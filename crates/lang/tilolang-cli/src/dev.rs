@@ -31,6 +31,33 @@ use tilolang_tilo::upgrade::{Upgrade, compare};
 use crate::package::{self, BuildOptions, BuiltApp};
 use crate::session::{self, Peer};
 
+/// The sources of the tilolang runtime binary: what `--build-runtime` rebuilds it on.
+const RUNTIME_SOURCES: [&str; 4] = [
+    "apps/tilolang",
+    "crates/platform/tilolang-tilo",
+    "crates/lang/tilolang-runtime",
+    "crates/lang/tilolang",
+];
+
+/// The profile the runtime is built with: the nested session's (dist/dev/nested-session-build.sh),
+/// optimised without the shipped profile's whole-program link, and incremental. An unoptimised
+/// runtime is several hundred megabytes.
+const RUNTIME_PROFILE: [&str; 10] = [
+    "--profile",
+    "nested",
+    "--config",
+    "profile.nested.inherits=\"release\"",
+    "--config",
+    "profile.nested.lto=false",
+    "--config",
+    "profile.nested.codegen-units=16",
+    "--config",
+    "profile.nested.incremental=true",
+];
+
+/// Where that build leaves the runtime binary, in the checkout.
+const RUNTIME_BINARY: &str = "target/nested/tilolang-app";
+
 /// What `tilolang dev` was asked for.
 #[derive(Clone, Debug)]
 pub struct DevOptions {
@@ -41,6 +68,8 @@ pub struct DevOptions {
     pub session: PathBuf,
     /// A tilolang runtime binary (a build of `apps/tilolang`) to run the apps on.
     pub runtime: Option<PathBuf>,
+    /// Build the runtime from the checkout and rebuild it on every change of its sources.
+    pub build_runtime: bool,
     /// The key the runtime bundle is signed with (default: the session's runtime publisher).
     pub runtime_identity: Option<PathBuf>,
     /// The Tilo checkout whose nested-session build has the session's tools.
@@ -74,6 +103,9 @@ const DEV_RUNTIME_PACKAGE: &str = "so.tilo.runtime.tilolang.dev";
 /// A tilolang runtime binary the apps run on, baked and installed as a runtime package.
 struct DevRuntime {
     binary: PathBuf,
+    /// The checkout the tool builds `binary` in, on every change of its sources; without one
+    /// the tool follows a binary built by hand.
+    built_in: Option<PathBuf>,
     /// The key its bundle is signed with: one the launcher trusts for runtime bundles.
     identity_file: PathBuf,
     version: String,
@@ -271,17 +303,61 @@ impl Dev {
         watcher: &mut notify::RecommendedWatcher,
         watching: &mut BTreeSet<PathBuf>,
     ) -> Result<(), String> {
-        let runtime_dir = self
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.binary.parent().map(Path::to_path_buf));
-        for dir in self.watched_dirs()?.into_iter().chain(runtime_dir) {
+        let mut dirs: Vec<(PathBuf, RecursiveMode)> = self
+            .watched_dirs()?
+            .into_iter()
+            .map(|dir| (dir, RecursiveMode::NonRecursive))
+            .collect();
+        match self.runtime.as_ref() {
+            Some(DevRuntime {
+                built_in: Some(repo),
+                ..
+            }) => dirs.extend(
+                RUNTIME_SOURCES
+                    .iter()
+                    .map(|dir| (repo.join(dir), RecursiveMode::Recursive)),
+            ),
+            Some(runtime) => dirs.extend(
+                runtime
+                    .binary
+                    .parent()
+                    .map(|dir| (dir.to_path_buf(), RecursiveMode::NonRecursive)),
+            ),
+            None => {}
+        }
+        for (dir, mode) in dirs {
             if watching.insert(dir.clone()) {
                 watcher
-                    .watch(&dir, RecursiveMode::NonRecursive)
+                    .watch(&dir, mode)
                     .map_err(|error| format!("{}: {error}", dir.display()))?;
             }
         }
+        Ok(())
+    }
+
+    /// Build the runtime binary in its checkout, through `cargo`: on this repository's build
+    /// server, as every build of it goes.
+    fn build_runtime(&self) -> Result<(), String> {
+        let Some(DevRuntime {
+            built_in: Some(repo),
+            ..
+        }) = &self.runtime
+        else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        session::status(
+            Command::new("cargo")
+                .current_dir(repo)
+                .arg("build")
+                .args(RUNTIME_PROFILE)
+                .args(["-p", "tilolang-app", "--bin", "tilolang-app"]),
+            "building the runtime",
+        )?;
+        eprintln!(
+            "==> the runtime built in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
         Ok(())
     }
 
@@ -302,7 +378,8 @@ impl Dev {
             let Ok(event) = event else { continue };
             let mut source = is_source_edit(&event);
             let mut runtime = self.is_runtime_change(&event);
-            if !source && !runtime {
+            let mut runtime_source = self.is_runtime_source_edit(&event);
+            if !source && !runtime && !runtime_source {
                 continue;
             }
             // An editor's save, or a link of the runtime, is several events: take every one
@@ -313,11 +390,20 @@ impl Dev {
                     Wake::File(Ok(more)) => {
                         source |= is_source_edit(&more);
                         runtime |= self.is_runtime_change(&more);
+                        runtime_source |= self.is_runtime_source_edit(&more);
                     }
                     Wake::File(Err(_)) => {}
                 }
             }
-            if runtime {
+            if runtime_source {
+                match self.build_runtime() {
+                    Ok(()) => self.runtime_changed(),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        eprintln!("==> the apps keep running on the last good runtime");
+                    }
+                }
+            } else if runtime {
                 self.runtime_changed();
             } else {
                 self.rebuild();
@@ -328,13 +414,40 @@ impl Dev {
         }
     }
 
+    /// A new binary of a runtime built by hand.
     fn is_runtime_change(&self, event: &notify::Event) -> bool {
         use notify::EventKind;
-        let Some(runtime) = &self.runtime else {
+        let Some(runtime) = self
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.built_in.is_none())
+        else {
             return false;
         };
         matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
             && event.paths.contains(&runtime.binary)
+    }
+
+    /// An edit of the sources of a runtime the tool builds.
+    fn is_runtime_source_edit(&self, event: &notify::Event) -> bool {
+        use notify::EventKind;
+        let Some(repo) = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.built_in.as_ref())
+        else {
+            return false;
+        };
+        matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+        ) && event.paths.iter().any(|path| {
+            RUNTIME_SOURCES
+                .iter()
+                .any(|dir| path.starts_with(repo.join(dir)))
+                && (path.extension().is_some_and(|extension| extension == "rs")
+                    || path.file_name().is_some_and(|name| name == "Cargo.toml"))
+        })
     }
 }
 
@@ -416,8 +529,14 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let bin = repo.join(session::BUILD_DIR).join("bin");
     let peer = Peer::attach(&options.session)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
-    let runtime = options.runtime.as_ref().map(|binary| DevRuntime {
+    let built_in = options.build_runtime.then(|| repo.clone());
+    let binary = options
+        .runtime
+        .clone()
+        .or_else(|| built_in.as_ref().map(|repo| repo.join(RUNTIME_BINARY)));
+    let runtime = binary.as_ref().map(|binary| DevRuntime {
         binary: std::path::absolute(binary).unwrap_or_else(|_| binary.clone()),
+        built_in: built_in.clone(),
         identity_file: options
             .runtime_identity
             .clone()
@@ -441,6 +560,7 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     })
     .map_err(|error| error.to_string())?;
     if dev.runtime.is_some() {
+        dev.build_runtime()?;
         dev.install_runtime()?;
     }
     let apps = dev.build_and_install(Instant::now())?;
