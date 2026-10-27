@@ -172,6 +172,11 @@ pub struct RunRequest<'a> {
     pub inputs: Map<String, Value>,
     /// The bot run this run continues, recorded on every change it makes.
     pub caused_by: Option<tilo_actions::context::Cause>,
+    /// The work unit this run belongs to when something else asked for it (a
+    /// task that called the shortcut), named by its own group. Every step is
+    /// stamped with it instead of this run's own group, so the run reads as
+    /// part of what asked for it and is undone with it.
+    pub parent: Option<tilo_actions::context::ActionGroup>,
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -625,6 +630,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         trigger,
         inputs,
         caused_by,
+        parent,
     } = request;
     let mut report = RunReport {
         run,
@@ -665,6 +671,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         outputs: BTreeMap::new(),
         records: Vec::new(),
         caused_by,
+        parent,
         timeout: shortcut
             .step_timeout_secs
             .map_or(DEFAULT_STEP_TIMEOUT, |secs| {
@@ -714,6 +721,7 @@ struct Runner<'a, H, K> {
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
+    parent: Option<tilo_actions::context::ActionGroup>,
     /// How long each step of the run may take.
     timeout: std::time::Duration,
     /// The steps that failed and the run carried on past, with why.
@@ -1730,33 +1738,41 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         descriptor: &ActionDescriptor,
         path: &StepPath,
     ) -> ActionContext {
-        ActionContext::for_resource(
+        let context = ActionContext::for_resource(
             row.resource.id.clone(),
             row.resource.kind.clone(),
             row.resource.label.clone(),
         )
         .with_app(app_id, app_id)
-        .with_purpose(self.shortcut.name.clone())
-        .with_group(
-            self.run.0.to_string(),
-            self.shortcut.name.clone(),
-            "shortcut",
-        )
-        .with_facet(ActionFacet::new("kind", "shortcut"))
-        .with_facet(ActionFacet::new("trigger", self.trigger.clone()))
-        .with_facet(ActionFacet::new("shortcut", self.shortcut.id.clone()))
-        // With the run's group, names the step a change was: a host that
-        // restarted mid-run finds the steps already taken in history.
-        .with_facet(ActionFacet::new(STEP_FACET, path.as_str()))
-        .with_caused_by(self.caused_by.clone())
-        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(
-                app_id,
-                row.resource.kind.clone(),
-                descriptor.address.action.clone(),
+        .with_purpose(self.shortcut.name.clone());
+        let context = match &self.parent {
+            Some(parent) => context.with_group(
+                parent.id.clone(),
+                self.shortcut.name.clone(),
+                parent.kind.clone(),
             ),
-            [],
-        )))
+            None => context.with_group(
+                self.run.0.to_string(),
+                self.shortcut.name.clone(),
+                "shortcut",
+            ),
+        };
+        context
+            .with_facet(ActionFacet::new("kind", "shortcut"))
+            .with_facet(ActionFacet::new("trigger", self.trigger.clone()))
+            .with_facet(ActionFacet::new("shortcut", self.shortcut.id.clone()))
+            // With the run's group, names the step a change was: a host that
+            // restarted mid-run finds the steps already taken in history.
+            .with_facet(ActionFacet::new(STEP_FACET, path.as_str()))
+            .with_caused_by(self.caused_by.clone())
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(
+                    app_id,
+                    row.resource.kind.clone(),
+                    descriptor.address.action.clone(),
+                ),
+                [],
+            )))
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the
