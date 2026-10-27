@@ -17,6 +17,11 @@
 //!   agents, often twice over, so it is not listed row by row.
 //! - Then what can be done in the window, each action read by its short
 //!   label; an item's actions answer only to the item's name.
+//! - Only what a person can take now is listed, as each action's own
+//!   declaration says: offered to people (its audience), available in the
+//!   window's state (an app marks a toggle's other side, or an action on an
+//!   empty selection, unavailable), and asking no more than a row can
+//!   collect. An action on the selection names it in its label.
 //! - Actions that act on what the person selected lead the other actions.
 
 use tilo_actions::{ActionSpec, ContextRequirement, FlatAction, Resource};
@@ -30,11 +35,12 @@ use crate::rank;
 pub const ACTIONS: &str = "window-actions";
 
 /// Whether a person may pick `spec` from a palette now: offered to people,
-/// available, and not the opening of a search hit (which a hit of the
-/// app's own search stands for).
+/// available, asking at most what a row can collect, and not the opening of
+/// a search hit (which a hit of the app's own search stands for).
 fn offered(spec: &ActionSpec) -> bool {
     spec.reaches_people()
         && spec.contract.availability.is_available()
+        && spec.takes_a_row_answer()
         && spec.operation_type.as_deref() != Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 
@@ -392,6 +398,199 @@ mod tests {
         assert!(
             !hits.iter().any(|hit| hit.kind == ResourceKind::Action),
             "every action of the window is the notebook's: {hits:?}"
+        );
+    }
+
+    fn unavailable(mut spec: ActionSpec, code: &str) -> ActionSpec {
+        spec.contract.availability = tilo_actions::Availability::Unavailable {
+            code: code.into(),
+            reason: code.into(),
+        };
+        spec
+    }
+
+    fn typed(id: &str, label: &str, params: Vec<tilo_actions::ActionParam>) -> ActionSpec {
+        ActionSpec::typed(
+            id,
+            label,
+            label,
+            ExecutionLocus::ClientLocal,
+            params,
+            |_| EncodedAction {
+                type_id: "test.action".into(),
+                payload: Vec::new(),
+            },
+        )
+    }
+
+    fn text(name: &'static str) -> tilo_actions::ActionParam {
+        tilo_actions::ActionParam::required(name, tilo_actions::ParamType::Text, "")
+    }
+
+    /// A file manager's window as it stands: a folder shown that is not a
+    /// favourite, one file selected, and the actions it publishes, some of
+    /// which cannot run now or are not for a person.
+    fn folder(selected: Option<&str>) -> Vec<Resource> {
+        let selection = |id: &str, label: String| {
+            let spec = action(id, &label).requires(tilo_actions::ContextRequirement::Selection);
+            match selected {
+                Some(_) => spec,
+                None => unavailable(spec, "selection_empty"),
+            }
+        };
+        let name = selected.unwrap_or_default();
+        vec![
+            Resource::new("files.folder", "files.folder", "Files")
+                .with_action(action("refresh", "Refresh folder"))
+                // A toggle pair: the folder is no favourite, so only adding
+                // applies.
+                .with_action(action("add-favorite", "Add to Favorites"))
+                .with_action(unavailable(
+                    action("remove-favorite", "Remove from Favorites"),
+                    "not_a_favorite",
+                ))
+                .with_action(selection(
+                    "rename-selected",
+                    format!("Rename \u{201c}{name}\u{201d}"),
+                ))
+                .with_action(selection(
+                    "trash-selected",
+                    format!("Move \u{201c}{name}\u{201d} to Trash"),
+                ))
+                // What agents and scripts call, naming every argument.
+                .with_action(
+                    typed(
+                        "rename",
+                        "Rename",
+                        vec![text("folder"), text("entry"), text("name")],
+                    )
+                    .for_audience(tilo_actions::Audience::Agents),
+                )
+                .with_action(
+                    action("replace-range", "Replace range")
+                        .for_audience(tilo_actions::Audience::Agents),
+                )
+                // Asks what a row can collect: one line.
+                .with_action(typed("new-folder", "New folder", vec![text("name")]))
+                // Asks more than a row can collect, though offered to people.
+                .with_action(typed(
+                    "copy-into",
+                    "Copy entries to folder",
+                    vec![text("entries"), text("to")],
+                ))
+                .with_action(typed(
+                    "select-entries",
+                    "Select entries",
+                    vec![tilo_actions::ActionParam::required(
+                        "entries",
+                        tilo_actions::ParamType::Array,
+                        "",
+                    )],
+                )),
+        ]
+    }
+
+    fn action_titles(resources: Vec<Resource>, needle: &str) -> Vec<String> {
+        let mut hits: Vec<Hit> = WindowSearch::new(resources, Vec::new())
+            .query(needle)
+            .into_iter()
+            .filter(|hit| hit.kind == ResourceKind::Action)
+            .collect();
+        selection_first(&mut hits);
+        hits.into_iter().map(|hit| hit.title).collect()
+    }
+
+    #[test]
+    fn only_what_can_run_now_is_listed() {
+        assert_eq!(
+            action_titles(folder(None), ""),
+            ["Refresh folder", "Add to Favorites", "New folder"],
+            "with nothing selected: no action on the selection, one side of the \
+             favourite toggle, nothing asking more than one line, nothing for agents"
+        );
+        for needle in ["remove", "favorites", "rename", "trash", "copy", "select"] {
+            let titles = action_titles(folder(None), needle);
+            assert!(
+                titles.iter().all(|title| title == "Add to Favorites"),
+                "{needle:?} finds nothing that cannot run now: {titles:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn actions_on_the_selection_name_it_and_lead() {
+        assert_eq!(
+            action_titles(folder(Some("report.pdf")), ""),
+            [
+                "Rename \u{201c}report.pdf\u{201d}",
+                "Move \u{201c}report.pdf\u{201d} to Trash",
+                "Refresh folder",
+                "Add to Favorites",
+                "New folder",
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_only_actions_never_reach_a_persons_search() {
+        for needle in ["", "rename", "replace", "range", "files"] {
+            let hits = WindowSearch::new(folder(Some("report.pdf")), Vec::new()).query(needle);
+            for hit in &hits {
+                let Target::Action(target) = &hit.target else {
+                    continue;
+                };
+                assert!(
+                    target.spec.reaches_people(),
+                    "{needle:?} lists {:?}, which is for agents",
+                    hit.title
+                );
+            }
+        }
+        // On an item too: an item's action for agents does not answer to
+        // the item's name.
+        let mut notebook = notebook();
+        notebook[0].children[0] = notebook[0].children[0].clone().with_action(
+            action("read-body", "Read note body").for_audience(tilo_actions::Audience::Agents),
+        );
+        let titles: Vec<String> = WindowSearch::new(notebook, vec![Box::new(Notes)])
+            .query("groceries")
+            .into_iter()
+            .filter(|hit| hit.kind == ResourceKind::Action)
+            .map(|hit| hit.title)
+            .collect();
+        assert_eq!(titles, ["Rename note"]);
+    }
+
+    /// A notebook whose own search lists its notes in the order the app
+    /// keeps them, which is not their alphabetical order.
+    struct Arranged;
+
+    impl ui::search::SearchProvider for Arranged {
+        fn name(&self) -> &'static str {
+            "Notes"
+        }
+        fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+            let mut found: Vec<ui::search::SearchResult> = Notes.search(query);
+            found.reverse();
+            found
+        }
+        fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+            Some(tilo_actions::ActionAddress::new("notes.notebook", "open"))
+        }
+    }
+
+    #[test]
+    fn what_the_window_holds_keeps_the_apps_order() {
+        let titles: Vec<String> = WindowSearch::new(notebook(), vec![Box::new(Arranged)])
+            .query("")
+            .into_iter()
+            .filter(|hit| hit.kind == ResourceKind::Note)
+            .map(|hit| hit.title)
+            .collect();
+        assert_eq!(
+            titles,
+            ["Trip plan", "Groceries"],
+            "as the app arranged them"
         );
     }
 

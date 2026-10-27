@@ -478,6 +478,12 @@ impl SettingsApp {
             })
     }
 
+    /// Go on reading the areas not read yet: something asked for what they
+    /// hold.
+    pub(crate) fn read_areas_now(&self) {
+        self.area_reads.wake();
+    }
+
     /// Read on after the first frame, so the published rows fill in an area
     /// at a time: the device reads that block run on the background
     /// executor ([`crate::effects::AreaReads::step`]). Once every area has

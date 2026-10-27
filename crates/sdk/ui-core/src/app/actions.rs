@@ -3,6 +3,15 @@
 // Kept as an `App` implementation so custom widgets and built-in controls
 // share one authoritative action/resource route.
 
+/// A broker's resolution of a resource still being read, answered once its
+/// read lands.
+pub(super) struct AwaitedResolution {
+    revision: String,
+    resource: String,
+    action: String,
+    reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolution>,
+}
+
 #[derive(Clone, Copy)]
 struct ResourceInvocation<'a> {
     address: &'a tilo_actions::ActionAddress,
@@ -1878,6 +1887,25 @@ impl App {
         }
     }
 
+    /// Whether `resource_id`, which resolves to nothing now, may resolve
+    /// once what its widget reads lands
+    /// ([`crate::resources::PublishesResources::resource_pending`]).
+    fn publication_resource_pending(&mut self, resource_id: &str, action_id: &str) -> bool {
+        let address = tilo_actions::ActionAddress::new(resource_id, action_id);
+        match self.actions.bound_publication.target(&address) {
+            Ok(Some(target)) => crate::bound_dispatch::component_resource_pending(
+                self.root_widget.as_mut(),
+                &target.binding,
+                &target.address.address.resource,
+            ),
+            Err(_) => false,
+            Ok(None) => crate::bound_dispatch::unbound_resource_pending(
+                self.root_widget.as_ref(),
+                resource_id,
+            ),
+        }
+    }
+
     fn resolve_action_directory(
         &mut self,
         revision: &str,
@@ -1950,7 +1978,43 @@ impl App {
         }
     }
 
+    /// Answer the resolutions held for a resource that was still being read
+    /// and no longer is: found, or not found once its read ended. One whose
+    /// caller went away is dropped.
+    fn answer_awaited_resolutions(&mut self) {
+        let awaited = std::mem::take(&mut self.actions.awaited_resolutions);
+        for awaited in awaited {
+            if awaited.reply.is_closed() {
+                continue;
+            }
+            if self.publication_resource_pending(&awaited.resource, &awaited.action) {
+                self.actions.awaited_resolutions.push(awaited);
+                continue;
+            }
+            let _ = awaited.reply.send(self.published_action_directory_resolution(
+                &awaited.revision,
+                &awaited.resource,
+                &awaited.action,
+            ));
+        }
+    }
+
+    /// Answer `asked` now, or once its resource is read when it is still
+    /// being read: at the pump the read's landing wakes.
+    fn resolve_or_await(&mut self, asked: AwaitedResolution) {
+        let resolution =
+            self.published_action_directory_resolution(&asked.revision, &asked.resource, &asked.action);
+        if matches!(resolution, runtime_collab::ActionDirectoryResolution::NotFound)
+            && self.publication_resource_pending(&asked.resource, &asked.action)
+        {
+            self.actions.awaited_resolutions.push(asked);
+            return;
+        }
+        let _ = asked.reply.send(resolution);
+    }
+
     fn pump_action_directory_requests(&mut self) {
+        self.answer_awaited_resolutions();
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::ResolveLocalDocumentAction {
@@ -1975,11 +2039,12 @@ impl App {
                     resource,
                     action,
                     reply,
-                } => {
-                    let _ = reply.send(
-                        self.published_action_directory_resolution(&revision, &resource, &action),
-                    );
-                }
+                } => self.resolve_or_await(AwaitedResolution {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                }),
             }
         }
     }
