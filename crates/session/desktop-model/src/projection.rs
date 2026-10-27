@@ -45,6 +45,10 @@ pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
 /// kept while empty (`1`), unlike an ordinary strip, which is published only
 /// while it holds windows.
 pub const STRIP_RETAINED_EMPTY_KEY: &str = "retained_empty_v1";
+/// The gap a device leaves between two of its own entries when it publishes
+/// them side by side, so another device's entry has room to land between
+/// them ([`placed_order`]).
+pub const LAYOUT_ORDER_STEP: u64 = 1 << 16;
 /// Key a room document stores its effect receipts under.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
@@ -655,10 +659,12 @@ fn put_author(doc: &mut AutoCommit, entry: &automerge::ObjId, author: Option<&st
 /// Every entry is written only by the peer whose salt its id carries
 /// ([`peer_salt_of`]) — a single-writer rule
 /// the host's admission of peer changes enforces, so last-writer-wins has
-/// nothing to arbitrate. Entries carry their index; readers sort by
-/// `(order, id)` so peers appending at once still agree, and the
-/// sweep at each level deletes only entries this machine owns. Salt
-/// `0` has no id space, so nothing is projected or merged there.
+/// nothing to arbitrate. Entries carry their position ([`placed_order`]:
+/// this device's own gap order, which leaves room for another device's
+/// entry between two of them); readers sort by `(order, id)` so peers
+/// appending at once still agree, and the sweep at each level deletes only
+/// entries this machine owns. Salt `0` has no id space, so nothing is
+/// projected or merged there.
 ///
 /// # Errors
 ///
@@ -705,6 +711,10 @@ pub fn project_owned_contents_as(
     let contents_all = or_created(contents_all, &contents_id);
 
     let mut live_strips: HashSet<String> = HashSet::new();
+    // Where the last entry considered stands, ours or a peer's: the lower
+    // bound of the gap this device's next entry is placed in
+    // ([`placed_order`]).
+    let mut placed: Option<u64> = None;
     for (si, strip) in strips.iter().enumerate() {
         let skey = contents_key(strip.id.raw());
         let strip_all = child_candidates(doc, &contents_all, skey.as_str());
@@ -728,6 +738,11 @@ pub fn project_owned_contents_as(
         if !owns_strip && !has_owned {
             continue;
         }
+        if !owns_strip && let Some(order) = published_order(doc, &strip_all) {
+            // A peer's strip is a lower bound for ours and is never
+            // rewritten.
+            placed = Some(placed.map_or(order, |held: u64| held.max(order)));
+        }
 
         let Ok(strip_entry) = winner_or_create(doc, &strip_all, &contents_id, skey.as_str()) else {
             continue;
@@ -738,7 +753,9 @@ pub fn project_owned_contents_as(
                 let _ = doc.put_uint_if_changed(&strip_entry, STRIP_RETAINED_EMPTY_KEY, 1);
             }
             let _ = doc.put_str_if_changed(&strip_entry, "name", &strip.name);
-            let _ = doc.put_uint_if_changed(&strip_entry, "order", si as u64);
+            let order = placed_order(placed, next_foreign_strip_order(doc, strips, si, &mine), si);
+            placed = Some(order);
+            let _ = doc.put_uint_if_changed(&strip_entry, "order", order);
             put_author(doc, &strip_entry, author);
         }
 
@@ -749,6 +766,64 @@ pub fn project_owned_contents_as(
     }
     sweep_stale(doc, &contents_all, &live_strips, &mine);
     Ok(())
+}
+
+/// The `order` published for this device's entry at `index` of its own
+/// list, given the order just before it (`prev`) and the next published
+/// order of an entry another device owns (`next_foreign`).
+///
+/// A device publishes its entries a [`LAYOUT_ORDER_STEP`] apart, so an
+/// entry of another device can be placed between any two of them: that
+/// device writes the midpoint of the gap it lands in, which fits between
+/// its neighbours exactly instead of tying with one of them and being
+/// ordered by its id. Each device still writes only its own entries — the
+/// neighbours are read, never rewritten — and the representation stays one
+/// bounded `u64` per entry. After enough successive placements into the
+/// same gap its two neighbours end up adjacent (`next - prev <= 1`); the
+/// entry then keeps the position just after its predecessor and `(order,
+/// id)` decides the rest.
+fn placed_order(prev: Option<u64>, next_foreign: Option<u64>, index: usize) -> u64 {
+    let index = u64::try_from(index).unwrap_or(u64::MAX);
+    match (prev, next_foreign) {
+        (None, None) => LAYOUT_ORDER_STEP.saturating_mul(index.saturating_add(1)),
+        // Before everything published: half the first gap, so the first
+        // entry keeps its own room in front of it.
+        (None, Some(next)) => (next / 2).max(1),
+        (Some(prev), None) => prev.saturating_add(LAYOUT_ORDER_STEP),
+        (Some(prev), Some(next)) => {
+            if next > prev.saturating_add(1) {
+                prev + (next - prev) / 2
+            } else {
+                prev.saturating_add(1)
+            }
+        }
+    }
+}
+
+/// The `order` the winning copy of `entries` carries, if it has one.
+fn published_order(doc: &impl ReadDoc, entries: &[automerge::ObjId]) -> Option<u64> {
+    let entry = entries.first()?;
+    doc.uint_at(entry, "order")
+}
+
+/// The published order of the nearest strip after `index` that another
+/// device owns: the upper bound of the gap this device's strip is placed in
+/// ([`placed_order`]).
+fn next_foreign_strip_order(
+    doc: &impl ReadDoc,
+    strips: &[Strip],
+    index: usize,
+    mine: &impl Fn(u64) -> bool,
+) -> Option<u64> {
+    let contents_all = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
+    strips
+        .iter()
+        .skip(index.saturating_add(1))
+        .filter(|later| !mine(later.id.raw()))
+        .find_map(|later| {
+            let key = contents_key(later.id.raw());
+            published_order(doc, &child_candidates(doc, &contents_all, key.as_str()))
+        })
 }
 
 /// Publish `strip`, at position `order`, as a strip kept while empty
@@ -781,6 +856,46 @@ pub fn retain_owned_strip(
     let _ = doc.put_str_if_changed(&entry, "name", &strip.name);
     let _ = doc.put_uint_if_changed(&entry, "order", order);
     Ok(true)
+}
+
+/// The published order of the nearest group after `index` in `strip` that
+/// another device owns ([`placed_order`]).
+fn next_foreign_group_order(
+    doc: &impl ReadDoc,
+    groups_all: &[automerge::ObjId],
+    strip: &Strip,
+    index: usize,
+    mine: &impl Fn(u64) -> bool,
+) -> Option<u64> {
+    strip
+        .window_groups
+        .iter()
+        .skip(index.saturating_add(1))
+        .filter(|later| !mine(later.id))
+        .find_map(|later| {
+            let key = contents_key(later.id);
+            published_order(doc, &child_candidates(doc, groups_all, key.as_str()))
+        })
+}
+
+/// The published order of the nearest tab after `index` in `group` that
+/// another device owns ([`placed_order`]).
+fn next_foreign_tab_order(
+    doc: &impl ReadDoc,
+    tabs_all: &[automerge::ObjId],
+    group: &WindowGroup,
+    index: usize,
+    mine: &impl Fn(u64) -> bool,
+) -> Option<u64> {
+    group
+        .tabs
+        .iter()
+        .skip(index.saturating_add(1))
+        .filter(|later| !mine(later.id))
+        .find_map(|later| {
+            let key = contents_key(later.id);
+            published_order(doc, &child_candidates(doc, tabs_all, key.as_str()))
+        })
 }
 
 /// [`project_owned_contents`]'s per-strip pass: get-or-create
@@ -819,6 +934,7 @@ fn project_owned_groups_in(
     let groups_id = winner_or_create(doc, &groups_all, strip_entry, "groups")?;
     let groups_all = or_created(groups_all, &groups_id);
     let mut live_groups: HashSet<String> = HashSet::new();
+    let mut placed: Option<u64> = None;
     for (gi, group) in strip.window_groups.iter().enumerate() {
         if group.tabs.is_empty() {
             continue;
@@ -830,13 +946,22 @@ fn project_owned_groups_in(
         }
         let gkey = contents_key(group.id);
         let group_copies = child_candidates(doc, &groups_all, gkey.as_str());
+        if !owns_group && let Some(order) = published_order(doc, &group_copies) {
+            placed = Some(placed.map_or(order, |held: u64| held.max(order)));
+        }
         let Ok(group_entry) = winner_or_create(doc, &group_copies, &groups_id, gkey.as_str())
         else {
             continue;
         };
         if owns_group {
             live_groups.insert(gkey.clone());
-            let _ = doc.put_uint_if_changed(&group_entry, "order", gi as u64);
+            let order = placed_order(
+                placed,
+                next_foreign_group_order(doc, &groups_all, strip, gi, &mine),
+                gi,
+            );
+            placed = Some(order);
+            let _ = doc.put_uint_if_changed(&group_entry, "order", order);
             // Width, maximization and active-tab selection are local
             // presentation preferences. Old room documents may still
             // contain the first two fields, but no current peer writes
@@ -887,6 +1012,7 @@ fn project_owned_tabs_in(
     let tabs_id = winner_or_create(doc, &tabs_all, group_entry, "tabs")?;
     let tabs_all = or_created(tabs_all, &tabs_id);
     let mut live_tabs: HashSet<String> = HashSet::new();
+    let mut placed: Option<u64> = None;
     for (ti, tab) in group.tabs.iter().enumerate() {
         if !mine(tab.id) {
             continue;
@@ -897,7 +1023,13 @@ fn project_owned_tabs_in(
         let Ok(tab_entry) = winner_or_create(doc, &tab_copies, &tabs_id, tkey.as_str()) else {
             continue;
         };
-        let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
+        let order = placed_order(
+            placed,
+            next_foreign_tab_order(doc, &tabs_all, group, ti, &mine),
+            ti,
+        );
+        placed = Some(order);
+        let _ = doc.put_uint_if_changed(&tab_entry, "order", order);
         let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
         put_author(doc, &tab_entry, author);
         match &tab.app_title {
@@ -1312,7 +1444,13 @@ pub fn merge_strip(
         rep.groups.into_iter().map(|g| (g.id, g)).collect();
     let prior_group_order: Vec<u64> = local.window_groups.iter().map(|group| group.id).collect();
 
-    let mut out: Vec<(u64, u64, WindowGroup)> = Vec::new();
+    // The published gaps are what every member sorts by, ours included: the
+    // order we published is the position the others read, so taking our
+    // cache's index instead would put our groups in front of a peer's
+    // whenever the two share a gap. Only a group we have not published yet
+    // keeps the index it stands at.
+    let mut published: Vec<(u64, u64, WindowGroup)> = Vec::new();
+    let mut kept: Vec<(usize, WindowGroup)> = Vec::new();
     for (i, group) in std::mem::take(&mut local.window_groups)
         .into_iter()
         .enumerate()
@@ -1320,26 +1458,30 @@ pub fn merge_strip(
         let gid = group.id;
         match by_group.remove(&gid) {
             Some(rep) => {
-                let order = if is_local(gid) { i as u64 } else { rep.order };
-                out.push((order, gid, merge_group(group, rep, is_local, changed)));
+                let order = rep.order;
+                published.push((order, gid, merge_group(group, rep, is_local, changed)));
             }
-            None if is_local(gid) => out.push((i as u64, gid, group)),
+            None if is_local(gid) => kept.push((i, group)),
             None => *changed = true,
         }
     }
     for (gid, rep) in by_group {
-        out.push((rep.order, gid, hydrate_group(rep)));
+        published.push((rep.order, gid, hydrate_group(rep)));
         *changed = true;
     }
-    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
+    published.compact_sort_by_key(|(order, id, _)| (*order, *id));
+    let mut out: Vec<WindowGroup> = published.into_iter().map(|(_, _, group)| group).collect();
+    for (index, group) in kept {
+        out.insert(index.min(out.len()), group);
+    }
     if !prior_group_order
         .iter()
         .copied()
-        .eq(out.iter().map(|(_, id, _)| *id))
+        .eq(out.iter().map(|group| group.id))
     {
         *changed = true;
     }
-    local.window_groups = out.into_iter().map(|(_, _, g)| g).collect();
+    local.window_groups = out;
     local
 }
 
@@ -1357,12 +1499,16 @@ pub fn merge_group(
     let mut by_tab: std::collections::BTreeMap<u64, ReplicatedTab> =
         rep.tabs.into_iter().map(|t| (t.id, t)).collect();
     let prior_tab_order: Vec<u64> = local.tabs.iter().map(|tab| tab.id).collect();
-    let mut out: Vec<(u64, u64, Tab)> = Vec::new();
+    // As [`merge_strip`]'s groups: the published gap decides for every tab
+    // that has one, ours included, and a tab we have not published yet keeps
+    // the index it stands at.
+    let mut published: Vec<(u64, u64, Tab)> = Vec::new();
+    let mut kept: Vec<(usize, Tab)> = Vec::new();
     for (i, tab) in std::mem::take(&mut local.tabs).into_iter().enumerate() {
         let tid = tab.id;
         match by_tab.remove(&tid) {
             Some(rep) => {
-                let order = if is_local(tid) { i as u64 } else { rep.order };
+                let order = rep.order;
                 let mut tab = tab;
                 if !is_local(tid) {
                     if tab.title != rep.title {
@@ -1381,25 +1527,29 @@ pub fn merge_group(
                         }
                     }
                 }
-                out.push((order, tid, tab));
+                published.push((order, tid, tab));
             }
-            None if is_local(tid) => out.push((i as u64, tid, tab)),
+            None if is_local(tid) => kept.push((i, tab)),
             None => *changed = true,
         }
     }
     for (tid, rep) in by_tab {
-        out.push((rep.order, tid, hydrate_tab(rep)));
+        published.push((rep.order, tid, hydrate_tab(rep)));
         *changed = true;
     }
-    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
+    published.compact_sort_by_key(|(order, id, _)| (*order, *id));
+    let mut out: Vec<Tab> = published.into_iter().map(|(_, _, tab)| tab).collect();
+    for (index, tab) in kept {
+        out.insert(index.min(out.len()), tab);
+    }
     if !prior_tab_order
         .iter()
         .copied()
-        .eq(out.iter().map(|(_, id, _)| *id))
+        .eq(out.iter().map(|tab| tab.id))
     {
         *changed = true;
     }
-    local.tabs = out.into_iter().map(|(_, _, t)| t).collect();
+    local.tabs = out;
 
     // `active_tab` is not taken from `rep` — the document doesn't
     // carry one. Moves only when the tab is genuinely gone.

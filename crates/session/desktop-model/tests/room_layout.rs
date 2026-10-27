@@ -394,3 +394,112 @@ fn a_request_outlives_the_owner_being_offline() {
         "the request stays as room state"
     );
 }
+
+/// Where each stripe of the room's layout stands, by strip id.
+fn strip_orders(doc: &AutoCommit) -> std::collections::BTreeMap<u64, u64> {
+    tilo_desktop_model::projection::contents_of(doc)
+        .into_iter()
+        .map(|strip| (strip.id, strip.order))
+        .collect()
+}
+
+/// The strip ids of a workspace, in the order the device shows them.
+fn strip_ids(workspace: &Workspace) -> Vec<u64> {
+    workspace
+        .strips
+        .iter()
+        .map(|strip| strip.id.raw())
+        .collect()
+}
+
+/// Three strips of two devices: the one in the middle is moved between the
+/// other device's two, and both devices read the room in exactly that order.
+///
+/// With one index per device, Ben's strip moving to sit between Ada's two
+/// would tie with the second of them and be ordered by its id. Ada's ids
+/// sort first, so her second strip would stay above Ben's and the move would
+/// silently not happen. The published position is a gap instead: Ada's
+/// strips stand a [`LAYOUT_ORDER_STEP`] apart and Ben writes the midpoint he
+/// lands in, without touching either of hers.
+#[test]
+fn a_moved_strip_lands_between_another_devices_strips() {
+    use tilo_desktop_model::projection::{Reader, contents_of, merge_room_contents};
+    let room = room();
+    let mut doc = AutoCommit::new();
+    room_layout::write(
+        &mut doc,
+        &layout(
+            room,
+            vec![strip_of(ADA, 1, "Notes"), strip_of(ADA, 2, "Mail")],
+        ),
+        ADA,
+        Some("ada"),
+    )
+    .unwrap();
+    doc.commit();
+    let ada_orders = strip_orders(&doc);
+    let notes = compose_id(ADA, 1);
+    let mail = compose_id(ADA, 2);
+    let chat = compose_id(BEN, 1);
+    assert!(
+        ada_orders[&notes] < ada_orders[&mail],
+        "Ada published a gap between her own strips"
+    );
+    // Ada's cache, as her own device holds it before Ben moved anything.
+    let mut ada_tree = room_layout::read(&doc, None).unwrap().tree;
+
+    // Ben sees Ada's two strips and opens his own after them.
+    let mut ben = fork(&mut doc);
+    let since = ben.get_heads();
+    let mut ben_layout = room_layout::read(&ben, None).unwrap();
+    ben_layout.tree.workspaces[0]
+        .strips
+        .push(strip_of(BEN, 1, "Chat"));
+    room_layout::write(&mut ben, &ben_layout, BEN, Some("ben")).unwrap();
+    publish(&mut doc, &mut ben, &since);
+    assert_eq!(
+        titles(&room_layout::read(&doc, None).unwrap()),
+        ["Notes", "Mail", "Chat"]
+    );
+
+    // Ben moves his strip between Ada's two and publishes the move.
+    let mut moved = room_layout::read(&ben, None).unwrap();
+    let mut his = moved.tree.workspaces[0].strips.remove(2);
+    assert_eq!(his.id.raw(), chat, "Ben moves his own strip");
+    moved.tree.workspaces[0].strips.insert(1, his);
+    let since = ben.get_heads();
+    assert!(
+        room_layout::write(&mut ben, &moved, BEN, Some("ben")).unwrap(),
+        "the move is a change of the room"
+    );
+    publish(&mut doc, &mut ben, &since);
+
+    let moved_orders = strip_orders(&doc);
+    assert_eq!(
+        moved_orders[&notes], ada_orders[&notes],
+        "Ada's first strip keeps the order she published"
+    );
+    assert_eq!(
+        moved_orders[&mail], ada_orders[&mail],
+        "Ada's second strip keeps the order she published: Ben writes no entry but his own"
+    );
+    assert!(
+        moved_orders[&notes] < moved_orders[&chat] && moved_orders[&chat] < moved_orders[&mail],
+        "Ben's strip sits strictly between Ada's two: {:?}",
+        moved_orders
+    );
+    assert_eq!(
+        titles(&room_layout::read(&doc, None).unwrap()),
+        ["Notes", "Chat", "Mail"],
+        "the room reads in the order Ben put his strip in"
+    );
+
+    // Ada folds the room into her own tree: the same order, and her strips
+    // are still hers to write.
+    merge_room_contents(&mut ada_tree, room, contents_of(&doc), Reader::Owner(ADA));
+    assert_eq!(
+        strip_ids(&ada_tree.workspaces[0]),
+        vec![notes, chat, mail],
+        "Ada reads the same order her colleague put the strip in"
+    );
+}
