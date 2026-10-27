@@ -74,7 +74,7 @@ use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
-use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
+use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, QueuedMessage, Shared};
 use crate::util::format_absolute;
 use crate::window_bar::BarItem;
 
@@ -758,6 +758,64 @@ impl MailApp {
         }
     }
 
+    /// Two messages waiting to leave, one of them refused by a server, in
+    /// the outbox: what the page shows, and the one place the verb that
+    /// takes a message back is.
+    fn stage_outbox(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        for (to, subject, body) in [
+            (
+                "ada@analytical.example",
+                "Notes on the second engine",
+                "Sent from the platform on the train. Tell me if the numbers hold.",
+            ),
+            (
+                "grace@navy.example",
+                "Dinner on Friday",
+                "Seven, if that suits. I will bring the almanac.",
+            ),
+        ] {
+            self.compose.open_with_draft(&crate::model::Draft {
+                to: to.into(),
+                subject: subject.into(),
+                body: body.into(),
+                ..Default::default()
+            });
+            self.send_compose(doc);
+        }
+        // The first one's server refused it, in its own words: it stays
+        // where it is, with the reason, until it is taken back.
+        let refused = crate::resource::read_mail(doc.doc())
+            .map(|mail| mail.outgoing())
+            .unwrap_or_default()
+            .first()
+            .map(|(outgoing, _)| outgoing.id.clone());
+        if let Some(id) = refused {
+            self.shared.borrow().submit(
+                doc,
+                crate::resource::Mail::paths().outbox.settle(
+                    &ui::prelude::Id::from_raw(&id),
+                    &ui::tilo_resource::Settled::failed(
+                        "550 5.7.1 This message was refused as spam".to_owned(),
+                    ),
+                ),
+            );
+        }
+        // The sends staged here are held for undo as a person's are; the
+        // capture is of the outbox, not of that notice, so it comes down.
+        self.nav.dismiss_toast();
+        self.send_notice = false;
+        self.sending_notice_next = false;
+        self.held_sends.clear();
+        self.sends_to_hold = 0;
+        {
+            let mut st = self.shared.borrow_mut();
+            st.status = None;
+            st.status_undo = false;
+        }
+        let account = self.shared.borrow().accounts.active;
+        self.shared.borrow_mut().open_outbox(account);
+    }
+
     /// Stage the view state screenshot `scenario` shows over the fixture
     /// mailbox. Runs in the sync after the framework asked for it, with the
     /// document, so a scenario that changes mail (moving messages to Trash
@@ -785,6 +843,7 @@ impl MailApp {
                 .search
                 .open(SearchRequest::this_app().with_query("launch")),
             "preview" => self.stage_preview(),
+            "outbox" => self.stage_outbox(doc),
             "bulk" => self.stage_bulk(),
             "bulk_purge_confirmation" => self.stage_bulk_purge_confirmation(doc),
             "reply" => self.stage_reply(),
@@ -969,6 +1028,48 @@ impl MailApp {
         self.pending_engine_requests.insert(request_id, pending);
         self.awaiting_engine = true;
         Some(request_id)
+    }
+
+    /// What the document's outbox holds now: the messages every account
+    /// still has to send, with a server's refusal where one refused them.
+    /// The outbox page and the sidebar's count both read this.
+    fn read_outbox(&mut self, doc: &ui::tilo_resource::Doc) {
+        let waiting = crate::resource::read_mail(doc)
+            .map(|mail| mail.outgoing())
+            .unwrap_or_default();
+        let queued: Vec<QueuedMessage> = waiting
+            .into_iter()
+            .map(|(outgoing, reason)| QueuedMessage {
+                id: outgoing.id.clone(),
+                account: outgoing.account.clone(),
+                to: recipient_line(&outgoing.draft),
+                subject: if outgoing.draft.subject.trim().is_empty() {
+                    "No subject".to_owned()
+                } else {
+                    outgoing.draft.subject.clone()
+                },
+                body: outgoing.draft.body.clone(),
+                reason,
+            })
+            .collect();
+        let mut st = self.shared.borrow_mut();
+        if st.outbox != queued {
+            st.outbox = queued;
+            st.dirty = true;
+        }
+        // The page always has a message open, and never one that left the
+        // outbox (sent, taken back): the newest that a server stopped, since
+        // that is the one waiting on the person, else the newest.
+        if st.outbox_open && st.open_queued().is_none() {
+            let queued = st.queued();
+            st.outbox_selected = queued
+                .iter()
+                .rev()
+                .find(|queued| queued.reason.is_some())
+                .or_else(|| queued.last())
+                .map(|queued| queued.id.clone());
+            st.dirty = true;
+        }
     }
 
     /// Accept only events that match a request still pending in this app. A
@@ -1259,6 +1360,10 @@ impl MailApp {
                     let mut state = self.shared.borrow_mut();
                     state.set_active_account(account);
                     state.select_folder(doc, folder);
+                }
+                Command::OpenOutbox(account) => self.shared.borrow_mut().open_outbox(account),
+                Command::CancelSend(id) => {
+                    self.shared.borrow_mut().cancel_send(doc, &id);
                 }
                 Command::OpenAllInboxes => self.shared.borrow_mut().open_all_inboxes(),
                 Command::AccountSettings => self.open_account_settings(),
@@ -3553,6 +3658,9 @@ impl MailApp {
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if state.outbox_open {
+            return Self::outbox_accessibility_node(state);
+        }
         let rows = state.list_rows();
         let total = rows.len();
         let messages = rows
@@ -3643,6 +3751,56 @@ impl MailApp {
             .with_children(children);
         if total == 0 {
             list = list.with_description(format!("No messages in {}", state.folder.title()));
+        }
+        list
+    }
+
+    /// The outbox page: a row per message still to leave, each saying why it
+    /// has not, and the verb that takes it back unsent.
+    fn outbox_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let queued = state.queued();
+        let total = queued.len();
+        let rows: Vec<AccessNode> =
+            queued
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("To {}: {}", message.to, message.subject))
+                        .with_description(message.state_line())
+                        .with_action_target(format!("mail.outbox:{}", message.id))
+                        .with_position(index + 1, total)
+                        .with_state(AccessState::new().focusable(true).selected(
+                            state.outbox_selected.as_deref() == Some(message.id.as_str()),
+                        ))
+                })
+                .collect();
+        let mut children = Vec::new();
+        if let Some(message) = state.open_queued() {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Cancel sending to {}", message.to))
+                    .with_action_target(format!("mail.outbox-cancel:{}", message.id))
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Queued message")
+                    .with_description(match &message.reason {
+                        Some(reason) => format!("The server refused this message: {reason}"),
+                        None => "This message has not been sent yet.".to_owned(),
+                    })
+                    .with_value(message.body.clone()),
+            );
+        }
+        children.extend(rows);
+        let mut list = AccessNode::new(Role::List)
+            .with_name("Outbox")
+            .with_children(children);
+        if total == 0 {
+            list = list.with_description("Nothing is waiting to be sent");
         }
         list
     }
@@ -3775,6 +3933,7 @@ impl Widget for MailApp {
         }
         self.compose.sync(state, path);
         self.show_status();
+        self.read_outbox(state);
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -4190,6 +4349,18 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.bulk:") {
             return self.perform_bulk_semantic_action(raw, action, state);
         }
+        if let Some(raw) = target.strip_prefix("mail.outbox-cancel:") {
+            let mut mail = self.shared.borrow_mut();
+            mail.cancel_send(state, raw);
+            drop(mail);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(raw) = target.strip_prefix("mail.outbox:") {
+            self.shared.borrow_mut().select_queued(raw);
+            self.dirty = true;
+            return true;
+        }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
@@ -4269,6 +4440,21 @@ impl Widget for MailApp {
         self.nav.mark_drawn();
         self.compose.mark_drawn();
         self.shortcuts.mark_drawn();
+    }
+}
+
+/// Who a queued message goes to, as one line: every recipient list it has.
+fn recipient_line(draft: &crate::actions::DraftData) -> String {
+    let mut to = Vec::new();
+    for field in [&draft.to, &draft.cc, &draft.bcc] {
+        for address in crate::transport::parse_addr_list(field) {
+            to.push(address.display());
+        }
+    }
+    if to.is_empty() {
+        "nobody yet".to_owned()
+    } else {
+        to.join(", ")
     }
 }
 
@@ -6469,6 +6655,104 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             in_drafts(&app).is_empty(),
             "the sent message no longer shows in Drafts"
         );
+    }
+
+    /// The outbox is a place: a row in the sidebar, a page of what waits to
+    /// leave with the reason a server refused it, and the verb that takes a
+    /// message back unsent.
+    #[test]
+    fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
+        let (mut app, mut doc) = app();
+        TestMail::store_draft(
+            &mut doc,
+            &crate::model::Draft {
+                to: "dest@there.example".into(),
+                subject: "Ready to go".into(),
+                body: "See you at noon".into(),
+                ..Default::default()
+            },
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        let id = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Drafts)
+            .first()
+            .map(|message| message.id)
+            .expect("the draft shows in Drafts");
+        app.open_draft(id);
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+        let waiting = TestMail::outbox(&doc);
+        let [(queued, None)] = waiting.as_slice() else {
+            panic!("one message waits: {waiting:?}");
+        };
+        let queued_id = queued.id.clone();
+
+        // A device that holds the account refuses it, in its own words.
+        TestMail::settle_delivery(
+            &mut doc,
+            &queued_id,
+            &ui::tilo_resource::Settled::failed("550 mailbox unavailable".to_owned()),
+        );
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+
+        let account = app.shared.borrow().accounts.active;
+        app.shared.borrow_mut().open_outbox(account);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        {
+            let state = app.shared.borrow();
+            assert_eq!(state.queued_count(account), 1, "the sidebar counts it");
+            let [row] = state.queued()[..] else {
+                panic!("the outbox holds the message that never left");
+            };
+            assert_eq!(row.to, "dest@there.example");
+            assert_eq!(row.subject, "Ready to go");
+            assert_eq!(
+                row.state_line(),
+                "550 mailbox unavailable",
+                "the server's refusal is the row's own words"
+            );
+            assert_eq!(
+                crate::sidebar::selected_row(&state).as_deref(),
+                Some("0/outbox"),
+                "the sidebar shows where the person is"
+            );
+        }
+        assert_eq!(
+            crate::window_bar::location(&app.shared.borrow(), None),
+            "Outbox"
+        );
+        // The page says the same: what waits, and the verb that takes it back.
+        let tree = MailApp::overview_accessibility_node(&app.shared.borrow());
+        let said = format!("{tree:?}");
+        assert!(
+            said.contains("To dest@there.example: Ready to go"),
+            "{said}"
+        );
+        assert!(said.contains("550 mailbox unavailable"), "{said}");
+        app.perform_semantic_action(
+            &format!("mail.outbox-cancel:{queued_id}"),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(
+            TestMail::outbox(&doc).is_empty(),
+            "taken out of the outbox unsent: {:?}",
+            TestMail::outbox(&doc)
+        );
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("Taken out of the outbox; nothing was sent"),
+            "the page says what it did"
+        );
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.shared.borrow().queued_count(account), 0, "and gone");
     }
 
     impl MailApp {

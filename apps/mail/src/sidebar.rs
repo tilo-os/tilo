@@ -37,6 +37,16 @@ fn parse_section(id: &str) -> Option<usize> {
 /// The row id of every account's inbox together.
 pub(crate) const ALL_INBOXES: &str = "all/inbox";
 
+/// The row id of the messages `account` still has to send.
+fn outbox_row_id(account: usize) -> String {
+    format!("{account}/outbox")
+}
+
+/// The account whose outbox a row id names.
+fn parse_outbox_row(id: &str) -> Option<usize> {
+    id.strip_suffix("/outbox")?.parse().ok()
+}
+
 /// The sidebar's destinations for the current state: with more than one
 /// account, every inbox together first, then each account's folders.
 pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
@@ -108,6 +118,16 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
                         _ => item,
                     }
                 })
+                // The outbox is not a folder of the mailbox: it is the
+                // messages that have not left it, so it stands at the end of
+                // the account's own list, counted while anything waits.
+                .chain(std::iter::once({
+                    let item = NavItem::new(outbox_row_id(index), "Outbox").icon(Icon::Send);
+                    match u32_of_usize(state.queued_count(index)) {
+                        0 => item,
+                        waiting => item.live_count(waiting),
+                    }
+                }))
                 .collect();
             let title = if account.config.email.is_empty() {
                 account.config.label().to_owned()
@@ -130,6 +150,9 @@ pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     if state.all_inboxes {
         return Some(ALL_INBOXES.to_owned());
     }
+    if state.outbox_open {
+        return Some(outbox_row_id(state.outbox_account));
+    }
     (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
 }
 
@@ -145,6 +168,10 @@ pub fn sidebar(shared: &Shared) -> NavList {
         .on_select(move |id| {
             if id == ALL_INBOXES {
                 on_select.borrow_mut().push_command(Command::OpenAllInboxes);
+            } else if let Some(account) = parse_outbox_row(&id) {
+                on_select
+                    .borrow_mut()
+                    .push_command(Command::OpenOutbox(account));
             } else if let Some((account, folder)) = parse_folder_row(&id) {
                 on_select
                     .borrow_mut()

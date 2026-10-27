@@ -173,12 +173,37 @@ pub enum Intent {
     ConfirmBulkPurge,
 }
 
+/// A message waiting to leave in an account's outbox: who it goes to, what it
+/// says, the account that sends it, and why it has not gone — a server's
+/// refusal, in its own words, when one refused it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub account: String,
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    /// Why the send stopped; `None` while it still waits its turn.
+    pub reason: Option<String>,
+}
+
+impl QueuedMessage {
+    /// The line the outbox shows under the subject: the server's refusal, or
+    /// the fact that nothing has refused it yet.
+    pub fn state_line(&self) -> &str {
+        self.reason.as_deref().unwrap_or("Waiting to be sent")
+    }
+}
+
 /// A command from the window's chrome (the sidebar, the header toolbars):
 /// queued by the control and applied by the app with the document in hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Browse explicit shared address-book recipient and sender choices.
     ContactRecipients,
+    /// Show an account's outbox: the messages waiting to leave, and why any
+    /// of them did not.
+    OpenOutbox(usize),
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
@@ -200,6 +225,8 @@ pub enum Command {
     Bulk(BulkAction),
     /// Apply an action to the open message.
     Message(CtxAction),
+    /// Take the queued message `id` out of the outbox unsent.
+    CancelSend(String),
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
@@ -233,6 +260,17 @@ pub struct MailState {
     pub status_undo: bool,
     /// The list shows every account's inbox at once.
     pub all_inboxes: bool,
+    /// The list and the reader show the open account's outbox rather than a
+    /// folder's messages.
+    pub outbox_open: bool,
+    /// The account whose outbox is open.
+    pub outbox_account: usize,
+    /// The messages waiting in every account's outbox, as the document holds
+    /// them, oldest first: what the outbox page lists, and how many each
+    /// account's sidebar row counts.
+    pub outbox: Vec<QueuedMessage>,
+    /// The queued message the outbox page has open.
+    pub outbox_selected: Option<String>,
     /// Why the active account cannot check mail, as last said; `None`
     /// while it works. A refresh that fails the same way says nothing new.
     pub sync_error: Option<String>,
@@ -421,6 +459,10 @@ impl MailState {
             status: None,
             status_undo: false,
             all_inboxes: false,
+            outbox_open: false,
+            outbox_account: 0,
+            outbox: Vec::new(),
+            outbox_selected: None,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
             first_fetch: None,
@@ -665,7 +707,81 @@ impl MailState {
     }
 
     /// Show every account's inbox in one list, newest first.
+    /// Show `account`'s outbox: the messages waiting to leave, and why any of
+    /// them did not.
+    pub fn open_outbox(&mut self, account: usize) {
+        self.set_active_account(account);
+        self.outbox_account = account;
+        self.outbox_open = true;
+        self.all_inboxes = false;
+        self.bulk_selecting = false;
+        self.selected = None;
+        self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        self.push_intent(Intent::ShowOverview);
+        self.dirty = true;
+    }
+
+    /// Leave the outbox for a folder.
+    pub fn close_outbox(&mut self) {
+        self.outbox_open = false;
+        self.outbox_selected = None;
+        self.dirty = true;
+    }
+
+    /// The queued messages the open account's outbox shows, oldest first.
+    pub fn queued(&self) -> Vec<&QueuedMessage> {
+        let email = self
+            .accounts
+            .accounts
+            .get(self.outbox_account)
+            .map_or_else(String::new, |account| account.config.email.clone());
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == email)
+            .collect()
+    }
+
+    /// How many messages `account` waits to send.
+    pub fn queued_count(&self, account: usize) -> usize {
+        let Some(account) = self.accounts.accounts.get(account) else {
+            return 0;
+        };
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == account.config.email)
+            .count()
+    }
+
+    /// The queued message the outbox page has open.
+    pub fn open_queued(&self) -> Option<&QueuedMessage> {
+        let id = self.outbox_selected.as_deref()?;
+        self.queued().into_iter().find(|queued| queued.id == id)
+    }
+
+    /// Open queued message `id`: the row's press.
+    pub fn select_queued(&mut self, id: &str) {
+        self.outbox_selected = Some(id.to_owned());
+        self.push_intent(Intent::ShowDetail);
+        self.dirty = true;
+    }
+
+    /// Take queued message `id` out of the outbox unsent: the `cancel-send`
+    /// verb, the same one an agent and the palette reach.
+    pub fn cancel_send(&mut self, doc: &mut ui::widget::Edits<'_>, id: &str) {
+        self.submit(
+            doc,
+            Mail::CANCEL_SEND.with(mailbox::CancelSend { id: id.to_owned() }),
+        );
+        self.outbox.retain(|queued| queued.id != id);
+        if self.outbox_selected.as_deref() == Some(id) {
+            self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        }
+        self.status = Some("Taken out of the outbox; nothing was sent".into());
+        self.dirty = true;
+    }
+
     pub fn open_all_inboxes(&mut self) {
+        self.close_outbox();
         self.all_inboxes = true;
         self.folder = Folder::Inbox;
         self.mailbox.set_account(AccountConfig::default());
@@ -699,6 +815,7 @@ impl MailState {
     }
 
     pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
+        self.close_outbox();
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -715,6 +832,7 @@ impl MailState {
     /// Reveal a folder as local presentation state. Canonical resource `View`
     /// operations use this path, so navigation does not create a document edit.
     pub fn reveal_folder(&mut self, folder: Folder) {
+        self.close_outbox();
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -747,6 +865,11 @@ impl MailState {
     /// local selection so a later accidental shortcut cannot act on messages
     /// the person no longer sees selected.
     pub fn set_bulk_selecting(&mut self, selecting: bool) {
+        // The outbox lists messages that have not left, not a folder's rows:
+        // there is nothing of a folder's to select while it shows.
+        if selecting && self.outbox_open {
+            return;
+        }
         self.bulk_selecting = selecting;
         if !selecting {
             self.bulk_selection.clear();
@@ -779,6 +902,9 @@ impl MailState {
     /// cap. This is a selection operation only; no mailbox state changes until
     /// an explicit bulk action is chosen.
     pub fn select_all_visible(&mut self) {
+        if self.outbox_open {
+            return;
+        }
         self.bulk_selecting = true;
         self.bulk_selection = self
             .list_rows()
