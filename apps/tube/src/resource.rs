@@ -282,7 +282,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
             );
         }
         self.wake_with(cx.waker());
-        self.attach_framework(cx.dispatcher(), history);
+        self.attach_framework(cx.dispatcher(), cx.actions(), history);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

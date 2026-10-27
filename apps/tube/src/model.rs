@@ -239,6 +239,16 @@ pub enum SearchType {
 impl SearchType {
     pub const ALL: [SearchType; 3] = [SearchType::Video, SearchType::Playlist, SearchType::Creator];
 
+    /// The stable name [`crate::actions::TubeEffect::FilterSearch`] names
+    /// this type by.
+    pub fn id(self) -> &'static str {
+        match self {
+            SearchType::Video => "video",
+            SearchType::Playlist => "playlist",
+            SearchType::Creator => "creator",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             SearchType::Video => "Video",
