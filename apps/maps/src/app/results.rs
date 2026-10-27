@@ -125,9 +125,9 @@ impl MapsApp {
                         self.model.status = failure::t("maps-route-updated");
                     }
                     Err(e) => {
-                        self.model.status = format!(
-                            "{} The offline estimate is shown.",
-                            failure::say(failure::ROUTE, &e)
+                        self.model.status = failure::t_args(
+                            "maps-route-estimate",
+                            &[("reason", failure::say(failure::ROUTE, &e).into())],
                         );
                     }
                 },
@@ -166,8 +166,11 @@ impl MapsApp {
                                 {
                                     self.selected_poi = None;
                                 }
-                                if self.model.status.contains("Loading places") {
-                                    self.model.status = format!("{n} places nearby");
+                                if self.model.status == failure::t("maps-loading-places") {
+                                    self.model.status = failure::t_args(
+                                        "maps-nearby-count",
+                                        &[("count", n.into())],
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -203,11 +206,9 @@ impl MapsApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.locating = false;
                 self.location_rx = None;
-                self.model.status = "Location unavailable".to_string();
+                self.model.status = failure::t("maps-location-unavailable");
                 if let Some(reply) = self.location_reply.take() {
-                    reply.finish(Err(
-                        "The location service disconnected before returning a fix".into(),
-                    ));
+                    reply.finish(Err(failure::t("maps-location-disconnected")));
                 }
                 return;
             }
@@ -218,9 +219,9 @@ impl MapsApp {
             LocationOutcome::Located { lat, lon, .. } => {
                 let pos = LatLon::new(lat, lon);
                 self.model.origin = Some(pos);
-                self.model.origin_name = "Current location".to_string();
+                self.model.origin_name = failure::t("maps-current-location");
                 self.model.center = pos;
-                self.model.status = "Located".to_string();
+                self.model.status = failure::t("maps-located");
                 // Refine the raw coordinate into a human place label.
                 if self.online {
                     self.pending += 1;

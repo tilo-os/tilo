@@ -125,6 +125,7 @@ impl MapsApp {
                     count,
                     request.name.clone(),
                 );
+                self.offline_downloading = true;
                 self.model.status = request.name.map_or_else(
                     || {
                         failure::t_args(
@@ -142,6 +143,7 @@ impl MapsApp {
             }
             OfflineAction::StopDownload => {
                 if self.tiles.stop_download() {
+                    self.offline_downloading = false;
                     self.model.status = failure::t("maps-offline-stopped");
                 }
             }

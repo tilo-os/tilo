@@ -3,7 +3,7 @@
 use super::{
     Affine, Button, ButtonFace, ButtonRole, ColumnMetrics, Congestion, Hit, Icon, MapMenu,
     MapPalette, MapView, MapsApp, PaintCtx, Panel, Point, Rect, Scene, TextRenderer, TextRole,
-    Theme, TileStyle, Widget, canvas, draw, geo, imagery_hint, on_panel,
+    Theme, TileStyle, Widget, canvas, draw, failure, geo, imagery_hint, on_panel,
 };
 
 impl MapsApp {
@@ -281,7 +281,7 @@ impl MapsApp {
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, theme),
             r,
-            (Icon::MoreHorizontal, "More"),
+            (Icon::MoreHorizontal, &failure::t("maps-more")),
             ButtonRole::Secondary,
             open,
             Hit::ToggleOverflow,
@@ -299,16 +299,16 @@ impl MapsApp {
         theme: &Theme,
     ) {
         let Some(menu) = self.menu_rect() else { return };
-        let name = if self.nav_open {
-            "Hide places"
+        let name = failure::t(if self.nav_open {
+            "maps-hide-places"
         } else {
-            "Show places"
-        };
+            "maps-show-places"
+        });
         let open = self.nav_open;
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, theme),
             menu,
-            (Icon::PanelLeft, name),
+            (Icon::PanelLeft, &name),
             ButtonRole::Secondary,
             open,
             Hit::ToggleNav,
@@ -317,7 +317,7 @@ impl MapsApp {
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, theme),
                 search,
-                (Icon::Search, "Search places"),
+                (Icon::Search, &failure::t("maps-search-places")),
                 ButtonRole::Secondary,
                 false,
                 Hit::OpenSearch,
@@ -456,7 +456,7 @@ impl MapsApp {
         let low = area.y0 + area.height() * 0.75;
         draw::text_center(
             &mut ctx,
-            msg,
+            &msg,
             Point::new(area.center().x, low - h / 2.0),
             &style,
             theme.text_dim,
@@ -497,7 +497,8 @@ impl MapsApp {
         let numeric = caption.clone().numeric();
 
         if self.traffic.is_empty() {
-            let text = "No traffic data";
+            let text = failure::t("maps-no-traffic-data");
+            let text = text.as_str();
             let w = draw::measure_w(tr, text, &label) + 2.0 * s3;
             let h = self.overflow_rect().height();
             let pill = Rect::new(left, bottom - h, left + w, bottom);
@@ -531,7 +532,7 @@ impl MapsApp {
         let mut y = card.y0 + s3;
         draw::text(
             &mut ctx,
-            "Traffic",
+            &failure::t("maps-traffic"),
             Point::new(x, y),
             &heading,
             ink.text_primary,
@@ -548,9 +549,10 @@ impl MapsApp {
                 f64::from(theme.tokens.radii.detail),
                 canvas::traffic_color(&pal, level),
             );
+            let level_label = level.label();
             draw::text(
                 &mut ctx,
-                level.label(),
+                &level_label,
                 Point::new(x + swatch_w + s2, y),
                 &caption,
                 ink.text_primary,

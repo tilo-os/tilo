@@ -1,6 +1,6 @@
 //! The offline areas a person saved: the regions their tiles cover, naming them, and recording, deleting or following the set the resource holds.
 
-use super::{GeoBounds, MapsApp, TileId, bounds_contains, format_bytes};
+use super::{GeoBounds, MapsApp, TileId, bounds_contains, failure, format_bytes};
 
 impl MapsApp {
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
@@ -61,7 +61,7 @@ impl MapsApp {
     /// before the area is dropped.
     pub(super) fn delete_region(&mut self, id: &str) -> Result<(), String> {
         let Some(region) = self.model.regions.iter().find(|r| r.id == id).cloned() else {
-            return Err("That offline area is not on this device".into());
+            return Err(failure::t("maps-offline-area-missing"));
         };
         // Tiles any *other* saved region still needs must survive.
         let mut keep: std::collections::HashSet<TileId> = std::collections::HashSet::new();
@@ -82,7 +82,13 @@ impl MapsApp {
             .cloned()
             .collect();
         self.set_offline_areas(areas);
-        self.model.status = format!("Removed {}, freeing {}", region.name, format_bytes(freed));
+        self.model.status = failure::t_args(
+            "maps-offline-removed",
+            &[
+                ("name", region.name.into()),
+                ("size", format_bytes(freed).into()),
+            ],
+        );
         Ok(())
     }
 
@@ -91,7 +97,10 @@ impl MapsApp {
         let freed = self.tiles.clear_cache();
         self.offline_panel.set_cache_bytes(0);
         self.set_offline_areas(Vec::new());
-        self.model.status = format!("Cleared {} of offline tiles", format_bytes(freed));
+        self.model.status = failure::t_args(
+            "maps-offline-cleared",
+            &[("size", format_bytes(freed).into())],
+        );
     }
 
     /// Show `areas` and keep them as this device's offline areas.
