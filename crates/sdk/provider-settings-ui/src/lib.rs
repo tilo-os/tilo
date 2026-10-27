@@ -655,7 +655,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             (Ok(()), Some(serde_json::Value::Array(models))) if !models.is_empty() => Some(t_args(
                 "agent-test-connected",
                 &[
-                    ("provider", listing_for.clone().unwrap_or_default().into()),
+                    ("provider", listing_for.unwrap_or_default().into()),
                     ("count", models.len().into()),
                 ],
             )),

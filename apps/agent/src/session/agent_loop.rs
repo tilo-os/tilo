@@ -263,16 +263,16 @@ impl ActiveTurn {
 fn turn_usage(body: &str) -> agent_provider_config::protocol::Usage {
     #[derive(serde::Deserialize)]
     struct Reported {
-        #[serde(default)]
-        input_tokens: u64,
-        #[serde(default)]
-        output_tokens: u64,
-        #[serde(default)]
-        cached_input_tokens: u64,
-        #[serde(default)]
-        cache_write_tokens: u64,
-        #[serde(default)]
-        reasoning_tokens: u64,
+        #[serde(default, rename = "input_tokens")]
+        input: u64,
+        #[serde(default, rename = "output_tokens")]
+        output: u64,
+        #[serde(default, rename = "cached_input_tokens")]
+        cached: u64,
+        #[serde(default, rename = "cache_write_tokens")]
+        cache_write: u64,
+        #[serde(default, rename = "reasoning_tokens")]
+        reasoning: u64,
     }
     let reported = serde_json::from_str::<Value>(body)
         .ok()
@@ -281,11 +281,11 @@ fn turn_usage(body: &str) -> agent_provider_config::protocol::Usage {
         return agent_provider_config::protocol::Usage::default();
     };
     agent_provider_config::protocol::Usage {
-        input_tokens: reported.input_tokens,
-        output_tokens: reported.output_tokens,
-        cached_input_tokens: reported.cached_input_tokens,
-        cache_write_tokens: reported.cache_write_tokens,
-        reasoning_tokens: reported.reasoning_tokens,
+        input_tokens: reported.input,
+        output_tokens: reported.output,
+        cached_input_tokens: reported.cached,
+        cache_write_tokens: reported.cache_write,
+        reasoning_tokens: reported.reasoning,
         total_tokens: 0,
     }
 }
