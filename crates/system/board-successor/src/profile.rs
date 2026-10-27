@@ -871,17 +871,24 @@ pub fn validate_target_imgref(value: &Value, root: &Root) -> Result<()> {
         let transports = get(&document, "transports")?.unwrap_or(&empty);
         let docker = get(transports, "docker")?.unwrap_or(&empty);
         let admission = get(docker, "registry.tilo.so/tilo/tilo-vm")?;
-        let insecure = json!([{"type": "insecureAcceptAnything"}]);
-        let signed = json!([{"type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign.pub",
-                             "signedIdentity": {"type": "matchRepository"}}]);
-        require(
-            admission == Some(&insecure) || admission == Some(&signed),
-            "tilo-vm update origin requires its development repository policy",
-        )?;
-        if admission == Some(&signed) {
-            root.trusted_path("usr/share/tilo/cosign.pub", true)?;
+        // A dev image admits the dev channel signed with the development key
+        // (os/scripts/finalize-dev-image.py); opt-in signed boards tighten that
+        // scope to the existing OS key; older dev images admitted it unsigned.
+        if admission == Some(&json!([{"type": "insecureAcceptAnything"}])) {
+            return Ok(());
         }
-        return Ok(());
+        for key in ["usr/share/tilo/cosign-dev.pub", "usr/share/tilo/cosign.pub"] {
+            let signed = json!([{"type": "sigstoreSigned", "keyPath": format!("/{key}"),
+                                 "signedIdentity": {"type": "matchRepository"}}]);
+            if admission == Some(&signed) {
+                root.trusted_path(key, true)?;
+                return Ok(());
+            }
+        }
+        return require(
+            false,
+            "tilo-vm update origin requires its development repository policy",
+        );
     }
     require(
         as_str(value).is_some_and(|v| RELEASE_REF.is_match(v)),
