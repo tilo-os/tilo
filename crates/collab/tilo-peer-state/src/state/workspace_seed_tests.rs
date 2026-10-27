@@ -58,7 +58,7 @@ fn a_seeded_workspace_keeps_its_windows_and_record_index() {
     let (key, authority, now) = fixture();
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let records = BTreeMap::from([("record-1".to_string(), "notes".to_string())]);
-    let seed = workspace_seed_with_layout(
+    let seed = workspace_seed_with_records(
         room,
         &authority,
         std::slice::from_ref(&authority),
@@ -66,6 +66,7 @@ fn a_seeded_workspace_keeps_its_windows_and_record_index() {
         SALT,
         &[strip()],
         &records,
+        Vec::new(),
     )
     .unwrap();
     let mut peer = StatePeer::new(

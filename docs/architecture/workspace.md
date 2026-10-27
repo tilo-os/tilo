@@ -165,7 +165,7 @@ state file from before has each such room created once when the owner opens
 (`ShellNetwork::govern_awaiting_rooms`). That one creation imports what the
 workspace already showed: its strips and windows in this device's topology
 namespace, and the record index its apps referenced
-(`tilo_peer_state::workspace_seed_with_layout`), so an upgrade keeps the
+(`tilo_peer_state::workspace_seed_with_records`), so an upgrade keeps the
 tabs and records the file held instead of replacing them with an empty
 room. A room this device governs is native from the moment the native owner
 is open, before its own record exists: `requires_native_owner` is true for
@@ -253,7 +253,7 @@ engine still writes it; the native owner takes it over at once afterwards.
    (`StatePeer::follow_successions`) and the device's owner keeps the
    successions with the room; the owner holds rooms this device governs
    beside joined ones (`NativeWorkspaceOwner::create_governed`, seeded by
-   `tilo_peer_state::workspace_seed_with_layout`, no host custody of its
+   `tilo_peer_state::workspace_seed_with_records`, no host custody of its
    writes); and the shell admits the windows it opens into such a room under
    its own registered namespace. New workspaces are created that way and the
    rooms a state file already held are imported on the owner when it opens,

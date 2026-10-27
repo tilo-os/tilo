@@ -3691,68 +3691,21 @@ pub fn workspace_seed(
 
 /// [`workspace_seed`] carrying what a workspace this device already showed
 /// into its new native room: its strips and windows in this device's own
-/// topology namespace, and the record index its apps had referenced.
+/// topology namespace, the record index its apps had referenced, and the
+/// documents the apps keeping those records already hold here, each under
+/// the app that keeps it (see [`SeedDocument`]).
 ///
 /// An existing store is brought onto the native owner by this seed, never by
 /// silently creating an empty room: a room made for a workspace with tabs
-/// keeps them, and a room with records keeps their index. The caller reads
-/// both under the same tree it is about to stop writing on the older engine.
+/// keeps them, and a room with records keeps their index and what this
+/// device holds of each. A record it does not hold is left to the room to
+/// fetch from a member that has it.
 ///
 /// # Errors
 ///
 /// The room is not a UUID, the salt names no namespace, or a projection the
 /// room schema refuses.
-pub fn workspace_seed_with_layout(
-    room: &str,
-    authority: &DeviceCert,
-    roster: &[DeviceCert],
-    name: &str,
-    salt: u16,
-    strips: &[tilo_desktop_model::layout::Strip],
-    records: &BTreeMap<String, String>,
-) -> Result<SeedState, String> {
-    workspace_seed_carrying(
-        room,
-        authority,
-        roster,
-        name,
-        salt,
-        strips,
-        records,
-        Vec::new(),
-    )
-}
-
-/// [`workspace_seed_with_layout`] carrying the records themselves: the
-/// documents the apps keeping them already hold on this device, each
-/// published under the app that keeps it, not only the index that names
-/// them.
-///
-/// A room that kept only the index would list a record whose content this
-/// device alone had and serve none of it: the workspace would show the
-/// record and open it empty. Importing the documents the same one-time pass
-/// publishes them at the route their app reads, and the room keeps them like
-/// any other admitted document.
-///
-/// # Errors
-///
-/// As [`workspace_seed_with_layout`].
 pub fn workspace_seed_with_records(
-    room: &str,
-    authority: &DeviceCert,
-    roster: &[DeviceCert],
-    name: &str,
-    salt: u16,
-    strips: &[tilo_desktop_model::layout::Strip],
-    records: &BTreeMap<String, String>,
-    documents: Vec<SeedDocument>,
-) -> Result<SeedState, String> {
-    workspace_seed_carrying(
-        room, authority, roster, name, salt, strips, records, documents,
-    )
-}
-
-fn workspace_seed_carrying(
     room: &str,
     authority: &DeviceCert,
     roster: &[DeviceCert],
