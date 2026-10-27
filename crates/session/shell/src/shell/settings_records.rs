@@ -562,6 +562,50 @@ fn on_in(records: &SettingsRecords, switch: settings_store::index::Switch) -> Op
         .as_bool()
 }
 
+/// What each of the choices `choices` holds as stored now, read where the
+/// person's settings are held in one go; `None` for no choice, or a section
+/// the session does not keep.
+pub(crate) fn chosen(
+    choices: impl IntoIterator<Item = Option<settings_store::index::Choice>>,
+) -> Vec<Option<serde_json::Value>> {
+    let choices: Vec<_> = choices.into_iter().collect();
+    let asked = choices.len();
+    with_records(move |records| {
+        choices
+            .into_iter()
+            .map(|choice| {
+                let choice = choice?;
+                let stored = records.stored(choice.section)?;
+                choice
+                    .path()
+                    .try_fold(&stored, |value, field| value.get(field))
+                    .cloned()
+            })
+            .collect()
+    })
+    .unwrap_or_else(|_| vec![None; asked])
+}
+
+/// Set the setting `choice` to its value `option` through its section's
+/// field edit, on behalf of the action `invoked_by`. One whose field edit
+/// asks first runs only once the person `confirmed` it.
+///
+/// # Errors
+/// As [`change`].
+pub(crate) fn choose(
+    choice: settings_store::index::Choice,
+    option: settings_store::index::ChoiceOption,
+    confirmed: bool,
+    invoked_by: &settings_store::InvokingAction,
+) -> Result<(), ActionError> {
+    change(
+        &address(choice.section, "field-edit"),
+        &set_path(choice.path(), &option.json()),
+        confirmed,
+        invoked_by,
+    )
+}
+
 /// Flip the yes-or-no setting `switch` through its section's field edit,
 /// on behalf of the action `invoked_by`: on when it is off, off when it is
 /// on, as stored at this moment. A flip whose field edit asks first runs
