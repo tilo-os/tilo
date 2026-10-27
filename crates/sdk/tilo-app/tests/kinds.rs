@@ -11,7 +11,7 @@ pub struct Tally {
     pub count: i64,
 }
 
-#[resource(kind = "test.tally", label = "Tally")]
+#[resource(kind = "test.tally", label = "Tally", app = "so.tilo.test-tally")]
 impl Tally {
     /// Rename the tally.
     #[action]

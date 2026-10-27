@@ -380,8 +380,11 @@ fn seed_availability_children_and_content() {
 #[test]
 fn an_input_that_does_not_bind_refuses_where_it_is_submitted() {
     // A hand-written reference whose names do not match its input.
-    let wrong: tilo_resource::ActionRef<Shelf, (String,)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+    let wrong: tilo_resource::ActionRef<Shelf, (String,)> = tilo_resource::ActionRef::new(
+        "add",
+        &["title", "colour"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     let invoke = wrong.with(("a".to_owned(),));
     assert!(invoke.refusal().is_some());
     assert!(invoke.arguments.is_empty());
@@ -1068,12 +1071,19 @@ fn reading_more_of_a_document_is_no_revision() {
 #[test]
 fn an_absent_positional_option_is_not_sent() {
     let add: tilo_resource::ActionRef<Shelf, (String, Option<Colour>)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+        tilo_resource::ActionRef::new(
+            "add",
+            &["title", "colour"],
+            tilo_resource::ResourceKind::of::<Shelf>(),
+        );
     let arguments = add.arguments(&("Tea".to_owned(), None)).unwrap();
     assert_eq!(arguments.len(), 1);
     assert_eq!(arguments["title"], "Tea");
-    let single: tilo_resource::ActionRef<Shelf, Option<String>> =
-        tilo_resource::ActionRef::new("retitle", &["title"]);
+    let single: tilo_resource::ActionRef<Shelf, Option<String>> = tilo_resource::ActionRef::new(
+        "retitle",
+        &["title"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     assert!(single.arguments(&None).unwrap().is_empty());
     let mut shelf = Replica::<Shelf>::new();
     shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();

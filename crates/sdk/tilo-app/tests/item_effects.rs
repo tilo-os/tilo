@@ -44,7 +44,7 @@ fn answer(
     (action == "save").then(|| serde_json::json!({ "saved": true }))
 }
 
-#[resource(kind = "test.queries", label = "Queries", effects = QueryEffect, answer = answer)]
+#[resource(kind = "test.queries", label = "Queries", effects = QueryEffect, answer = answer, app = "so.tilo.test-queries")]
 impl Queries {
     /// Save a query.
     #[action(answers)]

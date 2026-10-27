@@ -12,6 +12,10 @@ use crate::{CRATE, doc_lines, humanize, is_action_cx, krate, last_ident, owned_t
 pub(crate) struct ResourceOptions {
     kind: String,
     label: String,
+    /// The app that publishes records of this kind, which its typed
+    /// references name their actions by (`#[resource(app = "…")]`); the
+    /// framework app's id where the record names none.
+    app: Option<String>,
     params: Option<syn::Ident>,
     search: Option<syn::Path>,
     scopes: Option<syn::Path>,
@@ -39,7 +43,7 @@ pub(crate) struct ResourceOptions {
     item_views: Option<syn::Path>,
 }
 
-const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
+const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
@@ -50,6 +54,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
     let mut options = ResourceOptions {
         kind: String::new(),
         label: String::new(),
+        app: None,
         params: None,
         search: None,
         scopes: None,
@@ -98,6 +103,13 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
                     ..
                 }),
             ) => label = Some(text.value()),
+            (
+                "app",
+                Expr::Lit(ExprLit {
+                    lit: Lit::Str(text),
+                    ..
+                }),
+            ) => options.app = Some(text.value()),
             ("params", Expr::Path(path)) if path.path.get_ident().is_some() => {
                 options.params = path.path.get_ident().cloned();
             }
@@ -921,6 +933,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         .unwrap_or_else(|| format_ident!("{}", snake_case(&type_name)));
     let kind = &options.kind;
     let label = &options.label;
+    // The app whose `ActionKey`s its actions are published under. A record
+    // that names none is the framework app's, whose id replaces the
+    // placeholder at registration.
+    let app_id = match &options.app {
+        Some(app) => quote!(#app),
+        None => quote!(#krate::kind::DEFAULT_APP),
+    };
 
     let mut verbs = Vec::new();
     for impl_item in &mut item.items {
@@ -1157,7 +1176,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         consts.push(quote! {
             #[doc = #const_doc]
             pub const #const_ident: #krate::ActionRef<#self_ty, #params_mod::#variant> =
-                #krate::ActionRef::new(#id, &[]);
+                #krate::ActionRef::new(
+                    #id,
+                    &[],
+                    #krate::ResourceKind::declared::<#self_ty>(
+                        #kind,
+                        #label,
+                        <#self_ty as #krate::Resource>::APP_ID,
+                    ),
+                );
         });
 
         // What the verb may write: its item's unit and the fields it
@@ -1961,15 +1988,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
 
-        impl #self_ty {
-            #(#consts)*
-            #compensation_inherent
-            #queue_inherent
-        }
-
         impl #krate::Resource for #self_ty {
             const KIND: &'static str = #kind;
             const LABEL: &'static str = #label;
+            const APP_ID: &'static str = #app_id;
             const RECORD_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
             type State = #self_ty;
@@ -2130,6 +2152,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
                 ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
             }
+        }
+
+        // After the `Resource` impl, so the constants read its own.
+        impl #self_ty {
+            #(#consts)*
+            #compensation_inherent
+            #queue_inherent
         }
     })
 }
