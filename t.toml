@@ -1147,14 +1147,21 @@ name = "sandbox-jobs-real-kernel"
 requires = ["arch=x86_64"]
 isolation = "vm"
 needs = ["sandbox-jobs-real-kernel-build"]
-# The guest's init gives no controller to its root's children, as systemd would: the tests of
-# limits need memory, pids and cpu in the cgroup they delegate to themselves. The startup test
-# that holds a 4 GiB heap needs more memory than the guest's 4 GiB, so it is left out here.
+# Each test in a process of its own, as nextest runs them: the tests of limits move their
+# process into the cgroup they delegate to themselves, which leaves the next one in the same
+# process no controllers, and the clone comparison makes its process start every later job with
+# clone. The guest's init gives no controller to its root's children, as systemd would: the tests
+# of limits need memory, pids and cpu there. The startup test that holds a 4 GiB heap needs more
+# memory than the guest's 4 GiB, so it is left out here.
 run = """
 echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
 cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job --skip clone_fallback:: --skip startup::startup_does_not_grow_with_the_callers_heap --nocapture --test-threads=1
-/target/vm/tilo-sandbox-job clone_fallback:: --nocapture --test-threads=1
+failed=
+for test in $(/target/vm/tilo-sandbox-job --list --format terse | sed -n 's/: test$//p'); do
+  case $test in startup::startup_does_not_grow_with_the_callers_heap) continue ;; esac
+  /target/vm/tilo-sandbox-job --exact "$test" --nocapture || failed="$failed $test"
+done
+if [ -n "$failed" ]; then echo "failed:$failed"; exit 1; fi
 """
 inputs = []
 cost = "minutes"
