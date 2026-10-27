@@ -696,6 +696,26 @@ impl Chip {
         self
     }
 
+    /// Publish a press as a zero-argument effect, as
+    /// [`Button::on_effect`](crate::widget::Button::on_effect) does.
+    #[must_use]
+    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
+        let label = self.label.clone();
+        self.activation
+            .set_native(tilo_actions::OperationKind::Effect, &label, Box::new(f));
+        self
+    }
+
+    /// Publish a press as a transient view action (a filter, what is shown),
+    /// as [`Button::on_view`](crate::widget::Button::on_view) does.
+    #[must_use]
+    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
+        let label = self.label.clone();
+        self.activation
+            .set_native(tilo_actions::OperationKind::View, &label, Box::new(f));
+        self
+    }
+
     /// What the chip does or stands for, shown when the pointer rests on it.
     #[must_use]
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
@@ -897,7 +917,11 @@ impl Chip {
 }
 
 impl Widget for Chip {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn set_interaction_environment(
         &mut self,
@@ -1194,6 +1218,27 @@ impl Widget for Chip {
 }
 
 crate::widget::activation::activation_controls!(Chip, activation);
+
+impl crate::widget::ResourceOperations for Chip {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
+    }
+}
+
+impl crate::resources::PublishesResources for Chip {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.activation.native_resources()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

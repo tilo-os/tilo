@@ -30,7 +30,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, PersonRecord};
+use ui::framework::{Actions, Dispatcher, PersonRecord};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -42,7 +42,7 @@ use crate::actions::TubeEffect;
 use crate::api::{Request, Worker};
 use crate::history::WatchHistory;
 use crate::i18n::t;
-use crate::model::{Route, TubeModel};
+use crate::model::{Route, SearchType, TubeModel};
 use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
@@ -72,6 +72,9 @@ pub struct TubeApp {
     /// resource. `None` until the framework attaches the surface; a bare
     /// widget shows a library it cannot change.
     dispatcher: Option<Dispatcher<Library>>,
+    /// The library's published actions and Tube's effects, which the
+    /// screens' controls are bound to. `None` until the framework attaches.
+    actions: Option<Actions<Library>>,
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
@@ -227,6 +230,7 @@ impl TubeApp {
         Self {
             model: crate::sample::model(),
             dispatcher: None,
+            actions: None,
             history: None,
             preferences: None,
             local_history: None,
@@ -326,6 +330,13 @@ impl TubeApp {
                 let route = TubeEffect::screen(&screen)
                     .ok_or_else(|| format!("there is no screen `{screen}`"))?;
                 self.navigate_to(route);
+            }
+            TubeEffect::FilterSearch { kind } => {
+                let kind = SearchType::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.id() == kind)
+                    .ok_or_else(|| format!("there is no result type `{kind}`"))?;
+                self.model.search_type_filter.click(kind);
             }
             TubeEffect::ToggleSidebar => {
                 let now = self.sidebar_currently_open();
@@ -462,9 +473,15 @@ impl TubeApp {
     /// Invoke an effect through the framework's door, which asks for the
     /// confirmation a destructive one needs before it reaches
     /// [`Self::perform`].
-    fn invoke(&self, effect: &TubeEffect) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect(effect);
+    fn invoke(&mut self, effect: &TubeEffect) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.effect(effect),
+            // A bare widget, with no door to go through, does it itself.
+            None => {
+                if let Err(error) = self.perform(effect.clone()) {
+                    tracing::debug!(%error, "effect refused");
+                }
+            }
         }
     }
 
@@ -755,9 +772,11 @@ impl TubeApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Library>,
+        actions: Actions<Library>,
         history: Option<PersonRecord<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
+        self.actions = Some(actions);
         self.history = history;
         self.follow_history();
     }
@@ -792,6 +811,7 @@ impl TubeApp {
             model: &self.model,
             theme,
             bus: &self.bus,
+            actions: self.actions.as_ref(),
             imgs: crate::images::Imgs(self.images.as_ref()),
             content_width: self.content_width(theme),
             waiting: &self.waiting,
@@ -1005,9 +1025,6 @@ impl TubeApp {
                 self.navigate_to(Route::Channel(id.clone()));
                 self.dismiss_overlay_rail();
                 self.request_live(Request::Channel(id));
-            }
-            Action::ToggleSearchType(t) => {
-                self.model.search_type_filter.click(t);
             }
             Action::Back => {
                 self.go_back();
