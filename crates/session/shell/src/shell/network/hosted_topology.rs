@@ -301,6 +301,9 @@ impl ShellNetwork {
         let heads = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(device.to_vec()));
         let mut claimed = Vec::new();
+        // Windows this device was asked to close, queued once the loop is
+        // done with the workspace it reads them from.
+        let mut closes: Vec<u64> = Vec::new();
         {
             let mut tree = tree.write();
             let Some(workspace) = tree
@@ -324,9 +327,10 @@ impl ShellNetwork {
                 // whose window is still here waits for that lifecycle, even
                 // when the revision it named has moved on since.
                 if let DesktopCommand::CloseTab { location } = &bound.command {
-                    let shown = strips_hold_tab(&workspace.strips, location.tab);
-                    if shown {
-                        tree.request_layout_close(room, location.tab);
+                    if strips_hold_tab(&workspace.strips, location.tab) {
+                        if !closes.contains(&location.tab) {
+                            closes.push(location.tab);
+                        }
                         continue;
                     }
                     if claim(&mut doc, salt, request).unwrap_or(false) {
@@ -359,14 +363,19 @@ impl ShellNetwork {
                     }
                 }
             }
-            if claimed.is_empty() {
-                return;
-            }
             let strips = if governed_here {
                 workspace.strips.clone()
             } else {
                 own_legacy_windows(&workspace.strips, salt)
             };
+            // The workspace borrow ends here: the closes it named are the
+            // frame loop's to run through the one lifecycle.
+            for tab in closes {
+                tree.request_layout_close(room, tab);
+            }
+            if claimed.is_empty() {
+                return;
+            }
             if let Err(error) =
                 project_owned_contents(&mut doc, &strips, salt, share_floor, EmptyStrips::Skip)
             {
