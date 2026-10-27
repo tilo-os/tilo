@@ -1370,12 +1370,12 @@ impl InvocationJournal {
     fn settle(
         &mut self,
         at: usize,
-        started: DurableInvocation,
+        started: &DurableInvocation,
         write: Durable,
     ) -> Result<(), String> {
         let outcome = write.wait_blocking();
         if writer::withdrew(&outcome) {
-            self.roll_back(at, &started);
+            self.roll_back(at, started);
         }
         outcome
     }
