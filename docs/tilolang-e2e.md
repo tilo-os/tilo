@@ -55,8 +55,16 @@ Board. The session installs them (`--install-tapp`) beside native Notes
 - **read**: the door's `read` of tilolang Notes (what `tilo_read` calls) lists
   the room's records with their ids and kinds; a read of the notebook lists the
   note "New note" made, by the id a read takes.
-- **idle**: context switches of each app's threads over 10 s, untouched.
-  Expected: zero.
+- **idle**: each app left untouched for 10 s, native Notes among them. An app
+  that commits no frame is settled, and every thread of it sleeps: the check
+  fails on a single context switch. An app that commits frames is animating,
+  which here is only the connecting spinner of an app whose room never syncs
+  and that holds nothing to show (Board, and native Notes in this session): it
+  may commit one frame per pose of the spinner (30 a second) and no more. Its
+  context switches per frame are recorded.
+- **spinner**: Board, in front, holds nothing and its room never syncs, so it
+  says it is connecting, with a spinner. The spinner turns: Board commits at
+  least one frame over 10 s and no more than one per pose.
 - **routes**: a second start of the same session installs the collaboration
   probe in place of Board and Todo. Board's surface declares that it reads
   Notes' kinds; Todo's declares no read. The broker lets Board join Notes'
