@@ -143,7 +143,9 @@ impl RecordRouteParticipant {
                     .filter(|route| Some(route) != primary.as_ref()),
             )
             .collect();
-        self.manager.set_document_owner_routes(routes);
+        // A windowless holder dispatches no actions; its document never
+        // changes generation.
+        self.manager.set_document_owner_routes(routes, 0);
         for route in joins {
             // The primary route was joined with the manager.
             if Some(&route) != primary.as_ref() {
