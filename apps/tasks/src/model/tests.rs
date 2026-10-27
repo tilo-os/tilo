@@ -965,3 +965,347 @@ fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
         "work done by an agent is reviewed, not closed"
     );
 }
+
+/// The project is an ordinary resource above the tasks: it names itself and
+/// its kind, the tasks that work towards it are the ones it holds, and those
+/// same tasks are what their person's own list and board show.
+#[test]
+fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
+    use crate::model::{Kind, area_goal};
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .next()
+        .map(|(id, _)| id.clone())
+        .expect("the project is there");
+    let read = person.state().unwrap();
+    let made = read.area(&project).expect("the project");
+    assert_eq!(made.name, "Launch");
+    assert_eq!(made.kind, Kind::Project);
+    assert!(
+        person
+            .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+                name: "  ".into(),
+                kind: None,
+            }))
+            .is_err(),
+        "a project with no name is refused"
+    );
+
+    // Two tasks work towards it, one of them as a sub-task of the other, and
+    // a third works towards nothing: the project holds the two, at any depth
+    // through their sub-tasks.
+    for title in ["Write the notes", "Draw the slides", "Book a holiday"] {
+        person
+            .apply(Tracker::CREATE.with(create(title, None, None)))
+            .unwrap();
+    }
+    let notes = id_of(&person, "Write the notes");
+    person
+        .apply(Tracker::CREATE.with(create("Read them back", Some(notes.clone()), None)))
+        .unwrap();
+    let read_back = id_of(&person, "Read them back");
+    for issue in [&notes, &read_back] {
+        person
+            .apply(Tracker::PLAN.with(tracker::Plan {
+                issue: issue.clone(),
+                area: Some(area_goal(&project, "Launch")),
+                priority: None,
+                cost_budget: None,
+                due_ms: None,
+            }))
+            .unwrap();
+    }
+    let held: Vec<String> = person
+        .state()
+        .unwrap()
+        .in_area(&project)
+        .map(|(_, issue)| issue.title.clone())
+        .collect();
+    assert_eq!(held, ["Write the notes", "Read them back"]);
+
+    // The task reads in the project and in the tracker's list alike: the
+    // same issue, named as working towards the project.
+    let listed = person.state().unwrap().issues.get(&notes).cloned();
+    let listed = listed.expect("the task is in the tracker's list");
+    let listed = listed.area.as_ref().map(|area| area.label.as_str());
+    assert_eq!(listed, Some("Launch"));
+}
+
+/// Who is involved in a project is the project's own to keep, and a document
+/// it holds is a link one of its tasks carries.
+#[test]
+fn a_projects_people_carry_their_role_and_its_documents_are_its_tasks_links() {
+    use crate::model::area_goal;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: None,
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+    person
+        .apply(Tracker::CREATE.with(create("Write the notes", None, None)))
+        .unwrap();
+    let notes = id_of(&person, "Write the notes");
+    person
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: notes.clone(),
+            area: Some(area_goal(&project, "Launch")),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        }))
+        .unwrap();
+
+    // A document it holds is a link the task carries, so it is read on the
+    // project's page without being stored a second time.
+    person
+        .apply(Tracker::LINK.with(tracker::Link {
+            issue: notes,
+            app: "so.tilo.notes".into(),
+            kind: "notes.note".into(),
+            resource: "notes/launch".into(),
+            label: "The launch plan".into(),
+            record: None,
+        }))
+        .unwrap();
+
+    // Who is involved is the project's own to keep, with the role each has.
+    for (name, role) in [("ada", "writes the notes"), ("grace", "draws")] {
+        person
+            .apply(Tracker::INVOLVE.with(tracker::Involve {
+                area: project.clone(),
+                name: name.into(),
+                role: Some(role.into()),
+            }))
+            .unwrap();
+    }
+    let read = person.state().unwrap();
+    let people: Vec<(String, String)> = read
+        .area(&project)
+        .expect("the project")
+        .people
+        .values()
+        .map(|person| (person.name.clone(), person.role.clone()))
+        .collect();
+    assert_eq!(
+        people,
+        [
+            ("ada".to_owned(), "writes the notes".to_owned()),
+            ("grace".to_owned(), "draws".to_owned())
+        ]
+    );
+
+    // Taking someone out of the project leaves the project's other people.
+    let grace = read
+        .area(&project)
+        .expect("the project")
+        .people
+        .iter()
+        .find(|(_, person)| person.name == "grace")
+        .map(|(id, _)| id.clone())
+        .expect("grace is involved");
+    person
+        .apply(Tracker::REMOVE_PERSON.with(tracker::RemovePerson {
+            area: project.clone(),
+            person: grace,
+        }))
+        .unwrap();
+    assert_eq!(
+        person.state().unwrap().area(&project).unwrap().people.len(),
+        1
+    );
+    assert!(
+        person
+            .apply(Tracker::REMOVE_PERSON.with(tracker::RemovePerson {
+                area: Id::from_raw("gone"),
+                person: Id::from_raw("gone"),
+            }))
+            .is_err(),
+        "a project that is gone takes nobody out"
+    );
+}
+
+/// A project and an area differ only in what they say about themselves: the
+/// kind is what a person reads, and a project is one by default.
+#[test]
+fn an_area_is_a_project_that_goes_on() {
+    use crate::model::Kind;
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Support".into(),
+            kind: Some(Kind::Area),
+        }))
+        .unwrap();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: None,
+        }))
+        .unwrap();
+    let read = person.state().unwrap();
+    let kinds: Vec<Kind> = read.areas.values().map(|area| area.kind).collect();
+    assert_eq!(kinds, [Kind::Area, Kind::Project]);
+
+    let support = read
+        .areas
+        .iter()
+        .find(|(_, area)| area.name == "Support")
+        .map(|(id, _)| id.clone())
+        .expect("the area");
+    person
+        .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
+            area: support.clone(),
+            name: "Customer support".into(),
+        }))
+        .unwrap();
+    let read = person.state().unwrap();
+    assert_eq!(read.area(&support).unwrap().name, "Customer support");
+    assert_eq!(
+        read.area(&support).unwrap().kind,
+        Kind::Area,
+        "the kind stays"
+    );
+    assert!(
+        person
+            .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
+                area: support,
+                name: " ".into(),
+            }))
+            .is_err(),
+        "a project keeps a name"
+    );
+}
+
+/// The project and who is involved in it are the tracker's document, as the
+/// tasks are: they reach the person's other device and survive a restart.
+#[test]
+fn a_projects_tasks_and_people_reach_the_other_device_and_a_restart() {
+    use crate::model::{Kind, area_goal};
+
+    let mut on_laptop = ada();
+    on_laptop
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = on_laptop
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+    on_laptop
+        .apply(Tracker::INVOLVE.with(tracker::Involve {
+            area: project.clone(),
+            name: "ada".into(),
+            role: Some("writes".into()),
+        }))
+        .unwrap();
+    on_laptop
+        .apply(Tracker::CREATE.with(create("Write the notes", None, None)))
+        .unwrap();
+    let notes = id_of(&on_laptop, "Write the notes");
+    on_laptop
+        .apply(Tracker::PLAN.with(tracker::Plan {
+            issue: notes,
+            area: Some(area_goal(&project, "Launch")),
+            priority: None,
+            cost_budget: None,
+            due_ms: None,
+        }))
+        .unwrap();
+
+    let mut on_laptop = on_laptop.as_invoker("ada");
+    let mut on_desktop = on_laptop.fork().as_invoker("ada");
+    on_desktop.sync_with(&mut on_laptop).unwrap();
+    for merged in [on_laptop.state().unwrap(), on_desktop.state().unwrap()] {
+        let area = merged.area(&project).expect("the project on both");
+        assert_eq!(area.name, "Launch");
+        assert_eq!(area.people.len(), 1);
+        assert_eq!(merged.in_area(&project).count(), 1);
+    }
+
+    let reopened = Replica::<Tracker>::load(&on_desktop.save()).unwrap();
+    let after = reopened.state().unwrap();
+    let area = after.area(&project).expect("the project after a restart");
+    assert_eq!(area.name, "Launch");
+    assert_eq!(area.kind, Kind::Project);
+    assert_eq!(
+        area.people
+            .values()
+            .next()
+            .map(|person| person.name.as_str()),
+        Some("ada")
+    );
+    assert_eq!(after.in_area(&project).count(), 1);
+}
+
+/// The project and the people in it are published as anything of the record
+/// is: the tracker offers a place to make one, and each project is a resource
+/// of its own with the actions a person takes on it.
+#[test]
+fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
+    use crate::model::{Kind, area_resource};
+
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
+            name: "Launch".into(),
+            kind: Some(Kind::Project),
+        }))
+        .unwrap();
+    let project = person
+        .state()
+        .unwrap()
+        .areas
+        .iter()
+        .map(|(id, _)| id.clone())
+        .next()
+        .expect("the project");
+
+    let tree = person.published().unwrap();
+    let verbs: Vec<&str> = tree
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for verb in ["create-area", "rename-area", "involve", "remove-person"] {
+        assert!(verbs.contains(&verb), "{verb} is published; got {verbs:?}");
+    }
+    let children: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|child| child.id.as_str())
+        .collect();
+    let address = area_resource(&project);
+    assert!(
+        children.contains(&address.as_str()),
+        "the project is a resource of its own: {children:?}"
+    );
+}
