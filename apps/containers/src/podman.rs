@@ -658,12 +658,14 @@ pub fn remove_volume(name: &str, force: bool) -> Result<(), String> {
 // =====================================================================
 
 /// A line of streamed output from a long-running podman op (pull / log
-/// follow). The terminal `Done`/`Failed` variants close the stream.
+/// follow). The terminal `Done`/`Failed`/`Stopped` variants close the stream.
 #[derive(Clone, Debug)]
 pub enum StreamMsg {
     Line(String),
     Done,
     Failed(String),
+    /// The person stopped the operation and the engine was told to end it.
+    Stopped,
 }
 
 /// Spawn `podman <args>` and stream its merged stdout+stderr lines into
@@ -674,10 +676,32 @@ pub enum StreamMsg {
 pub fn stream_command(args: &[String], tx: &Sender<StreamMsg>) {
     let mut command = Command::new("podman");
     command.args(args);
-    stream_prepared(command, tx);
+    stream_prepared(
+        command,
+        tx,
+        &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
 }
 
-fn stream_prepared(mut command: Command, tx: &Sender<StreamMsg>) {
+/// [`stream_command`] for an operation the person can stop: when `stop` is
+/// set the engine is told to end it (its process is killed, so a mistaken
+/// multi-gigabyte pull stops consuming bandwidth and disk), and the stream
+/// closes with [`StreamMsg::Stopped`] rather than pretending it finished.
+pub fn stream_command_stoppable(
+    args: &[String],
+    tx: &Sender<StreamMsg>,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let mut command = Command::new("podman");
+    command.args(args);
+    stream_prepared(command, tx, stop);
+}
+
+fn stream_prepared(
+    mut command: Command,
+    tx: &Sender<StreamMsg>,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -714,7 +738,26 @@ fn stream_prepared(mut command: Command, tx: &Sender<StreamMsg>) {
         }));
     }
 
-    let status = child.wait();
+    // Wait for the engine, checking between moments whether the person asked
+    // for it to end. Killing the process is what stops the download; a flag
+    // the engine never reads would only hide it.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(error) => break Err(error),
+        }
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            // Say so before waiting on the readers: a process the engine
+            // spawned itself may keep the output pipe open a while longer, and
+            // the person's Stop must not wait for it.
+            let _ = tx.send(StreamMsg::Stopped);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     for reader in readers {
         if reader.join().is_err() {
             let _ = tx.send(StreamMsg::Failed(
@@ -799,7 +842,7 @@ mod tests {
             "i=0; while [ $i -lt 200 ]; do echo out-$i; echo err-$i >&2; i=$((i+1)); done",
         ]);
         let (tx, rx) = std::sync::mpsc::channel();
-        stream_prepared(command, &tx);
+        stream_prepared(command, &tx, &never_stopped());
         drop(tx);
         let messages: Vec<_> = rx.into_iter().collect();
         assert!(matches!(messages.last(), Some(StreamMsg::Done)));
@@ -822,13 +865,38 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "echo engine-disconnected >&2; exit 1"]);
         let (tx, rx) = std::sync::mpsc::channel();
-        stream_prepared(command, &tx);
+        stream_prepared(command, &tx, &never_stopped());
         drop(tx);
         let messages: Vec<_> = rx.into_iter().collect();
         assert!(
             matches!(messages.first(), Some(StreamMsg::Line(line)) if line == "engine-disconnected")
         );
         assert!(matches!(messages.last(), Some(StreamMsg::Failed(_))));
+    }
+
+    fn never_stopped() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// Stop ends the engine's process rather than only hiding its output: the
+    /// stream closes as stopped, and the command does not run to the end.
+    #[test]
+    fn a_stopped_stream_kills_its_process_and_says_so() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo first; sleep 30; echo never"]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stop = never_stopped();
+        let asked = std::sync::Arc::clone(&stop);
+        let worker = std::thread::spawn(move || stream_prepared(command, &tx, &asked));
+        // The first line says the process is running.
+        let first = rx.recv().expect("a line");
+        assert!(matches!(first, StreamMsg::Line(_)));
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let started = std::time::Instant::now();
+        let last = rx.recv().expect("the end");
+        assert!(matches!(last, StreamMsg::Stopped), "{last:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        worker.join().unwrap();
     }
 
     #[test]
