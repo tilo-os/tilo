@@ -51,7 +51,7 @@ use ui::tilo_resource;
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = AudioPrefs::valid)]
+#[model(defaults)]
 pub struct AudioPrefs {
     /// "System sounds": master switch, volume, theme and per-event choices.
     /// The compositor plays them; see [`settings_store::system_sounds`].
@@ -68,6 +68,7 @@ pub struct AudioPrefs {
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
     /// `1` right). The compositor session, not this pane, owns actuation.
     #[serde(default = "default_audio_balance")]
+    #[model(range = 0.0..=1.0)]
     pub balance: f32,
     /// Persistent accessibility mono transform. A compositor-session owner
     /// keeps the bounded virtual sink alive across Settings navigation.
@@ -100,14 +101,16 @@ impl Default for AudioPrefs {
 
 /// Display comfort preferences applied by the compositor's output layer.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = DisplayPrefs::valid)]
+#[model(defaults)]
 pub struct DisplayPrefs {
     #[model(readonly)]
     pub auto_brightness: bool,
+    /// Warm the whole screen to [`Self::night_light_temperature`].
     pub night_light: bool,
     /// Target correlated colour temperature used by the compositor's
     /// whole-output Night Light transform.
     #[serde(default = "default_night_light_temperature")]
+    #[model(range = 1_000..=10_000)]
     pub night_light_temperature: u32,
     /// Follow the Appearance day/night schedule instead of the manual switch:
     /// on from sunset, off from sunrise.
@@ -120,6 +123,7 @@ pub struct DisplayPrefs {
     /// fractional factor. `#[serde(default)]` keeps configs written before
     /// this field existed loadable (they take `1.0`).
     #[serde(default = "default_display_scale")]
+    #[model(range = 0.5..=4.0)]
     pub scale: f64,
 }
 
@@ -146,7 +150,7 @@ impl Default for DisplayPrefs {
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
 /// reads at session start.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = InputPrefs::valid)]
+#[model(defaults)]
 #[serde(default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -154,14 +158,23 @@ impl Default for DisplayPrefs {
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
+    /// Content follows the fingers on a touchpad, as on a phone.
     pub touchpad_natural_scroll: bool,
+    /// Content follows the wheel, the way a touchpad's natural scroll does.
     pub mouse_natural_scroll: bool,
+    /// A tap on the touchpad clicks.
     pub tap_to_click: bool,
-    /// 0.0..=1.0 pointer acceleration.
+    /// How fast the pointer moves, slow (0) to fast (1).
+    #[model(range = 0.0..=1.0)]
     pub pointer_speed: f64,
+    /// The touchpad's own pointer speed; none follows `pointer_speed`.
+    #[model(range = 0.0..=1.0)]
     pub touchpad_pointer_speed: Option<f64>,
+    /// The mouse's own pointer speed; none follows `pointer_speed`.
+    #[model(range = 0.0..=1.0)]
     pub mouse_pointer_speed: Option<f64>,
-    /// 0.0..=1.0 key-repeat rate.
+    /// How fast a held key repeats, slow (0) to fast (1).
+    #[model(range = 0.0..=1.0)]
     pub key_repeat: f64,
     /// Exact host-imported repeat pair. A Tilo slider selection clears both.
     #[model(readonly)]
@@ -171,14 +184,23 @@ pub struct InputPrefs {
     /// xkb layout code, e.g. `"us"`, `"de"`.
     #[model(readonly)]
     pub keyboard_layout: String,
+    /// Tap, then touch again and move, to drag.
     pub tap_drag: bool,
     /// Keep a tap-and-drag going after the finger lifts, until the next tap.
     pub tap_drag_lock: bool,
+    /// Ignore the touchpad while typing.
     pub disable_while_typing: bool,
+    /// Pressing left and right buttons together is a middle click.
     pub middle_emulation: bool,
+    /// Swap the primary and secondary buttons.
     pub left_handed: bool,
-    /// `adaptive` or `flat`; capability-gated by libinput.
+    /// Whether the pointer speeds up with faster movement (`adaptive`) or
+    /// moves the same distance at any speed (`flat`); capability-gated by
+    /// libinput.
+    #[model(choices = ["adaptive", "flat"])]
     pub accel_profile: String,
+    /// Three- and four-finger gestures switch workspaces and show the
+    /// overview.
     pub touchpad_gestures: bool,
     /// Whether touchpads send events at all. The touchpad-toggle key writes
     /// the same key, so both stay in agreement.
@@ -191,6 +213,7 @@ pub struct InputPrefs {
     /// Two-finger or edge scrolling; capability-gated by libinput.
     pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
     /// Scroll-distance multiplier for wheels and touchpads.
+    #[model(range = settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX)]
     pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
     #[model(readonly)]
@@ -295,7 +318,6 @@ impl InputPrefs {
         &mut self,
         #[param("From 0 (slow) to 1 (fast)")] rate: f64,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        within(rate, 0.0..=1.0, "the key repeat")?;
         self.key_repeat = rate;
         self.key_repeat_delay_ms = None;
         self.key_repeat_rate_hz = None;
@@ -419,6 +441,9 @@ impl PowerActionPref {
     }
 }
 
+/// The longest idle delay offered: a day, in minutes.
+const MINUTES_PER_DAY: u32 = 24 * 60;
+
 fn default_auto_suspend() -> bool {
     settings_store::power::DEFAULT_AUTO_SUSPEND
 }
@@ -453,7 +478,11 @@ fn default_critical_action() -> PowerActionPref {
 /// two carries `#[serde(default)]` so a config written before it existed still
 /// loads. The keys mirror `tilo_power_mgmt::config`'s reader exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = PowerPrefs::valid)]
+#[model(
+    check = PowerPrefs::valid,
+    check_reads = "low_battery_percent critical_battery_percent",
+    defaults
+)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
     /// [`Self::suspend_minutes`]. Unset means the shared default
@@ -464,27 +493,36 @@ pub struct PowerPrefs {
     /// Idle minutes before the session suspends while plugged in, and on
     /// battery until that has its own; `0` disables idle-suspend.
     #[serde(default = "default_suspend_minutes")]
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub suspend_minutes: u32,
     /// Idle minutes before the session suspends on battery; unset, the
     /// plugged-in timer applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub battery_suspend_minutes: Option<u32>,
     /// A power profile's own idle-suspend timer, where one was stored. It
     /// applies only while the stored profile timers truly differ
     /// ([`settings_store::power::SuspendTimers`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub saver_suspend_minutes: Option<u32>,
+    /// The balanced profile's own idle-suspend timer, where one was stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub balanced_suspend_minutes: Option<u32>,
+    /// The performance profile's own idle-suspend timer, where one was
+    /// stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub performance_suspend_minutes: Option<u32>,
     /// Idle minutes before the screen blanks; `0` disables blanking.
+    #[model(range = 0..=MINUTES_PER_DAY)]
     pub blank_minutes: u32,
     /// Idle minutes before the session locks; `0` is the explicit "Never"
     /// choice. Manual lock and the mandatory pre-suspend lock remain active.
     /// A longer delay or never weakens the lock; a shorter one does not.
     #[serde(default = "default_lock_minutes")]
-    #[model(weaker = "higher", weakest = 0)]
+    #[model(weaker = "higher", weakest = 0, range = 0..=MINUTES_PER_DAY)]
     pub lock_minutes: u32,
     /// Whether waking from sleep asks for the password. An idle, explicit or
     /// in-flight lock survives either way; only the lock this device adds on
@@ -500,9 +538,11 @@ pub struct PowerPrefs {
     pub power_key_action: PowerActionPref,
     /// Warn (a notification) at or below this battery percentage.
     #[serde(default = "default_low_battery_percent")]
+    #[model(range = 0..=100)]
     pub low_battery_percent: u32,
     /// Take [`Self::critical_action`] at or below this battery percentage.
     #[serde(default = "default_critical_battery_percent")]
+    #[model(range = 0..=100)]
     pub critical_battery_percent: u32,
     /// What to do when the battery is critically low.
     #[serde(default = "default_critical_action")]
@@ -514,6 +554,7 @@ pub struct PowerPrefs {
 /// ([`settings_store::desk_widgets`]), and the desk writes a pin or a
 /// widget dragged to another edge back here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
 pub struct DeskWidgetsPrefs {
     /// Now playing, with play/pause and next.
     #[serde(default = "default_music_widget")]
@@ -689,6 +730,7 @@ impl Default for PowerPrefs {
 
 /// System-update policy the update timer/service reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
 pub struct UpdatePrefs {
     #[model(readonly)]
     pub auto: bool,
@@ -754,10 +796,11 @@ tilo_resource::json_model!(CustomTheme);
     reason = "each bool is an independent appearance switch, not one combined state"
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = AppearancePrefs::valid)]
+#[model(check = AppearancePrefs::valid, check_reads = "sunrise sunset", defaults)]
 pub struct AppearancePrefs {
-    /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
+    /// Light, dark, or automatic: light by day and dark by night.
     #[serde(default = "default_mode")]
+    #[model(choices = ["light", "dark", settings_store::day_schedule::AUTOMATIC_MODE])]
     pub mode: String,
     /// The theme dark mode shows: a preset id or `custom:<id>`.
     #[serde(default = "default_dark_theme")]
@@ -773,6 +816,7 @@ pub struct AppearancePrefs {
     /// Spacing density over whichever theme is shown: one of
     /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `ROOMY`.
     #[serde(default = "default_density")]
+    #[model(range = 0.5..=2.0)]
     pub density: f64,
     /// Force the high-contrast accessibility palette, overriding the theme.
     #[serde(default)]
@@ -783,22 +827,25 @@ pub struct AppearancePrefs {
     /// Make menus, panels and sheets opaque instead of blurred.
     #[serde(default)]
     pub reduce_transparency: bool,
-    /// UI text-size multiplier (`1.0` = default). Scales *type only*. Clamped
-    /// on apply.
+    /// How large text is drawn, `1.0` as the theme sets it. Scales *type
+    /// only*.
     #[serde(default = "default_ui_scale")]
+    #[model(range = 0.5..=3.0)]
     pub text_scale: f64,
-    /// Global UI-scale multiplier (`1.0` = default) — the "make everything
-    /// bigger" knob. Scales the *whole* design system (spacing, radii, and the
+    /// How large everything is drawn, `1.0` as the theme sets it: the "make
+    /// everything bigger" knob. Scales the *whole* design system (spacing, radii, and the
     /// type scale) together via [`ui::Theme::with_ui_scale`]. Composes on top of
     /// the per-output fractional device scale the compositor reports, and text
-    /// additionally picks up `text_scale`. Clamped on apply.
+    /// additionally picks up `text_scale`.
     #[serde(default = "default_ui_scale")]
+    #[model(range = 0.5..=3.0)]
     pub ui_scale: f64,
     /// When the day ends, for the "Automatic" mode and a scheduled night
     /// light: `"sun"` follows sunrise and sunset at the time zone's location,
     /// `"custom"` uses [`Self::sunrise`] and [`Self::sunset`]
     /// (`settings_store::day_schedule`).
     #[serde(default = "default_schedule")]
+    #[model(choices = ["sun", "custom"])]
     pub schedule: String,
     /// Custom sunrise, `HH:MM`; also the fallback when the sun cannot be followed.
     #[serde(default = "default_sunrise")]
@@ -810,16 +857,19 @@ pub struct AppearancePrefs {
     /// or `"all"` workspaces. The compositor applies a change to the
     /// wallpaper they have at once, and to every one they choose after.
     #[serde(default = "default_wallpaper_scope")]
+    #[model(choices = WALLPAPER_SCOPES.map(|(_, value)| value))]
     pub wallpaper_scope: String,
     /// Where the wallpaper shows: `background`, `lockscreen` or `both`. The
     /// compositor applies a change to the wallpaper the person has at once.
     #[serde(default = "default_wallpaper_target")]
+    #[model(choices = WALLPAPER_TARGETS.map(|(_, value)| value))]
     pub wallpaper_target: String,
     /// The desktop's wallpaper: the id of a picture the system ships
     /// ([`tilo_wallpapers::all`]), or [`tilo_wallpapers::CUSTOM`] for the
     /// person's own picture, which the compositor keeps per device
     /// (`settings_store::appearance::WALLPAPER`). Unset shows the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(choices = tilo_wallpapers::values())]
     pub wallpaper: Option<String>,
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
@@ -1069,7 +1119,7 @@ impl AppearancePrefs {
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = NotificationPrefs::valid)]
+#[model(check = NotificationPrefs::valid, check_reads = "per_app", defaults)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
@@ -1209,35 +1259,6 @@ impl ui::storage::SettingsSchema for DisplayPrefs {
 #[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
 impl DisplayPrefs {}
 
-/// Refused unless `value` is a finite number within `range`, naming `what`.
-fn within(
-    value: f64,
-    range: std::ops::RangeInclusive<f64>,
-    what: &str,
-) -> Result<(), ui::tilo_resource::Refusal> {
-    if value.is_finite() && range.contains(&value) {
-        Ok(())
-    } else {
-        Err(ui::tilo_resource::Refusal::new(format!(
-            "{what} is between {} and {}",
-            range.start(),
-            range.end()
-        )))
-    }
-}
-
-/// Refused unless `value` is one of `known`, naming `what`.
-fn one_of(value: &str, known: &[&str], what: &str) -> Result<(), ui::tilo_resource::Refusal> {
-    if known.contains(&value) {
-        Ok(())
-    } else {
-        Err(ui::tilo_resource::Refusal::new(format!(
-            "{what} is one of {}",
-            known.join(", ")
-        )))
-    }
-}
-
 /// Refused unless `time` is a time of day, `HH:MM`.
 fn time_of_day(time: &str, what: &str) -> Result<(), ui::tilo_resource::Refusal> {
     settings_store::day_schedule::parse_hhmm(time)
@@ -1245,56 +1266,17 @@ fn time_of_day(time: &str, what: &str) -> Result<(), ui::tilo_resource::Refusal>
         .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("{what} is a time of day, HH:MM")))
 }
 
-const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
-
 impl AppearancePrefs {
     /// What the appearance section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        within(self.ui_scale, 0.5..=3.0, "the interface scale")?;
-        within(self.text_scale, 0.5..=3.0, "the text scale")?;
-        within(self.density, 0.5..=2.0, "the density")?;
-        one_of(
-            &self.schedule,
-            &["sun", "custom"],
-            "the day and night schedule",
-        )?;
         time_of_day(&self.sunrise, "the start of day")?;
-        time_of_day(&self.sunset, "the start of night")?;
-        one_of(
-            &self.wallpaper_scope,
-            &WALLPAPER_SCOPES.map(|(_, value)| value),
-            "where a new wallpaper applies",
-        )?;
-        one_of(
-            &self.wallpaper_target,
-            &WALLPAPER_TARGETS.map(|(_, value)| value),
-            "where a new wallpaper shows",
-        )?;
-        match &self.wallpaper {
-            Some(wallpaper) => one_of(wallpaper, &tilo_wallpapers::values(), "the wallpaper"),
-            None => Ok(()),
-        }
+        time_of_day(&self.sunset, "the start of night")
     }
 }
 
 impl NotificationPrefs {
     /// What the notification section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        within(
-            f64::from(self.focus.start_minute),
-            0.0..=MINUTES_PER_DAY - 1.0,
-            "the start of focus",
-        )?;
-        within(
-            f64::from(self.focus.end_minute),
-            0.0..=MINUTES_PER_DAY - 1.0,
-            "the end of focus",
-        )?;
-        within(
-            f64::from(self.focus.weekdays),
-            0.0..=127.0,
-            "the focus days",
-        )?;
         match self.per_app.keys().find(|app| !valid_app_id(app)) {
             Some(app) => Err(ui::tilo_resource::Refusal::new(format!(
                 "`{app}` is not an app id"
@@ -1307,77 +1289,12 @@ impl NotificationPrefs {
 impl PowerPrefs {
     /// What the power section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        for (minutes, what) in [
-            (Some(self.suspend_minutes), "the suspend delay"),
-            (self.battery_suspend_minutes, "the battery suspend delay"),
-            (self.saver_suspend_minutes, "the power saver suspend delay"),
-            (self.balanced_suspend_minutes, "the balanced suspend delay"),
-            (
-                self.performance_suspend_minutes,
-                "the performance suspend delay",
-            ),
-            (Some(self.blank_minutes), "the blank delay"),
-            (Some(self.lock_minutes), "the lock delay"),
-        ] {
-            if let Some(minutes) = minutes {
-                within(f64::from(minutes), 0.0..=MINUTES_PER_DAY, what)?;
-            }
+        if self.critical_battery_percent > self.low_battery_percent {
+            return Err(ui::tilo_resource::Refusal::new(
+                "the critical battery level is at most the low battery level",
+            ));
         }
-        within(
-            f64::from(self.low_battery_percent),
-            0.0..=100.0,
-            "the low battery level",
-        )?;
-        within(
-            f64::from(self.critical_battery_percent),
-            0.0..=f64::from(self.low_battery_percent),
-            "the critical battery level",
-        )
-    }
-}
-
-impl DisplayPrefs {
-    /// What the display section holds, however it was changed.
-    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        within(self.scale, 0.5..=4.0, "the display scale")?;
-        within(
-            f64::from(self.night_light_temperature),
-            1_000.0..=10_000.0,
-            "the night light temperature",
-        )
-    }
-}
-
-impl AudioPrefs {
-    /// What the sound section holds, however it was changed.
-    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        within(f64::from(self.balance), 0.0..=1.0, "the balance")?;
-        within(
-            self.system_sounds.volume,
-            0.0..=1.0,
-            "the system sound volume",
-        )
-    }
-}
-
-impl InputPrefs {
-    /// What the input section holds, however it was changed.
-    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
-        for (speed, what) in [
-            (Some(self.pointer_speed), "the pointer speed"),
-            (self.touchpad_pointer_speed, "the touchpad pointer speed"),
-            (self.mouse_pointer_speed, "the mouse pointer speed"),
-            (Some(self.key_repeat), "the key repeat"),
-        ] {
-            if let Some(speed) = speed {
-                within(speed, 0.0..=1.0, what)?;
-            }
-        }
-        within(
-            self.scroll_speed,
-            settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX,
-            "the scroll speed",
-        )
+        Ok(())
     }
 }
 
