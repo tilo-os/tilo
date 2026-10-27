@@ -1071,6 +1071,31 @@ mod input_publication {
         assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
     }
 
+    /// Each keystroke begins by publishing the surface its edits are
+    /// attributed to. A surface built from nothing that changed since the
+    /// last is not built again: the route carries it.
+    #[test]
+    fn an_unchanged_surface_is_not_built_again() {
+        let mut fixture = super::HostedPumpFixture::new(1);
+        let app = &mut fixture.app;
+        app.publish_action_surface();
+        let attempts = app.actions.action_surface_publication_attempts;
+        for _ in 0..10 {
+            app.publish_action_surface();
+        }
+        assert_eq!(
+            app.actions.action_surface_publication_attempts, attempts,
+            "ten publications of an unchanged surface built it again"
+        );
+        app.invalidate_widget_resource_cache();
+        app.publish_action_surface();
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            attempts + 1,
+            "a change to what the surface is built from builds it once"
+        );
+    }
+
     /// A handled input asks for a sync and a frame, and that sync can move
     /// what the tree shows. The input leaves its publication to the frame,
     /// which publishes once after the sync, instead of the input building

@@ -680,6 +680,30 @@ impl App {
         if self.collaboration.manager.is_connected() {
             self.refresh_document_routes();
         }
+        if self.collaboration.manager.take_action_surface_failed() {
+            // The broker did not install the last surface: nothing counts as
+            // published until it acknowledges one.
+            self.actions.last_published_actions = None;
+        }
+        // Nothing the surface is built from changed since the route was
+        // given it (`HostedPublicationStamp`): building it again would
+        // publish the same surface, so the route carries it already. Each
+        // keystroke begins by publishing (an input's edits are attributed
+        // to the surface on the route); this keeps that to a comparison.
+        let stamp = self.hosted_publication_stamp();
+        let unchanged = stamp.as_ref().is_some_and(|stamp| {
+            Some(stamp) == self.actions.hosted.publication.as_ref()
+                // The directory's own witness (the bound owners' generations
+                // and permissions), taken now: a grant revoked in place is a
+                // change though no generation moved.
+                && self
+                    .try_action_directory_revision()
+                    .is_ok_and(|now| now == stamp.revision())
+        });
+        if unchanged {
+            self.settle_held_own_invocations(true);
+            return;
+        }
         self.publish_action_surface_after_refresh();
     }
 
@@ -696,6 +720,13 @@ impl App {
     fn publish_action_surface_after_refresh(&mut self) {
         let carried = self.publish_action_surface_on_route();
         self.settle_held_own_invocations(carried);
+        // What the surface on the route was built from, for the next
+        // publication to compare with.
+        self.actions.hosted.publication = if carried {
+            self.hosted_publication_stamp()
+        } else {
+            None
+        };
     }
 
     /// Whether the route now carries this app's current offer: its surface
