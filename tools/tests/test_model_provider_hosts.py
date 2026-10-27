@@ -50,8 +50,9 @@ class ModelProviderHosts(unittest.TestCase):
         base = ROOT / "crates/browser/tilo-browser-runtime/src"
         services = (base / "host_services.rs").read_text()
         helper = services.split("fn provider_admin_app(", 1)[1].split("\n}", 1)[0]
+        # The page runs Model Providers, never Settings (a Tilo OS app).
         self.assertEqual(re.findall(r'"(so\.tilo\.[^"]+)"', helper),
-                         ["so.tilo.settings", "so.tilo.model-providers"])
+                         ["so.tilo.model-providers"])
         self.assertIn("handle.is_available() && !provider_admin_app(context.app_id())", services)
         desktop = (base / "desktop.rs").read_text()
         self.assertIn("if crate::host_services::provider_admin_app(definition.app_id)", desktop)
