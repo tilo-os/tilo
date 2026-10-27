@@ -151,15 +151,39 @@ pub enum MagnifierStep {
     ZoomOut,
 }
 
+impl MagnifierStep {
+    pub const ALL: [Self; 3] = [Self::Toggle, Self::ZoomIn, Self::ZoomOut];
+
+    /// The step's name, as an action takes it.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::ZoomIn => "zoom-in",
+            Self::ZoomOut => "zoom-out",
+        }
+    }
+
+    /// The step [`Self::id`] names.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|step| step.id() == id)
+    }
+}
+
+/// `remembered` as a zoom the toggle can turn on at: off or nothing yet
+/// remembered turns on at [`DEFAULT_ZOOM`].
+pub fn remembered_zoom(remembered: u8) -> u8 {
+    if remembered > OFF {
+        remembered.min(MAX_ZOOM)
+    } else {
+        DEFAULT_ZOOM
+    }
+}
+
 /// Apply `step` to the current `zoom`, given the zoom the toggle remembers. Returns the new zoom
 /// and the new remembered zoom.
 pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
     let zoom = zoom.clamp(OFF, MAX_ZOOM);
-    let remembered = if remembered > OFF {
-        remembered.min(MAX_ZOOM)
-    } else {
-        DEFAULT_ZOOM
-    };
+    let remembered = remembered_zoom(remembered);
     let next = match step {
         MagnifierStep::Toggle if zoom > OFF => OFF,
         MagnifierStep::Toggle => remembered,
@@ -173,32 +197,6 @@ pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
         remembered.max(zoom)
     };
     (next, remembered)
-}
-
-/// Apply `step` to the session's settings ([`crate::update_section`]) and
-/// return the new zoom.
-///
-/// # Errors
-///
-/// Returns the I/O error when the updated section cannot be written.
-pub fn apply_step(magnifier_step: MagnifierStep) -> std::io::Result<u8> {
-    let (values, next) = stepped(&crate::load_section(SECTION), magnifier_step);
-    crate::update_section(SECTION, values)?;
-    Ok(next)
-}
-
-/// The keys `step` writes into the accessibility `section`, and the new zoom.
-fn stepped(
-    section: &Map<String, Value>,
-    magnifier_step: MagnifierStep,
-) -> (Map<String, Value>, u8) {
-    let zoom = zoom_in_section(section, ZOOM_KEY).unwrap_or(OFF);
-    let remembered = zoom_in_section(section, LAST_ZOOM_KEY).unwrap_or(DEFAULT_ZOOM);
-    let (next, remembered) = step(zoom, remembered, magnifier_step);
-    let mut values = Map::new();
-    values.insert(ZOOM_KEY.into(), Value::from(next));
-    values.insert(LAST_ZOOM_KEY.into(), Value::from(remembered));
-    (values, next)
 }
 
 #[cfg(test)]
@@ -237,22 +235,6 @@ mod tests {
             assert_eq!(MagnifierView::from_label(view.label()), Some(view));
             assert_eq!(MagnifierView::parse(view.as_str()), view);
         }
-    }
-
-    #[test]
-    fn a_step_writes_the_zoom_and_what_the_toggle_remembers() {
-        let mut section = Map::new();
-        section.insert(ZOOM_KEY.into(), Value::from(4));
-        let mut apply = |magnifier_step| {
-            let (values, next) = stepped(&section, magnifier_step);
-            section.extend(values);
-            next
-        };
-        assert_eq!(apply(MagnifierStep::Toggle), OFF);
-        assert_eq!(apply(MagnifierStep::Toggle), 4);
-        assert_eq!(apply(MagnifierStep::ZoomOut), 3);
-        assert_eq!(MagnifierState::from_section(&section).zoom, 3);
-        assert_eq!(section.get(LAST_ZOOM_KEY), Some(&Value::from(3)));
     }
 
     #[test]

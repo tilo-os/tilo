@@ -83,6 +83,10 @@ macro_rules! accessibility_settings {
             pub magnifier_zoom: u8,
             /// A lens around the point of interest, or the whole screen magnified.
             pub magnifier_view: MagnifierView,
+            /// The zoom the magnifier's toggle turns back on to: the last one
+            /// in use. Changed by stepping the magnifier.
+            $(#[$readonly])*
+            pub magnifier_last_zoom: u8,
             /// Paint full-screen guide lines through the hardware pointer.
             pub cursor_crosshair: bool,
             /// Make text insertion carets wider in every Tilo toolkit application.
@@ -122,6 +126,7 @@ macro_rules! accessibility_settings {
                     color_filter: $crate::ColorFilter::None,
                     magnifier_zoom: $crate::__private::OFF,
                     magnifier_view: $crate::__private::MagnifierView::Lens,
+                    magnifier_last_zoom: $crate::__private::DEFAULT_ZOOM,
                     cursor_crosshair: false,
                     thick_text_caret: false,
                     switch_control: false,
@@ -219,6 +224,9 @@ macro_rules! accessibility_settings {
                 if let Some(value) = key(section, "magnifier_view") {
                     settings.magnifier_view = value;
                 }
+                if let Some(value) = key(section, $crate::__private::LAST_ZOOM_KEY) {
+                    settings.magnifier_last_zoom = value;
+                }
                 if let Some(value) = key(section, "cursor_crosshair") {
                     settings.cursor_crosshair = value;
                 }
@@ -250,6 +258,7 @@ macro_rules! accessibility_settings {
                 settings.bounce_keys_delay_ms =
                     $crate::__private::clamp(settings.bounce_keys_delay_ms, &$crate::__private::BOUNCE_KEYS_DELAY_RANGE);
                 settings.magnifier_zoom = settings.magnifier_zoom.clamp($crate::__private::OFF, $crate::__private::MAX_ZOOM);
+                settings.magnifier_last_zoom = $crate::__private::remembered_zoom(settings.magnifier_last_zoom);
                 settings.screen_reader_rate =
                     $crate::__private::settings_store::accessibility::clamped_rate(settings.screen_reader_rate);
                 settings
@@ -278,6 +287,18 @@ macro_rules! accessibility_settings {
                 $crate::__private::SWITCH_SCAN_RANGE_MS
                     .contains(&self.switch_scan_ms)
                     .then(|| ::std::time::Duration::from_millis(u64::from(self.switch_scan_ms)))
+            }
+
+            /// Step the magnifier: turn it on at the zoom last in use or
+            /// off, or magnify a level more or less, remembering the zoom.
+            pub fn step_magnifier(&mut self, step: $crate::__private::MagnifierStep) {
+                let (zoom, remembered) = $crate::__private::step_zoom(
+                    self.magnifier_zoom,
+                    self.magnifier_last_zoom,
+                    step,
+                );
+                self.magnifier_zoom = zoom;
+                self.magnifier_last_zoom = remembered;
             }
 
             pub fn magnifier(self) -> $crate::__private::MagnifierState {
@@ -321,7 +342,10 @@ pub mod __private {
     pub use crate::{BOUNCE_KEYS_DELAY_RANGE, CURSOR_SIZE_RANGE, SWITCH_SCAN_RANGE_MS};
     pub use settings_store;
     pub use settings_store::dictation::DictationLanguage;
-    pub use settings_store::magnifier::{MAX_ZOOM, MagnifierState, MagnifierView, OFF};
+    pub use settings_store::magnifier::{
+        DEFAULT_ZOOM, LAST_ZOOM_KEY, MAX_ZOOM, MagnifierState, MagnifierStep, MagnifierView, OFF,
+        remembered_zoom, step as step_zoom,
+    };
 
     pub fn clamp<T: Ord + Copy>(value: T, range: &std::ops::RangeInclusive<T>) -> T {
         value.clamp(*range.start(), *range.end())
