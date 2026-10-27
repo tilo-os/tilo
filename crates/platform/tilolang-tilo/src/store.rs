@@ -197,6 +197,45 @@ struct ListedOnce {
     listing: Rc<Listing>,
 }
 
+impl ListedOnce {
+    /// Whether a change of `key` may change this listing: its collection, the resource holding
+    /// it as a whole or one holding that, an item of it as a whole, or the field of an item a
+    /// filter reads. An item's other fields leave which items it lists, and their order, as
+    /// they were.
+    fn reached_by(&self, key: &FieldKey) -> bool {
+        let holder = |resource: &str, field: &str| {
+            self.resource
+                .strip_prefix(resource)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .and_then(|rest| rest.strip_prefix(field))
+                .is_some_and(|rest| rest.starts_with(':'))
+        };
+        // An item of the collection, not a resource inside one.
+        let item = key
+            .resource
+            .strip_prefix(self.resource.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+            .and_then(|rest| rest.strip_prefix(self.field.as_str()))
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|id| !id.contains('/'));
+        let filtered_on = |field: &str| {
+            field == ANY_FIELD
+                || self
+                    .pred
+                    .as_ref()
+                    .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
+        };
+        (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
+            || (item && filtered_on(&key.field))
+            || (key.field == ANY_FIELD
+                && self
+                    .resource
+                    .strip_prefix(key.resource.as_str())
+                    .is_some_and(|rest| rest.starts_with('/')))
+            || holder(&key.resource, &key.field)
+    }
+}
+
 /// Gives the store the room record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
@@ -837,7 +876,18 @@ impl TiloStore {
             }
         };
         inner.derive_all(&reached);
-        inner.changed();
+        if changed.unplaced || changed.layout {
+            inner.changed();
+        } else {
+            let mut reached = changed.docs.clone();
+            for key in changed.items.keys() {
+                reached
+                    .entry(key.doc().to_owned())
+                    .or_default()
+                    .push(key.clone());
+            }
+            inner.changed_within(&reached);
+        }
         let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
         if changed.unplaced {
             inner.notify_all();
@@ -1261,6 +1311,19 @@ impl Inner {
         self.listed.borrow_mut().clear();
     }
 
+    /// [`Self::changed`], for a change that reached only `fields` (per record; an empty list
+    /// for a record changed as a whole): the listings of collections it did not reach are
+    /// still what they were, and are kept.
+    fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>) {
+        self.snapshot = std::sync::Weak::new();
+        self.listed.borrow_mut().retain(|held| {
+            match fields.get(tilolang_runtime::store::doc_of(&held.resource)) {
+                None => true,
+                Some(keys) => !keys.is_empty() && !keys.iter().any(|key| held.reached_by(key)),
+            }
+        });
+    }
+
     fn mirror(&self) -> Result<&Doc, StoreError> {
         self.mirror
             .as_deref()
@@ -1310,17 +1373,10 @@ impl Inner {
         };
         match held.state {
             IndexState::Building(_) => {}
-            IndexState::Ready => {
-                let holds = self
-                    .mirror
-                    .as_deref()
-                    .is_some_and(|mirror| holds_heads(mirror, &held.heads));
-                if holds {
-                    self.catch_up(app);
-                } else {
-                    self.rebuild(app);
-                }
-            }
+            // Caught up, or built anew when the record lacks its heads. Finding a change by
+            // its hash reads the record's whole history: an index at the record's heads, the
+            // usual open, asks for none.
+            IndexState::Ready => self.catch_up(app),
             IndexState::Missing => self.rebuild(app),
         }
     }
@@ -1598,7 +1654,18 @@ impl Inner {
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
         self.derive_write(&write);
-        self.changed();
+        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+        for key in write
+            .touched
+            .iter()
+            .chain(write.items.iter().map(|(key, _)| key))
+        {
+            reached
+                .entry(key.doc().to_owned())
+                .or_default()
+                .push(key.clone());
+        }
+        self.changed_within(&reached);
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
             let mut moved = ItemTouches::new();
