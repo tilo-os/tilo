@@ -82,7 +82,12 @@ fn capture(
         room(),
         &fixture.certificate,
         &fixture.key,
-        CheckpointCapture { id, name, routes },
+        CheckpointCapture {
+            id,
+            name,
+            description: "",
+            routes,
+        },
         fixture.now,
     )
 }
@@ -541,6 +546,7 @@ fn capture_member(
         CheckpointCapture {
             id,
             name: "member",
+            description: "",
             routes: &member_routes(),
         },
         fixture.now,
@@ -558,6 +564,7 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
             name: "public".into(),
+            description: "before the rewrite".into(),
             routes: routes(),
         },
     };
@@ -577,6 +584,7 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
     let mut changed = request.clone();
     changed.command = CheckpointCommand::Capture {
         name: "changed".into(),
+        description: "before the rewrite".into(),
         routes: routes(),
     };
     assert!(execute(&changed).is_err());
@@ -605,6 +613,7 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
     second.invocation = uuid::Uuid::new_v4();
     second.command = CheckpointCommand::Capture {
         name: "second".into(),
+        description: "before the rewrite".into(),
         routes: routes(),
     };
     execute(&second).unwrap();
@@ -681,6 +690,7 @@ fn checkpoint_public_read_and_mutation_require_current_source_rights() {
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
             name: "public-member".into(),
+            description: "member snapshot".into(),
             routes: member_routes(),
         },
     };
@@ -1180,6 +1190,134 @@ fn checkpoint_captures_full_stored_schema_identity() {
     assert_eq!(schema.storage_version, Some(7));
 }
 
+#[test]
+fn checkpoint_manifest_states_its_reach_and_every_name_move_is_auditable() {
+    let fixture = fixture();
+    prepare(&fixture);
+    let route = &routes()[0];
+    assert_eq!(route.app, "so.tilo.chat");
+    let first = uuid::Uuid::new_v4();
+    let second = uuid::Uuid::new_v4();
+    let described = fixture
+        .owner
+        .capture_checkpoint(
+            room(),
+            &fixture.certificate,
+            &fixture.key,
+            CheckpointCapture {
+                id: first,
+                name: "before the rewrite",
+                description: "Chapters one and two, before the editor's pass",
+                routes: &routes(),
+            },
+            fixture.now,
+        )
+        .unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    let durable = std::fs::read(&path).unwrap();
+    let reopened = open_file(&path).unwrap();
+    let shown = reopened
+        .read_checkpoint(room(), &fixture.certificate, first, fixture.now)
+        .unwrap()
+        .manifest;
+    assert_eq!(
+        shown.description,
+        "Chapters one and two, before the editor's pass"
+    );
+    assert_eq!(shown.author, Some(fixture.certificate.user_public_key));
+    assert_eq!(
+        shown.completeness,
+        super::CheckpointCompleteness::NATIVE_RECORDS
+    );
+    assert!(
+        shown.completeness.complete && !shown.completeness.file_topology,
+        "a native manifest is complete for records only, never for files"
+    );
+    // The description is part of the immutable manifest, not a mutable name.
+    assert!(
+        fixture
+            .owner
+            .capture_checkpoint(
+                room(),
+                &fixture.certificate,
+                &fixture.key,
+                CheckpointCapture {
+                    id: first,
+                    name: "before the rewrite",
+                    description: "a different story",
+                    routes: &routes(),
+                },
+                fixture.now,
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    for text in [" padded ", &"x".repeat(281), "bad\u{7}description"] {
+        assert!(
+            fixture
+                .owner
+                .capture_checkpoint(
+                    room(),
+                    &fixture.certificate,
+                    &fixture.key,
+                    CheckpointCapture {
+                        id: uuid::Uuid::new_v4(),
+                        name: "bounded description",
+                        description: text,
+                        routes: &routes(),
+                    },
+                    fixture.now,
+                )
+                .is_err(),
+            "{text:?} must not be retained"
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(
+        fixture
+            .owner
+            .checkpoint_name_history(room(), "before the rewrite")
+            .unwrap(),
+        vec![super::NameBinding {
+            name: "before the rewrite".into(),
+            id: first,
+            author: fixture.certificate.user_public_key,
+            generation: described.publication_generation,
+        }]
+    );
+    capture(
+        &fixture.owner,
+        &fixture,
+        second,
+        "after the rewrite",
+        &routes(),
+    )
+    .unwrap();
+    fixture
+        .owner
+        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", first)
+        .unwrap();
+    fixture
+        .owner
+        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", second)
+        .unwrap();
+    let reopened = open_file(&path).unwrap();
+    let history = reopened.checkpoint_name_history(room(), "latest").unwrap();
+    assert_eq!(history.len(), 2, "a move appends, it never rewrites");
+    assert_eq!(history[0].id, first);
+    assert_eq!(history[1].id, second);
+    assert!(
+        history[1].generation > history[0].generation,
+        "a move records the publication it landed in"
+    );
+    assert!(
+        history
+            .iter()
+            .all(|entry| entry.author == fixture.certificate.user_public_key)
+    );
+    assert!(reopened.checkpoint_name_history(room(), "absent").is_err());
+}
+
 fn enroll_checkpoint_reader(
     fixture: &mut Fixture,
     path: &std::path::Path,
@@ -1392,6 +1530,7 @@ fn checkpoint_invalid_bounds_duplicate_routes_and_wrong_custody_do_not_publish()
                 CheckpointCapture {
                     id,
                     name: "wrong custody",
+                    description: "",
                     routes: &routes()
                 },
                 fixture.now,
