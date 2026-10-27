@@ -464,7 +464,7 @@ fn a_moved_strip_lands_between_another_devices_strips() {
 
     // Ben moves his strip between Ada's two and publishes the move.
     let mut moved = room_layout::read(&ben, None).unwrap();
-    let mut his = moved.tree.workspaces[0].strips.remove(2);
+    let his = moved.tree.workspaces[0].strips.remove(2);
     assert_eq!(his.id.raw(), chat, "Ben moves his own strip");
     moved.tree.workspaces[0].strips.insert(1, his);
     let since = ben.get_heads();
