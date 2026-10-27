@@ -387,7 +387,7 @@ pub(crate) fn pump(id: u32) {
                                 Box::new(Session {
                                     connection: connection.clone(),
                                 }),
-                                Box::new(PageContent),
+                                Box::new(page_recorder(id)),
                             )
                             .map_err(|error| error.to_string())
                             .and_then(|startup| register_feedback_startup(id, startup));
@@ -453,6 +453,26 @@ impl Capture for PageContent {
     }
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
         keep_picture(&crate::page_content::page_content(), image)
+    }
+}
+
+/// Records the window a report is about from the record peer `id`'s room
+/// committed, through the one recorder every desktop uses; the recording's
+/// bytes are kept in the page's content store beside the report's picture,
+/// and reach the room's host the same way.
+fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
+    tilo_desktop::feedback::recorder::WindowRecorder {
+        documents: Box::new(move |workspace, app, record| {
+            crate::replication::committed_record(id, workspace, app, record)
+        }),
+        protected: Box::new(tilo_desktop::secrets::holds_secrets),
+        keep: Box::new(|bytes| {
+            crate::page_content::page_content()
+                .put(bytes)
+                .map_err(|error| error.to_string())
+        }),
+        now_ms: Box::new(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX)),
+        pictures: Box::new(PageContent),
     }
 }
 

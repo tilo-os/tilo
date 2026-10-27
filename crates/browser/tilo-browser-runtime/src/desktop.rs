@@ -826,6 +826,18 @@ impl Shared {
             .collect()
     }
 
+    /// The record `tab` shows in this desktop's room, as a report about
+    /// its window names it: what a recording of the window records.
+    pub fn shown_record(
+        &self,
+        tree: &DesktopTree,
+        tab: TabId,
+    ) -> Option<tilo_desktop::feedback::ShownRecord> {
+        let workspace = crate::replication::room_uuid(self.room_actions.peer?)?;
+        let (_, record) = self.live_record_of(tree, tab)?;
+        Some(tilo_desktop::feedback::ShownRecord { workspace, record })
+    }
+
     /// The record `tab` shows as the room's live layer names it: its
     /// application and the record id, empty for the package's primary
     /// record.

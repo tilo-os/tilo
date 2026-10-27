@@ -22,7 +22,6 @@ use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
-mod feedback_recording;
 #[cfg(target_os = "linux")]
 mod feedback_review;
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! Recordings of the window a report is about, made on this device
-//! (`docs/architecture/session-replay.md`).
+//! (`docs/architecture/session-replay.md`): the one recorder every desktop,
+//! native or in a browser, offers a report's recording through.
 //!
 //! The window's record is read as its workspace committed it, the state
 //! History and Activity read too; its last
@@ -11,24 +12,29 @@
 
 use tilo_app::feedback::recording::{LIMITS, RECORDING_WINDOW_MS};
 use tilo_app::feedback::{Error, MaskedScreenshot, Recorded, RecordingScope, ReviewText, Subject};
-use tilo_desktop::feedback::transport::{Capture, NoCapture};
+use tilo_app::tilo_resource;
 use tilo_resource::model::Doc;
+
+use super::transport::Capture;
 
 /// The saved document of `record` of `app` in `workspace`, as the workspace
 /// committed it, when this device holds it.
-pub(super) type Documents = Box<dyn Fn(&str, &str, &str) -> Option<Vec<u8>>>;
+pub type Documents = Box<dyn Fn(&str, &str, &str) -> Option<Vec<u8>>>;
 /// Whether windows of an app are withheld from captures.
-pub(super) type Protected = Box<dyn Fn(&str) -> bool>;
+pub type Protected = Box<dyn Fn(&str) -> bool>;
 /// Keep bytes where the destination Chat's content lives; their hash.
-pub(super) type Keep = Box<dyn Fn(&[u8]) -> Result<String, String>>;
+pub type Keep = Box<dyn Fn(&[u8]) -> Result<String, String>>;
 
-/// Records the window a report is about; takes no screenshots.
-pub(super) struct WindowRecorder {
-    pub(super) documents: Documents,
-    pub(super) protected: Protected,
-    pub(super) keep: Keep,
+/// Records the window a report is about; its pictures are what `pictures`
+/// takes and keeps.
+pub struct WindowRecorder {
+    pub documents: Documents,
+    pub protected: Protected,
+    pub keep: Keep,
     /// Milliseconds since the Unix epoch, now.
-    pub(super) now_ms: Box<dyn Fn() -> i64>,
+    pub now_ms: Box<dyn Fn() -> i64>,
+    /// What takes and keeps the report's pictures on this desktop.
+    pub pictures: Box<dyn Capture>,
 }
 
 impl WindowRecorder {
@@ -73,16 +79,16 @@ fn kind(doc: &Doc, app: &str) -> String {
 
 impl Capture for WindowRecorder {
     fn offers_screenshots(&self) -> bool {
-        NoCapture.offers_screenshots()
+        self.pictures.offers_screenshots()
     }
     fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
-        NoCapture.context()
+        self.pictures.context()
     }
     fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
-        NoCapture.capture()
+        self.pictures.capture()
     }
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
-        NoCapture.persist(image)
+        self.pictures.persist(image)
     }
     fn recording_scope(&mut self, subject: &Subject) -> Option<RecordingScope> {
         let mut doc = self.document(subject)?;
@@ -155,6 +161,7 @@ mod tests {
                 Ok(blake3::hash(bytes).to_hex().to_string())
             }),
             now_ms: Box::new(|| 1_000_000),
+            pictures: Box::new(super::super::transport::NoCapture),
         }
     }
 

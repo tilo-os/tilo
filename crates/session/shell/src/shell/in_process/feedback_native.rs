@@ -277,8 +277,8 @@ impl Delivery {
 fn window_recorder(
     network: Arc<ShellNetwork>,
     room: String,
-) -> super::feedback_recording::WindowRecorder {
-    super::feedback_recording::WindowRecorder {
+) -> tilo_desktop::feedback::recorder::WindowRecorder {
+    tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
             let workspace = crate::shell::state::RoomId::parse(workspace)?;
             network
@@ -299,6 +299,7 @@ fn window_recorder(
             .map_err(|error| error.to_string())
         }),
         now_ms: Box::new(tilo_clock::unix_now_ms_i64),
+        pictures: Box::new(tilo_desktop::feedback::transport::NoCapture),
     }
 }
 
