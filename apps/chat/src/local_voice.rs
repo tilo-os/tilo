@@ -202,19 +202,19 @@ impl LocalVoice {
             Command::SetDeafened { deafened } => {
                 // Deafening silences and mutes at once; undeafening waits
                 // for the service to say what it put back.
+                // Whether the microphone stopped is the service's to say.
                 if *deafened {
                     self.snapshot.deafened = true;
                     self.snapshot.muted = true;
-                    self.snapshot.capture_active = false;
                 }
             }
             Command::SetMuted { muted } => {
                 self.unmute_requested = !muted;
-                // Turning capture off is immediate. Turning it on waits for
-                // the shell's fresh local prompt and actual capture result.
+                // The control shows muted at once; capture is reported off
+                // only once the service says it stopped. Turning it on waits
+                // for the shell's fresh local prompt and actual capture result.
                 if *muted {
                     self.snapshot.muted = true;
-                    self.snapshot.capture_active = false;
                 }
             }
             Command::SelectInput { .. }
@@ -529,13 +529,13 @@ impl LocalVoice {
         self.apply(snapshot);
         before != self.snapshot || before_channel != self.channel
     }
-    /// Take the service's `snapshot` as the call's state, fail-closed: the
-    /// microphone shows on only while this person asked for it.
+    /// Take the service's `snapshot` as the call's state: the control shows
+    /// unmuted only while this person asked for it, and whether the
+    /// microphone captures is always the service's word, never the intent.
     fn apply(&mut self, snapshot: &Snapshot) {
         self.snapshot = snapshot.clone();
         if !self.unmute_requested {
             self.snapshot.muted = true;
-            self.snapshot.capture_active = false;
         }
         if matches!(
             snapshot.state,
@@ -549,7 +549,6 @@ impl LocalVoice {
             }
             self.unmute_requested = false;
             self.snapshot.muted = true;
-            self.snapshot.capture_active = false;
         }
     }
     /// The join of the current channel failed for `issue`: the call shows
@@ -1104,6 +1103,19 @@ mod tests {
         snapshot.state = State::Live;
         snapshot.issue = None;
         snapshot
+    }
+    /// The id of the request in `requests` whose command `is`.
+    fn sent(requests: &[CollabRequest], is: impl Fn(&Command) -> bool) -> u64 {
+        requests
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command: Request { command, .. },
+                } if is(command) => Some(*request_id),
+                _ => None,
+            })
+            .expect("the command was sent")
     }
     fn request_id(request: &CollabRequest) -> u64 {
         match request {
@@ -1694,6 +1706,61 @@ mod tests {
         assert!(app.native_voice.channel.is_none());
     }
 
+    /// Muting shows at once on the control, but the call says the
+    /// microphone stopped only once the service did: a status that still
+    /// reports capture keeps saying so, however the person asked.
+    #[test]
+    fn mute_reports_capture_stopped_only_once_the_service_stopped_it() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        voice.complete(
+            sent(&join, |c| matches!(c, Command::Join { .. })),
+            &Ok(live()),
+        );
+        voice.submit(Command::SetMuted { muted: false }).unwrap();
+        let unmute = voice.take_requests(now);
+        let mut capturing = live();
+        capturing.muted = false;
+        capturing.capture_active = true;
+        capturing.input_id = Some("mic".into());
+        voice.complete(
+            sent(&unmute, |c| matches!(c, Command::SetMuted { muted: false })),
+            &Ok(capturing.clone()),
+        );
+        assert!(voice.snapshot.capture_active);
+
+        voice.submit(Command::SetMuted { muted: true }).unwrap();
+        assert!(voice.snapshot.muted, "the control shows muted at once");
+        assert!(
+            voice.snapshot.capture_active,
+            "the microphone is still capturing until the service stops it"
+        );
+        let mute = voice.take_requests(now);
+        // A status the service sent before it stopped capture.
+        voice.complete(
+            sent(&mute, |c| matches!(c, Command::SetMuted { muted: true })),
+            &Ok(capturing),
+        );
+        assert!(voice.snapshot.muted);
+        assert!(voice.snapshot.capture_active);
+        voice.submit(Command::Status).unwrap();
+        let status = voice.take_requests(now);
+        let mut stopped = live();
+        stopped.muted = true;
+        stopped.capture_active = false;
+        voice.complete(
+            sent(&status, |c| matches!(c, Command::Status)),
+            &Ok(stopped),
+        );
+        assert!(!voice.snapshot.capture_active);
+    }
+
     #[test]
     fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
         let now = ui::time::now();
@@ -1802,13 +1869,14 @@ mod tests {
             })
             .unwrap();
         let join = request_id(&voice.take_requests(Instant::now())[0]);
-        // Even a service that answers unmuted is shown muted: no one asked.
+        // A service that answers unmuted is shown muted, as no one asked,
+        // but a microphone it says captures is not hidden.
         let mut answered = live();
         answered.muted = false;
         answered.capture_active = true;
         answered.input_id = Some("mic".into());
         voice.complete(join, &Ok(answered));
-        assert!(voice.snapshot.muted && !voice.snapshot.capture_active);
+        assert!(voice.snapshot.muted && voice.snapshot.capture_active);
         voice.submit(Command::SetMuted { muted: false }).unwrap();
         let unmute = voice
             .take_requests(Instant::now())
