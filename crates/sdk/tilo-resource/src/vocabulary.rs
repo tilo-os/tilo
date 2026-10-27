@@ -148,6 +148,9 @@ pub type Builds = Arc<dyn Fn(&ActionArgs, i64) -> Result<Built, String> + Send +
 pub struct Declaration {
     pub id: &'static str,
     pub label: String,
+    /// The other words people use for the action
+    /// ([`tilo_actions::ActionSpec::keywords`]).
+    pub keywords: Vec<String>,
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
@@ -209,6 +212,7 @@ impl Declaration {
         Self {
             id,
             label,
+            keywords: Vec::new(),
             description: None,
             params,
             kind: ActionKind::Undoable,

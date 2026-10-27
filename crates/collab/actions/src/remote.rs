@@ -2210,6 +2210,7 @@ mod tests {
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),
             action_label: "Archive".into(),
+            keywords: Vec::new(),
             description: Some("Move the note to the archive".into()),
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::Document,

@@ -295,6 +295,7 @@ impl WorkspaceGovernanceServices for Governance {
             resource_kind: "workspace".into(),
             resource_label: "Workspace".into(),
             action_label: "Inspect".into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,

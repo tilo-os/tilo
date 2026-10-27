@@ -95,6 +95,9 @@ pub struct ExportedAction {
     pub resource_kind: String,
     pub resource_label: String,
     pub action_label: String,
+    /// The other words people use for the action, published with its label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
     pub description: Option<String>,
     pub operation_kind: OperationKind,
     /// The canonical typed parameter descriptors.
@@ -130,6 +133,7 @@ impl ExportedAction {
             resource_kind: self.resource_kind.clone(),
             resource_label: self.resource_label.clone(),
             action_label: self.action_label.clone(),
+            keywords: self.keywords.clone(),
             description: self.description.clone(),
             locus,
             kind: self.operation_kind,
@@ -150,6 +154,7 @@ impl From<&ActionDescriptor> for ExportedAction {
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
             action_label: descriptor.action_label.clone(),
+            keywords: descriptor.keywords.clone(),
             description: descriptor.description.clone(),
             operation_kind: descriptor.kind,
             params: descriptor.params.clone(),
@@ -339,6 +344,12 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
             text(&descriptor.resource_kind),
             text(&descriptor.resource_label),
             text(&descriptor.action_label),
+            // A list of texts: its own pointer and tag, then each text.
+            descriptor
+                .keywords
+                .iter()
+                .map(|word| text(word))
+                .fold(STRUCT, usize::saturating_add),
             optional(descriptor.description.as_deref()),
             text(descriptor.operation_kind.as_str()),
             json(&descriptor.params),
@@ -494,6 +505,14 @@ mod codec {
         out.set_resource_kind(&action.resource_kind);
         out.set_resource_label(&action.resource_label);
         out.set_action_label(&action.action_label);
+        if !action.keywords.is_empty() {
+            let count = u32::try_from(action.keywords.len())
+                .map_err(|_| capnp::Error::failed("too many action keywords".into()))?;
+            let mut keywords = out.reborrow().init_keywords(count);
+            for (at, word) in (0..count).zip(&action.keywords) {
+                keywords.set(at, word);
+            }
+        }
         out.set_description(action.description.as_deref().unwrap_or(""));
         out.set_operation_kind(action.operation_kind.as_str());
         out.set_params_json(&encode_json(&action.params, "action parameters")?);
@@ -731,11 +750,17 @@ mod codec {
             .map(decode_view)
             .transpose()?;
         let description = capnp_text(row.get_description()?)?;
+        let keywords = row
+            .get_keywords()?
+            .iter()
+            .map(|word| capnp_text(word?))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(ExportedAction {
             semantic_identity,
             resource_kind: capnp_text(row.get_resource_kind()?)?,
             resource_label: capnp_text(row.get_resource_label()?)?,
             action_label: capnp_text(row.get_action_label()?)?,
+            keywords,
             description: (!description.is_empty()).then_some(description),
             operation_kind,
             params,

@@ -576,6 +576,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                     resource_kind: "notes.page".into(),
                     resource_label: "Travel plans".into(),
                     action_label: "Open note".into(),
+                    keywords: Vec::new(),
                     description: None,
                     locus: tilo_actions::ExecutionLocus::ClientLocal,
                     kind: tilo_actions::OperationKind::View,

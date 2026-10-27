@@ -96,6 +96,7 @@ pub(super) fn actions() -> Vec<PublishedAction> {
         resource_kind: "workspace-checkpoint".into(),
         resource_label: "Native checkpoints".into(),
         action_label: label.into(),
+        keywords: Vec::new(),
         description: None,
         operation_kind: if mutation {
             tilo_actions::OperationKind::Document
