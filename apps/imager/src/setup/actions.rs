@@ -668,7 +668,7 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
 /// Full Tilo commands in the person's language.
 #[must_use]
 pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
-    let effect = |id| ActionRef::<SetupEffect, ()>::new(id, &[]);
+    let effect = |id| ActionRef::<SetupEffect, ()>::new(id, &[], SetupEffect::kind());
     blocked(state)
         .into_iter()
         .map(|blocked| EffectStatus::unavailable(effect(blocked.id), blocked.code, blocked.reason))

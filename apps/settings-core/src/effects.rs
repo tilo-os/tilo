@@ -519,7 +519,7 @@ pub fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
 pub const fn effect<E, A: serde::Serialize>(
     effect: ActionRef<E, A>,
 ) -> ActionRef<SettingsEffect, A> {
-    ActionRef::new(effect.id, effect.params)
+    ActionRef::new(effect.id, effect.params, *effect.kind())
 }
 
 /// The live row of `category`'s pane.
