@@ -63,11 +63,13 @@ pub(crate) fn component_history_read_for_test(
         .bridge
         .as_ref()
         .ok_or("original read bridge unavailable")?;
-    bridge.record(
-        &binding.app_id,
-        &bridge.route.cluster_id.to_string(),
-        &binding.checkout,
-    )
+    bridge
+        .record(
+            &binding.app_id,
+            &bridge.route.cluster_id.to_string(),
+            &binding.checkout,
+        )?
+        .ok_or_else(|| "the app's own channel answers this record".into())
 }
 impl NativeConstruction {
     #[cfg(feature = "native")]
@@ -599,12 +601,17 @@ impl InitialReadBridge {
         }
         Ok(())
     }
+    /// The committed history `checkout` starts from, read before the app
+    /// builds its record. `None` when no committed read answers it: the
+    /// broker said the app's own channel does (a record a sealed room does
+    /// not hold yet, which is new and which the app makes there), and the
+    /// record opens as one without a bridge would.
     pub(crate) fn record(
         &self,
         app: &str,
         room: &str,
         checkout: &crate::record::RecordCheckout,
-    ) -> Result<CommittedDocument, String> {
+    ) -> Result<Option<CommittedDocument>, String> {
         self.check_scope(app, Some(room))?;
         let route = if checkout.id.is_package_primary() {
             self.route.clone()
@@ -629,16 +636,19 @@ impl InitialReadBridge {
                 }
                 observed.applied();
             }
-            return Ok(read);
+            return Ok(Some(read));
         }
         let read = if checkout.id.is_package_primary() {
             if let Some(initial) = primary(app, Some(room)) {
-                initial.map(|(_, read)| read)?
+                Some(initial.map(|(_, read)| read)?)
             } else {
                 self.read(None)?
             }
         } else {
             self.read(Some(checkout))?
+        };
+        let Some(read) = read else {
+            return Ok(None);
         };
         if read.creation_workspace().is_some()
             && let Some(state) = current()
@@ -649,12 +659,14 @@ impl InitialReadBridge {
                 .entry(route.channel_id())
                 .or_insert_with(|| CreationCapture::new(read.clone()));
         }
-        Ok(read)
+        Ok(Some(read))
     }
+    /// The committed read of the primary route, or of `checkout`'s record:
+    /// `None` once the broker answered that the app's own channel serves it.
     fn read(
         &self,
         checkout: Option<&crate::record::RecordCheckout>,
-    ) -> Result<CommittedDocument, String> {
+    ) -> Result<Option<CommittedDocument>, String> {
         self.check()?;
         let route = checkout.map_or_else(
             || self.route.clone(),
@@ -679,7 +691,10 @@ impl InitialReadBridge {
             let seen = self.progress();
             self.check()?;
             if let Some(read) = self.state.document_reads.initial(&key) {
-                return Ok(read);
+                return Ok(Some(read));
+            }
+            if self.state.document_reads.answered_by_own_channel(&key) {
+                return Ok(None);
             }
             if crate::time::now() >= deadline {
                 return Err("native initial history unavailable before construction".into());
@@ -761,10 +776,13 @@ impl InitialReadBridge {
         _app: &str,
         _room: &str,
         _checkout: &crate::record::RecordCheckout,
-    ) -> Result<CommittedDocument, String> {
+    ) -> Result<Option<CommittedDocument>, String> {
         match self.never {}
     }
-    fn read(&self, _record: Option<&crate::record::RecordId>) -> Result<CommittedDocument, String> {
+    fn read(
+        &self,
+        _record: Option<&crate::record::RecordId>,
+    ) -> Result<Option<CommittedDocument>, String> {
         match self.never {}
     }
 }
@@ -1000,6 +1018,7 @@ mod tests {
         bridge
             .record("so.tilo.chat", &room.to_string(), &checkout)
             .unwrap()
+            .unwrap()
             .applied();
         let initialization = take_initialization("so.tilo.chat", &room.to_string(), &checkout)
             .unwrap()
@@ -1009,6 +1028,41 @@ mod tests {
             take_initialization("so.tilo.chat", &room.to_string(), &checkout)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    /// A record a sealed room does not hold yet is new, and the app makes it
+    /// on its own channel: the broker answers its read so ([`Reply::Legacy`]).
+    /// The bridge says no committed read answers it, at once, rather than
+    /// waiting out its deadline for a read that never comes and failing the
+    /// app's open of the record.
+    #[test]
+    fn a_record_the_apps_own_channel_answers_has_no_committed_read() {
+        let room = uuid::Uuid::new_v4();
+        let checkout = crate::record::RecordCheckout::new(
+            crate::record::RecordId::parse("derived:part.0@derived:messages@derived:default")
+                .expect("a record id"),
+            crate::record::RecordKind::new("chat.part"),
+        );
+        let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());
+        let state = BridgeState::new();
+        state.document_reads.legacy_for_test(&route.channel_id());
+        let (sender, _receiver) = tokio::sync::mpsc::channel(4);
+        let bridge = InitialReadBridge {
+            route: RouteSpec::app("so.tilo.chat", room),
+            commands: sender.downgrade(),
+            state,
+        };
+        let started = std::time::Instant::now();
+        assert!(
+            bridge
+                .record("so.tilo.chat", &room.to_string(), &checkout)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "answered without waiting out the read's deadline"
         );
     }
 }

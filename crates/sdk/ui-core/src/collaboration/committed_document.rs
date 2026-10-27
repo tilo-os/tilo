@@ -167,6 +167,10 @@ impl Reads {
         self.pending(key).unwrap()
     }
     #[cfg(test)]
+    pub(crate) fn legacy_for_test(&self, key: &str) {
+        self.legacy(key).unwrap();
+    }
+    #[cfg(test)]
     pub(super) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
         let ready = self.pending(key).unwrap();
         self.stage(key, &ready, read).unwrap();
@@ -227,6 +231,13 @@ impl Reads {
         }
         rows.insert(key.into(), Gate::Joining);
         true
+    }
+    /// Whether the broker answered `key`'s read as served by the app's own
+    /// channel ([`Self::legacy`]): no committed read will be staged for it.
+    pub(super) fn answered_by_own_channel(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Legacy)))
     }
     pub(super) fn initial(&self, key: &str) -> Option<CommittedDocument> {
         // Only a whole document can seed an owner; staged changes apply
