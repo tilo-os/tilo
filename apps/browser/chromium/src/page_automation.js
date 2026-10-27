@@ -1294,7 +1294,7 @@ globalThis.__tiloPage ||= (() => {
   // log. Preparation never focuses a field or exports its contents. A final
   // edit consumes its lease before page handlers run and uses Chromium's undo
   // path; unlike fill(), it must never fall back to setting another value.
-  let textLease = null, committingTextLease = null, composing = false;
+  let textLease = null, committingTextLease = null;
   let nativeTextElement = null, nativeTextEditor = null;
   const nativeSelection = ShadowRoot.prototype.getSelection;
   function nativeTextInputElement() { return nativeTextElement; }
@@ -1323,8 +1323,8 @@ globalThis.__tiloPage ||= (() => {
     if (!owned?.nativeEdit || !event.isTrusted || !composedContains(owned.element, event.target))
       retireTextLease();
   }, true);
-  addEventListener('compositionstart', () => { composing = true; retireTextLease(); }, true);
-  addEventListener('compositionend', () => { composing = false; }, true);
+  // Whether composition is still active is __tiloTextComposition's call.
+  addEventListener('compositionstart', retireTextLease, true);
 
   function activeTextElement() {
     let element = document.activeElement;
@@ -1354,7 +1354,7 @@ globalThis.__tiloPage ||= (() => {
     const composition = globalThis.__tiloTextComposition;
     if (!composition || typeof composition.active !== 'function' || composition.active())
       throw failure('text_input_composition', 'Composition state is active or unavailable');
-    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
+    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element)
       throw failure('text_input_changed', 'The original text field is no longer available');
     const textSecurity = getComputedStyle(element).webkitTextSecurity;
     if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
