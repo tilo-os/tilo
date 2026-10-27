@@ -3748,6 +3748,10 @@ impl FrameHarness {
                 p.record_since(crate::profiling::Pass::Sync, t_sync);
             }
         }
+        // The frame's sync took in what landed from elsewhere; the rest of
+        // the frame builds, lays out and draws that state, as the live
+        // window's does ([`crate::motion::frame_laying_out`]).
+        let _laying_out = crate::motion::laying_out_frame();
 
         let (standalone_history_changed, standalone_history_topology_changed) =
             self.prepare_history_frame();
