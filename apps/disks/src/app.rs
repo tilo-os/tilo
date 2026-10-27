@@ -168,8 +168,9 @@ impl ActionKind {
             ActionKind::Eject => "Power down and safely remove the whole device",
         }
     }
-    /// Destructive actions ask the person to type the device's name first.
-    pub(crate) fn destructive(self) -> bool {
+    /// Whether taking it destroys what the drive holds. Named apart from
+    /// `destructive`, which an action spec that Undo cannot take back answers.
+    pub(crate) fn is_delete(self) -> bool {
         matches!(self, ActionKind::Format)
     }
 }

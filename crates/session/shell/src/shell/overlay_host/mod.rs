@@ -562,6 +562,10 @@ pub struct ShellOverlayHost {
     /// that row starts it with the app's arguments, and the person answers
     /// the rest, its confirmation among them.
     palette_offer: Option<(ui::search::SearchOffer, String)>,
+    /// The app's own action the palette was opened on
+    /// (`SearchRequest::asking`): once search lists it, the palette asks
+    /// for its arguments.
+    palette_asked: Option<tilo_actions::ActionAddress>,
     /// A file row whose other actions the palette is listing (Alt+Enter),
     /// with the query to give back.
     secondary_flow: Option<(crate::shell::search::SearchResult, String)>,

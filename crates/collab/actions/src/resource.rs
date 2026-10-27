@@ -1688,14 +1688,14 @@ impl ActionSpec {
         self
     }
 
+    /// A deletion: its kind is
+    /// [`deletion_kind`](ActionContract::deletion_kind), and the tags the spec
+    /// already carries settle its confirmation — asked with a click unless a
+    /// compensated undo says Undo takes it back.
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
-        // A deletion reaches outside its resource only once Undo takes the
-        // change back.
         self.contract.kind = self.contract.deletion_kind();
-        // Asked with a click when Undo cannot take it back; run at once,
-        // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
         self.contract.settle_confirmation();
         self
     }

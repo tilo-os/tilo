@@ -3255,10 +3255,7 @@ impl Widget for ActionPalette {
     }
     fn is_focused(&self) -> bool {
         self.is_presented()
-            && (self
-                .field
-                .accessibility()
-                .is_some_and(|field| field.state.focused)
+            && (self.field.is_focused()
                 || self
                     .confirm
                     .as_ref()
@@ -3408,7 +3405,11 @@ impl Widget for ActionPalette {
                         .as_ref()
                         .map_or("", |confirm| confirm.detail.as_str()),
                 )
-                .with_state(crate::a11y::AccessState::new().modal(true))
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .modal(true)
+                        .focused(self.is_focused()),
+                )
                 .with_children(children),
         )
     }
