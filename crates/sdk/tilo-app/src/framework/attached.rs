@@ -441,7 +441,10 @@ impl AttachedView {
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
         let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
-        self.frame.relayout();
+        // It answers once what it caused in the app has landed: a reply the
+        // app asked a worker for in turn is applied as part of it, not of
+        // whatever is invoked next. A job it started answers by itself.
+        self.frame.settle_owed();
         Ok(started.completed().unwrap_or_default())
     }
 
@@ -465,7 +468,7 @@ impl AttachedView {
     ) -> Result<ActionOutput, DoorError> {
         let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
         if let Some(output) = started.completed() {
-            self.frame.relayout();
+            self.frame.settle_owed();
             return Ok(output);
         }
         let ended = |frame: &FrameHarness| {
@@ -475,8 +478,13 @@ impl AttachedView {
                 .find(|update| update.is_terminal())
                 .cloned()
         };
-        self.frame
-            .wait_until(within, |frame| ended(frame).is_some());
+        if self
+            .frame
+            .wait_until(within, |frame| ended(frame).is_some())
+        {
+            // What the job's end caused is applied before it answers too.
+            self.frame.settle_owed();
+        }
         match ended(&self.frame) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
