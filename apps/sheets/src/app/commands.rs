@@ -210,6 +210,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.rows_inserted(r0, 1);
         self.status = format!("Inserted row {}", r0.saturating_add(1));
     }
 
@@ -227,6 +228,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.rows_removed(r0, 1);
         self.status = format!("Deleted row {}", r0.saturating_add(1));
     }
 
@@ -245,6 +247,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.columns_inserted(c0, 1);
         self.status = format!(
             "Inserted column {}",
             crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())
@@ -265,6 +268,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.columns_removed(c0, 1);
         self.status = format!(
             "Deleted column {}",
             crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())

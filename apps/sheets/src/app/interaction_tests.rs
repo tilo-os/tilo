@@ -406,6 +406,10 @@ fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
         before + 2,
         "both selected rows are inserted by one verb"
     );
+    assert!(
+        app.grid.is_animating(),
+        "the rows arrive as a band that opens, not by teleporting"
+    );
 }
 
 /// Find is navigation over the whole workbook: revealing a match on another
