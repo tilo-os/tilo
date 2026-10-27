@@ -82,16 +82,12 @@ impl ShellOverlayHost {
         self.fullscreen_hint = None;
     }
 
-    /// When the hint began, while it is up at `now`.
+    /// When the hint began, while it is up at `now`: the entry is kept after
+    /// the words have gone, so a later follow of the same full screen does not
+    /// say them again.
     pub(super) fn fullscreen_hint_shown(&self, now: Instant) -> Option<Instant> {
-        Self::fullscreen_hint_shown_at(self.fullscreen_hint, now)
-    }
-
-    /// When the hint that began at `began` is up at `now`: the entry is kept
-    /// after the words have gone, so a later follow of the same full screen
-    /// does not say them again.
-    fn fullscreen_hint_shown_at(began: Option<Instant>, now: Instant) -> Option<Instant> {
-        began.filter(|entered| now >= *entered && now < hint_gone_at(*entered))
+        self.fullscreen_hint
+            .filter(|entered| now >= *entered && now < hint_gone_at(*entered))
     }
 
     /// When the hint next needs a frame without input.
@@ -204,13 +200,18 @@ impl ShellOverlayHost {
 
     /// What the hint says, as a polite live region: said once after what the
     /// screen reader is already saying, and never focused.
-    pub(super) fn fullscreen_hint_accessibility(now: Instant) -> Option<AccessNode> {
-        Self::fullscreen_hint_shown_at(self.fullscreen_hint, now)?;
-        Some(
-            AccessNode::new(Role::StaticText)
-                .with_hashed_key("shell-fullscreen-way-out")
-                .with_live(Politeness::Polite)
-                .with_value(words()),
-        )
+    pub(super) fn fullscreen_hint_accessibility(&self, now: Instant) -> Option<AccessNode> {
+        self.fullscreen_hint_shown(now)?;
+        Some(hint_node())
     }
+}
+
+/// What the hint says, as a polite live region: said once after what the
+/// screen reader is already saying, and never focused. It reads the hint's
+/// own words, so it needs nothing of the host.
+pub(super) fn hint_node() -> AccessNode {
+    AccessNode::new(Role::StaticText)
+        .with_hashed_key("shell-fullscreen-way-out")
+        .with_live(Politeness::Polite)
+        .with_value(words())
 }
