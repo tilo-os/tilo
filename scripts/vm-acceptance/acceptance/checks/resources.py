@@ -614,6 +614,29 @@ def describe_shell_parts(report: dict, n: int = 6) -> str:
     return ", ".join(heap + rest + peak_text)
 
 
+HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) free_mib=(\d+)")
+
+
+def heap_milestones(log: str, n: int = 8) -> str:
+    """The compositor's `HEAP-MILESTONE` lines (glibc heap in use/free at its start, its
+    renderer's first frame and each trim) as one fragment: `start 31/2, renderer-first-
+    frame 214/190, trim 205/12`, the first and the last `n - 1`. Whether the heap grew at
+    the renderer's first frame, where a CPU rasteriser compiles its shaders, or later."""
+    seen = [f"{m[1]} {m[2]}/{m[3]}" for m in HEAP_MILESTONE.finditer(log)]
+    if len(seen) > n:
+        seen = seen[:1] + ["…"] + seen[-(n - 1):]
+    return ", ".join(seen)
+
+
+def heap_timeline(ctx) -> str:
+    """`heap_milestones` of the session log, or an empty string when it has none."""
+    try:
+        log = ctx.vm.exec(f'grep -a "HEAP-MILESTONE" "{core.SESSION_LOG}"; true', check=False)
+    except Exception:  # noqa: BLE001 - evidence only; the check's verdict stands without it
+        return ""
+    return heap_milestones(log)
+
+
 def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
     """The idle compositor's anonymous RSS against `shell_idle_anon_mb`."""
     budget = budgets["shell_idle_anon_mb"]
@@ -846,6 +869,9 @@ def idle_empty(ctx, res):
         res.metrics["shell_parts_mib"] = shell_parts_mib(report)
         if any(p.startswith("idle compositor anonymous RSS") for p in problems):
             problems.append(f"compositor memory by kind: {describe_shell_parts(report)}")
+            timeline = heap_timeline(ctx)
+            if timeline:
+                problems.append(f"compositor heap in use/free MiB over time: {timeline}")
     expect(not problems, "; ".join(problems))
 
 
@@ -953,7 +979,9 @@ def mem(ctx, res):
             problems.append(over)
         else:
             ctx.write("R03-shell-memory-map.json", json.dumps(report, indent=1))
-            problems.append(f"{over} ({describe_shell_parts(report)})")
+            timeline = heap_timeline(ctx)
+            problems.append(f"{over} ({describe_shell_parts(report)}"
+                            + (f"; heap in use/free MiB over time: {timeline}" if timeline else "") + ")")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
     if big:
         problems.append("over the per-process anonymous RSS budget: " +

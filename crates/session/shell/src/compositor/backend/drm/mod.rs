@@ -1973,6 +1973,7 @@ fn paint_scanouts(
     {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it.
+        crate::shell::heap_trim::log_milestone("renderer-first-frame");
         crate::shell::heap_trim::request();
     }
     if let Some(bridge) = paint.as_mut() {

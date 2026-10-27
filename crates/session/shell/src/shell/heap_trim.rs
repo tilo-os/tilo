@@ -298,6 +298,30 @@ const fn supported() -> bool {
     cfg!(all(target_os = "linux", target_env = "gnu"))
 }
 
+/// One `HEAP-MILESTONE` line for the session log: glibc's heap in use and free
+/// and the process's anonymous RSS, at `what` (the compositor's start, its
+/// renderer's first frame, each trim). The vm-acceptance memory checks quote
+/// these lines, so an over-budget compositor says when its heap grew: at the
+/// renderer's first frame (a software GPU compiling its shaders) or later.
+pub fn log_milestone(what: &str) {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: mallinfo2 only reads allocator statistics; it takes no
+        // arguments and returns a plain struct by value.
+        let info = unsafe { libc::mallinfo2() };
+        let mib = |bytes: usize| bytes >> 20;
+        // A measurement line for the session log, like RENDERER-MEMORY.
+        eprintln!(
+            "HEAP-MILESTONE what={what} in_use_mib={} free_mib={} rss_anon_mib={}",
+            mib(info.uordblks),
+            mib(info.fordblks),
+            rss_anon_kib().map_or_else(|| "-".to_owned(), |kib| (kib >> 10).to_string()),
+        );
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = what;
+}
+
 /// Return every whole free page in every arena to the kernel.
 fn trim() {
     let start = Instant::now();
@@ -308,6 +332,7 @@ fn trim() {
     unsafe {
         libc::malloc_trim(0);
     }
+    log_milestone("trim");
     tracing::debug!(
         elapsed = ?start.elapsed(),
         rss_anon_before_kib = ?before,
