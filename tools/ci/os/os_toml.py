@@ -24,6 +24,9 @@ import os
 import re
 import sys
 import tokenize
+import fnmatch
+import subprocess
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +58,52 @@ CHROMIUM_SOURCES = ["os/image/compile.sh", "scripts/browser/build-host.py", "scr
 # What measures a built image and judges it against os/image-size-budget.toml.
 IMAGE_SIZE_TOOLS = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py",
                     "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
+
+
+# What cargo reads for the compiles: t derives it per package from the manifests and the
+# lockfile (`cargo_packages`), so these globs of the whole workspace leave their inputs.
+CARGO_READS = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "crates/**", "apps/**", "vendor/**"}
+# The workspace's packages, and the files outside its own directory each one reads.
+WORKSPACE_DIRS = ("apps/**", "crates/**", "vendor/**")
+
+
+def app_packages():
+    """The packages of the thin apps build-thin-apps.sh builds: every app with a tilo-app.toml."""
+    names = []
+    for manifest in sorted(Path(REPO, "apps").glob("*/tilo-app.toml")):
+        cargo = manifest.with_name("Cargo.toml")
+        if cargo.is_file():
+            names.append(tomllib.loads(cargo.read_text(encoding="utf-8"))["package"]["name"])
+    return names
+
+
+def compile_packages(dev):
+    """The workspace packages a compile builds: the development components
+    (install-components.py --dev) or everything compile.sh and build-thin-apps.sh name."""
+    if dev:
+        args = subprocess.run([sys.executable, os.path.join(REPO, "os/scripts/install-components.py"),
+                               "--dev", "--dry-run", "--format", "cargo"],
+                              check=True, capture_output=True, text=True, cwd=REPO).stdout
+        return sorted(set(re.findall(r"(?:^|\s)-p ([A-Za-z0-9_-]+)", args)))
+    with open(os.path.join(REPO, "os/image/compile.sh"), encoding="utf-8") as f:
+        text = without_comments("os/image/compile.sh", f.read())
+    return sorted(set(re.findall(r"(?:^|[\s\"])-p ([A-Za-z0-9_-]+)", text)) | set(app_packages()) | {"runtime-dylib"})
+
+
+def cross_package_reads(packages):
+    """Files in other packages' directories that these packages read (tools/ci/suites.toml's
+    readers), which their own package directories don't hold: a compile keyed by its packages
+    reads them as `inputs`, as it did when the whole workspace keyed it."""
+    sys.path.insert(0, os.path.join(REPO, "tools/ci"))
+    import suites  # noqa: E402
+    wanted = set(packages)
+    found = set()
+    for reader in suites.load(Path(REPO)).cargo:
+        if reader.package in wanted:
+            found.update(p + "**" if p.endswith("/") else p
+                         for p in reader.inputs if any(fnmatch.fnmatch(p, g) for g in WORKSPACE_DIRS))
+    return sorted(found)
+
 
 
 # A script names another by its repository path, or one beside it by its bare name: quoted,
@@ -328,6 +377,14 @@ def block():
            signing_tools_check(),
            test_assets_check()]
     builder_sources = pieces.inputs_of_text(pieces.helpers()["builder-sources"])
+    # The compiles are keyed by the packages they build (what cargo reads for them, as t derives
+    # it) and the other files the builder's sources hold, so a change to a crate none of them
+    # builds reruns none of them.
+    plain = sorted(set(builder_sources + ["os/image/compile.sh"]) - CARGO_READS)
+    image_packages = compile_packages(dev=False)
+    dev_packages = compile_packages(dev=True)
+    compile_inputs = sorted(set(plain + cross_package_reads(image_packages)))
+    dev_inputs = sorted(set(plain + cross_package_reads(dev_packages)))
     for arch, node in ARCHES:
         req = arr([node, "disk-100g"])
         out.append(check([
@@ -390,7 +447,9 @@ def block():
                 ("name", f'"os-compile{suffix}-{arch}"'),
                 ("image", BUILDER_IMAGE.format(arch=arch)),
                 ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled{suffix}"'),
-                ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
+                ("inputs", arr(compile_inputs)),
+                ("cargo_packages", arr(image_packages)),
+                ("cargo_dev_dependencies", "false"),
                 ("needs", arr(["test-assets"] + ([f"os-chromium-{arch}"] if release else []))),
                 ("env", f'{{ TILO_RUST_LTO = "{lto}", TILO_RUST_DEBUGINFO = "{debuginfo}", TILO_WITH_BROWSER = "1", '
                         + (f'TILO_CHROMIUM_ENGINE = "/target/os/{arch}/chromium", ' if release
@@ -407,7 +466,9 @@ def block():
             ("name", f'"os-compile-dev-{arch}"'),
             ("image", BUILDER_IMAGE.format(arch=arch)),
             ("run", f'"bash os/image/compile.sh --dev /target/os/{arch}/compiled-dev"'),
-            ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
+            ("inputs", arr(dev_inputs)),
+            ("cargo_packages", arr(dev_packages)),
+            ("cargo_dev_dependencies", "false"),
             ("needs", arr(["test-assets"])),
             # The dev components of the development image: no LTO, as Build / OS dev built them.
             ("env", '{ TILO_DEV_RUST_LTO = "off", '
