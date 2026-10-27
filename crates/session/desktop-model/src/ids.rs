@@ -188,15 +188,11 @@ pub const fn device_salt_of_key(key: &[u8]) -> u16 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = OFFSET;
-    let mut at = 0;
-    while at < key.len() {
-        h = (h ^ key[at] as u64).wrapping_mul(PRIME);
-        at += 1;
+    let mut rest = key;
+    while let [byte, tail @ ..] = rest {
+        h = (h ^ *byte as u64).wrapping_mul(PRIME);
+        rest = tail;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "each term is masked to 16 bits first"
-    )]
     let folded = ((h & 0xFFFF) as u16)
         ^ (((h >> 16) & 0xFFFF) as u16)
         ^ (((h >> 32) & 0xFFFF) as u16)
