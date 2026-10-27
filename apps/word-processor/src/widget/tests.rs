@@ -6176,6 +6176,36 @@ fn template_slot(template: crate::Template) -> String {
     format!("file-template:{index}")
 }
 
+/// The window's zoom gestures reach the page: a hosted window offers
+/// Ctrl+Plus, Ctrl+Minus and Ctrl+0 to a widget whose content zooms by
+/// itself before it grows its own chrome, so the editor provides
+/// `ContentZoom` and steps the page — the same steps its zoom field takes.
+#[test]
+fn the_window_zoom_gestures_scale_the_page() {
+    use ui::content_zoom::{self as shared, ZoomStep};
+    let (state, wp) = bound();
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, _state) = Framed::split(&mut framed);
+
+    assert!(
+        shared::provided(wp),
+        "the editor's page is content that zooms by itself"
+    );
+    assert_eq!(wp.zoom.factor(), 1.0, "a page starts at its own size");
+    assert_eq!(
+        shared::offer(wp, ZoomStep::In),
+        Some(1.1),
+        "Ctrl+Plus zooms the page in, one 10% step"
+    );
+    assert_eq!(shared::offer(wp, ZoomStep::In), Some(1.2));
+    assert_eq!(shared::offer(wp, ZoomStep::Out), Some(1.1));
+    assert_eq!(
+        shared::offer(wp, ZoomStep::Reset),
+        Some(1.0),
+        "Ctrl+0 is the page at the size its type is set in"
+    );
+}
+
 /// The bar says a document holds work its file does not, and stops saying so
 /// when the file takes it. The mark is the document's, so a frame drawn in
 /// between (which clears the repaint flag) changes nothing about it.
