@@ -271,12 +271,12 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         starter: run.starter.clone(),
         active: run.phase.active(),
         paused_through: run.paused.as_ref().map(|paused| paused.through),
-        budget: issue
-            .budget
-            .map(|budget| collab_types::task_budget::TaskExecutionBudget {
+        budget: issue.budget.as_ref().map(|budget| {
+            collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
-            }),
+            }
+        }),
         subject: issue
             .subject
             .as_ref()
