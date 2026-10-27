@@ -5,6 +5,24 @@
 //! historical renderer access to a live record, persistence, or dispatch.
 
 mod assets;
+
+/// Moves on whenever something reaches a History surface from outside a
+/// refresh of it: an asset or file reply another thread delivers, a request
+/// to open or close it, a command one of its controls queued, a width that
+/// changes its layout. A frame whose walk for History surfaces found none
+/// needing a refresh walks again only after news (or a change of the tree).
+static NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`NEWS`] as it stands.
+pub(crate) fn news() -> u64 {
+    NEWS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Something reached a History surface ([`NEWS`]).
+pub(crate) fn note_news() {
+    NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 pub mod capability;
 pub mod checked_files;
 pub mod coverage;
@@ -585,7 +603,7 @@ fn is_effect_receipt(entry: &HistoryEntry) -> bool {
 mod tests;
 
 #[cfg(test)]
-mod host_tests;
+pub(crate) mod host_tests;
 
 #[cfg(test)]
 pub(crate) mod focus_tests;

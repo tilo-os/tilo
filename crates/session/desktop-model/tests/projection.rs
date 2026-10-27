@@ -1,24 +1,23 @@
-//! A room document carries exactly the windows their minting peer owns,
-//! reads back as the same topology, and folds into another peer's tree
-//! without disturbing what that peer owns.
+//! A room document carries the workspace's layout as its record, and what a
+//! change to it did to windows its writer did not make is what a room
+//! decides; its other maps merge by key.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_desktop_model::projection::{
-    EmptyStrips, Reader, changed_owned_entries, contents_of, declared_room, merge_room_contents,
-    project_owned_contents, project_room_records, project_workspace_shortcuts, room_records_of,
-    workspace_shortcuts_of,
-};
+use tilo_desktop_model::ownership::{Act, layout_acts};
+use tilo_desktop_model::projection::{project_workspace_shortcuts, workspace_shortcuts_of};
+use tilo_desktop_model::shared_record::device::{Writer, write};
 use tilo_desktop_model::{
-    AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, compose_id,
+    AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, compose_id,
 };
 
 const ALICE: u16 = 0x0A11;
@@ -28,10 +27,9 @@ fn tab(id: u64, title: &str) -> Tab {
     Tab {
         id,
         title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: format!("org.example.{title}"),
+        tile: TileContent::Stub {
+            kind: AppKind::Other(title.into()),
             label: title.into(),
-            note: String::new(),
         },
         app_title: None,
     }
@@ -42,184 +40,101 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
         id,
         active_tab: tabs.first().map_or(0, |t| t.id),
         tabs,
-        width: WindowWidth::Wide,
-        maximized: true,
+        width: WindowWidth::Normal,
+        maximized: false,
         focus_history: Vec::new(),
     }
 }
 
-fn strip_of(salt: u16, base: u64) -> Strip {
-    let id = |n: u64| compose_id(salt, base + n);
-    let mut strip = Strip::new(StripId(id(0)), "Main");
-    strip.window_groups = vec![group(
-        id(1),
-        vec![tab(id(2), "Editor"), tab(id(3), "Terminal")],
-    )];
-    strip
+/// Write `workspace` as the person `person` at a device minting in `salt`.
+fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16) {
+    let mine = move |id: u64| tilo_desktop_model::peer_salt_of(id) == salt;
+    write(
+        doc,
+        workspace.room(),
+        workspace,
+        &Writer {
+            person: Some(person),
+            mine: &mine,
+            retained: &|_| false,
+        },
+    )
+    .unwrap();
+    doc.commit();
 }
 
-fn room() -> RoomId {
-    RoomId::parse("00000000-0000-4000-8000-00000000abcd").unwrap()
+fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)> {
+    layout_acts(Some(before), after, writer, None)
+        .into_iter()
+        .map(|touched| (touched.id, touched.act))
+        .collect()
 }
 
-#[test]
-fn projection_round_trips_owned_contents_once_shared() {
-    // Phase `owned_contents_read_back_as_the_same_topology`.
-    {
-        let mut doc = AutoCommit::new();
-        let strip = strip_of(ALICE, 10);
-        project_owned_contents(
-            &mut doc,
-            std::slice::from_ref(&strip),
-            ALICE,
-            None,
-            EmptyStrips::Skip,
-        )
-        .unwrap();
-
-        let read = contents_of(&doc);
-        assert_eq!(read.len(), 1);
-        assert_eq!(read[0].id, strip.id.raw());
-        assert_eq!(read[0].name.as_deref(), Some("Main"));
-        assert_eq!(read[0].groups.len(), 1);
-        let titles: Vec<&str> = read[0].groups[0]
-            .tabs
-            .iter()
-            .map(|t| t.title.as_str())
-            .collect();
-        assert_eq!(titles, ["Editor", "Terminal"]);
-    }
-    // Phase `nothing_is_projected_without_an_id_space_or_before_the_share_floor`.
-    {
-        let mut unsalted = AutoCommit::new();
-        project_owned_contents(
-            &mut unsalted,
-            &[strip_of(0, 10)],
-            0,
-            None,
-            EmptyStrips::Skip,
-        )
-        .unwrap();
-        assert!(contents_of(&unsalted).is_empty());
-
-        let mut joined = AutoCommit::new();
-        project_owned_contents(
-            &mut joined,
-            &[strip_of(ALICE, 10)],
-            ALICE,
-            Some(1_000),
-            EmptyStrips::Skip,
-        )
-        .unwrap();
-        assert!(
-            contents_of(&joined).is_empty(),
-            "windows minted before joining stay private"
-        );
-    }
-    // Phase `a_document_names_the_room_it_describes`.
-    {
-        use automerge::{ROOT, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        assert_eq!(declared_room(&doc), None);
-        doc.put(&ROOT, "room", room().to_string()).unwrap();
-        assert_eq!(declared_room(&doc), Some(room()));
-    }
-    // Phase `record_references_round_trip`.
-    {
-        let mut doc = AutoCommit::new();
-        let held = [("rec-1".to_string(), "note".to_string())]
-            .into_iter()
-            .collect();
-        project_room_records(&mut doc, &held).unwrap();
-        assert_eq!(
-            room_records_of(&doc),
-            vec![("rec-1".to_string(), "note".to_string())]
-        );
-        let _ = AppKind::Terminal;
-    }
+/// Alice's strip holds her notes and Bob's terminal, side by side.
+fn room() -> (AutoCommit, Workspace) {
+    let room = RoomId::new();
+    let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Team");
+    let mut strip = Strip::new(StripId(compose_id(ALICE, 1)), "Main");
+    strip.window_groups.push(group(
+        compose_id(ALICE, 2),
+        vec![tab(compose_id(ALICE, 3), "Notes")],
+    ));
+    workspace.strips.push(strip);
+    let mut doc = AutoCommit::new();
+    write_as(&mut doc, &workspace, "alice", ALICE);
+    workspace.strips[0].window_groups.push(group(
+        compose_id(BOB, 2),
+        vec![tab(compose_id(BOB, 3), "Terminal")],
+    ));
+    write_as(&mut doc, &workspace, "bob", BOB);
+    (doc, workspace)
 }
 
 #[test]
-fn projection_detects_rewrites_and_merges_peer_windows() {
-    // Phase `rewriting_an_owned_entry_is_detected_but_carrying_a_new_one_is_not`.
-    {
-        let mut ours = AutoCommit::new();
-        let strip = strip_of(ALICE, 10);
-        project_owned_contents(
-            &mut ours,
-            std::slice::from_ref(&strip),
-            ALICE,
-            None,
-            EmptyStrips::Skip,
-        )
-        .unwrap();
+fn a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leave() {
+    let (doc, workspace) = room();
+    let notes = compose_id(ALICE, 3);
+    let terminal = compose_id(BOB, 3);
 
-        let mut renamed = strip.clone();
-        renamed.window_groups[0].tabs[0].title = "Hijacked".into();
-        let mut candidate = ours.fork();
-        project_owned_contents(&mut candidate, &[renamed], ALICE, None, EmptyStrips::Skip).unwrap();
-        assert_eq!(changed_owned_entries(Some(&ours), &candidate, ALICE), 1);
+    // Alice, from another of her devices, closes her notes: hers to close.
+    let mut closed = workspace.clone();
+    closed.strips[0].window_groups.remove(0);
+    let mut after = doc.clone();
+    write_as(&mut after, &closed, "alice", 0x0A12);
+    assert!(acts(&doc, &after, "alice").is_empty());
+    // Bob doing the same closes someone else's window.
+    assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Close)]);
 
-        let mut grown = ours.fork();
-        project_owned_contents(
-            &mut grown,
-            &[strip, strip_of(ALICE, 50)],
-            ALICE,
-            None,
-            EmptyStrips::Skip,
-        )
-        .unwrap();
-        assert_eq!(changed_owned_entries(Some(&ours), &grown, ALICE), 0);
-    }
-    // Phase `a_peers_windows_merge_in_while_ours_keep_their_view_state`.
-    {
-        let mut bob_doc = AutoCommit::new();
-        project_owned_contents(
-            &mut bob_doc,
-            &[strip_of(BOB, 10)],
-            BOB,
-            None,
-            EmptyStrips::Skip,
-        )
-        .unwrap();
+    // Bob renaming Alice's window is a rename of someone else's.
+    let mut renamed = workspace.clone();
+    renamed.strips[0].window_groups[0].tabs[0].title = "Mine now".into();
+    let mut after = doc.clone();
+    write_as(&mut after, &renamed, "bob", BOB);
+    assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Rename)]);
 
-        let mut alice = DesktopTree::default();
-        let mut ws = Workspace::in_room(WorkspaceId(compose_id(ALICE, 1)), room(), "Shared");
-        ws.strips.push(strip_of(ALICE, 100));
-        alice.workspaces.push(ws);
+    // Bob moving his own terminal into Alice's group touches nothing of hers.
+    let mut moved = workspace;
+    let terminal_tab = moved.strips[0].window_groups.remove(1).tabs.remove(0);
+    moved.strips[0].window_groups[0].tabs.push(terminal_tab);
+    let mut after = doc.clone();
+    write_as(&mut after, &moved, "bob", BOB);
+    assert!(acts(&doc, &after, "bob").is_empty());
+    assert_eq!(acts(&doc, &after, "alice"), vec![(terminal, Act::Move)]);
+}
 
-        assert!(merge_room_contents(
-            &mut alice,
-            room(),
-            contents_of(&bob_doc),
-            Reader::Owner(ALICE)
-        ));
-        let strips = &alice.workspaces[0].strips;
-        assert_eq!(strips.len(), 2);
-        let ours = strips
-            .iter()
-            .find(|s| s.id.raw() == compose_id(ALICE, 100))
-            .unwrap();
-        assert!(ours.window_groups[0].maximized, "our view state is ours");
-        let theirs = strips
-            .iter()
-            .find(|s| s.id.raw() == compose_id(BOB, 10))
-            .unwrap();
-        assert!(
-            !theirs.window_groups[0].maximized,
-            "a peer's group opens with this device's defaults"
-        );
-
-        assert!(
-            !merge_room_contents(
-                &mut alice,
-                room(),
-                contents_of(&bob_doc),
-                Reader::Owner(ALICE)
-            ),
-            "merging the same document again changes nothing"
-        );
-    }
+#[test]
+fn a_window_added_in_someone_elses_name_is_an_attribution() {
+    let (doc, workspace) = room();
+    let mut added = workspace;
+    let forged = compose_id(BOB, 9);
+    added.strips[0]
+        .window_groups
+        .push(group(compose_id(BOB, 8), vec![tab(forged, "Forged")]));
+    // Written by Bob's device, but naming Alice as its maker.
+    let mut after = doc.clone();
+    write_as(&mut after, &added, "alice", BOB);
+    assert_eq!(acts(&doc, &after, "bob"), vec![(forged, Act::Attribute)]);
+    assert!(acts(&doc, &after, "alice").is_empty());
 }
 
 fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {

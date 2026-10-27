@@ -100,17 +100,17 @@ pub enum BrowserEffect {
     /// Go back
     ///
     /// Answers with the address once the previous page loaded.
-    #[effect(row, job, returns, idempotent)]
+    #[effect(row, job, cancellable, returns, idempotent)]
     Back,
     /// Go forward
     ///
     /// Answers with the address once the next page loaded.
-    #[effect(row, job, returns, idempotent)]
+    #[effect(row, job, cancellable, returns, idempotent)]
     Forward,
     /// Reload
     ///
     /// Answers with the address once the page loaded again.
-    #[effect(row, job, returns, idempotent)]
+    #[effect(row, job, cancellable, returns, idempotent)]
     Reload,
     /// Stop loading
     #[effect(view, row)]
@@ -118,7 +118,7 @@ pub enum BrowserEffect {
     /// Open address
     ///
     /// Answers with the address once the page loaded.
-    #[effect(row, job, returns, idempotent)]
+    #[effect(row, job, cancellable, returns, idempotent)]
     Navigate {
         #[param("Absolute URL or search terms")]
         url: String,
@@ -145,7 +145,7 @@ pub enum BrowserEffect {
     /// Open page
     ///
     /// Opens a page of the history or a bookmark in this window.
-    #[effect(row, job, returns, idempotent)]
+    #[effect(row, job, cancellable, returns, idempotent)]
     Open {
         #[param("The page's address")]
         url: String,
@@ -379,7 +379,15 @@ pub enum BrowserEffect {
     ///
     /// Answers with the page's outline: its elements and their refs. A frame
     /// carries the id that addresses its own document.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     ReadPage {
         #[param(
             "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
@@ -393,7 +401,16 @@ pub enum BrowserEffect {
     /// letter, a chart, letters drawn rather than written — reaches it and
     /// nothing else does. The engine paints it, so the page cannot see or
     /// answer it.
-    #[effect(row, job, returns, content, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        content,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     CapturePage {
         #[param(
             "Element ref from the page outline, such as d1e5: the picture is that element's box"
@@ -410,7 +427,15 @@ pub enum BrowserEffect {
     ///
     /// Answers with the outline lines added and removed since the last read,
     /// or the whole outline when the document is new.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     ReadPageChanges {
         #[param(
             "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
@@ -421,7 +446,15 @@ pub enum BrowserEffect {
     ///
     /// Answers with what a click at the point would hit, through overlays
     /// and banners, and the interactive element holding it.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     ReadPageElementAt {
         #[param("Viewport x in CSS pixels from the page's left edge")]
         x: f64,
@@ -436,7 +469,15 @@ pub enum BrowserEffect {
     ///
     /// Answers once the document has loaded and stopped changing for a
     /// quiet period, or the longest wait passed.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     WaitPageSettled {
         #[param("How long the page must stay unchanged, milliseconds (default 500)")]
         quiet_ms: Option<u32>,
@@ -451,7 +492,15 @@ pub enum BrowserEffect {
     ///
     /// Console messages and uncaught errors, collected from the first time
     /// an agent touched the tab.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     ReadPageConsole {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -462,7 +511,15 @@ pub enum BrowserEffect {
     ///
     /// Method, address, type, status, size and failure of the page's
     /// requests, never headers, bodies or cookies.
-    #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
     ReadPageNetwork {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -470,7 +527,7 @@ pub enum BrowserEffect {
         since: Option<u64>,
     },
     /// Click page element
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -484,7 +541,7 @@ pub enum BrowserEffect {
     /// Applies the page's hover styles there, such as a menu that opens
     /// when the pointer rests on its trigger, and answers with what the
     /// pointer is over now and what changed in the outline.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     HoverPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: Option<String>,
@@ -497,7 +554,7 @@ pub enum BrowserEffect {
     ///
     /// Presses the pointer, moves it and releases it, as a person dragging
     /// does, so reordering lists and dropped targets receive the drag.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     DragPage {
         #[param("Element ref to pick up, such as d1e5")]
         from: Option<String>,
@@ -518,7 +575,7 @@ pub enum BrowserEffect {
     ///
     /// Presses the pointer at the first point, moves it through the rest and
     /// releases it at the last, as drawing a signature on a canvas does.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     PointerPath {
         #[param("Element ref to draw on, such as d1e5")]
         element: Option<String>,
@@ -530,7 +587,7 @@ pub enum BrowserEffect {
     /// Fill page field
     ///
     /// A password or card field is refused: those take the secret fill.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     FillPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -545,7 +602,7 @@ pub enum BrowserEffect {
     ///
     /// Fills a password or card field; the text is a secret kept out of
     /// logs and history.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     FillPageSecret {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -560,7 +617,7 @@ pub enum BrowserEffect {
         frame: Option<String>,
     },
     /// Choose page options
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     SelectPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -579,7 +636,7 @@ pub enum BrowserEffect {
     /// a relative path, a folder or an unreadable file is refused. It also
     /// answers a file chooser a click opened, so a page that asks for a file
     /// can be finished without a native picker.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     FillPageFiles {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -591,7 +648,7 @@ pub enum BrowserEffect {
         frame: Option<String>,
     },
     /// Press key on page
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     PressPage {
         #[param("Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a")]
         key: String,
@@ -607,7 +664,7 @@ pub enum BrowserEffect {
     /// A form that sends its data to another site than the page's own is
     /// refused, through submit, click or Enter, unless `cross_origin` allows
     /// it.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     SubmitPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -663,7 +720,7 @@ pub enum BrowserEffect {
     /// drawing is a stroke per press and release (`kind=down element=d1e4
     /// x=20 y=20`, moves across, `kind=up`). The answer reports what
     /// changed on the page.
-    #[effect(row, job, returns, untrusted)]
+    #[effect(row, job, cancellable, returns, untrusted)]
     PointerPage {
         #[param(
             "Steps in order, one per item, such as kind=move element=d1e4 x=10 y=10: a step naming an element is placed inside its box, every other step is a viewport position in CSS pixels"
@@ -685,7 +742,7 @@ pub enum BrowserEffect {
     /// centre is used when no element is named. It works whatever holds the
     /// keyboard, so it scrolls after a click a focused control would eat
     /// `End` or `PageDown` for.
-    #[effect(row, job, returns, audience = "agents", untrusted)]
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     ScrollPage {
         #[param(
             "Element ref whose box the wheel turns over, such as d1e5; the viewport's centre by default"
@@ -983,6 +1040,8 @@ impl BrowserEffect {
                 frame,
             } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
+                // A key the browser cannot press is refused with what a key
+                // name is, rather than sent as a character nothing types.
                 key: PageKey::parse(&key).unwrap_or_else(|| PageKey {
                     key,
                     modifiers: KeyModifiers::default(),

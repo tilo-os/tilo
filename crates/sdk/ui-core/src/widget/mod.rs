@@ -226,7 +226,9 @@ pub fn solve_layout(
     root: NodeId,
     available: taffy::Size<taffy::AvailableSpace>,
 ) -> Result<(), taffy::TaffyError> {
-    taffy.compute_layout(root, available)
+    // The tree's own method measures every leaf as empty, through a solver
+    // compiled for its own closure; the toolkit's one solver does the same.
+    layout::solve_layout(taffy, root, available, &mut |_, _, _| taffy::Size::ZERO)
 }
 
 /// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
@@ -3446,6 +3448,7 @@ pub use tree_view::{
 pub mod virtual_list;
 pub use virtual_list::{DuplicateListKey, ListModel, RowSelection, VecListModel, VirtualList};
 mod activation;
+mod dismissal;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{

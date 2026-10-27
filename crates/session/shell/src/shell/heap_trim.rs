@@ -221,6 +221,16 @@ pub fn trims_completed() -> u64 {
     TRIMS.load(Ordering::Acquire)
 }
 
+/// Whether a trim a close asked for is still to run, or a trim is running:
+/// what a reader of the compositor's footprint after closing windows waits
+/// out. Never starts the trim thread.
+pub fn close_trim_pending() -> bool {
+    TRIMMER.get().copied().flatten().is_some_and(|trimmer| {
+        let schedule = trimmer.schedule.lock_recover();
+        schedule.pending.is_some() || schedule.trimming
+    })
+}
+
 /// Wait until every request so far has been served and no trim is running;
 /// `false` if that takes longer than `timeout`.
 #[cfg(test)]

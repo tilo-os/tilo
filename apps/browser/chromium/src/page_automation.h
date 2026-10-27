@@ -1,5 +1,6 @@
 #pragma once
 #include "page_automation_script.h"
+#include "key_mapping.h"
 #include "include/cef_browser.h"
 #include "include/cef_drag_data.h"
 #include "include/cef_devtools_message_observer.h"
@@ -80,11 +81,35 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // cancelled rather than answered for a page nobody is looking at.
   void NavigationStarted() {
     ++navigations_;CancelFileDialog();
-    if(pending_ && pending_->awaiting_start) { pending_->awaiting_start=false;pending_->awaiting_load=true; }
+    if(!pending_) return;
+    // The document the action ran in is being replaced: a wait for the page's
+    // fence, or for a frame's settle, can no longer be answered from it.
+    // Waiting for the navigation to load is what answers this action now.
+    pending_->awaiting_start=false;
+    pending_->waits_on_document=false;
+    if(!pending_->awaiting_load) pending_->awaiting_load=true;
   }
   void NavigationFinished() {
     if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
   }
+  // The page's renderer is gone (it crashed, or was replaced): no answer can
+  // come from a document that no longer exists. The action in flight is
+  // answered as an outcome nobody knows, so it never stays accepted.
+  void RendererGone() {
+    if(!pending_) return;
+    Finish(Failure("page_gone","The page's renderer went away while this action ran, so whether "
+      "it took effect is unknown; read the page again before acting on it"));
+  }
+  // The tab asked this action to stop. The page cannot be told mid-request, so
+  // the answer is the one thing that is true: it was not observed to finish,
+  // and whether it took effect is unknown.
+  void Cancel() {
+    if(!pending_) return;
+    Finish(Failure("cancelled","The action was cancelled before the page answered it, so whether "
+      "it took effect is unknown; read the page again to see what it did"));
+  }
+  // Whether an action is running: the tab refuses another one while it is.
+  bool Busy() const { return static_cast<bool>(pending_); }
   // A request the engine refused before it reached the page is answered in
   // the order the caller asked, behind anything still running. The tab is
   // told the request is settled here, so the same request reaching it after
@@ -246,6 +271,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // not, and may still navigate later on its own. "frame": what it did, it
     // did inside a frame, which is not a way for the page to leave.
     std::string navigation="none";bool awaiting_start=false,awaiting_load=false;
+    // Whether this action's answer is read from the document it acted in. A
+    // navigation that begins then takes that document away unanswered.
+    bool waits_on_document=false;
     // Where a gesture's two ends are, in the view's space, once it began.
     int from_x=0,from_y=0,to_x=0,to_y=0;int steps=0,step=0;
     // What the page resolved when a drag began, so a drop nothing took can be
@@ -773,6 +801,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     read->SetInt("doc",document_);
     pending_->command=read;
     pending_->navigation="none";
+    // The document whose changing the caller waits to hear about is the one
+    // the read runs in: a navigation that began while the action waited means
+    // a new document is here, so what the action changed is unknown.
+    pending_->waits_on_document=true;
     world_request_.clear();place_frame_=PageFrame{};
     if(!main_world_ && !world_) {
       world_request_=main_id_;
@@ -1604,6 +1636,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!world_frame_.number.empty()) { MeasureFrameOffset(true);return; }
       ClickTarget(false);
     } else if(action=="press") {
+      // A key the engine cannot press is named back, rather than sent as a key
+      // nothing types: a press the page ignored and a press of a key that does
+      // not exist would otherwise read the same to the caller.
+      if(const auto written=pending_->command->GetString("key").ToString();
+         !tilo::NamedKeyMapping(written) && written.size()!=1)
+        { Fail("invalid_key",NotAKey(written));return; }
       auto key=CefDictionaryValue::Create();key->SetString("key",pending_->command->GetString("key"));
       for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,pending_->command->GetBool(flag));
       key_(key);
@@ -1721,7 +1759,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     else if(browser_->IsLoading()) pending_->awaiting_load=true;
     else { Succeed(pending_->message,std::nullopt);return; }
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message,std::nullopt);
+      if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message+
+      "; the page did not finish loading that navigation in time",std::nullopt);
     },CefRefPtr<PageAutomation>(this),pending_->token),kLoadWaitMs);
   }
   // A click inside a frame is a pointer event in the top document, so its point
@@ -1758,6 +1797,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
     const auto message=Text(value,"message");
     Succeed(message.empty()?pending_->message:message,std::nullopt);
+  }
+  // What a key the engine cannot press is answered with: the key it was
+  // given, the keys it could have meant, and the case the caller need not match.
+  static std::string NotAKey(const std::string& written) {
+    std::string names;
+    for(const auto& named:tilo::kNamedKeys) names+=(names.empty()?"":", ")+std::string(named.name);
+    return "\""+written+"\" is not a key the browser has. Name one of "+names+
+      " (in any letter case), or a single character such as an a";
   }
   std::string Chord() const {
     static constexpr std::pair<const char*,const char*> kModifiers[]={{"ctrl","Control+"},{"shift","Shift+"},{"alt","Alt+"},{"meta","Meta+"}};

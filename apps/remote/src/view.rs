@@ -80,10 +80,9 @@ pub(crate) fn rail(
     let requests = Rc::clone(requests);
     NavList::new(vec![NavSection::untitled("destinations", items)])
         .rail()
-        .with_id("remote.rail")
         .with_accessible_name("Remote")
         .selected(selected.id())
-        .on_select(move |id| {
+        .on_view("remote.rail", move |id| {
             if let Some(destination) = Destination::from_id(&id) {
                 requests.borrow_mut().push(Action::Show(destination));
             }

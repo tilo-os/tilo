@@ -317,11 +317,12 @@ fn window(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
             .map(|place| NavItem::new(place.key(), tr(place.label())).icon(place.icon()))
             .collect(),
     )])
-    .with_id("activity.places")
     .with_accessible_name(tr("activity-places"))
     .with_semantic_key("activity.places")
     .bind_selection(&nav.place)
-    .on_select(move |_| chosen.pane.set(ui::widget::NavPane::Content));
+    .on_view("activity.places", move |_| {
+        chosen.pane.set(ui::widget::NavPane::Content);
+    });
 
     let place = nav.place();
     let shell = ui::widget::NavShell::new()

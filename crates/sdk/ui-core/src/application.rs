@@ -4,7 +4,7 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use crate::permissions::{PermissionContext, PermissionScope, UserId};
+use crate::permissions::{PermissionContext, PermissionScope, SharedPermissions, UserId};
 use crate::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
 };
@@ -69,7 +69,7 @@ pub struct HostContextInputs {
     pub views: Rc<InstanceViewStore>,
     pub device_id: String,
     pub instance_id: InstanceId,
-    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub permissions: SharedPermissions,
     /// The trusted local person, retained independently of later action attribution.
     pub author: UserId,
     pub action_context: tilo_actions::ActionContext,
@@ -86,7 +86,7 @@ pub struct HostContext {
     record: RecordCheckout,
     reservation: Option<RecordReservation>,
     initialization: Option<crate::collaboration::native_initial::RecordInitialization>,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     author: UserId,
     host_person: UserId,
     action_context: tilo_actions::ActionContext,
@@ -348,7 +348,7 @@ pub struct Reopener {
     views: Rc<InstanceViewStore>,
     device_id: String,
     instance_id: InstanceId,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     author: UserId,
     action_context: tilo_actions::ActionContext,
     writes_as_author: bool,
@@ -394,7 +394,7 @@ impl Reopener {
                 views: Rc::clone(&self.views),
                 device_id: self.device_id.clone(),
                 instance_id: self.instance_id,
-                permissions: Rc::clone(&self.permissions),
+                permissions: self.permissions.clone(),
                 author: self.author.clone(),
                 action_context: self.action_context.clone(),
             },
@@ -457,7 +457,7 @@ impl HostContext {
             views: Rc::clone(&self.views),
             device_id: self.device_id.clone(),
             instance_id: self.instance_id,
-            permissions: Rc::clone(&self.permissions),
+            permissions: self.permissions.clone(),
             author: self.author.clone(),
             action_context: self.action_context.clone(),
             writes_as_author: self.writes_as_author,
@@ -803,7 +803,7 @@ impl HostContext {
     /// offers whoever holds it. Nothing it shows can be changed through it.
     pub fn restrict_to_reading(&mut self) {
         let reading = self.permissions.borrow().read_only();
-        self.permissions = Rc::new(RefCell::new(reading));
+        self.permissions = crate::permissions::SharedPermissions::new(reading);
     }
     pub fn live_permissions(&self) -> crate::permissions::LivePermissions {
         crate::permissions::LivePermissions::shared(self.permissions.clone())
@@ -2414,7 +2414,9 @@ mod bound_lifetime_tests {
                     views: views.clone(),
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
@@ -2460,7 +2462,9 @@ mod bound_lifetime_tests {
                     views: views.clone(),
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
@@ -2520,7 +2524,9 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                        permissions: crate::permissions::SharedPermissions::new(
+                            PermissionContext::permissive(),
+                        ),
                         author: UserId("probe-author".into()),
                         action_context: tilo_actions::ActionContext::default(),
                     },
@@ -2607,7 +2613,9 @@ mod bound_lifetime_tests {
                     views,
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },

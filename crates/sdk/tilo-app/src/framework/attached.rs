@@ -32,7 +32,7 @@ use ui_core::application::{
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
-use ui_core::permissions::{PermissionContext, UserId};
+use ui_core::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
 use ui_core::record::{RecordCheckout, RecordOwners, RecordStore};
 use ui_core::state::DocumentFrontier;
@@ -76,7 +76,7 @@ pub struct AttachedView {
     frame: Box<FrameHarness>,
     /// The record store the view reads and writes.
     records: RecordStore,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     /// Who acts through the view: the invoker its operations are admitted for.
     me: String,
     /// The invoker as admitted: its kind and the person it acts for.
@@ -259,7 +259,7 @@ impl AttachedView {
             .map_err(|error| error.to_string())?;
         let views =
             Rc::new(InstanceViewStore::portable(cache, room).map_err(|error| error.to_string())?);
-        let permissions = Rc::new(RefCell::new(permissions));
+        let permissions = SharedPermissions::new(permissions);
         let target = LaunchTarget::Record {
             checkout: checkout.clone(),
             reveal: None,
@@ -348,7 +348,7 @@ impl AttachedView {
 
     /// The participant's permissions changed: a role granted or taken away.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        *self.permissions.borrow_mut() = permissions;
+        self.permissions.set(permissions);
         self.frame.relayout();
     }
 

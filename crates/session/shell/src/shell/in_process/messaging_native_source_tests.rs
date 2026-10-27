@@ -7,6 +7,15 @@ use tilo_resource::{Effect, Fields, Resource, SharedRecord};
 #[path = "messaging_record_tests.rs"]
 mod current_records;
 
+/// Whether an accessible `label` says `text`: the whole label, or one part
+/// of a conversation line. Messages draws its thread with the toolkit's
+/// conversation list, which speaks each line as who said it, when, whether
+/// it arrived and what it says (`ui::widget::ConversationList`), so a
+/// message body is one comma-separated part of its list item's name.
+fn speaks(label: Option<&str>, text: &str) -> bool {
+    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
+}
+
 const ACI: &str = "01234567-89ab-cdef-0123-456789abcdef";
 const OWN_ACI: &str = "11111111-1111-4111-8111-111111111111";
 const PERSON: &str = "00000000-0000-4000-8000-000000000001";
@@ -91,7 +100,7 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
             harness
                 .a11y_nodes()
                 .iter()
-                .any(|(_, node)| node.label() == Some("native private reply"))
+                .any(|(_, node)| speaks(node.label(), "native private reply"))
         }),
         "the completed native reply must reach the private accessibility tree"
     );
@@ -872,7 +881,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
                 harness
                     .a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("native private arrival"))
+                    .any(|(_, node)| speaks(node.label(), "native private arrival"))
             }),
         "actual idle receiver must display private text in the launched app"
     );
@@ -887,7 +896,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
             .harness
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.label() == Some("native private reply"))
+            .any(|(_, node)| speaks(node.label(), "native private reply"))
     );
     assert!(
         !mounted
@@ -1100,7 +1109,7 @@ fn activate_linked_conversation(
             .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .a11y_nodes()
                 .iter()
-                .any(|(_, node)| node.label() == Some("native private arrival")))
+                .any(|(_, node)| speaks(node.label(), "native private arrival")))
     );
     assert!(effect(&mut mounted.harness, &reply, false).is_err());
     effect(&mut mounted.harness, &reply, true).unwrap();
@@ -1110,7 +1119,7 @@ fn activate_linked_conversation(
             .harness
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.label() == Some("native private reply"))
+            .any(|(_, node)| speaks(node.label(), "native private reply"))
     );
     assert!(
         !mounted

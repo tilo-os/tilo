@@ -1,6 +1,5 @@
 //! The app worker's side: prepare, confine, then serve one record.
 
-use std::cell::RefCell;
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
@@ -15,7 +14,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::collaboration::record_content::{ContentLane, RecordContent};
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::{SharedPermissions, UserId};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
@@ -503,7 +502,7 @@ struct ReadSource<'a> {
 /// its registered reads.
 struct ReadSession {
     frame: FrameHarness,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 }
 
 const INSTANCE: u64 = 1;
@@ -546,7 +545,7 @@ impl ReadSession {
         let views = Rc::new(
             InstanceViewStore::portable(cache, source.room).map_err(|error| error.to_string())?,
         );
-        let permissions = Rc::new(RefCell::new(policy.permissions()));
+        let permissions = SharedPermissions::new(policy.permissions());
         let target = LaunchTarget::Record {
             checkout,
             reveal: None,
@@ -581,7 +580,7 @@ impl ReadSession {
     }
 
     fn set_policy(&self, policy: &ViewReadPolicy) {
-        *self.permissions.borrow_mut() = policy.permissions();
+        self.permissions.set(policy.permissions());
     }
 
     fn operations(&self) -> Vec<ActionDescriptor> {

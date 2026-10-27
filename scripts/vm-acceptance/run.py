@@ -390,7 +390,7 @@ def switch_locale(vm: TiloVm, lang: str) -> None:
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
-    time.sleep(5)
+    vm.wait_catalogue()
 
 
 def main() -> int:
@@ -559,7 +559,7 @@ def main() -> int:
                 swapped["components"] = management["components"] + swapped["components"]
                 swapped["slot_layers"].update(management["slot_layers"])
             facts["provenance"]["swap"] = swapped
-        time.sleep(5)
+        vm.wait_catalogue()
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
         # A VM this run created without --gl renders in software: no GPU for R05 to judge.
         facts["software_rendering"] = created and not args.gl

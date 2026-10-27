@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
@@ -28,11 +27,19 @@ NOT_CHROME = re.compile(r"GroupRow|foreign-surface|^tab:|tabbar_new_tab|TileHost
 CONTAINER = re.compile(r"(Host|Container|Layer|Root)(\[\d+\])?$")
 
 
+SETTINGS = "so.tilo.settings"
+
+
 def set_theme(ctx, name: str) -> None:
-    """Select the theme through shell actions, which persist it and repaint chrome."""
+    """Select the theme through shell actions, which persist it and repaint chrome on the
+    next paint. An open Settings window repaints in it once the change reaches it: wait for
+    that frame, bounded, as a theme that is already set repaints nothing."""
+    seq = ctx.frame_seq(SETTINGS)
     for provider, action in THEMES[name]:
         ctx.vm.invoke(provider, action)
-    time.sleep(2.5)
+    if seq is not None:
+        ctx.wait_presented(SETTINGS, 2.5, after_seq=seq)
+    ctx.wait_still()
 
 
 def layout_problems(targets: list[dict], displays: dict) -> dict:
@@ -91,8 +98,7 @@ def _surface_pass(ctx, res, label):
             except CheckFailed as exc:
                 findings[name] = {"error": str(exc)}
                 continue
-            time.sleep(0.8)
-        st = ctx.state()
+        st = ctx.wait_still()
         shot = ctx.shot(f"{label}-{name}")
         lp = layout_problems(ctx.vm.targets(), core.display_rects(st))
         img = core.load_image(shot)
@@ -121,10 +127,11 @@ def theme_contrast_problems(lum: dict) -> list[str]:
 def _matrix(ctx, res, locale):
     ctx.reset()
     try:
-        ctx.open_app("so.tilo.settings")
+        ctx.open_app(SETTINGS)
+        if ctx.wait_presented(SETTINGS, 30) is None:
+            res.detail = "Settings showed no frame within 30 s; chrome checked without it"
     except CheckFailed as exc:
         res.detail = f"Settings did not open ({exc}); chrome checked without it"
-    time.sleep(2)
     per_theme, problems = {}, []
     for theme in THEMES:
         set_theme(ctx, theme)

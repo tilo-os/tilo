@@ -375,7 +375,7 @@ fn component_mount_as(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
@@ -386,9 +386,9 @@ fn component_mount_as(
         .open(definition.app_id, room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        author, role,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member(author, role),
+    );
     let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
         LaunchTarget::Record {
@@ -584,7 +584,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 
 #[test]
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::{
         application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
@@ -618,10 +618,9 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         .open(definition.app_id, room)
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        "author",
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
+    );
     let mut components = Vec::new();
     for instance in [1, 2] {
         let target = LaunchTarget::Record {

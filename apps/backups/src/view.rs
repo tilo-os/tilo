@@ -377,9 +377,8 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
-    .with_id("backups-places")
     .with_accessible_name("Backups")
-    .on_select(move |id| {
+    .on_view("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
         }

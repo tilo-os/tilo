@@ -1,12 +1,11 @@
 //! A member's own business in a room this relay governs, as actions
-//! (provider [`MEMBER_ACTIONS_PROVIDER`]): claiming their topology namespace,
-//! recording their own effect receipt, having the host create the empty
+//! (provider [`MEMBER_ACTIONS_PROVIDER`]): recording their own effect receipt, having the host create the empty
 //! record of an app they open there first, sharing one record or item with
 //! the room and ending that share, and asking what they may do at a node.
 //!
 //! None is governance: each runs a room method that decides it for the
-//! person the room certified the calling device to (a claim needs their
-//! current Write, a receipt is only their own, a record only for an app the
+//! person the room certified the calling device to (a receipt is only their
+//! own, a record only for an app the
 //! room lets author and a record they may change). A share grants the room
 //! only what the sharer holds, on one record or one item of it, and only
 //! its sharer ends it (`crate::rooms::shares`). Every person the room
@@ -16,9 +15,8 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE,
-    UNSHARE_RESOURCE, member_resource,
+    MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
+    RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -31,14 +29,7 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 6] = [
-    Verb {
-        id: CLAIM_TOPOLOGY_NAMESPACE,
-        label: "Claim topology namespace",
-        gate: CLAIM_TOPOLOGY_NAMESPACE,
-        kind: ActionKind::Outside,
-        params: claim_params,
-    },
+const MEMBER_VERBS: [Verb; 5] = [
     Verb {
         id: RECORD_EFFECT_RECEIPT,
         label: "Record effect receipt",
@@ -117,14 +108,6 @@ fn node_of(args: &Args) -> Result<tilo_action_policy::TreePath, ActionHostError>
         .map_err(|_| invalid("`node` is not a node of the room's tree"))
 }
 
-fn claim_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "salt",
-        ParamType::Integer,
-        "The namespace, 1 to 65535; one another device owns is never rebound.",
-    )]
-}
-
 fn receipt_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -190,14 +173,6 @@ impl Rooms {
         };
         let args = Args::of(&request.argument)?;
         let done = match address.action.as_str() {
-            CLAIM_TOPOLOGY_NAMESPACE => {
-                let salt = args
-                    .integer("salt")?
-                    .and_then(|salt| u16::try_from(salt).ok())
-                    .filter(|salt| *salt != 0)
-                    .ok_or_else(|| invalid("`salt` must be a whole number from 1 to 65535"))?;
-                self.claim_topology_namespace(&room, &device, salt).await
-            }
             RECORD_EFFECT_RECEIPT => {
                 let invocation = uuid::Uuid::parse_str(args.required_text("invocation")?)
                     .map_err(|_| invalid("`invocation` must be a UUID"))?;

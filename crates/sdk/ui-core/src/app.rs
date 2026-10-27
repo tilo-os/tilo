@@ -3991,8 +3991,9 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn revoke(&self) {
             if let Self::Component { binding, .. } = self {
-                *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::stranger("fixture");
+                binding
+                    .permissions
+                    .set(crate::permissions::PermissionContext::stranger("fixture"));
             }
         }
     }

@@ -4362,6 +4362,19 @@ impl ControlState for FrameBuilderControlState<'_> {
                         .is_some_and(|value| value == "1"),
                 }),
             );
+            fields.insert(
+                "seat_keyboard".into(),
+                serde_json::json!(self.seat.map(State::seat_keyboard_json)),
+            );
+            // A trim asked for by a window close, still to run or running
+            // (`heap_trim`), and how many trims have run.
+            fields.insert(
+                "heap_trim".into(),
+                serde_json::json!({
+                    "pending": crate::shell::heap_trim::close_trim_pending(),
+                    "trims": crate::shell::heap_trim::trims_completed(),
+                }),
+            );
         }
         dump
     }
@@ -13483,9 +13496,8 @@ pub fn run() {
                     (*surface, crate::shell::network::room_topic_id(*room))
                 }));
             }
-            // This session's legacy windows, as its own tabs in the rooms
-            // other devices govern, so their members have a tab to show.
-            // Only those rooms' tabs are copied, and only their own legacy ones.
+            // This device's layout of the rooms its native owner holds,
+            // written as its own changes and sent to their governors.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
                 hosted_legacy_checked = Instant::now();
                 let rooms = tree_handle
@@ -13496,7 +13508,7 @@ pub fn run() {
                     .map(crate::shell::state::Workspace::room)
                     .collect::<Vec<_>>();
                 for room in rooms {
-                    net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.publish_governed_layout(room, &tree_handle);
                     net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();
@@ -20107,6 +20119,13 @@ mod tests {
                 "on_screen_keyboard_surface": null,
             })
         );
+        let sources = chrome["seat_keyboard"]["sources"]
+            .as_array()
+            .expect("the seat keyboard's XKB sources");
+        assert!(!sources.is_empty(), "the seat keymap has a source");
+        assert_eq!(chrome["seat_keyboard"]["active"], 0);
+        assert!(chrome["heap_trim"]["pending"].is_boolean());
+        assert!(chrome["heap_trim"]["trims"].is_u64());
     }
 
     /// The state dump says who asks for animation frames, and asking must

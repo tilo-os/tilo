@@ -15,7 +15,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
@@ -501,7 +501,7 @@ struct Desktop {
     mentions: RefCell<mention_notices::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     /// The workspace the session serves.
     room: String,
 }
@@ -1002,7 +1002,7 @@ enum Root {
 fn desktop_inputs(
     config: &Config,
     dyn_store: &Rc<dyn durable_store::DurableStore>,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 ) -> Result<crate::desktop::Inputs, JsValue> {
     let views = Rc::new(
         InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.room)
@@ -1035,9 +1035,9 @@ fn present_desktop(
     id: u64,
     config: &Config,
     dyn_store: Rc<dyn durable_store::DurableStore>,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 ) -> Result<Presentation, JsValue> {
-    let opening_permissions = Rc::clone(&permissions);
+    let opening_permissions = permissions.clone();
     let dyn_history_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
@@ -1131,7 +1131,7 @@ fn present_component(
     definition: &'static ui::application::ApplicationDefinition,
     config: &Config,
     dyn_store: Rc<dyn durable_store::DurableStore>,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
 ) -> Result<Presentation, JsValue> {
     if definition.app_id == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
@@ -1293,10 +1293,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     } else {
         collab_types::role::Role::Owner
     };
-    let permissions = Rc::new(RefCell::new(PermissionContext::member(
-        config.author(),
-        assumed,
-    )));
+    let permissions = SharedPermissions::new(PermissionContext::member(config.author(), assumed));
     let Presentation {
         root,
         stores,
@@ -1305,10 +1302,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_owners,
         mut desktop,
     } = match definition {
-        Some(definition) => {
-            present_component(definition, &config, dyn_store, Rc::clone(&permissions))?
-        }
-        None => present_desktop(id, &config, dyn_store, Rc::clone(&permissions))?,
+        Some(definition) => present_component(definition, &config, dyn_store, permissions.clone())?,
+        None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
     let window = Arc::new(
         event_loop

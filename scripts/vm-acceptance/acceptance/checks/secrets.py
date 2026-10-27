@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import time
 
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import wait_until
@@ -339,7 +338,9 @@ def go_through_first_use(ctx, user: str) -> list[str]:
         if step in ACKNOWLEDGE:
             acknowledged.add(step)
         done.append(step)
-        time.sleep(1.5)
+        # The next listing once the step took effect; an acknowledgement may list the same
+        # rows, so bounded.
+        wait_until(lambda: onboarding_rows(ctx, user) != listed[0], 1.5, 0.3)
     raise CheckFailed(f"first use did not end within {FIRST_USE_STEPS} steps: {done}")
 
 

@@ -27,6 +27,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 mod causal;
+mod job;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -322,73 +323,7 @@ type Then<R, H> = Box<dyn FnOnce(&mut H, Box<dyn Any + Send>, &mut EffectCx<R, H
 /// time the job is, `Some` once it arrived.
 type Source = Box<dyn FnMut() -> Option<Box<dyn Any + Send>>>;
 
-/// What a job reports and how it is stopped: the same for every resource,
-/// so one copy of it serves them all.
-struct JobCore {
-    events: Receiver<JobEvent>,
-    cancelled: Arc<AtomicBool>,
-    task: Option<ui_core::rt::JoinHandle<()>>,
-    source: Option<Source>,
-    sequence: u64,
-    custody: Option<ResourceInvocationScope>,
-}
-
-impl JobCore {
-    fn stop(self) {
-        self.cancelled.store(true, Ordering::Release);
-        if let Some(task) = self.task {
-            task.abort();
-        }
-    }
-
-    /// The next thing the job reports, if it reported anything.
-    fn next(&mut self) -> Option<Next> {
-        if let Some(error) = self
-            .custody
-            .as_ref()
-            .and_then(|custody| custody.check().err())
-        {
-            return Some(Next::Failed(failure(error)));
-        }
-        let answered = self.source.as_mut().and_then(|source| source());
-        let event = match answered.map_or_else(
-            || self.events.try_recv(),
-            |value| Ok(JobEvent::Finished(value)),
-        ) {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                return Some(Next::Failed(failure(
-                    "the effect ended without an answer".into(),
-                )));
-            }
-        };
-        if let Some(error) = self
-            .custody
-            .as_ref()
-            .and_then(|custody| custody.check().err())
-        {
-            return Some(Next::Failed(failure(error)));
-        }
-        Some(match event {
-            JobEvent::Failed(error) => Next::Failed(error),
-            JobEvent::Progress {
-                phase,
-                completed,
-                total,
-            } => {
-                self.sequence = self.sequence.saturating_add(1);
-                Next::Progress(Polled::Progress {
-                    sequence: self.sequence,
-                    phase,
-                    completed,
-                    total,
-                })
-            }
-            JobEvent::Finished(value) => Next::Finished(value),
-        })
-    }
-}
+use job::{JobCore, Tracking, track_for};
 
 /// What [`JobCore::next`] found.
 enum Next {
@@ -472,24 +407,25 @@ fn track_job(
     custody: JobCustody,
     then: Option<Box<dyn Any>>,
     owner: std::any::TypeId,
+    cancel_by: Option<Arc<AtomicBool>>,
 ) -> Progress {
     let (events, receiver) = channel();
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let signals = job::Signals::own();
     let progress = Progress {
         events,
-        cancelled: Arc::clone(&cancelled),
+        cancelled: Arc::clone(&signals.cancelled),
         wake: wake.clone(),
         custody: custody.worker,
     };
     if let Some(previous) = started.replace(Job {
-        core: JobCore {
-            events: receiver,
-            cancelled,
-            task: None,
-            source: None,
-            sequence: 0,
-            custody: custody.custody,
-        },
+        core: JobCore::of(
+            receiver,
+            job::Signals {
+                cancel_by,
+                ..signals
+            },
+            custody.custody,
+        ),
         then,
         owner,
     }) {
@@ -633,6 +569,10 @@ struct Answering {
     target: Option<ui_core::host_operation::OperationTarget>,
     /// Where the invoker asked the effect to act (`#[param(place)]`).
     place: Option<tilo_resource::Place>,
+    /// The caller's cancellation signal, which a job this effect leaves to
+    /// answer later is stopped by when the caller gives up waiting
+    /// ([`EffectCx::cancel_by`]).
+    cancel_by: Option<Arc<AtomicBool>>,
 }
 
 impl Answering {
@@ -649,6 +589,7 @@ impl Answering {
             delivered: None,
             target: None,
             place: None,
+            cancel_by: None,
         }
     }
 }
@@ -1017,6 +958,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 worker: self.inv.worker_custody.as_ref(),
                 custody: self.inv.custody.as_ref(),
                 scope: self.env.scope.as_ref(),
+                cancel_by: self.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
             },
             then,
@@ -1084,6 +1026,19 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             started.core.task = Some(task);
         }
         Effected::Pending
+    }
+
+    /// Have the job this effect leaves to answer later stopped when `signal`
+    /// goes off, as well as when the caller cancels it.
+    ///
+    /// An effect whose answer is read from a long-lived surface ([`Self::reply`])
+    /// can lose its caller before the caller's own cancellation reaches it: the
+    /// answer is kept by the surface rather than by a job of this invocation.
+    /// A handler of such an effect passes the caller's cancellation signal
+    /// ([`Progress::cancellation_signal`]) here, and the job that carries the
+    /// answer stops with it: an operation nobody waits for must not run on.
+    pub fn cancel_by(&mut self, signal: Arc<AtomicBool>) {
+        self.inv.cancel_by = Some(signal);
     }
 
     /// Answer later, from wherever the work settles. Return
@@ -1754,6 +1709,19 @@ impl<K: JobKey> Running<K> {
         self.running.keys().cloned().collect()
     }
 
+    /// Stop the job `key` before it is polled when its caller cancelled it,
+    /// or when a signal it answers to went off; `true` when it stopped.
+    fn prepare(&mut self, key: &K, cancel: bool) -> bool {
+        let stopped = self
+            .running
+            .get(key)
+            .is_some_and(|job| cancel || job.core.fired());
+        if stopped {
+            self.cancel(key);
+        }
+        stopped
+    }
+
     /// Stop the job answering `key`; its result, if it comes, is dropped.
     fn cancel(&mut self, key: &K) -> bool {
         self.running.remove(key).map(Job::stop).is_some()
@@ -1930,6 +1898,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 worker: cx.inv.worker_custody.as_ref(),
                 custody: cx.inv.custody.as_ref(),
                 scope: cx.env.scope.as_ref(),
+                cancel_by: cx.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
             },
             place.as_ref(),
@@ -2119,6 +2088,7 @@ fn invocation_parts(
             delivered,
             target: op.target().cloned(),
             place,
+            cancel_by: None,
         },
         lent,
     })
@@ -2141,34 +2111,6 @@ fn custody_parts(
     Ok(InvocationParts { inv, lent })
 }
 
-/// How a job an effect's handler started is tracked: the context's job
-/// slot and what a job's progress needs of it.
-struct Tracking<'a> {
-    started: &'a mut Option<Job>,
-    wake: &'a WakeHandle,
-    worker: Option<&'a ResourceEffectScope>,
-    custody: Option<&'a ResourceInvocationScope>,
-    scope: Option<&'a std::rc::Weak<super::surface::SurfaceScope>>,
-    /// The `Then<R, H>` type of the runner's completions.
-    owner: std::any::TypeId,
-}
-
-/// Start tracking a job in the context `tracking` describes, with the
-/// completion `then`, tied to the context's surface: the [`Progress`] its
-/// work reports through.
-#[inline(never)]
-fn track_for(tracking: &mut Tracking<'_>, then: Option<Box<dyn Any>>) -> Progress {
-    let progress = track_job(
-        &mut *tracking.started,
-        tracking.wake,
-        JobCustody::of(tracking.worker, tracking.custody),
-        then,
-        tracking.owner,
-    );
-    track_in(tracking.scope, &progress);
-    progress
-}
-
 /// Start in `jobs` what an effect's handler answered ([`settle_start`]),
 /// and move the participant to `place` through `land` once it succeeded.
 ///
@@ -2189,6 +2131,7 @@ fn finish_start(
         worker,
         custody,
         scope,
+        cancel_by,
         owner,
     } = tracking;
     let settled = settle_start(
@@ -2202,6 +2145,7 @@ fn finish_start(
                     worker,
                     custody,
                     scope,
+                    cancel_by,
                     owner,
                 },
                 None,
@@ -2228,10 +2172,9 @@ fn poll_invocation(
     cancel: bool,
     complete: &mut Complete<'_>,
 ) -> Option<InvocationUpdate> {
-    if !jobs.contains(&invocation) {
-        return None;
-    }
-    if cancel && jobs.cancel(&invocation) {
+    // A caller that stopped waiting, and a job left to answer past its
+    // caller's wait once that caller gave up, both end here.
+    if jobs.prepare(&invocation, cancel) {
         return Some(InvocationUpdate::Cancelled {
             invocation,
             message: None,
