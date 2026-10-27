@@ -19,11 +19,11 @@ use tilo_actions::remote::{
 };
 
 use crate::{
-    AGENT_APP_ID, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, AiTransform,
-    AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
-    RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
-    SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, StepRecord, StepStatus, StopWatch, TimeOfDay,
+    AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION,
+    AGENT_TRANSFORM_KIND, ActionCatalog, AskRequest, Binding, CatchUp, CheckErrorKind, Condition,
+    ConfirmationRequest, NoShortcuts, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
+    RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector,
+    Shortcut, Step, StepFailure, StepKind, StepPath, StepRecord, StepStatus, StopWatch, TimeOfDay,
     TriggerSpec, Weekday, check, run, shortcut_resource_id,
 };
 
@@ -74,6 +74,42 @@ fn returning(result: ResultSpec) -> ActionContract {
         result,
         ..ActionContract::default()
     }
+}
+
+/// One of the agent's transform actions. Its result spec is what the agent
+/// publishes: text, or with `schema` a value satisfying it.
+fn agent_transform_row(action: &str, params: Vec<ActionParam>) -> CatalogueRow {
+    let schema = if action == AGENT_SUMMARISE_ACTION {
+        json!({"type": "string"})
+    } else {
+        json!({"description": "Text, or with `schema` a value satisfying it."})
+    };
+    row(
+        AGENT_APP_ID,
+        "agent.transform:default",
+        AGENT_TRANSFORM_KIND,
+        action,
+        params,
+        returning(ResultSpec::Json { schema }),
+    )
+}
+
+fn task_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("instruction", ParamType::Text, "What to do"),
+        ActionParam::optional("allow", ParamType::Array, "What it may use"),
+        ActionParam::optional("schema", ParamType::Object, "The summary's shape")
+            .with_schema(json!({"type": "object"})),
+    ]
+}
+
+fn freeform_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("prompt", ParamType::Text, "What to do"),
+        ActionParam::optional("input", ParamType::Text, "What to read"),
+        ActionParam::optional("schema", ParamType::Object, "The answer's shape")
+            .with_schema(json!({"type": "object"})),
+    ]
 }
 
 fn list_schema() -> Value {
@@ -156,20 +192,10 @@ impl FakeHost {
                 )],
                 ActionContract::default(),
             ),
-            row(
-                AGENT_APP_ID,
-                "agent.transform:default",
-                AGENT_TRANSFORM_KIND,
-                AGENT_SUMMARISE_ACTION,
-                vec![ActionParam::required(
-                    "input",
-                    ParamType::Text,
-                    "Text to condense",
-                )],
-                returning(ResultSpec::Json {
-                    schema: json!({"type": "string"}),
-                }),
-            ),
+            agent_transform_row(AGENT_TASK_ACTION, task_params()),
+            agent_transform_row(AGENT_FREEFORM_ACTION, freeform_params()),
+            // Agent transforms answer either text or an object: a step that
+            // declared a shape checks the answer against the shape itself.
             row(
                 SHORTCUTS_APP_ID,
                 &shortcut_resource_id("a"),
@@ -202,6 +228,21 @@ impl FakeHost {
     }
 
     fn output(request: &InvokeRequest) -> ActionOutput {
+        // The shape a step declared for its answer, when it declared one. The
+        // agent validates the answer against it as it stands.
+        let schema = || {
+            let InvokeArgument::Json(args) = &request.argument else {
+                return None;
+            };
+            let value = args.get("schema")?;
+            match value {
+                Value::String(text) => serde_json::from_str(text).ok(),
+                Value::Object(object) if object.contains_key("literal") => {
+                    object.get("literal").cloned().filter(Value::is_object)
+                }
+                other => other.is_object().then(|| other.clone()),
+            }
+        };
         let text = |name: &str| match &request.argument {
             InvokeArgument::Json(args) => args.get(name).and_then(Value::as_str).map(str::to_owned),
             InvokeArgument::None | InvokeArgument::Text(_) => None,
@@ -215,8 +256,18 @@ impl FakeHost {
                 value: None,
                 resources: vec![NOTE.into()],
             },
-            AGENT_SUMMARISE_ACTION => ActionOutput {
-                value: Some(json!(format!("summary of {}", text("input").unwrap()))),
+            // Text without a schema; an object when the step declared one.
+            AGENT_FREEFORM_ACTION => ActionOutput {
+                value: Some(match (text("input"), schema()) {
+                    (Some(input), None) => json!(format!("summary of {input}")),
+                    (Some(input), Some(_)) => json!({"summary": input, "moved": 3}),
+                    _ => json!({"done": true}),
+                }),
+                resources: Vec::new(),
+            },
+            // A task answers with its summary in the shape the step declared.
+            AGENT_TASK_ACTION => ActionOutput {
+                value: Some(json!({"tidy": true, "moved": 3})),
                 resources: Vec::new(),
             },
             _ => ActionOutput::default(),
@@ -1240,8 +1291,9 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
         vec![Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Literal(json!("long text")),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Literal(json!("long text"))),
             },
         )],
     );
@@ -1261,7 +1313,140 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
     let started = host.started();
     assert_eq!(
         started[0].target.address,
-        ActionAddress::new("agent.transform:default", AGENT_SUMMARISE_ACTION)
+        ActionAddress::new("agent.transform:default", AGENT_FREEFORM_ACTION)
+    );
+}
+
+#[test]
+fn an_ai_step_declares_its_output_type() {
+    let host = FakeHost::new();
+    let schema = json!({
+        "type": "object",
+        "properties": {"moved": {"type": "integer"}},
+        "required": ["moved"]
+    });
+    let mut digest = shortcut(
+        "digest",
+        vec![Step::new(
+            "sum",
+            StepKind::Ai {
+                prompt: "Count the moves".into(),
+                output: Some(schema),
+                input: Some(Binding::Literal(json!("three notes moved"))),
+            },
+        )],
+    );
+    digest.grant.push(app_rule(AGENT_APP_ID));
+    digest.output = Some(Binding::step("sum", "/moved"));
+    assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
+
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &digest,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!(3)));
+}
+
+#[test]
+fn a_task_step_waits_for_the_tasks_typed_summary() {
+    let host = FakeHost::new();
+    let mut tidy = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: Some(json!({
+                    "type": "object",
+                    "properties": {"tidy": {"type": "boolean"}},
+                    "required": ["tidy"]
+                })),
+            },
+        )],
+    );
+    tidy.grant.push(app_rule(AGENT_APP_ID));
+    tidy.output = Some(Binding::step("task", "/tidy"));
+    assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
+
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &tidy,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!(true)));
+    let started = host.started();
+    assert_eq!(
+        started[0].target.address,
+        ActionAddress::new("agent.transform:default", AGENT_TASK_ACTION)
+    );
+
+    // An answer the declared shape does not admit is a broken contract.
+    let host = FakeHost::new();
+    let mut loose = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: Some(json!({
+                    "type": "object",
+                    "required": ["missing"]
+                })),
+            },
+        )],
+    );
+    loose.grant.push(app_rule(AGENT_APP_ID));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &loose,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            report.outcome,
+            RunOutcome::Failed {
+                failure: StepFailure::Contract { .. },
+                ..
+            }
+        ),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_task_narrower_than_the_run_is_refused_by_the_grant() {
+    // The step's `allow` names what the task may use. Its own invocation is
+    // granted by the shortcut like any other agent step, and a shortcut
+    // whose grant leaves the agent out refuses the step before it runs.
+    let host = FakeHost::new();
+    let task = shortcut(
+        "tidy",
+        vec![Step::new(
+            "task",
+            StepKind::Task {
+                instruction: "Tidy the inbox".into(),
+                allow: Vec::new(),
+                output: None,
+            },
+        )],
+    );
+    let errors = check(&task, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, CheckErrorKind::OutsideGrant { .. })),
+        "{errors:?}"
     );
 }
 
@@ -1273,8 +1458,9 @@ fn an_ai_step_never_reads_a_secret() {
         vec![Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Input("token".into()),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Input("token".into())),
             },
         )],
     );
@@ -1322,8 +1508,9 @@ fn secret_variables_cannot_be_rendered_or_sent_to_ai() {
         Step::new(
             "sum",
             StepKind::Ai {
-                transform: AiTransform::Summarise,
-                input: Binding::Var("copy".into()),
+                prompt: "Condense".into(),
+                output: None,
+                input: Some(Binding::Var("copy".into())),
             },
         ),
         invoke(
