@@ -244,3 +244,30 @@ test('a new workspace is made on a machine the person set up, and opened', async
   // Opened as held by the machine's host, which the browser remembers it under.
   assert.deepEqual(opened, [{origin, room: ROOM, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
 });
+
+test('in someone else’s room a person with a machine can still make a workspace on it', async () => {
+  const origin = 'https://node.example:8443';
+  const calls = [];
+  const lobby = {
+    host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
+    workspaces: {
+      create: async name => { calls.push(['create', name]); return {room: ROOM, name}; },
+      enter: async room => { calls.push(['enter', room]); return {room}; },
+    },
+    dispose: async () => { calls.push(['dispose']); },
+  };
+  // The Lounge: a room on a host that is not Ada's.
+  const lounge = {origin: 'https://lounge.example', room: 'lounge', userPublicKey: ADA,
+    host: {hostCert: {user_public_key: bytes('bb'.repeat(32))}}};
+  const opened = [];
+  const {mount, shown} = desktop();
+  const actions = createWorkspaceActions({peer: lounge, machines: () => [origin],
+    lobby: async at => { calls.push(['lobby', at]); return lobby; },
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: save => save('Acme'), fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.ok(ids(shown.at(-1)).includes(NEW_WORKSPACE.id));
+  await actions.perform(NEW_WORKSPACE.id);
+  assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', ROOM], ['dispose']]);
+  assert.equal(opened[0].origin, origin);
+});
