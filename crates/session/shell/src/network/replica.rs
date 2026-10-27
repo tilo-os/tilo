@@ -1554,6 +1554,29 @@ mod tests {
         member_rep: WorkspaceTreeReplica,
     }
 
+    /// Member B (replica 2) joins `room`, hosted by `host_rep`, and the
+    /// round trip gives it the window while it is shared.
+    fn member_given_the_room(
+        host_rep: &mut WorkspaceTreeReplica,
+        room: RoomId,
+    ) -> (WorkspaceTreeHandle, WorkspaceTreeReplica) {
+        let mut member_tree = WorkspaceTree::default();
+        member_tree
+            .join_room("Placeholder", room)
+            .expect("B joins the room");
+        assert!(member_tree.pin_room_authority(room, PeerOrigin::hub(1)));
+        let member = member_tree.shared();
+        let mut member_rep = WorkspaceTreeReplica::new(2, member.clone());
+        member_rep.request_sync();
+        deliver(&member_rep, host_rep, 2);
+        let to_member = deliver(host_rep, &mut member_rep, 1);
+        assert!(
+            received_carries(&to_member, WITHDRAWN_TITLE),
+            "B is given the window while it is shared"
+        );
+        (member, member_rep)
+    }
+
     fn shared_then_withdrawn(withdrawal: Withdrawal) -> Withdrawn {
         use crate::shell::state::{
             AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
@@ -1596,20 +1619,7 @@ mod tests {
         let host = host_tree.shared();
         let mut host_rep = WorkspaceTreeReplica::new(1, host.clone());
 
-        let mut member_tree = WorkspaceTree::default();
-        member_tree
-            .join_room("Placeholder", room)
-            .expect("B joins the room");
-        assert!(member_tree.pin_room_authority(room, PeerOrigin::hub(1)));
-        let member = member_tree.shared();
-        let mut member_rep = WorkspaceTreeReplica::new(2, member.clone());
-        member_rep.request_sync();
-        deliver(&member_rep, &mut host_rep, 2);
-        let to_member = deliver(&host_rep, &mut member_rep, 1);
-        assert!(
-            received_carries(&to_member, WITHDRAWN_TITLE),
-            "{withdrawal:?}: B is given the window while it is shared"
-        );
+        let (member, mut member_rep) = member_given_the_room(&mut host_rep, room);
 
         {
             let mut tree = host.write();
