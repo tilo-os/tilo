@@ -17,6 +17,8 @@ use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSp
 use ui::widget::{TextInput, Widget as _, text_control_height};
 use ui::{TextRole, paint::PaintCtx};
 
+use crate::draw_util::text_in_band;
+
 /// What a press on a card asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SheetAnswer {
@@ -25,6 +27,85 @@ pub(super) enum SheetAnswer {
     /// Put the card away without writing anything.
     Close,
 }
+
+/// One row of the shortcut sheet: what the keys do, and the keys themselves,
+/// spelled for this platform by [`ui::spell_shortcut`].
+pub(super) struct ShortcutRow {
+    /// The message key of what the keys do.
+    pub label: &'static str,
+    /// The chord, in [`ui::spell_shortcut`]'s spelling (`{cmd:N}`,
+    /// `{shift:N}`, `{Esc}`).
+    pub keys: &'static str,
+}
+
+/// Every chord this window answers to, in the order a person meets them:
+/// moving around the calendar, then adding, then the sheet itself.
+pub(super) const SHORTCUTS: &[ShortcutRow] = &[
+    ShortcutRow {
+        label: "calendar-help-month",
+        keys: "M",
+    },
+    ShortcutRow {
+        label: "calendar-help-week",
+        keys: "W",
+    },
+    ShortcutRow {
+        label: "calendar-help-day",
+        keys: "D",
+    },
+    ShortcutRow {
+        label: "calendar-help-agenda",
+        keys: "A",
+    },
+    ShortcutRow {
+        label: "calendar-help-today",
+        keys: "T",
+    },
+    ShortcutRow {
+        label: "calendar-help-previous",
+        keys: "[",
+    },
+    ShortcutRow {
+        label: "calendar-help-next",
+        keys: "]",
+    },
+    ShortcutRow {
+        label: "calendar-help-previous-day",
+        keys: "{Left}",
+    },
+    ShortcutRow {
+        label: "calendar-help-next-day",
+        keys: "{Right}",
+    },
+    ShortcutRow {
+        label: "calendar-help-previous-week",
+        keys: "{Up}",
+    },
+    ShortcutRow {
+        label: "calendar-help-next-week",
+        keys: "{Down}",
+    },
+    ShortcutRow {
+        label: "calendar-help-new-event",
+        keys: "N",
+    },
+    ShortcutRow {
+        label: "calendar-help-quick-add",
+        keys: "{shift:N}",
+    },
+    ShortcutRow {
+        label: "calendar-help-delete",
+        keys: "{Delete}",
+    },
+    ShortcutRow {
+        label: "calendar-help-close",
+        keys: "{Esc}",
+    },
+    ShortcutRow {
+        label: "calendar-help-shortcuts",
+        keys: "?",
+    },
+];
 
 /// The quick add's card: one field, what the line will become, and two
 /// answers.
@@ -207,6 +288,157 @@ impl QuickAdd {
     }
 }
 
+/// The shortcut sheet's card: every chord this window answers to.
+pub(super) struct ShortcutSheet {
+    open: bool,
+    title: String,
+    layout: Option<ModalLayout>,
+    /// Where each row's words and keys stand, in row order.
+    rows: Vec<(Rect, Rect)>,
+}
+
+impl ShortcutSheet {
+    pub(super) fn new() -> Self {
+        Self {
+            open: false,
+            title: crate::resource::t("calendar-help-title"),
+            layout: None,
+            rows: Vec::new(),
+        }
+    }
+
+    pub(super) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub(super) fn toggle(&mut self) {
+        self.set_open(!self.open);
+    }
+
+    pub(super) fn set_open(&mut self, open: bool) {
+        self.open = open;
+        if !open {
+            self.layout = None;
+            self.rows.clear();
+        }
+    }
+
+    /// Where the card stands this frame; `Rect::ZERO` while it is shut.
+    #[cfg(test)]
+    pub(super) fn card(&self) -> Rect {
+        self.layout
+            .as_ref()
+            .map_or(Rect::ZERO, |layout| layout.card)
+    }
+
+    /// What a press at `p` asks for, if anything.
+    pub(super) fn hit(&self, p: Point) -> Option<SheetAnswer> {
+        let layout = self.layout.as_ref()?;
+        match layout.hit(p)? {
+            ModalHit::Close | ModalHit::Scrim | ModalHit::Action(_) => Some(SheetAnswer::Close),
+            ModalHit::Card => None,
+        }
+    }
+
+    /// Solve the card for `window` and place its rows.
+    pub(super) fn layout(&mut self, window: Rect, theme: &Theme) {
+        if !self.open {
+            self.layout = None;
+            self.rows.clear();
+            return;
+        }
+        let title = self.title.clone();
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let style = theme.text(TextRole::Body);
+        let (layout, row, keys_w) =
+            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+                let line = f64::from(text.measure_style("Ag", None, &style).1);
+                let row = line + gap;
+                let body_h = row * SHORTCUTS.len() as f64;
+                // The keys keep a column of their own, as wide as the widest
+                // of them, so they read down the card as one column.
+                let keys_w = SHORTCUTS
+                    .iter()
+                    .map(|row| {
+                        f64::from(
+                            text.measure_style(&ui::spell_shortcut(row.keys), None, &style)
+                                .0,
+                        )
+                    })
+                    .fold(0.0, f64::max)
+                    // A gap on each side, so an elided label never runs into
+                    // the keys it belongs to.
+                    + 2.0 * gap;
+                (
+                    modal_dialog::layout(
+                        window,
+                        &ModalSpec::new(&title).body_height(body_h),
+                        text,
+                        theme,
+                    ),
+                    row,
+                    keys_w,
+                )
+            });
+        let body = layout.body;
+        let keys_w = keys_w.min(body.width() * 0.7);
+        // Rows keep the height of their line: a narrow window gives the sheet
+        // the whole of it, and a list that stretched to fill it would read as
+        // a column of its own.
+        self.rows = (0..SHORTCUTS.len())
+            .map(|index| {
+                let top = body.y0 + row * (index as f64);
+                let band = Rect::new(body.x0, top, body.x1, (top + row - gap).min(body.y1));
+                (
+                    Rect::new(band.x0, band.y0, band.x1 - keys_w, band.y1),
+                    // The keys' own column, one gap clear of the words so an
+                    // elided label never runs into them.
+                    Rect::new(band.x1 - keys_w + gap, band.y0, band.x1, band.y1),
+                )
+            })
+            .collect();
+        self.layout = Some(layout);
+    }
+
+    pub(super) fn draw(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(layout) = self.layout.clone() else {
+            return;
+        };
+        let title = self.title.clone();
+        let spec = ModalSpec::new(&title).body_height(layout.body.height());
+        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
+        let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
+        let style = sheet.text(TextRole::Body);
+        let mut ctx = PaintCtx::new(scene, transform, text, &sheet);
+        for (what, row) in SHORTCUTS.iter().zip(&self.rows) {
+            text_in_band(
+                &mut ctx,
+                &crate::resource::t(what.label),
+                &style,
+                sheet.text_primary,
+                row.0.x0,
+                row.0,
+                row.0.width(),
+            );
+            text_in_band(
+                &mut ctx,
+                &ui::spell_shortcut(what.keys),
+                &style,
+                sheet.text_dim,
+                row.1.x0,
+                row.1,
+                row.1.width(),
+            );
+        }
+    }
+}
+
 impl super::CalendarApp {
     /// Solve both cards for the window this frame.
     pub(super) fn layout_sheets(&mut self) {
@@ -220,6 +452,7 @@ impl super::CalendarApp {
             self.quick_add.set_summary(summary);
             self.quick_add.layout(window, &theme);
         }
+        self.shortcuts.layout(window, &theme);
     }
 
     /// Write the quick add's line as an event, through the same action the
@@ -246,14 +479,15 @@ impl super::CalendarApp {
         self.spawn_event(event, doc);
     }
 
-    /// Put the card away without writing anything.
+    /// Put away whichever card is over the calendar.
     pub(super) fn close_sheets(&mut self) {
         self.quick_add.close();
+        self.shortcuts.set_open(false);
     }
 
     /// Whether a card over the calendar holds input this frame.
     pub(super) fn sheet_open(&self) -> bool {
-        self.quick_add.is_open()
+        self.quick_add.is_open() || self.shortcuts.is_open()
     }
 }
 
@@ -287,6 +521,28 @@ impl super::CalendarApp {
         use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
         *input.handled = true;
         self.dirty = true;
+        if self.shortcuts.is_open() {
+            match input.event {
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            logical_key:
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                            ..
+                        },
+                    ..
+                } => self.close_sheets(),
+                // A press anywhere on or beside the sheet puts it away; the
+                // sheet is the only thing that takes input while it is up.
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } if self.shortcuts.hit(self.last_mouse).is_some() => self.close_sheets(),
+                _ => {}
+            }
+            return;
+        }
         match input.event {
             WindowEvent::KeyboardInput {
                 event:

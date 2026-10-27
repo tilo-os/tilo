@@ -133,6 +133,8 @@ enum Action {
     /// Open the one-line quick add: a day, a time and a length read out of
     /// what the person types, written as an event when they press Add.
     QuickAdd,
+    /// Show this window's keys.
+    Shortcuts,
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
     DismissTaskPopover,
@@ -278,8 +280,10 @@ pub struct CalendarApp {
     /// The modal sheet the editor is presented in, laid out against the
     /// window; `None` while no editor is open.
     modal: Option<ModalLayout>,
-    /// The one-line quick add, as a card over the calendar.
+    /// The one-line quick add, and this window's keys, as cards over the
+    /// calendar.
     quick_add: sheets::QuickAdd,
+    shortcuts: sheets::ShortcutSheet,
     /// Height of the notes editor's content at its last layout, so the sheet
     /// grows with the notes.
     notes_content_h: f64,
@@ -512,6 +516,7 @@ impl CalendarApp {
             form: FormRects::default(),
             modal: None,
             quick_add: sheets::QuickAdd::new(),
+            shortcuts: sheets::ShortcutSheet::new(),
             notes_content_h: 0.0,
             repeat_scope_menu: Popover::new()
                 .with_items(repeat_scope::choices())
@@ -684,6 +689,7 @@ impl CalendarApp {
                     .input_mut()
                     .set_text("Lunch with Sam friday 1pm");
             }
+            "shortcuts" => self.shortcuts.set_open(true),
             "task_detail" => self.shots_show_task_detail(),
             "task_due_picker" => self.shots_open_task_picker("due"),
             "task_priority_picker" => self.shots_open_task_picker("priority"),
@@ -3012,6 +3018,7 @@ impl CalendarApp {
             Action::Import => self.invoke_effect(&crate::resource::CalendarEffect::ImportIcs),
             Action::NewEvent => self.new_event(doc),
             Action::QuickAdd => self.quick_add.open(),
+            Action::Shortcuts => self.shortcuts.toggle(),
             Action::ToggleSelectedTask => {
                 if let Some(Sel::Task(id)) = self.selection {
                     self.toggle_task(id, doc);
@@ -3097,6 +3104,12 @@ impl CalendarApp {
             Action::QuickAdd => (
                 "calendar.quick-add".into(),
                 crate::resource::t("calendar-quick-title"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Shortcuts => (
+                "calendar.shortcuts".into(),
+                crate::resource::t("calendar-help-title"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3819,6 +3832,7 @@ impl CalendarApp {
             // `n` opens the full form.
             let act = match ch.as_str() {
                 "N" => Some(Action::QuickAdd),
+                "?" => Some(Action::Shortcuts),
                 other => match other.to_lowercase().as_str() {
                     "m" => Some(Action::View(View::Month)),
                     "w" => Some(Action::View(View::Week)),
@@ -4191,7 +4205,8 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
-        // The card sits over the calendar and its editor alike.
+        // The two cards sit over the calendar and its editor alike.
+        self.shortcuts.draw(scene, transform, text_renderer, theme);
         self.quick_add
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -4658,6 +4673,7 @@ impl CalendarApp {
                 BarAction::New if self.view == View::Tasks => Action::NewTask,
                 BarAction::New => Action::NewEvent,
                 BarAction::QuickAdd => Action::QuickAdd,
+                BarAction::Shortcuts => Action::Shortcuts,
                 BarAction::Export => Action::Export,
                 BarAction::Import => Action::Import,
                 BarAction::View(view) => Action::View(view),
