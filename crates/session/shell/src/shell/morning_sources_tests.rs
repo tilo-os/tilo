@@ -465,6 +465,7 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
             trigger: tilo_automation::RunTrigger::Fired(fired[0].trigger.clone()),
             inputs: fired[0].inputs.clone(),
             caused_by: None,
+            parent: None,
         },
     ));
     assert_eq!(report.outcome, tilo_automation::RunOutcome::Completed);
