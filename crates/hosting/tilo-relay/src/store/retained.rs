@@ -1894,12 +1894,15 @@ impl WorkspaceStore {
         let mut out = Vec::new();
         // Compatibility/admin reads do not grant proof or GC authority, but
         // must retain visibility of a previously committed local selection.
-        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+        let selection = self.root.join(super::shell_selection::DIRECTORY);
+        out.extend(read_current(&selection, |selected| {
             let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
+            let mut frames = Vec::new();
             while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
-                out.push(fs::read(self.root.join(meta.source))?);
+                frames.push(fs::read(self.root.join(meta.source))?);
             }
-        }
+            Ok(frames)
+        })?);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         if !v2.exists() {
             return Ok(out);
@@ -1910,16 +1913,46 @@ impl WorkspaceStore {
             if !lineage.file_type()?.is_dir() {
                 continue;
             }
-            let Some(active) = current(&lineage.path())? else {
-                continue;
-            };
             out.extend(
-                records(&active)?
+                read_current(&lineage.path(), records)?
                     .into_iter()
                     .map(|mut entry| std::mem::take(&mut entry.bytes)),
             );
         }
         Ok(out)
+    }
+}
+
+/// What `read` makes of the generation `selector` currently selects, or
+/// nothing when it selects none.
+///
+/// This read runs beside the persistence owner, which may select a new
+/// generation and collect the old one while it reads: a file of the
+/// generation it began with is then gone. A generation is only ever
+/// collected once it is no longer selected, so a file missing from a
+/// generation that has since been replaced is that, and the read starts
+/// again on the new one; a file missing from the still selected generation
+/// is a real error.
+fn read_current<T>(
+    selector: &Path,
+    mut read: impl FnMut(&Path) -> Result<Vec<T>, StoreError>,
+) -> Result<Vec<T>, StoreError> {
+    let mut selected = current(selector)?;
+    loop {
+        let Some(generation) = selected else {
+            return Ok(Vec::new());
+        };
+        match read(&generation) {
+            Ok(out) => return Ok(out),
+            Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let now = current(selector)?;
+                if now.as_ref() == Some(&generation) {
+                    return Err(StoreError::Io(error));
+                }
+                selected = now;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
