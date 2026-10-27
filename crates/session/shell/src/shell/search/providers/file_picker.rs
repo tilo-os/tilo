@@ -224,6 +224,7 @@ impl SearchProvider for FilePickerProvider {
                         .begin(expected, state, operation(name, args)?)
                         .map(InvocationDisposition::Pending)
                 })),
+                resource: None,
             }
         })
         .collect();

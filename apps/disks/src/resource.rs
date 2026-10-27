@@ -232,7 +232,7 @@ fn row_operation(
     lost: impl FnOnce() -> String,
 ) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
-    if kind.destructive() {
+    if kind.is_delete() {
         spec.contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };

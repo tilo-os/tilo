@@ -3012,6 +3012,10 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod action_proposal;
+pub use action_proposal::{
+    ActionProposal, ActionProposalView, DiffLine, DiffTag, ProposalDecision, ProposalTarget,
+};
 pub mod binding;
 pub mod capability;
 mod composed;

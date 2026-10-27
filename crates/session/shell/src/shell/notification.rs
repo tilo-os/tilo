@@ -174,6 +174,7 @@ fn snoozed_alarm_rows(
                 on_begin_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
                     begin_alarm_action(chrome, &address, &expected_room, Some(&source))
                 })),
+                resource: None,
             })
         })
         .collect()
@@ -246,6 +247,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
                         begin_alarm_action(chrome, &action_id, &expected_room, None)
                     },
                 )),
+                resource: None,
             });
         }
     }

@@ -1,6 +1,8 @@
 use super::*;
 use crate::widget::{NavFeed, NavItem, NavList, NavSection};
-use crate::window_toolbar::ToolbarEvent;
+use crate::window_toolbar::{
+    ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar, declare, declared,
+};
 
 fn places() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
@@ -461,4 +463,96 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         feed.take_renames(),
         vec![("projects".to_owned(), "Archive".to_owned())]
     );
+}
+
+/// A shell that hands its own header to the window's bar, showing the
+/// place "Home".
+fn place_shell(w: u32, height: u32) -> FrameHarness {
+    let shell = NavShell::new()
+        .with_id("places")
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Places", Vec::new())
+        .content_header("Home", Vec::new());
+    let mut h = harness(shell, w, height, Theme::dark());
+    settle(&mut h, w, height);
+    h.present_in_window_bar();
+    settle(&mut h, w, height);
+    h
+}
+
+/// The shell's slots in the window's bar name the place it shows. Another
+/// part of the window may declare them for a while (a mode's commands, an
+/// inspector's); when that part goes (the place changed to one without it)
+/// the shell takes the slots back, so the bar names the place the shell
+/// shows rather than the tab's own title, which still says where the
+/// window opened.
+#[test]
+fn the_bar_names_the_place_again_once_another_parts_slots_go() {
+    let other = |label: &str| WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: label.to_owned(),
+            ..ToolbarLocation::default()
+        }),
+        actions: vec![ToolbarAction::new(
+            "place.share",
+            "share",
+            "Share this place",
+        )],
+        ..WindowToolbar::default()
+    };
+    let label = || {
+        declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label)
+    };
+    let mut h = place_shell(W, H);
+    // A part of the window that is not the shell declares the slots: the
+    // shell steps aside.
+    declare(Some(other("Shared sessions")));
+    settle(&mut h, W, H);
+    assert_eq!(label().as_deref(), Some("Shared sessions"));
+    // That part goes, and the place moves on in the same breath.
+    declare(None);
+    h.root_mut::<NavShell>()
+        .set_content_header("History", Vec::new());
+    settle(&mut h, W, H);
+    assert_eq!(
+        label().as_deref(),
+        Some("History"),
+        "the bar names the place the shell shows once the other part's slots go"
+    );
+    // The shell's own header actions are the bar's again.
+    assert!(
+        declared().is_some_and(|toolbar| toolbar.location.is_some()),
+        "the shell declares the window's slots again"
+    );
+}
+
+/// A shell that stepped aside for another part keeps the slots while that
+/// part declares them, even as the place changes under it.
+#[test]
+fn another_parts_slots_stand_while_it_holds_them() {
+    let mut h = place_shell(W, H);
+    declare(Some(WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Shared sessions".into(),
+            ..ToolbarLocation::default()
+        }),
+        ..WindowToolbar::default()
+    }));
+    settle(&mut h, W, H);
+    h.root_mut::<NavShell>()
+        .set_content_header("History", Vec::new());
+    settle(&mut h, W, H);
+    assert_eq!(
+        declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label)
+            .as_deref(),
+        Some("Shared sessions"),
+        "the other part's slots stand while it holds them"
+    );
+    declare(None);
+    settle(&mut h, W, H);
 }

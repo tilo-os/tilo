@@ -337,6 +337,7 @@ impl Provider {
             on_begin_invoke: Some(Rc::new(move |_, _, chrome, args| {
                 provider.begin(chrome, operation, phase, offered_tour, args)
             })),
+            resource: None,
         }
     }
 

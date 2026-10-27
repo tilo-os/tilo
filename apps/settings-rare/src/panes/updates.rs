@@ -28,9 +28,10 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::widgets::{
-    Body, El, Item, SettingsSection, block, error_caption, note, row, rows, section,
+    Body, El, Item, SettingsSection, block, error_caption, error_row, note, row, rows, section,
     setting_row_described, thing_row, value_row,
 };
+use crate::windows_compat::{Readiness as WindowsReadiness, WindowsSupportAction};
 
 crate::effects::effect_family!(UpdatesEffect => answer);
 
@@ -46,61 +47,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UpdatesArea> {
     app.areas().find()
 }
 
-/// What the update settings found by search are set to, as the page last
-/// read the machine: nothing until it has.
-pub(crate) mod values {
-    use ui::LocalState;
-
-    use super::{UpdatesEffect, UpdatesModel, area};
-    use crate::effects::effect;
-    use crate::host::PaneCx;
-    use crate::i18n::t;
-    use crate::setting::{Follows, Read};
-    use crate::settings_app::SettingsApp;
-    use crate::widgets::Item;
-
-    fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
-        let model = area(app)?.model.get()?;
-        let model = model.borrow();
-        read(&model)
-    }
-
-    /// Automatic updates, a switch where the machine schedules them.
-    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
-        read(app, |model| {
-            model.timer_enabled.is_some().then_some(model.prefs.auto)
-        })
-        .map_or(Read::Value(None), Read::Switch)
-    }
-
-    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
-        cx.row(t("upd-automatic")).id("updates.auto").toggle_effect(
-            &LocalState::new(on),
-            effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-        )
-    }
-
-    /// Updating over metered connections, a switch once the machine said
-    /// whether it may.
-    pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Read {
-        read(app, |model| model.allow_metered).map_or(Read::Value(None), Read::Switch)
-    }
-
-    pub(crate) fn metered_switch(cx: &PaneCx, on: bool) -> Item {
-        cx.row(t("upd-metered"))
-            .id("updates.metered")
-            .toggle_effect(
-                &LocalState::new(on),
-                effect(UpdatesEffect::SET_METERED_UPDATES),
-            )
-    }
-}
-
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
-/// The channels a device may follow (`tilo-update-channel`), in the order they are offered:
-/// Tilo's releases, or main's development images.
-const UPDATE_CHANNELS: &[&str] = &["stable", "dev"];
-const UPDATE_CHANNEL_HELPER: &str = "/usr/libexec/tilo-update-channel";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -126,30 +73,6 @@ fn schedule_shown(id: &str) -> String {
         "Weekly" => t("upd-schedule-weekly"),
         _ => t("upd-schedule-system"),
     }
-}
-
-fn channel_shown(id: &str) -> String {
-    match id {
-        "dev" => t("upd-channel-dev"),
-        _ => t("upd-channel-stable"),
-    }
-}
-
-fn channel_from_label(label: &str) -> String {
-    if label == "dev" || label == t("upd-channel-dev") {
-        "dev".into()
-    } else if label == "stable" || label == t("upd-channel-stable") {
-        "stable".into()
-    } else {
-        label.to_string()
-    }
-}
-
-/// The channel a device follows and the ones it may choose instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UpdateChannels {
-    pub current: String,
-    pub available: Vec<String>,
 }
 
 fn schedule_from_label(label: &str) -> String {
@@ -407,17 +330,6 @@ pub trait UpdateControl: Send + Sync {
     fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
         Err("update scheduling is unavailable on this machine".into())
     }
-    /// The channel this device follows and the ones it may follow; `None` when
-    /// it cannot say.
-    fn channels(&self) -> Option<UpdateChannels> {
-        None
-    }
-    /// # Errors
-    /// Returns an error if this machine has no channel to choose (the
-    /// default), or if the policy service refuses the requested channel.
-    fn set_channel(&self, _channel: &str) -> Result<(), String> {
-        Err("update channels are unavailable on this machine".into())
-    }
     fn allow_metered(&self) -> Option<bool> {
         None
     }
@@ -503,8 +415,6 @@ fn start_update_policy(action: &str) -> Result<(), String> {
             | "schedule-weekly"
             | "metered-allow"
             | "metered-avoid"
-            | "channel-dev"
-            | "channel-stable"
     ) {
         return Err("invalid update policy action".into());
     }
@@ -640,35 +550,6 @@ impl UpdateControl for RealUpdateControl {
         })
     }
 
-    fn channels(&self) -> Option<UpdateChannels> {
-        crate::device_read::off_ui_thread();
-        let read = |what: &str| {
-            run_bounded(UPDATE_CHANNEL_HELPER, &[what], CONTROL_TIMEOUT)
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        };
-        let available: Vec<String> = read("list")?
-            .lines()
-            .map(str::trim)
-            .filter(|channel| UPDATE_CHANNELS.contains(channel))
-            .map(str::to_string)
-            .collect();
-        let current = read("current")?.trim().to_string();
-        available
-            .contains(&current)
-            .then_some(UpdateChannels { current, available })
-    }
-
-    fn set_channel(&self, channel: &str) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        start_update_policy(match channel {
-            "dev" => "channel-dev",
-            "stable" => "channel-stable",
-            _ => return Err("unknown update channel".into()),
-        })
-    }
-
     fn allow_metered(&self) -> Option<bool> {
         crate::device_read::off_ui_thread();
         Some(
@@ -788,6 +669,11 @@ type DetailsProvider = Arc<dyn Fn(Option<&str>) -> UpdateDetails + Send + Sync>;
 pub type CodecRunner = Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sync>;
 /// Reads the codec-pack helper's status file (a fixture in tests).
 pub type CodecStatusProvider = Arc<dyn Fn() -> CodecPackStatus + Send + Sync>;
+/// Runs one Windows-support unit to completion (a stub in tests).
+pub type WindowsSupportRunner =
+    Arc<dyn Fn(WindowsSupportAction) -> Result<(), String> + Send + Sync>;
+/// Reads Windows support's readiness on this device (a fixture in tests).
+pub type WindowsSupportProvider = Arc<dyn Fn() -> WindowsReadiness + Send + Sync>;
 
 fn codecs_card_title() -> String {
     t("upd-codecs")
@@ -795,6 +681,14 @@ fn codecs_card_title() -> String {
 
 fn codecs_explanation() -> String {
     t("upd-codecs-explain")
+}
+
+pub(super) fn windows_card_title() -> String {
+    t("upd-windows")
+}
+
+pub(super) fn windows_explanation() -> String {
+    t("upd-windows-explain")
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -839,6 +733,7 @@ struct DeviceReaders {
     rebooter: Arc<dyn Rebooter>,
     firmware: FirmwareReader,
     codec_status: CodecStatusProvider,
+    windows_support: WindowsSupportProvider,
 }
 
 impl DeviceReaders {
@@ -857,6 +752,7 @@ impl DeviceReaders {
                 )
             }),
             codec_status: Arc::new(CodecPackStatus::read),
+            windows_support: Arc::new(WindowsReadiness::read),
         }
     }
 
@@ -874,11 +770,11 @@ impl DeviceReaders {
             rollback_target,
             details,
             schedule: self.control.schedule(),
-            channels: self.control.channels(),
             allow_metered: self.control.allow_metered(),
             firmware_updates,
             firmware_history,
             codec_status: (self.codec_status)(),
+            windows_support: (self.windows_support)(),
         }
     }
 }
@@ -890,11 +786,11 @@ struct FirstRead {
     rollback_target: Result<Option<String>, String>,
     details: UpdateDetails,
     schedule: Option<String>,
-    channels: Option<UpdateChannels>,
     allow_metered: Option<bool>,
     firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
     firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
     codec_status: CodecPackStatus,
+    windows_support: WindowsReadiness,
 }
 
 impl FirstRead {
@@ -910,11 +806,11 @@ impl FirstRead {
             rollback_target: Err(error.to_string()),
             details: UpdateDetails::default(),
             schedule: None,
-            channels: None,
             allow_metered: None,
             firmware_updates: Err(error.to_string()),
             firmware_history: Err(error.to_string()),
             codec_status: CodecPackStatus::default(),
+            windows_support: WindowsReadiness::NotOffered,
         }
     }
 }
@@ -963,7 +859,6 @@ pub struct UpdatesModel {
     /// it could not be read, and the switch says so instead of guessing.
     timer_enabled: Option<bool>,
     schedule: Option<String>,
-    channels: Option<UpdateChannels>,
     allow_metered: Option<bool>,
     /// What this machine can go back to, if anything, or why that could not
     /// be read.
@@ -981,6 +876,13 @@ pub struct UpdatesModel {
     codec_status: CodecPackStatus,
     codec_status_provider: CodecStatusProvider,
     codec_runner: CodecRunner,
+    /// Where Windows support stands here, and how a request runs on it.
+    pub(super) windows_support: WindowsReadiness,
+    windows_support_provider: WindowsSupportProvider,
+    windows_support_runner: WindowsSupportRunner,
+    /// The Windows-support unit currently running, and its completion.
+    pub(super) windows_pending: Option<WindowsSupportAction>,
+    pub(super) windows_events: Option<Landing>,
     /// The codec-pack unit currently running, and its completion.
     codec_pending: Option<CodecAction>,
     codec_events: Option<Landing>,
@@ -1011,6 +913,7 @@ impl UpdatesModel {
     pub fn new(cx: PaneCx) -> Self {
         let mut model = Self::reading(cx, DeviceReaders::system());
         model.codec_runner = Arc::new(crate::codec_pack::run);
+        model.windows_support_runner = Arc::new(crate::windows_compat::run);
         model.watch_codec_status();
         model
     }
@@ -1046,7 +949,6 @@ impl UpdatesModel {
             jobs: Vec::new(),
             timer_enabled: None,
             schedule: None,
-            channels: None,
             allow_metered: None,
             rollback_target: Ok(None),
             firmware_updates: Ok(Vec::new()),
@@ -1059,7 +961,14 @@ impl UpdatesModel {
             firmware_refresh_pending: false,
             codec_status: CodecPackStatus::default(),
             codec_status_provider: readers.codec_status,
+            windows_support: WindowsReadiness::NotOffered,
+            windows_support_provider: readers.windows_support,
+            windows_pending: None,
+            windows_events: None,
             codec_runner: Arc::new(|_| Err("the codec pack is unavailable in this test".into())),
+            windows_support_runner: Arc::new(|_| {
+                Err("Windows support is unavailable in this test".into())
+            }),
             codec_pending: None,
             codec_events: None,
             codec_status_changed: Arc::new(AtomicBool::new(false)),
@@ -1086,11 +995,11 @@ impl UpdatesModel {
         self.rollback_target = read.rollback_target;
         self.details = read.details;
         self.schedule = read.schedule;
-        self.channels = read.channels;
         self.allow_metered = read.allow_metered;
         self.firmware_updates = read.firmware_updates;
         self.firmware_history = read.firmware_history;
         self.codec_status = read.codec_status;
+        self.windows_support = read.windows_support;
         self.changed = true;
     }
 
@@ -1119,7 +1028,7 @@ impl UpdatesModel {
         )
     }
 
-    /// [`Self::with_parts`], plus the system control — the timer, the
+    /// [`UpdatesPane::with_parts`], plus the system control — the timer, the
     /// rollback target and the rollback itself.
     ///
     /// Reads the control as it is built, on the calling thread: it is a
@@ -1140,11 +1049,11 @@ impl UpdatesModel {
             rollback_target: control.rollback_target(),
             details: UpdateDetails::default(),
             schedule: control.schedule(),
-            channels: control.channels(),
             allow_metered: control.allow_metered(),
             firmware_updates: Err("fwupd is unavailable in this test".into()),
             firmware_history: Err("fwupd is unavailable in this test".into()),
             codec_status: CodecPackStatus::default(),
+            windows_support: WindowsReadiness::NotOffered,
         };
         let readers = DeviceReaders {
             status: status_provider,
@@ -1157,6 +1066,7 @@ impl UpdatesModel {
                 (Err(unavailable.clone()), Err(unavailable))
             }),
             codec_status: Arc::new(CodecPackStatus::default),
+            windows_support: Arc::new(|| WindowsReadiness::NotOffered),
         };
         let mut model = Self::assemble(cx, readers, clock, prefs);
         model.adopt(read);
@@ -1190,6 +1100,21 @@ impl UpdatesModel {
         self.codec_status = status();
         self.codec_status_provider = status;
         self.codec_runner = runner;
+        self
+    }
+
+    /// Dispose the Windows-support card for a capture, without asking the
+    /// device or running the helper.
+    #[must_use]
+    pub fn with_windows_support(
+        mut self,
+        readiness: WindowsReadiness,
+        provider: WindowsSupportProvider,
+        runner: WindowsSupportRunner,
+    ) -> Self {
+        self.windows_support = readiness;
+        self.windows_support_provider = provider;
+        self.windows_support_runner = runner;
         self
     }
 
@@ -1445,6 +1370,11 @@ impl UpdatesModel {
         section(&codecs_card_title(), rows(body))
     }
 
+    /// Where Windows support stands here, as the card reads it.
+    pub fn windows_support(&self) -> &WindowsReadiness {
+        &self.windows_support
+    }
+
     fn change_codecs(&mut self, action: CodecAction) {
         let operation = Self::codec_operation(action);
         if self.codec_pending.is_some() {
@@ -1518,6 +1448,12 @@ impl UpdatesModel {
         self.timer_enabled
     }
 
+    /// Are updates on a metered connection allowed, as this pane last read
+    /// it?
+    pub fn allow_metered(&self) -> Option<bool> {
+        self.allow_metered
+    }
+
     /// The message currently shown in the pane, if any.
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
@@ -1589,24 +1525,23 @@ impl UpdatesModel {
                 rows(vec![note(&t("upd-reading"))]),
             )]);
         }
-        // The update's state is said once, in the status card; every other
-        // card says only what this device reports.
-        let mut all: Vec<SettingsSection> = vec![self.status_card()];
-        all.extend(self.firmware_card());
+        let mut all: Vec<SettingsSection> = vec![
+            self.overview_card(),
+            self.status_card(),
+            self.firmware_card(),
+            self.codecs_card(),
+            self.windows_card(),
+            self.detail_card(),
+            self.lifecycle_card(),
+            self.rollback_card(),
+            self.help_card(),
+        ];
         // Firmware history is useful only when fwupd answered and there is a
-        // transaction to describe.
+        // transaction to describe. If the service is unavailable, the single
+        // firmware recovery card above owns that explanation and retry.
         if matches!(&self.firmware_history, Ok(history) if !history.is_empty()) {
-            all.push(self.firmware_history_card());
+            all.insert(3, self.firmware_history_card());
         }
-        all.push(self.codecs_card());
-        all.push(self.detail_card());
-        all.extend(self.lifecycle_card());
-        // Going back needs a previous image; with none there is nothing to
-        // offer.
-        if !matches!(self.rollback_target, Ok(None)) {
-            all.push(self.rollback_card());
-        }
-        all.push(self.help_card());
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -1624,41 +1559,15 @@ impl UpdatesModel {
         crate::widgets::page(all)
     }
 
-    /// The one statement of the update's state: what is ready or that the
-    /// system is current, its action, and checking again beside it.
+    /// Status card — current + staged + the primary action.
     fn status_card(&self) -> SettingsSection {
-        let check_label = if self.check_pending {
-            t("upd-checking")
-        } else {
-            t("upd-check")
-        };
-        let check = if self.prefs.last_checked.is_empty() || self.prefs.last_checked == "Never" {
-            self.button_row(
-                "settings.updates.check",
-                &check_label,
-                UpdatesEffect::CheckForUpdates,
-            )
-        } else {
-            setting_row_described(
-                &t("upd-last-checked"),
-                &self.prefs.last_checked,
-                Box::new(self.button(
-                    "settings.updates.check",
-                    &check_label,
-                    UpdatesEffect::CheckForUpdates,
-                )),
-            )
-        };
         if let Some(error) = &self.status.staged_error {
             return section(
                 &t("upd-software"),
-                rows(vec![
-                    block(error_caption(&t_args(
-                        "upd-status-error",
-                        &[("error", error.as_str().into())],
-                    ))),
-                    check,
-                ]),
+                rows(vec![block(error_caption(&t_args(
+                    "upd-status-error",
+                    &[("error", error.as_str().into())],
+                )))]),
             );
         }
         let body = match &self.status.staged_version {
@@ -1681,7 +1590,7 @@ impl UpdatesModel {
                 None,
             ))),
         };
-        section(&t("upd-software"), rows(vec![body, check]))
+        section(&t("upd-software"), rows(vec![body]))
     }
 
     /// A line holding one button, at the leading edge of its section.
@@ -1710,66 +1619,129 @@ impl UpdatesModel {
         )))
     }
 
-    /// What this device runs and the update settings it has: a setting
-    /// the device cannot read has no row.
-    fn detail_card(&self) -> SettingsSection {
-        let mut items = vec![value_row(
-            &t("upd-current-version"),
-            &self.status.current_version,
-        )];
-        items.push(match &self.channels {
-            Some(channels) if channels.available.len() > 1 => {
-                self.cx.row(t("upd-channel")).choice_effect(
-                    channels.available.iter().map(|id| channel_shown(id)),
-                    &LocalState::new(channel_shown(&channels.current)),
-                    effect(UpdatesEffect::SET_UPDATE_CHANNEL)
-                        .map(|shown: String| channel_from_label(&shown)),
-                )
+    fn overview_card(&self) -> SettingsSection {
+        let mut overview = vec![match &self.status.staged_error {
+            Some(error) => error_row(
+                &t("upd-os"),
+                &t_args("upd-status-error", &[("error", error.as_str().into())]),
+            ),
+            None if self.status.staged_version.is_some() => {
+                value_row(&t("upd-os"), &t("upd-os-staged"))
             }
-            Some(channels) => value_row(&t("upd-channel"), &channel_shown(&channels.current)),
-            None => value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
-        });
-        if self.timer_enabled.is_some() {
-            items.push(values::automatic_switch(&self.cx, self.prefs.auto));
+            None => value_row(&t("upd-os"), &t("upd-os-current")),
+        }];
+        if let Ok(updates) = &self.firmware_updates {
+            let fw_value = if updates.is_empty() {
+                t("upd-firmware-current")
+            } else {
+                t("upd-firmware-available")
+            };
+            overview.push(value_row(&t("upd-firmware"), &fw_value));
         }
-        if let Some(schedule) = self.schedule.as_deref().map(schedule_shown) {
-            items.push(
-                self.cx.row(t("upd-schedule")).choice_effect(
-                    UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
-                    &LocalState::new(schedule),
-                    effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
-                        .map(|shown: String| schedule_from_label(&shown)),
+        section(&t("upd-overview"), rows(overview))
+    }
+
+    fn detail_card(&self) -> SettingsSection {
+        let automatic = t("upd-automatic");
+        let unavailable = t("upd-unavailable");
+        let schedule_label = t("upd-schedule");
+        let check_label = if self.check_pending {
+            t("upd-checking")
+        } else {
+            t("upd-check")
+        };
+        let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
+        section(
+            &t("upd-details"),
+            rows(vec![
+                value_row(&t("upd-current-version"), &self.status.current_version),
+                value_row(&t("upd-last-checked"), &self.prefs.last_checked),
+                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
+                match self.timer_enabled {
+                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+                        &LocalState::new(self.prefs.auto),
+                        effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
+                    ),
+                    // Not a switch stuck in one position: a switch that cannot
+                    // reach the timer would report "off" for a machine that is
+                    // updating itself, which is worse than saying so.
+                    None => value_row(&automatic, &unavailable),
+                },
+                match &schedule_placeholder {
+                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
+                        UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
+                        &LocalState::new(schedule.clone()),
+                        effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                            .map(|shown: String| schedule_from_label(&shown)),
+                    ),
+                    None => value_row(&schedule_label, &unavailable),
+                },
+                match self.allow_metered {
+                    Some(_) => self
+                        .cx
+                        .row(t("upd-metered"))
+                        .id("updates.metered")
+                        .toggle_effect(
+                            &LocalState::new(self.allow_metered.unwrap_or(false)),
+                            effect(UpdatesEffect::SET_METERED_UPDATES),
+                        ),
+                    None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
+                },
+                self.button_row(
+                    "settings.updates.check",
+                    &check_label,
+                    UpdatesEffect::CheckForUpdates,
                 ),
-            );
-        }
-        if let Some(allowed) = self.allow_metered {
-            items.push(values::metered_switch(&self.cx, allowed));
-        }
-        section(&t("upd-details"), rows(items))
+            ]),
+        )
     }
 
-    /// What the image reports of its own recovery: only what it reports.
-    fn lifecycle_card(&self) -> Option<SettingsSection> {
-        let mut lifecycle_rows = Vec::new();
-        if let Some(health) = &self.details.rollback_health {
-            lifecycle_rows.push(value_row(&t("upd-rollback-health"), health));
+    fn lifecycle_card(&self) -> SettingsSection {
+        let not_reported = t("upd-not-reported");
+        let no_doc = t("upd-no-doc-url");
+        let mut lifecycle_rows = vec![value_row(
+            &t("upd-rollback-health"),
+            self.details
+                .rollback_health
+                .as_deref()
+                .unwrap_or(&not_reported),
+        )];
+        lifecycle_rows.push(value_row(
+            &t("upd-release-notes"),
+            self.details.release_notes.as_deref().unwrap_or(&no_doc),
+        ));
+        if self.details.history.is_empty() {
+            lifecycle_rows.push(note(&t("upd-no-bootc-history")));
+        } else {
+            lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
         }
-        if let Some(notes) = &self.details.release_notes {
-            lifecycle_rows.push(value_row(&t("upd-release-notes"), notes));
-        }
-        lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
-        (!lifecycle_rows.is_empty()).then(|| section(&t("upd-lifecycle"), rows(lifecycle_rows)))
+        section(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
-    /// Device firmware, once the firmware service answers; a device whose
-    /// firmware nothing can update has no firmware card.
-    fn firmware_card(&self) -> Option<SettingsSection> {
+    fn firmware_card(&self) -> SettingsSection {
         let body = match &self.firmware_updates {
-            Err(_) => return None,
+            Err(error) => self.firmware_card_error(error),
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
-        Some(section(&t("upd-firmware"), body))
+        section(&t("upd-firmware"), body)
+    }
+
+    fn firmware_card_error(&self, error: &str) -> Body {
+        let refresh_label = if self.firmware_refresh_pending {
+            t("upd-refreshing")
+        } else {
+            t("upd-try-again")
+        };
+        rows(vec![
+            self.status_row(
+                &t("upd-fw-query-failed"),
+                "settings.updates.firmware.refresh",
+                &refresh_label,
+                UpdatesEffect::RefreshFirmware,
+            ),
+            note(&t_args("upd-fwupd-reported", &[("error", error.into())])),
+        ])
     }
 
     fn firmware_card_up_to_date(&self) -> Body {
@@ -1899,8 +1871,10 @@ impl UpdatesModel {
         }
     }
 
-    /// The rollback card, shown while there is an image to go back to (or
-    /// whether there is one could not be read).
+    /// The rollback card. Present whether or not there is anything to go
+    /// back to, because "this machine has nothing to roll back to" is
+    /// information a person looking for the control needs, and an absent
+    /// card reads as an absent feature.
     /// Built from the same strings `rollback_card_lines` reports, so what a
     /// test asserts on and what a person reads cannot come apart.
     fn rollback_card(&self) -> SettingsSection {
@@ -2411,64 +2385,6 @@ impl UpdatesModel {
         self.changed = true;
     }
 
-    fn set_channel(&mut self, requested: &str) {
-        let operation = UpdatesEffect::SET_UPDATE_CHANNEL.id;
-        let Some(channels) = self.channels.clone() else {
-            self.operation_failed(
-                operation,
-                "the update channel cannot be read on this device",
-            );
-            return;
-        };
-        let requested = channel_from_label(requested);
-        if requested == channels.current {
-            self.operation_succeeded(operation, "update channel was already selected");
-            return;
-        }
-        if !channels.available.contains(&requested) {
-            self.operation_failed(operation, "this device cannot follow that update channel");
-            return;
-        }
-        let control = Arc::clone(&self.control);
-        self.start(operation, move || {
-            let set = control.set_channel(&requested);
-            let channels = set.is_ok().then(|| control.channels()).flatten();
-            Box::new(move |model: &mut Self| model.channel_set(requested, set, channels))
-        });
-    }
-
-    fn channel_set(
-        &mut self,
-        requested: String,
-        set: Result<(), String>,
-        channels: Option<UpdateChannels>,
-    ) {
-        let operation = UpdatesEffect::SET_UPDATE_CHANNEL.id;
-        match set {
-            Ok(()) => {
-                self.channels = channels.or_else(|| {
-                    self.channels.take().map(|channels| UpdateChannels {
-                        current: requested,
-                        ..channels
-                    })
-                });
-                self.notice = None;
-                self.operation_succeeded(operation, "update channel changed");
-            }
-            Err(error) => {
-                self.notice = Some(t_args(
-                    "upd-notice-channel",
-                    &[("error", error.as_str().into())],
-                ));
-                self.operation_failed(
-                    operation,
-                    format!("Update channel could not be changed: {error}"),
-                );
-            }
-        }
-        self.changed = true;
-    }
-
     fn set_metered(&mut self, requested: bool) {
         let Some(current) = self.allow_metered else {
             self.operation_failed(
@@ -2601,6 +2517,12 @@ pub enum UpdatesEffect {
     /// Check again for hardware H.264/HEVC support.
     #[effect(job)]
     RefreshCodecs,
+    /// Run Windows apps: download Windows support to this device.
+    #[effect(job)]
+    InstallWindowsSupport,
+    /// Remove the downloaded Windows support.
+    #[effect(job, destructive)]
+    RemoveWindowsSupport,
     /// Update the system automatically, or only when asked.
     #[effect(job, idempotent)]
     SetAutomaticUpdates { on: bool },
@@ -2613,13 +2535,6 @@ pub enum UpdatesEffect {
     /// Download updates on metered networks, or wait for another network.
     #[effect(job, idempotent)]
     SetMeteredUpdates { allowed: bool },
-    /// Choose which images this device updates to: Tilo's releases, or main's
-    /// development builds.
-    #[effect(job, idempotent)]
-    SetUpdateChannel {
-        #[param("Channel", choices = UPDATE_CHANNELS.iter().copied())]
-        channel: String,
-    },
 }
 
 impl UpdatesModel {
@@ -2647,10 +2562,15 @@ impl UpdatesModel {
             UpdatesEffect::InstallCodecs => self.change_codecs(CodecAction::Install),
             UpdatesEffect::RemoveCodecs => self.change_codecs(CodecAction::Remove),
             UpdatesEffect::RefreshCodecs => self.change_codecs(CodecAction::Refresh),
+            UpdatesEffect::InstallWindowsSupport => {
+                self.change_windows_support(WindowsSupportAction::Install);
+            }
+            UpdatesEffect::RemoveWindowsSupport => {
+                self.change_windows_support(WindowsSupportAction::Remove);
+            }
             UpdatesEffect::SetAutomaticUpdates { on } => self.set_automatic(on),
             UpdatesEffect::SetUpdateSchedule { schedule } => self.set_schedule(&schedule),
             UpdatesEffect::SetMeteredUpdates { allowed } => self.set_metered(allowed),
-            UpdatesEffect::SetUpdateChannel { channel } => self.set_channel(&channel),
         }
     }
 
@@ -2687,6 +2607,7 @@ impl UpdatesModel {
         self.drain_firmware_refresh_events();
         self.drain_firmware_events();
         self.drain_codec_events();
+        self.drain_windows_events();
         self.refresh_codec_status_if_changed();
         self.run_waiting();
     }
@@ -2795,1181 +2716,57 @@ impl crate::panes::model::PaneModel for UpdatesModel {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::panes::model::PaneModel;
-    use std::sync::Mutex;
+/// What the update settings found by search are set to, as the page last
+/// read the machine: nothing until it has.
+pub(crate) mod values {
+    use ui::LocalState;
 
-    /// A model's settings document of its own.
-    fn test_cx() -> PaneCx {
-        let profile = tempfile::tempdir().unwrap().keep();
-        PaneCx::in_file(profile.join("settings.json"))
+    use super::{UpdatesEffect, UpdatesModel, area};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read};
+    use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
+
+    fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
+        let model = area(app)?.model.get()?;
+        let model = model.borrow();
+        read(&model)
     }
 
-    #[derive(Default)]
-    struct RecordingRebooter {
-        calls: Mutex<u32>,
-    }
-    impl Rebooter for RecordingRebooter {
-        fn reboot(&self) -> Result<(), String> {
-            crate::device_read::off_ui_thread();
-            *self.calls.lock().unwrap() += 1;
-            Ok(())
-        }
+    /// Automatic updates, a switch where the machine schedules them.
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
+        read(app, |model| {
+            model.timer_enabled.is_some().then_some(model.prefs.auto)
+        })
+        .map_or(Read::Value(None), Read::Switch)
     }
 
-    fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesModel {
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: staged.map(std::string::ToString::to_string),
-            staged_error: None,
-        };
-        let requeried = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: Some("Tilo 2026.07".into()),
-            staged_error: None,
-        };
-        UpdatesModel::with_parts(
-            test_cx(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            rebooter,
+    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("upd-automatic")).id("updates.auto").toggle_effect(
+            &LocalState::new(on),
+            effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
         )
     }
 
-    /// A pane whose codec runner rewrites a fake status file the way the
-    /// helper does and returns `outcome`; `status` is what the watcher reads.
-    fn codec_pane(
-        status: Arc<Mutex<String>>,
-        runs: Arc<Mutex<Vec<CodecAction>>>,
-        outcome: Result<(), String>,
-    ) -> UpdatesModel {
-        let reader = Arc::clone(&status);
-        pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
-            Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
-            Arc::new(move |action| {
-                runs.lock().unwrap().push(action);
-                *status.lock().unwrap() = match (action, outcome.is_ok()) {
-                    (CodecAction::Install | CodecAction::Refresh, true) => {
-                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#
-                    }
-                    (CodecAction::Install | CodecAction::Refresh, false) => {
-                        r#"{"state":"failed","last_error":"offline","desired":true}"#
-                    }
-                    (CodecAction::Remove, _) => r#"{"state":"not-installed","desired":false}"#,
-                }
-                .to_string();
-                outcome.clone()
-            }),
-        )
+    /// Updating over metered connections, a switch once the machine said
+    /// whether it may.
+    pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Read {
+        read(app, |model| model.allow_metered).map_or(Read::Value(None), Read::Switch)
     }
 
-    fn shared_status(json: &str) -> Arc<Mutex<String>> {
-        Arc::new(Mutex::new(json.to_string()))
-    }
-
-    /// Press a codec control, then wait for the unit to return (no polling).
-    fn press_and_finish(pane: &mut UpdatesModel, effect: UpdatesEffect) {
-        pane.poll();
-        pane.run(effect, None);
-        pane.poll();
-        pane.wait_for_codec_operation();
-        pane.poll();
-    }
-
-    #[test]
-    fn codec_card_is_one_short_line_and_one_button() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let pane = codec_pane(shared_status(""), runs, Ok(()));
-        assert_eq!(
-            pane.codecs_card_lines(),
-            [
-                "Play more video and audio formats",
-                "Downloaded to this device from the formats' publishers. You can turn it off here at any time.",
-                "Status: Off",
-                "Install",
-            ]
-        );
-    }
-
-    #[test]
-    fn every_helper_state_has_its_status_and_controls() {
-        let cases: [(&str, &str, &[&str]); 7] = [
-            (r#"{"state":"not-installed"}"#, "Off", &["Install"]),
-            (
-                r#"{"state":"waiting-for-network","desired":true}"#,
-                "Waiting for an internet connection",
-                &["Cancel"],
-            ),
-            (
-                r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#,
-                "Downloading (step 3 of 7)",
-                &[],
-            ),
-            (
-                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
-                "On, including hardware H.264/HEVC",
-                &["Remove"],
-            ),
-            (
-                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
-                "follows once a matching driver is published",
-                &["Check for hardware support again", "Remove"],
-            ),
-            (
-                r#"{"state":"failed","last_error":"no route to host","desired":true}"#,
-                "Could not install: no route to host",
-                &["Try again", "Remove"],
-            ),
-            (r#"{"state":"removing"}"#, "Removing", &[]),
-        ];
-        for (json, status_line, controls) in cases {
-            let runs = Arc::new(Mutex::new(Vec::new()));
-            let pane = codec_pane(shared_status(json), runs, Ok(()));
-            let lines = pane.codecs_card_lines();
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.starts_with("Status: ") && line.contains(status_line)),
-                "{json}: {lines:?}"
-            );
-            let buttons = pane.codec_buttons();
-            let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
-            assert_eq!(offered, controls, "{json}");
-            let _ = pane.codecs_card();
-        }
-    }
-
-    #[test]
-    fn a_running_install_shows_the_helpers_progress() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(
-            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
-        );
-        let pane = codec_pane(status, runs, Ok(()));
-        let lines = pane.codecs_card_lines();
-        assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
-        assert!(
-            lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
-            "{lines:?}"
-        );
-    }
-
-    #[test]
-    fn the_watcher_updates_the_card_while_the_helper_works() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
-        let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
-        pane.poll();
-        *status.lock().unwrap() =
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
-        pane.poll();
-        assert_eq!(pane.codec_status().state, PackState::WaitingForNetwork);
-        pane.codec_status_file_changed();
-        pane.poll();
-        assert_eq!(pane.codec_status().state, PackState::Installed);
-        assert!(
-            pane.codecs_card_lines()
-                .iter()
-                .any(|line| line.contains("Sign out and back in"))
-        );
-    }
-
-    #[test]
-    fn install_runs_the_unit_and_shows_the_waiting_mesa_part() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Install]);
-        assert_eq!(pane.codec_status().state, PackState::Installed);
-        let lines = pane.codecs_card_lines();
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("follows once a matching driver is published"))
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("No restart is needed"))
-        );
-        assert_eq!(lines.last().map(String::as_str), Some("Remove"));
-        assert_eq!(pane.notice(), None);
-    }
-
-    #[test]
-    fn a_request_the_helper_has_not_picked_up_reads_as_starting() {
-        let (release, gate) = channel::channel::<()>();
-        let gate = Mutex::new(gate);
-        let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
-            Arc::new(CodecPackStatus::default),
-            Arc::new(move |_| {
-                let _ = gate.lock().unwrap().recv();
-                Ok(())
-            }),
-        );
-        pane.poll();
-        pane.run(UpdatesEffect::InstallCodecs, None);
-        pane.poll();
-        let lines = pane.codecs_card_lines();
-        assert!(lines.contains(&"Status: Starting\u{2026}".to_string()));
-        assert!(lines.contains(&"Progress: 0%".to_string()));
-        assert!(
-            !lines.iter().any(|line| line == "Install"),
-            "no second request while one runs"
-        );
-        release.send(()).unwrap();
-        pane.wait_for_codec_operation();
-    }
-
-    #[test]
-    fn failed_install_surfaces_the_helper_error_and_offers_retry() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Err("offline".into()));
-        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-        assert_eq!(
-            pane.notice(),
-            Some("The formats could not be changed: offline")
-        );
-        let lines = pane.codecs_card_lines();
-        assert!(lines.contains(&"Status: Could not install: offline".to_string()));
-        assert!(lines.contains(&"Try again".to_string()));
-        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
-        assert_eq!(
-            *runs.lock().unwrap(),
-            vec![CodecAction::Install, CodecAction::Install]
-        );
-    }
-
-    #[test]
-    fn checking_again_for_the_mesa_build_runs_a_refresh() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
-        );
-        let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, UpdatesEffect::RefreshCodecs);
-        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Refresh]);
-    }
-
-    #[test]
-    fn remove_returns_to_not_installed() {
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(
-            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
-        );
-        let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, UpdatesEffect::RemoveCodecs);
-        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
-        assert_eq!(pane.codec_status().state, PackState::NotInstalled);
-        assert_eq!(
-            pane.codecs_card_lines().last().map(String::as_str),
-            Some("Install")
-        );
-    }
-
-    /// os-release, bootc staged/rollback, release notes and journal history parsing.
-    #[test]
-    fn update_status_parsers_accept_only_trusted_shapes() {
-        {
-            assert_eq!(
-                parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
-                Some("Tilo 42")
-            );
-        }
-
-        {
-            let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
-            assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
-
-            let none = r#"{"status":{"staged":null,"booted":{"version":"Tilo 2026.06"}}}"#;
-            assert_eq!(parse_bootc_staged(none), None);
-
-            let image =
-                r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
-            assert_eq!(
-                parse_bootc_staged(image).as_deref(),
-                Some("quay.io/tilo/tilo:latest")
-            );
-        }
-
-        {
-            let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
-            assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
-            let dated = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:stable"},
-                "version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
-            assert_eq!(
-                parse_bootc_rollback(dated).as_deref(),
-                Some("2026.10.18, built 2026-10-18")
-            );
-            let none = r#"{"status":{"rollback":null}}"#;
-            assert_eq!(parse_bootc_rollback(none), None);
-            let bare = r#"{"status":{"rollback":{}}}"#;
-            assert_eq!(
-                parse_bootc_rollback(bare).as_deref(),
-                Some("the previous image"),
-                "a rollback deployment bootc describes in a shape we do not know \
-             still exists, and hiding it would hide the way back"
-            );
-        }
-
-        {
-            let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
-            assert_eq!(
-                parse_bootc_release_notes(json).as_deref(),
-                Some("https://updates.example.test/releases/42")
-            );
-            let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
-            assert_eq!(parse_bootc_release_notes(unsafe_url), None);
-        }
-
-        {
-            let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
-            assert_eq!(history, ["2026-01-01 update complete", "line two"]);
-        }
-    }
-
-    /// Checks and firmware refresh return promptly, stamp only on success, dedupe, and ignore replicated latches.
-    #[test]
-    fn update_checks_run_promptly_and_stamp_only_on_completion() {
-        // Case `check_requeries_and_stamps_last_checked`.
-        // Check for updates re-queries the system and stamps a real
-        // last-checked time — proving the button acts, not no-ops.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let reb = Arc::new(RecordingRebooter::default());
-            let mut pane = pane_with(None, reb);
-            pane.poll();
-            assert_eq!(pane.prefs().last_checked, "Never");
-            assert_eq!(pane.status().staged_version, None);
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(
-                pane.prefs().last_checked,
-                "CHECKED-NOW",
-                "timestamp updated"
-            );
-            assert_eq!(
-                pane.status().staged_version.as_deref(),
-                Some("Tilo 2026.07"),
-                "the re-query result landed"
-            );
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_checks();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            // The check is held until released below: were `sync` to wait for
-            // it, this call would only return once the gate timed out.
-            pane.poll();
-            assert!(pane.check_pending, "the check runs off the UI thread");
-            assert_eq!(pane.prefs().last_checked, "Never");
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert!(
-                !control.gate_timed_out(),
-                "sync blocked on the update check"
-            );
-            assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
-            assert!(pane.notice().is_none());
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None).failing_check());
-            let mut pane = pane_with_control(control);
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(pane.prefs().last_checked, "Never");
-            assert!(
-                pane.notice()
-                    .is_some_and(|message| message.contains("could not be checked"))
-            );
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_refreshes();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::RefreshFirmware, None);
-            pane.poll();
-            assert!(pane.firmware_refresh_pending);
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.firmware_refresh_pending);
-            assert!(
-                !control.gate_timed_out(),
-                "sync blocked on the firmware refresh"
-            );
-            assert_eq!(pane.firmware_updates, Ok(Vec::new()));
-
-            control.set_refresh_fails(true);
-            pane.run(UpdatesEffect::RefreshFirmware, None);
-            pane.poll();
-            assert!(pane.firmware_refresh_pending);
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.firmware_refresh_pending);
-            assert!(pane.firmware_updates.is_err());
-            assert!(pane.notice().is_some_and(|message| {
-                message.contains("Firmware metadata could not be refreshed")
-            }));
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_checks();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            assert!(pane.check_pending);
-            // A second press while the first check is provably still running.
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(*control.check_calls.lock().unwrap(), 1);
-        }
-    }
-
-    /// The channel a device follows is shown, chosen where the image offers a
-    /// choice, and the choice reaches the device's update policy once.
-    #[test]
-    fn the_update_channel_is_shown_and_chosen_where_the_device_offers_one() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let release = pane_with_control(Arc::new(
-            FakeControl::new(Some(true), None).following("stable", &["stable"]),
-        ));
-        let text = crate::widgets::announced_text(release.build_composition().as_ref());
-        assert!(text.contains(&t("upd-channel-stable")), "{text:#?}");
-        assert!(!text.contains(&t("upd-channel-dev")), "{text:#?}");
-
-        let control =
-            Arc::new(FakeControl::new(Some(true), None).following("dev", &["dev", "stable"]));
-        let mut pane = pane_with_control(control.clone());
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
-        assert!(text.contains(&t("upd-channel-dev")), "{text:#?}");
-        pane.run(
-            UpdatesEffect::SetUpdateChannel {
-                channel: "stable".into(),
-            },
-            None,
-        );
-        pane.poll();
-        settle(&mut pane, UpdatesModel::working);
-        pane.run(
-            UpdatesEffect::SetUpdateChannel {
-                channel: "stable".into(),
-            },
-            None,
-        );
-        pane.run(
-            UpdatesEffect::SetUpdateChannel {
-                channel: "nightly".into(),
-            },
-            None,
-        );
-        settle(&mut pane, UpdatesModel::working);
-        assert_eq!(
-            *control.channel_calls.lock().unwrap(),
-            vec!["stable".to_string()]
-        );
-        assert!(pane.notice().is_none());
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
-        assert!(text.contains(&t("upd-channel-stable")), "{text:#?}");
-    }
-
-    /// Drive the host's polling until `pending` clears. The bound is a hang
-    /// guard for a worker that never reports, not a performance budget.
-    fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
-        let deadline = ui::time::now() + gate_timeout();
-        loop {
-            pane.poll();
-            if !pending(pane) {
-                return;
-            }
-            assert!(
-                ui::time::now() < deadline,
-                "background worker never reported"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    /// Restart reboots once; rollback is confirmed, reported, honestly described and absent without an image.
-    #[test]
-    fn restart_and_rollback_are_confirmed_and_reported() {
-        {
-            let reb = Arc::new(RecordingRebooter::default());
-            let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
-            pane.poll();
-            pane.run(UpdatesEffect::RestartToUpdate, None);
-            pane.poll();
-            // A second stray press must not reboot again.
-            pane.run(UpdatesEffect::RestartToUpdate, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-            assert_eq!(*reb.calls.lock().unwrap(), 1);
-        }
-
-        // Case `rolling_back_needs_a_confirmation_and_then_acts`.
-        // Rolling back takes two clicks, and the first one only shows what a
-        // rollback does not undo.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
-            let mut pane = pane_with_control(control.clone());
-            pane.poll();
-            assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
-
-            // First click: nothing happens to the machine.
-            pane.run(UpdatesEffect::ReviewRollback, None);
-            pane.poll();
-            assert_eq!(
-                *control.rollbacks.lock().unwrap(),
-                0,
-                "the first click must only ask; a one-click rollback is a rollback \
-             by accident"
-            );
-
-            // The confirmation view has to actually carry the caveats, or the
-            // second click is uninformed.
-            let shown = pane.rollback_card_lines().join("\n");
-            for phrase in ["do NOT revert", "next app update"] {
-                assert!(
-                    shown.contains(phrase),
-                    "the confirmation must say what a rollback does not undo \
-                 ({phrase} missing) — shown was:\n{shown}"
-                );
-            }
-
-            // Second click: it acts.
-            pane.run(UpdatesEffect::RollBack, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-            assert_eq!(*control.rollbacks.lock().unwrap(), 1);
-            let notice = pane.notice().expect("the result has to be shown");
-            assert!(
-                notice.contains("Restart"),
-                "the person has to be told a restart is what takes it, got: {notice}"
-            );
-        }
-
-        // Case `a_failed_rollback_is_reported_in_the_pane`.
-        // A failed rollback says so where the person is looking.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control =
-                Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
-            let mut pane = pane_with_control(control);
-            pane.poll();
-            pane.run(UpdatesEffect::RollBack, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-            let notice = pane.notice().expect("a failed rollback must be visible");
-            assert!(
-                notice.contains("the boot loader would not take it"),
-                "the reason has to survive to the screen, got: {notice}"
-            );
-        }
-
-        // Case `the_help_text_does_not_promise_what_is_not_offered`.
-        // The help text must never promise a capability the pane does not offer
-        // — assert on what the pane renders, not on a comment.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane =
-                pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
-            let help = pane.help_lines().join("\n");
-            assert!(
-                !help.contains("you can roll back to the previous image at boot"),
-                "the old sentence described a feature that did not exist; if it is \
-             back, so is the lie. Help text was:\n{help}"
-            );
-            assert_eq!(
-                pane.rollback_card_lines()[0],
-                rollback_card_title(),
-                "the rollback control has to be on the pane, since the pane talks \
-             about rolling back"
-            );
-            assert!(
-                help.contains("three times"),
-                "the automatic half is the part a person cannot discover by \
-             looking, so the pane has to state it. Help text was:\n{help}"
-            );
-        }
-
-        // Case `no_previous_image_is_stated_rather_than_offered`.
-        // A machine with nothing to go back to says so, rather than offering a
-        // button that would fail.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
-            let shown = pane.rollback_card_lines().join("\n");
-            assert!(
-                shown.contains("no previous image on this machine yet"),
-                "the absence has to be stated; an absent card reads as an absent \
-             feature. Shown was:\n{shown}"
-            );
-        }
-    }
-
-    // ---- timer + rollback control -------------------------------------------
-
-    /// A machine, recorded. `timer` is what `systemctl is-enabled` would say.
-    struct FakeControl {
-        timer: Mutex<Option<bool>>,
-        set_calls: Mutex<Vec<bool>>,
-        rollbacks: Mutex<u32>,
-        target: Mutex<Option<String>>,
-        set_fails: bool,
-        rollback_fails: bool,
-        check_gate: Mutex<Option<channel::Receiver<()>>>,
-        check_fails: bool,
-        refresh_gate: Mutex<Option<channel::Receiver<()>>>,
-        refresh_fails: Mutex<bool>,
-        check_calls: Mutex<u32>,
-        gate_timed_out: std::sync::atomic::AtomicBool,
-        channels: Mutex<Option<UpdateChannels>>,
-        channel_calls: Mutex<Vec<String>>,
-    }
-
-    /// How long a gated fake waits for its release before giving up and
-    /// recording that the caller held the UI thread: the shared hang bound.
-    fn gate_timeout() -> Duration {
-        tilo_test_env::hang_bound()
-    }
-
-    impl FakeControl {
-        fn new(timer: Option<bool>, target: Option<&str>) -> Self {
-            Self {
-                timer: Mutex::new(timer),
-                set_calls: Mutex::new(Vec::new()),
-                rollbacks: Mutex::new(0),
-                target: Mutex::new(target.map(str::to_string)),
-                set_fails: false,
-                rollback_fails: false,
-                check_gate: Mutex::new(None),
-                check_fails: false,
-                refresh_gate: Mutex::new(None),
-                refresh_fails: Mutex::new(false),
-                check_calls: Mutex::new(0),
-                gate_timed_out: std::sync::atomic::AtomicBool::new(false),
-                channels: Mutex::new(None),
-                channel_calls: Mutex::new(Vec::new()),
-            }
-        }
-        /// A device following `current` that may choose any of `available`.
-        fn following(self, current: &str, available: &[&str]) -> Self {
-            *self.channels.lock().unwrap() = Some(UpdateChannels {
-                current: current.into(),
-                available: available
-                    .iter()
-                    .map(|channel| (*channel).to_string())
-                    .collect(),
-            });
-            self
-        }
-        fn failing_set(mut self) -> Self {
-            self.set_fails = true;
-            self
-        }
-        fn failing_rollback(mut self) -> Self {
-            self.rollback_fails = true;
-            self
-        }
-        fn failing_check(mut self) -> Self {
-            self.check_fails = true;
-            self
-        }
-        /// Hold every update check until the returned sender releases it.
-        fn gate_checks(&self) -> channel::Sender<()> {
-            let (release, gate) = channel::channel();
-            *self.check_gate.lock().unwrap() = Some(gate);
-            release
-        }
-        /// Hold every firmware refresh until the returned sender releases it.
-        fn gate_refreshes(&self) -> channel::Sender<()> {
-            let (release, gate) = channel::channel();
-            *self.refresh_gate.lock().unwrap() = Some(gate);
-            release
-        }
-        fn wait_at(&self, gate: &Mutex<Option<channel::Receiver<()>>>) {
-            if let Some(gate) = gate.lock().unwrap().as_ref()
-                && gate.recv_timeout(gate_timeout()).is_err()
-            {
-                self.gate_timed_out
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        fn gate_timed_out(&self) -> bool {
-            self.gate_timed_out
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-        fn set_refresh_fails(&self, fails: bool) {
-            *self.refresh_fails.lock().unwrap() = fails;
-        }
-    }
-
-    impl UpdateControl for FakeControl {
-        fn timer_enabled(&self) -> Option<bool> {
-            crate::device_read::off_ui_thread();
-            *self.timer.lock().unwrap()
-        }
-        fn set_timer(&self, on: bool) -> Result<(), String> {
-            crate::device_read::off_ui_thread();
-            self.set_calls.lock().unwrap().push(on);
-            if self.set_fails {
-                return Err("polkit said no".into());
-            }
-            *self.timer.lock().unwrap() = Some(on);
-            Ok(())
-        }
-        fn rollback_target(&self) -> Result<Option<String>, String> {
-            crate::device_read::off_ui_thread();
-            Ok(self.target.lock().unwrap().clone())
-        }
-        fn roll_back(&self) -> Result<(), String> {
-            crate::device_read::off_ui_thread();
-            *self.rollbacks.lock().unwrap() += 1;
-            if self.rollback_fails {
-                return Err("the boot loader would not take it".into());
-            }
-            *self.target.lock().unwrap() = None;
-            Ok(())
-        }
-
-        fn channels(&self) -> Option<UpdateChannels> {
-            crate::device_read::off_ui_thread();
-            self.channels.lock().unwrap().clone()
-        }
-        fn set_channel(&self, channel: &str) -> Result<(), String> {
-            crate::device_read::off_ui_thread();
-            self.channel_calls.lock().unwrap().push(channel.to_string());
-            if let Some(channels) = self.channels.lock().unwrap().as_mut() {
-                channels.current = channel.to_string();
-            }
-            Ok(())
-        }
-
-        fn check_now(&self) -> Result<(), String> {
-            crate::device_read::off_ui_thread();
-            *self.check_calls.lock().unwrap() += 1;
-            self.wait_at(&self.check_gate);
-            if self.check_fails {
-                Err("update check failed".into())
-            } else {
-                Ok(())
-            }
-        }
-
-        fn refresh_firmware(
-            &self,
-        ) -> Result<
-            (
-                Vec<os_actions::FirmwareUpdate>,
-                Vec<os_actions::FirmwareHistoryEntry>,
-            ),
-            String,
-        > {
-            crate::device_read::off_ui_thread();
-            self.wait_at(&self.refresh_gate);
-            if *self.refresh_fails.lock().unwrap() {
-                Err("firmware refresh failed".into())
-            } else {
-                Ok((Vec::new(), Vec::new()))
-            }
-        }
-    }
-
-    /// `bootc` that cannot be asked (not root, absent, refused) is reported
-    /// as that failure. "Your system is up to date" is a claim about the
-    /// machine and is never made from a failed read.
-    #[test]
-    fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: None,
-            staged_error: Some("error: This command requires root privileges".into()),
-        };
-        let requeried = status.clone();
-        let pane = UpdatesModel::with_parts_and_control(
-            test_cx(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            Arc::new(FakeControl::new(Some(true), None)),
-        );
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
-        assert!(
-            text.iter().any(|line| line
-                == "Can't check for updates: error: This command requires root privileges"),
-            "{text:#?}"
-        );
-        for claim in [t("upd-up-to-date"), t("upd-os-current")] {
-            assert!(!text.contains(&claim), "claims {claim:?}: {text:#?}");
-        }
-    }
-
-    #[test]
-    fn the_update_is_stated_once_and_unknowns_have_no_rows() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: Some("Tilo 2026.07".into()),
-            staged_error: None,
-        };
-        let requeried = status.clone();
-        let pane = UpdatesModel::with_parts_and_control(
-            test_cx(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            Arc::new(FakeControl::new(None, None)),
-        );
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
-        let ready = t_args("upd-ready", &[("version", "Tilo 2026.07".into())]);
-        assert_eq!(
-            text.iter().filter(|line| line.contains("2026.07")).count(),
-            1,
-            "the staged update is said once: {text:#?}"
-        );
-        assert!(text.iter().any(|line| line.contains(&ready)), "{text:#?}");
-        assert!(
-            text.iter().any(|line| line.contains(&t("upd-check"))),
-            "checking again sits by the status: {text:#?}"
-        );
-        for nothing in [
-            "Unavailable",
-            "Status unavailable",
-            "Not reported",
-            "No release-notes link was reported.",
-            "Update ready, restart required",
-            "Never",
-            "fwupd",
-        ] {
-            assert!(
-                !text.iter().any(|line| line.contains(nothing)),
-                "{nothing:?} has nothing to say: {text:#?}"
-            );
-        }
-    }
-
-    fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: None,
-            staged_error: None,
-        };
-        let requeried = status.clone();
-        UpdatesModel::with_parts_and_control(
-            test_cx(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            control,
-        )
-    }
-
-    /// The switch mirrors the timer, disables it, snaps back on refusal and is absent when unreadable.
-    #[test]
-    fn automatic_update_switch_follows_the_timer() {
-        // Case `the_switch_opens_showing_what_the_timer_actually_is`.
-        // The switch shows the timer, not a stored preference, even when the two
-        // disagree.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None));
-            let pane = UpdatesModel::with_parts_and_control(
-                test_cx(),
-                UpdateStatus {
-                    current_version: "Tilo".into(),
-                    staged_version: None,
-                    staged_error: None,
-                },
-                UpdatePrefs {
-                    auto: false,
-                    ..UpdatePrefs::default()
-                },
-                Arc::new(|| UpdateStatus {
-                    current_version: "Tilo".into(),
-                    staged_version: None,
-                    staged_error: None,
-                }),
-                Arc::new(|| "now".to_string()),
-                Arc::new(RecordingRebooter::default()),
-                control,
-            );
-            assert!(
-                pane.prefs().auto,
-                "the machine's timer wins over a stale preference; showing the \
-             preference is how a switch comes to lie about the system"
-            );
-            assert_eq!(pane.timer_enabled(), Some(true));
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None));
-            let mut pane = pane_with_control(control.clone());
-            pane.poll();
-
-            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-
-            assert_eq!(
-                *control.set_calls.lock().unwrap(),
-                vec![false],
-                "the switch must reach the update timer exactly once"
-            );
-            assert_eq!(
-                control.timer_enabled(),
-                Some(false),
-                "and the timer must actually be off afterwards"
-            );
-            assert_eq!(pane.timer_enabled(), Some(false));
-            assert!(
-                pane.notice().is_none(),
-                "nothing went wrong, so say nothing"
-            );
-        }
-
-        // Case `a_refused_switch_snaps_back_and_is_reported_in_the_pane`.
-        // When the system refuses, the switch goes back and the pane says so on
-        // screen. A warning in the journal is, for a settings switch, the same as
-        // failing silently.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
-            let mut pane = pane_with_control(control.clone());
-            pane.poll();
-
-            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-
-            assert_eq!(
-                control.timer_enabled(),
-                Some(true),
-                "the timer must be untouched when the change was refused"
-            );
-            assert!(
-                pane.prefs().auto,
-                "the switch itself must snap back, or it shows a state the machine \
-             is not in"
-            );
-            let notice = pane
-                .notice()
-                .expect("a refused change has to appear in the pane, not only the journal");
-            assert!(
-                notice.contains("polkit said no"),
-                "the message must carry the reason, got: {notice}"
-            );
-        }
-
-        // Case `an_unreadable_timer_is_not_rendered_as_off`.
-        // A machine that cannot be asked gets no switch at all. Rendering "off"
-        // for a timer that could not be read is the same class of lie.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
-            assert_eq!(pane.timer_enabled(), None);
-            // And the stub used by the older constructor answers the same way, so
-            // a test written before this existed cannot get a confident `false`.
-            assert_eq!(UnavailableControl.timer_enabled(), None);
-            assert!(UnavailableControl.set_timer(true).is_err());
-            assert!(UnavailableControl.roll_back().is_err());
-        }
-    }
-
-    /// The effects reach the model the app keeps; a capture's reaches no
-    /// system tool and says why it did nothing.
-    #[test]
-    fn effects_reach_the_model_and_report_how_they_end() {
-        use crate::effects::SettingsEffect;
-        use crate::resource::SettingsShell;
-        use ui::prelude::TestApp;
-
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
-        app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
-            .expect("the check reads the sample image");
-        let refused = app
-            .effect_confirmed(&SettingsEffect::from(UpdatesEffect::RollBack))
-            .unwrap_err();
-        assert!(
-            format!("{refused:?}").contains("Rolling back failed"),
-            "{refused:?}"
-        );
-        app.effect(&SettingsEffect::from(
-            crate::effects::NavigationEffect::OpenPane {
-                pane: "updates".into(),
-            },
-        ))
-        .unwrap();
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Tilo 2026.07"), "{frame}");
-    }
-
-    /// A control whose every call waits for its gate to open: a device that
-    /// takes as long as it likes.
-    struct GatedControl {
-        gate: Arc<crate::stall::Stall>,
-        timer: Mutex<Option<bool>>,
-        target: Mutex<Option<String>>,
-        set_calls: Mutex<Vec<bool>>,
-        rollbacks: Mutex<u32>,
-    }
-
-    impl GatedControl {
-        fn pass(&self) {
-            crate::device_read::off_ui_thread();
-            self.gate.wait();
-        }
-    }
-
-    impl UpdateControl for GatedControl {
-        fn timer_enabled(&self) -> Option<bool> {
-            self.pass();
-            *self.timer.lock().unwrap()
-        }
-        fn set_timer(&self, on: bool) -> Result<(), String> {
-            self.pass();
-            self.set_calls.lock().unwrap().push(on);
-            *self.timer.lock().unwrap() = Some(on);
-            Ok(())
-        }
-        fn rollback_target(&self) -> Result<Option<String>, String> {
-            self.pass();
-            Ok(self.target.lock().unwrap().clone())
-        }
-        fn roll_back(&self) -> Result<(), String> {
-            self.pass();
-            *self.rollbacks.lock().unwrap() += 1;
-            *self.target.lock().unwrap() = None;
-            Ok(())
-        }
-    }
-
-    /// The pane opens at once over a device that has not answered, says it
-    /// is reading, and a request made meanwhile runs once the read lands. A
-    /// change the device takes long to make never holds the window either.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the stalled device's whole story, read and change, reads best as one test"
-    )]
-    fn a_stalled_update_control_never_holds_the_window() {
-        use crate::resource::SettingsShell;
-        use crate::settings_app::SettingsApp;
-        use ui::prelude::TestApp;
-
-        ui::i18n::I18nManager::init("en-US");
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let gate = crate::stall::Stall::new();
-        let control = Arc::new(GatedControl {
-            gate: Arc::clone(&gate),
-            timer: Mutex::new(Some(true)),
-            target: Mutex::new(Some("tilo:gen41".into())),
-            set_calls: Mutex::new(Vec::new()),
-            rollbacks: Mutex::new(0),
-        });
-        let readers = DeviceReaders {
-            status: Arc::new(|| {
-                crate::device_read::off_ui_thread();
-                UpdateStatus {
-                    current_version: "Tilo 2026.06".into(),
-                    staged_version: None,
-                    staged_error: None,
-                }
-            }),
-            details: Arc::new(|_| UpdateDetails::default()),
-            control: Arc::clone(&control) as Arc<dyn UpdateControl>,
-            rebooter: Arc::new(RecordingRebooter::default()),
-            firmware: Arc::new(|| -> FirmwareReading {
-                crate::device_read::off_ui_thread();
-                (Ok(Vec::new()), Ok(Vec::new()))
-            }),
-            codec_status: Arc::new(CodecPackStatus::default),
-        };
-        let model = app
-            .with_widget::<SettingsApp, _>(move |settings| {
-                let shared =
-                    std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
-                *shared.borrow_mut() = UpdatesModel::reading(settings.host().clone(), readers);
-                shared
-            })
-            .expect("the Settings window is mounted");
-
-        crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
-        app.harness()
-            .poll_frame()
-            .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains(&t("upd-reading")), "{frame}");
-        assert!(!frame.contains(&t("upd-up-to-date")), "{frame}");
-
-        // A request while the device is still being read waits for the read.
-        model
-            .borrow_mut()
-            .run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
-        app.harness()
-            .poll_frame()
-            .expect("the window draws its next frame");
-        gate.assert_held("the switch");
-        assert!(control.set_calls.lock().unwrap().is_empty());
-
-        gate.release();
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| {
-                    model.borrow().timer_enabled() == Some(false)
-                        && harness
-                            .inspection_json()
-                            .is_ok_and(|frame| frame.contains(&t("upd-up-to-date")))
-                }),
-            "the read lands, then the waiting request turns the timer off"
-        );
-        assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
-
-        gate.hold();
-        model.borrow_mut().run(UpdatesEffect::RollBack, None);
-        app.harness()
-            .poll_frame()
-            .expect("the window draws its next frame");
-        gate.assert_held("the rollback button");
-        assert_eq!(model.borrow().notice(), None);
-        assert_eq!(model.borrow().rollback_target(), Some("tilo:gen41"));
-
-        gate.release();
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |_| model
-                    .borrow()
-                    .notice()
-                    .is_some_and(|notice| notice.contains("Restart"))),
-            "the rollback's outcome is shown"
-        );
-        assert_eq!(*control.rollbacks.lock().unwrap(), 1);
-        assert_eq!(model.borrow().rollback_target(), None);
+    pub(crate) fn metered_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("upd-metered"))
+            .id("updates.metered")
+            .toggle_effect(
+                &LocalState::new(on),
+                effect(UpdatesEffect::SET_METERED_UPDATES),
+            )
     }
 }
+
+mod windows_card;
+
+#[cfg(test)]
+mod tests;

@@ -538,22 +538,35 @@ impl NavShell {
     /// Declare the slots from the headers while the shell owns them, follow
     /// the desktop's bar coming and going, and step aside for another part
     /// of the window that declares them (the sync pass).
+    ///
+    /// Stepping aside lasts only as long as that part's declaration: the
+    /// shell looks again every pass, so a part that goes (a mode's commands,
+    /// an inspector's, a place without them) hands the slots back and the
+    /// bar names the place the shell shows rather than the tab's own title.
     pub(super) fn sync_shell_bar(&mut self) {
         let hosted = crate::window_toolbar::is_hosted();
         if hosted != self.shell_bar.hosted {
             self.shell_bar.hosted = hosted;
             self.slots_changed();
-        }
-        if self.shell_bar.yielded {
-            return;
+            if !hosted {
+                self.shell_bar.yielded = false;
+            }
         }
         if ShellBar::declared_by_another_part() {
-            self.shell_bar.yielded = true;
-            if self.shell_bar.owns() {
-                set_owner(None);
+            if !self.shell_bar.yielded {
+                self.shell_bar.yielded = true;
+                if self.shell_bar.owns() {
+                    set_owner(None);
+                }
+                self.slots_changed();
             }
-            self.slots_changed();
             return;
+        }
+        if self.shell_bar.yielded {
+            // The other part's declaration went: the shell takes the slots
+            // back.
+            self.shell_bar.yielded = false;
+            self.slots_changed();
         }
         let slots = if self.inputs.borrow().shell_bar {
             self.header_slots()

@@ -34,7 +34,6 @@
 "apps/pdf-viewer/src/source.rs" = 3500
 "apps/settings-rare/src/panes/accounts.rs" = 5000
 "apps/settings-rare/src/panes/device_mesh.rs" = 3500
-"apps/settings-rare/src/panes/updates.rs" = 4000
 "apps/settings/src/panes/audio.rs" = 3500
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/mouse_keyboard.rs" = 3500
