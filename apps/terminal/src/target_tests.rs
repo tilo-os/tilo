@@ -1166,6 +1166,65 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     });
 }
 
+/// A terminal that is not the app of a window (the code editor's panel)
+/// keeps its ended session; Restart shell opens a new one on the target the
+/// ended one ran on, in place.
+#[test]
+fn an_embedded_terminal_restarts_its_ended_shell_on_the_same_target() {
+    let opens: Opened = Rc::default();
+    let log = opens.clone();
+    let mut widget = TerminalWidget::spawn_headless().unwrap();
+    widget.set_sessions(Sessions::scripted(
+        RecentTarget::none(),
+        move |target, by, _| {
+            log.borrow_mut().push((target.clone(), by));
+            crate::inner::TerminalBackend::with_command(interactive_bash())
+                .map_err(|error| OpenError::Failed(error.to_string()))
+        },
+    ));
+    let doc = AutoCommit::new();
+    let settle =
+        |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
+            let deadline = tilo_test_env::hang_deadline();
+            while !done(widget) {
+                assert!(std::time::Instant::now() < deadline, "{what}");
+                widget.sync(&doc, &ROOT);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+    widget.sync(&doc, &ROOT);
+    assert_eq!(widget.session_state(), &OpenState::Open);
+    assert!(!widget.can_restart(), "a running shell is not restarted");
+
+    widget.try_write_input(b"exit\r").unwrap();
+    settle(&mut widget, "the shell exits", &|w| w.is_disconnected());
+    assert!(widget.shell_exited());
+    assert!(
+        widget.lifecycle_banner().is_some(),
+        "the ended session stays"
+    );
+    assert!(widget.can_restart());
+
+    widget
+        .perform(crate::resource::TerminalEffect::Restart)
+        .expect("the shell starts again");
+    assert_eq!(widget.session_state(), &OpenState::Open);
+    assert!(!widget.is_disconnected());
+    assert_eq!(widget.lifecycle_banner(), None);
+    let first = opens.borrow()[0].clone();
+    assert_eq!(
+        opens.borrow().as_slice(),
+        &[first.clone(), first],
+        "the new session runs where the ended one did"
+    );
+    widget
+        .try_write_input(b"printf 'TILO_%s\\n' RESTARTED\r")
+        .unwrap();
+    settle(&mut widget, "the new shell runs commands", &|w| {
+        w.grid_text().contains("TILO_RESTARTED")
+    });
+}
+
 #[test]
 fn a_session_the_tab_replaced_or_dropped_closes_nothing() {
     let window = ui::hosted_window::HostedWindow::new();
