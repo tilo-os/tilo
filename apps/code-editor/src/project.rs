@@ -331,7 +331,7 @@ impl Project {
     /// time the editor reads it, under the id the editor gave it. An entry
     /// already recorded, or at a path a collaborator recorded under another
     /// id, is left as it is.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn record_entry(
         &mut self,
         #[param("The id it is kept under")] id: Id,
@@ -373,7 +373,7 @@ impl Project {
     /// Keep `text`, read from disk, as the text of `file` the first time
     /// the editor opens it. Text already there — a collaborator's or an
     /// earlier session's unsaved edits — is left as it is.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn record_text(
         &mut self,
         #[param("The file's id")] file: String,
@@ -391,7 +391,7 @@ impl Project {
     /// Record terminal target
     ///
     /// Record where the embedded terminal's session runs.
-    #[action(external, id = "record-target")]
+    #[action(external, id = "record-target", audience = "agents")]
     pub fn record_terminal_target(
         &mut self,
         #[param("An encoded session target")] target: String,
@@ -405,7 +405,7 @@ impl Project {
     ///
     /// Record the relay session the embedded terminal re-attaches to, or
     /// forget it.
-    #[action(external, id = "record-relay-session")]
+    #[action(external, id = "record-relay-session", audience = "agents")]
     pub fn record_terminal_relay(
         &mut self,
         #[param("The relay session's id; none to forget it")] session: Option<String>,
@@ -418,7 +418,7 @@ impl Project {
     /// Claim terminal pane
     ///
     /// Scope presence to a new process's pane of the embedded terminal.
-    #[action(external, id = "claim-pane")]
+    #[action(external, id = "claim-pane", audience = "agents")]
     pub fn claim_terminal_pane(
         &mut self,
         #[param("The pane's id")] pane: String,
@@ -474,7 +474,7 @@ impl Project {
     /// Record terminal run
     ///
     /// Record a run the embedded terminal's session ended.
-    #[action(external, id = "record-run")]
+    #[action(external, id = "record-run", audience = "agents")]
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,
@@ -664,11 +664,17 @@ impl Project {
         self.files
             .iter()
             .map(|(id, entry)| {
-                SearchEntry::new(
-                    entry.name.clone(),
-                    self.path_of(id).unwrap_or_else(|| entry.name.clone()),
-                )
-                .anchored(crate::actions::file_resource_id(id))
+                let path = self.path_of(id).unwrap_or_else(|| entry.name.clone());
+                let icon = ui::icons::icon_for_path(
+                    std::path::Path::new(&path),
+                    entry.kind == EntryKind::Folder,
+                );
+                // Listed as the project's files, each with the picture its
+                // kind of file wears in the explorer.
+                SearchEntry::new(entry.name.clone(), path)
+                    .anchored(crate::actions::file_resource_id(id))
+                    .grouped(FILES_GROUP)
+                    .with_icon(icon.name())
             })
             .collect()
     }
@@ -685,6 +691,9 @@ impl Project {
             .collect()
     }
 }
+
+/// The heading the project's files are listed under in a search.
+const FILES_GROUP: &str = "Files";
 
 fn untitled(name: Option<String>) -> String {
     name.filter(|name| !name.trim().is_empty())

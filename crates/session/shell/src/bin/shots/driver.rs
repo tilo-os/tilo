@@ -47,6 +47,26 @@ mod window_menu_scene;
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
 
+/// The places an app-search scene's Files window keeps among its Favorites,
+/// pinned by its `add-bookmark`.
+const FILES_SEED: &[(&str, &str, &str)] = &[
+    (
+        "files.folder",
+        "add-bookmark",
+        r#"{"place":"xdg:documents"}"#,
+    ),
+    (
+        "files.folder",
+        "add-bookmark",
+        r#"{"place":"xdg:downloads"}"#,
+    ),
+    (
+        "files.folder",
+        "add-bookmark",
+        r#"{"place":"xdg:pictures"}"#,
+    ),
+];
+
 /// The notes an app-search scene's notebook holds, made by its `new-note`.
 const NOTES_SEED: &[(&str, &str, &str)] = &[
     ("notes.notebook", "new-note", r#"{"title":"Groceries"}"#),
@@ -2032,21 +2052,23 @@ impl ShellDriver {
             "palette" => self.scene_palette(),
             "palette_app_query" => self.scene_palette_app_query(),
             "palette_in_app_query" => self.scene_palette_in_app_query(),
-            "app_search_files" => self.scene_app_search(AppKind::FileExplorer, "Files", "", &[]),
+            "app_search_files" => {
+                self.scene_app_search(AppKind::FileExplorer, "Files", "", FILES_SEED);
+            }
             "app_search_files_query" => {
-                self.scene_app_search(AppKind::FileExplorer, "Files", "doc", &[]);
+                self.scene_app_search(AppKind::FileExplorer, "Files", "doc", FILES_SEED);
             }
             "app_search_code" => {
-                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "", CODE_SEED)
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "", CODE_SEED);
             }
             "app_search_code_query" => {
-                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "new", CODE_SEED)
+                self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "new", CODE_SEED);
             }
             "app_search_notes" => {
-                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "", NOTES_SEED)
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "", NOTES_SEED);
             }
             "app_search_notes_query" => {
-                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "note", NOTES_SEED)
+                self.scene_app_search(AppKind::Other("Notes".into()), "Notes", "note", NOTES_SEED);
             }
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),

@@ -78,12 +78,14 @@ impl Source for Actions<'_> {
             .filter(|flat| offered(flat.action) && !mirrors_a_control(&flat.resource_kind))
             .collect();
         // Two items offering the same action read alike: only then is the
-        // item named under each.
-        let mut rows: std::collections::HashMap<tilo_actions::ListedRow, usize> =
+        // item named under each. The same label on one item names nothing.
+        let mut items: std::collections::HashMap<tilo_actions::ListedRow, Vec<&str>> =
             std::collections::HashMap::new();
         for flat in &flat {
-            let count = rows.entry(flat.row()).or_default();
-            *count = count.saturating_add(1);
+            let named = items.entry(flat.row()).or_default();
+            if !named.contains(&flat.resource_label.as_str()) {
+                named.push(&flat.resource_label);
+            }
         }
         let browsing = needle.trim().is_empty();
         let count = i32::try_from(flat.len()).unwrap_or(i32::MAX);
@@ -95,7 +97,7 @@ impl Source for Actions<'_> {
                     return None;
                 }
                 let mut row = flat.row();
-                if rows.get(&row).is_some_and(|count| *count > 1) {
+                if items.get(&row).is_some_and(|named| named.len() > 1) {
                     row = tilo_actions::listed_row(&flat.action.label, Some(&flat.resource_label));
                 }
                 let score = if browsing {
@@ -107,7 +109,9 @@ impl Source for Actions<'_> {
                     }
                     MAX_PROVIDER_SCORE.saturating_sub(at.min(count))
                 } else if flat.depth == 0 {
-                    rank::action_match_score(needle, &row.title, &flat.resource_label)?
+                    // The window's own actions: the window is what was
+                    // searched, so its name finds none of them.
+                    rank::action_match_score(needle, &row.title, "")?
                 } else {
                     rank::item_action_match_score(needle, &flat.resource_label)?
                 };
@@ -353,6 +357,15 @@ mod tests {
         selection_first(&mut actions);
         let titles: Vec<&str> = actions.iter().map(|hit| hit.title.as_str()).collect();
         assert_eq!(titles, ["Bold", "New note"]);
+    }
+
+    #[test]
+    fn the_windows_own_name_finds_none_of_its_actions() {
+        let hits = search("notebook");
+        assert!(
+            !hits.iter().any(|hit| hit.kind == ResourceKind::Action),
+            "every action of the window is the notebook's: {hits:?}"
+        );
     }
 
     #[test]
