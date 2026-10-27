@@ -155,6 +155,93 @@ fn replaying_history_fills_the_builder_without_sending() {
     assert_eq!(a.selected, None);
 }
 
+/// A history row offers what a person expects of one: replay it, keep it as a
+/// saved request, or forget it (`APP-api-tester-04`). A saved request's row
+/// offers its own two, and neither kind is offered a control that would do
+/// nothing to it.
+#[test]
+fn history_rows_offer_replay_save_and_delete() {
+    let (mut a, doc) = demo();
+    let lift = vello::kurbo::Rect::new(0.0, 100.0, 240.0, 124.0);
+
+    a.open_row_menu("history:1", lift, vello::kurbo::Point::new(40.0, 110.0));
+    let open = a.menu.as_ref().expect("a history row has a menu");
+    let labels: Vec<&str> = open
+        .menu
+        .items()
+        .iter()
+        .filter_map(MenuItem::label)
+        .collect();
+    assert_eq!(
+        labels,
+        ["Replay request", "Save as request…", "Delete from history"]
+    );
+    let commands: Vec<String> = open.commands.iter().map(|cmd| format!("{cmd:?}")).collect();
+    assert_eq!(
+        commands,
+        ["ReplayHistory(1)", "SaveHistory(1)", "DeleteHistory(1)"]
+    );
+
+    a.open_row_menu("request:0:0", lift, vello::kurbo::Point::new(40.0, 110.0));
+    let open = a.menu.as_ref().expect("a saved request has a menu");
+    let labels: Vec<&str> = open
+        .menu
+        .items()
+        .iter()
+        .filter_map(MenuItem::label)
+        .collect();
+    assert_eq!(labels, ["Rename request", "Delete request"]);
+
+    // A row that is neither (a collection header) offers nothing at all.
+    a.menu = None;
+    a.open_row_menu("collection:0", lift, vello::kurbo::Point::new(40.0, 110.0));
+    assert!(a.menu.is_none(), "no menu for a row with no actions");
+    drop(doc);
+}
+
+/// Keeping a sent request as a saved one asks for its name and leaves the
+/// builder alone; forgetting it takes it out of the history, and Undo brings
+/// it back because the verb is a change of the record.
+#[test]
+fn a_sent_request_is_saved_as_a_request_or_forgotten() {
+    let (mut a, mut doc) = demo();
+    let before = record(&doc).history_shown().len();
+    assert!(before > 0, "the demo sent something");
+    let builder = a.request.url.clone();
+
+    push(&a, Cmd::SaveHistory(0));
+    drain(&mut a, &mut doc);
+    let form = a.form.as_ref().expect("the sheet opens");
+    assert_eq!(form.mode, FormMode::SaveSent);
+    assert!(
+        !form.fields.name.get().is_empty(),
+        "the name starts from the route it sent"
+    );
+    assert_eq!(a.request.url, builder, "the builder keeps its request");
+    form.fields.name.set("Failures at 14:02".into());
+    push(&a, Cmd::SubmitForm);
+    drain(&mut a, &mut doc);
+    let stored = record(&doc);
+    let shown = stored.collections_shown();
+    let saved: Vec<&str> = shown
+        .iter()
+        .flat_map(|collection| collection.requests.iter().map(|r| r.name.as_str()))
+        .collect();
+    assert!(
+        saved.contains(&"Failures at 14:02"),
+        "the sent request is a saved one now: {saved:?}"
+    );
+    assert_eq!(a.request.url, builder, "and the builder is still the one");
+
+    push(&a, Cmd::DeleteHistory(0));
+    drain(&mut a, &mut doc);
+    assert_eq!(
+        record(&doc).history_shown().len(),
+        before - 1,
+        "the entry is gone from the history"
+    );
+}
+
 /// The environment picker is wired through the action host: selecting a new
 /// environment submits exactly the field edit of the active environment an
 /// agent would, and the choice lands in the shared document. Its commands
@@ -326,6 +413,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         FormMode::RenameRequest,
         FormTarget {
             collection: Some(collection.clone()),
+            sent: None,
             request: Some(request.clone()),
         },
     );
@@ -365,6 +453,7 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         &a,
         Cmd::DeleteRequest(FormTarget {
             collection: Some(collection),
+            sent: None,
             request: Some(request),
         }),
     );

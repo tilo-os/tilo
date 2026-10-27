@@ -311,6 +311,98 @@ fn sent_requests_are_history_that_opens_again() {
     );
 }
 
+/// A sent request is kept as a saved one with what it sent, without moving
+/// the builder; forgetting it is a deletion Undo takes back, so nobody is
+/// asked first (`APP-api-tester-04`).
+#[test]
+fn a_sent_request_saves_as_a_request_or_is_forgotten() {
+    let mut workspace = seeded();
+    workspace
+        .apply(Workspace::RECORD_SENT.with(workspace::RecordSent {
+            method: "POST".into(),
+            url: "https://api.example.com/users?token=secret".into(),
+            status: 201,
+            duration_ms: 7,
+        }))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    let (sent, _) = state.history.iter().next().unwrap();
+    let (sent, collection) = (sent.clone(), collection_id(&workspace));
+    assert!(
+        state
+            .saved(&sent)
+            .is_none(),
+        "the history is not a collection"
+    );
+    // What the builder holds, which saving from the history must not move.
+    let builder = state.request.url.clone();
+    drop(state);
+
+    workspace
+        .apply(Workspace::SAVE_SENT.with(workspace::SaveSent {
+            collection: collection.clone(),
+            sent: sent.clone(),
+            name: None,
+        }))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    let (_, saved) = state
+        .collections
+        .get(&collection)
+        .unwrap()
+        .requests
+        .iter()
+        .find(|(_, request)| request.name.contains("/users"))
+        .expect("the sent request is a saved one");
+    let saved = saved.clone();
+    assert_eq!(saved.method, HttpMethod::Post);
+    assert!(
+        saved.url.starts_with("https://api.example.com/users"),
+        "the address came along: {}",
+        saved.url
+    );
+    assert!(
+        !saved.name.contains("token"),
+        "the name leaves out the query: {}",
+        saved.name
+    );
+    assert_eq!(
+        state.request.url, builder,
+        "saving from the history leaves the builder alone"
+    );
+    drop(state);
+
+    // The history's own row offers both, and forgetting one is a deletion
+    // Undo takes back: nobody is asked first.
+    let tree = workspace.published().unwrap();
+    let history = child(&tree, &item_resource_id::<Workspace>("history", &sent));
+    for verb in ["open-sent", "delete-sent"] {
+        let action = history
+            .actions
+            .iter()
+            .find(|action| action.id == verb)
+            .unwrap_or_else(|| panic!("a history row offers {verb}"));
+        assert!(
+            action.contract.can_be_undone(),
+            "{verb}: Undo brings the entry back"
+        );
+        assert!(!action.contract.requires_confirmation(), "{verb} asks nobody");
+    }
+
+    workspace
+        .apply(Workspace::DELETE_SENT.with(sent.clone()))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    assert!(
+        !state.history.contains(&sent),
+        "the entry is out of the history"
+    );
+    assert!(
+        state.collections.get(&collection).unwrap().requests.len() == 2,
+        "the saved request stays"
+    );
+}
+
 /// A credential never reaches the record: a request's auth keeps its scheme
 /// and public fields, a secret variable carries no value.
 #[test]

@@ -419,7 +419,12 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
         !d.targets().contains_key("api.form-name"),
         "maintenance forms are hidden until the row action asks for one"
     );
-    act_named(d, "Rename request List users", &ui::a11y::Action::Activate);
+    // A row's own actions are behind its More, so a history row is never
+    // offered a rename; the menu's rows are how assistive technology picks
+    // one.
+    act_named(d, "More List users", &ui::a11y::Action::Activate);
+    d.key("ArrowDown");
+    d.key("Enter");
     assert!(d.targets().contains_key("api.form-name"));
     assert!(!d.targets().contains_key("api.form-variable-key"));
     d.perform_named("api.form-name", &ui::a11y::Action::Focus)
@@ -431,7 +436,7 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
             .and_then(|node| node.name)
             .as_deref(),
         Some("Requests"),
-        "Escape returns focus to the navigation control that owns the row action"
+        "focus is back on the navigation control that owns the row actions"
     );
 }
 
