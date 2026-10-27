@@ -241,7 +241,7 @@ for phase in early late late late late late late late late; do
       -u tilo-firstboot-user.service -u tilo-installer-setup.service \
       --no-pager -n 35 || true
     if [ "$phase" = late ]; then
-      getent passwd tester || echo 'TILO_VALIDATION_NO_QUICKUSER'
+      getent passwd tester || echo 'TILO_VALIDATION_NO_TESTER'
       faillock --user tester 2>&1 || true
       ss -tnlp 2>/dev/null | grep -E ':22\b' || echo 'TILO_VALIDATION_NOTHING_ON_22'
       ss -tn 2>/dev/null | grep -E ':22\b' || true
