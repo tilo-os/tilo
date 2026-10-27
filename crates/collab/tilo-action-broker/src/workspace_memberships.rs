@@ -261,6 +261,54 @@ impl CapnpBrokerState {
         )
     }
 
+    /// Whether `room`'s membership actions are published on this broker.
+    pub(crate) fn membership_published(&self, room: &str) -> bool {
+        self.workspace_membership_peers
+            .lock()
+            .is_ok_and(|peers| peers.contains_key(room))
+    }
+
+    /// Told whether `room`'s membership actions are published: at once when
+    /// they are, else once the broker's loop has refreshed its membership
+    /// surfaces, which this asks for. A room this device just made or joined
+    /// is published by that refresh; an app opening there right away asks
+    /// its membership of the room only then. The receiver's sender drops
+    /// with the broker, which also answers that they are not.
+    pub(crate) fn await_membership_surface(&self, room: &str) -> std::sync::mpsc::Receiver<bool> {
+        let (told, published) = std::sync::mpsc::channel();
+        if self.membership_published(room) {
+            let _ = told.send(true);
+            return published;
+        }
+        if let Ok(mut waiting) = self.membership_surface_waiters.lock() {
+            waiting.push((room.to_owned(), told));
+        }
+        tilo_identity_host::policy_change::announce();
+        published
+    }
+
+    /// The opens waiting for a membership refresh, taken before it reads
+    /// the rooms ([`Self::await_membership_surface`]).
+    pub(super) fn take_membership_surface_waiters(
+        &self,
+    ) -> Vec<(String, std::sync::mpsc::Sender<bool>)> {
+        self.membership_surface_waiters
+            .lock()
+            .map(|mut waiting| std::mem::take(&mut *waiting))
+            .unwrap_or_default()
+    }
+
+    /// Tell `waiting` whether their rooms' membership actions are published
+    /// now that the refresh they waited for ran.
+    pub(super) fn answer_membership_surface_waiters(
+        &self,
+        waiting: Vec<(String, std::sync::mpsc::Sender<bool>)>,
+    ) {
+        for (room, told) in waiting {
+            let _ = told.send(self.membership_published(&room));
+        }
+    }
+
     pub(super) fn refresh_workspace_membership_services(self: &Arc<Self>) -> Result<(), String> {
         let Some(service) = self.services.workspace_memberships.clone() else {
             return Ok(());
@@ -1059,6 +1107,64 @@ mod tests {
                         .iter()
                         .any(|(resource, _)| *resource == "desktop:checkpoints"),
                     "a checkpoint is this device's custody, not the host's"
+                );
+                drop(state);
+            })
+            .await;
+    }
+
+    /// An app opened in a room that appeared since the broker last published
+    /// its rooms' membership actions waits for the broker's loop to publish
+    /// them, rather than being refused because it came first.
+    #[tokio::test]
+    async fn an_open_in_a_new_room_is_told_once_its_membership_actions_are_published() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Made just now",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                assert!(!state.membership_published(&room));
+                let published = state.await_membership_surface(&room);
+                assert!(
+                    published.try_recv().is_err(),
+                    "not told before the broker's loop has looked"
+                );
+                state.refresh_policy_surfaces();
+                assert_eq!(published.try_recv(), Ok(true));
+                assert_eq!(
+                    state.await_membership_surface(&room).try_recv(),
+                    Ok(true),
+                    "a room already published is told at once"
+                );
+
+                let unknown = uuid::Uuid::new_v4().to_string();
+                let refused = state.await_membership_surface(&unknown);
+                state.refresh_policy_surfaces();
+                assert_eq!(
+                    refused.try_recv(),
+                    Ok(false),
+                    "a room the broker publishes nothing for is told so, not left waiting"
                 );
                 drop(state);
             })
