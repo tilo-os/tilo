@@ -261,6 +261,12 @@ enum PendingResourceOperation {
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
     },
+    FileTransfer {
+        reply: Option<ui::framework::EffectReply>,
+        connection_id: ConnectionId,
+        session_generation: u64,
+        completion: std::sync::mpsc::Receiver<Result<u64, String>>,
+    },
 }
 
 /// Everything a control can ask for. Queued by the views
