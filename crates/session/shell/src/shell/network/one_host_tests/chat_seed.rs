@@ -194,6 +194,11 @@ struct NewWorkspace {
     person: String,
 }
 
+/// `keys`, each in hex.
+fn hex_keys(keys: &[[u8; 32]]) -> Vec<String> {
+    keys.iter().map(hex::encode).collect()
+}
+
 fn new_workspace(
     home: &mut tilo_test_env::TestHome,
     dir: &std::path::Path,
@@ -224,20 +229,32 @@ fn new_workspace(
         DeviceCapabilities::member(),
         &wakes,
     );
+    let (_, room) = hosted_workspace(&desktop, &[&laptop], "Projects");
+    laptop.reach(&desktop);
+    until_or_say(
+        &[&desktop, &laptop],
+        "the laptop to hold the workspace",
+        || laptop.holds(room).then_some(()),
+        || {
+            format!(
+                "; the desktop {} counts as Ada's devices {:?}, the laptop {} counts {:?}",
+                hex::encode(desktop.cert().device_public_key),
+                hex_keys(&desktop.net().personal_device_keys()),
+                hex::encode(laptop.cert().device_public_key),
+                hex_keys(&laptop.net().personal_device_keys()),
+            )
+        },
+    );
     // The desktop keeps its identity on this machine as such a device
     // does, so its session's broker signs what it admits as the desktop.
+    // One process runs both devices and the identity tree is the
+    // process's, so it names the desktop only once the laptop holds the
+    // workspace: Ada's devices met each other as their sessions do.
     home.env()
         .set("TILO_IDENTITY_ROOT", &dir.join("desktop"))
         .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
     desktop.keep_identity_on_disk(
         &runtime_identity::identity_dir_from_env().expect("the identity directory"),
-    );
-    let (_, room) = hosted_workspace(&desktop, &[&laptop], "Projects");
-    laptop.reach(&desktop);
-    until(
-        &[&desktop, &laptop],
-        "the laptop to hold the workspace",
-        || laptop.holds(room).then_some(()),
     );
     NewWorkspace {
         desktop,
