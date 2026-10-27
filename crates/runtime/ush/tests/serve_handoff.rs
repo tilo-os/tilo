@@ -651,6 +651,96 @@ fn run_handoff() {
     );
 }
 
+/// A session whose guest cannot be set up writes nothing on its terminal:
+/// the reason is the supervisor's to log, and the app reads on the
+/// session's lease that the guest was not set up, not that a shell exited.
+#[test]
+fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut env, store, socket, _granted) = serve_fixture(dir.path());
+    // A record that grants a host cannot start where the kernel refuses the
+    // packet filter: setup fails after the terminal was handed over.
+    env.set("TILO_USH_EGRESS_REFUSE_NETFILTER", "1");
+    Records::at(store.records_root())
+        .apply(
+            DEFAULT_RECORD,
+            Environment::ALLOW_HOST.with("granted.test".to_owned()),
+        )
+        .unwrap();
+
+    let stream = UnixStream::connect(&socket).expect("connect");
+    (&stream)
+        .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+        .unwrap();
+    let (ready, _) = runtime_portal::fd_transport::recv_with_fds(&stream).expect("hello answer");
+    assert!(
+        String::from_utf8_lossy(&ready).contains("\"ready\""),
+        "{}",
+        String::from_utf8_lossy(&ready)
+    );
+    let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
+        target: Target::default_environment(),
+        cols: 100,
+        rows: 30,
+        term: Some("xterm-256color".into()),
+        command: Vec::new(),
+        requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
+        runs: None,
+        editor_protocol: None,
+        end_report: true,
+    })
+    .unwrap();
+    request.push(b'\n');
+    (&stream).write_all(&request).unwrap();
+    let (payload, mut rights) =
+        runtime_portal::fd_transport::recv_with_fds(&stream).expect("session answer");
+    assert_eq!(
+        rights.len(),
+        2,
+        "a pty and a lease: {}",
+        String::from_utf8_lossy(&payload)
+    );
+    let lease = UnixStream::from(rights.pop().unwrap());
+    let master = rights.pop().unwrap();
+
+    // The lease says how the session ended, then closes.
+    lease
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    let mut report = String::new();
+    (&lease)
+        .read_to_string(&mut report)
+        .expect("the lease closes after its report");
+    let report: serde_json::Value = serde_json::from_str(report.trim())
+        .unwrap_or_else(|e| panic!("not one report line {report:?}: {e}"));
+    assert_eq!(report["ended"], "failed", "{report}");
+    assert!(
+        report["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("network filter")),
+        "the reason, for the log, names the cause: {report}"
+    );
+
+    // The guest's terminal shows none of it.
+    let seen = read_until(master.as_raw_fd(), "\u{0}", Duration::from_millis(500));
+    assert!(
+        seen.trim().is_empty(),
+        "setup errors are never written on the person's terminal:\n{seen}"
+    );
+}
+
 /// A guest whose sandbox cannot be built says why in words under `bwrap`'s
 /// own one-line reason; one that can be built runs without that notice.
 /// Both halves assert: which one runs depends on the machine, as probed.

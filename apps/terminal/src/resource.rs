@@ -523,6 +523,11 @@ pub enum TerminalEffect {
     /// Clear screen
     #[effect(destructive)]
     Clear,
+    /// Restart shell
+    ///
+    /// Starts the session's shell again in place, after it ended.
+    #[effect(destructive)]
+    Restart,
     /// Paste
     ///
     /// Pastes the exact supplied text; clipboard contents are never re-read

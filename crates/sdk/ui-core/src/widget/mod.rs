@@ -3227,6 +3227,8 @@ pub use scrollable::{ScrollAxis, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
+mod overlay_scrollbar;
+pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{

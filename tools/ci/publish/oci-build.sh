@@ -10,7 +10,7 @@
 # nothing, copies every layer whole, so an image FROM the multi-GB CI builder or the bootc base
 # filled the step's memory and disk.
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
 context=${1:?usage: oci-build.sh CONTEXT CONTAINERFILE OUT [buildah args]}
 containerfile=${2:?}
 out=${3:?}

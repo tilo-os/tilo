@@ -66,7 +66,7 @@ class PublishedPointers(unittest.TestCase):
     def test_the_payload_publish_desktop_payload_writes_is_a_desktop_payload_pointer(self):
         with tempfile.TemporaryDirectory() as temp:
             tree = Path(temp) / "tree"
-            for name in ("dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"):
+            for name in ("dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"):
                 (tree / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / name, tree / name)
             lane = tree / "dist/ci-output/fedora-44-amd64"

@@ -3206,6 +3206,9 @@ fn a_peer_pointer_move_repaints_under_one_percent_of_a_4k_output_in_every_theme(
         ("high contrast", Theme::high_contrast()),
     ] {
         let (mut frame, _clock) = settled_builder_in(theme);
+        // The glance the resting pointer brings opens on its own clock, and
+        // two paints a moment apart catch it at different opacities.
+        settle_desk(&mut frame);
         assert_peer_move_is_sparse(&mut frame, &format!("peer pointer move, {name}"));
     }
 }
