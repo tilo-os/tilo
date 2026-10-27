@@ -104,6 +104,171 @@ pub enum RunOutcome {
     Stopped,
 }
 
+/// How wide a sub-issue's run is, within what its parent task's run holds.
+///
+/// A parent launches the work of the issues under it, so what it may do is
+/// the ceiling every sub-issue works within: a preset only takes away, and
+/// the parent's own permissions are asked again at every step its
+/// sub-issue takes, so revoking one narrows every descendant at once.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskPreset {
+    /// Everything the parent's run holds.
+    #[default]
+    Inherit,
+    /// The parent's run without `apps`: every permission of each of those
+    /// apps, and every permission in a scope that names one of that app's
+    /// resources.
+    InheritMinus { apps: Vec<String> },
+    /// Only these: what is listed, each of which the parent must hold too.
+    Explicit { permissions: Vec<String> },
+}
+
+impl TaskPreset {
+    /// The permission that takes away every permission of `app` in the
+    /// subtree the task works in.
+    #[must_use]
+    pub fn app_permission(app: &str) -> String {
+        format!("{app}/*")
+    }
+}
+
+/// The shortest permission a preset may name: `<app>/*`.
+const SHORTEST_PERMISSION: usize = 4;
+
+/// Whether `permission` is one a preset may name: the app pattern `app/*`,
+/// or a part of what an app's actions are done to (`app/rest`), never a
+/// bare word. An app's own id may hold dots (`so.tilo.notes`), so `/` is
+/// what tells the app from the rest.
+#[must_use]
+pub fn names_a_permission(permission: &str) -> bool {
+    permission.trim() == permission
+        && permission.len() >= SHORTEST_PERMISSION
+        && !permission.contains(char::is_whitespace)
+        && permission
+            .split_once('/')
+            .is_some_and(|(app, rest)| !app.is_empty() && !rest.is_empty())
+}
+
+/// Whether `permission` is the app pattern `app/*`: every permission of one
+/// app.
+#[must_use]
+pub fn is_app_permission(permission: &str) -> bool {
+    permission
+        .strip_suffix("/*")
+        .is_some_and(|app| !app.is_empty() && !app.contains('*'))
+}
+
+/// Whether granting `permission` grants `held`: they are the same, or
+/// `permission` is an app pattern and `held` sits in that app.
+#[must_use]
+pub fn admits_permission(permission: &str, held: &str) -> bool {
+    if permission == held {
+        return true;
+    }
+    // An app's own id may hold dots (`so.tilo.notes`), so the pattern names
+    // the app whole: what it admits is what sits in that very app.
+    is_app_permission(permission)
+        && permission
+            .strip_suffix("/*")
+            .is_some_and(|app| held.split_once('/').is_some_and(|(held, _)| held == app))
+}
+
+impl TaskPreset {
+    /// The permissions this preset leaves of `parent`'s, in the order the
+    /// parent's were given: each one whose grant the preset admits.
+    /// Permissions of `parent` a preset lists but does not hold are not
+    /// among them: the effective set is the preset within the parent's.
+    #[must_use]
+    pub fn within<'a>(&'a self, parent: &'a [String]) -> Vec<String> {
+        match self {
+            Self::Inherit => parent.to_vec(),
+            Self::InheritMinus { apps } => parent
+                .iter()
+                .filter(|permission| {
+                    !apps
+                        .iter()
+                        .any(|app| admits_permission(&Self::app_permission(app), permission))
+                })
+                .cloned()
+                .collect(),
+            Self::Explicit { permissions } => permissions
+                .iter()
+                .filter(|listed| parent.iter().any(|held| admits_permission(listed, held)))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The permissions this preset names on its own, for a task with no task
+    /// above it to settle within: an inherit names none, an inherit-minus
+    /// names the app patterns it takes away, an explicit list names itself.
+    #[must_use]
+    pub fn named(&self) -> Vec<String> {
+        match self {
+            Self::Inherit => Vec::new(),
+            Self::InheritMinus { apps } => {
+                apps.iter().map(|app| Self::app_permission(app)).collect()
+            }
+            Self::Explicit { permissions } => permissions.clone(),
+        }
+    }
+
+    /// What keeps this preset from being settled: every permission it asks
+    /// for that `parent`'s run does not hold, in the order it named them.
+    ///
+    /// Taking an app away asks for nothing, so an inherit-minus is never
+    /// outside: it leaves the task under it holding less than the task above
+    /// it, whatever it names.
+    #[must_use]
+    pub fn outside(&self, parent: &[String]) -> Vec<String> {
+        match self {
+            Self::Inherit | Self::InheritMinus { .. } => Vec::new(),
+            Self::Explicit { permissions } => permissions
+                .iter()
+                .filter(|listed| !parent.iter().any(|held| admits_permission(listed, held)))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The preset as a person reads it: Inherit, Inherit minus … of …, or
+    /// each permission it names.
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        match self {
+            Self::Inherit => "Inherit".into(),
+            Self::InheritMinus { apps } if apps.is_empty() => "Inherit".into(),
+            Self::InheritMinus { apps } => format!(
+                "Inherit minus {}",
+                apps.iter()
+                    .map(|app| Self::app_permission(app))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Explicit { permissions } => permissions.join(", "),
+        }
+    }
+}
+
+/// A permission as a person reads it: what it is done to, in its app.
+///
+/// A permission is written `app/rest`, where the app's id may hold dots and
+/// `rest` is the part of the tree below it: `so.tilo.notes/note.body.change`
+/// reads as "note body change in so.tilo.notes", and `so.tilo.notes/*` as
+/// "everything in so.tilo.notes". Someone reading a task's permissions reads
+/// what it may do in an app, not a path through the action tree.
+#[must_use]
+pub fn permission_sentence(permission: &str) -> String {
+    let Some((app, rest)) = permission.split_once('/') else {
+        return permission.to_owned();
+    };
+    if rest == "*" {
+        return format!("everything in {app}");
+    }
+    format!("{} in {app}", rest.replace(['/', '.'], " "))
+}
+
 /// Time ceilings for an issue's runs.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {

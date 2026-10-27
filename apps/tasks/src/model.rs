@@ -21,7 +21,8 @@ pub use issue::{
 pub use record::{Tracker, tracker};
 pub use run::{
     Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
-    RunOutcome, RunPhase,
+    RunOutcome, RunPhase, TaskPreset, admits_permission, is_app_permission, names_a_permission,
+    permission_sentence,
 };
 
 /// The record kind issues live in.

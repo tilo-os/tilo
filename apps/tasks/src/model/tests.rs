@@ -8,8 +8,8 @@
 use ui::tilo_resource::{Id, Replica};
 
 use crate::model::{
-    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status, Tracker,
-    agent_assignee, tracker,
+    Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, Status,
+    TaskPreset, Tracker, agent_assignee, tracker,
 };
 
 const AGENT: &str = "agent:claude";
@@ -371,6 +371,8 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                 }),
                 subject: None,
                 quick: false,
+                parent: None,
+                preset: crate::model::TaskPreset::Inherit,
             },
         })
     };
@@ -847,75 +849,362 @@ fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
     assert!(run.paused.is_none(), "a stopped run is not still paused");
 }
 
-#[test]
-fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
-    let mut person = ada();
-    let id = Id::from_raw("quick");
-    person
-        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
-            ask: crate::model::AgentRequest {
-                id: id.clone(),
-                title: "Which venue seats 120?".into(),
-                body: None,
-                agent: "claude".into(),
-                model: None,
-                subject: None,
-                quick: true,
+/// An ask of `preset` under `parent`, made as its agent asks for the work
+/// under a task it runs.
+fn ask(id: &str, parent: Option<Id>, preset: TaskPreset) -> ui::tilo_resource::Invoke<Tracker> {
+    Tracker::ASK_AGENT.with(tracker::AskAgent {
+        ask: crate::model::AgentRequest {
+            id: Id::from_raw(id),
+            title: format!("part {id}"),
+            body: None,
+            agent: "claude".into(),
+            model: None,
+            subject: None,
+            quick: false,
+            parent,
+            preset,
+        },
+    })
+}
+
+fn preset_of(replica: &Replica<Tracker>, id: &str) -> Vec<String> {
+    replica
+        .state()
+        .unwrap()
+        .issues
+        .get(&Id::from_raw(id))
+        .expect("the issue is there")
+        .effective_permissions()
+}
+
+/// A whole task with no task under it: it holds nothing, as a subtask whose
+/// task above was never settled holds nothing.
+fn rooted(id: &str) -> Id {
+    Id::from_raw(id)
+}
+
+fn start(replica: &mut Replica<Tracker>, id: &str) {
+    replica.apply(ask(id, None, TaskPreset::Inherit)).unwrap();
+}
+
+/// A subtask of `parent`, asked by the task above's own agent, as a run
+/// launching part of its work does.
+fn start_below(replica: &mut Replica<Tracker>, id: &str, parent: &str) {
+    let mut agent = replica.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(ask(id, Some(rooted(parent)), TaskPreset::Inherit))
+        .unwrap();
+    replica.sync_with(&mut agent).unwrap();
+}
+
+/// The Tasks app's issues, as a permission: a change among them.
+const ISSUES: &str = "so.tilo.tasks/issues.change";
+/// Writing a note's body.
+const NOTES: &str = "so.tilo.notes/note.body.change";
+
+/// The permissions a preset settles on, as a list.
+fn held(permissions: &[&str]) -> Vec<String> {
+    permissions
+        .iter()
+        .map(|permission| (*permission).to_owned())
+        .collect()
+}
+
+/// Stop whatever run `id`'s task has going, as its person does to change
+/// what it may do.
+fn stop(replica: &mut Replica<Tracker>, id: &str) {
+    if replica
+        .state()
+        .unwrap()
+        .issues
+        .get(&rooted(id))
+        .is_some_and(|issue| issue.active_run().is_some())
+    {
+        replica
+            .apply(Tracker::STOP_RUN.with(tracker::StopRun { issue: rooted(id) }))
+            .unwrap();
+    }
+}
+
+/// A task at the top whose preset is `held`, settled by its own person.
+fn task_holding(replica: &mut Replica<Tracker>, id: &str, held: &[&str]) {
+    start(replica, id);
+    stop(replica, id);
+    replica
+        .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+            issue: rooted(id),
+            preset: TaskPreset::Explicit {
+                permissions: held.iter().map(|held| (*held).to_owned()).collect(),
             },
         }))
         .unwrap();
-    assert!(
-        person.state().unwrap().issues.get(&id).unwrap().quick,
-        "the task it made is a question"
-    );
-    let mut agent = person.fork().as_agent_for(AGENT, "ada");
-    agent
-        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
-            issue: id.clone(),
-            outcome: RunOutcome::Done,
-            summary: Some("The old depot on Mill Street seats 120.".into()),
-        }))
-        .unwrap();
-    let state = agent.state().unwrap();
-    let issue = state.issues.get(&id).unwrap();
     assert_eq!(
-        issue.status,
-        Status::Done,
-        "an answered question ends rather than waiting for a review"
+        preset_of(replica, id),
+        held.to_vec(),
+        "{id} holds what it was asked for"
     );
-    // What was asked and what came back stay in the task, findable later.
-    assert_eq!(issue.comments.len(), 1);
-    assert_eq!(issue.title, "Which venue seats 120?");
+}
+
+/// Whether `error` reads as the permission `wanted`, in a person's words.
+fn names(error: &str, wanted: &str) -> bool {
+    error.starts_with("Not allowed:") && error.contains(wanted)
 }
 
 #[test]
-fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
+fn a_task_at_the_top_settles_its_own_preset() {
     let mut person = ada();
-    let id = Id::from_raw("work");
+    // Nothing narrows a task with no task above it, so a preset it names is
+    // read as well formed and left to be settled as its run is admitted.
     person
-        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
-            ask: crate::model::AgentRequest {
-                id: id.clone(),
-                title: "Write the launch notes".into(),
-                body: None,
-                agent: "claude".into(),
-                model: None,
-                subject: None,
-                quick: false,
+        .apply(ask("root", None, TaskPreset::Inherit))
+        .unwrap();
+    assert!(preset_of(&person, "root").is_empty());
+    let error = person
+        .apply(ask(
+            "word",
+            None,
+            TaskPreset::Explicit {
+                permissions: vec!["write".into()],
+            },
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not name a permission"), "{error}");
+}
+
+#[test]
+fn nothing_working_under_a_task_holds_what_it_does_not() {
+    let mut person = ada();
+    task_holding(&mut person, "root", &[ISSUES]);
+    let root = rooted("root");
+
+    // What the task above does not hold is asked of the task, never taken on
+    // the asking's word.
+    let error = person
+        .apply(ask(
+            "greedy",
+            Some(root.clone()),
+            TaskPreset::Explicit {
+                permissions: vec![NOTES.into()],
+            },
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        names(&error, "note body change in so.tilo.notes"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("so.tilo.notes/"),
+        "the permission, in the words a person reads: {error}"
+    );
+
+    // A preset that names no permission is refused whoever asks.
+    let error = person
+        .apply(ask(
+            "word",
+            Some(root),
+            TaskPreset::Explicit {
+                permissions: vec!["write".into()],
+            },
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not name a permission"), "{error}");
+}
+
+#[test]
+fn a_subtask_is_settled_within_the_task_that_launched_it() {
+    let mut person = ada();
+    task_holding(&mut person, "root", &[ISSUES, NOTES]);
+    let root = rooted("root");
+
+    // Everything the task above holds, and nothing more.
+    start_below(&mut person, "plain", "root");
+    assert_eq!(preset_of(&person, "plain"), held(&[ISSUES, NOTES]));
+
+    // All of it but the notes.
+    stop(&mut person, "plain");
+    person
+        .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+            issue: rooted("plain"),
+            preset: TaskPreset::InheritMinus {
+                apps: vec!["so.tilo.notes".into()],
             },
         }))
         .unwrap();
-    let mut agent = person.fork().as_agent_for(AGENT, "ada");
-    agent
-        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
-            issue: id.clone(),
-            outcome: RunOutcome::Done,
-            summary: None,
+    assert_eq!(preset_of(&person, "plain"), held(&[ISSUES]));
+    assert_eq!(
+        person
+            .state()
+            .unwrap()
+            .issues
+            .get(&rooted("plain"))
+            .unwrap()
+            .permitted_by,
+        held(&[ISSUES, NOTES]),
+        "and it reads what the preset left of what the task above holds"
+    );
+
+    // Only these: the one it names, of what the task above holds.
+    start_below(&mut person, "listed", "root");
+    stop(&mut person, "listed");
+    person
+        .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+            issue: rooted("listed"),
+            preset: TaskPreset::Explicit {
+                permissions: vec![ISSUES.into()],
+            },
         }))
         .unwrap();
+    assert_eq!(preset_of(&person, "listed"), held(&[ISSUES]));
+    let _ = root;
+}
+
+#[test]
+fn taking_a_permission_from_a_task_leaves_every_task_under_it_without_it() {
+    let mut person = ada();
+    task_holding(&mut person, "root", &[ISSUES, NOTES]);
+    start_below(&mut person, "child", "root");
+    start_below(&mut person, "below", "child");
     assert_eq!(
-        agent.state().unwrap().issues.get(&id).unwrap().status,
-        Status::InReview,
-        "work done by an agent is reviewed, not closed"
+        preset_of(&person, "below"),
+        held(&[ISSUES, NOTES]),
+        "a task two deep works under a task under a task"
+    );
+
+    // Narrowing the task at the top leaves the tasks under it holding what
+    // it holds now, never what it held.
+    stop(&mut person, "root");
+    person
+        .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+            issue: rooted("root"),
+            preset: TaskPreset::Explicit {
+                permissions: vec![ISSUES.into()],
+            },
+        }))
+        .unwrap();
+    assert_eq!(preset_of(&person, "root"), held(&[ISSUES]));
+
+    // Asking again for the notes under the child is refused in the words a
+    // person reads: the child's own set is what a task under it is settled
+    // within, and that no longer holds them.
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let error = agent
+        .apply(ask(
+            "wider",
+            Some(rooted("child")),
+            TaskPreset::Explicit {
+                permissions: vec![NOTES.into()],
+            },
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        names(&error, "note body change in so.tilo.notes"),
+        "{error}"
+    );
+
+    // Settled again by the child's own run, the task below holds what the
+    // child holds now.
+    let mut child_agent = person.fork().as_agent_for(AGENT, "ada");
+    child_agent
+        .apply(
+            Tracker::SETTLE_PERMISSIONS.with(tracker::SettlePermissions {
+                issue: rooted("below"),
+            }),
+        )
+        .unwrap();
+    person.sync_with(&mut child_agent).unwrap();
+    assert_eq!(preset_of(&person, "below"), held(&[ISSUES]));
+    assert_eq!(
+        person
+            .state()
+            .unwrap()
+            .issues
+            .get(&rooted("below"))
+            .unwrap()
+            .permitted_by,
+        held(&[ISSUES])
+    );
+}
+
+#[test]
+fn only_a_person_or_the_runs_own_agent_changes_what_it_may_do() {
+    let mut person = ada();
+    task_holding(&mut person, "root", &[ISSUES, NOTES]);
+    start_below(&mut person, "child", "root");
+    let child = rooted("child");
+    let narrower = TaskPreset::InheritMinus {
+        apps: vec!["so.tilo.notes".into()],
+    };
+
+    // Another agent does not narrow it.
+    let mut stranger = person.fork().as_agent_for("agent:other", "ada");
+    assert!(
+        stranger
+            .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+                issue: child.clone(),
+                preset: narrower.clone(),
+            }))
+            .is_err(),
+        "another agent changes nothing here"
+    );
+
+    // The person who approved the task above does, once no run of the
+    // subtask is going.
+    assert!(
+        person
+            .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+                issue: child.clone(),
+                preset: narrower.clone(),
+            }))
+            .is_err(),
+        "not under a going run"
+    );
+    stop(&mut person, "child");
+    person
+        .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+            issue: child.clone(),
+            preset: narrower,
+        }))
+        .unwrap();
+    assert_eq!(preset_of(&person, "child"), held(&[ISSUES]));
+
+    // And never more than the task above holds.
+    assert!(
+        person
+            .apply(Tracker::SET_PRESET.with(tracker::SetPreset {
+                issue: child,
+                preset: TaskPreset::Explicit {
+                    permissions: vec!["so.tilo.mail/mailbox.change".into()],
+                },
+            }))
+            .is_err(),
+        "a permission the task above does not hold"
+    );
+}
+
+#[test]
+fn a_preset_names_the_permissions_it_hands_a_task() {
+    // An app-wide permission admits every permission below it, and not one
+    // of another app whose id starts the same way.
+    assert!(crate::model::run::admits_permission(
+        "so.tilo.notes/*",
+        NOTES
+    ));
+    assert!(!crate::model::run::admits_permission(
+        "so.tilo.notes/*",
+        "so.tilo.notes-archive/note.body.change"
+    ));
+    // A permission in the words a person reads names what it is done to and
+    // the app it is done in, never a path through the tree.
+    assert_eq!(
+        crate::model::run::permission_sentence(NOTES),
+        "note body change in so.tilo.notes"
+    );
+    assert_eq!(
+        crate::model::run::permission_sentence("so.tilo.notes/*"),
+        "everything in so.tilo.notes"
     );
 }

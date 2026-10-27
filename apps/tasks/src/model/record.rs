@@ -10,7 +10,7 @@ use crate::model::issue::{
 };
 use crate::model::run::{
     Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
-    RunOutcome, RunPhase,
+    RunOutcome, RunPhase, TaskPreset, names_a_permission,
 };
 
 /// A workspace's issues.
@@ -101,6 +101,70 @@ impl Tracker {
             _ => Ok(()),
         }
     }
+
+    /// What the task above `issue`'s run holds: the ceiling every task under
+    /// it works within.
+    ///
+    /// Read each time from the task at the top of the chain down, each task's
+    /// preset applied within what the task above it holds: a person narrowing
+    /// a task there narrows every task under it at once, and nothing a task
+    /// recorded when it was settled outlives that.
+    ///
+    /// `None` for a task with no task above it: nothing narrows what it was
+    /// asked to do. A chain of more tasks than the tracker holds is a cycle a
+    /// merge made, and nothing in it holds anything.
+    #[must_use]
+    pub fn parent_permissions(&self, issue: &Id) -> Option<Vec<String>> {
+        let parent = self
+            .issues
+            .get(issue)
+            .and_then(|issue| issue.parent.clone());
+        self.parent_permissions_below(parent.as_ref())
+    }
+
+    /// [`Self::parent_permissions`] for a task not in the tracker yet: what the
+    /// task `parent` works under holds, as an id being asked for a subtask
+    /// under it settles within.
+    fn parent_permissions_below(&self, parent: Option<&Id>) -> Option<Vec<String>> {
+        let mut chain = Vec::new();
+        let mut at = parent.cloned();
+        while let Some(id) = at.take() {
+            // A chain longer than the tracker is a cycle a merge made: stop
+            // rather than loop.
+            if chain.len() > self.issues.len() {
+                return Some(Vec::new());
+            }
+            let issue = self.issues.get(&id)?;
+            chain.push(issue.clone());
+            at.clone_from(&issue.parent);
+        }
+        let mut held: Option<Vec<String>> = None;
+        for issue in chain.iter().rev() {
+            held = Some(match &held {
+                Some(above) => issue.preset.within(above),
+                None => issue.preset.named(),
+            });
+        }
+        held
+    }
+
+    /// What `preset` asks for that `parent` does not hold, as a refusal
+    /// naming every permission: a subtask never asks for more than the task
+    /// it works under holds.
+    fn outside(parent: &[String], preset: &TaskPreset) -> Result<(), Refusal> {
+        let outside = preset.outside(parent);
+        if outside.is_empty() {
+            return Ok(());
+        }
+        Err(Refusal::new(format!(
+            "Not allowed: {} outside the task this works under",
+            outside
+                .iter()
+                .map(|permission| crate::model::run::permission_sentence(permission))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
 }
 
 /// The invoker, when a person: the run verbs a person answers refuse agents.
@@ -148,6 +212,16 @@ fn own_run<'a>(cx: &ActionCx, issue: &'a mut Issue) -> Result<&'a mut Run, Refus
     Ok(run)
 }
 
+/// Whether the agent of `issue`'s own run is asking: only the run of a task
+/// launches the work under it, so a subtask is never something else's to
+/// start.
+fn is_agent_asking(cx: &ActionCx, issue: &Issue) -> bool {
+    match (cx.author(), issue.run.as_ref()) {
+        (Some(agent), Some(run)) => by_agent(cx) && run.agent.0 == agent,
+        _ => false,
+    }
+}
+
 /// Refuse a step of a run a person paused: it takes none until they let it
 /// go on.
 fn at_boundary(run: &Run) -> Result<(), Refusal> {
@@ -155,6 +229,30 @@ fn at_boundary(run: &Run) -> Result<(), Refusal> {
         return Err(Refusal::new("The run is paused: no step until it goes on"));
     }
     Ok(())
+}
+
+/// Refuse a preset that does not name permissions: an inherit-minus lists
+/// apps, and an explicit list names permissions, never a bare word.
+fn preset_is_well_formed(preset: &TaskPreset) -> Result<(), Refusal> {
+    match preset {
+        TaskPreset::Inherit => Ok(()),
+        TaskPreset::InheritMinus { apps } => apps
+            .iter()
+            .find(|app| {
+                app.trim().is_empty() || app.contains('*') || app.contains(char::is_whitespace)
+            })
+            .map_or(Ok(()), |app| {
+                Err(Refusal::new(format!("{app} does not name an app")))
+            }),
+        TaskPreset::Explicit { permissions } => permissions
+            .iter()
+            .find(|permission| !names_a_permission(permission))
+            .map_or(Ok(()), |permission| {
+                Err(Refusal::new(format!(
+                    "{permission} does not name a permission"
+                )))
+            }),
+    }
 }
 
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
@@ -271,15 +369,31 @@ impl Tracker {
     /// starts at once, approved by the asking itself.
     ///
     /// # Errors
-    /// Refuses an id already taken, a blank title, an invoker who is not a
-    /// person, or an agent that is not named.
-    #[action(audience = "people", writes = issues)]
+    /// Refuses an id already taken, a blank title, an invoker who is neither a
+    /// person nor the agent of the task this one works under, an agent that
+    /// is not named, or a preset wider than the task above it holds.
+    #[action(writes = issues)]
     pub fn ask_agent(
         &mut self,
         cx: &mut ActionCx,
         #[param(flatten)] ask: AgentRequest,
     ) -> Result<(), Refusal> {
-        let starter = person(cx)?;
+        // A person asks for themselves. An agent asks for part of the work
+        // of the task it runs, and for nothing else: the task above is where
+        // the preset is settled, so the run there is what may narrow it.
+        let starter = match ask.parent.as_ref().and_then(|id| self.issues.get(id)) {
+            Some(parent) if by_agent(cx) && is_agent_asking(cx, parent) => {
+                parent.run.as_ref().map_or_else(
+                    || {
+                        Err(Refusal::new(
+                            "Only the run's own agent starts the work under it",
+                        ))
+                    },
+                    |run| Ok(run.starter.clone()),
+                )?
+            }
+            _ => person(cx)?,
+        };
         if self.issues.contains(&ask.id) {
             return Err(Refusal::new("That issue exists already"));
         }
@@ -287,6 +401,21 @@ impl Tracker {
         if agent.0.trim_start_matches("agent:").is_empty() {
             return Err(Refusal::new("Name the agent to ask"));
         }
+        self.check_parent(ask.parent.as_ref())?;
+        // A subtask works under the task that launched it and within what
+        // that task works within. A task at the top has no task above it to
+        // be settled within, so its preset is what it holds.
+        preset_is_well_formed(&ask.preset)?;
+        let (permitted, held) = match self.parent_permissions_below(ask.parent.as_ref()) {
+            // A preset is settled within what the task at the top of the
+            // chain holds now, read from there rather than from what a task
+            // under it recorded when it was settled.
+            Some(above) => {
+                Self::outside(&above, &ask.preset)?;
+                (ask.preset.within(&above), above)
+            }
+            None => (ask.preset.named(), Vec::new()),
+        };
         let number = self.next_number();
         let now = cx.now_ms();
         let issue = Issue {
@@ -298,6 +427,10 @@ impl Tracker {
             model: ask.model.clone(),
             subject: ask.subject,
             quick: ask.quick,
+            parent: ask.parent,
+            preset: ask.preset,
+            permitted,
+            permitted_by: held,
             author: starter.clone(),
             created_ms: now,
             run: Some(Run {
@@ -500,6 +633,122 @@ impl Tracker {
             paused: None,
         });
         target.status = Status::InProgress;
+        Ok(())
+    }
+
+    /// Settle what a run of the issue may do, against the task it works
+    /// under: the preset within the parent task's permissions, never wider
+    /// than the parent holds now.
+    ///
+    /// The agent of the parent's run launches the work under it, so a
+    /// subtask is settled by the run that started it and by no one else.
+    /// Its scope only ever narrows (`permission_sentence` reads it back),
+    /// and the parent's permissions are asked again at every step, so
+    /// revoking one from the parent narrows every task under it.
+    ///
+    /// # Errors
+    /// Refuses anyone but the parent task's own agent, an issue with no
+    /// task above it, or a preset that names a permission the parent's run
+    /// does not hold.
+    #[action(audience = "agents", writes = issues)]
+    pub fn settle_permissions(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        let (parent, preset, settled) = {
+            let target = self.issues.get(issue).ok_or_else(no_issue)?;
+            let parent = target
+                .parent
+                .clone()
+                .ok_or_else(|| Refusal::new("This task works under no other task"))?;
+            (parent, target.preset.clone(), target.permitted.clone())
+        };
+        {
+            let above = self.issues.get(&parent).ok_or_else(no_issue)?;
+            if !is_agent_asking(cx, above) {
+                return Err(Refusal::new(
+                    "Only the task this works under settles what it may do",
+                ));
+            }
+        }
+        let held = self.parent_permissions(issue).unwrap_or_default();
+        Self::outside(&held, &preset)?;
+        let within = preset.within(&held);
+        let target = self.issue_mut(issue)?;
+        // A step the run already took with more than this is not undone
+        // here, and nothing later widens again.
+        target.permitted = if settled.is_empty() {
+            within
+        } else {
+            settled
+                .into_iter()
+                .filter(|permission| {
+                    within
+                        .iter()
+                        .any(|allowed| crate::model::run::admits_permission(allowed, permission))
+                })
+                .collect()
+        };
+        target.permitted_by = held;
+        Ok(())
+    }
+
+    /// Change how wide the issue's run is within the task it works under:
+    /// all of it, all but some apps, or the permissions listed.
+    ///
+    /// A person changes what they will let the work do; the run's own agent
+    /// narrows itself, and neither may widen it past what the task above
+    /// holds (settling again never widens: `settle_permissions`).
+    ///
+    /// # Errors
+    /// Refuses an issue with no task above it, a permission that is not one,
+    /// a node in an inherit-minus, a preset that names a permission the
+    /// task above does not hold, or a change while the issue's run is going.
+    #[action(writes = issues)]
+    pub fn set_preset(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("All, all but some apps, or the permissions listed")] preset: TaskPreset,
+    ) -> Result<(), Refusal> {
+        let allowed = match self.issues.get(issue) {
+            Some(target) => target.parent.is_none() || !by_agent(cx) || is_agent_asking(cx, target),
+            None => return Err(no_issue()),
+        };
+        if !allowed {
+            return Err(Refusal::new(
+                "Only a person or the run's own agent changes what it may do",
+            ));
+        }
+        let (parent, going) = {
+            let target = self.issues.get(issue).ok_or_else(no_issue)?;
+            (target.parent.clone(), target.active_run().is_some())
+        };
+        if going {
+            return Err(Refusal::new("Change what it may do when no run is going"));
+        }
+        // What the task above works within now, read from the top of its
+        // chain: narrowing a task above narrows this one too.
+        let held = match &parent {
+            Some(parent) => {
+                self.issues.get(parent).ok_or_else(no_issue)?;
+                let above = self
+                    .parent_permissions_below(Some(parent))
+                    .unwrap_or_default();
+                Self::outside(&above, &preset)?;
+                above
+            }
+            None => Vec::new(),
+        };
+        preset_is_well_formed(&preset)?;
+        // With no task above it, nothing narrows the preset: what it names is
+        // what the task holds.
+        let within = if parent.is_none() {
+            preset.named()
+        } else {
+            preset.within(&held)
+        };
+        let target = self.issue_mut(issue)?;
+        target.preset = preset;
+        target.permitted = within;
+        target.permitted_by = held;
         Ok(())
     }
 

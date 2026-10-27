@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tilo_rich_text::RichText;
 use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::model::run::{Area, Budget, ModelChoice, Run};
+use crate::model::run::{Area, Budget, ModelChoice, Run, TaskPreset};
 
 /// The longest title an issue keeps.
 pub const MAX_TITLE_CHARS: usize = 240;
@@ -197,6 +197,30 @@ pub struct Issue {
     /// so an issue never ends up under itself.
     #[model(readonly)]
     pub parent: Option<Id>,
+    /// Within
+    ///
+    /// How wide this sub-issue's run is within what its parent task's run
+    /// holds: all of it, all but some apps, or the permissions listed. Only
+    /// `set-preset` changes it, and the parent's permissions are asked again
+    /// at every step, so a permission revoked from the parent is gone from
+    /// every issue under it at once.
+    #[model(readonly)]
+    pub preset: TaskPreset,
+    /// Permitted
+    ///
+    /// What the last run started here was allowed to do, as the door that
+    /// admitted it settled the preset against the parent's permissions: what
+    /// a person reading the issue (or an agent working out what it may do)
+    /// sees the run within. Kept because the task is the tree; the door
+    /// still asks the parent's live permissions at every step.
+    #[model(readonly)]
+    pub permitted: Vec<String>,
+    /// Permitted by
+    ///
+    /// What the parent task's run held when this one was settled, so a
+    /// person reads what the preset left of it.
+    #[model(readonly)]
+    pub permitted_by: Vec<String>,
     /// Links
     pub links: Collection<Link>,
     /// Goal
@@ -325,6 +349,28 @@ impl Issue {
         }
     }
 
+    /// The permissions a run of this issue works within: what the preset
+    /// left of the parent task's permissions, or the settled set the door
+    /// last wrote here (the narrower of the two, as a door settles it).
+    #[must_use]
+    pub fn effective_permissions(&self) -> Vec<String> {
+        if self.permitted_by.is_empty() {
+            // A task at the top holds what its run was admitted to do.
+            self.permitted.clone()
+        } else {
+            self.preset.within(&self.permitted_by)
+        }
+    }
+
+    /// What is asked for outside the parent's permissions: nothing for an
+    /// inherit, each app edge an inherit-minus takes away, each permission
+    /// an explicit list names and the parent's set does not hold. A refusal
+    /// names these.
+    #[must_use]
+    pub fn refused_permissions(&self) -> Vec<String> {
+        self.preset.outside(&self.permitted_by)
+    }
+
     /// The messages to run `epoch` its agent has not taken in yet.
     pub fn messages_for_run(&self, epoch: u64) -> impl Iterator<Item = (&Id, &Message)> {
         self.comments.iter().filter(move |(_, message)| {
@@ -385,6 +431,12 @@ pub struct AgentRequest {
     /// what came back.
     #[serde(default)]
     pub quick: bool,
+    /// The task this one works under, when it is a subtask it launches.
+    #[serde(default)]
+    pub parent: Option<Id>,
+    /// How wide its run is within the parent task's: only takes away.
+    #[serde(default)]
+    pub preset: TaskPreset,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import
