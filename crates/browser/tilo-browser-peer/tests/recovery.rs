@@ -110,6 +110,20 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         browser.key.clone(),
     );
     peer.join(workspace()).unwrap();
+    // Wait for the join's own `Ready` event, not a ready phase: the join
+    // is a command the session takes up later, so the phase can read
+    // ready (connected, no room waiting) before the room is even asked
+    // for, and the session marks the room ready before it emits the
+    // event. Either way that `Ready` would land after the drain below.
+    wait_for("the room's Ready", || async {
+        peer.drain()
+            .iter()
+            .any(|event| {
+                matches!(event, PeerEvent::Ready { workspace_id } if *workspace_id == workspace())
+            })
+            .then_some(())
+    })
+    .await;
     ready(&[&peer]).await;
     // Any status change bumps the generation (each envelope's contact
     // time does); a reconnect is what subscribes the room anew.
