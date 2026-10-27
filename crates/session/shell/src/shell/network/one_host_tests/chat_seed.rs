@@ -202,21 +202,18 @@ fn new_workspace(
 ) -> NewWorkspace {
     let wakes = Arc::new(Wakes::default());
     let ada = Person::new(seed);
-    // The desktop is set up as Ada's device on this machine, as a device
-    // its person set up is: its session acts as that device, and its broker
-    // signs what it admits as it.
-    let identity_root = dir.join("desktop-identity");
-    home.env()
-        .set("TILO_USER_ID", ada.id())
-        .set("TILO_IDENTITY_ROOT", &identity_root)
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    let identity_dir = runtime_identity::identity_dir_from_env().expect("the identity directory");
-    ada.set_up_device(&identity_root, &identity_dir, "Ada's desktop");
-    let desktop = Device::start_as_this_host(
-        &identity_root,
+    home.env().set("TILO_USER_ID", ada.id());
+    // Ada set the desktop up from another of her devices, as she sets up
+    // any device but her first: it admits no devices itself.
+    let desktop = Device::start(
+        &ada,
         "Ada's desktop",
         &dir.join("desktop"),
         ports,
+        DeviceCapabilities {
+            can_admit_devices: false,
+            ..DeviceCapabilities::primary()
+        },
         &wakes,
     );
     let laptop = Device::start(
@@ -226,6 +223,14 @@ fn new_workspace(
         ports + 1,
         DeviceCapabilities::member(),
         &wakes,
+    );
+    // The desktop keeps its identity on this machine as such a device
+    // does, so its session's broker signs what it admits as the desktop.
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &dir.join("desktop"))
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    desktop.keep_identity_on_disk(
+        &runtime_identity::identity_dir_from_env().expect("the identity directory"),
     );
     let (_, room) = hosted_workspace(&desktop, &[&laptop], "Projects");
     laptop.reach(&desktop);
