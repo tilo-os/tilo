@@ -12,7 +12,8 @@
 //! Chat owns the bytes: an attachment is a content hash in the app's content
 //! store, never a path meaningful on one device. Saving is therefore a real
 //! copy out, through the host's save dialog, and the bytes are written only to
-//! the path the person chose.
+//! the place the person chose: a path on a device that has them, or the file
+//! a browser page's dialog keeps (or its download).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -39,12 +40,23 @@ pub(crate) struct AttachmentView {
     pub(crate) saved: Option<SavedCopy>,
 }
 
-/// A save in flight: the dialog the host is showing, and what to write.
+/// A save in flight: the dialog the host is showing, then the write to the
+/// place chosen in it.
 pub(crate) struct AttachmentSave {
-    pub(crate) pick: ui::portal::PortalChannel,
+    pub(crate) step: SaveStep,
     pub(crate) blob: String,
-    pub(crate) name: String,
     pub(crate) msg: Id,
+}
+
+/// Where an [`AttachmentSave`] is.
+pub(crate) enum SaveStep {
+    /// The person is choosing where the copy goes.
+    Choosing(ui::portal::DestinationChannel),
+    /// The copy is being written to `destination`.
+    Writing {
+        channel: ui::portal::SaveChannel,
+        destination: ui::portal::SaveDestination,
+    },
 }
 
 impl AttachmentView {
@@ -98,75 +110,103 @@ impl ChatApp {
             &name,
         )
         .thread_name("chat-attachment-save")
-        .send();
+        .send_save_destination();
         self.attachment_save = Some(AttachmentSave {
-            pick,
+            step: SaveStep::Choosing(pick),
             blob: att.blob().to_owned(),
-            name,
             msg: msg.to_owned(),
         });
     }
 
-    /// Take what the save dialog answered, once.
+    /// Take what the save dialog, then the write, answered, once each.
     pub(crate) fn settle_attachment_save(&mut self) {
-        let Some(save) = &self.attachment_save else {
-            return;
-        };
-        let outcome = match save.pick.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.attachment_save = None;
-                self.attachment_status = Some(crate::i18n::t("chat-attachment-save-failed"));
-                return;
-            }
-        };
         let Some(save) = self.attachment_save.take() else {
             return;
         };
-        let path = match outcome {
-            ui::portal::PortalOutcome::Opened(path) => path,
-            ui::portal::PortalOutcome::Cancelled => return,
-            ui::portal::PortalOutcome::Failed(reason) => {
-                self.attachment_status = Some(format!(
-                    "{}: {reason}",
-                    crate::i18n::t("chat-attachment-save-failed")
-                ));
-                return;
+        let failed = |reason: Option<String>| {
+            let failed = crate::i18n::t("chat-attachment-save-failed");
+            Some(reason.map_or_else(|| failed.clone(), |reason| format!("{failed}: {reason}")))
+        };
+        match save.step {
+            SaveStep::Choosing(pick) => {
+                let destination = match pick.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.attachment_save = Some(AttachmentSave {
+                            step: SaveStep::Choosing(pick),
+                            ..save
+                        });
+                        return;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.attachment_status = failed(None);
+                        return;
+                    }
+                    Ok(ui::portal::DestinationOutcome::Chosen(destination)) => destination,
+                    Ok(ui::portal::DestinationOutcome::Cancelled) => return,
+                    Ok(ui::portal::DestinationOutcome::Failed(reason)) => {
+                        self.attachment_status = failed(Some(reason));
+                        return;
+                    }
+                };
+                // The bytes were verified when they arrived; a copy is written
+                // only where the person chose, and never invented when the
+                // store has none (a demo attachment is a picture with no file
+                // behind it).
+                let Some(bytes) = self.content.read(&save.blob) else {
+                    self.attachment_status = Some(crate::i18n::t("chat-attachment-not-on-device"));
+                    return;
+                };
+                let channel = destination.write(bytes);
+                self.attachment_save = Some(AttachmentSave {
+                    step: SaveStep::Writing {
+                        channel,
+                        destination,
+                    },
+                    ..save
+                });
+                // A write that answers at once is taken now.
+                self.settle_attachment_save();
             }
-        };
-        // The bytes were verified when they arrived; a copy is written only to
-        // the path the person chose, and never invented when the store has
-        // none (a demo attachment is a picture with no file behind it).
-        let Some(bytes) = self.content.read(&save.blob) else {
-            self.attachment_status = Some(crate::i18n::t("chat-attachment-not-on-device"));
-            return;
-        };
-        if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, &bytes) {
-            self.attachment_status = Some(format!(
-                "{}: {error}",
-                crate::i18n::t("chat-attachment-save-failed")
-            ));
-            return;
+            SaveStep::Writing {
+                channel,
+                destination,
+            } => match channel.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.attachment_save = Some(AttachmentSave {
+                        step: SaveStep::Writing {
+                            channel,
+                            destination,
+                        },
+                        ..save
+                    });
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.attachment_status = failed(None);
+                }
+                Ok(ui::portal::SaveOutcome::Cancelled) => {}
+                Ok(ui::portal::SaveOutcome::Failed(reason)) => {
+                    self.attachment_status = failed(Some(reason));
+                }
+                Ok(ui::portal::SaveOutcome::Saved) => {
+                    // Only a copy with a path on this device can be shown in
+                    // its folder; one the browser keeps is in its downloads.
+                    if let Some(path) = destination.location()
+                        && let Some(view) = self.attachment_view.as_mut()
+                        && view.msg == save.msg
+                    {
+                        view.saved = Some(SavedCopy {
+                            name: crate::i18n::t("chat-attachment-saved"),
+                            target: path.to_string_lossy().into_owned(),
+                        });
+                    }
+                    self.attachment_status = Some(format!(
+                        "{}: {}",
+                        crate::i18n::t("chat-attachment-saved"),
+                        destination.name()
+                    ));
+                }
+            },
         }
-        let name = path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or(save.name.as_str())
-            .to_owned();
-        let saved = SavedCopy {
-            name: crate::i18n::t("chat-attachment-saved"),
-            target: path.to_string_lossy().into_owned(),
-        };
-        if let Some(view) = self.attachment_view.as_mut()
-            && view.msg == save.msg
-        {
-            view.saved = Some(saved);
-        }
-        self.attachment_status = Some(format!(
-            "{}: {name}",
-            crate::i18n::t("chat-attachment-saved")
-        ));
     }
 
     /// Show the saved copy's folder in the desktop's file manager.
