@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use tilo_lock::MutexRecover as _;
 
 type Sink = Arc<dyn Fn(WakeEvent) + Send + Sync>;
@@ -18,11 +18,26 @@ struct Destination {
     sink: Option<Sink>,
     pending: bool,
     pending_sync: bool,
+    settling: Settling,
+}
+
+/// What [`WakeHandle::settle`] follows.
+#[derive(Default)]
+struct Settling {
+    /// Replies the owner is owed ([`Owed`]) that have not landed.
+    owed: usize,
+    /// A reply landed since the last pass.
+    replied: bool,
+    /// The scope was woken since the last pass.
+    woken: bool,
 }
 
 struct Route {
     open: AtomicBool,
     destination: Mutex<Destination>,
+    /// Signalled whenever the scope is woken, a reply lands or it closes:
+    /// what [`WakeHandle::settle`] waits on.
+    changed: Condvar,
 }
 
 thread_local! {
@@ -55,6 +70,7 @@ impl WakeScope {
             route: Arc::new(Route {
                 open: AtomicBool::new(true),
                 destination: Mutex::new(Destination::default()),
+                changed: Condvar::new(),
             }),
         }
     }
@@ -162,6 +178,9 @@ impl WakeScope {
     /// Stop new authorizations without waiting for previously accepted work.
     pub fn close(&mut self) {
         self.route.open.swap(false, Ordering::AcqRel);
+        // Nothing owed to a closed scope is waited for any more.
+        drop(self.route.destination.lock_recover());
+        self.route.changed.notify_all();
     }
 }
 
@@ -303,6 +322,87 @@ impl WakeHandle {
         self.send_wake(false);
     }
 
+    /// Owe the owner a reply: work it asked for off its thread whose answer
+    /// it waits to take up, such as a worker's reply to a request. The work
+    /// holds the [`Owed`] and drops it once its answer is queued for the
+    /// owner (or it ends without one), which wakes the owner.
+    ///
+    /// What an action causes this way is part of the action: a host answers
+    /// the action once every reply owed meanwhile landed and was taken up
+    /// ([`Self::settle`]), so its effects are the action's, not the next
+    /// one's. Owe only short work answered by itself: long-running work an
+    /// action starts answers as a job instead, and nothing waits on a person
+    /// (a chooser) or on a stream that does not end. A detached handle, or
+    /// one whose scope closed, owes nothing.
+    pub fn owe(&self) -> Owed {
+        let route = self.route.as_ref().filter(|route| {
+            route.upgrade().is_some_and(|route| {
+                let mut destination = route.destination.lock_recover();
+                let open = route.open.load(Ordering::Acquire);
+                if open {
+                    destination.settling.owed = destination.settling.owed.saturating_add(1);
+                }
+                open
+            })
+        });
+        Owed {
+            route: route.cloned(),
+        }
+    }
+
+    /// Whether a reply is owed to the scope that has not landed.
+    pub fn owes(&self) -> bool {
+        self.route
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|route| {
+                route.open.load(Ordering::Acquire)
+                    && route.destination.lock_recover().settling.owed > 0
+            })
+    }
+
+    /// Run `pass`, one turn of the owner's loop that takes up whatever has
+    /// landed for it, until no reply is owed ([`Self::owe`]) and a pass ran
+    /// after the last one landed. Between passes it waits for the scope to
+    /// be woken: it never polls, and returns at once when the scope closes.
+    /// At least one pass runs: the one that takes up what the caller just
+    /// did. A detached handle runs that one.
+    pub fn settle(&self, mut pass: impl FnMut()) {
+        let Some(route) = self.route.as_ref().and_then(Weak::upgrade) else {
+            pass();
+            return;
+        };
+        loop {
+            {
+                let mut destination = route.destination.lock_recover();
+                destination.settling.replied = false;
+                destination.settling.woken = false;
+            }
+            pass();
+            let mut destination = route.destination.lock_recover();
+            loop {
+                if !route.open.load(Ordering::Acquire) {
+                    return;
+                }
+                // A reply that landed after the pass began is taken up by
+                // the next one, even when it was the last owed.
+                if destination.settling.replied {
+                    break;
+                }
+                if destination.settling.owed == 0 {
+                    return;
+                }
+                if destination.settling.woken {
+                    break;
+                }
+                destination = route
+                    .changed
+                    .wait(destination)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
     fn send_wake(&self, requires_sync: bool) {
         if !self.authorize_publication() {
             return;
@@ -320,14 +420,48 @@ impl WakeHandle {
             }
             destination.pending = true;
             destination.pending_sync |= requires_sync;
+            destination.settling.woken = true;
             destination.sink.as_ref().map(Arc::clone)
         };
+        route.changed.notify_all();
         if let Some(sink) = sink {
             sink(WakeEvent {
                 route: weak.clone(),
                 requires_sync,
             });
         }
+    }
+}
+
+/// A reply owed to a scope's owner ([`WakeHandle::owe`]). Dropping it says
+/// the reply landed: queued for the owner, or the work ended without one.
+/// It wakes the owner.
+#[must_use = "dropping it at once says the reply already landed"]
+pub struct Owed {
+    route: Option<Weak<Route>>,
+}
+
+impl std::fmt::Debug for Owed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Owed").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Owed {
+    fn drop(&mut self) {
+        let Some(weak) = self.route.take() else {
+            return;
+        };
+        let Some(route) = weak.upgrade() else {
+            return;
+        };
+        {
+            let mut destination = route.destination.lock_recover();
+            destination.settling.owed = destination.settling.owed.saturating_sub(1);
+            destination.settling.replied = true;
+        }
+        route.changed.notify_all();
+        WakeHandle { route: Some(weak) }.wake();
     }
 }
 
@@ -829,6 +963,81 @@ mod tests {
             WakeHandle::new().wake();
             assert!(outer.accepts(&rx.try_recv().unwrap()));
         }
+    }
+
+    #[test]
+    fn settling_waits_for_every_owed_reply_to_be_taken_up() {
+        let (scope, _wakes) = bound_scope();
+        let handle = scope.handle();
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let mut taken = Vec::new();
+
+        // A reply landing while the owner waits wakes it for a pass.
+        let owed = handle.owe();
+        assert!(handle.owes());
+        let worker = {
+            let queue = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                queue.lock_recover().push(1);
+                drop(owed);
+            })
+        };
+        handle.settle(|| taken.append(&mut queue.lock_recover()));
+        worker.join().unwrap();
+        assert_eq!(taken, [1]);
+        assert!(!handle.owes());
+
+        // A reply landing during a pass, after it took up what was queued,
+        // is taken up by one more, though nothing is owed any more.
+        let mut owed = Some(handle.owe());
+        let mut passes = 0;
+        handle.settle(|| {
+            passes += 1;
+            taken.append(&mut queue.lock_recover());
+            if let Some(owed) = owed.take() {
+                let queue = Arc::clone(&queue);
+                std::thread::spawn(move || {
+                    queue.lock_recover().push(2);
+                    drop(owed);
+                })
+                .join()
+                .unwrap();
+            }
+        });
+        assert_eq!((taken.as_slice(), passes), ([1, 2].as_slice(), 2));
+
+        // Nothing owed: one pass, however often it wakes its own scope.
+        let mut passes = 0;
+        handle.settle(|| {
+            passes += 1;
+            handle.wake();
+        });
+        assert_eq!(passes, 1);
+    }
+
+    #[test]
+    fn a_closed_or_detached_scope_owes_nothing() {
+        let mut passes = 0;
+        let detached = WakeHandle::detached();
+        let owed = detached.owe();
+        assert!(!detached.owes());
+        detached.settle(|| passes += 1);
+        assert_eq!(passes, 1);
+        drop(owed);
+
+        // Closing the scope ends a wait on what it was owed.
+        let (mut scope, _wakes) = bound_scope();
+        let handle = scope.handle();
+        let owed = handle.owe();
+        let mut passes = 0;
+        handle.settle(|| {
+            passes += 1;
+            scope.close();
+        });
+        assert_eq!(passes, 1);
+        assert!(!handle.owes());
+        assert!(scope.handle().owe().route.is_none());
+        drop(owed);
     }
 
     #[test]

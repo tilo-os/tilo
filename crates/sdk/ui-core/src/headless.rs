@@ -7536,7 +7536,8 @@ impl FrameHarness {
         } else {
             self.invoke_bound_action(&address, &arguments)
         }?;
-        self.relayout();
+        // It answers once what it caused off the UI thread has landed.
+        self.settle_owed();
         Ok(started)
     }
 
@@ -9937,7 +9938,8 @@ impl FrameHarness {
             self.invoke_address(address, arguments, confirmed)
         };
         self.host_tick();
-        self.relayout();
+        // It answers once what it caused off the UI thread has landed.
+        self.settle_owed();
         result
     }
 
