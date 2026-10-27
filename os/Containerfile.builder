@@ -76,6 +76,11 @@ RUN dnf install -y \
 RUN dnf install -y --setopt=install_weak_deps=False ostree gpgme-devel \
     && dnf clean all && rm -rf /var/cache/dnf
 
+# The imager backend's signed offline Flatpak fixture (imager-tests-<arch>) restores a
+# GPG-signed repository into a user installation with the native flatpak tool.
+RUN dnf install -y --setopt=install_weak_deps=False flatpak \
+    && dnf clean all && rm -rf /var/cache/dnf
+
 # Required by production PDF capture tests. Use the same verified external
 # asset context as sccache; runtime/library upgrades do not touch Fedora packages.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
