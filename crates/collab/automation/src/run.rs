@@ -1583,7 +1583,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         for iteration in 0..iterations {
             self.vars
                 .insert(index.to_owned(), Value::from(iteration as u64));
-            self.block(body, path.repeat(Some(iteration))).await?;
+            self.block(body, path.repeat(Some(iteration as usize)))
+                .await?;
         }
         if shadowed_secret {
             self.secret_vars.insert(index.to_owned());

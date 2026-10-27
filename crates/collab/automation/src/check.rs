@@ -375,8 +375,7 @@ impl Checker<'_> {
                 None
             }
             StepKind::Compute { expr } => {
-                let ty = self.expression(expr, scope, path);
-                Some((ty, None))
+                Some((self.expression(expr, scope, path), Some(expr.schema())))
             }
             StepKind::Repeat { count, index, body } => {
                 self.repeat(path, scope, count, index, body);
@@ -614,15 +613,10 @@ impl Checker<'_> {
                 }
             }
             Expr::Object { members } => {
-                let mut properties = serde_json::Map::new();
                 for member in members {
-                    let ty = self.expression(&member.value, scope, path);
-                    properties.insert(member.name.clone(), ty.schema());
+                    self.expression(&member.value, scope, path);
                 }
-                Ty::Object(Some(serde_json::json!({
-                    "type": "object",
-                    "properties": serde_json::Value::Object(properties),
-                })))
+                Ty::Object(expr.schema())
             }
             Expr::Filter { items, test } => {
                 let ty = self.expression(items, scope, path);

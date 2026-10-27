@@ -217,6 +217,50 @@ impl Expr {
         }
     }
 
+    /// The JSON Schema describing what this expression produces, as far as
+    /// its shape is knowable without a value: a step after a
+    /// [`Compute`](crate::StepKind::Compute) reaches into a dictionary or a
+    /// list it built as it would into any declared result.
+    #[must_use]
+    pub fn schema(&self) -> Option<Value> {
+        let typed = |name: &str| Some(serde_json::json!({"type": name}));
+        match self {
+            Self::Math { op: Op::Concat, .. }
+            | Self::Replace { .. }
+            | Self::Field { .. }
+            | Self::Value {
+                binding: Binding::Template(_),
+            } => typed("string"),
+            Self::Math { .. } | Self::Negate { .. } => typed("number"),
+            Self::Truthy { .. } | Self::Not { .. } | Self::Compare { .. } | Self::Logic { .. } => {
+                typed("boolean")
+            }
+            Self::Length { .. } => typed("integer"),
+            Self::Split { .. } => {
+                Some(serde_json::json!({"type": "array", "items": {"type": "string"}}))
+            }
+            Self::Map { field, .. } => Some(serde_json::json!({"type": "array"})),
+            Self::Take { .. } | Self::Filter { .. } | Self::Sort { .. } => typed("array"),
+            Self::Object { members } => {
+                let mut properties = Map::new();
+                for member in members {
+                    properties.insert(
+                        member.name.clone(),
+                        member
+                            .value
+                            .schema()
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    );
+                }
+                Some(serde_json::json!({
+                    "type": "object",
+                    "properties": Value::Object(properties),
+                }))
+            }
+            _ => None,
+        }
+    }
+
     /// Whether this expression or anything inside it reads a secret binding.
     /// A secret is a value like any other here; where it may be *shown* is
     /// the binding's business, not the expression's.
