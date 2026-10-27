@@ -838,14 +838,17 @@ impl MusicApp {
         let retry = Action::RetryRemote(source.to_owned());
         let key = format!("remote-failed:{source}:{text}");
         let id = format!("music.retry.{source}");
+        let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
             Box::new(
                 ui::widget::Banner::error(ui::i18n::I18nManager::lookup_plain("arriving-failed"))
                     .with_message(text)
-                    .with_action(
-                        Button::new(&id, &ui::i18n::I18nManager::lookup_plain("arriving-retry"))
-                            .on_click(super::super::page_part::asking(asked, retry)),
-                    ),
+                    .with_action(super::super::page_part::press(
+                        actions.as_ref(),
+                        asked,
+                        Button::new(&id, &ui::i18n::I18nManager::lookup_plain("arriving-retry")),
+                        retry,
+                    )),
             )
         })
     }
@@ -882,7 +885,11 @@ impl MusicApp {
         let key = format!("chips:{offers:?}:{query:?}:{keep:?}");
         let offers = offers.to_vec();
         let query = query.clone();
+        let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
+            let press = |button, action| {
+                super::super::page_part::press(actions.as_ref(), asked, button, action)
+            };
             let sink = Rc::clone(asked);
             let on_change: Rc<dyn Fn(QuerySpec)> =
                 Rc::new(move |next| sink.borrow_mut().push(Action::SetQuery(next)));
@@ -891,13 +898,13 @@ impl MusicApp {
                 Rc::new(move |key| sink.borrow_mut().push(Action::OpenFacet(key.to_owned())));
             let keep_action: Option<Button> = match keep {
                 Keep::Nothing => None,
-                Keep::Offer => Some(
+                Keep::Offer => Some(press(
                     Button::new("music.keep-view", "Keep search")
                         .with_icon(Icon::Bookmark)
                         .role(ButtonRole::Secondary)
-                        .tooltip("Keep this search beside your library")
-                        .on_click(super::super::page_part::asking(asked, Action::KeepQuery)),
-                ),
+                        .tooltip("Keep this search beside your library"),
+                    Action::KeepQuery,
+                )),
                 Keep::Kept => Some(
                     Button::new("music.keep-view", "Kept")
                         .with_icon(Icon::Bookmark)
@@ -906,14 +913,11 @@ impl MusicApp {
                         .tooltip("This search is one of your views")
                         .with_enabled(false),
                 ),
-                Keep::Forget(id) => Some(
+                Keep::Forget(id) => Some(press(
                     Button::new("music.forget-view", "Remove from your views")
-                        .role(ButtonRole::Secondary)
-                        .on_click(super::super::page_part::asking(
-                            asked,
-                            Action::ForgetKept(id),
-                        )),
-                ),
+                        .role(ButtonRole::Secondary),
+                    Action::ForgetKept(id),
+                )),
             };
             let mut row = Row::new()
                 .no_wrap()
@@ -1115,7 +1119,11 @@ impl MusicApp {
         }
         let key = format!("controls:{rows:?}");
         let gap = ui::num::f32_of_f64(look.related);
+        let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
+            let press = |button, action| {
+                super::super::page_part::press(actions.as_ref(), asked, button, action)
+            };
             let mut column = ui::widget::Column::new()
                 .with_no_padding()
                 .with_gap(gap)
@@ -1132,9 +1140,7 @@ impl MusicApp {
                         if let Some(icon) = icon {
                             button = button.with_icon(icon);
                         }
-                        Box::new(
-                            button.on_click(super::super::page_part::asking(asked, action.clone())),
-                        )
+                        Box::new(press(button, action.clone()))
                     }
                     ControlKind::Switch { on } => {
                         let sink = Rc::clone(asked);
@@ -1157,19 +1163,16 @@ impl MusicApp {
                     .with_align_items(ui::taffy::AlignItems::Center)
                     .push(control);
                 if let Some(home) = home {
-                    row = row.push(Box::new(
+                    row = row.push(Box::new(press(
                         Button::new(&format!("music.control-show.{id}"), Home::show_label(&home))
                             .role(ButtonRole::Plain)
                             .control_size(ControlSize::Small)
-                            .with_accessible_name(&format!("{}: {label}", Home::show_label(&home)))
-                            .on_click(super::super::page_part::asking(
-                                asked,
-                                Action::ShowControl {
-                                    home,
-                                    action: Box::new(action),
-                                },
-                            )),
-                    ));
+                            .with_accessible_name(&format!("{}: {label}", Home::show_label(&home))),
+                        Action::ShowControl {
+                            home,
+                            action: Box::new(action),
+                        },
+                    )));
                 }
                 column = column.push(Box::new(row));
             }
