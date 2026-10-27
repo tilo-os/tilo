@@ -38,7 +38,7 @@
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
 "apps/sheets/src/formula.rs" = 3500
-"apps/sheets/src/grid.rs" = 4000
+"apps/sheets/src/grid.rs" = 3500
 "apps/slides/src/app.rs" = 5000
 "apps/store/src/app.rs" = 6500
 "apps/terminal/src/main_body.rs" = 8000
