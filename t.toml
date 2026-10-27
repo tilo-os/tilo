@@ -3592,9 +3592,11 @@ name = "nightly-arm64-goldens"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 requires = ["arch=arm64"]
 run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'"
+inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+cargo_packages = ["ebook", "shell", "tilo-ui"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 writable_sources = true
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 cost = "heavy"
 default = false
 # END generated
