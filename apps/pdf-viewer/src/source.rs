@@ -1788,6 +1788,58 @@ struct QueueState {
     /// page that finishes rendering while nothing else happens is drawn
     /// without waiting for input.
     wakes: HashMap<u64, ui::wake::WakeHandle>,
+    /// The replies each session's window is owed and waits to take up
+    /// (an open's settlement, the markup a document already carries): what
+    /// it asked for in reply to an action is part of that action.
+    owed: HashMap<(u64, OwedReply), Vec<ui::wake::Owed>>,
+}
+
+/// A reply a window is owed, by what answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum OwedReply {
+    /// The settlement of the open request with this id.
+    Open(u64),
+    /// The markup read from the document with this id.
+    Existing(u64),
+}
+
+impl OwedReply {
+    /// The reply `event` is, when it is one a window is owed.
+    const fn answered_by(event: &RasterEvent) -> Option<Self> {
+        match event {
+            RasterEvent::Opened { request, .. }
+            | RasterEvent::OpenFailed { request, .. }
+            | RasterEvent::OpenSuperseded { request } => Some(Self::Open(request.id)),
+            RasterEvent::ExistingRead { document_id, .. }
+            | RasterEvent::ExistingFailed { document_id, .. } => Some(Self::Existing(*document_id)),
+            _ => None,
+        }
+    }
+}
+
+impl QueueState {
+    /// Owe `session`'s window the reply `reply`. Where the window's own
+    /// frames serve the queue (no thread can start), nothing answers it
+    /// meanwhile, so nothing is owed.
+    fn owe(&mut self, session: u64, reply: OwedReply) {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
+            return;
+        }
+        let owed = self.wakes.get(&session).cloned().unwrap_or_default().owe();
+        self.owed.entry((session, reply)).or_default().push(owed);
+    }
+
+    /// The reply `reply` owed to `session`'s window landed.
+    fn answered_reply(&mut self, session: u64, reply: OwedReply) {
+        if let std::collections::hash_map::Entry::Occupied(mut owed) =
+            self.owed.entry((session, reply))
+        {
+            owed.get_mut().pop();
+            if owed.get().is_empty() {
+                owed.remove();
+            }
+        }
+    }
 }
 
 fn session_settlement_count(state: &QueueState, session_id: u64) -> usize {
@@ -2161,13 +2213,16 @@ impl RasterHandle {
                     return Err(RasterSubmitError::QueueFull);
                 }
                 let was_pending = state.open.contains_key(&self.session.id);
+                state.owe(self.session.id, OwedReply::Open(request.id));
                 if let Some(superseded) = state.open.insert(self.session.id, request) {
+                    let reply = OwedReply::Open(superseded.id);
                     state.open_events.push_back(QueuedEvent {
                         session_id: self.session.id,
                         event: RasterEvent::OpenSuperseded {
                             request: superseded,
                         },
                     });
+                    state.answered_reply(self.session.id, reply);
                 }
                 if !was_pending {
                     state.open_order.push_back(self.session.id);
@@ -2194,6 +2249,10 @@ impl RasterHandle {
             | RasterCommand::SetReaderMarkup { .. }) => {
                 if state.controls.len() >= MAX_PENDING_PAGE_REQUESTS {
                     return Err(RasterSubmitError::QueueFull);
+                }
+                if let RasterCommand::ReadExisting { document_id } = &command {
+                    let document_id = *document_id;
+                    state.owe(self.session.id, OwedReply::Existing(document_id));
                 }
                 state.controls.push_back(QueuedCommand {
                     session_id: self.session.id,
@@ -2535,6 +2594,8 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
     state.closing_sessions.insert(session_id);
     state.evicted_sessions.remove(&session_id);
     state.wakes.remove(&session_id);
+    // A closing window takes up nothing more.
+    state.owed.retain(|(owner, _), _| *owner != session_id);
     state.open.remove(&session_id);
     state
         .open_contents
@@ -2976,10 +3037,14 @@ fn queue_event(state: &mut QueueState, session_id: u64, event: RasterEvent) {
         // per-session admission limit above reserves room for every accepted
         // completion, so this enqueue never blocks the sole owner thread just
         // because another window has stopped draining its own events.
+        let answered = OwedReply::answered_by(&event);
         if !state.closing_sessions.contains(&session_id) {
             state
                 .open_events
                 .push_back(QueuedEvent { session_id, event });
+        }
+        if let Some(reply) = answered {
+            state.answered_reply(session_id, reply);
         }
         return;
     }

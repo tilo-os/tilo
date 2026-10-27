@@ -35,6 +35,11 @@ impl RootWake {
         self.scope.enter()
     }
 
+    /// A handle on the root's wake scope.
+    pub(super) fn handle(&self) -> crate::wake::WakeHandle {
+        self.scope.handle()
+    }
+
     /// Whether a wake is waiting for a frame.
     pub(super) fn pending(&self) -> bool {
         self.woken.load(Ordering::Acquire)
@@ -59,6 +64,25 @@ impl super::FrameHarness {
         self.component_wake
             .as_ref()
             .map_or_else(|| self.root_wake.pending(), |wake| wake.dirty.get())
+    }
+
+    /// Run the frame an action asks for, then frames as an idle live window
+    /// does until every reply the root is owed
+    /// ([`crate::wake::WakeHandle::owe`]) has landed and a frame took it up:
+    /// what the action caused off the UI thread (a worker's answer the app
+    /// asked for in reply to it) is applied before the action answers, so
+    /// its effects are the action's and not the next one's. Waits for
+    /// wakes, never polls.
+    pub fn settle_owed(&mut self) {
+        let handle = self.component_wake.as_ref().map_or_else(
+            || self.root_wake.handle(),
+            |wake| wake.binding.lifetime.clone(),
+        );
+        handle.settle(|| {
+            self.relayout();
+            self.idle_control_tick();
+            self.relayout();
+        });
     }
 
     /// Take up the wake waiting for this frame, if any.
