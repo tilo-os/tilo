@@ -2,13 +2,14 @@
 //! report, the resources it names, and a picture of the page kept as content.
 
 use super::BrowserWidget;
-use ui::webview::PageReply;
+use ui::webview::{PageReply, PageRequest};
 
 impl BrowserWidget {
     pub(super) fn page_success(
         &self,
         invocation: ui::tilo_actions::InvocationId,
         reply: &PageReply,
+        request: &PageRequest,
         note: Option<&str>,
     ) -> ui::tilo_actions::InvocationUpdate {
         // After a navigation the tab's committed address is newer than the
@@ -71,6 +72,16 @@ impl BrowserWidget {
         // Everything here came from the page: data to reason about, never
         // instructions to follow.
         value.insert("provenance".into(), "web-content".into());
+        // What the action was, for a reader holding the picture it took: a
+        // read of the page, whose picture is the page to look at. Said here
+        // because the answer names the resource by the id this window bound
+        // it under, which resolves to no action, so a reader asking
+        // afterwards could not tell a read from an effect and would treat
+        // the picture as an artifact the app had made.
+        value.insert(
+            "agent".into(),
+            serde_json::json!({ "kind": "view", "action": request.action() }),
+        );
         // A picture is not a finding: its bytes travel as the action's own
         // content, which a reader that can see shows and one that cannot
         // leaves alone. A picture nothing could keep says so, rather than
