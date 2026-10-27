@@ -1020,7 +1020,7 @@ def mem(ctx, res):
                         "memory was not measured (see R-apps-closed-after-open.log)")
     # The same idle desktop once the apps have closed: what they leave behind.
     try:
-        after = _footprint_after_close(ctx)
+        after = _footprint_after_close(ctx, opened)
     except core.Unobservable as e:
         unobserved.append(f"memory after the apps closed: {e}")
     else:
@@ -1100,13 +1100,22 @@ def record_disk(ctx) -> dict:
     return disk
 
 
-def _footprint_after_close(ctx) -> dict:
-    """Close every window, wait for the apps' processes to exit and the compositor to
-    settle (it trims its heap after a close), then read the footprint."""
+def _footprint_after_close(ctx, apps: list[str]) -> dict:
+    """Close every window, wait for `apps`' processes to exit and the compositor to
+    settle (it trims its heap after a close), then read the footprint. Only the apps the
+    check opened: a session's own host agents (the geoclue agent) run in the launcher's
+    scope too and never close."""
     ctx.reset()
-    gone = wait_until(lambda: not any(p["app"] for p in core.processes(ctx)["procs"].values()), 20, 1.0)
-    if not gone:
-        raise core.Unobservable("app processes were still running 20 s after their windows closed")
+    last: dict = {}
+
+    def gone():
+        last["left"] = sorted({f"{p['app']}:{p['comm']}" for p in core.processes(ctx)["procs"].values()
+                               if p["app"] in apps})
+        return not last["left"]
+
+    if not wait_until(gone, 20, 1.0):
+        raise core.Unobservable("app processes were still running 20 s after their windows closed: "
+                                + ", ".join(last.get("left", [])[:8]))
     time.sleep(AFTER_CLOSE_SETTLE_S)
     return footprint(ctx)
 
