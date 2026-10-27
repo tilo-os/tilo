@@ -6,14 +6,14 @@
 "apps/agent/src/model.rs" = 3500
 "apps/browser/src/browser_widget.rs" = 6500
 "apps/calendar/src/app.rs" = 5000
-"apps/calendar/src/app/tests.rs" = 4000
+"apps/calendar/src/app/tests.rs" = 3500
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9000
 "apps/ebook/src/app/interaction_tests.rs" = 5500
-"apps/file-explorer/src/files_app.rs" = 11000
+"apps/file-explorer/src/files_app.rs" = 10500
 "apps/file-explorer/src/files_app/tests.rs" = 8000
 "apps/file-explorer/src/views/file_view.rs" = 3500
 "apps/imager/src/app.rs" = 6000
@@ -21,7 +21,7 @@
 "apps/imager/src/setup/journey/mod.rs" = 12000
 "apps/imager/src/setup/journey/prepared_media.rs" = 4000
 "apps/imager/src/setup/view.rs" = 6500
-"apps/mail/src/app.rs" = 8500
+"apps/mail/src/app.rs" = 6000
 "apps/mail/src/compose.rs" = 3500
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
@@ -29,7 +29,7 @@
 "apps/music/src/app/tests.rs" = 4800
 "apps/music/src/audio.rs" = 3500
 "apps/notes/src/app.rs" = 5000
-"apps/osk/src/widget.rs" = 5500
+"apps/osk/src/widget.rs" = 3500
 "apps/pdf-viewer/src/app.rs" = 10000
 "apps/pdf-viewer/src/source.rs" = 3500
 "apps/settings-rare/src/panes/accounts.rs" = 5000
@@ -38,7 +38,7 @@
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
 "apps/sheets/src/formula.rs" = 3500
-"apps/sheets/src/grid.rs" = 4000
+"apps/sheets/src/grid.rs" = 3500
 "apps/slides/src/app.rs" = 5000
 "apps/store/src/app.rs" = 6500
 "apps/terminal/src/main_body.rs" = 8000
@@ -46,7 +46,7 @@
 "apps/video-editor/src/app.rs" = 9000
 "apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
-"apps/word-processor/src/widget/tests.rs" = 9000
+"apps/word-processor/src/widget/tests.rs" = 8500
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
