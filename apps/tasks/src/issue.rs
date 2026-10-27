@@ -8,8 +8,8 @@
 //! location names it.
 
 use crate::model::{
-    ConfirmationState, Issue, Message, MessageKind, ModelChoice, RunPhase, Status, Tracker,
-    agent_assignee, issue_resource, person_assignee, tracker,
+    Issue, Message, MessageKind, ModelChoice, Run, RunPhase, Status, Tracker, agent_assignee,
+    issue_resource, person_assignee, tracker,
 };
 use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
@@ -523,14 +523,13 @@ struct RunView {
 fn run_view(issue: &Issue) -> RunView {
     RunView {
         agent: issue.assigned_agent().map(str::to_owned),
-        phase: issue.run.as_ref().map(|run| run.phase),
+        phase: issue.run.as_ref().map(Run::shown_phase),
         paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
         question: issue
             .run
             .as_ref()
-            .filter(|run| run.phase == RunPhase::Waiting)
+            .filter(|run| run.asks_its_person())
             .and_then(|run| run.confirmation.as_ref())
-            .filter(|question| question.state == ConfirmationState::Waiting)
             .map(|question| {
                 question
                     .draft

@@ -640,6 +640,27 @@ impl crate::app::ChatApp {
             | Command::SetVolume { .. }
             | Command::Pictures { .. } => CallAction::Join,
         };
+        // A call that cannot start keeps its card, saying why, until the
+        // person closes it; asking for one opens that card.
+        if self.refused_call.is_some() {
+            if action == CallAction::Leave {
+                self.refused_call = None;
+                self.call.leave();
+                self.media_error = None;
+                self.request_relayout();
+            } else if let Command::Join { .. } = command
+                && let Some(reason) = self.call_refusal()
+            {
+                self.call_refused(channel, reason);
+            }
+            return Ok(());
+        }
+        if let Command::Join { .. } = command
+            && let Some(reason) = self.call_refusal()
+        {
+            self.call_refused(channel, reason);
+            return Ok(());
+        }
         if !self.call_allows(action) {
             return Err("Call action is not permitted".into());
         }
@@ -674,6 +695,14 @@ impl crate::app::ChatApp {
     }
 
     pub(crate) fn project_native_voice(&mut self) {
+        // The card of a call that cannot start stays as it is until the
+        // person closes it, or calls can start here after all.
+        if self.refused_call.is_some() {
+            if self.call_refusal().is_some() {
+                return;
+            }
+            self.refused_call = None;
+        }
         let laid_out = self.call_layout_inputs();
         let snapshot = &self.native_voice.snapshot;
         // The panel represents explicit local intent, including an unavailable

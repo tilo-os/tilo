@@ -1,3 +1,6 @@
+[ratchets.closure_action_button]
+"apps/tasks/src/project.rs" = 2
+
 [ratchets.closure_control]
 "apps/tasks/src/board.rs" = 2
 "apps/tasks/src/list.rs" = 1

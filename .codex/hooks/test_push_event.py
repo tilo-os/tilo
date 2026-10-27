@@ -33,8 +33,8 @@ class PushEventTests(unittest.TestCase):
 
     def test_synthetic_push_fixtures(self):
         for name, worktree, branch in [
-            ("tilo157", "child", "topic/child"),
-            ("infra240", "wrapped", "topic/wrapped"),
+            ("child-push", "child", "topic/child"),
+            ("wrapped-push", "wrapped", "topic/wrapped"),
         ]:
             event = json.loads((Path(__file__).parent / "fixtures" / f"{name}.json").read_text())
             target = push_target(event)

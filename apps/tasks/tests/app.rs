@@ -1061,3 +1061,79 @@ fn a_project_is_made_listed_and_opened_by_its_address() {
             .is_empty()
     );
 }
+
+/// The task list gathers what a person follows, and one chip says how a
+/// run is doing wherever the issue is read: on its page, on the board and in
+/// the list. Pressing the chip opens the issue through the app's own open
+/// effect, which is also what a script and an agent invoke, so following a
+/// task from the list lands in the one task view.
+#[test]
+fn a_running_task_reads_the_same_in_the_list_and_on_its_issue() {
+    let mut app = open();
+    app.call(
+        "create",
+        json!({ "title": "Send the notes", "assignee": "agent:scribe" }),
+    )
+    .expect("create");
+    let issue = only(&app);
+    let follow = |app: &TestApp<App>| {
+        app.state()
+            .issues
+            .get(&issue)
+            .expect("the issue")
+            .run
+            .clone()
+    };
+
+    // A task no run has taken up is not one the list follows.
+    assert!(follow(&app).is_none(), "no run was started yet");
+
+    app.call("approve-run", json!({ "issue": issue.as_str() }))
+        .expect("start the run");
+    assert!(follow(&app).is_some(), "the run is on the issue");
+
+    // The list is reached through the filter the sidebar publishes.
+    choose(&mut app, "Running tasks");
+
+    // The row carries the task's state as the chip the issue and the board
+    // show, and the chip says what the run is doing.
+    let chip = format!("tasks-run-chip-{issue}");
+    assert!(
+        app.harness().targets().contains_key(&chip),
+        "the list shows the task's state: {:?}",
+        app.harness().targets().keys().collect::<Vec<_>>()
+    );
+
+    // Pressing it opens the issue: the one task view, not a second one.
+    app.harness()
+        .click_named(&chip)
+        .expect("press the task's state");
+    let _ = app.harness().poll_frame();
+    assert!(
+        app.harness().targets().contains_key("tasks-issue-title"),
+        "the chip opens the issue"
+    );
+
+    // Its lifecycle actions are the issue's own, offered to a person and to
+    // a script alike, so the list needs no second copy of them.
+    let pause = app
+        .state()
+        .issues
+        .get(&issue)
+        .expect("the issue")
+        .run
+        .is_some();
+    assert!(pause);
+    app.call("pause-run", json!({ "issue": issue.as_str() }))
+        .expect("pause the run");
+    assert!(
+        app.state()
+            .issues
+            .get(&issue)
+            .expect("the issue")
+            .run
+            .as_ref()
+            .is_some_and(|run| run.paused.is_some()),
+        "a paused run stays the task, held"
+    );
+}

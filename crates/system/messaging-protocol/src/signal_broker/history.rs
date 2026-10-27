@@ -8,7 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use tilo_contact_directory::routing::Route;
-use tilo_messaging::{Delivery, Direction, HistoryPage, Message, SendError};
+use tilo_messaging::{
+    Delivery, Direction, HistoryCursor, HistoryError, HistoryPage, Message, SendError,
+};
 use zeroize::{Zeroize, Zeroizing};
 #[path = "history/groups.rs"]
 pub(crate) mod groups;
@@ -471,9 +473,23 @@ impl History {
         self.persist().map_err(|_| SendError::Uncertain)?;
         Ok(true)
     }
+    /// The newest page of `route`.
+    #[cfg(test)]
     pub(crate) fn page(&self, route: Route, limit: usize) -> Result<HistoryPage, SendError> {
+        self.page_before(route, None, limit)
+            .map_err(|_| SendError::Unavailable)
+    }
+
+    /// The page of `route` before the message `cursor` names (the newest
+    /// page without one), at most `limit` messages.
+    pub(crate) fn page_before(
+        &self,
+        route: Route,
+        cursor: Option<&HistoryCursor>,
+        limit: usize,
+    ) -> Result<HistoryPage, HistoryError> {
         if !self.usable {
-            return Err(SendError::Unavailable);
+            return Err(HistoryError::Unavailable);
         }
         let address = Address::from(&route);
         let mut rows: Vec<_> = self
@@ -483,6 +499,13 @@ impl History {
             .filter(|(_, r)| r.address == address)
             .collect();
         rows.sort_by_key(|(id, r)| (r.timestamp, *id));
+        if let Some(cursor) = cursor {
+            let oldest = rows
+                .iter()
+                .position(|(id, _)| id.as_str() == cursor.as_str())
+                .ok_or(HistoryError::InvalidCursor)?;
+            rows.truncate(oldest);
+        }
         let more = rows.len() > limit;
         let skip = rows.len().saturating_sub(limit);
         let retained = rows.len().saturating_sub(skip);
