@@ -1676,7 +1676,7 @@ impl CollaborationManager {
                     }
                 }
                 (Some(Err(error)), _)
-                    if error == broker::PRIMARY_ROUTE_TIMED_OUT && self.rejoin_hello.is_some() =>
+                    if is_primary_route_timeout(&error) && self.rejoin_hello.is_some() =>
                 {
                     self.rejoin_late_primary_route();
                 }
@@ -1705,6 +1705,7 @@ impl CollaborationManager {
     /// A manager whose primary route missed its deadline at launch: the app
     /// opens on its local replica, and `hello` is announced again until the
     /// route answers (see [`Self::rejoin_late_primary_route`]).
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn joining_late(mut self, hello: CollabRequest) -> Self {
         self.rejoin_hello = Some(hello);
         self.rejoin_late_primary_route();
@@ -2079,7 +2080,22 @@ mod portable_transport_tests {
 /// Original authority retained across display background work.
 pub use runtime_collab::DisplayOrigin;
 
-#[cfg(test)]
+/// Whether a primary-route acknowledgement failed because the route took
+/// longer than the broker's join deadline: the broker says so with its own
+/// error text, and a build without the broker transport cannot answer.
+fn is_primary_route_timeout(error: &str) -> bool {
+    #[cfg(feature = "broker-transport")]
+    {
+        error == broker::PRIMARY_ROUTE_TIMED_OUT
+    }
+    #[cfg(not(feature = "broker-transport"))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+#[cfg(all(test, feature = "broker-transport"))]
 mod late_primary_route_tests {
     use super::*;
     use std::collections::VecDeque;
