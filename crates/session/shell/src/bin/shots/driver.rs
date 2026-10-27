@@ -39,6 +39,7 @@ mod secret_prompt_sim_scene;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
+mod window_share_scene;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -2151,6 +2152,8 @@ impl ShellDriver {
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
             "tab-rename" => self.scene_tab_rename(),
+            "window-share-menu" => self.scene_window_share_menu(),
+            "window-shared" => self.scene_window_shared(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
