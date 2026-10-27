@@ -335,6 +335,12 @@ impl super::Decorator for ContextMenuArea {
         "ContextMenuArea"
     }
 
+    /// The content's change is the area's: the menu adds no structure of
+    /// its own, so rows a list mounts in place stay mounted in place.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.content.take_structure_change()
+    }
+
     // The content's node is this area's: named targets and hit tests that
     // find the node meet the area, which answers as the content does.
     fn build_layout(

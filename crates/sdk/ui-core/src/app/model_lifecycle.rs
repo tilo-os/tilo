@@ -35,7 +35,7 @@ struct HostedAuthorityWitness {
 /// without a resource-cache invalidation. Equal stamps mean that publication
 /// would recompute the same resources, descriptors and directory snapshot.
 #[derive(PartialEq, Eq)]
-struct HostedPublicationStamp {
+pub(super) struct HostedPublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
@@ -43,12 +43,21 @@ struct HostedPublicationStamp {
     revision: String,
 }
 
+impl HostedPublicationStamp {
+    /// The action directory's revision the surface was published at.
+    pub(super) fn revision(&self) -> &str {
+        &self.revision
+    }
+}
+
 #[derive(Default)]
 pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
     authority: Option<HostedAuthorityWitness>,
-    publication: Option<HostedPublicationStamp>,
+    /// What the surface on the route was built from: every publication
+    /// records it (`App::publish_action_surface`).
+    pub(super) publication: Option<HostedPublicationStamp>,
 }
 
 /// What one hosted pump did; used by focused tests and the timing trace.
@@ -234,6 +243,10 @@ impl super::App {
             || self.hosted_publication_stamp() != self.actions.hosted.publication
         {
             report.published = true;
+            if always_refresh {
+                // Built again whatever the stamp says.
+                self.actions.hosted.publication = None;
+            }
             self.publish_action_surface();
         } else if self.collaboration.manager.is_connected() {
             // Keep the idempotent directory-capability registration that the
@@ -246,9 +259,6 @@ impl super::App {
         // timer): the session's index follows it here too, not only on input.
         self.publish_search_index();
         self.finish_model_directory_refresh(directory);
-        if report.published {
-            self.actions.hosted.publication = self.hosted_publication_stamp();
-        }
         if let Some(started) = started {
             crate::diag!(
                 "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
@@ -296,7 +306,7 @@ impl super::App {
     /// `None` whenever publication cannot be proven current: disconnected,
     /// nothing published yet, an evicted directory snapshot or stamp, or an
     /// exhausted generation that no longer distinguishes later mutations.
-    fn hosted_publication_stamp(&self) -> Option<HostedPublicationStamp> {
+    pub(super) fn hosted_publication_stamp(&self) -> Option<HostedPublicationStamp> {
         let resource_generation = self.actions.resource_generation.get();
         let permission_generation = self.actions.permission_generation.get();
         let registry_generation = self.actions.action_registry_generation;
@@ -331,6 +341,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_update");
         // The room's presence is state of the frame, lent under the window's
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);

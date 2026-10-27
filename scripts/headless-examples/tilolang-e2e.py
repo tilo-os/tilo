@@ -23,7 +23,11 @@ app gets on a real system:
   activation "Show this window" answers for tilolang Notes as for native Notes
   read       the door's `read` of tilolang Notes lists the room's records, and
              the notebook's read lists its notes by the ids a read takes
-  idle       context switches of each app's threads over 10 s, untouched
+  idle       each app untouched for 10 s, native Notes included: one that commits no
+             frame wakes no thread at all; one that animates (a connecting spinner)
+             commits one frame per pose and no more
+  spinner    Board, empty and unsynced, in front: its connecting spinner turns, one
+             committed frame per pose and none between
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Board, whose surface declares that it reads Notes' kinds, and as
@@ -414,16 +418,79 @@ def snapshots(session: Session, windows: dict, out: Path, prefix: str = "") -> d
     return shots
 
 
-def check_idle(processes: dict, seconds: float = 10.0) -> dict:
+def native_pid(session_pid: int) -> int | None:
+    """The process of native Notes, when it runs."""
+    return next((p for p in descendants(session_pid)
+                 if environ(p).get("TILO_PACKAGE_ID") == NATIVE and Path(exe(p)).name == "notes"), None)
+
+
+def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
+    """Every app, native Notes among them, left untouched for 10 s. An app that commits no frame
+    is settled, and every thread of it sleeps: zero context switches. An app that commits frames
+    is animating, which in this session is only the connecting spinner of an app whose room never
+    syncs and that holds nothing to show (Board; native Notes): one frame per pose of the spinner
+    and no more, with its context switches per frame recorded."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
+    native = native_pid(session_pid)
+    if native is None:
+        raise Failed("native Notes is not running to be held to the same idle")
+    pids[NATIVE] = native
     before = {app: switches(pid) for app, pid in pids.items()}
+    seqs = {app: frame_seq(session, app) for app in pids}
+    start = time.monotonic()
     time.sleep(seconds)
-    out = {}
+    elapsed = time.monotonic() - start
+    poses = elapsed * INDICATOR_POSES_PER_SECOND
+    out, problems = {}, []
     for app, pid in pids.items():
         after = switches(pid)
+        frames = frame_seq(session, app) - seqs[app]
         woke = {t: after[t] - before[app].get(t, 0) for t in after if after[t] != before[app].get(t, 0)}
-        out[app] = {"switches": sum(woke.values()), "threads": woke}
+        total = sum(woke.values())
+        out[app] = {"frames": frames, "switches": total, "threads": woke}
+        if frames == 0 and woke:
+            problems.append(f"{app} drew nothing and woke: {woke}")
+        elif frames > poses + 1:
+            problems.append(f"{app} committed {frames} frames in {elapsed:.1f} s, more than its "
+                            f"spinner's {poses:.0f} poses")
+        if frames:
+            out[app]["switches_per_frame"] = round(total / frames, 1)
+    if problems:
+        raise Failed(f"{'; '.join(problems)} ({json.dumps(out)})")
+    return out
+
+
+def frame_seq(session: Session, app: str) -> int:
+    frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+    return max((f.get("frame_seq") or 0 for f in frames if f["app_id"] == app), default=0)
+
+
+# The poses a second of a looping indicator (ui_core::animation::INDICATOR_STEP).
+INDICATOR_POSES_PER_SECOND = 30
+
+
+def check_spinner(session: Session, windows: dict, processes: dict, seconds: float = 10.0) -> dict:
+    """Board holds nothing and its room never syncs, so it says it is connecting with a spinner,
+    in front: the spinner turns, and costs one committed frame per pose, nothing between poses."""
+    w = windows[app_id("board")]
+    session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
+    time.sleep(2)
+    pid = processes["apps"][app_id("board")]["pid"]
+    before, seq, start = switches(pid), frame_seq(session, app_id("board")), time.monotonic()
+    time.sleep(seconds)
+    frames = frame_seq(session, app_id("board")) - seq
+    elapsed = time.monotonic() - start
+    after = switches(pid)
+    woke = sum(after[t] - before.get(t, 0) for t in after)
+    poses = elapsed * INDICATOR_POSES_PER_SECOND
+    out = {"frames": frames, "poses": round(poses), "switches": woke,
+           "switches_per_frame": round(woke / frames, 1) if frames else None}
+    if frames == 0:
+        raise Failed(f"the connecting spinner stood still: {out}")
+    # One pose a frame; a frame whose clock reading straddles two poses may land late by one.
+    if frames > poses + 1:
+        raise Failed(f"the spinner committed more frames than it has poses: {out}")
     return out
 
 
@@ -568,7 +635,9 @@ def main() -> int:
             ("native", lambda: check_native(session, out)),
             ("activation", lambda: check_activation(session)),
             ("read", lambda: check_read(session)),
-            ("idle", lambda: check_idle(summary["checks"]["processes"])),
+            ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+            ("spinner", lambda: check_spinner(session, summary["checks"]["launch"],
+                                              summary["checks"]["processes"])),
         ])
         stop_session(proc)
         proc = None
