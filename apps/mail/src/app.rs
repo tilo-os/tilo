@@ -1123,7 +1123,7 @@ impl MailApp {
     /// What the document's outbox holds now: the messages every account
     /// still has to send, with a server's refusal where one refused them.
     /// The outbox page and the sidebar's count both read this.
-    fn read_outbox(&mut self, doc: &ui::tilo_resource::Doc) {
+    fn read_outbox(&self, doc: &ui::tilo_resource::Doc) {
         let waiting = crate::resource::read_mail(doc)
             .map(|mail| mail.outgoing())
             .unwrap_or_default();
