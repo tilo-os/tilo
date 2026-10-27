@@ -1062,6 +1062,9 @@ pub struct AccountsPane {
     /// The vault being opened again on a worker; a later opening replaces
     /// an earlier one.
     vault_opening: Option<crate::device_read::Landing>,
+    /// Which Mail accounts custody holds an `OAuth` grant for, read on a
+    /// worker: each asks the Secret Service for the vault.
+    mail_grants: MailGrants,
     /// The vault work queued and running, in order.
     lane: vault_lane::VaultLane,
     /// A reload waits in the lane.
@@ -1180,6 +1183,7 @@ impl AccountsPane {
             sync_statuses: accounts::AccountSyncStatusStore::default(),
             vault: None,
             vault_opening: None,
+            mail_grants: MailGrants::default(),
             lane: vault_lane::VaultLane::default(),
             reload_queued: false,
             is_sample,
@@ -2430,7 +2434,7 @@ impl AccountsPane {
         let not_synced =
             runtime.is_none_or(|status| status.health == accounts::AccountSyncHealth::Never);
         let granted_mail =
-            view.kind == AccountKind::Mail && self.custodian.oauth_scopes(&id).is_ok();
+            view.kind == AccountKind::Mail && self.mail_grants.granted.contains(&view.id);
         let (status, status_tone) =
             if !self.is_sample && view.enabled && !pending && not_synced && import_only {
                 (t("accounts-status-import-only"), StatusTone::Neutral)
@@ -2867,11 +2871,52 @@ impl AccountsPane {
             crate::device_read::Landed::Done(vault) => {
                 self.vault = Some(vault);
                 self.vault_opening = None;
+                self.mail_grants.asked = None;
                 self.changed = true;
             }
             crate::device_read::Landed::Pending => {}
             crate::device_read::Landed::Lost => self.vault_opening = None,
         }
+    }
+
+    /// Take in the Mail grants a worker read, and read them again when the
+    /// Mail accounts or the vault changed since they were asked for.
+    fn poll_mail_grants(&mut self) {
+        if let Some(reading) = &self.mail_grants.reading {
+            match reading.poll::<std::collections::BTreeSet<String>>() {
+                crate::device_read::Landed::Done(granted) => {
+                    self.changed |= granted != self.mail_grants.granted;
+                    self.mail_grants.granted = granted;
+                    self.mail_grants.reading = None;
+                }
+                crate::device_read::Landed::Pending => return,
+                crate::device_read::Landed::Lost => self.mail_grants.reading = None,
+            }
+        }
+        if self.is_sample {
+            return;
+        }
+        let ids: Vec<String> = self
+            .dir
+            .mail
+            .accounts
+            .iter()
+            .map(|account| account.id.clone())
+            .collect();
+        if self.mail_grants.asked.as_ref() == Some(&ids) {
+            return;
+        }
+        if ids.is_empty() {
+            self.changed |= !self.mail_grants.granted.is_empty();
+            self.mail_grants.granted.clear();
+            self.mail_grants.asked = Some(ids);
+            return;
+        }
+        self.mail_grants.asked = Some(ids.clone());
+        let vault = self.account_root.vault_opener();
+        self.mail_grants.reading = Some(crate::device_read::Landing::start(move || {
+            vault.oauth_granted(ids)
+        }));
     }
 
     fn account_type(kind: AccountKind) -> &'static str {
@@ -3861,6 +3906,7 @@ impl AccountsPane {
         }
         self.advance_lane(false);
         self.poll_vault_opening();
+        self.poll_mail_grants();
         self.poll_form_probe();
         self.poll_sign_in();
         self.poll_reauth_probe();
@@ -3889,11 +3935,22 @@ impl PaneModel for AccountsPane {
             || self.reauth_probe.is_some()
             || !self.lane.is_idle()
             || self.vault_opening.is_some()
+            || self.mail_grants.reading.is_some()
             || self
                 .sign_in
                 .as_ref()
                 .is_some_and(cloud_signin::SignInFlow::busy)
     }
+}
+
+/// The Mail accounts an `AccountsPane` shows as granted, read on a worker.
+#[derive(Default)]
+struct MailGrants {
+    /// The Mail accounts last read as granted.
+    granted: std::collections::BTreeSet<String>,
+    /// The Mail accounts the last read asked about; `None` reads again.
+    asked: Option<Vec<String>>,
+    reading: Option<crate::device_read::Landing>,
 }
 
 fn relative_sync_time(unix: i64) -> String {
@@ -4828,6 +4885,79 @@ mod tests {
             "the credential went with the account"
         );
         assert!(!root.mutation_pending(), "the removal's journal is cleared");
+    }
+
+    /// Whether custody holds a Mail account's grant is read on a worker:
+    /// a vault that does not answer holds no frame of the pane, and the
+    /// grant shows once it does.
+    #[test]
+    fn a_stalled_vault_never_holds_the_mail_grant_status() {
+        use std::time::Instant;
+
+        let (_dir, root) = scratch_root();
+        let id = accounts::AccountId::from("granted@example.test");
+        let mut account = accounts::Account::new(id.clone(), "email");
+        account.config = serde_json::to_value(accounts::email::AccountConfig {
+            email: "granted@example.test".into(),
+            imap_host: "imap.example.test".into(),
+            ..accounts::email::AccountConfig::default()
+        })
+        .expect("the config serialises");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account);
+        root.save_store(&store).expect("the store is saved");
+        let dir = AccountDirectory::load_in(&root);
+        assert_eq!(dir.mail.accounts.len(), 1, "the pane lists a Mail account");
+        root.custodian()
+            .seal_oauth(
+                &id,
+                &account_custody::TokenSet {
+                    access_token: "test-only-access".into(),
+                    scope: None,
+                    refresh_token: "test-only-refresh".into(),
+                    expires_in: 3600,
+                    obtained_at: 0,
+                },
+            )
+            .expect("the grant is sealed");
+        let read = AccountsRead::of(&root);
+        let config = root.path().expect("an explicit root");
+        let gate = crate::stall::Stall::new();
+        let window = std::thread::spawn(move || {
+            ui::rt::mark_ui_thread();
+            let stalled = std::sync::Arc::clone(&gate);
+            let root = AccountRoot::at(config).with_vault_gate(move || {
+                stalled.wait();
+            });
+            let dir = AccountDirectory::load_in(&root);
+            let mut pane = AccountsPane::from_read(root, dir, read);
+            let granted = t("accounts-status-mail-granted");
+            let shows_granted = |pane: &AccountsPane| {
+                crate::widgets::announced_text(pane.compose().as_ref())
+                    .iter()
+                    .any(|line| line.contains(&granted))
+            };
+
+            let _ = pane.poll();
+            let shown = shows_granted(&pane);
+            gate.assert_held("composing the accounts");
+            assert!(!shown, "the grant is not known before the vault answers");
+            assert!(
+                PaneModel::busy(&pane),
+                "the pane keeps polling while the vault is out"
+            );
+
+            gate.release();
+            let deadline = tilo_test_env::hang_deadline();
+            while !shows_granted(&pane) {
+                assert!(Instant::now() < deadline, "the grant is shown");
+                let _ = pane.poll();
+                std::thread::yield_now();
+            }
+        });
+        if let Err(panic) = window.join() {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     /// A room bridged to a Discord server, its host answering at once.
