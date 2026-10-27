@@ -301,7 +301,7 @@ fn developer_catalog(
     getrandom::fill(&mut seed).unwrap();
     fs::write(&key, hex::encode(seed)).unwrap();
     fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_tilo-model-catalog"))
+    let status = Command::new(tilo_test_env::package_binary!("tilo-model-catalog"))
         .arg("--source")
         .arg(work.join("source.json"))
         .arg("--signing-key")
