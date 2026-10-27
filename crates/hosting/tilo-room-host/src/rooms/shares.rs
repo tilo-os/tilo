@@ -32,22 +32,34 @@ fn fresh_request() -> Result<[u8; 32], CollaborationError> {
     Ok(id)
 }
 
-/// Whether `device` may share the window `tab` of the room `room` holds as
-/// the share `share`: a window is shared only under its own share id, and
-/// only by the device its tab's topology namespace is registered to, which
-/// hosts it ([`tilo_desktop_model::window_share`]). Nobody shares another
-/// device's window.
+/// Whether `device` may share `node` of the room `room` holds as the share
+/// `share`, as far as windows go ([`tilo_desktop_model::window_share`]): a
+/// window is shared only under its own share id, what a Tilo app's window
+/// shows only under that window's, and either only by the device the
+/// window's tab's topology namespace is registered to, which hosts it.
+/// Nobody shares another device's window, or says what it shows.
 fn window_is_the_callers(
     room: Option<&automerge::AutoCommit>,
     device: &DeviceCert,
     share: &str,
-    tab: u64,
+    node: &TreePath,
 ) -> Result<(), CollaborationError> {
-    if share != tilo_desktop_model::window_share::window_share_id(tab) {
-        return Err(CollaborationError::new(
-            "a window is shared under its own share id",
-        ));
-    }
+    use tilo_desktop_model::window_share::{window_of_node, window_of_share_id};
+    let window = window_of_node(node).map(|(_, tab)| tab);
+    let named = window_of_share_id(share);
+    let tab = match (window, named) {
+        (None, None) => return Ok(()),
+        // The window's own node: under its share id, or as what the window
+        // shows when that is its app's own record as a whole.
+        (Some(tab), Some((named, _))) if named == tab => tab,
+        // What a window shows: any one resource of the room.
+        (None, Some((tab, true))) => tab,
+        _ => {
+            return Err(CollaborationError::new(
+                "a window is shared under its own share id",
+            ));
+        }
+    };
     let host = room
         .map(tilo_desktop_model::projection::contents_owners_of)
         .and_then(|owners| owners.get(&tilo_desktop_model::peer_salt_of(tab)).cloned());
@@ -99,9 +111,7 @@ impl Rooms {
         }
         let grants = share::share_grants(governed.room(), &person, share, node, access)
             .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        if let Some((_, tab)) = tilo_desktop_model::window_share::window_of_node(node) {
-            window_is_the_callers(governed.peer().admitted_room(), device, share, tab)?;
-        }
+        window_is_the_callers(governed.peer().admitted_room(), device, share, node)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         share::check_held(&member.authority(&bound), &grants, &cx)
             .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;

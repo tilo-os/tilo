@@ -174,6 +174,13 @@ impl WindowSlots {
         }
     }
 
+    /// The desktop's own items in the menu of `tab`'s window bar, as last
+    /// set ([`Self::set_host_items`]).
+    #[must_use]
+    pub fn host_items(&self, tab: TabId) -> &[ToolbarAction] {
+        self.host_items.get(&tab).map_or(&[], Vec::as_slice)
+    }
+
     /// The desktop's own items the person chose since the last call, by
     /// tab, each by its id.
     pub fn take_host_actions(&mut self) -> Vec<(TabId, String)> {
