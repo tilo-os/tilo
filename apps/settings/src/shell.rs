@@ -1,5 +1,9 @@
 //! The app every host runs: Settings' core shell, with every part of
 //! Settings brought together before it opens ([`crate::install`]).
+//!
+//! It is the app over the resource `settings_core` declares: [`SettingsShell`]
+//! is that crate's own host, and the definition it is mounted through is
+//! that crate's.
 
 use ui::application::ComponentBehaviour;
 use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
