@@ -617,6 +617,11 @@ pub struct Resource {
     pub presentation: Option<ResourcePresentation>,
     /// Exact original typed identity retained before host namespacing.
     pub semantic_identity: Option<ResourceSemanticIdentity>,
+    /// The app that publishes it, as the [`ActionKey`](crate::ActionKey)s
+    /// of its actions name it: the one whose resource this is, not the
+    /// provider keeping it in a room. `None` for a resource published
+    /// outside an app.
+    pub app_id: Option<String>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
@@ -632,10 +637,18 @@ impl Resource {
             label: label.into(),
             presentation: None,
             semantic_identity: None,
+            app_id: None,
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
         }
+    }
+
+    /// The app that publishes it, as an [`ActionKey`](crate::ActionKey) of
+    /// one of its actions names it ([`Self::app_id`]).
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        self.app_id.as_deref()
     }
 
     #[must_use]
@@ -1698,14 +1711,14 @@ impl ActionSpec {
         self
     }
 
+    /// A deletion: its kind is
+    /// [`deletion_kind`](ActionContract::deletion_kind), and the tags the spec
+    /// already carries settle its confirmation — asked with a click unless a
+    /// compensated undo says Undo takes it back.
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
-        // A deletion reaches outside its resource only once Undo takes the
-        // change back.
         self.contract.kind = self.contract.deletion_kind();
-        // Asked with a click when Undo cannot take it back; run at once,
-        // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
         self.contract.settle_confirmation();
         self
     }
@@ -2971,8 +2984,8 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "resource/history_context_tests.rs"]
-mod history_context_tests;
+#[path = "resource/history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 #[path = "resource/effective_invocation_tests.rs"]

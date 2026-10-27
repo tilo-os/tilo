@@ -728,7 +728,7 @@ pub struct FileExplorerWidget {
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
     /// What the rename editor painted, this frame and last: the window's
     /// own paint over the shell, which damages where it changed.
-    rename_paint: crate::own_paint::OwnPaint,
+    rename_paint: ui::own_paint::OwnPaint,
     /// Set on `begin_rename` so the first `sync` after the seed selects the
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
@@ -1937,7 +1937,7 @@ impl FileExplorerWidget {
                 .with_id("files.rename_input")
                 .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
-            rename_paint: crate::own_paint::OwnPaint::default(),
+            rename_paint: ui::own_paint::OwnPaint::default(),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
@@ -5784,15 +5784,19 @@ impl FileExplorerWidget {
     }
 
     /// Open what a launch names: a received share link (`tilo-file://…`) is
-    /// admitted through the recipient service, anything else is a folder,
-    /// resolved against the launcher's working directory. A folder that is
-    /// missing or unreadable shows the ordinary navigation error.
+    /// admitted through the recipient service; a path, resolved against the
+    /// launcher's working directory, is a folder to show, or a file to show
+    /// selected in its folder ("Show in Files"). A folder that is missing or
+    /// unreadable shows the ordinary navigation error.
     pub fn open_launch_argument(&mut self, argument: &str) {
         if argument.starts_with(crate::received_shares::LINK_SCHEME) {
             self.admit_received_share(argument.to_owned());
             return;
         }
         match std::path::absolute(argument) {
+            Ok(path) if path.is_file() => {
+                self.apply_reveal_in_folder(&path);
+            }
             Ok(path) => self.navigate(path),
             Err(error) => self.set_external_status(error.to_string()),
         }
@@ -10693,6 +10697,10 @@ mod tests;
 #[cfg(test)]
 #[path = "files_app/notice_action_tests.rs"]
 mod notice_action_tests;
+
+#[cfg(test)]
+#[path = "files_app/launch_argument_tests.rs"]
+mod launch_argument_tests;
 
 #[cfg(test)]
 #[path = "files_app/sidebar_button_tests.rs"]

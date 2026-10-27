@@ -403,6 +403,7 @@ fn overflow(cx: &ViewCx<Artwork>, commands: Vec<Command>) -> Element {
         ui::tilo_resource::ActionRef::new(
             ui::tilo_resource::GROUP,
             &[ui::tilo_resource::GROUP_PARAM],
+            crate::resource::ARTWORK_KIND,
         );
     Box::new(cx.actions().bind(
         menu,

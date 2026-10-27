@@ -4,7 +4,8 @@
 //! shell's chooser service, and the app's host services answer every chooser
 //! through it (`tilo_dialogs::shell`). The shell shows the chooser for an Open
 //! that asks for the chosen file's contents; an Open that asks for a path is
-//! answered only from what the workspace already granted the app, and the
+//! answered through the app's documents, which a session may not serve, and
+//! then only from what the workspace already granted the app: the
 //! Authenticator is granted nothing. These tests drive the real client of that
 //! service over a socket, against a stand-in for the shell that answers as the
 //! shell does, so a regression to a path chooser fails here rather than on the
@@ -21,9 +22,9 @@ use tilo_dialogs::shell::{FilePortalGrant, Reply, Request};
 
 use super::tests::{click, opened, panel};
 
-/// What the session shell answers an app whose workspace granted it no
-/// files when it asks for a path (`portal-chooser-nothing-granted`).
-const NOTHING_GRANTED: &str = "This app has been given no files to choose from.";
+/// What the session shell answers an app it cannot give a chosen path to
+/// (`portal-chooser-cannot-give`).
+const CANNOT_GIVE: &str = "This device can't give apps the files you choose right now. Sign out and back in, then try again.";
 
 /// The session shell's end of one app's chooser connection: every request
 /// it was sent, in order.
@@ -35,7 +36,7 @@ struct SessionShell {
 impl SessionShell {
     /// Serve the shell's end of the connection on a thread, answering every
     /// contents chooser with `chosen` (as the person picking `name`) and
-    /// refusing every path chooser, as the shell refuses an app granted no
+    /// refusing every path chooser, as a shell that cannot give refuses an app granted no
     /// files. Returns the app's end.
     fn serve(&self, name: &str, chosen: Vec<u8>) -> UnixStream {
         let (app, shell) = UnixStream::pair().expect("a socket pair");
@@ -111,7 +112,7 @@ fn answer(request: Request, name: &str, chosen: &[u8]) -> Reply {
         Request::ReleaseContents { id, .. } => Reply::ContentsReleased { id },
         Request::Pick { id, .. } => Reply::Failed {
             id,
-            reason: NOTHING_GRANTED.to_owned(),
+            reason: CANNOT_GIVE.to_owned(),
         },
         other => Reply::Failed {
             id: request_id(&other),
@@ -178,8 +179,8 @@ fn the_totp_app_opens_the_file_picker() {
         !requests
             .iter()
             .any(|request| matches!(request, Request::Pick { .. })),
-        "the app asks for the chosen file's contents, never a path the shell refuses an app \
-         granted no files: {requests:?}"
+        "the app asks for the chosen file's contents, never a path a shell that cannot give \
+         refuses an app granted no files: {requests:?}"
     );
     assert!(filled, "the chosen image fills the add form");
     assert_eq!(
@@ -203,19 +204,19 @@ struct LaterChooser {
 
 impl tilo_dialogs::FilePicker for LaterChooser {
     fn pick(&self, _: portal::PickRequest) -> portal::PortalChannel {
-        refused(portal::PortalOutcome::Failed(NOTHING_GRANTED.into()))
+        refused(portal::PortalOutcome::Failed(CANNOT_GIVE.into()))
     }
 
     fn pick_multiple(&self, _: portal::PickRequest) -> portal::MultiChannel {
-        refused(portal::MultiOutcome::Failed(NOTHING_GRANTED.into()))
+        refused(portal::MultiOutcome::Failed(CANNOT_GIVE.into()))
     }
 
     fn open_file(&self, _: portal::PickRequest) -> portal::OpenFileChannel {
-        refused(portal::OpenFileOutcome::Failed(NOTHING_GRANTED.into()))
+        refused(portal::OpenFileOutcome::Failed(CANNOT_GIVE.into()))
     }
 
     fn launch(&self, _: portal::LaunchRequest) -> portal::LaunchChannel {
-        refused(portal::LaunchOutcome::Failed(NOTHING_GRANTED.into()))
+        refused(portal::LaunchOutcome::Failed(CANNOT_GIVE.into()))
     }
 
     fn pick_contents(&self, _: portal::PickRequest) -> portal::ContentsChannel {

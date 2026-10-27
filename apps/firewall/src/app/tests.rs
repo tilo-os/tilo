@@ -476,3 +476,55 @@ fn the_firewalls_controls_are_in_the_window_bar() {
         "Add rule is the rules' command"
     );
 }
+
+/// The frames `app` runs until it asks for none: no queued work and no
+/// animation, what a host wakes an idle window for. `None` when it still
+/// asks after `limit` frames.
+fn frames_to_rest(app: &mut TestApp<FirewallShell>, limit: usize) -> Option<usize> {
+    for frame in 0..=limit {
+        let schedule = app.harness().frame_schedule();
+        if !(schedule.queued_work || schedule.needs_animation_frame) {
+            return Some(frame);
+        }
+        app.frame();
+    }
+    None
+}
+
+/// Nobody touching the window, it asks for nothing within a few frames:
+/// opened on the add-rule scenario in the desktop's window bar, and again
+/// once the bar's sidebar button has hidden the docked sidebar of a window
+/// that wide. Apply is not left waiting on an apply that never runs.
+#[test]
+fn an_idle_window_comes_to_rest_within_a_few_frames() {
+    let _landed = ui::motion::testing::settled();
+    let mut app = TestApp::<FirewallShell>::drive("add-rule").unwrap();
+    app.harness().resize((1280, 800)).unwrap();
+    app.harness().present_in_window_bar();
+    let rests = |app: &mut TestApp<FirewallShell>, when: &str| {
+        let frames = frames_to_rest(app, 4);
+        assert!(
+            frames.is_some(),
+            "{when}: still asking after 4 frames: {:?}, queued {:?}, animating {:?}",
+            app.harness().frame_schedule(),
+            app.harness().queued_work_sources(),
+            app.harness().frame_requesters(),
+        );
+    };
+    rests(&mut app, "opened");
+    let bar = ui::window_toolbar::declared().expect("the window's slots");
+    let apply = bar.actions.iter().find(|action| action.id == view::APPLY);
+    assert!(
+        apply.is_some_and(|action| action.enabled),
+        "Apply is offered, not waiting on an apply: {apply:?}"
+    );
+
+    app.harness().click_window_sidebar_button().unwrap();
+    rests(&mut app, "after hiding the sidebar");
+    let shown = app.harness().window_sidebar_shown().unwrap();
+    assert_eq!(
+        shown.agreed(),
+        Some(false),
+        "the sidebar is hidden: {shown:?}"
+    );
+}

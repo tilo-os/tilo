@@ -120,6 +120,11 @@ pub(super) struct LaunchDestination {
 impl BrokerActor {
     #[must_use]
     pub(super) fn for_caller(caller: &Caller) -> Self {
+        Self::principal_of(caller).within(caller.ceiling())
+    }
+
+    /// The actor `caller`'s principal is, before any ceiling.
+    fn principal_of(caller: &Caller) -> Self {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => {

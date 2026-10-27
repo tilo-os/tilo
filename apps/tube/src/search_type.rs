@@ -101,7 +101,7 @@ pub fn suggested_entries(
                 .grouped("YouTube")
                 .subtitled(video.channel_name.clone())
                 .with_icon("play")
-                .boosted(QUERY_BOOST - place)
+                .boosted(QUERY_BOOST.saturating_sub(PLACE.saturating_mul(place)))
         })
         .collect()
 }
@@ -115,6 +115,12 @@ pub fn video_anchor(id: &str) -> String {
 const SEARCH_ANCHOR: &str = "tube.search:";
 /// How far [`query_entry`]'s row floats over the videos the query matches.
 const QUERY_BOOST: i32 = 1000;
+/// How far each suggested video sinks below the one before it. A search
+/// ranks an app's rows by how well each matched plus its boost, a match
+/// ranking from 0 to 100: a step wider than that keeps the order whatever
+/// the titles say ("lofi hip hop radio" begins with "lofi", the row that
+/// searches for it only contains it).
+const PLACE: i32 = 101;
 
 /// What opening the anchor `anchor` runs: the video (from the catalogue or
 /// the watch history), the creator or the playlist it names.

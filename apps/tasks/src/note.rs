@@ -20,6 +20,8 @@ use crate::model::Tracker;
 pub const NOTES: &str = "so.tilo.notes";
 /// Its notebook, the resource that makes a note.
 const NOTEBOOK: &str = "notes.notebook";
+/// The kind of a note, an item of the notebook's pages.
+pub(crate) const NOTE_KIND: &str = "notes.notebook.pages";
 /// The notebook's action that makes a note with a title.
 const NEW_NOTE: &str = "create-page";
 

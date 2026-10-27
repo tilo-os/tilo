@@ -1696,7 +1696,7 @@ impl NetworkArea {
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
             statuses.extend(effects.iter().map(|&id| {
                 EffectStatus::unavailable(
-                    ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                    ActionRef::<SettingsEffect, ()>::new(id, &[], SettingsEffect::kind()),
                     code,
                     reason,
                 )

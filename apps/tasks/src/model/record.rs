@@ -2,6 +2,7 @@
 
 use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
+use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
 use crate::model::issue::{
@@ -413,6 +414,33 @@ impl Tracker {
             },
         );
         Ok(())
+    }
+
+    /// Link a note
+    ///
+    /// Link an issue to an existing note in Notes, picked by its title.
+    ///
+    /// # Errors
+    /// Refuses a reference that names no note.
+    #[action(writes = issues)]
+    pub fn link_note(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt,
+    ) -> Result<(), Refusal> {
+        if note.app != crate::NOTES || note.reference.kind != crate::note::NOTE_KIND {
+            return Err(Refusal::new("That is not a note"));
+        }
+        self.link(
+            cx,
+            issue,
+            note.app,
+            note.reference.kind,
+            note.reference.id,
+            note.reference.label,
+            note.record,
+        )
     }
 
     /// Delete an issue. Its sub-issues move up to its parent.

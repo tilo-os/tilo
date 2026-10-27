@@ -38,7 +38,6 @@ pub mod model;
 pub mod native_fixture;
 pub mod nearby_send;
 pub mod open_with;
-mod own_paint;
 pub mod path_bar;
 pub mod places;
 pub mod places_sidebar;

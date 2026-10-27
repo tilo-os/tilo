@@ -200,6 +200,78 @@ impl ui::tilo_actions::remote::ActionHost for Door {
     }
 }
 
+/// "Link a note" takes a note already written as the reference the system
+/// palette picks by its title (and an agent passes): it publishes what it
+/// picks, so nobody types an id, and links the note it names, never
+/// something else.
+#[test]
+fn a_note_picked_by_its_title_is_linked_as_it_reads() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Plan the launch" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let picked = app
+        .actions()
+        .expect("the actions")
+        .into_iter()
+        .find(|action| {
+            action.address.resource == issue_resource(&issue)
+                && action.address.action == "link-note"
+        })
+        .and_then(|action| action.params.into_iter().find(|p| p.name == "note"))
+        .and_then(|param| param.pick());
+    assert_eq!(
+        picked,
+        Some(ui::tilo_actions::Pick::Resource {
+            kind: "notes.notebook.pages".into()
+        }),
+        "the note is picked, never typed"
+    );
+    let note = json!({
+        "app": tasks::NOTES,
+        "kind": "notes.notebook.pages",
+        "id": "notes.notebook/pages/7",
+        "label": "Launch checklist",
+    });
+    app.call_on(
+        &issue_resource(&issue),
+        "link-note",
+        json!({ "note": note }),
+    )
+    .expect("link the note");
+    let links: Vec<_> = app
+        .state()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .links
+        .values()
+        .cloned()
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].app, tasks::NOTES);
+    assert_eq!(links[0].kind, "notes.notebook.pages");
+    assert_eq!(links[0].resource, "notes.notebook/pages/7");
+    assert_eq!(links[0].label, "Launch checklist");
+    let issue_ref = json!({
+        "app": "so.tilo.tasks",
+        "kind": "tasks.tracker.issues",
+        "id": "tasks.tracker/issues/1",
+        "label": "Another issue",
+    });
+    assert!(
+        app.call_on(
+            &issue_resource(&issue),
+            "link-note",
+            json!({ "note": issue_ref })
+        )
+        .is_err(),
+        "only a note"
+    );
+}
+
 /// A link names the record of the app that keeps what it links to, and
 /// opens it there; a link made before links named a record opens the app's
 /// own record of the workspace.
