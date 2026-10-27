@@ -1608,8 +1608,7 @@ fn locale_registry_with_keys(locales: &[String], messages: &[String]) -> String 
     let mut seen = BTreeSet::new();
     for id in messages {
         let name = label_key_name(id);
-        // Plural forms (`item`, `foo-plural`) and terms are attributes of the
-        // message they belong to, not labels a control shows.
+        // A term is a shared fragment, not a label a control shows.
         if name.is_empty() || !seen.insert(name.clone()) {
             continue;
         }
@@ -1626,18 +1625,11 @@ fn locale_registry_with_keys(locales: &[String], messages: &[String]) -> String 
 const KEYS_MODULE: &str = "pub mod keys {";
 
 /// The `Key` constant a Fluent message id names: `bookmarks-add` is
-/// `BOOKMARKS_ADD`. A plural form is not a key of its own: `item` and
-/// `<message>-plural` name the variants of the message they belong to.
+/// `BOOKMARKS_ADD`. A term is not a message a control shows, so it has no
+/// key; a message's plural variants are selectors inside it, never ids.
 fn label_key_name(id: &str) -> String {
     if id.starts_with('-') {
         return String::new();
-    }
-    if let Some((_, form)) = id.rsplit_once('-') {
-        let plural = matches!(form, "plural" | "one" | "two" | "few" | "many" | "other")
-            || form.parse::<u64>().is_ok();
-        if plural {
-            return String::new();
-        }
     }
     let mut name = String::with_capacity(id.len());
     for character in id.chars() {
