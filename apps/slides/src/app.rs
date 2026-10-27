@@ -1117,7 +1117,7 @@ impl SlidesApp {
             return;
         }
         let current = self.compute_chrome().scale;
-        self.slide_zoom = Self::step(current, direction > 0.0);
+        self.slide_zoom = SlideZoom::step(current, direction > 0.0);
         self.clamp_slide_pan();
     }
 
