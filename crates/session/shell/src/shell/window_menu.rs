@@ -497,7 +497,8 @@ fn extent_rows(extent: WindowExtent, config: &ShortcutConfig) -> [WindowMenuRow;
     ]
 }
 
-/// "Tell an agent…": the row every menu the desktop opens ends with.
+/// "Tell an agent…": what to ask an agent about the thing the menu was
+/// opened on. Every menu the desktop opens offers it.
 pub fn tell_agent_row() -> WindowMenuRow {
     WindowMenuRow::Entry(WindowMenuEntry {
         action: WindowMenuAction::TellAgent,
@@ -508,7 +509,7 @@ pub fn tell_agent_row() -> WindowMenuRow {
 }
 
 /// "Instruct an agent…": what to do with the thing, said in the composer's
-/// field rather than asked about it.
+/// field rather than asked about it. Offered beside [`tell_agent_row`].
 pub fn instruct_agent_row() -> WindowMenuRow {
     WindowMenuRow::Entry(WindowMenuEntry {
         action: WindowMenuAction::InstructAgent,
@@ -735,6 +736,7 @@ mod tests {
                 "Close tab",
                 "Close window",
                 "Tell an agent…",
+                "Instruct an agent…",
             ]
         );
         let shortcut = |label: &str| {
@@ -830,8 +832,8 @@ mod tests {
         assert!(!single.iter().any(|label| label == "Close tab"));
         assert!(!single.iter().any(|label| label == "Split right"));
         assert_eq!(
-            single[single.len() - 2..],
-            ["Close window", "Tell an agent…"]
+            single[single.len() - 3..],
+            ["Close window", "Tell an agent…", "Instruct an agent…"]
         );
 
         let state = WindowMenuFacts {

@@ -18,7 +18,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// The window menu of a tabbed window, top to bottom.
-const TABBED_LABELS: [&str; 12] = [
+const TABBED_LABELS: [&str; 13] = [
     "Full screen",
     "Maximize",
     "Move to strip",
@@ -31,9 +31,10 @@ const TABBED_LABELS: [&str; 12] = [
     "Close tab",
     "Close window",
     "Tell an agent…",
+    "Instruct an agent…",
 ];
 /// The window menu of a window of one tab.
-const SINGLE_LABELS: [&str; 9] = [
+const SINGLE_LABELS: [&str; 10] = [
     "Full screen",
     "Maximize",
     "Move to strip",
@@ -43,6 +44,7 @@ const SINGLE_LABELS: [&str; 9] = [
     "New tab",
     "Close window",
     "Tell an agent…",
+    "Instruct an agent…",
 ];
 
 const TAB_A: u64 = 0xa1;
@@ -656,8 +658,8 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert_eq!(h.tab_ids(0), h.tabs, "the window is untouched");
     }
 
-    /// Anything else the desktop draws gets the same menu, offering only to
-    /// tell an agent about it, and choosing that closes it.
+    /// Anything else the desktop draws gets the same menu, offering only what
+    /// an agent can be asked or told about it, and choosing either closes it.
     fn a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent() {
         let mut h = harness(1);
         let seed = crate::shell::selection_agent::SelectionSeed::new(
@@ -682,7 +684,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.clone())
             .collect();
-        assert_eq!(labels, ["Tell an agent…"]);
+        assert_eq!(labels, ["Tell an agent…", "Instruct an agent…"]);
         assert!(!h.host.perform_semantic_action(
             "tabmenu:close",
             &ui::a11y::Action::Activate,

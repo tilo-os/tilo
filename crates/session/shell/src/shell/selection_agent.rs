@@ -210,7 +210,7 @@ impl SelectionSeed {
     /// an instruction naming the thing, which the agent reaches only through
     /// the resource the composer sends with it. A thing with nothing to act
     /// on is not offered one.
-    pub(crate) fn instruction(&self) -> Option<String> {
+    pub(crate) fn asked_for(&self) -> Option<String> {
         let resource = self.selection.as_ref()?.resource.as_ref()?;
         let label = resource.label.trim();
         if label.is_empty() {

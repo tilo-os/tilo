@@ -432,8 +432,29 @@ impl ShellOverlayHost {
     /// Tell an agent about the menu's window, whatever app it shows: done
     /// either way, so the menu has nothing more to offer.
     fn tell_agent_from_menu(&mut self, target: TabMenuTarget) -> bool {
-        let app_id = self
-            .chrome
+        let app_id = self.app_id_of_target(target);
+        let at = self.layers.tab_menu.anchor_point();
+        self.tell_agent_about_app(&app_id, at);
+        true
+    }
+
+    /// The same window, told what to do with it rather than asked about: the
+    /// composer opens about it with the instruction already in its field.
+    /// Done either way, as telling it is.
+    fn instruct_agent_from_menu(&mut self, target: TabMenuTarget) -> bool {
+        let app_id = self.app_id_of_target(target);
+        let at = self.layers.tab_menu.anchor_point();
+        let instruction = self.asked_for_app(&app_id);
+        self.tell_agent_about_app(&app_id, at);
+        if let Some(instruction) = instruction {
+            self.agent_quick_composer.instruct(&instruction);
+        }
+        true
+    }
+
+    /// The app the menu's window shows.
+    fn app_id_of_target(&self, target: TabMenuTarget) -> String {
+        self.chrome
             .as_ref()
             .and_then(|chrome| {
                 chrome
@@ -441,12 +462,7 @@ impl ShellOverlayHost {
                     .tab_app_id(target.strip, target.group, target.tab)
             })
             .map(|app| app.as_str().to_owned())
-            .unwrap_or_default();
-        // Done either way: without an agent to tell, the desktop
-        // says so, and the menu has nothing more to offer.
-        let at = self.layers.tab_menu.anchor_point();
-        self.tell_agent_about_app(&app_id, at);
-        true
+            .unwrap_or_default()
     }
 
     /// Run one tab-menu action against its tab; `true` when it was
@@ -472,6 +488,7 @@ impl ShellOverlayHost {
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
             WindowMenuAction::CloseWindow => self.close_window_from_menu(target),
             WindowMenuAction::TellAgent => self.tell_agent_from_menu(target),
+            WindowMenuAction::InstructAgent => self.instruct_agent_from_menu(target),
             WindowMenuAction::FullScreen => self.toggle_full_screen_from_menu(target),
             WindowMenuAction::Maximize => self.toggle_maximize_from_menu(target),
             WindowMenuAction::MoveToStrip(destination) => {
@@ -652,7 +669,7 @@ impl ShellOverlayHost {
                 };
                 // The person said what to do; the agent is found, or said
                 // missing, exactly as it is when they asked.
-                let instruction = seed.instruction();
+                let instruction = seed.asked_for();
                 let opened = self
                     .open_ask_agent(seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))));
                 if let Some(instruction) = instruction {

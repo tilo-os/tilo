@@ -11,6 +11,7 @@ use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::i18n::t_args;
 use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
 
 impl ShellOverlayHost {
@@ -102,6 +103,24 @@ impl ShellOverlayHost {
             None => seed,
         };
         self.open_ask_agent(seed)
+    }
+
+    /// The instruction the composer's field starts with when the person chose
+    /// to tell an agent what to do about `app_id`'s window: the window's own
+    /// resource, named, with the app it is in. `None` when the app published
+    /// no window resource — there is then nothing for the agent to act on.
+    pub(super) fn asked_for_app(&self, app_id: &str) -> Option<String> {
+        let resource = self
+            .selection_requests
+            .window_of(app_id)
+            .map(|resource| resource.label.clone())?;
+        Some(t_args(
+            "agent-quick-instruct",
+            &[
+                ("thing", resource.into()),
+                ("app", self.app_label(app_id).into()),
+            ],
+        ))
     }
 
     /// The focused window offers no selection of its own: ask about the
