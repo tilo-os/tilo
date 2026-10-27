@@ -3,7 +3,7 @@
 [[resources]]
 kind = "firewall.config"
 label = "Firewall"
-version = 2
+version = 3
 fields = [
   { path = "enabled", type = "bool", readonly = true },
   { path = "panic_mode", type = "bool", readonly = true },

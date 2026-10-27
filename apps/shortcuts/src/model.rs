@@ -429,9 +429,12 @@ fn edit_program(
     Ok(())
 }
 
-/// Bring a workbench of version 1 up to this one: a draft's inputs, output
-/// and triggers and each step's head and arguments were one JSON string
-/// each, and are stored as their values now. Every draft, step and binding
+/// Bring a workbench of an older version up to this one. Version 1 stored a
+/// draft's inputs, output and triggers and each step's head and arguments as
+/// one JSON string each; they are stored as their values now. Version 2
+/// stored a step's head with its fields flat beside its variant's name; a
+/// head's fields are stored by their variant now, so that a field one variant
+/// names is never read where another wrote it. Every draft, step and binding
 /// is kept; a value that was JSON `null` (no input, no head, no binding) is
 /// left absent, as it read before.
 ///
@@ -442,23 +445,37 @@ pub fn upgrade(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ObjType, ReadDoc as _, Value};
-    use ui::tilo_resource::evolution::{collection_items, retype_json, retype_json_items};
-    if from != 1 {
+    use ui::tilo_resource::evolution::{
+        collection_items, retype_json, retype_json_items, retype_variant_fields,
+    };
+    if !(1..=2).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Shortcuts workbench migration from {from}"
         )));
     }
     for draft in collection_items(doc, &ui::automerge::ROOT, "drafts")? {
-        retype_json::<Option<Binding>>(doc, &draft, "output")?;
-        retype_json::<Vec<TriggerSpec>>(doc, &draft, "triggers")?;
-        retype_json_items::<Option<ActionParam>>(doc, &draft, "inputs")?;
+        if from == 1 {
+            // Version 1 stored a step's head as one JSON string.
+            retype_json::<Option<Binding>>(doc, &draft, "output")?;
+            retype_json::<Vec<TriggerSpec>>(doc, &draft, "triggers")?;
+            retype_json_items::<Option<ActionParam>>(doc, &draft, "inputs")?;
+        }
         for step in collection_items(doc, &draft, "steps")? {
-            retype_json::<Option<Head>>(doc, &step, "head")?;
+            if from == 1 {
+                retype_json::<Option<Head>>(doc, &step, "head")?;
+            }
+            // Version 2 stored a head's fields flat, beside its variant's
+            // name; whatever version stored it, a head's fields are stored by
+            // its variant now, so a field one variant names is never read as
+            // another's.
+            retype_variant_fields::<Option<Head>>(doc, &step, "head")?;
             let Some((Value::Object(ObjType::Map), args)) = doc.get(&step, "args")? else {
                 continue;
             };
-            for name in doc.keys(&args).collect::<Vec<_>>() {
-                retype_json::<Option<Binding>>(doc, &args, &name)?;
+            if from == 1 {
+                for name in doc.keys(&args).collect::<Vec<_>>() {
+                    retype_json::<Option<Binding>>(doc, &args, &name)?;
+                }
             }
         }
     }
@@ -468,7 +485,7 @@ pub fn upgrade(
 #[resource(
     kind = "shortcuts.workbench",
     label = "Shortcuts",
-    version = 2,
+    version = 3,
     migrate = upgrade
 )]
 impl Workbench {

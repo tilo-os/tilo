@@ -21,7 +21,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::automerge::ObjId;
-use ui::tilo_resource::evolution::{collection_items, map_at, map_values, retype_json};
+use ui::tilo_resource::evolution::{
+    collection_items, map_at, map_values, retype_json, retype_variant_fields,
+};
 use ui::tilo_resource::{
     self, ActionCx, Atom, Collection, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal,
 };
@@ -82,7 +84,9 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// in place. Chats made before Chat's record was a model kept each channel's
 /// and category's fields flat in its entry, and opened as version 1 with
 /// those fields unread; up to version 5 they are read into the item
-/// ([`restore_flat_items`]).
+/// ([`restore_flat_items`]). Versions 5 and 6 stored a triage step's update
+/// with its fields flat beside its variant's name; they are stored by their
+/// variant now.
 ///
 /// # Errors
 /// When `from` is not a version this chat was, or a stored value does not
@@ -92,7 +96,7 @@ fn migrate(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::ROOT;
-    if !(1..=5).contains(&from) {
+    if !(1..=6).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
@@ -105,6 +109,7 @@ fn migrate(
         retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
         for step in collection_items(doc, &report, "triage")? {
             retype_json::<Option<crate::feedback::TriageUpdate>>(doc, &step, "update")?;
+            retype_variant_fields::<Option<crate::feedback::TriageUpdate>>(doc, &step, "update")?;
         }
     }
     if let Some(moderation) = map_at(doc, &ROOT, "moderation")? {
@@ -227,16 +232,18 @@ fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError
     Ok(())
 }
 
-/// Bring a part of the chat's messages of version 1 up to this one. Version
-/// 1 kept a message's paragraphs, earlier texts, mentions, reference,
-/// attachment and shown name, and an agent's record of its work, as one
-/// JSON string each; they are model values now, rewritten in place.
+/// Bring a part of the chat's messages of an older version up to this one.
+/// Version 1 kept a message's paragraphs, earlier texts, mentions, reference,
+/// attachment and shown name, and an agent's record of its work, as one JSON
+/// string each; they are model values now, rewritten in place. Version 2
+/// stored the fields of a value whose variants carry fields flat, beside its
+/// variant's name; they are stored by their variant now ([`upgrade_message`]).
 ///
 /// # Errors
 /// When `from` is not a version a part was, or a stored value does not read
 /// as its new type.
 pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    if from != 1 {
+    if !(1..=2).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no chat part migration from {from}"
         )));
@@ -323,23 +330,33 @@ pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, Strin
         .collect()
 }
 
-/// [`upgrade_part`] of one message stored at `message`.
+/// [`upgrade_part`] of one message stored at `message`: the values a part of
+/// version 1 kept as one JSON string each are stored as their values, and the
+/// values whose variants carry fields — its attachment, where its work is and
+/// what came of each operation — are stored by their variant, as a part of
+/// version 2 kept their fields flat. Both steps leave a value that already
+/// reads as it is stored where it is.
 fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
-    use crate::model::{AgentReasoning, AgentStepOutcome, Attachment};
+    use crate::model::{AgentReasoning, AgentStepOutcome, AgentWorkState, Attachment};
     retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
     retype_json::<Vec<Revision>>(doc, message, "history")?;
     retype_json::<Vec<crate::mention::Mention>>(doc, message, "mentions")?;
     retype_json::<Option<tilo_reference::ResourceRef>>(doc, message, "reference")?;
     retype_json::<Option<Attachment>>(doc, message, "attachment")?;
     retype_json::<Option<ShownAs>>(doc, message, "appearance")?;
+    retype_variant_fields::<Option<Attachment>>(doc, message, "attachment")?;
     if let Some(work) = map_at(doc, message, "work")? {
         retype_json::<Option<Transition>>(doc, &work, "state")?;
         retype_json::<Option<AgentReasoning>>(doc, &work, "reasoning")?;
         if let Some(stream) = map_at(doc, &work, "stream")? {
             retype_json::<Option<crate::agent_stream::AgentFinish>>(doc, &stream, "finish")?;
         }
+        if let Some(transition) = map_at(doc, &work, "state")? {
+            retype_variant_fields::<AgentWorkState>(doc, &transition, "state")?;
+        }
         for (_, step) in map_values(doc, &work, "trace")? {
             retype_json::<Option<AgentStepOutcome>>(doc, &step, "outcome")?;
+            retype_variant_fields::<Option<AgentStepOutcome>>(doc, &step, "outcome")?;
         }
     }
     Ok(())
@@ -1197,7 +1214,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 6,
+    version = 7,
     migrate = migrate,
 )]
 impl Chat {
