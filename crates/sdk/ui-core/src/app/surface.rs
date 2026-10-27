@@ -933,6 +933,10 @@ impl App {
         let record_changed = self.pump_hosted_model_record_changed();
         #[cfg(test)]
         drop(pump_probe);
+        // The model's pass took in what landed from elsewhere; the rest of
+        // the frame builds, lays out and draws that state. Work landing
+        // meanwhile is the next frame's, which its wake asks for.
+        let _laying_out = crate::motion::laying_out_frame();
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
