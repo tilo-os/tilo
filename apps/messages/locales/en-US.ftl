@@ -38,7 +38,9 @@ messages-server-acknowledged = Accepted by service
 messages-delivered = Delivered to recipient
 messages-read = Read by recipient
 messages-uncertain = Send status uncertain
-messages-more-history = Showing recent messages
+messages-load-older = Load older messages
+messages-loading-older = Loading older messages…
+messages-history-start = This is the start of the conversation.
 messages-list-people = List people
 messages-list-routes = List messaging choices
 
