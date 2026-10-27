@@ -154,7 +154,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     let base = std::fs::canonicalize(&base).map_err(|error| error.to_string())?;
     let peers: Vec<Peer> = ('a'..='z')
         .take(options.peers)
-        .map(|name| Peer::new(base.join(name.to_string())))
+        .map(|name| Peer::new(base.join(name.to_string()), &repo))
         .collect::<Result<_, _>>()?;
     let (tilo_runtime, tilolang_runtime) = prepare(&repo.join(session::SESSION_SCRIPT), &peers)?;
     let build = BuildOptions {

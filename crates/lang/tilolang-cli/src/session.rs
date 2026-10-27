@@ -68,10 +68,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// How long a window may take to close when its app is asked to let it go.
 const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The interfaces a nested session serves: the checkout's own declaration, which
+/// nested-session.sh hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
+const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
+
 /// One session the tool drives.
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
     pub(crate) control: PathBuf,
+    /// The interfaces the session serves, which installing into it checks against.
+    interfaces: PathBuf,
 }
 
 #[derive(serde::Deserialize)]
@@ -81,17 +87,18 @@ struct SessionFile {
 }
 
 impl Peer {
-    /// The session whose state is `state`, started by this tool.
-    pub(crate) fn new(state: PathBuf) -> Result<Self, String> {
+    /// The session whose state is `state`, started by this tool from the checkout `repo`.
+    pub(crate) fn new(state: PathBuf, repo: &Path) -> Result<Self, String> {
         Ok(Self {
             control: control_socket(&state)?,
             state,
+            interfaces: repo.join(SYSTEM_INTERFACES),
         })
     }
 
-    /// The running session `named` names: its ready file, its runtime directory, or its control
-    /// socket.
-    pub(crate) fn attach(named: &Path) -> Result<Self, String> {
+    /// The running session `named` names (its ready file, its runtime directory, or its control
+    /// socket), run from the checkout `repo`.
+    pub(crate) fn attach(named: &Path, repo: &Path) -> Result<Self, String> {
         let file = if named.is_dir() {
             named.join(SESSION_FILE)
         } else if named
@@ -124,6 +131,7 @@ impl Peer {
         Ok(Self {
             state: session.state,
             control: session.control,
+            interfaces: repo.join(SYSTEM_INTERFACES),
         })
     }
 
@@ -146,6 +154,7 @@ impl Peer {
                 state.join("keys/runtime-publishers.txt"),
             )
             .env("TILO_TEST_CONTROL", &self.control)
+            .env("TILO_SYSTEM_INTERFACES", &self.interfaces)
             .env_remove("TILO_APPS_SYSTEM_DIR");
         if let Some(runtime) = self.control.parent() {
             command.env("XDG_RUNTIME_DIR", runtime);
