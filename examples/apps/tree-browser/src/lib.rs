@@ -175,10 +175,9 @@ impl ResourceApp for App {
                 ),
             ],
         ))
-        .with_id("section-tree")
         .with_expanded([1, 2])
         .with_selected(Some(3))
-        .on_select(move |id| {
+        .on_view("section-tree", move |id| {
             if SECTIONS.contains(&id) {
                 selected_from_tree.set(id);
             }

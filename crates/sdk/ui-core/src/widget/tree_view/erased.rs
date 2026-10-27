@@ -148,6 +148,18 @@ impl TreeCore {
 /// implements, handed to it.
 macro_rules! forward_widget {
     ($($tree:tt)+) => {
+        // The tree's capabilities (its published choice) are this view's.
+        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            Widget::provide(&self.$($tree)+, request);
+        }
+
+        fn provide_mut<'a>(
+            &'a mut self,
+            request: &mut crate::widget::capability::RequestMut<'a, '_>,
+        ) {
+            Widget::provide_mut(&mut self.$($tree)+, request);
+        }
+
         fn set_interaction_environment(
             &mut self,
             environment: crate::interaction::InteractionEnvironment,
@@ -440,6 +452,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
     builders! {
         with_id(id: impl Into<String>);
         on_select(f: impl FnMut(NodeId) + 'static);
+        on_view(id: impl Into<String>, f: impl FnMut(NodeId) + 'static);
         on_expand(f: impl FnMut(NodeId, bool) + 'static);
         on_load_request(f: impl FnMut(TreeLoadRequest) + 'static);
         on_activate(f: impl FnMut(NodeId) + 'static);

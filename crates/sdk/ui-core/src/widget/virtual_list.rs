@@ -37,6 +37,8 @@ use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 #[path = "virtual_list_remount.rs"]
 mod remount;
 use remount::row_kept;
+#[path = "virtual_list_choice.rs"]
+mod choice;
 #[path = "virtual_list_shown.rs"]
 mod shown;
 use shown::ListShown;
@@ -326,6 +328,9 @@ pub struct VirtualList<M: ListModel> {
     /// What has been typed into the focused list ([`ListModel::label`]).
     typing: crate::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<M::Key>>,
+    /// Choosing a row, published as the list's view action
+    /// ([`VirtualList::on_view`]).
+    view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
     /// The last row a click landed on and when, for a double click.
@@ -459,6 +464,7 @@ impl<M: ListModel> VirtualList<M> {
             focused_key: None,
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
+            view: None,
             on_activate: None,
             on_context: None,
             last_click: None,
@@ -1242,7 +1248,13 @@ impl<M: ListModel> VirtualList<M> {
 
     fn emit_selection(&mut self, key: M::Key) {
         let selected = self.selection.is_selected(&key);
-        if let Some(callback) = &mut self.on_select {
+        if let Some((_, handler)) = &mut self.view {
+            // The person's choice is the published view action's own run:
+            // no host decides a view or records it.
+            if selected {
+                handler(key);
+            }
+        } else if let Some(callback) = &mut self.on_select {
             callback(key, selected);
         }
     }
@@ -1473,6 +1485,12 @@ where
 }
 
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -2383,8 +2401,8 @@ mod tests {
     use crate::testing::Dispatch;
     use taffy::AvailableSpace;
 
-    struct HugeList {
-        count: usize,
+    pub(super) struct HugeList {
+        pub(super) count: usize,
     }
 
     impl ListModel for HugeList {
@@ -2812,39 +2830,6 @@ mod tests {
             assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
             assert_eq!(list.focused_key, Some(1));
             assert_eq!(list.scroll_offset(), 0.0);
-        }
-    }
-
-    #[test]
-    fn hundred_million_row_lists_mount_and_request_only_the_window() {
-        {
-            let builds = Rc::new(Cell::new(0_usize));
-            let captured = Rc::clone(&builds);
-            let presses = Rc::new(Cell::new(0));
-            let mut list =
-                VirtualList::new(HugeList { count: 100_000_000 }, 20.0, move |_, _, key| {
-                    captured.set(captured.get().saturating_add(1));
-                    Box::new(ProbeRow::new(
-                        format!("row {key}"),
-                        20.0,
-                        false,
-                        Rc::clone(&presses),
-                    ))
-                })
-                .with_viewport_height(100.0);
-            list.set_scroll_offset(50_000_000.0 * 20.0);
-            let _ = lay_out(&mut list, 300.0);
-
-            assert_eq!(list.model().len(), 100_000_000);
-            assert!(list.mounted_len() <= 10);
-            assert_eq!(builds.get(), list.mounted_len());
-            assert!(list.visible_range().len() <= 10);
-            let top = list.scrollbar_thumb().expect("overflow has a scrollbar");
-            list.set_scroll_offset(list.max_scroll_offset());
-            let bottom = list.scrollbar_thumb().expect("scrollbar remains visible");
-            assert!(bottom.y0 > top.y0);
-            let track = crate::widget::scrollbar::vertical_track(list.rect, list.gutter);
-            assert!((bottom.y1 - track.y1).abs() < 0.001);
         }
     }
 
