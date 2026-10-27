@@ -24,9 +24,13 @@ impl Document {
         self.body = body;
     }
 
-    /// Erase the document. Declared destructive, so every surface that
-    /// invokes it asks for confirmation first.
-    #[action(destructive)]
+    /// Erase the document.
+    ///
+    /// Destructive without a way back: Undo restores the text on this device,
+    /// but not what everyone the document is shared with already saw of it.
+    /// So every surface that invokes it, from the button to an agent, asks
+    /// for confirmation first.
+    #[action(destructive, irreversible)]
     pub fn clear(&mut self) {
         *self = Self::default();
     }

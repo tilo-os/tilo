@@ -10183,7 +10183,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Document {
         let _ = writeln!(
             out,
-            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
+            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive and irreversible (Undo restores the text but not what collaborators already saw), so it asks for confirmation wherever it is invoked."
         );
     }
     if spec.template == Template::Collection {

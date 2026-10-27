@@ -44,8 +44,9 @@ fn the_preview_follows_the_inputs_and_undo_reverts() {
     assert_eq!(App::label(&app.state()), "Untitled document");
 }
 
-/// Clearing is destructive, so it needs confirmation; the document is stored
-/// and survives a relaunch.
+/// Clearing is destructive without a way back — Undo restores this device's
+/// text, not what collaborators already saw — so it needs confirmation. The
+/// document is stored and survives a relaunch.
 #[test]
 fn clearing_needs_confirmation_and_the_document_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");

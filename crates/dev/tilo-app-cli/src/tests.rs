@@ -3524,7 +3524,10 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(source.contains(".input(p.title)"));
         assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
-        assert!(source.contains("#[action(destructive)]"));
+        assert!(
+            source.contains("#[action(destructive, irreversible)]"),
+            "a clear Undo cannot take back is asked first"
+        );
         let test = app_test(&spec);
         assert!(test.contains("the_preview_follows_the_inputs_and_undo_reverts"));
         assert!(test.contains("app.undo()"));
