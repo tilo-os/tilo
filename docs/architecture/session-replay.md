@@ -40,8 +40,11 @@ The recording is therefore a resource of the recorded app's kind whose whole
 history is the window. Its steps are its History entries, and its state at
 step *n* is History's state at that entry.
 
-Apps that withhold themselves from captures (`capture_protected`: passwords,
-authenticators) are never recorded. Recordings are bounded in steps and bytes
+Apps that declare their windows withheld from captures
+(`ComponentBehaviour::capture_protected`: passwords, authenticators) are
+never recorded. Each desktop reads that declaration from the app's own
+windows, the native one also as an app in its own process asks for it, and
+the recorder checks nothing else. Recordings are bounded in steps and bytes
 (`recording::Limits`). A window with more steps than the bound starts later,
 so the last steps before the report are always there; a recording larger
 than the byte bound is not offered.

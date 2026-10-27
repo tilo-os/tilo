@@ -833,9 +833,19 @@ impl Shared {
         tree: &DesktopTree,
         tab: TabId,
     ) -> Option<tilo_desktop::feedback::ShownRecord> {
+        if self.window_capture_protected(tree, tab) {
+            return None;
+        }
         let workspace = crate::replication::room_uuid(self.room_actions.peer?)?;
         let (_, record) = self.live_record_of(tree, tab)?;
         Some(tilo_desktop::feedback::ShownRecord { workspace, record })
+    }
+
+    /// Whether the app window `tab` shows declares itself withheld from what
+    /// leaves the device.
+    pub fn window_capture_protected(&self, tree: &DesktopTree, tab: TabId) -> bool {
+        self.live_record_of(tree, tab)
+            .is_some_and(|(app, _)| crate::capture_declarations::declared(&app))
     }
 
     /// The record `tab` shows as the room's live layer names it: its
@@ -1125,6 +1135,7 @@ impl Tiles {
             || definition.instantiate(context, target, restore),
         )
         .map_err(|error| error.to_string())?;
+        crate::capture_declarations::note(definition.app_id, component.capture_protected());
         if let Some(content) = component.content() {
             crate::page_content::own_loaders(
                 &self.shared.image_owners,

@@ -25,8 +25,14 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// Native builds compile it for its tests; the page is its only user.
 #[cfg(target_arch = "wasm32")]
 mod background_work;
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page opens windows")
+)]
+mod capture_declarations;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]

@@ -1290,6 +1290,12 @@ impl AppComponent {
     pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
         self.behaviour = behaviour;
     }
+    /// Whether the app declares its windows withheld from everything that
+    /// leaves the device ([`ComponentBehaviour::capture_protected`]).
+    #[must_use]
+    pub const fn capture_protected(&self) -> bool {
+        self.behaviour.capture_protected
+    }
     /// The id of the application this component is an instance of.
     pub fn app_id(&self) -> &str {
         self.context.app_id()

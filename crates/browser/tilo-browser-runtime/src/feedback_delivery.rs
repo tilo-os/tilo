@@ -465,7 +465,7 @@ fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
             crate::replication::committed_record(id, workspace, app, record)
         }),
-        protected: Box::new(tilo_desktop::secrets::holds_secrets),
+        protected: Box::new(crate::capture_declarations::declared),
         keep: Box::new(|bytes| {
             crate::page_content::page_content()
                 .put(bytes)
