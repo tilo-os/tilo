@@ -150,8 +150,8 @@ pub mod vocabulary;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, reverting_type,
-    take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, minted_keys,
+    reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;

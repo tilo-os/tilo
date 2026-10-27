@@ -205,8 +205,13 @@ case ${1:-} in
     # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
     # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
     # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone.
+    # Its layers are dated by the OS image's clock (its base's and RPM snapshot's), not by the
+    # commit or the time they were built, so a dev layer whose content is the same is the same
+    # blob in the next build, and a publication sends it once.
+    epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' localhost/tilo:ci)
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the OS image carries no clock but '$epoch'"
     phase build
-    TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
+    SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \

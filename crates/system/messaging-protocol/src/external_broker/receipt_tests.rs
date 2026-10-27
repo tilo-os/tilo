@@ -341,10 +341,9 @@ async fn actual_receipt_wakes_messages_and_refreshes_visible_recipient_evidence_
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                harness
-                    .a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("Read by recipient"))
+                harness.a11y_nodes().iter().any(|(_, node)| {
+                    super::tests::speaks(node.label(), &ui::widget::DeliveryState::Read.label())
+                })
             }),
         "native evidence wakes and refreshes the selected private conversation"
     );

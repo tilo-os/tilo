@@ -61,6 +61,9 @@ pub struct PathBar {
     workspace_roots: Vec<PathBuf>,
     sink: CommandSink,
     rect: Rect,
+    /// What the bar painted, this frame and last, so a frame that left the
+    /// trail or the field as they were repaints neither.
+    own: crate::own_paint::OwnPaint,
 }
 
 impl PathBar {
@@ -81,6 +84,7 @@ impl PathBar {
             workspace_roots: Vec::new(),
             sink,
             rect: Rect::ZERO,
+            own: crate::own_paint::OwnPaint::default(),
         }
     }
 
@@ -264,11 +268,28 @@ impl Widget for PathBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.editing {
-            self.field.draw(scene, transform, tr, theme, presence);
-        } else {
-            self.crumbs.draw(scene, transform, tr, theme, presence);
-        }
+        let (editing, rect) = (self.editing, self.rect);
+        let (field, crumbs) = (&mut self.field, &mut self.crumbs);
+        self.own.record(scene, transform, |scene| {
+            if editing {
+                field.draw(scene, transform, tr, theme, presence);
+            } else {
+                crumbs.draw(scene, transform, tr, theme, presence);
+            }
+            // The field's focus ring reaches past the bar.
+            let reach = f64::from(theme.tokens.spacing.s2);
+            rect.inflate(reach, reach)
+        });
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.own.damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.own.present();
+        self.field.mark_drawn();
+        self.crumbs.mark_drawn();
     }
 
     fn draw_overlay(

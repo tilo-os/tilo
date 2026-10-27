@@ -395,42 +395,7 @@ impl CalcScreen {
         );
         self.ensure_layout(left.width());
 
-        let memory_min_w = 4.0 * self.mem_w + 3.0 * m.cell_gap;
-        let side_w = (left.width() * 0.38).clamp(memory_min_w, m.side_max_w.max(memory_min_w));
-        let side_pad_min_w = 4.0 * m.key_min_w + 3.0 * m.cell_gap;
-        let tall_grid = left.height() - m.display_tall - m.mem_h - 2.0 * m.gap;
-        let (chrome, grid, display_h) = if tall_grid >= self.grid_min_h() {
-            let grid_top = left.y0 + m.display_tall + m.gap + m.mem_h + m.gap;
-            (
-                left,
-                Rect::new(left.x0, grid_top, left.x1, left.y1),
-                m.display_tall,
-            )
-        } else if left.height() - m.display_short - m.mem_h - 2.0 * m.gap >= self.grid_min_h() {
-            // Drop the status line before splitting the display from the pad.
-            // A modest scale increase must not turn a balanced pad into a
-            // narrow grid with a large, mostly empty column beside it.
-            let grid_top = left.y0 + m.display_short + m.gap + m.mem_h + m.gap;
-            (
-                left,
-                Rect::new(left.x0, grid_top, left.x1, left.y1),
-                m.display_short,
-            )
-        } else if left.width() - side_w - m.gap >= side_pad_min_w {
-            // Beside the pad: the display takes what the memory row leaves.
-            let chrome = Rect::new(left.x0, left.y0, left.x0 + side_w, left.y1);
-            let grid = Rect::new(chrome.x1 + m.gap, left.y0, left.x1, left.y1);
-            self.ensure_layout_within(grid.width(), grid.height());
-            let height = (chrome.height() - m.mem_h - m.gap).clamp(m.display_short, m.display_tall);
-            (chrome, grid, height)
-        } else {
-            let grid_top = left.y0 + m.display_short + m.gap + m.mem_h + m.gap;
-            (
-                left,
-                Rect::new(left.x0, grid_top, left.x1, left.y1),
-                m.display_short,
-            )
-        };
+        let (chrome, grid, display_h) = self.split_regions(left);
         // A wide window does not turn keys into tiles: the pad stops at
         // `key_max_w` per column, and a stacked display and memory row
         // narrow with it, centred in the space.
@@ -528,6 +493,49 @@ impl CalcScreen {
             let x0 = grid.x0 + c as f64 * (cw + m.cell_gap);
             let y0 = grid.y0 + r as f64 * (ch + m.cell_gap);
             self.key_rects.push(Rect::new(x0, y0, x0 + cw, y0 + ch));
+        }
+    }
+
+    /// Splits `left` between the display and memory column and the key grid,
+    /// by how much room there is: stacked tall, stacked short, or side by
+    /// side. The chrome and grid rects, and the display's height.
+    fn split_regions(&mut self, left: Rect) -> (Rect, Rect, f64) {
+        let m = self.m;
+        let memory_min_w = 4.0 * self.mem_w + 3.0 * m.cell_gap;
+        let side_w = (left.width() * 0.38).clamp(memory_min_w, m.side_max_w.max(memory_min_w));
+        let side_pad_min_w = 4.0 * m.key_min_w + 3.0 * m.cell_gap;
+        let tall_grid = left.height() - m.display_tall - m.mem_h - 2.0 * m.gap;
+        if tall_grid >= self.grid_min_h() {
+            let grid_top = left.y0 + m.display_tall + m.gap + m.mem_h + m.gap;
+            (
+                left,
+                Rect::new(left.x0, grid_top, left.x1, left.y1),
+                m.display_tall,
+            )
+        } else if left.height() - m.display_short - m.mem_h - 2.0 * m.gap >= self.grid_min_h() {
+            // Drop the status line before splitting the display from the pad.
+            // A modest scale increase must not turn a balanced pad into a
+            // narrow grid with a large, mostly empty column beside it.
+            let grid_top = left.y0 + m.display_short + m.gap + m.mem_h + m.gap;
+            (
+                left,
+                Rect::new(left.x0, grid_top, left.x1, left.y1),
+                m.display_short,
+            )
+        } else if left.width() - side_w - m.gap >= side_pad_min_w {
+            // Beside the pad: the display takes what the memory row leaves.
+            let chrome = Rect::new(left.x0, left.y0, left.x0 + side_w, left.y1);
+            let grid = Rect::new(chrome.x1 + m.gap, left.y0, left.x1, left.y1);
+            self.ensure_layout_within(grid.width(), grid.height());
+            let height = (chrome.height() - m.mem_h - m.gap).clamp(m.display_short, m.display_tall);
+            (chrome, grid, height)
+        } else {
+            let grid_top = left.y0 + m.display_short + m.gap + m.mem_h + m.gap;
+            (
+                left,
+                Rect::new(left.x0, grid_top, left.x1, left.y1),
+                m.display_short,
+            )
         }
     }
 
@@ -636,8 +644,8 @@ impl CalcScreen {
         let m = &self.m;
         let short = self.display_is_short();
         let pad = m.display_pad;
-        let (_expr_top, expr_bottom) = self.expression_band();
-        let expr_line = Rect::new(display.x0 + pad, _expr_top, display.x1 - pad, expr_bottom);
+        let (expr_top, expr_bottom) = self.expression_band();
+        let expr_line = Rect::new(display.x0 + pad, expr_top, display.x1 - pad, expr_bottom);
         let expr_icon = self.copy_icon_of(DisplaySlot::Expression);
         let expr_rect = Self::line_text(expr_line, expr_icon);
 

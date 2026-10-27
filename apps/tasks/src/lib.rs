@@ -7,6 +7,7 @@
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's task: its runs are
 //! the issue's actions, approved, steered and answered from the issue page.
+//! An issue's note is written in Notes, through Notes' own action ([`note`]).
 //!
 //! Storage, sync, history, undo, search and permissions are the framework's.
 //!
@@ -27,6 +28,7 @@ mod issue;
 mod list;
 pub mod locales;
 pub mod model;
+mod note;
 mod sample;
 mod window_bar;
 
@@ -37,6 +39,7 @@ use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
 pub use model::Tracker;
+pub use note::{NOTES, TasksEffect};
 
 /// What the window shows when no issue is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -165,6 +168,7 @@ impl ResourceApp for App {
         let stage = nav.clone();
         let staged_for_stage = staged.clone();
         cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged_for_stage.get()));
+        cx.effects(note::handle);
 
         // The sidebar narrows the tracker, and is built again as the
         // tracker gains issues and labels; the views switch its places.

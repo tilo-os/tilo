@@ -1,6 +1,6 @@
 //! Captions: the tracks a video offers and the words on screen while it plays.
 //!
-//! `YouTube` publishes caption tracks as timed text in WebVTT (the same shape
+//! `YouTube` publishes caption tracks as timed text in `WebVTT` (the same shape
 //! an Invidious instance serves), so one parser covers both sources: the
 //! worker resolves a video's tracks ([`CaptionTrack`]) and downloads the one
 //! the person chose, and the watch page asks [`active_cue`] where its playhead
@@ -44,7 +44,7 @@ pub fn active_cue(cues: &[CaptionCue], position_ms: u64) -> Option<&CaptionCue> 
     (position_ms < cue.end_ms).then_some(cue)
 }
 
-/// Read a WebVTT file's cues, in order, skipping the header, the styling
+/// Read a `WebVTT` file's cues, in order, skipping the header, the styling
 /// blocks and the note/region blocks. Malformed cues are left out rather than
 /// failing the track: a caption file with one bad line still says the other
 /// nine hundred.

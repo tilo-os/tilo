@@ -972,7 +972,7 @@ fn inspector_scrolls_only_when_it_overflows() {
         app.last_mouse = scrolled.slide_dest.center();
         let mut handled = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, ModifiersState::empty(), &mut handled);
-        assert!(app.inspector_scroll.offset_y() == 0.0);
+        assert_eq!(app.inspector_scroll.offset_y(), 0.0);
         assert!(!handled, "a fitted slide has nowhere to move");
         });
     }

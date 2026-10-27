@@ -1,6 +1,9 @@
 //! The one door an action comes through: a menu row, a control, an offline verb or a touch, turned into the state or resource change it names.
 
-use super::*;
+use super::{
+    Hit, MapControlAction, MapMenu, MapsApp, OfflineAction, Panel, TileLayer, Workspace,
+    areas_refused, failure,
+};
 
 impl MapsApp {
     pub(super) fn dispatch(&mut self, hit: &Hit) {

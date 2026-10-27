@@ -1,6 +1,10 @@
 //! The floating navigation surface a journey draws in, and the card for the place a person selected.
 
-use super::*;
+use super::{
+    Affine, Button, ButtonFace, ButtonRole, ControlSize, Hit, Icon, MapsApp, PaintCtx, Point,
+    PropertyListFace, PropertyRow, Rect, Scene, TextKind, TextRenderer, TextRole, Theme, draw, geo,
+    on_panel,
+};
 
 impl MapsApp {
     /// The live turn card: a floating panel with the next instruction and

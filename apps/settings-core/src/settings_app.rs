@@ -446,9 +446,14 @@ impl SettingsApp {
     /// area's when reading is not put off ([`crate::effects::AreaReads`]).
     pub fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
         // An area read off the UI thread is published once its read has
-        // been taken in: asking for its rows before would wait for it.
-        !self.area_reads.deferred()
-            || (area.is_open)(self)
+        // been taken in, or has ended: asking for its rows before would
+        // wait for it.
+        (area.is_open)(self)
+            || (!self.area_reads.deferred()
+                && area
+                    .background
+                    .as_ref()
+                    .is_none_or(|read| (read.finished)(self)))
             || (area.pane == self.selected && area.background.is_none())
     }
 

@@ -524,7 +524,7 @@ impl OriginalInvocationData {
                 if !person.may_in(
                     workspace,
                     &self.node(workspace),
-                    self.spec.contract.kind,
+                    self.spec.contract.need().kind,
                     seconds,
                 ) {
                     return Err("original invocation caller is no longer authorized");
@@ -589,6 +589,14 @@ impl OriginalInvocationData {
     /// an agent or another member asking for it.
     pub(super) fn through_app_door(&self) -> bool {
         matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
+    }
+
+    /// Whether application `app` invoked this itself through its own door,
+    /// as [`Self::through_app_door`], rather than the person on a
+    /// connection of their own.
+    pub(super) fn through_door_of(&self, app: &str) -> bool {
+        self.through_app_door()
+            && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
     }
 
     /// Whether this was delivered to application `app` in `room`.
@@ -1141,7 +1149,7 @@ impl OriginalInvocation {
             if !actor.may_in(
                 workspace,
                 &self.data.node(workspace),
-                self.data.spec.contract.kind,
+                self.data.spec.contract.need().kind,
                 seconds,
             ) {
                 return Err("original invocation caller is no longer authorized".to_string());
