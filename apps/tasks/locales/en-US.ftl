@@ -75,8 +75,10 @@ tasks-thread-empty-title = Nothing said yet
 tasks-thread-empty-message = Writing to a task in its thread puts the conversation here.
 tasks-thread-draft = Message
 tasks-thread-placeholder = Write a message
-tasks-thread-comment = Comment
-tasks-thread-to-run = Send to the agent
+tasks-thread-send = Send
+# The same button while a run of the task reads the thread: the message goes
+# to that run, which takes it in at its next step.
+tasks-thread-send-to-agent = Send to the agent
 tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
