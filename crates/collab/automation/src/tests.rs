@@ -484,6 +484,7 @@ fn run_with(
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     ))
 }
@@ -851,6 +852,45 @@ fn a_step_output_feeds_the_next_steps_input() {
             .iter()
             .any(|f| f.key == "trigger" && f.value == "manual")
     );
+}
+
+#[test]
+fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
+    let host = FakeHost::new();
+    let tidy = shortcut("tidy", vec![list()]);
+    let parent = tilo_actions::context::ActionGroup {
+        id: "task-run-7".into(),
+        label: "Sort the inbox".into(),
+        kind: "task".into(),
+    };
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &tidy,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: None,
+            parent: Some(parent.clone()),
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert!(!started.is_empty());
+    for request in started {
+        let context = request.context.as_ref().unwrap();
+        let group = context.group.as_ref().unwrap();
+        assert_eq!(group.id, parent.id);
+        assert_eq!(group.kind, parent.kind);
+        assert_eq!(
+            context.purpose.as_deref(),
+            Some("Tidy inbox"),
+            "the run keeps its own name inside the task"
+        );
+    }
 }
 
 #[test]
@@ -1256,6 +1296,7 @@ fn bindings_address_into_an_object_input_and_a_loop_item() {
             trigger: RunTrigger::Manual,
             inputs,
             caused_by: None,
+            parent: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -1368,6 +1409,7 @@ fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
                 trigger: RunTrigger::Manual,
                 inputs,
                 caused_by: None,
+                parent: None,
             },
         ))
     };
@@ -1762,6 +1804,7 @@ fn an_ai_step_never_reads_a_secret() {
             trigger: RunTrigger::Manual,
             inputs,
             caused_by: None,
+            parent: None,
         },
     ));
     assert!(
@@ -2179,6 +2222,7 @@ fn archive_run<'a, K: RunHooks>(
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     )
 }
@@ -2406,6 +2450,7 @@ fn a_run_reports_the_version_of_the_shortcut_it_ran() {
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: None,
+            parent: None,
         },
     ));
     let edited = edit("Tidy the inbox");
@@ -2572,6 +2617,7 @@ fn every_step_of_a_caused_run_records_the_cause() {
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
             caused_by: Some(cause.clone()),
+            parent: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");

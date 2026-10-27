@@ -1068,6 +1068,7 @@ async fn shortcut_step_observes_once_per_change() {
                     trigger: tilo_automation::RunTrigger::Manual,
                     inputs: serde_json::Map::new(),
                     caused_by: None,
+                    parent: None,
                 },
             )
             .await

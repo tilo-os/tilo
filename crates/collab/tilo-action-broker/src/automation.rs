@@ -230,31 +230,64 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
 /// of, so a caller is handed the shortcut's own typed result rather than an
 /// unconstrained one. A shortcut that binds nothing answers nothing.
 fn output_result(shortcut: &Shortcut) -> ResultSpec {
-    shortcut.output.as_ref().map_or(ResultSpec::None, |output| {
-        // The value a binding produces is known type by type; one that reads
-        // an earlier step is held to that step's own result when the shortcut
-        // is saved, and read as text here.
-        let schema = match output {
-            Binding::Literal(serde_json::Value::Object(_)) | Binding::Object(_) => {
-                serde_json::json!({"type": "object"})
-            }
-            Binding::Literal(serde_json::Value::Array(_)) | Binding::List(_) => {
-                serde_json::json!({"type": "array"})
-            }
-            Binding::Literal(serde_json::Value::Null) => serde_json::json!({"type": "null"}),
-            Binding::Literal(serde_json::Value::Bool(_)) => {
-                serde_json::json!({"type": "boolean"})
-            }
-            Binding::Literal(serde_json::Value::Number(number)) if number.is_i64() => {
-                serde_json::json!({"type": "integer"})
-            }
-            Binding::Literal(serde_json::Value::Number(_)) => {
-                serde_json::json!({"type": "number"})
-            }
-            _ => serde_json::json!({"type": "string"}),
-        };
-        ResultSpec::Json { schema }
-    })
+    shortcut
+        .output
+        .as_ref()
+        .map_or(ResultSpec::None, |output| ResultSpec::Json {
+            schema: output_schema(output, &shortcut.inputs),
+        })
+}
+
+/// The JSON schema of the value `output` binds.
+///
+/// The value a binding produces is known type by type; one that reads an
+/// earlier step is held to that step's own result when the shortcut is saved,
+/// and read as text here.
+fn output_schema(output: &Binding, inputs: &[ActionParam]) -> serde_json::Value {
+    let of_input = |name: &str| {
+        inputs
+            .iter()
+            .find(|input| input.name.as_ref() == name)
+            .map(|input| serde_json::json!({"type": schema_type(input.ty)}))
+    };
+    match output {
+        Binding::Literal(serde_json::Value::Object(_)) | Binding::Object(_) => {
+            serde_json::json!({"type": "object"})
+        }
+        Binding::Literal(serde_json::Value::Array(_)) | Binding::List(_) => {
+            serde_json::json!({"type": "array"})
+        }
+        Binding::Literal(serde_json::Value::Null) => serde_json::json!({"type": "null"}),
+        Binding::Literal(serde_json::Value::Bool(_)) => serde_json::json!({"type": "boolean"}),
+        Binding::Literal(serde_json::Value::Number(number)) if number.is_i64() => {
+            serde_json::json!({"type": "integer"})
+        }
+        Binding::Literal(serde_json::Value::Number(_)) => {
+            serde_json::json!({"type": "number"})
+        }
+        Binding::Literal(serde_json::Value::String(_)) | Binding::Template(_) => {
+            serde_json::json!({"type": "string"})
+        }
+        Binding::Input(name) => {
+            of_input(name).unwrap_or_else(|| serde_json::json!({"type": "string"}))
+        }
+        // A variable or an earlier step's value is held to its own type where
+        // the shortcut is saved; a caller is promised text here.
+        Binding::Var(_) | Binding::StepOutput { .. } => serde_json::json!({"type": "string"}),
+    }
+}
+
+/// A parameter's type in JSON schema's words.
+fn schema_type(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Text | ParamType::Secret | ParamType::Resource => "string",
+        ParamType::Integer => "integer",
+        ParamType::Number => "number",
+        ParamType::Boolean => "boolean",
+        ParamType::Object => "object",
+        ParamType::Array => "array",
+        ParamType::DateTime => "string",
+    }
 }
 
 /// What `run` on `shortcut` says about itself: its inputs, its steps, what
@@ -809,6 +842,11 @@ pub struct RunStart {
     pub mode: RunMode,
     /// Values for the shortcut's inputs.
     pub inputs: Map<String, Value>,
+    /// The work unit this run belongs to when something else asked for it:
+    /// a task that called the shortcut, named by its own group. The run's
+    /// steps are stamped with it, so the run shows up inside that task rather
+    /// than beside it, and undoing the task undoes what it asked for.
+    pub parent: Option<tilo_actions::context::ActionGroup>,
 }
 
 /// [`RunHooks`] for a run started through the door.
@@ -1349,14 +1387,14 @@ mod tests {
         let tidy = shortcut(serde_json::json!({
             "id": "file-receipts",
             "name": "File receipts",
-            "inputs": [folder, limit],
+            "inputs": [&folder, &limit],
             "steps": [],
             "output": {"literal": {"filed": 3}}
         }));
         let run = run_descriptor(&tidy);
         assert_eq!(
             run.params,
-            vec![folder, limit],
+            vec![folder.clone(), limit.clone()],
             "its declared inputs, typed"
         );
         assert_eq!(run.keywords, vec!["folder".to_owned(), "week".to_owned()]);
@@ -1376,6 +1414,22 @@ mod tests {
         assert!(
             description.contains("`week` (integer, optional)"),
             "{description}"
+        );
+
+        // An output that hands back one of its inputs answers with that
+        // input's own type.
+        let echo = shortcut(serde_json::json!({
+            "id": "echo",
+            "name": "Echo the week",
+            "inputs": [&folder, &limit],
+            "steps": [],
+            "output": {"input": "week"}
+        }));
+        assert_eq!(
+            run_descriptor(&echo).contract.result,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "integer"})
+            }
         );
 
         let silent = shortcut(serde_json::json!({
