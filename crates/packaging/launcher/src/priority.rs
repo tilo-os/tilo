@@ -721,6 +721,36 @@ pub fn request_realtime(priority: i32) {
         });
 }
 
+/// Drop the calling thread out of a realtime policy `request_realtime` gave it,
+/// once it is known to do long CPU work: a present thread whose "GPU" turns out
+/// to be a CPU rasteriser (lavapipe, llvmpipe) rasterizes for far longer than
+/// a realtime thread may run, so it would only starve the rest of the session
+/// and run into `RLIMIT_RTTIME`. Does nothing on a thread that is not realtime.
+#[cfg(target_os = "linux")]
+pub fn leave_realtime(reason: &str) {
+    use std::sync::atomic::Ordering;
+    // SAFETY: plain syscall on the calling thread.
+    let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
+    if policy != libc::SCHED_RR && policy != libc::SCHED_FIFO {
+        return;
+    }
+    let param = libc::sched_param { sched_priority: 0 };
+    // SAFETY: plain syscall on a stack struct; pid 0 is the calling thread.
+    let left = unsafe {
+        libc::sched_setscheduler(
+            0,
+            libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK,
+            &raw const param,
+        )
+    } == 0;
+    // SAFETY: gettid takes no arguments.
+    let tid = unsafe { libc::gettid() };
+    for slot in &REALTIME_THREADS {
+        let _ = slot.compare_exchange(tid, 0, Ordering::Relaxed, Ordering::Relaxed);
+    }
+    eprintln!("tilo-priority: thread {tid} leaves realtime ({reason}): {left}");
+}
+
 /// Soft `RLIMIT_RTTIME`: far above any frame (a present thread blocks on the
 /// GPU and the display every few milliseconds), far below a visible stall.
 #[cfg(target_os = "linux")]
@@ -1181,6 +1211,32 @@ mod tests {
         rig.send(&[Event::Focus(Some(20))]);
         assert_eq!(rig.boost.focused(), Some("app-tilo-b-20.scope"));
         assert_eq!(rig.calls.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_thread_leaves_realtime_once_its_work_is_known_to_be_long() {
+        std::thread::spawn(|| {
+            let param = libc::sched_param {
+                sched_priority: PRESENT_RT_PRIORITY,
+            };
+            // SAFETY: plain syscall on this thread.
+            let granted = unsafe {
+                libc::sched_setscheduler(
+                    0,
+                    libc::SCHED_RR | libc::SCHED_RESET_ON_FORK,
+                    &raw const param,
+                )
+            } == 0;
+            leave_realtime("a CPU rasteriser");
+            // SAFETY: plain syscall.
+            let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
+            assert_eq!(policy, libc::SCHED_OTHER, "realtime was granted: {granted}");
+            // A thread that is not realtime is left as it is.
+            leave_realtime("a CPU rasteriser");
+        })
+        .join()
+        .expect("the thread runs");
     }
 
     /// The kernel's `SIGXCPU` goes to the whole process: a thread that is not
