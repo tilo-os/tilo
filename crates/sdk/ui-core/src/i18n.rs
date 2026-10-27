@@ -50,8 +50,11 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
 /// The Fluent message a label, placeholder or button shows: looked up in
 /// the active locale when drawn, shown verbatim when no catalog has it.
 ///
-/// `tilo-app check` fails on a literal key that the app's
-/// `locales/en-US.ftl` lacks.
+/// A `tilo-app` app names its messages through the keys generated into
+/// `src/locales.rs` (`locales::keys::BOOKMARKS_ADD`), so a label its
+/// `locales/en-US.ftl` does not have is a compile error. `tilo-app check`
+/// also fails on a literal key that the source catalog lacks, and on keys
+/// the catalog has grown past.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelKey(std::borrow::Cow<'static, str>);
 

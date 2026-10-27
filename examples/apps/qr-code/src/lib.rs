@@ -81,13 +81,13 @@ impl ResourceApp for App {
         let input = cx
             .input(p.payload.clone())
             .with_id("qr-input")
-            .with_placeholder("qr-input-placeholder");
+            .with_placeholder(crate::locales::keys::QR_INPUT_PLACEHOLDER);
         let payload = cx.value_at(&p.payload);
         let output = ModelView::from_state(&payload, |payload| code_view(payload));
-        let clear = cx.button("qr-clear-button", Code::CLEAR.invoke());
+        let clear = cx.button(crate::locales::keys::QR_CLEAR_BUTTON, Code::CLEAR.invoke());
         Box::new(ui::column![
             Text::new("qr-title").with_role(TextRole::Title),
-            labeled_field("qr-input-label", input),
+            labeled_field(crate::locales::keys::QR_INPUT_LABEL, input),
             output,
             clear,
         ])
