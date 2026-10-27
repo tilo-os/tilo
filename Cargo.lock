@@ -324,6 +324,7 @@ dependencies = [
  "tilo-automation",
  "tilo-identity-client",
  "tilo-model-client",
+ "tilo-selector",
  "tilo-test-env",
  "tilo-user-identity",
  "tracing",
@@ -16655,6 +16656,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content-types",
  "tilo-lock",
+ "tilo-selector",
  "tilo-test-env",
  "unicode-normalization",
  "uuid",
@@ -20147,6 +20149,14 @@ dependencies = [
  "rten",
  "rten-tensor",
  "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-selector"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "workspace-hack",
 ]
 
@@ -25965,6 +25975,7 @@ dependencies = [
  "tilo-secret-vault",
  "tilo-secrets",
  "tilo-segment",
+ "tilo-selector",
  "tilo-session-record",
  "tilo-sibling-unlock",
  "tilo-sort",

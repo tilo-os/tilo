@@ -1233,6 +1233,7 @@ doc = false
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -2222,6 +2223,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
@@ -3588,6 +3590,7 @@ doc = false
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -4576,6 +4579,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
+"tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
