@@ -50,3 +50,10 @@ tilo-app inspect --audit --json
 
 More: [A resource workflow](../../sdk-resource-journey.md),
 [Scripts and agents](../../agent-action-api.md).
+
+## An app that predates actions
+
+An app with no resource tree of its own — a Flatpak app behind D-Bus, a
+command-line tool — is reached by declaring its actions rather than by
+changing it:
+[Wrapping a Linux app's interfaces as typed actions](../../linux-app-adapter.md).

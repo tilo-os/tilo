@@ -123,6 +123,7 @@ macro_rules! read_through_json_value {
 
 pub mod action;
 pub mod adapter;
+pub mod adapter_run;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -158,6 +159,7 @@ pub use adapter::{
     ADAPTER_OPERATION_TYPE, ActionAdapter, AdapterAction, AdapterInvocation, Check, Implementation,
     Layer, Observation, Skipped, Step, Undo,
 };
+pub use adapter_run::{BusCall, Plan, Refusal, Work};
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
