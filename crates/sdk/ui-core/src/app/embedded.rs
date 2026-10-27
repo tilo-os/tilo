@@ -866,6 +866,31 @@ impl AppWidget for EmbeddedApp {
             crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
         })
     }
+    fn window_search(&self) -> Option<crate::widget::WindowPublication> {
+        let root = self.app.root_widget.as_ref();
+        Some(crate::widget::WindowPublication {
+            resources: crate::widget::published_resources(root, &self.app.state.doc),
+            providers: crate::widget::published_search_providers(root),
+        })
+    }
+    fn run_window_control(
+        &mut self,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        match self
+            .app
+            .invoke_local_resource_action(&invocation.address, &invocation.arguments)
+        {
+            Ok(_) => {
+                self.wants_frame.set(true);
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(%error, address = ?invocation.address, "the window's search row was refused");
+                Err(invocation)
+            }
+        }
+    }
     fn invoke_device_local_action(
         &mut self,
         address: &tilo_actions::ActionAddress,

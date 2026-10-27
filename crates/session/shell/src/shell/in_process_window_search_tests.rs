@@ -15,9 +15,9 @@ fn window_rows(
     use crate::shell::search::providers::focused_window::{FocusedWindowProvider, WindowReading};
     let provider = Rc::new(FocusedWindowProvider::default());
     let doc = automerge::AutoCommit::new();
-    let _lent = provider.lend(Some(WindowReading::of(
-        harness.root_widget(),
-        &doc,
+    let _lent = provider.lend(Some(WindowReading::from_publication(
+        ui::widget::published_resources(harness.root_widget(), &doc),
+        ui::widget::published_search_providers(harness.root_widget()),
         tab,
         app.into(),
     )));
@@ -170,15 +170,17 @@ fn the_shells_app_search_shows_what_its_window_offers() {
     for _ in 0..10 {
         fb.paint_settled();
     }
-    let window = fb
-        .host()
-        .active_app_host()
-        .map(|host| ui::widget::published_resources(host, &automerge::AutoCommit::new()).len());
+    let window = fb.host().active_app_host().map(|host| {
+        host.window_search(&automerge::AutoCommit::new())
+            .resources
+            .len()
+    });
     fb.host_mut().open_app_search_for_shots(tab, "");
     let mut doc = automerge::AutoCommit::new();
     fb.host_mut()
         .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
     let rows = fb.host().search_rows_for_tests();
+    drop(fb);
     assert!(
         rows.iter()
             .any(|(title, kind, provider)| title == "New note"
