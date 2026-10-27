@@ -42,6 +42,7 @@ pub enum DiscordOp {
     CreateWebhook(CreateWebhookOp),
     ApplyChannel(ChannelSpec),
     DeleteChannel(DeleteChannelOp),
+    ArrangeChannels(ArrangeOp),
     ApplyRole(RoleSpec),
     DeleteRole(DeleteRoleOp),
     SetMemberRoles(MemberRolesOp),
@@ -79,6 +80,7 @@ impl<'de> Deserialize<'de> for DiscordOp {
             "create-webhook" => Self::CreateWebhook(op(fields)?),
             "apply-channel" => Self::ApplyChannel(op(fields)?),
             "delete-channel" => Self::DeleteChannel(op(fields)?),
+            "arrange-channels" => Self::ArrangeChannels(op(fields)?),
             "apply-role" => Self::ApplyRole(op(fields)?),
             "delete-role" => Self::DeleteRole(op(fields)?),
             "set-member-roles" => Self::SetMemberRoles(op(fields)?),
@@ -103,6 +105,7 @@ impl<'de> Deserialize<'de> for DiscordOp {
                         "create-webhook",
                         "apply-channel",
                         "delete-channel",
+                        "arrange-channels",
                         "apply-role",
                         "delete-role",
                         "set-member-roles",
@@ -142,7 +145,8 @@ impl DiscordOp {
             Self::ApplyChannel(spec) => spec.id.as_deref(),
             Self::DeleteChannel(op) => Some(&op.channel),
             Self::SetOverwrite(op) => Some(&op.channel),
-            Self::ApplyRole(_)
+            Self::ArrangeChannels(_)
+            | Self::ApplyRole(_)
             | Self::DeleteRole(_)
             | Self::SetMemberRoles(_)
             | Self::Kick(_)
@@ -163,6 +167,7 @@ impl DiscordOp {
             self,
             Self::ApplyChannel(_)
                 | Self::DeleteChannel(_)
+                | Self::ArrangeChannels(_)
                 | Self::SetOverwrite(_)
                 | Self::ApplyRole(_)
                 | Self::DeleteRole(_)
@@ -302,6 +307,8 @@ impl ChannelKind {
 }
 
 /// Create (`id: None`) or bring back in line (`id: Some`) one channel.
+/// `parent` and `position` place a channel being created; an existing
+/// channel keeps its place, which only [`ArrangeOp`] changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct ChannelSpec {
@@ -322,6 +329,38 @@ pub struct ChannelSpec {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct DeleteChannelOp {
     pub channel: String,
+}
+
+/// Put channels and categories in their places at once (Discord's bulk
+/// position change), so the server lists them in the order Tilo does.
+/// Positions count within what Discord sorts together: the categories,
+/// and each category's (or the top level's) text and voice channels.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct ArrangeOp {
+    #[serde(default)]
+    pub categories: Vec<CategoryPlace>,
+    #[serde(default)]
+    pub channels: Vec<ChannelPlace>,
+}
+
+/// Where a category goes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct CategoryPlace {
+    pub category: String,
+    pub position: i64,
+}
+
+/// Where a channel goes: under `parent` (none for the top level), at
+/// `position`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct ChannelPlace {
+    pub channel: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    pub position: i64,
 }
 
 /// Create (`id: None`) or bring back in line one role the bridge manages.
@@ -553,6 +592,17 @@ mod tests {
             DiscordOp::Kick(MemberOp::default()),
             DiscordOp::Ban(MemberOp::default()),
             DiscordOp::Unban(MemberOp::default()),
+            DiscordOp::ArrangeChannels(ArrangeOp {
+                categories: vec![CategoryPlace {
+                    category: "4".into(),
+                    position: 1,
+                }],
+                channels: vec![ChannelPlace {
+                    channel: "5".into(),
+                    parent: Some("4".into()),
+                    position: 0,
+                }],
+            }),
             DiscordOp::SetOverwrite(OverwriteOp {
                 channel: "1".into(),
                 target: "2".into(),

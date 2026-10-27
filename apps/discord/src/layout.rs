@@ -1,12 +1,13 @@
 //! The layout reconcile (discord-bridge.md §4). An adopted server keeps
-//! what it had: the bridge never renames, moves, recreates or deletes a
-//! channel it did not make. What it always does is keep a webhook on every
+//! what it had: the bridge never renames, recreates or deletes a channel
+//! it did not make (where bridged channels sit is shared with Tilo, see
+//! [`crate::order`]). What it always does is keep a webhook on every
 //! bridged text channel and let go of a pair whose one side was deleted,
 //! keeping the other apart. A bridge that mirrors channels also makes, in
 //! Discord, the channels and categories made in Tilo after the adoption,
-//! and keeps those (and only those) in line with Tilo. Applying a plan and
-//! planning again yields nothing, so an interrupted reconcile is simply run
-//! again. A channel whose category has no Discord counterpart yet waits for
+//! and keeps those (and only those) named as Tilo names them. Applying a
+//! plan and planning again yields nothing, so an interrupted reconcile is
+//! simply run again. A channel whose category has no Discord counterpart yet waits for
 //! the next run, which the category's creation triggers.
 
 use discord_wire::op::{ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DiscordOp};
@@ -153,14 +154,12 @@ fn ours(mapping: &Mapping) -> bool {
 }
 
 /// What Tilo made after the adoption is made in Discord, and what the
-/// bridge made there follows Tilo's names and categories. Positions are
-/// left to Discord: a new channel goes last among its siblings.
+/// bridge made there follows Tilo's names. A new channel or category is
+/// made last in its list, those made together in Tilo's order; where it
+/// sits among the rest, and which category a channel is listed under, is
+/// the order's to set ([`crate::order`]).
 fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
-    let mut categories = guild
-        .channels
-        .iter()
-        .filter(|c| c.kind == ChannelKind::Category)
-        .count();
+    let mut next = Next::default();
     for category in &room.categories {
         if guild.tilo_only.contains(&category.id) || queued(guild, &category.id) {
             continue;
@@ -178,10 +177,9 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
         match guild.mapping(MappedKind::Category, &category.id) {
             None => {
                 plan.apply.push(ApplyItem {
-                    op: want(None, position(categories)),
+                    op: want(None, next.take(guild, ChannelKind::Category, None)),
                     kind: MappedKind::Category,
                 });
-                categories = categories.saturating_add(1);
             }
             Some(mapping) if ours(mapping) => {
                 if let Some(current) = observed(guild, &mapping.discord)
@@ -225,23 +223,19 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
         };
         match guild.mapping(MappedKind::Channel, &channel.id) {
             None => {
-                let siblings = guild
-                    .channels
-                    .iter()
-                    .filter(|c| c.kind == kind_of(channel) && c.parent == parent)
-                    .count();
+                let position = next.take(guild, kind_of(channel), parent.as_deref());
                 plan.apply.push(ApplyItem {
-                    op: want(None, position(siblings)),
+                    op: want(None, position),
                     kind: MappedKind::Channel,
                 });
             }
             Some(mapping) if ours(mapping) => {
                 if let Some(current) = observed(guild, &mapping.discord) {
-                    let wanted = want(Some(current.id.clone()), current.position);
-                    if current.name != wanted.name
-                        || current.topic != wanted.topic
-                        || current.parent != wanted.parent
-                    {
+                    let wanted = ChannelSpec {
+                        parent: current.parent.clone(),
+                        ..want(Some(current.id.clone()), current.position)
+                    };
+                    if current.name != wanted.name || current.topic != wanted.topic {
                         plan.apply.push(ApplyItem {
                             op: wanted,
                             kind: MappedKind::Channel,
@@ -262,8 +256,32 @@ fn queued(guild: &Guild, tilo: &str) -> bool {
     })
 }
 
-fn position(count: usize) -> i64 {
-    i64::try_from(count).unwrap_or(i64::MAX)
+/// The next free position at the end of each list Discord sorts: after
+/// the last one there, whatever gaps the list has.
+#[derive(Default)]
+struct Next(std::collections::BTreeMap<(u8, Option<String>), i64>);
+
+impl Next {
+    fn take(&mut self, guild: &Guild, kind: ChannelKind, parent: Option<&str>) -> i64 {
+        let next = self
+            .0
+            .entry((kind.discord_type(), parent.map(str::to_owned)))
+            .or_insert_with(|| {
+                guild
+                    .channels
+                    .iter()
+                    .filter(|c| {
+                        c.kind == kind
+                            && (kind == ChannelKind::Category || c.parent.as_deref() == parent)
+                    })
+                    .map(|c| c.position.saturating_add(1))
+                    .max()
+                    .unwrap_or(0)
+            });
+        let position = *next;
+        *next = next.saturating_add(1);
+        position
+    }
 }
 
 const fn kind_of(channel: &Channel) -> ChannelKind {

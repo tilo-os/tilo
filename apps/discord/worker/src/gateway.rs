@@ -491,7 +491,7 @@ impl Gateway {
                 }
                 let guild =
                     Guild::from_create(data, &self.bot_user, self.ctx.config.cdn_base.as_str());
-                self.emit(guild.layout(self.sequence(seq)));
+                self.emit(guild.connected_layout(self.sequence(seq)));
                 let send = self.calls.guild_created(data, &guild);
                 self.outbox.extend(send);
                 self.guild = Some(guild);

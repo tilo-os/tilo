@@ -22,7 +22,7 @@ use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
 use crate::record::{Guild, MappedKind, Ownership};
 use crate::tilo::{self, RoomChat};
-use crate::{import, layout, roles};
+use crate::{import, layout, order, roles};
 
 /// The Chat record kind the bridge mirrors.
 pub const CHAT_KIND: &str = "chat.workspace";
@@ -69,6 +69,8 @@ pub struct BridgePlan {
     pub unreacts: Vec<Value>,
     /// `apply-channel`, then `map` it as `kind`.
     pub apply_channels: Vec<Value>,
+    /// `arrange-channels`: Discord's channels put in Chat's order.
+    pub arrange_channels: Vec<Value>,
     pub delete_channels: Vec<Value>,
     pub unmaps: Vec<Value>,
     pub webhooks: Vec<Value>,
@@ -131,6 +133,8 @@ pub struct BridgePlan {
     /// Chat `delete-category`: a category of Tilo's own the moves or dropped
     /// channels left empty.
     pub drop_categories: Vec<Value>,
+    /// Chat `arrange-channels`: Chat put in Discord's order.
+    pub chat_arrangements: Vec<Value>,
     /// `finish-import`, with the Tilo channels left Tilo's own.
     pub finish: Vec<Value>,
     /// Plan again after this pass: something here unblocks more.
@@ -447,9 +451,28 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
         && plan.file_channels.is_empty()
         && plan.drop_channels.is_empty()
         && plan.drop_categories.is_empty()
-        && plan.finish.is_empty());
+        && plan.finish.is_empty()
+        // A channel made now is put in its place on the next pass.
+        && !plan
+            .apply_channels
+            .iter()
+            .any(|apply| apply.pointer("/op/id").is_none_or(Value::is_null)));
     plan
 }
+
+/// The Chat verbs that rearrange the room's channels: after them the
+/// bridge puts Discord in Chat's order.
+const ARRANGES: &[&str] = &[
+    "create-channel",
+    "create-channel-with-id",
+    "create-category",
+    "move-channel",
+    "move-category",
+    "set-channel-category",
+    "arrange-channels",
+    "archive-channel",
+    "delete-category",
+];
 
 fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &str, event: &Value) {
     let Reading {
@@ -473,7 +496,7 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
             plan.deletes
                 .extend(values(outbound::plan_delete(guild, channel, message)));
         }
-        _ => reconcile(plan, read),
+        verb => reconcile(plan, read, ARRANGES.contains(&verb)),
     }
 }
 
@@ -484,8 +507,9 @@ fn post(plan: &mut BridgePlan, guild: &Guild, chat: &Value, message: &str, conte
 }
 
 /// Adopting the server, then keeping it bridged: what Discord makes is
-/// imported, and the layout and role reconciles do the rest.
-fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
+/// imported, and the layout and role reconciles do the rest. `arranged`:
+/// someone rearranged Chat, which Discord follows.
+fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     let guild = read.guild;
     let tilo = RoomChat::from_chat(read.chat);
     let import = import::plan(guild, &tilo);
@@ -519,9 +543,18 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
             .into_iter()
             .map(|category| json!({ "category": category })),
     );
+    // Adopted, the room lists the server's channels as the server does.
+    if !import.finish.is_empty() {
+        plan.chat_arrangements
+            .extend(values(order::to_chat(guild, guild, &tilo)));
+    }
     plan.finish.extend(values(import.finish));
     if guild.ownership == Ownership::Adopted {
         let layout = layout::plan(guild, &tilo);
+        if arranged && plan.arrange_channels.is_empty() {
+            plan.arrange_channels
+                .extend(values(order::to_discord(guild, &tilo)));
+        }
         plan.apply_channels.extend(values(layout.apply));
         plan.delete_channels.extend(values(layout.delete));
         plan.unmaps.extend(values(layout.unmap));
@@ -647,8 +680,15 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         layout.roles.clone(),
     );
     observed.observe_emojis(layout.emojis.clone());
+    let adopted = read.guild.ownership == Ownership::Adopted;
+    let room = RoomChat::from_chat(read.chat);
     if observed == *read.guild {
-        reconcile(plan, read);
+        reconcile(plan, read, false);
+        // Back after a while: what moved in Discord meanwhile shows in Chat.
+        if adopted && layout.connected {
+            plan.chat_arrangements
+                .extend(values(order::to_chat(read.guild, read.guild, &room)));
+        }
         // On every start too: the workspace's emoji made while the bridge
         // was away, or that the server had no room or permission for.
         emoji(plan, read);
@@ -662,6 +702,12 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
             "roles": layout.roles,
             "emojis": layout.emojis,
         }));
+        // Someone moved a channel or category in Discord: Chat follows. The
+        // bridge's own arrangement on its way there is no such move.
+        if adopted && (layout.connected || order::moved_in_discord(read.guild, &observed, &room)) {
+            plan.chat_arrangements
+                .extend(values(order::to_chat(&observed, read.guild, &room)));
+        }
     }
 }
 

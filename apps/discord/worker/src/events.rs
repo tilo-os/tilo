@@ -378,12 +378,23 @@ impl Guild {
 
     #[must_use]
     pub fn layout(&self, sequence: u64) -> Emit {
+        self.layout_as(sequence, false)
+    }
+
+    /// The layout as the gateway handed it on (re)connecting.
+    #[must_use]
+    pub fn connected_layout(&self, sequence: u64) -> Emit {
+        self.layout_as(sequence, true)
+    }
+
+    fn layout_as(&self, sequence: u64, connected: bool) -> Emit {
         let layout = LayoutChanged {
             guild_id: self.id.clone(),
             bot_user: self.bot_user.clone(),
             channels: self.channels.values().cloned().collect(),
             roles: self.roles.values().cloned().collect(),
             emojis: self.emojis.values().cloned().collect(),
+            connected,
         };
         Emit::new(
             source::LAYOUT_CHANGED,
@@ -632,6 +643,12 @@ mod tests {
         assert_eq!(
             layout.payload["channels"][1]["overwrites"][0]["deny"],
             "2048"
+        );
+        assert_eq!(layout.payload["connected"], false);
+        assert_eq!(
+            guild.connected_layout(8).payload["connected"],
+            true,
+            "the layout a (re)connect hands over says so"
         );
     }
 
