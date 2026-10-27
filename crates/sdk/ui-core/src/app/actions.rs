@@ -1927,6 +1927,27 @@ impl App {
         if self.action_publication_failure.is_some() {
             return;
         }
+        if !self.collaboration.manager.invocation_owner_current(id) {
+            // Accepted for a document this window has since reopened or
+            // replaced: nothing ran, and it must not run in the new one.
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id,
+                    update: tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "action_document_replaced".into(),
+                            message: crate::i18n::I18nManager::lookup_plain(
+                                "action-document-replaced",
+                            ),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
+            return;
+        }
         if !self.published_action_history_ready() {
             // An already accepted delivery lost its original owner-history
             // custody. Run no handler; disconnect retains admitted uncertainty.
