@@ -15,7 +15,9 @@ use super::idle_quiet_tests::{
     LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, device_reaching, session_threads,
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
-use crate::network::actor::gossip_caches_drain_within;
+use crate::network::actor::{
+    gossip_caches_drain_within, shorten_gossip_retention_for_this_process,
+};
 use crate::shell::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// How long a test desktop's relays stay up once nothing needs them: long
@@ -29,6 +31,12 @@ pub(super) const REST_AFTER: Duration = Duration::from_secs(2);
 /// no longer counted, and not one wakeup of the network runtime. The budget
 /// allows two wakeups in [`LONE_IDLE`]: 0.10/s.
 const RESTED_WAKEUP_BUDGET: f64 = 0.1;
+
+/// How long gossip keeps the pair's message ids and messages in
+/// [`after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps`]:
+/// far longer than a graft or a duplicate takes over loopback, and short
+/// enough that the caches drain within [`LONE_SETTLE`].
+const GOSSIP_RETENTION: Duration = Duration::from_secs(5);
 
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
@@ -255,10 +263,11 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
 /// nobody is named and the delay passes, the desktop left alone rests its
 /// relays, and from then on it wakes no more than one that never
 /// collaborated ([`RESTED_WAKEUP_BUDGET`]). Gossip sweeps the topics the pair linked until their last
-/// messages expire ([`gossip_caches_drain_within`], 100 s), long before a
+/// messages expire ([`gossip_caches_drain_within`], 100 s on a real desktop), long before a
 /// real desktop rests its relays five minutes after the last collaborator;
-/// this one rests them after [`REST_AFTER`], so it waits that out before it
-/// is measured. Before iroh-gossip stopped the sweep on empty caches it ran
+/// this one rests them after [`REST_AFTER`] and keeps gossip's messages only
+/// [`GOSSIP_RETENTION`], and waits until the caches drained before it is
+/// measured. Before iroh-gossip stopped the sweep on empty caches it ran
 /// for the session: 0.60 to 0.65 blocking wakeups a second here against the
 /// lone desktop's 0.35 to 0.40 (focused runs 96742-96744).
 #[test]
@@ -272,6 +281,10 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     )) {
         return;
     }
+    // Gossip's caches drain [`GOSSIP_RETENTION`] plus one sweep after the
+    // pair's last message instead of 100 s; the sweep itself, and everything
+    // measured once they have drained, stays as on a real desktop.
+    shorten_gossip_retention_for_this_process(GOSSIP_RETENTION);
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[46; 32]);
