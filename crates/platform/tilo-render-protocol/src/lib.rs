@@ -26,10 +26,14 @@
 //!   [`channel`] carries them with descriptors over a `SOCK_SEQPACKET` pair,
 //!   and [`shm`] the sealed memfds: the ring frames are written to, and the
 //!   images an app uploads once.
+//! - [`patch`]: beside scenes, the component patches a tilolang app sends the
+//!   room's UI host instead of pixels, the events, bindings, focus and
+//!   composition that come back, and the check every batch passes.
 
 pub mod control;
 pub mod frame;
 pub mod limits;
+pub mod patch;
 pub mod scene;
 pub mod validate;
 
