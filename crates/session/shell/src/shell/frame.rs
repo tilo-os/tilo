@@ -1536,13 +1536,22 @@ impl FrameBuilder {
         // Rebuilt overlays can retain their own focus while the compositor
         // still names a desktop control. Only one live widget may own the
         // keyboard and its accessibility cursor, even when ids are replaced.
+        // A widget gaining focus it does not hold is not blurred first: a
+        // press is what asks to focus it, and a blur ends the press it is in
+        // the middle of, so the click it would have completed never did.
+        let gaining = target.and_then(|new| self.node_map.get(&new).copied());
         for &widget in self.node_map.values() {
+            // SAFETY: every pointer belongs to the current live tree.
+            if gaining.is_some_and(|gaining| std::ptr::addr_eq(gaining, widget))
+                && !unsafe { (*widget).is_focused() }
+            {
+                continue;
+            }
             // SAFETY: every pointer belongs to the current live tree.
             unsafe { (*widget).set_focus(false) };
         }
-        if let Some(new) = target
-            && let Some(&widget) = self.node_map.get(&new)
-        {
+        if let Some(widget) = gaining {
+            // SAFETY: the pointer belongs to the current live tree.
             unsafe { (*widget).set_focus(true) };
             if reveal {
                 self.host
@@ -10664,6 +10673,14 @@ mod window_bar_keyboard_tests;
 #[cfg(test)]
 #[path = "frame_quiet_pump_tests.rs"]
 mod quiet_pump_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder is the test's subject from its first layout to its last assertion"
+)]
+#[path = "frame_launchpad_press_tests.rs"]
+mod launchpad_press_tests;
 
 #[cfg(test)]
 #[path = "frame_layout_owed_tests.rs"]
