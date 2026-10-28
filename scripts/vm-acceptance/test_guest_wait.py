@@ -56,6 +56,17 @@ class LineWaitTest(unittest.TestCase):
         finally:
             guest_wait.os.path.realpath = real
 
+    def test_a_log_replaced_by_a_new_file_is_followed(self):
+        def replace():
+            time.sleep(0.3)
+            fresh = self.log.with_name("session.log.new")
+            fresh.write_text(self.log.read_text() + "APP-STARTUP app=so.x total_ms=2\n")
+            os.replace(fresh, self.log)
+        threading.Thread(target=replace).start()
+        started = time.monotonic()
+        self.assertEqual(guest_wait.wait_line(str(self.log), 3, 10, [r"APP-STARTUP app=so\.x "]), 0)
+        self.assertLess(time.monotonic() - started, 3)
+
     def test_a_line_never_written_runs_out(self):
         self.assertEqual(guest_wait.wait_line(str(self.log), 3, 0.3, [r"APP-STARTUP app=so\.x "]), 1)
 

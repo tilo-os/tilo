@@ -102,45 +102,54 @@ def wait_exit(app: str, seconds: float) -> int:
                 os.close(fd)
 
 
-IN_MODIFY, IN_ATTRIB, IN_MOVE_SELF, IN_DELETE_SELF = 0x2, 0x4, 0x800, 0x400
+IN_MODIFY, IN_ATTRIB, IN_CREATE, IN_MOVED_TO = 0x2, 0x4, 0x100, 0x80
 
 
 def wait_line(path: str, first: int, seconds: float, patterns: list[str]) -> int:
     deadline = time.monotonic() + seconds
     libc = ctypes.CDLL(None, use_errno=True)
     fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-    if fd < 0 or libc.inotify_add_watch(fd, os.path.realpath(path).encode(),
-                                        IN_MODIFY | IN_ATTRIB | IN_MOVE_SELF | IN_DELETE_SELF) < 0:
+    real = os.path.realpath(path)
+    if fd < 0 or libc.inotify_add_watch(fd, real.encode(), IN_MODIFY | IN_ATTRIB) < 0 \
+            or libc.inotify_add_watch(fd, os.path.dirname(real).encode(), IN_CREATE | IN_MOVED_TO) < 0:
         print("no inotify watch on the file", file=sys.stderr)
         return 2
     wanted = [re.compile(p.encode()) for p in patterns]
-    number, partial = 0, b""
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read()
-            if chunk:
-                lines = (partial + chunk).split(b"\n")
-                partial = lines.pop()
-                for line in lines:
-                    number += 1
-                    # Coloured log lines carry escapes between a field's name and value.
-                    plain = re.sub(rb"\x1b\[[0-9;]*m", b"", line)
-                    if number >= first and any(w.search(plain) for w in wanted):
-                        print(line.decode(errors="replace")[:400])
-                        return 0
-                continue
-            left = deadline - time.monotonic()
-            if left <= 0:
-                return 1
-            # The session writes its log through the slot's own mount of the home, and
-            # inotify sees no write made through another mount of an overlay: a wakeup on
-            # an event where there is one, else after a tenth of a second, to read again.
-            select.select([fd], [], [], min(left, 0.1))
-            try:
-                os.read(fd, 4096)
-            except BlockingIOError:
-                pass
-
+    offset, number, partial = 0, 0, b""
+    while True:
+        # Opened again for every read: the log can be replaced by a file of its own
+        # (written whole and renamed into place), which a descriptor held open never sees.
+        try:
+            with open(path, "rb") as f:
+                if os.fstat(f.fileno()).st_size < offset:
+                    offset, number, partial = 0, 0, b""
+                f.seek(offset)
+                chunk = f.read()
+        except FileNotFoundError:
+            chunk = b""
+        if chunk:
+            offset += len(chunk)
+            lines = (partial + chunk).split(b"\n")
+            partial = lines.pop()
+            for line in lines:
+                number += 1
+                # Coloured log lines carry escapes between a field's name and value.
+                plain = re.sub(rb"\x1b\[[0-9;]*m", b"", line)
+                if number >= first and any(w.search(plain) for w in wanted):
+                    print(line.decode(errors="replace")[:400])
+                    return 0
+            continue
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return 1
+        # The session writes its log through the slot's own mount of the home, and
+        # inotify sees no write made through another mount of an overlay: a wakeup on an
+        # event where there is one, else after a tenth of a second, to read again.
+        select.select([fd], [], [], min(left, 0.1))
+        try:
+            os.read(fd, 4096)
+        except BlockingIOError:
+            pass
 
 if __name__ == "__main__":
     what = sys.argv[1]
