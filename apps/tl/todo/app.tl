@@ -95,12 +95,14 @@ view item_row(item: Todo) {
 /// An item's window.
 view item_editor(item: Todo) {
     std.document(item) {
-        input(bind: item.title, placeholder: "Title")
-        toggle(label: "Done", bind: item.done)
+        row(gap: .related, align: .center) {
+            checkbox(bind: item.done)
+            input(bind: item.title, placeholder: "Title", fill)
+        }
         field("Due") {
             date(bind: item.due)
         }
-        input(bind: item.notes, placeholder: "Notes", lines: 6)
+        input(bind: item.notes, placeholder: "Add notes", lines: 6)
     }
 }
 
