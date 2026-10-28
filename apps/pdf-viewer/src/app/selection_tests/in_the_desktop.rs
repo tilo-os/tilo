@@ -91,7 +91,7 @@ fn reader<T>(h: &mut FrameHarness, nth: usize, visit: impl FnOnce(&mut PdfApp) -
     }
     let mut nth = nth;
     let mut visit: Visit<'_, T> = Some(Box::new(visit));
-    walk(h.root_mut::<DesktopSurface>(), &mut nth, &mut visit)
+    walk(&mut *h.root_mut::<DesktopSurface>(), &mut nth, &mut visit)
 }
 
 /// Run the desktop's frames until `done` holds of the right-hand reader.

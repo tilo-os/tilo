@@ -4801,7 +4801,7 @@ mod tests {
                 1,
                 "only the active release remains enabled during its download"
             );
-            let app = view.root_mut::<ImagerApp>();
+            let mut app = view.root_mut::<ImagerApp>();
             assert!(
                 app.published_rows()
                     .iter()

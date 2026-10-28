@@ -1671,17 +1671,17 @@ mod tests {
             "no filter field of its own"
         );
 
-        let root = harness.root_mut::<DbClientApp>();
+        let mut root = harness.root_mut::<DbClientApp>();
         assert_eq!(
-            InPlace::of(root),
+            InPlace::of(&mut *root),
             InPlace::List,
             "the search narrows a list"
         );
         let mut driver = SearchDriver::default();
         driver.open(InPlace::List);
-        driver.drive(root, "album", FindOptions::default(), None, false);
+        driver.drive(&mut *root, "album", FindOptions::default(), None, false);
         let mut count = None;
-        assert!(ui::widget::with_filterable(root, &mut |list| count = list.filter_count()));
+        assert!(ui::widget::with_filterable(&mut *root, &mut |list| count = list.filter_count()));
         let count = count.expect("the tables say how many match");
         assert!(
             count.shown >= 1 && count.shown < count.total,
@@ -1723,13 +1723,14 @@ mod tests {
 
         // --- phase: opening_a_table_loads_its_rows_and_structure ---
         {
-            let root = harness.root_mut::<DbClientApp>();
+            let mut root = harness.root_mut::<DbClientApp>();
             root.link
                 .ask(Intent::OpenRelation(crate::model::RelationRef {
                     schema: "main".into(),
                     name: "tracks".into(),
                 }));
             root.session.block_until_idle();
+            drop(root);
             harness.relayout();
             harness.root_mut::<DbClientApp>().session.block_until_idle();
             harness.relayout();
@@ -2343,13 +2344,14 @@ mod tests {
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            let root = harness.root_mut::<DbClientApp>();
+            let mut root = harness.root_mut::<DbClientApp>();
             root.session.data_page_size = 5;
             root.link
                 .ask(Intent::OpenRelation(crate::model::RelationRef {
                     schema: "main".into(),
                     name: "tracks".into(),
                 }));
+            drop(root);
             let page = |harness: &mut FrameHarness| {
                 harness.root_mut::<DbClientApp>().session.block_until_idle();
                 harness.relayout();

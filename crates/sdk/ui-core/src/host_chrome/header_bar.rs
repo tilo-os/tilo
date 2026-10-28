@@ -509,6 +509,7 @@ mod tests {
         assert_eq!(labels[1], None, "recent changes follow a separator");
         assert_eq!(labels.len(), history.len() + 1);
         let show = bar.menu.item_rect(0).unwrap().center();
+        drop(bar);
         driver.click_at(show.x, show.y);
         let requests = driver.root_mut::<HeaderBar>().take_requests();
         let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
@@ -609,6 +610,7 @@ mod tests {
                 .all(|label| label.is_some_and(|label| label.contains(" · ")))
         );
         let newest = bar.menu.item_rect(2).unwrap().center();
+        drop(bar);
         driver.click_at(newest.x, newest.y);
         let requests = driver.root_mut::<HeaderBar>().take_requests();
         let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
