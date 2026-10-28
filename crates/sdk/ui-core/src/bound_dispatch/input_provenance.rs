@@ -2,6 +2,7 @@
 //! carried as thread-scoped provenance from the producer through the queue
 //! that drains it to the execution that records it.
 use super::Origin;
+use crate::widget::Widget;
 use std::cell::Cell;
 
 /// How a person's input produced a control invocation: the provenance that
@@ -86,7 +87,22 @@ impl Drop for DrainOriginScope {
     }
 }
 
-pub(crate) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
+/// The next invocation `widget`'s queues hand over, the effect invocation
+/// it continues, and who asked for it.
+pub(crate) fn take_attributed_with_origin(
+    widget: &mut dyn Widget,
+) -> Option<(
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+    Origin,
+)> {
+    let (taken, _, origin) = capture_physical_drain(|| {
+        crate::widget::controls::take_attributed_control_invocation(widget)
+    });
+    taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
+}
+
+pub(super) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
     let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
     let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
     let result = run();

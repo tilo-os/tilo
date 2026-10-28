@@ -38,10 +38,12 @@ mod input_provenance;
 #[cfg(test)]
 pub(crate) use input_provenance::physical_text;
 pub(crate) use input_provenance::{
-    Input, capture_physical_drain, input, note_drained_input, note_drained_origin, with_input,
-    with_physical_text,
+    Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
 };
-use input_provenance::{native_text_input, with_native_text};
+// The native app runtime drains attributed invocations; it is not built for wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use input_provenance::take_attributed_with_origin;
+use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
 
 pub(crate) use crate::widget::controls::Origin;
 
@@ -2108,19 +2110,20 @@ pub(crate) struct OrdinaryConfirmation {
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
-    match spec.input() {
+    match &spec.input {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
-        tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
-            type_id: type_id.to_owned(),
+        tilo_actions::ActionInput::Deferred { type_id, .. } => ControlInputSurface::Deferred {
+            type_id: type_id.clone(),
         },
         tilo_actions::ActionInput::Prompted {
             prompt,
             placeholder,
             collects,
+            ..
         } => ControlInputSurface::Prompted {
-            prompt: prompt.to_owned(),
-            placeholder: placeholder.to_owned(),
-            collects,
+            prompt: prompt.clone(),
+            placeholder: placeholder.clone(),
+            collects: *collects,
         },
     }
 }
@@ -2243,27 +2246,25 @@ pub(crate) fn control_witness_with_arguments(
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
-    let (intent, continuation) =
-        if matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }) {
-            validate_deferred_arguments(spec, arguments, argument)?;
-            let intent = DeferredIntent::capture(spec)?;
-            let continuation = intent.draft().clone();
-            (PreparedActionIntent::Deferred(intent), continuation)
-        } else {
-            let encoded =
-                encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-            let continuation = spec
-                .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-                    original_arguments.query(),
-                ))
-                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                    code: "unsupported_continuation_identity".into(),
-                    reason:
-                        "The action provider cannot prove the original target and handler identity"
-                            .into(),
-                })?;
-            (PreparedActionIntent::Encoded(encoded), continuation)
-        };
+    let (intent, continuation) = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
+    {
+        validate_deferred_arguments(spec, arguments, argument)?;
+        let intent = DeferredIntent::capture(spec)?;
+        let continuation = intent.draft().clone();
+        (PreparedActionIntent::Deferred(intent), continuation)
+    } else {
+        let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+        let continuation = spec
+            .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+                original_arguments.query(),
+            ))
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "unsupported_continuation_identity".into(),
+                reason: "The action provider cannot prove the original target and handler identity"
+                    .into(),
+            })?;
+        (PreparedActionIntent::Encoded(encoded), continuation)
+    };
     Ok(ControlWitness {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
@@ -5015,9 +5016,60 @@ pub(crate) fn restore_legacy_history(
         })
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
 }
-#[path = "bound_dispatch/edit_stamp.rs"]
-mod edit_stamp;
-pub use edit_stamp::DocumentEditStamp;
+/// A read-only invalidation stamp. It contains no document text and confers no
+/// write authority; an unavailable stamp must invalidate deferred insertion.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentEditStamp {
+    // Exact owner lifetime and undo/redo revision, never callback admission.
+    owner: Option<(uuid::Uuid, u64)>,
+    frontier: Vec<ChangeHash>,
+    pending: usize,
+}
+impl DocumentEditStamp {
+    /// Bind an embedded field's private equality check to its record and node.
+    #[cfg(feature = "native")]
+    pub(crate) fn bind_fingerprint(
+        &self,
+        node: NodeId,
+        field: [u8; 32],
+        key: &[u8; 32],
+    ) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new_keyed(key);
+        hash.update(b"tilo.ime.embedded-edit.v1");
+        hash.update(&u64::from(node).to_le_bytes());
+        if let Some((owner, history_revision)) = self.owner {
+            hash.update(owner.as_bytes());
+            hash.update(&history_revision.to_le_bytes());
+        }
+        hash.update(&self.pending.to_le_bytes());
+        for head in &self.frontier {
+            hash.update(&head.0);
+        }
+        hash.update(&field);
+        *hash.finalize().as_bytes()
+    }
+
+    pub(crate) fn for_owned_document(
+        document: &AutoCommit,
+        lifetime: uuid::Uuid,
+        history_revision: u64,
+    ) -> Self {
+        Self {
+            owner: Some((lifetime, history_revision)),
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
+    }
+
+    /// Snapshot an unbound host document without committing its open action.
+    pub fn for_document(document: &AutoCommit) -> Self {
+        Self {
+            owner: None,
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
+    }
+}
 
 #[path = "bound_dispatch/a11y_owner.rs"]
 mod a11y_owner;

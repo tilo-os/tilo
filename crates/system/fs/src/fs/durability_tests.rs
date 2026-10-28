@@ -9,17 +9,18 @@ use iroh::endpoint::{Endpoint, presets};
 use uuid::Uuid;
 
 struct Fixture {
-    dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     history: Arc<crate::history::FileHistoryStore>,
     publisher: Arc<crate::record_publisher::RecordPublisher>,
     actor: FileActor,
+    /// Last, so the stores above close before their files are deleted.
+    dir: tempfile::TempDir,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tilo_test_env::memory_tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -42,12 +43,12 @@ impl Fixture {
                 .unwrap(),
         );
         Self {
-            dir,
             namespace,
             hydrator,
             history,
             publisher,
             actor,
+            dir,
         }
     }
 
@@ -187,7 +188,8 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn more_fsyncs_than_the_version_bound_lose_nothing() {
-    const VERSION_BOUND: usize = 64;
+    // Small: a few syncs past the bound prove what hundreds would.
+    const VERSION_BOUND: usize = 4;
     let fixture = Fixture::new().await;
     fixture
         .publisher
@@ -196,7 +198,7 @@ async fn more_fsyncs_than_the_version_bound_lose_nothing() {
     let fs = fixture.mount(true);
     let (ino, fh) = create_open(&fs, "app.sqlite");
     let record_id = fs.ns().record_id_for(ino).unwrap();
-    let syncs = VERSION_BOUND + 100;
+    let syncs = VERSION_BOUND * 3;
     let mut expected = vec![0_u8; 4096];
     fs.write_buffer(ino, 0, &expected).unwrap();
     for i in 0..syncs {

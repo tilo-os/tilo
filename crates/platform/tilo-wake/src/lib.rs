@@ -361,6 +361,34 @@ impl WakeHandle {
             })
     }
 
+    /// Forget the replies that landed so far: the owner's next pass takes
+    /// them up, and [`Self::settled`] after it asks only about later ones.
+    /// For an owner that cannot wait ([`Self::settle`]), such as a window
+    /// whose frames also serve a person: it marks where a pass begins and
+    /// asks once it ended.
+    pub fn begin_pass(&self) {
+        if let Some(route) = self.route.as_ref().and_then(Weak::upgrade) {
+            let mut destination = route.destination.lock_recover();
+            destination.settling.replied = false;
+            destination.settling.woken = false;
+        }
+    }
+
+    /// Whether nothing is owed and no reply landed since
+    /// [`Self::begin_pass`]: a pass that began after it took up everything
+    /// that was owed. A closed or detached scope is settled; one that is not
+    /// is woken when a reply lands, so its owner asks again then.
+    pub fn settled(&self) -> bool {
+        self.route
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_none_or(|route| {
+                let destination = route.destination.lock_recover();
+                !route.open.load(Ordering::Acquire)
+                    || (destination.settling.owed == 0 && !destination.settling.replied)
+            })
+    }
+
     /// Run `pass`, one turn of the owner's loop that takes up whatever has
     /// landed for it, until no reply is owed ([`Self::owe`]) and a pass ran
     /// after the last one landed. Between passes it waits for the scope to
@@ -373,11 +401,7 @@ impl WakeHandle {
             return;
         };
         loop {
-            {
-                let mut destination = route.destination.lock_recover();
-                destination.settling.replied = false;
-                destination.settling.woken = false;
-            }
+            self.begin_pass();
             pass();
             let mut destination = route.destination.lock_recover();
             loop {
@@ -1013,6 +1037,23 @@ mod tests {
             handle.wake();
         });
         assert_eq!(passes, 1);
+    }
+
+    #[test]
+    fn an_owner_that_cannot_wait_asks_after_each_pass() {
+        let (scope, _wakes) = bound_scope();
+        let handle = scope.handle();
+        assert!(handle.settled());
+        let owed = handle.owe();
+        handle.begin_pass();
+        assert!(!handle.settled(), "a reply is owed");
+        drop(owed);
+        assert!(
+            !handle.settled(),
+            "the reply landed after the pass began: the next pass takes it up"
+        );
+        handle.begin_pass();
+        assert!(handle.settled());
     }
 
     #[test]
