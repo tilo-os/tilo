@@ -2728,10 +2728,12 @@ async fn publication_shape(rooms: &Rooms, room: &str) -> (bool, usize) {
     let governed = rooms.room(room).await.unwrap();
     let governed = governed.lock().await;
     let outgoing = &governed.record.outgoing;
-    (
+    let shape = (
         outgoing.iter().all(|publication| publication.checkpoint),
         outgoing.len(),
-    )
+    );
+    drop(governed);
+    shape
 }
 
 /// A crowd arriving through the door costs the room one change each, added
