@@ -32,6 +32,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
 use super::Instance;
+use crate::action::DynAction;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 
 /// Why a change did not reach the room.
@@ -190,10 +191,16 @@ impl RoomRecord {
     /// Whether the person at the window has a step to undo, or an undo to redo.
     #[must_use]
     pub fn can_undo(&self) -> (bool, bool) {
-        let me = self.me();
+        self.can_undo_as(&self.person)
+    }
+
+    /// Whether `person` has a step to undo, or an undo to redo, in the record.
+    #[must_use]
+    pub fn can_undo_as(&self, person: &str) -> (bool, bool) {
+        let who = UserId(person.to_owned());
         (
-            self.undo.can_undo_as(&self.doc, Some(&me)),
-            self.undo.can_redo_as(&self.doc, Some(&me)),
+            self.undo.can_undo_as(&self.doc, Some(&who)),
+            self.undo.can_redo_as(&self.doc, Some(&who)),
         )
     }
 
@@ -303,35 +310,81 @@ impl RoomRecord {
             .store()
             .committed(ticket)
             .ok_or(RoomError::NoAction(ticket))?;
+        let invoker = ActionInvoker::actor(self.person.clone());
+        self.apply(&action, invoker, None)
+    }
+
+    /// Apply `action`, which the door built for `invoker` (a person or an agent task the broker
+    /// admitted), to the room record as one step of its own, and send it on the record's route.
+    /// `ambient` is the task or run it was invoked in. The instance is brought up to date.
+    ///
+    /// # Errors
+    /// The action could not be applied, or the room did not take the change.
+    pub fn apply_invoked(
+        &mut self,
+        instance: &mut Instance,
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(), RoomError> {
+        self.apply(action, invoker, ambient)?;
+        instance.sync(Some(&self.doc));
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(), RoomError> {
         let encoded = action
             .encode()
             .map_err(|error| RoomError::Refused(error.to_string()))?;
         let before = self.doc.get_heads();
-        let context = ActionContext::for_resource(
+        let mut context = ActionContext::for_resource(
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
-        )
-        .with_invoker(ActionInvoker::actor(self.person.clone()));
+        );
+        if let Some(ambient) = ambient {
+            context = context.enriched_by(ambient);
+        }
+        let author = invoker.actor.clone();
+        let context = context.with_invoker(invoker);
         tilo_actions::apply_local_with_context(
             &mut self.doc,
-            &action,
+            action,
             encoded,
-            Some(self.person.as_bytes()),
+            Some(author.as_bytes()),
             context,
         )
         .map_err(|error| RoomError::Refused(error.to_string()))?;
         self.doc.commit();
-        // The commit is a step of the person at the window: their Undo takes it back.
-        let me = self.me();
-        self.undo
-            .record_committed_action_authored(&mut self.doc, before, None, None, Some(me));
+        // The change is a step of whoever made it: their Undo takes it back.
+        self.undo.record_committed_action_authored(
+            &mut self.doc,
+            before,
+            None,
+            None,
+            Some(UserId(author)),
+        );
         self.send_since_sent()
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the
     /// record. Whether the record changed.
     pub fn receive(&mut self, instance: &mut Instance) -> bool {
+        self.receive_and(instance, |_| {})
+    }
+
+    /// [`Self::receive`], handing every event that is no change of the record (an invocation,
+    /// presence, the route's state) to `other`, in the order they came.
+    pub fn receive_and(
+        &mut self,
+        instance: &mut Instance,
+        mut other: impl FnMut(CollabEvent),
+    ) -> bool {
         let mut changed = false;
         for event in self.manager.poll() {
             let CollabEvent::Document {
@@ -340,6 +393,7 @@ impl RoomRecord {
                 ..
             } = event
             else {
+                other(event);
                 continue;
             };
             let Some(payload) =

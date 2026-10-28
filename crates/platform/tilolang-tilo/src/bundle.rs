@@ -75,6 +75,37 @@ impl Bundle {
         }
     }
 
+    /// The bundle of the compiled module `wasm`, its ids lock `ids` and the metadata of the
+    /// packages it uses (`imports`, each as its JSON), as a package's payload holds them: what a
+    /// tilolang host is handed for each instance.
+    ///
+    /// # Errors
+    /// The module carries no metadata, or an import does not parse.
+    pub fn from_parts(
+        wasm: Vec<u8>,
+        ids: String,
+        imports: &[Vec<u8>],
+    ) -> Result<Self, BundleError> {
+        let meta = Meta::from_wasm(&wasm)
+            .ok_or_else(|| BundleError::NotAModule(PathBuf::from(WASM_FILE)))?;
+        let imports = imports
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                serde_json::from_slice(bytes).map_err(|source| BundleError::BadImport {
+                    path: PathBuf::from(IMPORTS_DIR).join(format!("{index}.json")),
+                    source,
+                })
+            })
+            .collect::<Result<Vec<Meta>, _>>()?;
+        Ok(Self {
+            wasm,
+            meta,
+            ids,
+            imports,
+        })
+    }
+
     /// The bundle in the payload directory `dir`.
     ///
     /// # Errors
