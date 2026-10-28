@@ -1330,6 +1330,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     if ui.as_text.get() {
         items.push(text_view(ui, draft_id.clone()));
         items.push(Box::new(caption("shortcuts-steps-read-only")));
+        items.push(grant_section(input));
         return page(ui, items);
     }
     if let Arrival::Failed(reason) = &input.catalogue {
@@ -1345,7 +1346,43 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         vec![block(ui, input, &draft_id, draft, "", 0)],
     )));
     items.push(output_section(ui, input, &draft_id, draft));
+    items.push(grant_section(input));
     page(ui, items)
+}
+
+/// What saving the draft would let it do, kept in front of the person while
+/// they build it: the same least-privilege list the save sheet reviews, so a
+/// step that reaches into another app says so the moment it is added.
+fn grant_section(input: &EditorInput) -> Element {
+    let Some((_, draft)) = &input.draft else {
+        return Box::new(ui::widget::optional(None));
+    };
+    let permissions: Vec<Permission> =
+        grant::least_privilege(&draft.program().steps, &input.catalog);
+    let mut lines: Vec<Element> = permissions
+        .iter()
+        .enumerate()
+        .map(|(index, permission)| {
+            Box::new(
+                Text::new(&format!(
+                    "{} ({})",
+                    permission.label,
+                    permission.kind.phrase()
+                ))
+                .with_id(format!("grant-summary-{index}")),
+            ) as Element
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Box::new(
+            caption("shortcuts-grant-none").with_id("shortcuts-grant-summary-none"),
+        ));
+    }
+    Box::new(Section::titled(
+        ui::i18n!("shortcuts-grant"),
+        vec![Box::new(Section::new(lines))],
+    ))
+    .into()
 }
 
 /// The draft's program as the text language writes it: the same steps, in
@@ -1915,7 +1952,7 @@ fn step_card(
     let number = editor::step_number(steps, &step.id).unwrap_or(0);
     let title = format!("{number}. {}", editor::title(step, &input.catalog, steps));
     let is_folded = folded(ui, draft_id, path);
-    let actions = step_actions(ui, draft_id, path, (index, count), !is_folded);
+    let actions = step_actions(ui, draft_id, path, (index, count), steps, !is_folded);
     let (body, nested) = step_fields(&at, step);
     // A folded step keeps its header, without the fields under it: its
     // fields and the steps inside it come back when it is opened.
@@ -2401,20 +2438,54 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     Box::new(body)
 }
 
-/// A step's own actions: move it up or down its block, or remove it.
-/// What a person can do with a step from its header, in the order the
-/// buttons sit: move it within its block, remove it, and fold it away.
+/// A step's own actions: move it up or down its block, nest it or lift it
+/// out, remove it, and fold it away. The buttons sit in that order, the nest
+/// pair between moving and removing.
 fn step_actions(
     ui: &Ui,
     draft_id: &Id,
     path: &str,
     (index, count): (usize, usize),
+    steps: &[Step],
     folded: bool,
 ) -> ActionGroup {
     let fold = fold_button(ui, draft_id, path, folded);
     let step_button = |id: &str, icon: Icon, name: &str| {
         Button::icon_only(&format!("{id}-{path}"), icon, name).control_size(ControlSize::Small)
     };
+    let nesting = |id: &str, icon: Icon, name: &str, place: Option<editor::Nesting>| {
+        let draft = draft_id.clone();
+        let path = path.to_owned();
+        let button = step_button(id, icon, name);
+        let placed = place.is_some();
+        let button = match place {
+            Some(place) => ui.bind(
+                button,
+                Workbench::SET_NESTED.map(move |()| {
+                    (
+                        draft.clone(),
+                        path.clone(),
+                        place.block.clone(),
+                        place.index,
+                    )
+                }),
+            ),
+            None => button,
+        };
+        button.with_enabled(placed)
+    };
+    let deeper = nesting(
+        "step-nest",
+        Icon::ArrowRight,
+        &ui::i18n!("shortcuts-nest-step"),
+        editor::nest_into(steps, path),
+    );
+    let shallower = nesting(
+        "step-lift",
+        Icon::ArrowLeft,
+        &ui::i18n!("shortcuts-lift-step"),
+        editor::lift_out(path),
+    );
     let up = ui
         .bind(
             step_button("step-up", Icon::ChevronUp, &ui::i18n!("shortcuts-move-up")),
@@ -2449,6 +2520,8 @@ fn step_actions(
     );
     ActionGroup::new(fold)
         .secondary(remove)
+        .secondary(shallower)
+        .secondary(deeper)
         .secondary(up)
         .secondary(down)
 }

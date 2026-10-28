@@ -17,7 +17,7 @@ use tilo_automation::{
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
-use crate::model::{Draft, step_at};
+use crate::model::{Draft, block_at, step_at};
 use tilo_automation::grant;
 
 /// The shortcut `draft` would save as, with the least grant it needs, as the
@@ -219,6 +219,78 @@ pub fn describe(binding: &Binding, steps: &[Step]) -> String {
             format!("[{}]", items.join(", "))
         }
     }
+}
+
+/// Where a step can move so that it is nested one level deeper, or one
+/// level shallower: the block it lands in and the place there.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Nesting {
+    /// The block the step moves into, as [the surface's `set-nested` takes
+    /// it](crate::model::Workbench::set_nested): empty for the top level.
+    pub block: String,
+    /// Where it lands in that block.
+    pub index: usize,
+}
+
+/// The first branch a step opens, if it holds steps of its own.
+fn opened_branch(step: &Step) -> Option<&'static str> {
+    match &step.kind {
+        StepKind::If { .. } => Some("then"),
+        StepKind::ForEach { .. } => Some("each"),
+        StepKind::Invoke { .. }
+        | StepKind::SetVar { .. }
+        | StepKind::Ask { .. }
+        | StepKind::Ai { .. }
+        | StepKind::Task { .. } => None,
+    }
+}
+
+/// The block `address` names, and where it sits in its own block: `("", 0)`
+/// for the top level, `("2", 1)` for the block of the step at `2.…`.
+fn enclosing(address: &str) -> Option<(&str, usize)> {
+    if address.is_empty() {
+        return None;
+    }
+    let owner = address.rsplit_once('.').map_or(address, |(owner, _)| owner);
+    let (block, last) = owner.rsplit_once('.').unwrap_or(("", owner));
+    Some((block, last.parse().ok()?))
+}
+
+/// Where the step at `path` can move to be nested deeper: into the block of
+/// the step just above it, if that step holds steps. A step has no deeper
+/// place when it is first in its block, or when the step above it holds
+/// nothing.
+#[must_use]
+pub fn nest_into(steps: &[Step], path: &str) -> Option<Nesting> {
+    let (block, index) = path.rsplit_once('.').unwrap_or(("", path));
+    let index: usize = index.parse().ok()?;
+    let above = block_at(steps, block)?.get(index.checked_sub(1)?)?;
+    let branch = opened_branch(above)?;
+    let target = if block.is_empty() {
+        format!("{}.{branch}", index - 1)
+    } else {
+        format!("{block}.{}.{branch}", index - 1)
+    };
+    // Past the last step the block above already holds, so it is added to
+    // that step rather than put before what is there.
+    let inside = block_at(steps, &target)?.len();
+    Some(Nesting {
+        block: target,
+        index: inside,
+    })
+}
+
+/// Where the step at `path` can move to leave its block: its block's own
+/// step, placed just after it. A step already at the top level has nowhere
+/// to go.
+#[must_use]
+pub fn lift_out(path: &str) -> Option<Nesting> {
+    let (address, _) = path.rsplit_once('.').unwrap_or(("", path));
+    let (parent, owner) = enclosing(address)?;
+    Some(Nesting {
+        block: parent.to_owned(),
+        index: owner + 1,
+    })
 }
 
 /// The position (from 1) the editor shows for the step with `id`: steps are

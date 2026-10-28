@@ -1044,3 +1044,110 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
         "the text is gone"
     );
 }
+
+/// The header of a step moves it into the step above, and out again, without
+/// anyone typing an address or a piece of JSON.
+#[test]
+fn a_step_nests_into_the_one_above_it_and_lifts_back_out() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    let program = |app: &mut TestApp<App>| {
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .expect("the draft")
+            .program()
+    };
+    let top = program(&mut app);
+    assert_eq!(top.steps.len(), 3, "three steps at the top level");
+    assert!(
+        !app.harness().targets().contains_key("step-nest-0"),
+        "the first step has nothing above it to move into"
+    );
+    assert!(
+        app.harness().targets().contains_key("step-nest-1"),
+        "the second step can move into the condition"
+    );
+    assert!(
+        !app.harness().targets().contains_key("step-lift-1"),
+        "and it is already at the top level"
+    );
+
+    act(&mut app, "step-nest-1", &Action::Activate);
+    let nested = program(&mut app);
+    assert_eq!(nested.steps.len(), 2, "the condition and the last step");
+    let tilo_automation::StepKind::If { then, .. } = &nested.steps[0].kind else {
+        panic!(
+            "the first step is the condition: {:?}",
+            nested.steps[0].kind
+        );
+    };
+    assert_eq!(
+        then.iter().map(|step| step.id.clone()).collect::<Vec<_>>(),
+        vec![top.steps[1].id.clone()],
+        "the step it held above is now inside the condition"
+    );
+
+    act(&mut app, "step-lift-0.then.0", &Action::Activate);
+    let lifted = program(&mut app);
+    assert_eq!(lifted.steps.len(), 3, "the step came back out");
+    assert_eq!(
+        lifted
+            .steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>(),
+        top.steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>(),
+        "and stands where it stood, after the condition"
+    );
+}
+
+/// The steps' permissions are on the page while the shortcut is being built,
+/// not only in the sheet that asks before saving it.
+#[test]
+fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
+    let (_host, _guard, mut app) = open();
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
+        .expect("a new draft");
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens in the editor");
+    let none = ui::i18n!("shortcuts-grant-none");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("shortcuts-grant-summary-none")
+                .name(none)
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("an empty shortcut is allowed to do nothing");
+
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-list"),
+        &Action::Activate,
+    );
+    // The list step needs to read the notes app's folder, and the summary
+    // says so without waiting for the save sheet.
+    let line = app
+        .harness()
+        .expect(&SemanticExpectation::named("grant-summary-0").within(tilo_test_env::hang_bound()))
+        .expect("the summary lists what the step needs")
+        .node
+        .semantics
+        .and_then(|semantics| semantics.name)
+        .expect("the line says what the step is allowed to do");
+    assert!(
+        line.contains("notes"),
+        "the summary names the app the step reaches into: {line}"
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("shortcuts-grant-summary-none"),
+        "and no longer says it does nothing"
+    );
+}
