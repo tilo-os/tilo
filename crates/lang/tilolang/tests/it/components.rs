@@ -1,5 +1,5 @@
-//! components.md section 2.2: the toolkit's components, read as the package `ui`, checked
-//! against the descriptions the toolkit generates from each widget.
+//! components.md, "A component is a described widget": the toolkit's components, read as the
+//! package `ui`, checked against the descriptions the toolkit generates from each widget.
 
 use crate::common::{compile_body, validate};
 

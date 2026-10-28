@@ -1,4 +1,4 @@
-//! The native vocabulary (native-apps.md section 3): lists and their rows, view state as
+//! The native vocabulary: lists and their rows, view state as
 //! native controls, facts, and buttons for declared actions. Each lowers to the same `ui_*`
 //! host calls as every other node. A window's frame is no part of it: the standard library
 //! (`std.list`, `std.document`, `std.page`) composes frames from the toolkit's components.

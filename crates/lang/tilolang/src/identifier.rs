@@ -1,7 +1,7 @@
-//! Identifiers of every service, written as URIs (search.md section 2.2.1): `mailto:jane@x.com`,
-//! `tel:+4930123456`, `discord:janedoe`, `matrix:@jane:matrix.org`, `tilo:jane`. A
-//! `std.Identifier` is held as that text, its scheme and its value. Search knows no service: a
-//! new one is a new scheme.
+//! Identifiers of every service, written as URIs (search.md, "Types, references and paths"):
+//! `mailto:jane@x.com`, `tel:+4930123456`, `discord:janedoe`, `matrix:@jane:matrix.org`,
+//! `tilo:jane`. A `std.Identifier` is held as that text, its scheme and its value. Search knows no
+//! service: a new one is a new scheme.
 //!
 //! Bare forms are accepted where they are unambiguous: `jane@x.com` is a `mailto:`, `+4930…` a
 //! `tel:`. `*` is the one pattern: `*@x.com`, `tel:+49*`, `discord:*`. Identifiers compare

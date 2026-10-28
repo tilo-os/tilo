@@ -1,4 +1,4 @@
-//! Filter columns (search.md section 4): per filter of a type, and per other field a `filter`
+//! Filter columns (search.md, "Who indexes"): per filter of a type, and per other field a `filter`
 //! compares, a list of the type's resources ordered by the field's value.
 //!
 //! A column is kept twice:

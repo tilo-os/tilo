@@ -1,4 +1,4 @@
-//! Publishing tilolang resources on the action door (implementation design 7.4).
+//! Publishing tilolang resources on the action door.
 //!
 //! Every resource in the room record is published as a `tilo_actions::Resource` of kind
 //! `tl.<app>.<Type>`, with one typed action per tilolang action whose subject is its type. The

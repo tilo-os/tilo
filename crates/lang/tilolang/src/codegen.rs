@@ -1,4 +1,12 @@
-//! The wasm backend: IR to the module shape of implementation.md section 4.2.
+//! The wasm backend: IR to one wasm module per package.
+//!
+//! The module imports from `"tl"` only the [`Imp`]s it calls, in the order of that table. It
+//! exports `memory`, which holds the string literals and nothing else, and one function per
+//! declaration, named by its id: `a_<id>` for actions, `f_<id>` for flows, `v_<id>` for views,
+//! `n_<id>` for fns, `d_<action>_<param>` for parameter defaults and `b_main` for a block. The
+//! metadata goes in the custom section `tilolang.meta`. A flow's action calls are plain calls of
+//! the `invoke` import; suspending and replaying a flow is the host's job, so the guest keeps no
+//! state between calls.
 
 use crate::abi::Imp;
 use crate::ir::{BinOp, Conv, Ek, Expr, ForList, Func, Module as IrModule, Stmt};

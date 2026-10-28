@@ -1,6 +1,6 @@
-//! Lengths of time, as literals write them: `7d`, `-30d`, `5m` (search.md section 2.2.1). A
-//! duration is a value of a filter (`received: -7d`), resolved against the time a query is
-//! answered.
+//! Lengths of time, as literals write them: `7d`, `-30d`, `5m` (search.md, "Types, references and
+//! paths"). A duration is a value of a filter (`received: -7d`), resolved against the time a query
+//! is answered.
 
 /// The units a duration is written in, and how many seconds each is.
 pub const UNITS: &[(&str, i64)] = &[

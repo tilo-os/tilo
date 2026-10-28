@@ -183,7 +183,7 @@ impl Runtime {
         self.load_package(wasm, meta)
     }
 
-    /// Evaluate an agent block (implementation design 6.1) as `principal`. A view renders and
+    /// Evaluate an agent block as `principal`. A view renders and
     /// can be pressed; an action application is invoked, or suggested when the authority asks
     /// (the block's module is the author, so the chain starts with it); data is returned.
     ///
@@ -233,7 +233,7 @@ impl Runtime {
 
     /// Evaluate the source of a block an agent wrote, as `agent`: a view renders, a value is
     /// projected, and an action application runs or is suggested to a person, recorded as an
-    /// `Invocation` resource (implementation design 6.1, 7.4).
+    /// `Invocation` resource.
     ///
     /// # Errors
     ///
@@ -471,7 +471,7 @@ impl Runtime {
         )
     }
 
-    /// What an agent sees of a value (implementation design 6.2).
+    /// What an agent sees of a value ([`crate::project`]).
     pub fn project(&self, value: &Value) -> Json {
         project(&self.core, value, ProjectOptions::default())
     }
@@ -481,7 +481,7 @@ impl Runtime {
         project(&self.core, value, opts)
     }
 
-    /// Signatures of every loaded package, for discovery (implementation design 6.3).
+    /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
         let metas: Vec<&Meta> = pkgs.iter().map(|p| &p.meta).collect();

@@ -1,4 +1,4 @@
-//! What the platform reads of a package's metadata (`tilolang.meta`, implementation design 5).
+//! What the platform reads of a package's metadata (`tilolang.meta`).
 //!
 //! The metadata types are the runtime's ([`tilolang_runtime::Meta`]); this module adds what the
 //! platform derives from them: the record schemas, the resource kinds and the subject of an

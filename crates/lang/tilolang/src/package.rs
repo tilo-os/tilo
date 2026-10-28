@@ -674,8 +674,8 @@ pub struct CompiledProgram {
     pub lets: Vec<Binding>,
 }
 
-/// Compiles an agent's program (agents.md section 1): statements over every visible app, run
-/// as a flow whose parameters are the names a session bound before (`bound`).
+/// Compiles an agent's program (agents.md, "One language, one tool"): statements over every visible
+/// app, run as a flow whose parameters are the names a session bound before (`bound`).
 ///
 /// # Errors
 /// The diagnostics, located in `source`.

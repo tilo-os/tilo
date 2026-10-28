@@ -1,5 +1,5 @@
 //! Predicates over the fields of a resource, which a store answers itself: from its index's
-//! filter columns where it keeps one (search.md section 4).
+//! filter columns where it keeps one (search.md, "Who indexes").
 //!
 //! `items.filter(x -> not x.done)` and `items.count(x -> x.pinned)` over a collection field,
 //! with a lambda that reads only fields of the item and literals, compile to a [`Pred`] as well

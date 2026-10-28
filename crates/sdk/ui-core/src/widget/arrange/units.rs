@@ -300,8 +300,8 @@ impl Fit {
     }
 }
 
-/// The width classes of a view's container (spec 4): in `rem`, so enlarged text moves a window to
-/// a narrower class.
+/// The width classes of a view's container (layout.md, "Responding to space"): in `rem`, so
+/// enlarged text moves a window to a narrower class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WidthClass {
     Compact,
@@ -397,7 +397,8 @@ impl Orientation {
     }
 }
 
-/// What a view reads as `space`: the constraint its container offers it (spec 4).
+/// What a view reads as `space`: the constraint its container offers it (layout.md,
+/// "Responding to space").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Space {
     /// Offered width and height in `rem`.

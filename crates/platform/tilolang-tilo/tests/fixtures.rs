@@ -9,7 +9,7 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::record::{DynRecord, DynValue};
 
-/// The counter of the language spec: the first package of the host.
+/// The counter package (`apps/tl/counter`): the first package of the host.
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
 
 /// A list with text, a collection and a set, for the merge kinds the counter does not use.

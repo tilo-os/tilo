@@ -1,4 +1,13 @@
-//! The host imports of implementation.md section 4.4, module `"tl"`.
+//! The host imports, module `"tl"`: every function a compiled module may call, with its wasm
+//! signature.
+//!
+//! `Int` is an `i64`, `Float` an `f64`, `Bool` an `i32`. Every other value (text, lists, records,
+//! references, actions, UI nodes) lives in the host and the guest holds an `i32` handle to it, so a
+//! module can't forge a reference or an action: it can only name handles the host gave it. Fields,
+//! types and actions are named by their ids, passed as string literal handles. An import traps on
+//! misuse (a wrong kind of handle, a mutation outside an action); well-typed code never makes such
+//! a call, apart from a reference literal that doesn't resolve. The runtime's table
+//! (`tilolang_runtime::abi`) must match this one.
 
 use crate::types::Vt;
 

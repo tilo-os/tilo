@@ -651,7 +651,7 @@ impl Checker<'_> {
     }
 
     /// `open(r)` or `open(r, view: v)`: an action reference that goes to the window of `r`
-    /// (workspace-model.md section 3). Views only.
+    /// (workspace-model.md, "Windows"). Views only.
     fn builtin_open(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -1061,8 +1061,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop
-    /// (implementation.md section 3.6).
+    /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a
+    /// lambda is only ever a direct argument of these, so there are no closures at run time.
     fn higher_order(
         &mut self,
         list: Ex,

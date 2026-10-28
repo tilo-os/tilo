@@ -1,4 +1,4 @@
-//! View bodies: UI statements lowered to `ui_*` host calls (implementation.md section 4.4).
+//! View bodies: UI statements lowered to `ui_*` host calls ([`crate::abi`]).
 
 use super::expr::dotted;
 use super::{Checker, Ex, StateRef, conv, store_op};

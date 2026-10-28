@@ -1,5 +1,6 @@
-//! Queries (search.md sections 2 and 3.3): a typed search and `query(T, ...)` are one query,
-//! read against the type's filters, answered over a collection, and kept as its items change.
+//! Queries (search.md, "A query" and "Where search appears"): a typed search and `query(T, ...)`
+//! are one query, read against the type's filters, answered over a collection, and kept as its
+//! items change.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]

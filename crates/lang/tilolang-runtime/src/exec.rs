@@ -1,4 +1,19 @@
-//! Invocation lifecycles (implementation design 4.5): actions, flows and views.
+//! Invocation lifecycles of actions and flows.
+//!
+//! * **An action** runs in one store transaction. Its writes go into the transaction; if it
+//!   returns, the store commits one change per touched document, each carrying a
+//!   [`ChangeNote`] (the action, its arguments, the invoker, the authorship chain and the
+//!   module). If it traps or runs out of fuel, nothing is committed.
+//! * **A flow** keeps a journal ([`crate::flow`]). Each action it invokes is decided by the
+//!   authority: Allow runs it and journals the result, Deny journals an error value, Ask records
+//!   a suggestion and suspends the run. Once the suggestion is answered the flow runs again from
+//!   the start, and the journal answers every invocation, model call and read that already
+//!   happened, so it takes the same path and nothing runs twice.
+//!
+//! An action's arguments left out are completed from their defaults, on the invoker's state,
+//! before it is decided, journaled or run. An action's `outside` call doesn't reach outside
+//! while the action runs: it is queued in the action's change as an outbox entry, which the
+//! device that holds the capability settles.
 
 use std::rc::Rc;
 

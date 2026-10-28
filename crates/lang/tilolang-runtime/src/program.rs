@@ -1,5 +1,6 @@
-//! Agents' programs (agents.md section 1): a session that compiles each program against every
-//! loaded app, runs it as a flow the agent wrote, and keeps its top-level `let`s for the next.
+//! Agents' programs (agents.md, "One language, one tool"): a session that compiles each program
+//! against every loaded app, runs it as a flow the agent wrote, and keeps its top-level `let`s for
+//! the next.
 //!
 //! A program is code by its agent: its module's frames carry the agent's principal identity
 //! (`ModuleHash::principal`), so what it applies is decided as the agent's code, as a block's

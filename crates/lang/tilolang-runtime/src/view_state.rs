@@ -1,5 +1,5 @@
-//! View state (workspace-model.md sections 1, 4 and 7): what a view declares with `window`
-//! and `lens`.
+//! View state (workspace-model.md, "The pieces" and "In the language"): what a view declares with
+//! `window` and `lens`.
 //!
 //! `window` state belongs to a window and is shared by everyone looking at it; `lens` state
 //! belongs to one person looking at one window. Both live here, in the runtime, keyed by the

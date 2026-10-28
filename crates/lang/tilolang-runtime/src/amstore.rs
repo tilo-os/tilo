@@ -1,5 +1,5 @@
-//! `AmStore`: the reference [`Store`], one Automerge document per resource
-//! (implementation design 4.8).
+//! `AmStore`: the reference [`Store`], one Automerge document per resource. Tests and the
+//! command line use it; the platform's store is `tilolang_tilo::store`.
 //!
 //! Document layout. The root holds `$type`, `$app`, `$outbox` and every field, keyed by its
 //! field id:

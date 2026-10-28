@@ -13,7 +13,7 @@ pub const TYPE_KEY: &str = "$type";
 /// The key holding a resource's app id.
 pub const APP_KEY: &str = "$app";
 
-/// How a field merges (spec 2.2) and therefore which concrete model stores it.
+/// How a field merges and therefore which concrete model stores it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MergeKind {
     /// A scalar or structured value, last writer wins.
@@ -108,7 +108,7 @@ impl FieldSchema {
     }
 }
 
-/// What a filter column holds (search.md section 4): how its values are written so that
+/// What a filter column holds (search.md, "Who indexes"): how its values are written so that
 /// their order is the values' order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ColumnKind {
@@ -127,7 +127,7 @@ pub enum ColumnKind {
     Ident,
 }
 
-/// A filter column of a type (search.md section 4): the index keeps, per collection of the
+/// A filter column of a type (search.md, "Who indexes"): the index keeps, per collection of the
 /// type's resources and (for the type's filters) across the workspace, a list of them ordered
 /// by the column's value, each value written in [`ColumnKind`]'s order.
 #[derive(Clone, Debug, PartialEq)]

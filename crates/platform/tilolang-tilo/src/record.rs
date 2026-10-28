@@ -6,8 +6,8 @@
 //! operation then delegates to the concrete model of the field's merge kind, so a tilolang
 //! counter merges exactly as a Rust [`Counter`] does.
 //!
-//! Layout of one resource (implementation design 7.2): a map holding `$type`, `$app` and every
-//! field by field id.
+//! Layout of one resource: a map holding `$type`, `$app` and every field by field id, under
+//! `tl/<app>/<resource id>` in the room record.
 
 use std::collections::BTreeMap;
 

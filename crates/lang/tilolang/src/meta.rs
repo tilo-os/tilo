@@ -1,5 +1,8 @@
-//! Package metadata (`tilolang.meta`, implementation.md section 5). Tools, the runtime, the
-//! platform and agents read it; compiled packages are imported through it.
+//! Package metadata, the JSON in the module's `tilolang.meta` section: the package's types,
+//! enums, actions (with their effect class and what they reach), views, flows and fns, by id
+//! and name, with their doc comments. Tools, the runtime, the platform and agents read it;
+//! compiled packages are imported through it. The platform derives the agent's catalogue, the
+//! published actions and the app's surface from it.
 
 use crate::types::{EffectClass, MergeKind};
 use serde::{Deserialize, Serialize};
@@ -109,8 +112,8 @@ pub struct TypeMeta {
     pub search: SearchMeta,
 }
 
-/// What search, a list's filters and agents offer of a type (search.md section 2.2): its
-/// filters in order (the first are the visible chips), its default order and the fields kept
+/// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
+/// its filters in order (the first are the visible chips), its default order and the fields kept
 /// out of filters.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchMeta {

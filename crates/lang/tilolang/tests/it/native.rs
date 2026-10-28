@@ -1,4 +1,4 @@
-//! native-apps.md sections 1, 3, 5 and 7: what declarations tell the platform (labels, roles,
+//! What declarations tell the platform (labels, roles,
 //! icons, field roles, row views, scenarios), and the errors of the native vocabulary.
 
 use crate::common::{codes, compile_body};
@@ -97,7 +97,7 @@ fn action<'a>(m: &'a PackageMeta, name: &str) -> &'a tilolang::meta::ActionMeta 
         .unwrap_or_else(|| panic!("no action {name}"))
 }
 
-// USER REQUIREMENT (2026-10-20, native-apps.md section 1): "An action's label is its name in
+// USER REQUIREMENT (2026-10-20): "An action's label is its name in
 // sentence case (`new_note` -> "New note"), or its doc comment's first line when that is
 // shorter. `icon:` and `role:` are declared on the action, not on each button."
 #[test]
@@ -275,7 +275,7 @@ fn row_views_are_in_the_metadata() {
     assert_eq!(c.meta.row_view(&id("Notebook")), None);
 }
 
-// USER REQUIREMENT (2026-10-20, native-apps.md section 5): "A package declares scenarios:
+// USER REQUIREMENT (2026-10-20): "A package declares scenarios:
 // named seed data for screenshots, tests and benchmarks ... They never touch a person's data."
 #[test]
 fn a_scenario_is_a_hidden_action_listed_with_its_name() {
@@ -773,7 +773,7 @@ fn dated_props_say_what_they_are() {
     crate::common::validate(&c.wasm);
 }
 
-// native-apps.md section 3: one control per action. An action whose `on:` is its subject's
+// One control per action. An action whose `on:` is its subject's
 // field says which state it toggles, so a window that binds a control to that field shows the
 // control alone.
 #[test]
