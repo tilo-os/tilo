@@ -2672,3 +2672,96 @@ fn header_actions_changed_in_place_keep_the_row() {
         "an action that goes changes the row"
     );
 }
+
+/// A pane that, once armed, mounts children of its own in place at its next
+/// sync, as a list does when rows change: it reports the change until it is
+/// carried out, in place or by a build.
+struct Remounting {
+    rect: Rect,
+    armed: SharedRc<Cell<bool>>,
+    pending: bool,
+    remounts: SharedRc<Cell<usize>>,
+}
+
+impl Widget for Remounting {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.pending = false;
+        taffy.fill_leaf(node_map, self)
+    }
+    crate::rect_geometry!();
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        self.pending |= self.armed.replace(false);
+    }
+    fn take_structure_change(&mut self) -> StructureChange {
+        if self.pending {
+            StructureChange::Children
+        } else {
+            StructureChange::None
+        }
+    }
+    fn remount_children(&mut self, _remount: &mut crate::widget::Remount<'_>) -> bool {
+        if std::mem::take(&mut self.pending) {
+            self.remounts.set(self.remounts.get() + 1);
+        }
+        true
+    }
+    fn name(&self) -> &'static str {
+        "Remounting"
+    }
+}
+
+/// A change a part carries out in place is the shell's only where the
+/// shell can have it carried out: in a screen it lays out, in front or not,
+/// it is remounted there; a screen outside the tree is built whole when it
+/// comes back. Either way the frame settles and the window keeps its tree.
+#[test]
+fn a_part_changed_in_place_off_screen_keeps_the_tree_and_settles() {
+    let armed = SharedRc::new(Cell::new(false));
+    let remounts = SharedRc::new(Cell::new(0));
+    let overview = Remounting {
+        rect: Rect::ZERO,
+        armed: SharedRc::clone(&armed),
+        pending: false,
+        remounts: SharedRc::clone(&remounts),
+    };
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .overview(Box::new(overview))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 360, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+
+    let rebuilt = h.rebuilt_frames();
+    for _ in 0..3 {
+        armed.set(true);
+        h.relayout_at((360, 800))
+            .expect("the frame settles with a change pending off screen");
+    }
+    assert_eq!(h.rebuilt_frames(), rebuilt, "the window keeps its tree");
+    let laid_out = h
+        .root::<NavShell>()
+        .exposed_parts()
+        .contains(&Part::Body(Column::Overview));
+    assert_eq!(
+        remounts.get(),
+        if laid_out { 3 } else { 0 },
+        "remounted where it is laid out, and only there"
+    );
+}
