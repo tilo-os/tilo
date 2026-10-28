@@ -436,9 +436,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
                    "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml"],
     },
-    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged.
+    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged. The app the
+    # outside_repo test generates compiles tilo-model-gateway from the checkout too, which none of
+    # the others reaches, so a change to it reruns this.
     "sdk-linux": {
-        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator"},
+        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator",
+                                            "tilo-model-gateway"},
         "tested": {"tilo-caps", "tilo-app-cli"},
         "inputs": ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py"],
     },
