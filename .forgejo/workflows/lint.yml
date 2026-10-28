@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Lint checks the whole tree, so only the newest main commit matters: a
-  # superseded run is cancelled. A dispatch is never cancelled.
-  group: lint-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # One run per pushed commit: every head on main gets a result, and a newer
+  # push never cancels an older run.
+  group: lint-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   quality:
