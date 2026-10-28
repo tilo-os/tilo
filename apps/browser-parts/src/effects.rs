@@ -526,6 +526,37 @@ pub enum BrowserEffect {
         )]
         since: Option<u64>,
     },
+    /// Find a page element by what it says
+    ///
+    /// Answers with the ref of the element a stable description names, read
+    /// from the page as it is now, so a description recorded once finds the
+    /// page again after it has reloaded: a ref belongs to one document, and a
+    /// name and a role do not. Match `name` as the outline prints it, first
+    /// exactly, then in any letter case, then by a part of it; `role` narrows
+    /// it to one kind of element. Several equal matches are refused and
+    /// listed, naming their numbers, and a description the page does not hold
+    /// names the nearest it has, rather than guessing.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    FindPageElement {
+        #[param("Role the outline prints, such as textbox, combobox, checkbox, button or link")]
+        role: Option<String>,
+        #[param("Accessible name as the outline prints it, such as Email")]
+        name: Option<String>,
+        #[param("Number among equal matches, from 1 (the first)")]
+        nth: Option<u32>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the element is then found in that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// Click page element
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     ClickPage {
@@ -961,6 +992,17 @@ impl BrowserEffect {
             }),
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
+            }),
+            Self::FindPageElement {
+                role,
+                name,
+                nth,
+                frame,
+            } => page(PageRequest::Find {
+                role: role.filter(|role| !role.trim().is_empty()),
+                name: name.filter(|name| !name.trim().is_empty()),
+                nth,
+                frame: page_frame(frame),
             }),
             Self::ClickPage { element, frame } => page(PageRequest::Click {
                 element,

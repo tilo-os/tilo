@@ -94,6 +94,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         let (_, widget, _, _) = page_on("https://shop.test/");
         for id in [
             "read-page",
+            "find-page-element",
             "click-page",
             "fill-page",
             "select-page",
@@ -408,6 +409,10 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
                 serde_json::json!({"element": "d2e4", "text": "42 Linden Street",
                             "frame": "1.2"}),
             ),
+            (
+                "find-page-element",
+                serde_json::json!({"role": "button", "name": "Remove", "nth": 2}),
+            ),
         ] {
             let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
             widget.sync(&doc, &root);
@@ -464,6 +469,14 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
                     secret: false,
                     frame: Some(FrameId::parse("1.2").unwrap()),
                 },
+                // A description reaches the engine as it was asked, and the
+                // ref it answers is output another step can bind.
+                PageRequest::Find {
+                    role: Some("button".into()),
+                    name: Some("Remove".into()),
+                    nth: Some(2),
+                    frame: None,
+                },
             ],
             "a form leaves for another site only when the caller says so"
         );
@@ -489,6 +502,16 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         assert_eq!(answers[3]["data"]["settled"], true);
         assert_eq!(answers[5]["data"]["entries"], serde_json::json!([]));
         assert_eq!(answers[6]["data"]["next"], 0);
+        // A find answers the ref of what it named, at the top of the answer
+        // where a later step binds it, and the line it matched inside it.
+        assert_eq!(
+            (
+                answers[11]["element"].as_str(),
+                answers[11]["role"].as_str()
+            ),
+            (Some("d1e1"), Some("button")),
+        );
+        assert_eq!(answers[11]["data"]["element"], "d1e1");
     }
 
     // Phase `a_page_picture_is_the_actions_own_content`: what a page shows

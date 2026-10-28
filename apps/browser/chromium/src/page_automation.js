@@ -1041,6 +1041,189 @@ globalThis.__tiloPage ||= (() => {
     return {lines, cut, frames: frames()};
   }
 
+  // What the page shows that an agent can act on, as the outline prints it:
+  // the same role words, the same names, the same order, so a caller who read
+  // a line names the element back by what it says. The walk keeps the places
+  // a line sits under — a named dialog, form or group, a table with a caption
+  // — so a box is found by the words its own line is printed beneath. One
+  // walk, so a find stays a bounded read of the page whatever the page does.
+  const MAX_FIND_CANDIDATES = 40000, MAX_FIND_NEAR = 20, MAX_FIND_AMBIGUOUS = 12;
+  // A box the outline names, and what a line printed inside it sits under:
+  // the named ones print their name, the rest a word for what they hold.
+  const FIND_NAMED = new Set(['dialog', 'alertdialog', 'form', 'group', 'table', 'region']);
+
+  // The kind the outline lists an element under, read as the outline reads
+  // it: the role its element carries, a drag source, a thing a pointer asks
+  // for, and what a bare element with a click is.
+  function kindOf(element, visible, inside, pointer) {
+    if (!visible) return '';
+    let kind = role(element);
+    if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
+    const tag = element.localName;
+    if (!kind && visible && !inside && tag !== 'body' && tag !== 'html' && tag !== 'label' &&
+        (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
+         (getComputedStyle(element).cursor === 'pointer' && !pointer))) kind = 'clickable';
+    if (!kind && tag === 'body') return '';
+    return kind;
+  }
+
+  function childrenOf(element) {
+    if (element.shadowRoot) return element.shadowRoot.childNodes;
+    const assigned = element.localName === 'slot' ? element.assignedNodes({flatten: true}) : null;
+    return assigned && assigned.length ? assigned : element.childNodes;
+  }
+
+  // Every element of this document the outline prints with a ref, in the
+  // outline's own order, each with the kind, the name, the places its line
+  // may sit under, and the line itself.
+  function findCandidates() {
+    const found = [];
+    let visited = 0;
+    const under = (places, text) => `${places}${text}${text.endsWith(':') ? ' ' : ': '}`;
+    const visit = (element, inside, places, pointer) => {
+      if (++visited > MAX_FIND_CANDIDATES) return;
+      const tag = element.localName;
+      if (SKIP.has(tag) || element.getAttribute('aria-hidden') === 'true') return;
+      if (tag === 'input' && type(element) === 'hidden') return;
+      if (element.checkVisibility && !element.checkVisibility()) return;
+      const style = getComputedStyle(element);
+      const visible = style.visibility === 'visible';
+      const kind = kindOf(element, visible, inside, pointer || style.cursor === 'pointer');
+      // A frame is its own document, read with the frame's id.
+      if (kind === 'iframe') return;
+      const inner = inside || (tag === 'label' && !!element.control);
+      if (INTERACTIVE.has(kind) || kind === 'heading') {
+        const label = name(element, kind, {naming: kind === 'hint'}) || '';
+        found.push({element, kind, label, places, line: `${places}${lineOf(label, kind, element)}`});
+        // A select prints its own line and its options beneath it.
+        if (tag === 'select') for (const option of element.options) {
+          const optionName = clean(option.label, MAX_NAME) || '';
+          found.push({element: option, kind: 'option', label: optionName, places: under(places, `combobox ${quote(label)}`),
+            line: `${under(places, `combobox ${quote(label)}`)}option ${quote(optionName)}`});
+        }
+        // The line's own name carries what is inside it, so what is found
+        // within is found under the line it is printed beneath.
+        if (kind === 'textbox' || kind === 'searchbox') return;
+        for (const child of childrenOf(element)) if (child.nodeType === 1)
+          visit(child, true, under(places, `${kind}${label ? ' ' + quote(label) : ''}`), style.cursor === 'pointer');
+        return;
+      }
+      if (CONTAINERS.has(kind)) {
+        const label = FIND_NAMED.has(kind) ? name(element, kind) : '';
+        const bar = `${kind}${label ? ' ' + quote(label) : ''}`;
+        for (const child of childrenOf(element)) if (child.nodeType === 1)
+          visit(child, inner, label ? under(places, bar) : places, pointer || style.cursor === 'pointer');
+        return;
+      }
+      for (const child of childrenOf(element)) if (child.nodeType === 1)
+        visit(child, inner, places, pointer || style.cursor === 'pointer');
+    };
+    if (document.body) visit(document.body, false, '', false);
+    return found;
+  }
+
+  // A line as the outline prints it, without the depth it is printed at: the
+  // words a caller read, which is what a find answers with.
+  function lineOf(label, kind, element) {
+    const parts = [kind];
+    if (label) parts.push(quote(label));
+    if (INTERACTIVE.has(kind)) parts.push(`[ref=${refOf(element)}]`);
+    parts.push(...details(element, kind));
+    if (kind === 'hint') parts.push('(a hover opens more)');
+    if (kind === 'draggable') parts.push('(draggable)');
+    return parts.join(' ');
+  }
+
+  // How a name matches what a line prints: as the whole name exactly, then
+  // in any letter case, then as a part of it.
+  const MATCHES = [
+    (label, wanted) => label === wanted,
+    (label, wanted) => label.toLowerCase() === wanted.toLowerCase(),
+    (label, wanted) => label.toLowerCase().includes(wanted.toLowerCase())
+  ];
+  const LOOSE = ['', ' in any letter case', ' by part of its name'];
+
+  function described(role, name) {
+    return [role ? `role ${quote(role)}` : '', name ? `name ${quote(name)}` : '']
+      .filter(Boolean).join(' and ');
+  }
+
+  // The distance about, so the nearest names are listed first: a letter
+  // slipped in a word is near, and so is a name sharing its start, which is
+  // how a person hears two names as alike.
+  function closeness(a, b) {
+    const left = a.toLowerCase(), right = b.toLowerCase();
+    const row = Array.from({length: right.length + 1}, (_, index) => index);
+    for (let i = 1; i <= left.length; i++) {
+      let corner = row[0];
+      row[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        const held = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, corner + (left[i - 1] === right[j - 1] ? 0 : 1));
+        corner = held;
+      }
+    }
+    let shared = 0;
+    while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
+    return row[right.length] - shared / (Math.max(left.length, right.length) + 1);
+  }
+
+  // What the page holds, so a caller who described nothing it has is told
+  // what it nearly said instead of being sent looking again.
+  function findsNothing(role, name, all) {
+    const asked = described(role, name);
+    if (!all.length)
+      return failure('not_found', `Nothing on the page is ${asked}; the page shows no element an action can act on`);
+    const scored = all.map(candidate => ({candidate, near: name ? closeness(candidate.label, name)
+      : role ? closeness(candidate.kind, role) : 0}));
+    scored.sort((a, b) => a.near - b.near);
+    const nearest = scored.slice(0, MAX_FIND_NEAR).map(({candidate}) => candidate.line);
+    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}`);
+  }
+
+  // The element a stable description names, answered with its ref in this
+  // document as it is now, so a step recorded once plays again after the page
+  // has loaded. Nothing is guessed: several equal matches without a number are
+  // refused and listed, and a description the page does not hold names the
+  // nearest it has.
+  function find(command) {
+    const role = typeof command.role === 'string' && command.role.trim() ? command.role.trim().toLowerCase() : null;
+    const name = typeof command.name === 'string' && command.name.trim() ? command.name.trim() : null;
+    if (!role && !name)
+      throw failure('invalid_request', 'find-page-element needs a role, a name, or both, such as name="Email" or role=button name="Remove"');
+    const nth = typeof command.nth === 'number' ? command.nth : null;
+    const all = findCandidates();
+    const ofRole = role ? all.filter(candidate => candidate.kind === role) : all;
+    const asked = described(role, name);
+    // The whole name first; then in any letter case, then by a part of it,
+    // each only once nothing matched the way before it.
+    for (const step of [0, 1, 2]) {
+      if (!name && step > 0) break;
+      const matches = name ? ofRole.filter(candidate => MATCHES[step](candidate.label, name)) : ofRole;
+      if (!matches.length) continue;
+      const where = matches[0].places ? ` under ${matches[0].places.replace(/: $/, '')}` : '';
+      const loosely = name ? LOOSE[step] : '';
+      if (nth === null && matches.length > 1) {
+        const listed = matches.slice(0, MAX_FIND_AMBIGUOUS)
+          .map((candidate, index) => `(${index + 1}) ${candidate.line}`);
+        const more = matches.length > listed.length ? ` and ${matches.length - listed.length} more` : '';
+        throw failure('ambiguous', `${matches.length} elements are ${asked}${loosely}${where}: ` +
+          `${listed.join('; ')}${more}. Name one by its number, nth`);
+      }
+      const pick = nth === null ? matches[0] : matches[nth - 1];
+      if (!pick)
+        throw failure('not_found', `The page has ${matches.length} element${matches.length === 1 ? '' : 's'} ${asked}${loosely}` +
+          `${where}, so there is no (${nth}); name one from 1 to ${matches.length}`);
+      const ref = refOf(pick.element);
+      const number = nth === null ? 1 : nth;
+      const data = {element: ref, role: pick.kind, name: pick.label, line: pick.line,
+        nth: number, matches: matches.length};
+      return {ok: true, ...data, data,
+        message: `Found ${pick.line}${nth === null ? '' : ` of ${matches.length}`}`};
+    }
+    return findsNothing(role, name, all);
+  }
+
   function clip(rect) {
     const left = Math.max(rect.left, 0), top = Math.max(rect.top, 0);
     const right = Math.min(rect.right, innerWidth), bottom = Math.min(rect.bottom, innerHeight);
@@ -1937,6 +2120,9 @@ globalThis.__tiloPage ||= (() => {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
+          // The ref of the element a stable description names, read from the
+          // page as it is now.
+          case 'find': return find(command);
           // The engine mirrors a hover through the page's CSS only when that
           // CSS opens something on hover; otherwise the browser's own pointer
           // is enough and nothing is applied.
