@@ -2005,6 +2005,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(answer)
     }
+    /// The Tilo app a workspace call launches, when it is one: opening an
+    /// application resource from the workspace. A host application
+    /// (`app.host:<desktop-id>`) is no Tilo peer.
+    fn launched_app(resource: &str, action: &str, workspace: bool) -> Option<String> {
+        resource
+            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+            .filter(|app_id| {
+                workspace
+                    && action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    && !app_id.starts_with("host:")
+            })
+            .map(str::to_owned)
+    }
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
     async fn invoke_one(&self, mut a: OneCall) -> Result<Value, String> {
@@ -2015,16 +2028,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if a.workspace {
             self.seat_for_launch().await;
         }
-        // A host application (`app.host:<desktop-id>`) is no Tilo peer.
-        let launching = a
-            .resource
-            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-            .filter(|app_id| {
-                a.workspace
-                    && a.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-                    && !app_id.starts_with("host:")
-            })
-            .map(str::to_owned);
+        let launching = Self::launched_app(&a.resource, &a.action, a.workspace);
         // The workspace launches the app empty; the path goes to the app's
         // own open action once it runs.
         let path = match launching {

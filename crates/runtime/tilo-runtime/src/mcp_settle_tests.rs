@@ -25,17 +25,27 @@ pub(crate) struct GatedHost {
     waits: Arc<AtomicUsize>,
     /// Every invocation finishes as soon as it starts.
     at_once: bool,
-    /// Refuse an invocation naming no revision as an app built before
-    /// revisionless resolution does: as a moved revision.
-    stale_without_revision: bool,
-    /// Refuse an invocation naming no revision as the broker refuses a
-    /// directory action that asks for confirmation without one.
-    confirmed_needs_revision: bool,
+    /// How an invocation naming no revision is refused, if it is.
+    without_revision: Option<WithoutRevision>,
     /// Take every invocation without ever answering its admission, as a
     /// broker whose admission journal waits on a slow disk.
     admission_unanswered: bool,
-    unanswered: Arc<StdMutex<Vec<Completer<Result<InvocationReceipt, ActionHostError>>>>>,
+    unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
     queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
+}
+
+/// An admission answer the host holds back.
+type AdmissionCompleter = Completer<Result<InvocationReceipt, ActionHostError>>;
+
+/// Why a host refuses an invocation that names no revision.
+#[derive(Clone, Copy)]
+enum WithoutRevision {
+    /// As an app built before revisionless resolution does: as a moved
+    /// revision.
+    Stale,
+    /// As the broker refuses a directory action that asks for confirmation
+    /// without one.
+    NeedsConfirmation,
 }
 
 impl GatedHost {
@@ -92,13 +102,18 @@ impl ActionHost for GatedHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if self.stale_without_revision && request.revision.is_none() {
-            return Pending::ready(Err(ActionHostError::StaleRevision));
-        }
-        if self.confirmed_needs_revision && request.revision.is_none() {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION.into(),
-            }));
+        if request.revision.is_none() {
+            match self.without_revision {
+                Some(WithoutRevision::Stale) => {
+                    return Pending::ready(Err(ActionHostError::StaleRevision));
+                }
+                Some(WithoutRevision::NeedsConfirmation) => {
+                    return Pending::ready(Err(ActionHostError::InvalidRequest {
+                        reason: tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION.into(),
+                    }));
+                }
+                None => {}
+            }
         }
         self.owner.lock().unwrap().replace(caller.clone());
         let answer = self.stub.invoke(caller, request);
@@ -443,7 +458,7 @@ fn an_omitted_revision_reads_no_directory_page_first() {
 fn an_app_that_needs_a_revision_is_given_the_current_one() {
     let host = GatedHost {
         at_once: true,
-        stale_without_revision: true,
+        without_revision: Some(WithoutRevision::Stale),
         ..GatedHost::default()
     };
     let endpoint = gated_endpoint(host.clone());
@@ -737,7 +752,7 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::U
 fn a_confirmed_action_is_given_the_revision_it_is_confirmed_at() {
     let host = GatedHost {
         at_once: true,
-        confirmed_needs_revision: true,
+        without_revision: Some(WithoutRevision::NeedsConfirmation),
         ..GatedHost::default()
     };
     let endpoint = gated_endpoint(host.clone());
