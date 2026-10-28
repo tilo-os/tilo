@@ -753,6 +753,13 @@ fi
 if [ -n "${TILO_DISK_SEED_RAW:-}" ]; then
   disk_args+=(--seed-raw "$TILO_DISK_SEED_RAW")
 fi
+# A build host that copies the disk somewhere else before it is booted (tools/ci/
+# builder-vm-guest.sh) takes the raw disk and skips the qcow2 conversion here (disk-image.sh
+# --raw): $OUTDIR/disk.raw instead of TILO_DISK.
+if [ "${TILO_DISK_RAW:-0}" = 1 ]; then
+  disk_args+=(--raw)
+  TILO_DISK="$OUTDIR/disk.raw"
+fi
 # Release gate only: the /etc half of os/dev/validation-access.sh, written into
 # this disk copy; `vm.sh boot` attaches the signed extension it trusts
 # (TILO_VM_VALIDATION_SYSEXT).
