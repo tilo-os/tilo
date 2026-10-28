@@ -170,3 +170,60 @@ fn a_launch_into_a_workspace_from_before_hosts_starts_once_it_is_placed() {
         started[0].kind
     );
 }
+
+/// An app opened as the session starts, while this device's own host is
+/// still placing its workspace, waits for the room's enrollment to commit
+/// and opens as the device the commit installed: it is not refused for
+/// coming first.
+#[test]
+fn an_opening_asked_for_before_the_enrollment_commits_goes_on_once_it_does() {
+    let (_directory, owner, room, commit) =
+        crate::shell::native_workspace_owner::test_owner_before_enrollment();
+    let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+    assert!(!owner.rooms().contains(&room), "nothing is committed yet");
+    let session = LaunchSession::current();
+    let (opened, opened_now) = std::sync::mpsc::channel();
+    let waiting = {
+        let tree = tree.clone();
+        std::thread::spawn(move || {
+            opened
+                .send(room_hold::committed_device(&session, &tree, room))
+                .expect("the test waits for it");
+        })
+    };
+    assert!(
+        opened_now
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "the opening waits while the room's enrollment has not committed"
+    );
+    commit();
+    let device = opened_now
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the commit wakes the opening")
+        .expect("the opening goes on once the room is enrolled");
+    assert_eq!(
+        Ok(device),
+        owner.with_current(room, |view| Ok(view.device().clone())),
+        "it opens as the device the room is held under"
+    );
+    waiting.join().expect("the opening ends");
+}
+
+/// A room this device holds no enrollment in, and is neither placing,
+/// joining nor enrolling into, will never be enrolled here: an app opened
+/// into it is refused at once, saying so.
+#[test]
+fn an_opening_into_a_room_that_will_never_be_enrolled_is_refused() {
+    let (_directory, owner, _room, _now, _key) =
+        crate::shell::native_workspace_owner::test_enrolled_owner();
+    let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+    let elsewhere = RoomId::new();
+    let refused = room_hold::committed_device(&LaunchSession::current(), &tree, elsewhere)
+        .expect_err("a room never enrolled here is refused");
+    assert!(
+        matches!(&refused, LaunchError::DeviceNotAdmitted { detail }
+            if detail.contains("holds no enrollment in the workspace's room")),
+        "{refused:?}"
+    );
+}
