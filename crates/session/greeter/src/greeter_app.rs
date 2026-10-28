@@ -64,6 +64,7 @@ use ui::widget::{
 };
 
 mod console;
+mod sign_in_comforts;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
@@ -937,19 +938,6 @@ impl GreeterApp {
     #[must_use]
     pub fn with_proxy_slot(mut self, slot: Arc<OnceLock<EventLoopProxy<UserEvent>>>) -> Self {
         self.proxy = slot;
-        self
-    }
-
-    /// Start with the device's screen reader setting, and keep what is
-    /// turned on or off here for the login screens through `changes`.
-    #[must_use]
-    pub fn with_sign_in_comforts(
-        mut self,
-        screen_reader: bool,
-        changes: crate::comforts::Changes,
-    ) -> Self {
-        self.screen_reader = screen_reader;
-        self.sign_in_comforts = Some(changes);
         self
     }
 
@@ -2449,18 +2437,7 @@ impl Widget for GreeterApp {
 
     fn take_accessibility_request(&mut self) -> Option<AccessibilityRequest> {
         let request = self.requests.accessibility.take()?;
-        if let AccessibilityRequest::ScreenReader(on) = request {
-            self.screen_reader = on;
-        }
-        if let Some(changes) = &self.sign_in_comforts {
-            match request {
-                AccessibilityRequest::ScreenReader(on) => changes.set("screen_reader", on),
-                AccessibilityRequest::HighContrast(on) => changes.set("high_contrast", on),
-                AccessibilityRequest::TextScale(scale) => changes.set("text_scale", scale),
-            }
-        }
-        // The toggles show their new state; the App's theme change rebuilds.
-        self.dirty_structure = true;
+        self.keep_accessibility_change(request);
         Some(request)
     }
 
@@ -2473,6 +2450,9 @@ impl Widget for GreeterApp {
         let (state, _root) = ui::doc::document_ref(state.doc(), root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
+            return;
+        }
+        if self.keep_screen_reader_chord(payload) {
             return;
         }
         if payload == crate::output_scale::OUTPUTS_WAKE {
@@ -2641,7 +2621,7 @@ mod tests {
         ]
     }
 
-    fn one_session() -> Vec<Session> {
+    pub(super) fn one_session() -> Vec<Session> {
         vec![test_sessions().remove(0)]
     }
 
