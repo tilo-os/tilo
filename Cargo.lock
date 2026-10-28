@@ -2620,10 +2620,16 @@ dependencies = [
  "fs-protocol",
  "hex",
  "runtime-collab",
+ "runtime-identity",
+ "runtime-portal",
  "serde_json",
+ "tempfile",
  "tilo-actions",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-lock",
+ "tilo-process",
+ "tilo-test-env",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -18669,7 +18675,6 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "ashpd",
- "hex",
  "image",
  "jni 0.21.1",
  "ndk-context",
@@ -18683,13 +18688,13 @@ dependencies = [
  "tilo-model-client",
  "tilo-net",
  "tilo-notify",
+ "tilo-process",
  "tilo-rt",
  "tilo-secrets",
  "tilo-tts",
  "tilo-winit",
  "tokio",
  "tracing",
- "unic-langid",
  "workspace-hack",
  "zbus",
 ]
@@ -19682,6 +19687,7 @@ name = "tilo-process"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "hex",
  "libc",
  "runtime-portal",
  "rustix 1.1.4",
@@ -19690,6 +19696,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "unic-langid",
  "workspace-hack",
 ]
 

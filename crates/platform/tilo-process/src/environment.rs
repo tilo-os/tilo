@@ -1,17 +1,21 @@
 //! Host inputs — who the process is, where its files live, and how its user
 //! asked to be served.
 //!
-//! Toolkit code takes these from [`environment`] (or from constructor
-//! parameters such as `ui::record::RecordSet::open_in`) rather than
-//! reading the process environment itself. Only the native runner derives
-//! them from the process — environment variables, the settings file — in
-//! `ui::native::services::process_environment`. Another host installs its
-//! own with [`install_environment`].
+//! Toolkit and collab-client code take these from [`environment`] (or from
+//! constructor parameters such as `ui::record::RecordSet::open_in`) rather
+//! than reading the process environment itself. Only the native fallback
+//! derives them from the process ([`process_environment`], feature
+//! `native`). Another host installs its own with [`install_environment`].
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use unic_langid::LanguageIdentifier;
+
+#[cfg(feature = "native")]
+mod native;
+#[cfg(feature = "native")]
+pub use native::process_environment;
 
 /// Inert, app-owned resume projection sent only to the local shell.
 ///
@@ -255,7 +259,7 @@ pub fn environment() -> Arc<HostEnvironment> {
         return installed;
     }
     #[cfg(feature = "native")]
-    return Arc::new(crate::native::services::process_environment());
+    return Arc::new(process_environment());
     #[cfg(not(feature = "native"))]
     Arc::new(HostEnvironment::default())
 }

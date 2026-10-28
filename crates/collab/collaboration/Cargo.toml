@@ -8,11 +8,22 @@ repository.workspace = true
 homepage.workspace = true
 description = "The collab client without the toolkit: what a process that commits to a Tilo room links, and the toolkit (`ui::collaboration`) builds on."
 
+[features]
+default = []
+# The local session runtime: the identity the launcher bound, read through
+# the identity client.
+local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
+
 [dependencies]
 collab-types = { version = "0.1.0", path = "../collab-types" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # The local document action report is the broker SDK's vocabulary.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
+runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
+# The host inputs (who this process is, where its files live), as the toolkit
+# reads them, without the toolkit's host services.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # A file's durable record id is the `user.tilo.record-id` attribute
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.
@@ -24,6 +35,13 @@ hex.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
+# The identity tests read the configuration directory the process names.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 
 [lints]
 workspace = true
