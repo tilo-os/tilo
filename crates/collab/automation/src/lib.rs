@@ -79,8 +79,9 @@ pub use scenario::{
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
-    FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
-    StepPolicy, TimeOfDay, TriggerSpec, Weekday,
+    FOCUS_SCHEDULE, FocusTransition, SAVED_SHORTCUT_DOMAIN, SavedProof, Schedule, ScheduleClaim,
+    Selector, Shortcut, ShortcutChange, Step, StepKind, StepPolicy, TimeOfDay, TriggerSpec,
+    Weekday,
 };
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";

@@ -731,17 +731,47 @@ fn launch_resolved_installed_app(
     if reopen_focused_local_card(chrome, package_id) {
         return Ok(());
     }
-    // Asked for again, an app opens another window of it beside the focused
-    // one; switching to a window it already has is that window's own row.
-    // The device's control panel is the exception: one window per machine,
-    // so opening it again goes to that window.
-    let already = (package_id == SETTINGS_PACKAGE_ID)
-        .then(|| {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            crate::shell::peer_windows::opened_here(&tree, package_id)
-        })
-        .flatten();
+    // If the room already has this app open, focus it rather than starting
+    // a second copy. See `peer_windows::opened_for_the_room`. A Terminal
+    // asked for into a group (the tab strip's "+", Super+T) is the explicit
+    // request for another shell, so it always launches; so does an app whose
+    // process here opens more windows: asked for again, it opens one.
+    let wants_another_terminal = package_id == crate::shell::window_actions::TERMINAL_PACKAGE
+        && matches!(chrome.borrow().open_target, OpenTarget::Here(_));
+    let opens_another_window = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|workspace| launcher::opens_more_windows(package_id, workspace.room()));
+    let already = if wants_another_terminal || opens_another_window {
+        None
+    } else {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let salt = tree.local_salt();
+        tree.desktop
+            .active_workspace()
+            .and_then(|ws| {
+                // An app runs once per workspace on this device: its own
+                // window here, however it opened (the person, a join's
+                // arrival, a restore), is the one to return to. A second
+                // process could not own the workspace's records, which the
+                // first holds.
+                crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .or_else(|| {
+                        crate::shell::peer_windows::opened_locally_in_workspace(
+                            ws, package_id, salt,
+                        )
+                    })
+                    .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+            })
+            .or_else(|| {
+                (package_id == SETTINGS_PACKAGE_ID)
+                    .then(|| crate::shell::peer_windows::opened_here(&tree, package_id))
+                    .flatten()
+            })
+    };
     if let Some((ws_id, strip, group, tab)) = already {
         chrome.borrow_mut().select_tab(ws_id, strip, group, tab);
         return Ok(());
@@ -779,10 +809,10 @@ fn launch_resolved_installed_app(
     // the capability list now, so the grant has to be in that copy.
     let launched = {
         let st = chrome.borrow();
-        let mut tree = st.tree_mut();
+        let tree = st.tree();
         // The workspace the place was held in: for a personal app the
         // personal workspace, whichever was shown.
-        let native_room = tree
+        let room = tree
             .desktop
             .workspaces
             .iter()
@@ -794,20 +824,16 @@ fn launch_resolved_installed_app(
                     .any(|group| group.tabs.iter().any(|tab| tab.id == held))
             })
             .or_else(|| tree.desktop.active_workspace())
-            .map(crate::shell::state::Workspace::room)
-            .filter(|room| tree.requires_native_owner(*room));
-        if let Some(room) = native_room {
-            drop(tree);
-            Some(launcher::queue_native_authoring_launch(
+            .map(crate::shell::state::Workspace::room);
+        drop(tree);
+        room.map(|room| {
+            launcher::queue_native_authoring_launch(
                 app.clone(),
                 st.tree_handle(),
                 room,
                 st.native_app_opening.clone(),
-            ))
-        } else {
-            tree.workspace_after_opening_app(package_id)
-                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
-        }
+            )
+        })
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
@@ -1270,87 +1296,70 @@ mod tests {
         }
     }
 
-    /// Notes has a window open and the person searches for Notes and picks
-    /// the app's row: a second Notes window opens beside the focused one.
-    /// Switching to the open window is that window's own row.
+    /// An app this device already runs in the workspace, however it opened
+    /// (a join's arrival opens Chat), is focused when opened again, never
+    /// started a second time beside it.
     #[test]
-    #[serial_test::serial]
-    fn picking_an_open_apps_row_opens_another_window_of_it_beside_the_focused_one() {
+    fn opening_an_app_running_here_focuses_it_without_another_record_writer() {
+        for (package, name) in [("so.tilo.terminal", "Terminal"), ("so.tilo.chat", "Chat")] {
+            focuses_the_running_window(package, name);
+        }
+    }
+
+    fn focuses_the_running_window(package: &str, name: &str) {
         use crate::shell::state::{
             Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
             next_id,
         };
-        // The Terminal too, outside a group's "+": a Terminal asked for is
-        // another shell.
-        for (package, name) in [("so.tilo.notes", "Notes"), ("so.tilo.terminal", "Terminal")] {
-            let tab_id = next_id();
-            let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
-            let mut strip = Strip::new(StripId::from(next_id()), "Main");
-            let strip_id = strip.id;
-            let group_id = next_id();
-            strip.window_groups.push(WindowGroup {
-                id: group_id,
-                tabs: vec![Tab {
-                    id: tab_id,
-                    title: name.into(),
-                    tile: TileContent::Foreign {
-                        app_id: package.into(),
-                        surface_id: 7,
-                    },
-                    app_title: None,
-                }],
-                active_tab: tab_id,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-            workspace.strips.push(strip);
-            let mut tree = WorkspaceTree::default();
-            tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
-            tree.desktop.active = workspace.id;
-            tree.desktop.active_strip.insert(workspace.id, strip_id);
-            tree.desktop.workspaces = vec![workspace];
-            tree.desktop.active_group.insert(strip_id, group_id);
-            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
-            let chrome = ChromeState::new_with_handle(handle.clone());
-            let rows = ApplicationsProvider::new()
-                .results_for(&name.to_lowercase(), vec![app(package, name)]);
-            let row = rows.first().expect("the installed app's row");
-            let mut doc = AutoCommit::new();
-            let _ = (row.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            );
-            let opening = catalogue::take_pending_launch(package);
-            let groups: Vec<(crate::shell::state::GroupId, usize)> =
-                handle.read().desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .iter()
-                    .map(|group| (group.id, group.tabs.len()))
-                    .collect();
-            launcher::clear_pending_placements();
-
-            assert!(
-                opening,
-                "picking {name}'s row starts another window of it, not a switch to the open one"
-            );
-            assert_eq!(
-                groups.len(),
-                2,
-                "two {name} windows: the open one and the new one: {groups:?}"
-            );
-            assert_eq!(
-                groups[0],
-                (group_id, 1),
-                "the open window keeps its place and its one tab: {groups:?}"
-            );
-            assert_eq!(
-                groups[1].1, 1,
-                "the new window is a window of its own: {groups:?}"
-            );
-        }
+        let tab_id = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        let group_id = next_id();
+        strip.window_groups.push(WindowGroup {
+            id: group_id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: name.into(),
+                tile: TileContent::Foreign {
+                    app_id: package.into(),
+                    surface_id: 7,
+                },
+                app_title: None,
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let provider = ApplicationsProvider::new();
+        let rows = provider.results_for(&name.to_lowercase(), vec![app(package, name)]);
+        let row = rows.first().expect("installed app's action");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap_or_else(|error| panic!("Open must focus the running {name}: {error:?}"));
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "focus must not queue a second launcher or opening notice"
+        );
+        assert_eq!(
+            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
     }
 
     /// The group's "+" asks for a tab in that group: another Terminal opens
@@ -1363,7 +1372,7 @@ mod tests {
             next_id,
         };
         let tab_id = next_id();
-        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
         let mut strip = Strip::new(StripId::from(next_id()), "Main");
         let group_id = next_id();
         strip.window_groups.push(WindowGroup {
@@ -1382,12 +1391,21 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         });
-        workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        // Apps open in a room a host holds and this device's native owner
+        // entered: the workspace's room is placed on this device's host.
+        let _hosted = crate::shell::test_support::host_active_room(&handle);
+        handle
+            .write()
+            .desktop
+            .active_workspace_mut()
+            .expect("the workspace")
+            .strips
+            .push(strip);
         let chrome = ChromeState::new_with_handle(handle);
         let rows = ApplicationsProvider::new()
             .results_for("terminal", vec![app("so.tilo.terminal", "Terminal")]);
@@ -1438,7 +1456,7 @@ mod tests {
         });
         workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         tree.remember_local_app_record(tab, 8183);

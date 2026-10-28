@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
+use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::{CheckpointPrefixRecovery, RelayConfig, ReplicationIntent, WorkspaceBinding};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::workload::Fleet;
@@ -234,20 +234,10 @@ mod affinity {
 async fn serve_relay() -> anyhow::Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let setup: Setup = serde_json::from_str(&stdin.next_line().await?.context("no setup")?)?;
-    let mut cfg = RelayConfig {
+    let cfg = RelayConfig {
         state_root: setup.state_root.clone(),
         ..RelayConfig::default()
     };
-    for (id, _) in &setup.rooms {
-        cfg.workspaces.push(WorkspaceBinding {
-            id: *id,
-            pin: true,
-            replication: ReplicationIntent::FullWorkspace,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
-        });
-    }
     let identity = RelayIdentity {
         user_public_key: setup.user_public_key,
         device_signing_key: ed25519_dalek::SigningKey::from_bytes(&setup.relay_secret_key),
@@ -264,8 +254,18 @@ async fn serve_relay() -> anyhow::Result<()> {
     )
     .await?;
     for (id, members) in setup.rooms {
+        // The rooms are the relay owner's; their governor admits exactly
+        // the load's devices.
         relay
-            .set_workspace_membership(id, true, members, setup.state_root.clone())
+            .replace_governed_workspace_access(
+                id,
+                true,
+                tilo_peer_state::GovernedAccess {
+                    member_devices: members,
+                    member_user_roots: vec![setup.user_public_key],
+                },
+                setup.state_root.clone(),
+            )
             .await?;
     }
     say(&Ready {

@@ -241,10 +241,13 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
         for id in [71, 72] {
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     id,
                     true,
-                    vec![cert.device_public_key],
+                    tilo_peer_state::GovernedAccess {
+                        member_user_roots: vec![relay.own_user_public_key()],
+                        member_devices: vec![cert.device_public_key],
+                    },
                     state.path().into(),
                 )
                 .await
@@ -315,7 +318,15 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
 
     // A later observation must still replace a previously allowed decision.
     relay
-        .set_workspace_membership(72, true, vec![], state.path().into())
+        .replace_governed_workspace_access(
+            72,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_user_roots: vec![relay.own_user_public_key()],
+                member_devices: vec![],
+            },
+            state.path().into(),
+        )
         .await
         .unwrap();
     grants.observe(&sessions).await;
@@ -382,10 +393,13 @@ async fn live_grants_follow_announced_changes() {
         .unwrap();
         for id in [81, 82] {
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     id,
                     true,
-                    vec![cert.device_public_key],
+                    tilo_peer_state::GovernedAccess {
+                        member_user_roots: vec![relay.own_user_public_key()],
+                        member_devices: vec![cert.device_public_key],
+                    },
                     state.path().into(),
                 )
                 .await
@@ -439,7 +453,15 @@ async fn live_grants_follow_announced_changes() {
     // Removal announces itself; the observer runs well before its old 50 ms
     // tick plus the carrier's 100 ms recheck.
     relay
-        .set_workspace_membership(81, true, vec![], state.path().into())
+        .replace_governed_workspace_access(
+            81,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_user_roots: vec![relay.own_user_public_key()],
+                member_devices: vec![],
+            },
+            state.path().into(),
+        )
         .await
         .unwrap();
     let denied = tokio::time::timeout(Duration::from_millis(150), async {
@@ -487,7 +509,15 @@ async fn expired_cert_gets_no_live_grant() {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+            .replace_governed_workspace_access(
+                91,
+                true,
+                tilo_peer_state::GovernedAccess {
+                    member_user_roots: vec![relay.own_user_public_key()],
+                    member_devices: vec![cert.device_public_key],
+                },
+                state.path().into(),
+            )
             .await
             .unwrap();
         let sessions = Sessions::new(relay.web_context().clone());

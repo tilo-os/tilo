@@ -731,7 +731,6 @@ fn program() -> Shortcut {
         |name: &'static str, ty, about: &'static str| ActionParam::required(name, ty, about);
     Shortcut {
         id: "discord-bridge".into(),
-        step_timeout_secs: None,
         name: "Discord Bridge".into(),
         inputs: vec![
             param("event", ParamType::Object, "What fired"),
@@ -780,10 +779,12 @@ fn program() -> Shortcut {
                 },
             ),
         ],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: triggers(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 

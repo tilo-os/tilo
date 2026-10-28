@@ -17,7 +17,7 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
-use crate::shell::state::{RoomId, UserId, Workspace, WorkspaceTree, person_id_of};
+use crate::shell::state::{RoomId, UserId, Workspace, person_id_of};
 
 /// May the local user invite into the workspace on screen: an invitation
 /// submitted now would be issued here. The one answer every door (the
@@ -29,14 +29,12 @@ pub(crate) fn may_invite_here(state: &ChromeState) -> bool {
 /// How this device may issue an invitation into one workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InviteRoute {
-    /// The room is governed by a relay of this device's person: that relay
-    /// issues the invitation.
-    Relay,
-    /// This device governs a room no relay holds yet: it shares the room on
-    /// its person's home relay, which then issues the invitation.
-    ShareOnRelay,
-    /// The actor may invite, but another person's device governs the room,
-    /// and only that device can sign an invitation it will honour.
+    /// The room's host issues the invitation, at this person's request:
+    /// a relay of theirs, or this device's own host for a room placed here.
+    /// Either way it is the host's INVITE governance action.
+    Host,
+    /// The actor may invite, but another person governs the room, and only
+    /// its host signs an invitation it will honour.
     ViaGovernor,
     /// No invitation can be issued from here.
     Refused(InviteRefusal),
@@ -47,8 +45,8 @@ pub(crate) enum InviteRoute {
 pub(crate) enum InviteRefusal {
     /// The capability policy does not grant the actor `Invite`.
     NotPermitted,
-    /// The room is relay-governed but its admitted state is not available on
-    /// this device yet, so nobody here can tell who governs it.
+    /// The room's admitted state is not on this device yet (it is still
+    /// being placed or joined), so nobody here can tell who governs it.
     AuthorityUnavailable,
 }
 
@@ -56,14 +54,14 @@ impl InviteRoute {
     /// Whether the invite composer should be offered: only when submitting it
     /// can produce an invitation.
     pub(crate) const fn issues_here(self) -> bool {
-        matches!(self, Self::Relay | Self::ShareOnRelay)
+        matches!(self, Self::Host)
     }
 
     /// The error the issuer answers with when it cannot issue, `None` when it
     /// can.
     pub(crate) const fn refusal(self) -> Option<&'static str> {
         match self {
-            Self::Relay | Self::ShareOnRelay => None,
+            Self::Host => None,
             Self::ViaGovernor => Some(
                 "only the governing workspace administrator can create invitations here; \
                  ask the workspace owner to invite this person",
@@ -108,17 +106,15 @@ pub(crate) fn governing_relay(
 }
 
 /// Decide whether the person this device acts as in `workspace`'s room,
-/// `local_user`, may invite into it, and through which authority, as `tree`
-/// knows the room.
+/// `local_user`, may invite into it, and through which authority.
 ///
 /// `native_governor` is who governs the room's admitted native state, when
 /// this device holds it (read by [`native_governor`] outside the
 /// tree's lock). The room is this person's own when that root is the
 /// identity selected for this room, which may be a workspace-specific
 /// identity rather than the device's default person: the identity
-/// `ShellNetwork::administered_room` then asks the relay as.
+/// `ShellNetwork::administered_room` then asks the room's host as.
 pub(crate) fn may_issue_invitation(
-    tree: &WorkspaceTree,
     workspace: &Workspace,
     local_user: &UserId,
     native_governor: Option<Governor>,
@@ -131,21 +127,17 @@ pub(crate) fn may_issue_invitation(
     if !permitted {
         return InviteRoute::Refused(InviteRefusal::NotPermitted);
     }
-    let room = workspace.room();
     match native_governor {
         Some(governor) if person_id_of(governor.person).as_ref() == Some(local_user) => {
-            InviteRoute::Relay
+            InviteRoute::Host
         }
-        // A relay governs the room: it issues invitations for every member
-        // its policy lets invite, and decides that itself.
-        Some(governor) if governor.relay => InviteRoute::Relay,
-        None if tree.requires_native_owner(room) => {
-            InviteRoute::Refused(InviteRefusal::AuthorityUnavailable)
-        }
-        None if tree.governs_room(room) => InviteRoute::ShareOnRelay,
-        // Another person's relay governs the room, or another device the
-        // self-governed one.
-        Some(_) | None => InviteRoute::ViaGovernor,
+        // A relay hosts the room: it issues invitations for every member its
+        // policy lets invite, and decides that itself.
+        Some(governor) if governor.relay => InviteRoute::Host,
+        // Another person's own device hosts the room.
+        Some(_) => InviteRoute::ViaGovernor,
+        // Not held here yet: placed or joined, its host is not reached yet.
+        None => InviteRoute::Refused(InviteRefusal::AuthorityUnavailable),
     }
 }
 
@@ -187,7 +179,7 @@ pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
         .desktop
         .active_workspace()
         .filter(|workspace| workspace.id == local && workspace.room() == room)
-        .map(|workspace| may_issue_invitation(&tree, workspace, &local_user, governor));
+        .map(|workspace| may_issue_invitation(workspace, &local_user, governor));
     drop(tree);
     route
 }
@@ -214,13 +206,13 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A person who governs a relay room under a workspace-specific identity
-    /// issues through that relay, whatever the device's default person is:
+    /// A person who governs a hosted room under a workspace-specific identity
+    /// issues through its host, whatever the device's default person is:
     /// the policy compares the governor with the identity this room selects,
-    /// the one the relay request is signed with, not with `local_person`.
+    /// the one the host request is signed with, not with `local_person`.
     /// Another person who merely holds an `Invite` grant is sent to them.
     #[test]
-    fn a_workspace_identity_that_governs_the_relay_room_issues_through_it() {
+    fn a_workspace_identity_that_governs_the_hosted_room_issues_through_its_host() {
         let (_directory, owner, room, _now, _key) = test_enrolled_owner();
         let governor = native_governor(Some(owner.clone()), room).expect("admitted governor");
         let workspace_identity = person_id_of(governor.person).expect("person id");
@@ -252,18 +244,18 @@ pub(crate) mod tests {
             .find(|workspace| workspace.room() == room)
             .expect("the enrolled room's workspace");
         let routes = [&workspace_identity, &member]
-            .map(|person| may_issue_invitation(&tree, workspace, person, Some(governor)));
+            .map(|person| may_issue_invitation(workspace, person, Some(governor)));
         drop(tree);
 
         assert_eq!(
             routes,
-            [InviteRoute::Relay, InviteRoute::ViaGovernor],
-            "the governing workspace identity issues through its relay; a \
-             delegated inviter is sent to the governor"
+            [InviteRoute::Host, InviteRoute::ViaGovernor],
+            "the governing workspace identity issues through the room's host; \
+             a delegated inviter is sent to the governor"
         );
     }
 
-    /// A room a relay governs, such as a site's community workspace taking
+    /// A room a relay hosts, such as a site's community workspace taking
     /// people by invitation: a member the room's policy lets invite asks the
     /// relay, which issues the invitation; a member it does not is refused.
     #[test]
@@ -303,22 +295,22 @@ pub(crate) mod tests {
             .iter()
             .find(|workspace| workspace.room() == room)
             .expect("the enrolled room's workspace");
-        let routes = [&inviter, &member]
-            .map(|person| may_issue_invitation(&tree, workspace, person, Some(relay)));
+        let routes =
+            [&inviter, &member].map(|person| may_issue_invitation(workspace, person, Some(relay)));
         let desktop = Governor {
             relay: false,
             ..relay
         };
-        let via_desktop = may_issue_invitation(&tree, workspace, &inviter, Some(desktop));
+        let via_desktop = may_issue_invitation(workspace, &inviter, Some(desktop));
         drop(tree);
 
         assert_eq!(
             routes,
             [
-                InviteRoute::Relay,
+                InviteRoute::Host,
                 InviteRoute::Refused(InviteRefusal::NotPermitted)
             ],
-            "the relay issues for a member its policy lets invite"
+            "the relay hosting the room issues for a member its policy lets invite"
         );
         assert_eq!(
             via_desktop,

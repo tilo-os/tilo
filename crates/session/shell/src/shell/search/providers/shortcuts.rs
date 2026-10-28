@@ -420,6 +420,7 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: Some(owner.clone()),
+            saved_proof: None,
         };
         let mut plain = on_file.clone();
         plain.id = "tidy".into();

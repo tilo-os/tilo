@@ -54,8 +54,14 @@ mod inbound_bridge;
 use inbound_bridge::InboundBridge;
 #[path = "inbound_document.rs"]
 mod inbound_document;
+#[path = "broker_key_fetch.rs"]
+mod key_fetch;
 #[path = "broker_key_schedule.rs"]
 mod key_schedule;
+use key_fetch::{
+    FetchedKeys, KeyFetch, KeyQuery, answered_keys, certified_channel_keys, endpoint_channel_keys,
+    update_route_keys,
+};
 use key_schedule::{KeyRound, KeySchedule, KeySignal};
 // The managed sender itself is Unix-only (host_worker), and so is its transport.
 #[cfg(unix)]
@@ -1822,8 +1828,13 @@ impl DocumentReassembly {
 /// durable identity and requested route; an old handoff must not be replayed.
 pub struct HostSessionConnector {
     connect: Box<dyn FnOnce(RouteSpec) -> HostSessionFuture + Send>,
+    /// What the connect waits for first: the host's word that the services
+    /// it reaches are up, or will not come ([`Self::once_ready`]).
+    ready: Option<Box<dyn FnOnce() -> HostReadyFuture + Send>>,
     identity_exchange_timeout: Duration,
 }
+
+type HostReadyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 trait HostAsyncIo: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
@@ -1875,6 +1886,7 @@ impl HostSessionConnector {
                     ))
                 })
             }),
+            ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
     }
@@ -1903,8 +1915,29 @@ impl HostSessionConnector {
                     ))
                 })
             }),
+            ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
+    }
+}
+
+impl HostSessionConnector {
+    /// Connect only once `ready` resolves: when the host says the services
+    /// this connection reaches are listening, or that their start is over.
+    /// A host showing an app while it is still starting those services
+    /// (a session restoring its tabs before it binds its broker) is not
+    /// wedged, so this wait is not under the bound on the connect itself;
+    /// connecting before then finds no socket and leaves the app offline.
+    /// `ready` must resolve once the host's start is over, whatever its
+    /// outcome.
+    #[must_use]
+    pub fn once_ready<F, Fut>(mut self, ready: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        self.ready = Some(Box::new(move || Box::pin(ready()) as HostReadyFuture));
+        self
     }
 }
 
@@ -1918,20 +1951,26 @@ enum SdkConnectSource {
 }
 
 impl SdkConnectSource {
-    fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
+    fn build_client(
+        self,
+    ) -> Result<
+        (runtime_collab::CollabClient, runtime_portal::ConnectionEnd),
+        runtime_portal::NotAvailable,
+    > {
         match self {
             SdkConnectSource::Host(_, _) => Err(runtime_portal::NotAvailable::ConnectionFailed(
                 std::io::Error::other("host session requires worker-side identity admission"),
             )),
-            SdkConnectSource::Env => runtime_collab::try_connect(),
+            SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
                     fd,
                     rpc_twoparty_capnp::Side::Client,
                 )?;
-                let raw: runtime_collab::CollabServiceClient = unix.bootstrap();
-                Ok(runtime_collab::CollabClient::from_raw(raw))
+                let (raw, end): (runtime_collab::CollabServiceClient, _) =
+                    unix.bootstrap_until_closed();
+                Ok((runtime_collab::CollabClient::from_raw(raw), end))
             }
         }
     }
@@ -1967,12 +2006,28 @@ struct SdkJoinIdentity {
     signer: SdkDocumentSigner,
 }
 
+/// Where an endpoint with no identity service asks for its routes' channel
+/// keys, as an identity service answers them: the record's room, its app,
+/// the record, and the key generation the route holds.
+pub type EndpointChannelKeys = std::sync::Arc<
+    dyn Fn(
+            &str,
+            &str,
+            &str,
+            u64,
+        )
+            -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+        + Send
+        + Sync,
+>;
+
 /// Certified identity for a client connecting to an explicit collaboration
 /// endpoint rather than through a launcher-inherited identity service.
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
     device_key: ed25519_dalek::SigningKey,
+    channel_keys: Option<EndpointChannelKeys>,
 }
 
 impl CertifiedEndpointIdentity {
@@ -1980,11 +2035,21 @@ impl CertifiedEndpointIdentity {
         Self {
             presentation,
             device_key,
+            channel_keys: None,
         }
     }
 
+    /// The same identity, encrypting its writes under the channel keys
+    /// `keys` answers, as an endpoint with an identity service does. Without
+    /// them its writes are plaintext, and refused in a room that seals them.
+    #[must_use]
+    pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
+        self.channel_keys = Some(keys);
+        self
+    }
+
     fn document_signer(&self) -> SdkDocumentSigner {
-        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()))
+        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()), self.channel_keys.clone())
     }
 }
 
@@ -2098,7 +2163,8 @@ enum SdkDocumentSigner {
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
     /// still rejects the uncertified join before any op reaches policy.
-    Harness(Box<ed25519_dalek::SigningKey>),
+    /// With channel keys to ask, its routes encrypt as a certified one's do.
+    Harness(Box<ed25519_dalek::SigningKey>, Option<EndpointChannelKeys>),
 }
 
 /// Identity state after the shovel thread has entered its `LocalSet`. The host
@@ -2126,9 +2192,10 @@ impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
 }
 
 fn harness_document_signer() -> SdkDocumentSigner {
-    SdkDocumentSigner::Harness(Box::new(ed25519_dalek::SigningKey::generate(
-        &mut UnwrapErr(SysRng),
-    )))
+    SdkDocumentSigner::Harness(
+        Box::new(ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng))),
+        None,
+    )
 }
 
 #[cfg(unix)]
@@ -2394,6 +2461,41 @@ impl CollaborationManager {
             None,
             "person",
         )
+    }
+
+    /// Hold `route`, a record of `kind` that need not exist yet, over `fd`,
+    /// a connection to the broker its host made itself, joined as the
+    /// certified device `identity` presents: what a host holding a record
+    /// without a window does when it reaches its broker its own way (one of
+    /// several sessions in one process). A route the broker does not take
+    /// leaves the manager offline, as a background connect's does.
+    #[must_use]
+    pub fn for_record_fd_with_identity(
+        fd: RawFd,
+        route: RouteSpec,
+        kind: Option<String>,
+        handle: Option<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Self {
+        match Self::connect_route_kind(
+            SdkConnectSource::Fd(fd),
+            route,
+            kind,
+            handle,
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation.clone(),
+                participant_kind: "person",
+                signer: identity.document_signer(),
+            }),
+            "person",
+        ) {
+            Ok(connected) => Self::from_connected(connected),
+            Err(error) => {
+                let mut manager = Self::offline(error.to_string());
+                manager.sync_expected = true;
+                manager
+            }
+        }
     }
 
     /// Connect to an explicit endpoint with a certified device presentation.
@@ -3442,6 +3544,9 @@ fn run_shovel(
             SdkConnectSource::Host(connector, route) => {
                 let cluster_id = route.cluster_id;
                 let identity_timeout = connector.identity_exchange_timeout;
+                if let Some(ready) = connector.ready {
+                    ready().await;
+                }
                 match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
                     Ok(Ok((collaboration_stream, identity_stream, lane))) => {
                         let identity =
@@ -3458,11 +3563,11 @@ fn run_shovel(
                                             collaboration_stream,
                                             capnp_rpc::rpc_twoparty_capnp::Side::Client,
                                         );
-                                        let raw: runtime_collab::CollabServiceClient =
-                                            rpc.bootstrap();
+                                        let (raw, end): (runtime_collab::CollabServiceClient, _) =
+                                            rpc.bootstrap_until_closed();
                                         let client = runtime_collab::CollabClient::from_raw(raw)
                                             .with_optional_descriptors(lane);
-                                        Ok((client, identity))
+                                        Ok(((client, end), identity))
                                     }
                                     Err(error) => Err(error),
                                 }
@@ -3479,9 +3584,9 @@ fn run_shovel(
                     )),
                 }
             }
-            source => source.build_client().and_then(|client| {
+            source => source.build_client().and_then(|connection| {
                 identity
-                    .map(|identity| (client, identity.into()))
+                    .map(|identity| (connection, identity.into()))
                     .ok_or_else(|| {
                         runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
@@ -3490,7 +3595,7 @@ fn run_shovel(
                     })
             }),
         };
-        let (client, identity) = match session {
+        let ((client, connection_end), identity) = match session {
             Ok(session) => session,
             Err(e) => {
                 report_init(&state, &init_tx, InitStatus::Failed(e));
@@ -3503,6 +3608,7 @@ fn run_shovel(
 
         Box::pin(drive_shovel(
             client,
+            connection_end,
             identity,
             outbound_rx,
             media_rx,
@@ -3582,6 +3688,7 @@ fn follow_channel_keys(
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
+    mut connection_end: runtime_portal::ConnectionEnd,
     identity: LocalSdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     media_rx: native_media::Receiver,
@@ -3603,11 +3710,11 @@ async fn drive_shovel(
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
-    // come from the identity service. A harness has no such service, so it
-    // stays plaintext.
+    // come from the identity service. A harness with no such service and no
+    // channel keys of its own stays plaintext.
     let asks_channel_keys = !matches!(
         signer,
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_))
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None))
     );
     // When to ask for keys: see `KeySchedule`. Each encrypted route follows
     // its channel's changes and marks itself on `key_signals`.
@@ -3638,6 +3745,18 @@ async fn drive_shovel(
             && key_schedule.timed(any_route_asking_on_timer(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
+            // The broker hung up: every call on this connection now fails,
+            // and nothing reconnects it (a host retry is a new connector).
+            // Collaboration ends here, once, so the app goes offline instead
+            // of retrying calls that cannot succeed.
+            _ = &mut connection_end => {
+                tracing::warn!(
+                    primary = primary.as_deref().unwrap_or(""),
+                    "collab: the broker closed this app's connection"
+                );
+                inbound_tx.state.fail_closed("broker connection closed");
+                break;
+            }
             Some(signal) = key_signal_rx.recv() => {
                 key_schedule.note(signal);
                 if key_fetch.is_none()
@@ -3789,6 +3908,14 @@ async fn drive_shovel(
                     record_kind.as_deref().unwrap_or(""),
                 )
                 .await;
+                // A read waiting for this route's first read hears that none
+                // is coming.
+                if let Err(error) = &joined {
+                    inbound_tx
+                        .state
+                        .document_reads
+                        .join_failed(&spec.channel_id(), error.clone());
+                }
                 note_route_join(&inbound_tx.state, &spec, joined);
             }
             SdkCommand::ToRoute(spec, request) => {
@@ -4348,13 +4475,29 @@ async fn ensure_sdk_route(
             .bind_private_window(&channel_id, instance)?;
     }
 
+    // A room that seals its records takes every write encrypted under the
+    // record channel's keys, whoever reads the record for the app. A route
+    // whose endpoint has no keys to ask for refuses each write there.
+    let sealed = matches!(
+        channel
+            .committed_document(&runtime_collab::committed_document::Request::Writes)
+            .await,
+        Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
+    );
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
     // therefore stay cleartext end to end.
-    let encrypted = asks_channel_keys && !committed;
+    let encrypted = asks_channel_keys && (sealed || !committed);
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
         super::route_keys::RouteKeys::requested()
+    } else if sealed {
+        tracing::warn!(
+            app = %spec.app_id,
+            room = %spec.cluster_id,
+            "collab: this room seals every write and this connection holds no channel keys; its writes are refused"
+        );
+        super::route_keys::RouteKeys::unsealable()
     } else {
         super::route_keys::RouteKeys::plain()
     }));
@@ -5562,7 +5705,7 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
             key.verifying_key().to_bytes()
         }
         LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
@@ -5646,7 +5789,7 @@ async fn try_send_frame(
                 ));
             }
         },
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
             use ed25519_dalek::Signer as _;
             let signing_bytes = match op.signing_bytes() {
                 Ok(bytes) => bytes,
@@ -5790,114 +5933,18 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => return false,
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+            let query = KeyQuery::of(route, generation);
+            let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
+                .await
+                .into_iter();
+            return fetched
+                .next()
+                .is_some_and(|(_, _, reply)| update_route_keys(route, reply, generation));
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, None)) => return false,
     };
     update_route_keys(route, answered_keys(reply, generation), generation)
-}
-
-/// The keys the identity service answered, or, when it could not answer,
-/// that they are unavailable and the answer was not the channel service's.
-fn answered_keys(
-    reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
-    generation: u64,
-) -> KeysAnswer {
-    match reply {
-        Ok(reply) => KeysAnswer {
-            reply,
-            answered: true,
-        },
-        Err(error) => {
-            tracing::debug!(?error, "collab: identity service refused channel keys");
-            KeysAnswer {
-                reply: runtime_identity::wire::ChannelKeysReply {
-                    access: runtime_identity::wire::ChannelAccess::Unavailable,
-                    generation,
-                    keys: None,
-                },
-                answered: false,
-            }
-        }
-    }
-}
-
-/// One route's answer to a key question.
-struct KeysAnswer {
-    reply: runtime_identity::wire::ChannelKeysReply,
-    /// The channel service answered (rather than the identity service
-    /// refusing or failing): it then tells the route when this answer may
-    /// change, and the endpoint need not ask on a timer.
-    answered: bool,
-}
-
-/// Take the identity service's `reply` for `route`, asked at `generation`.
-/// Returns whether the route's state or keys changed.
-fn update_route_keys(route: &SdkRoute, answer: KeysAnswer, generation: u64) -> bool {
-    let Ok(mut keys) = route.encryption.lock() else {
-        return false;
-    };
-    let state = keys.state();
-    let KeysAnswer { reply, answered } = answer;
-    keys.update(reply.access, reply.generation, reply.keys.as_deref());
-    keys.set_answered(answered);
-    keys.generation() != generation || keys.state() != state
-}
-
-/// One route's question to the identity service, taken off the route so it
-/// can be asked on another thread.
-struct KeyQuery {
-    route: String,
-    workspace_id: String,
-    app_id: String,
-    record_id: String,
-    generation: u64,
-}
-
-impl KeyQuery {
-    fn of(route: &SdkRoute, generation: u64) -> Self {
-        Self {
-            route: route.spec.channel_id(),
-            workspace_id: route.spec.cluster_id.to_string(),
-            app_id: route.spec.app_id.clone(),
-            record_id: route.spec.record.clone().unwrap_or_default(),
-            generation,
-        }
-    }
-}
-
-/// The identity service's answers to one round of key questions: by route,
-/// with the generation each was asked at.
-type FetchedKeys = Vec<(String, u64, KeysAnswer)>;
-
-/// A round of key questions in flight on a blocking thread.
-type KeyFetch = std::pin::Pin<Box<dyn std::future::Future<Output = FetchedKeys>>>;
-
-/// Ask a certified identity service `queries` on a blocking thread: its
-/// socket answers as slowly as the service does, and the shovel thread
-/// carries every route's ops meanwhile.
-async fn certified_channel_keys(
-    identity: std::sync::Arc<dyn SdkCertifiedIdentity>,
-    queries: Vec<KeyQuery>,
-) -> FetchedKeys {
-    tokio::task::spawn_blocking(move || {
-        queries
-            .into_iter()
-            .map(|query| {
-                let reply = identity.channel_keys(
-                    &query.workspace_id,
-                    &query.app_id,
-                    &query.record_id,
-                    query.generation,
-                );
-                (
-                    query.route,
-                    query.generation,
-                    answered_keys(reply, query.generation),
-                )
-            })
-            .collect()
-    })
-    .await
-    .unwrap_or_default()
 }
 
 /// The log target of every round of key questions an endpoint starts: what
@@ -5918,10 +5965,23 @@ async fn refresh_keys(
     inbound_tx: &InboundBridge,
     round: &KeyRound,
 ) -> Option<KeyFetch> {
-    let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
-        tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
-        refresh_all_route_keys(routes, signer, inbound_tx, round).await;
-        return None;
+    let keys: EndpointChannelKeys = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            let identity = std::sync::Arc::clone(identity);
+            std::sync::Arc::new(
+                move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
+                    identity.channel_keys(workspace_id, app_id, record_id, generation)
+                },
+            )
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+            std::sync::Arc::clone(keys)
+        }
+        _ => {
+            tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
+            refresh_all_route_keys(routes, signer, inbound_tx, round).await;
+            return None;
+        }
     };
     let queries: Vec<KeyQuery> = routes
         .iter()
@@ -5940,10 +6000,7 @@ async fn refresh_keys(
         routes = queries.len(),
         "collab: asking the identity service for channel keys"
     );
-    Some(Box::pin(certified_channel_keys(
-        std::sync::Arc::clone(identity),
-        queries,
-    )))
+    Some(Box::pin(endpoint_channel_keys(keys, queries)))
 }
 
 /// Take a finished round's answers, then deliver what waited on them.

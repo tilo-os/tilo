@@ -38,6 +38,11 @@ pub enum WindowMenuAction {
     EqualizeWidths,
     /// A new tab of the same app, beside this one.
     NewTab,
+    /// Share the window with the people of its workspace, or stop: only a
+    /// window this device runs, in a workspace where each person lays out
+    /// their own windows ([`WindowMenuFacts::sharing`]). The same request
+    /// `tab.share` / `tab.unshare` make.
+    ShareWindow,
     /// Name the tab in place, in its pill: only a host (non-Tilo) window's
     /// tab, whose title is the window's own rather than an app's resource.
     RenameTab,
@@ -85,6 +90,7 @@ impl WindowMenuAction {
             }
             Self::EqualizeWidths => "tabmenu:width:equal".into(),
             Self::NewTab => "tabmenu:new-tab".into(),
+            Self::ShareWindow => "tabmenu:share".into(),
             Self::RenameTab => "tabmenu:rename".into(),
             Self::SplitRight => "tabmenu:split-right".into(),
             Self::MoveToNewGroup => "tabmenu:new-group".into(),
@@ -138,6 +144,7 @@ impl WindowMenuAction {
             Self::FullScreen,
             Self::Maximize,
             Self::NewTab,
+            Self::ShareWindow,
             Self::RenameTab,
             Self::SplitRight,
             Self::MoveToNewGroup,
@@ -176,6 +183,19 @@ pub struct WindowMenuFacts {
     pub renamable: bool,
     /// The window asked for the person and has not had them yet.
     pub attention: bool,
+    /// Whether the window can be shared with its workspace's people, and
+    /// whether it is: `None` for a window that is not this device's to
+    /// share, or in a workspace whose layout shares every window already.
+    pub sharing: Option<WindowSharing>,
+}
+
+/// A window this device can share with its workspace's people.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowSharing {
+    /// The workspace's name.
+    pub place: String,
+    /// Whether it is shared now.
+    pub shared: bool,
 }
 
 /// One row the menu offers.
@@ -363,7 +383,8 @@ fn width_row() -> WindowMenuRow {
 ///
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
 /// 2. Move to strip, Move to workspace and Move to display, each a nested
-///    menu of places, and Width;
+///    menu of places, and Width, then Share with the workspace (or Stop
+///    sharing) for a window this device can share there;
 /// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
 ///    Split right and Move to new group;
 /// 4. Close tab, for a tabbed window, then Close window;
@@ -385,6 +406,25 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
     rows.extend(extent_rows(facts.extent, config));
     rows.extend(move_rows(facts));
     rows.push(width_row());
+    if let Some(sharing) = &facts.sharing {
+        rows.push(entry(
+            WindowMenuAction::ShareWindow,
+            if sharing.shared {
+                t("shell-window-menu-stop-sharing")
+            } else {
+                t_args(
+                    "shell-window-menu-share",
+                    &[("place", sharing.place.clone().into())],
+                )
+            },
+            if sharing.shared {
+                Icon::EyeOff
+            } else {
+                Icon::ScreenShare
+            },
+            None,
+        ));
+    }
     rows.extend([
         WindowMenuRow::Separator,
         entry(
@@ -577,6 +617,7 @@ mod tests {
             strips: vec![(StripId(2), "Research".into())],
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
             renamable: false,
+            sharing: None,
             attention: false,
             displays: Vec::new(),
         }
@@ -820,6 +861,60 @@ mod tests {
         };
         let rows = window_menu_rows(&state, &config);
         assert_eq!(labels(&rows)[..2], ["Exit full screen", "Restore"]);
+    }
+
+    /// A window this device can share with its workspace offers Share
+    /// with it, after the moves, and reads Stop sharing while shared; any
+    /// other window offers neither.
+    #[test]
+    fn only_a_window_this_device_can_share_offers_share_and_then_stop_sharing() {
+        let config = ShortcutConfig::default();
+        let plain = window_menu_rows(&facts(1), &config);
+        assert!(
+            !plain
+                .iter()
+                .any(|row| row.action() == Some(WindowMenuAction::ShareWindow)),
+            "a window that is not this device's to share offers no share"
+        );
+
+        let shareable = WindowMenuFacts {
+            sharing: Some(WindowSharing {
+                place: "Lounge".into(),
+                shared: false,
+            }),
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&shareable, &config);
+        let shown = labels(&rows);
+        for moves in ["Move to workspace", "Move to display"] {
+            let moved = shown.iter().position(|l| *l == moves).expect(moves);
+            let share = shown
+                .iter()
+                .position(|l| *l == "Share with Lounge")
+                .expect("Share with Lounge");
+            assert!(moved < share, "{shown:?}");
+        }
+        // The last of the moves and widths, then Share.
+        let width = shown.iter().position(|l| *l == "Width").expect("Width");
+        assert_eq!(shown.get(width + 1), Some(&"Share with Lounge"));
+        let shared = WindowMenuFacts {
+            sharing: Some(WindowSharing {
+                place: "Lounge".into(),
+                shared: true,
+            }),
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&shared, &config);
+        assert!(labels(&rows).contains(&"Stop sharing"));
+        assert!(!labels(&rows).contains(&"Share with Lounge"));
+        assert_eq!(
+            WindowMenuAction::ShareWindow.semantic_key(),
+            "tabmenu:share"
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:share"),
+            Some(WindowMenuAction::ShareWindow)
+        );
     }
 
     /// A host window's tab offers Rename tab, beside New tab, and the row

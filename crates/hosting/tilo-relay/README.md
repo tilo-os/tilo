@@ -9,14 +9,14 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 
 - Binds an iroh endpoint on the `tilo-relay/1` ALPN.
 - Verifies every inbound peer's `DeviceCert`. A home host defaults to the
-  same user identity; shared/provider hosts can use an explicit trust policy
-  plus per-workspace device membership. Certs are Ed25519
+  same user identity; shared/provider hosts use an explicit trust policy, and
+  each room's own governance decides which devices it admits. Certs are Ed25519
   signatures over `blake3("tilo-devcert-v1\0" || postcard(view))`; the
   canonical types live in `tilo-user-identity`.
 - Fans out incoming Automerge deltas to every other subscribed
   peer for the same workspace.
 - A default same-owner home host auto-binds and pins rooms on first subscribe;
-  shared/provider hosts require an explicit binding.
+  other rooms are those it governs or hosts for their governor.
 - Enqueues deltas for offline members under
   `workspaces/<id>/pending/<hex(device_pubkey)>/<seq>.delta` and
   drains them on next `Subscribe`.
@@ -26,15 +26,16 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   checkpoints every ten minutes.
 - Bounds every in-memory peer queue. A peer that cannot keep up is disconnected;
   durable traffic is then queued on disk and replayed after it reconnects.
-- Ships a `tilo-relay-admin` CLI for binding/unbinding workspaces
-  and listing what a running relay is pinning.
+- Ships a `tilo-relay-admin` CLI for home peers, revocations and status.
 
 ## Composite home-peer deployment
 
 The headless home-peer deployment runs `tilo-relay` with the authenticated
 filesystem replica. It retains workspace/app collaboration records,
 checkpoints, offline queues, and all filesystem blobs, media/book bytes, and
-thumbnails for every workspace in `/etc/tilo/home-peer.toml`.
+thumbnails for every workspace in `/etc/tilo/home-peer.toml`. Which rooms it
+holds is up to the rooms: a room's governor adds the home peer as one of the
+room's hosts.
 
 `ReplicationIntent::FullWorkspace` is backed by the composite host. The relay
 reads the replica's aggregate freshness proof for every advertisement and
@@ -46,10 +47,10 @@ for the persistent-volume and identity requirements.
 ## Binaries
 
 - `tilo-relay` — daemon. Systemd `Type=notify`; subcommands `init`,
-  `run`, `status`, `bind-workspace`, `unbind-workspace`.
-- `tilo-relay-admin` — helper: `bind-room`, `bind-workspace`, membership
-  add/remove/list, status, and root-signed `revoke-device`. Membership and
-  revocation changes are reloaded by a running daemon within one second.
+  `run`, `status`.
+- `tilo-relay-admin` — helper: home peers, status, and root-signed
+  `revoke-device`. A running daemon picks revocations up as they are
+  written.
 
 ## Shell configuration
 

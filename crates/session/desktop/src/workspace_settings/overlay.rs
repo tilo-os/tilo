@@ -41,8 +41,6 @@ pub struct WorkspaceSettingsModel<'a> {
     /// The in-progress name, while the person is renaming the workspace.
     pub editing_name: Option<&'a str>,
     pub name_selection: ui::text_selection::Selection,
-    /// Whether this device governs the active workspace's room.
-    pub governs_active_room: bool,
     /// Whether policy controls are live rather than painted disabled.
     pub owner_controls: bool,
     pub apps: &'a dyn AppDirectory,
@@ -2110,7 +2108,6 @@ mod tests {
                 anchor: 4,
                 cursor: 0,
             },
-            governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
@@ -2152,7 +2149,6 @@ mod tests {
             people: &crate::collaborators::PeopleNames::default(),
             editing_name: Some(&name),
             name_selection: ui::text_selection::Selection::collapsed(name.len()),
-            governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
@@ -2266,7 +2262,6 @@ mod tests {
                 people: &crate::collaborators::PeopleNames::default(),
                 editing_name: editing.then_some(name.as_str()),
                 name_selection: ui::text_selection::Selection::collapsed(name.len()),
-                governs_active_room: false,
                 owner_controls: true,
                 apps: &super::super::NoAppDirectory,
                 devices: &[],
@@ -2427,7 +2422,6 @@ mod tests {
             people: &crate::collaborators::PeopleNames::default(),
             editing_name: None,
             name_selection: ui::text_selection::Selection::collapsed(0),
-            governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],

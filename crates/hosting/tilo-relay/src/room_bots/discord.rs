@@ -273,7 +273,7 @@ mod tests {
     /// serves neither.
     #[test]
     fn the_bridge_context_names_what_the_host_serves() {
-        let (_, cert) = crate::rooms::tests::governor();
+        let (_, cert) = crate::rooms::fixtures::governor();
         assert_eq!(Served::default().context("lounge", &cert), None);
         let served = Served {
             avatars_url: Some("https://rooms.example/avatars".into()),
@@ -338,9 +338,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_host_connects_the_room_to_the_server_its_bridge_names_once() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::rooms::tests::governor();
-        let relay = crate::rooms::tests::view_read_relay(scratch.path(), &key, &cert).await;
-        let rooms = relay.rooms().unwrap().clone();
+        let (key, cert) = crate::rooms::fixtures::governor();
+        let relay = crate::rooms::fixtures::test_host(scratch.path(), &key, &cert).await;
+        let rooms = relay.rooms().clone();
         let room = rooms.create("Plaza").await.unwrap().room;
         let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
             .unwrap()

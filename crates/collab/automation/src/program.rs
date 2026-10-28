@@ -71,7 +71,7 @@ pub fn parse_program(bytes: &[u8]) -> Result<Shortcut, ProgramError> {
     }
     let shortcut: Shortcut =
         serde_json::from_slice(bytes).map_err(|e| ProgramError::Malformed(e.to_string()))?;
-    if shortcut.saved_by.is_some() {
+    if shortcut.saved_by.is_some() || shortcut.saved_proof.is_some() {
         return Err(ProgramError::SavedBy);
     }
     if canonical_bytes(&shortcut)? != bytes {
@@ -138,6 +138,7 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: None,
+            saved_proof: None,
         }
     }
 

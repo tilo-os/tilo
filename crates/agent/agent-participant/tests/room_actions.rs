@@ -81,7 +81,7 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{Device, ROOM, enrol, ready, start_peer, workspace};
+use support::{Device, ROOM, enrol, ready, start_peer};
 
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
@@ -530,19 +530,11 @@ async fn start_lending(
     feedback_reviewer: Option<Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
 ) -> Hosted {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         web_entry: page.map(|origin| format!("{origin}/")),
         ..Default::default()
     };
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace(),
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
-        shell_authority: None,
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-    });
     let (relay, agents) = tilo_relay::agents::start(
         cfg,
         RelayIdentity {
@@ -1138,7 +1130,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let retained = hosted
         .relay
         .room_records()
-        .retained(workspace())
+        .retained(support::workspace())
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(
@@ -1417,7 +1409,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let retained = hosted
         .relay
         .room_records()
-        .retained(workspace())
+        .retained(support::workspace())
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(

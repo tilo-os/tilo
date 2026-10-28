@@ -91,7 +91,7 @@ fn host_with_portal(
     {
         let mut t = handle.write();
         let owner = shell::shell::state::local_user_id();
-        t.adopt_ownerless_workspaces(&owner);
+        t.own_workspaces_for_test(|_| owner.clone());
     }
     let mut inputs =
         shell::shell::hosted_inputs::HostedTileInputs::fixture().expect("Files fixture");

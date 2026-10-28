@@ -364,6 +364,30 @@ impl RelayCoeditSession {
         self.publish_payload(&CoeditPayload::RetainedDelta { channel, body })
     }
 
+    /// Send `payload`, a write this device must know the host keeps, as
+    /// commit `op`: the host admits it as it would the same payload
+    /// published, and answers [`Inbound::Committed`] once it is durable, or
+    /// [`Inbound::CommitRefused`]. Sending the same `op` again, on this or a
+    /// later session, is answered from the host's ledger and kept once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
+    pub fn commit(&self, op: [u8; 16], payload: &CoeditPayload) -> Result<(), CoeditError> {
+        let delta = payload.encode().map_err(CoeditError::Encode)?;
+        self.client
+            .send(Envelope::Commit {
+                workspace_id: self.workspace_id,
+                op,
+                author_device_public_key: self.author,
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     fn publish_payload(&self, payload: &CoeditPayload) -> Result<(), CoeditError> {
         let delta = payload.encode().map_err(CoeditError::Encode)?;
         self.client
@@ -635,7 +659,31 @@ impl RelayCoeditSession {
                         return Some(inbound);
                     }
                 }
+                Envelope::Committed {
+                    workspace_id, op, ..
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Committed { op });
+                }
+                Envelope::CommitRefused {
+                    workspace_id,
+                    op,
+                    reason,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::CommitRefused { op, reason });
+                }
                 Envelope::NotAuthorised { .. } => return None,
+                Envelope::RemoteActionUndeliverable {
+                    workspace_id,
+                    to_device_public_key,
+                    reason,
+                } if workspace_id == self.workspace_id => {
+                    tracing::warn!(
+                        workspace_id,
+                        to = %hex::encode(to_device_public_key),
+                        %reason,
+                        "the host could not deliver a remote action sent on this session"
+                    );
+                }
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}

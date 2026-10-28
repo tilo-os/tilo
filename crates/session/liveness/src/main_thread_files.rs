@@ -497,16 +497,19 @@ fn note_main_call(
     if !first {
         return;
     }
-    let backtrace = super::capture_thread(main);
-    if backtrace.is_some() {
-        *restarted = Some((nr, path.clone()));
-    }
+    let backtrace = match super::capture_held_thread(main) {
+        Ok(frames) => {
+            *restarted = Some((nr, path.clone()));
+            frames
+        }
+        Err(why) => why,
+    };
     if let Some(walk) = RECORD
         .lock()
         .iter_mut()
         .find(|walk| walk.syscall == name && walk.path == path)
     {
-        walk.backtrace = backtrace;
+        walk.backtrace = Some(backtrace);
     }
 }
 

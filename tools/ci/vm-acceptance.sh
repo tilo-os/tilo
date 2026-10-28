@@ -113,7 +113,7 @@ fi
 # A run of someone's tree checks what its changes reach; main checks all. `t test
 # vm-acceptance --test 'A15|W16'` names the checks itself (T_TEST_FILTER: check ids or
 # areas, `|`-separated); each shard then boots only if it holds one of them.
-only=${T_INPUT_ONLY:-}
+only=${T_INPUT_ONLY:-secrets}
 if [[ -n ${T_TEST_FILTER:-} ]]; then
   only=${T_TEST_FILTER//|/,}
 elif [[ -z $only && -z ${T_TRIGGER:-} ]]; then

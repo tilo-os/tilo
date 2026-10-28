@@ -134,7 +134,7 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
         other => return Err(format!("the agent answered {other}, not a shortcut")),
     };
     object.insert("id".to_owned(), Value::String("drafted".to_owned()));
-    for authority in ["grant", "triggers", "saved_by"] {
+    for authority in ["grant", "triggers", "saved_by", "saved_proof"] {
         object.remove(authority);
     }
     let mut shortcut: Shortcut = serde_json::from_value(Value::Object(object))

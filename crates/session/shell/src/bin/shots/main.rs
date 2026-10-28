@@ -5,6 +5,11 @@
 //! Invoked without `--mode` / `--scenario`, behaves like the original
 //! `shots` binary — renders the legacy scene set to PNG via offscreen mode.
 
+// A scene whose room is placed on this device decodes room admission in
+// automerge worker processes started from this test binary; this serves
+// them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 mod diff;
 mod driver;
 mod mode;

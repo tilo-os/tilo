@@ -61,7 +61,12 @@ State defaults to `$XDG_STATE_HOME/tilo-nested`, falling back to
 `~/.local/state/tilo-nested`. `--state DIR` selects another private profile.
 
 It contains the scratch HOME/XDG tree, app store, signed runtime, publisher key,
-throwaway identity and `logs/`. Re-running preserves app data and repackages
+throwaway identity and `logs/`. Its `system/` store holds what a device's
+`/usr/share/tilo-apps` would: the env-runtime Terminal's environments start
+from. The ush supervisor runs beside the shell with its user unit's command
+line and environment (`os/usr/lib/systemd/user/tilo-ush.service`), so Terminal
+opens a shell; `dist/dev/nested-terminal-check.py` (t check `nested-terminal`)
+proves it. Re-running preserves app data and repackages
 changed payloads. The private runtime directory and D-Bus session avoid
 socket/service collisions, but this is not a VM: audio is connected to the
 host's sound server.
@@ -74,7 +79,7 @@ host's sound server.
 
 A throwaway identity is not a personal identity backup. The script refreshes it
 before expiry; do not use this state for durable personal work. Inspect
-`logs/shell.log`, `identity.log`, `model-gateway.log` and `native.log` for the
+`logs/shell.log`, `identity.log`, `model-gateway.log`, `ush.log` and `native.log` for the
 corresponding startup failure rather than deleting state as a routine fix.
 Configure a model provider in the nested Settings app before asking its agent to
 work.

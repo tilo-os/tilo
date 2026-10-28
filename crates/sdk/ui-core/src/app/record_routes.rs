@@ -261,6 +261,26 @@ impl RouteDocument {
         Self::with_manager(manager, route, scope)
     }
 
+    /// [`Self::connect`] for a host that reaches the broker its own way:
+    /// `manager` makes the connection to `route`, inside the scope `wake`
+    /// runs from, as [`Self::connect`]'s connector's is.
+    #[must_use]
+    pub fn connect_with(
+        manager: impl FnOnce() -> CollaborationManager,
+        route: RouteSpec,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let mut scope = crate::WakeScope::new();
+        if let Err(error) = scope.bind(move |_| wake()) {
+            tracing::warn!(%error, "a held route is not woken by the broker");
+        }
+        let manager = {
+            let _entry = scope.enter();
+            manager()
+        };
+        Self::with_manager(manager, route, scope)
+    }
+
     fn with_manager(
         manager: CollaborationManager,
         route: RouteSpec,

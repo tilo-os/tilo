@@ -571,13 +571,7 @@ pub struct SaveContext<'a> {
     pub fixed_label: &'a dyn Fn(&settings_store::keyboard_shortcuts::FixedShortcut) -> String,
 }
 
-/// A shortcut to store, or remove, in one workspace.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ShortcutChange {
-    Save(Box<Shortcut>),
-    /// Remove the saved shortcut with this id.
-    Delete(String),
-}
+pub use tilo_automation::ShortcutChange;
 
 /// What one library invocation does: answer from what is saved, or change it.
 #[derive(Clone, Debug, PartialEq)]
@@ -643,6 +637,8 @@ pub fn plan_library(
     };
     let mut shortcut = shortcut;
     shortcut.saved_by = Some(context.saver.to_string());
+    // The device that stores it signs it; whatever proof came in is not its.
+    shortcut.saved_proof = None;
     let exists = saved.iter().any(|other| other.id == shortcut.id);
     if exists && !replacing {
         return Err(format!(

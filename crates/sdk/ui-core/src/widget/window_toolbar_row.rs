@@ -777,6 +777,20 @@ impl ToolbarRow {
         self.row
     }
 
+    /// Where what the location shows at rest ends: its label as measured,
+    /// and the notice's buttons after it. `None` with no location, or
+    /// before it is measured.
+    pub(crate) fn location_content_end(&self) -> Option<f64> {
+        let location = self.slots.location;
+        if location.area() <= 0.0 {
+            return None;
+        }
+        let forms = &self.views_size.as_ref()?.forms;
+        let label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        let notice = self.slots.notice.iter().map(|rect| rect.x1);
+        Some(notice.fold(label, f64::max).min(location.x1))
+    }
+
     /// Whether the location is being edited.
     pub(crate) fn is_editing(&self) -> bool {
         self.field.is_some()

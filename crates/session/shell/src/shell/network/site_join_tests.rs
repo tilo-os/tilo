@@ -19,6 +19,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use super::hosted_sites::{self, HostHttp};
 use super::site_join::SiteJoin;
 use super::{HostIdentity, Reach, ShellNetwork};
+use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{RoomId, WorkspaceTree};
 
 const CHAT: &str = "so.tilo.chat";
@@ -691,46 +692,6 @@ fn a_workspace_joined_from_an_invitation_alone_is_arrived_in() {
     site.shutdown();
 }
 
-/// Someone the Lounge lets in by invitation only pastes the invitation its
-/// host issued into the join field: they arrive in the Lounge's Chat, the
-/// app its site's entry names, as a person who came through the site's door
-/// does. Their computer follows the site as its community, and the site
-/// names the host the invitation is for. One rule chooses where a join
-/// arrives, however it was made.
-#[test]
-#[serial_test::serial]
-fn joining_by_an_invitation_in_the_join_field_arrives_in_the_sites_app() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let site = Site::start(dir.path());
-    let room = RoomId::parse(&site.room).unwrap();
-    site.open.store(false, std::sync::atomic::Ordering::SeqCst);
-    let (grace, tree) = computer(&dir.path().join("grace"), key(2), "Grace's computer");
-    grace.hosted_sites.follow_community(&site.entry);
-    assert_eq!(
-        grace.join_site(&site.entry),
-        Err(hosted_sites::SiteError::InvitationOnly("Lounge".into()))
-    );
-    let text = site.invite_text();
-    assert!(grace.join_from_field(&text).is_ok());
-    held(&grace, &tree, room);
-    let arrivals = until("Grace to arrive in the Lounge", || {
-        grace.tick();
-        Some(grace.take_arrivals()).filter(|arrivals| !arrivals.is_empty())
-    });
-    assert_eq!(
-        arrivals,
-        vec![hosted_sites::Arrival {
-            room,
-            app: Some(CHAT.into()),
-        }],
-        "she arrives in the Lounge's Chat, once"
-    );
-    assert!(grace.take_arrivals().is_empty());
-    drop(grace);
-    site.shutdown();
-}
-
 #[test]
 #[serial_test::serial]
 fn an_invitation_only_site_says_so() {
@@ -830,6 +791,74 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
         "one workspace for the Lounge"
     );
     drop(net);
+    site.shutdown();
+}
+
+/// Someone the Lounge lets in by invitation only pastes the invitation its
+/// host issued for them into the join field: they arrive in the Lounge's
+/// Chat, the app its site's entry names, as a person who came through the
+/// site's door does. One rule chooses where a join arrives, however it was
+/// made.
+#[test]
+#[serial_test::serial]
+fn joining_by_an_invitation_in_the_join_field_arrives_in_the_sites_app() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+    site.open.store(false, std::sync::atomic::Ordering::SeqCst);
+    let grace_root = key(2);
+    let issued = site
+        .runtime
+        .block_on(site.relay().rooms().unwrap().issue(
+            &site.room,
+            &site.host_cert,
+            tilo_relay::rooms::IssueInvitationRequest {
+                request_id: random(),
+                role: tilo_peer_state::join::MemberRole::Editor,
+                recipient_user_public_key: Some(grace_root.verifying_key().to_bytes()),
+                invitee_name: Some("Grace".into()),
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                inviter_name: Some("Ada".into()),
+            },
+        ))
+        .unwrap();
+    let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
+
+    // Grace's computer is in the site's community, as every Tilo computer
+    // is in its own, and its door turns her away.
+    let (grace, grace_tree) = computer(&dir.path().join("grace"), grace_root, "Grace's computer");
+    grace.hosted_sites.follow_community(&site.entry);
+    assert_eq!(
+        grace.join_site(&site.entry),
+        Err(hosted_sites::SiteError::InvitationOnly("Lounge".into()))
+    );
+    let PeerSyncResponse::EnrollmentPending { id } = grace.join_from_field(&invitation).unwrap()
+    else {
+        panic!("the invitation enrolls with the Lounge's host");
+    };
+    until("Grace's join to install", || {
+        grace.tick();
+        match grace.poll_enrollment(id).unwrap() {
+            PeerSyncResponse::EnrollmentPending { .. } => None,
+            joined => Some(joined),
+        }
+    });
+    held(&grace, &grace_tree, room);
+    let arrivals = until("Grace to arrive in the Lounge", || {
+        grace.tick();
+        Some(grace.take_arrivals()).filter(|arrivals| !arrivals.is_empty())
+    });
+    assert_eq!(
+        arrivals,
+        vec![hosted_sites::Arrival {
+            room,
+            app: Some(CHAT.into()),
+        }],
+        "she arrives in the Lounge's Chat, once"
+    );
+    assert!(grace.take_arrivals().is_empty());
+    drop(grace);
     site.shutdown();
 }
 

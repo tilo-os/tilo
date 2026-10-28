@@ -94,6 +94,17 @@ impl ShellOverlayHost {
             facts.extent.full_screen = st.fullscreen_group() == Some(target.group);
             let tree = st.tree();
             facts.renamable = crate::shell::tab_binding::may_rename_tab(&tree, target.tab);
+            facts.sharing = crate::shell::search::providers::desktop_windows::shareable_window(
+                &tree,
+                target.tab,
+                tilo_clock::unix_now_ms(),
+            )
+            .map(
+                |(workspace, shared)| crate::shell::window_menu::WindowSharing {
+                    place: workspace.name.clone(),
+                    shared,
+                },
+            );
             let surface = tree
                 .desktop
                 .workspaces
@@ -500,6 +511,17 @@ impl ShellOverlayHost {
             WindowMenuAction::EqualizeWidths => self.equalize_widths_from_menu(target),
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
             WindowMenuAction::RenameTab => self.begin_tab_rename(target),
+            WindowMenuAction::ShareWindow => {
+                let shared = self.chrome.as_ref().and_then(|chrome| {
+                    crate::shell::search::providers::desktop_windows::shareable_window(
+                        &chrome.borrow().tree(),
+                        target.tab,
+                        tilo_clock::unix_now_ms(),
+                    )
+                    .map(|(_, shared)| shared)
+                });
+                shared.is_some_and(|shared| self.request_window_share(target.tab, !shared))
+            }
             WindowMenuAction::StopDesktopControl => self.stop_desktop_control(target.tab),
             WindowMenuAction::SplitRight | WindowMenuAction::MoveToNewGroup => {
                 let Some(chrome) = self.chrome.clone() else {

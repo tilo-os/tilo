@@ -236,7 +236,7 @@ fn workspace_create_refuses_denied_actors_revocation_and_stale_context() {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             if stale_context {
-                let replacement = tree.append_empty_workspace("Replacement context");
+                let replacement = tree.create_hosted_workspace("Replacement context").0;
                 tree.desktop
                     .active_workspace_mut()
                     .unwrap()

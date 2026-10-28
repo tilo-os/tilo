@@ -33,19 +33,16 @@ use std::sync::Arc;
 use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use sha2::{Digest as _, Sha256};
-use tilo_browser_peer::invite::{ask_to_join_pre_admitted, guest_certificate};
+use tilo_browser_peer::invite::guest_certificate;
 use tilo_browser_peer::{
     CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerHandle, PeerStore as _,
     answer_pairing, certify, pending_pairings,
 };
-use tilo_relay::rooms::PreAdmitRequest;
 use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CertifyReply, MemberApproval,
     PendingCertification,
 };
-use tilo_relay_protocol::rooms::{JoinReply, PreAdmission, RoomRole};
 use tilo_relay_protocol::web::HereRequest;
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
@@ -54,8 +51,8 @@ use tilo_user_identity::{
 use tokio::task::JoinHandle;
 
 use support::{
-    Device, TestHost, enrol, next_document, ready, route, start_host, start_host_admitting,
-    start_peer, start_peer_with_store, start_room_host, wait_for, workspace,
+    door, enrol, enter, in_room, next_document, ready, redeem, route, start_host, start_peer,
+    start_peer_with_store, start_room_host, wait_for, workspace,
 };
 
 fn new_key() -> SigningKey {
@@ -369,7 +366,8 @@ fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expires() {
 }
 
 async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::testing::OwnProcess) {
-    // Alice's host serves a workspace Bob, Dave and Erin are guests of.
+    // Alice's host governs a room Bob, Dave and Erin are guests of: each
+    // was invited through the room and came in on a browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let bob = new_key();
@@ -377,15 +375,26 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let erin = new_key();
     let person = |key: &SigningKey| key.verifying_key().to_bytes();
     let state = tempfile::tempdir().unwrap();
-    let host = start_host_admitting(
-        &alice,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-        None,
-        &[person(&bob), person(&dave), person(&erin)],
-    )
-    .await;
+    let host = start_room_host(&alice, &host_device, state.path(), false).await;
+    let room = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
+    for guest in [&bob, &dave, &erin] {
+        let browser = new_key();
+        let browser_cert = guest_certificate(
+            guest,
+            browser.verifying_key().to_bytes(),
+            "Browser",
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .unwrap();
+        redeem(
+            &host,
+            door(&host, &alice, &host_device, &room.room, person(guest)).await,
+            &browser_cert,
+            &browser,
+        )
+        .await;
+    }
     let https = host.https();
     let page = Host::Https(https.clone());
 
@@ -604,99 +613,6 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
     let (cert, _) = phone.answer().await.unwrap();
     assert_eq!(cert, honest, "the device holds the first answer");
     host.relay.shutdown().await;
-}
-
-/// The room's one-time pre-admission for `person`, as the room service's
-/// door asks the room for it: the owner's grant for a token's digest,
-/// issued as an invitation only `person` redeems. Returns the invitation
-/// and the token.
-async fn door(
-    host: &TestHost,
-    owner: &SigningKey,
-    owner_host: &Device,
-    room: &str,
-    person: [u8; 32],
-) -> (Vec<u8>, Vec<u8>) {
-    let token: [u8; 32] = rand::random();
-    let token_sha256: [u8; 32] = Sha256::digest(token).into();
-    let mut grant = PreAdmission {
-        room: room.to_owned(),
-        role: RoomRole::Editor,
-        token_sha256,
-        label: "Guest".into(),
-        expires_at_ns: tilo_clock::unix_now_ns()
-            .checked_add(600_000_000_000)
-            .unwrap(),
-        owner_user_public_key: owner.verifying_key().to_bytes(),
-        signature: [0; 64],
-    };
-    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
-    let issued = host
-        .relay
-        .rooms()
-        .unwrap()
-        .pre_admit(
-            &owner_host.cert,
-            PreAdmitRequest {
-                request_id: *blake3::hash(&token_sha256).as_bytes(),
-                grant,
-                recipient_user_public_key: Some(person),
-                inviter_name: Some("Tilo".into()),
-            },
-        )
-        .await
-        .unwrap();
-    (issued.signed_invitation, token.to_vec())
-}
-
-/// Let `cert`'s device in through `door`, then start its page in the room.
-async fn enter(
-    host: &TestHost,
-    (invitation, token): (Vec<u8>, Vec<u8>),
-    cert: &DeviceCert,
-    key: &SigningKey,
-    host_cert: &DeviceCert,
-    workspace_id: u64,
-) -> PeerHandle {
-    let https = host.https();
-    let admitted = ask_to_join_pre_admitted(
-        &*https,
-        &invitation,
-        cert,
-        key,
-        rand::random(),
-        "Bob",
-        &token,
-    )
-    .await
-    .unwrap();
-    assert!(
-        matches!(
-            &admitted,
-            JoinReply::Admitted {
-                role: RoomRole::Editor,
-                ..
-            }
-        ),
-        "{admitted:?}"
-    );
-    let peer = start_peer(
-        Host::Https(https),
-        cert.clone(),
-        host_cert.clone(),
-        key.clone(),
-    );
-    peer.join(workspace_id).unwrap();
-    in_room(&peer, workspace_id).await;
-    peer
-}
-
-async fn in_room(peer: &PeerHandle, workspace_id: u64) {
-    ready(&[peer]).await;
-    wait_for("the governed room to let the page in", || async {
-        (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
-    })
-    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

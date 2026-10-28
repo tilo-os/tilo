@@ -193,7 +193,7 @@ impl NativeWorkspaceOwner {
             .record
             .enrollment
             .as_mut()
-            .ok_or("the room is governed here, not joined through a host")?;
+            .ok_or("the room's record holds no enrollment")?;
         enrollment.hint = Some(pending.hint);
         enrollment.floor = Some(record::DescriptorFloor {
             generation: response.generation,

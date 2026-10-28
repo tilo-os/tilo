@@ -429,6 +429,7 @@ impl Draft {
             triggers: program.triggers,
             step_timeout_secs: program.step_timeout_secs,
             saved_by: None,
+            saved_proof: None,
         }
     }
 }

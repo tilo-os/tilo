@@ -34,8 +34,8 @@ longer carries resolves through the device's aliases
 through the same aliases.
 
 **The rooms a device holds are its workspace list.** The native owner's
-record (`native_authority`: installed replicas and joins in flight) and, until
-the shell's own engine goes, its rooms define which workspaces exist;
+record (`native_authority`: installed replicas and joins in flight) defines
+which workspaces exist;
 `desktop.workspaces` adds only the device's presentation. A join knows the
 room it joins before it talks to the host (the door's and every invitation's
 grant names it), so the workspace is made for that room at once and says
@@ -107,7 +107,51 @@ alone (`SurfaceViewRequest`), and the host encodes the window only while
 someone views it, damage-driven, with the hardware encoder where there is
 one, and sends it to that viewer alone over the authenticated direct route,
 end-to-end encrypted to its device. A member only watches; driving someone's
-window needs its owner's control grant. In a personal room nothing streams.
+window needs its owner's control grant. In a personal room only a window
+its person shares on purpose streams.
+
+**Sharing one window in a personal room.** A member shares one of their
+windows with a personal room through the room's resource share
+(`tilo_action_policy::share`, the `resource.share` member action) of the
+window's own node, `room › <app> › window › <tab>`, under the share id
+`window.<tab>`; stopping is `resource.unshare`. The host writes it into the
+room's governance as grants: who shared it (`granted_by`), which window (the
+node) and until when (the grant's lifetime). It takes the share only from
+the device the tab's topology namespace is registered to, so nobody shares
+another device's window and the registry says which device hosts it
+(`tilo_desktop_model::window_share`). Every other member shows it as a tab
+under the sharer's tab id in their own layout, a window group at the end of
+the workspace's last strip, marked with the sharer's presence while they
+are here, and drops it when the share ends.
+
+How that tab shows the window depends on what the window is. An outside
+window (a terminal, any Wayland or X client) keeps its state in its process,
+so the sharer streams that window, and no other, to the members viewing it
+and to the room's hosts, and the tab is a `HostedWindow`, which the stream
+names. A Tilo app's window is a view of a resource that already lives in the
+room, so none of its pixels are streamed: its sharer also shares what it
+shows, under the share id `window.<tab>:shows`, on the resource's own node
+(the record the app says the window shows, at the item its bar anchors, or
+the window's node again for the app's own record as a whole;
+`window_share::shows_node`). Ending the window's share ends both. Every other
+member's tab is a `PeerWindow` of the same app, which opens it on that
+record (`WorkspaceTree::room_tab_record`) like any peer's window, and the
+sharer's cursor and selection show in it as any collaborator's do. When the
+share ends, a Tilo app's window the member used here (gave input to) stays,
+as their own window under an id of their device's; one they left alone
+closes.
+
+The sharer reaches it on the window itself: its window menu and its bar's
+menu offer "Share with <workspace>", and "Stop sharing" while shared, for a
+window this device runs in a personal room only. While the room's record
+holds the share, the window's bar says "Shared with <workspace>" with the
+faces of the people there (`ui::widget::SharedWith`). A share outlives
+neither its window nor its sharer's stay: a window this device closed or
+moved out of the workspace has its share stopped, through the room's outbox,
+which asks again on the host's next event until the room no longer holds the
+share; leaving or deleting the workspace stops its shares before the room is
+released. Every door makes the one
+request `tab.share` / `tab.unshare` make (`overlay_host::window_share_controls`).
 
 **Presence is per resource, layout is per person.** Inside a resource
 several people have open (a note, a chat channel) each sees the others'
@@ -128,9 +172,10 @@ same changes.
 **One engine decides what a room is.** `tilo_peer_state::StatePeer` admits
 every change to a room, on every host, in one of two roles:
 
-- **Governor**: the device or host that holds the room's governance
-  (`StatePeer::new`). Today a workspace host (`tilo-relay`), the room
-  service, the standalone runtime for its profile room.
+- **Governor**: the host that holds the room's governance (`StatePeer::new`
+  under the host's `Rooms`): the room host every device runs in-process for
+  the rooms placed on it, the same host `tilo-relay` runs, and the
+  standalone runtime for its profile room.
 - **Member**: a device that holds a replica (`StatePeer::joined`, kept by
   `tilo_joined_room::NativeWorkspaceOwner`).
 
@@ -158,20 +203,18 @@ two paths and in the runtime), the rule for which document frame starts a
 retained baseline (`collab_types::DocumentFrame::retention`), and one
 invitation format besides the shell's own. What is still doubled:
 
-1. **Two engines in the shell.** Rooms a host governs go through
-   `NativeWorkspaceOwner` (`WorkspaceTree::requires_native_owner`). Every
-   other room (one this device minted, one joined with a direct invite, a
-   person's own and continuation rooms) goes through the shell's own engine:
-   `room_docs`, `room_authority`, `sync_room_doc`, `apply_room_changes`,
-   `name_peer`, `certify_peer_identity`, `redeem_invited_identity`,
-   `peer_room_allows`, `network/replica.rs`, the `PeerInviteToken` format in
-   `network/invite.rs` and the hello store in `network/identity.rs`, about
-   6,000 lines plus their tests. It re-implements what `StatePeer` does:
-   identity rows (`GovernedPeerIdentity` beside `GovernedIdentity`),
-   redemption (`redeem_invited_identity` beside `admit_invited_member`),
-   membership writes, media binding (`media_authority_admitted` beside
-   `validate_media_bindings`) and sender authorization (`peer_room_allows`
-   beside `StatePeer::permissions`).
+1. **One engine in the shell.** Every room goes through `NativeWorkspaceOwner`;
+   this device's native owner is a member of each, including the rooms its
+   own host governs. `room_docs` is only a read-only cache of each room's
+   admitted document, written by `WorkspaceTree::project_native_room`, which
+   also keeps the room's admitted roster (`WorkspaceTree::room_peer_identities`).
+   A governance change made here (a role, a grant, a rename) is asked of the
+   room's governor (`GovernanceRequest`, taken by
+   `network/governance_requests.rs`) and shows once the admitted document
+   carries it; a sandbox capability taken back also narrows here at once.
+   Window streams go to and are taken from the room's admitted roster, not a
+   gossip topic; gossip carries only the person's own topic between their
+   devices.
 2. **Three layout schemas.** The room document's `contents` (native), the
    `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
    browser, relay, agent participant) and the device's whole-desktop
@@ -184,36 +227,21 @@ Each step lands on `main` on its own, green, and deletes the copy it
 replaces. Pre-alpha: old paths are removed, not kept beside the new ones;
 state of an older shape is refused and fetched again, not migrated.
 
-1. **The shell governs its own rooms with `StatePeer`.** The pieces are
-   in place: the engine follows a revoked governor's root-named successor
-   (`StatePeer::follow_successions`) and the device's owner keeps the
-   successions with the room; the owner holds rooms this device governs
-   beside joined ones (`NativeWorkspaceOwner::create_governed`, seeded by
-   `tilo_peer_state::workspace_seed`, no host custody of its writes); and
-   the shell admits the windows it opens into such a room under its own
-   registered namespace. What remains is creating new workspaces that way,
-   then moving existing ones, after which `room_docs`, `sync_room_doc`,
-   `apply_room_changes`, `try_sync_room_doc` and `ContentOwnership::Salted`
-   go. Doing so before steps 2 and 3 would cost two things the shell's own
-   engine does today: a person's other devices hold their own workspaces as
-   co-governors over gossip, and a room is shared without a home relay with
-   a direct invitation. So new workspaces move once a governed room can be
-   carried to the person's other devices and to an invited person.
-2. **Direct peers on the same engine.** Gossip becomes a carrier for
-   `StatePeer` (`SyncResp` and `AppDocument` from an authenticated device,
-   like a relay delta). A direct invitation is a workspace-join invitation
-   redeemed by the governing device. `network/invite.rs`
-   (`PeerInviteToken`), `redeem_invited_identity`, `name_peer`,
-   `certify_peer_identity`, `GovernedPeerIdentity`, `peer_room_allows`,
-   `room_gate.rs`'s legacy table and `network/replica.rs` go. (The shell's
-   identity rows are persisted and compared byte for byte by every peer, so
-   they change with this step rather than on their own.)
-3. **One governor per room, also for a person's own rooms.** A person's own
-   and continuation rooms are governed by the device that made them (or the
-   person's home relay once moved there); their other devices are members
-   with the owner's role and change governance through governor actions,
-   as members of host rooms do. `RoomAuthority`, `room_authority`,
-   `adopt_governed_peers` and the continuation pins go.
+1. **Done: the shell governs no room itself.** Every device runs the room
+   host in-process, and a workspace made here is placed on it
+   (`WorkspaceTree::create_hosted_workspace`, `pending_placements`). The
+   shell's own engine went: `sync_room_doc`, `apply_room_changes`,
+   `RoomAuthority` and the continuation pins, `ContentOwnership::Salted`,
+   `network/replica.rs`, `network/hub.rs`, the `PeerInviteToken` format and
+   the gossip topics of rooms. A state file from before loads unchanged; its
+   rooms are no longer served by the shell's engine.
+2. **Governance the host's `Rooms` has no action for yet.** Removing or
+   banning a member, granting a sandbox capability in the room, and
+   transferring ownership have no governor action, so a device cannot ask
+   for them yet; `Rooms` publishing actions for them completes this.
+3. **One governor per room** holds: the host that governs a room is its
+   only governor, and a person's other devices are members with the owner's
+   role.
 4. **One layout schema.** The browser, the relay's operator strips and the
    agent participant write `contents`; `shared_record.rs` and the relay's
    `desktop_guard` go (the topology registry decides who moves what). A new
@@ -227,10 +255,9 @@ state of an older shape is refused and fetched again, not migrated.
    keeps the workspace list and presentation; Activity and Replay read
    the room documents' history for everything else.
 
-Steps 2 and 3 come before workspaces move onto the engine (the rest of
-step 1); 4, 5 and 6 are independent of them. When 3 has landed,
-`tilo-peer-state` is the room core and `tilo-joined-room` its carriers;
-renaming them is then mechanical and optional.
+4, 5 and 6 are independent of each other. `tilo-peer-state` is the room
+core and `tilo-joined-room` its carriers; renaming them is mechanical and
+optional.
 
 ## Records that outgrow a snapshot
 

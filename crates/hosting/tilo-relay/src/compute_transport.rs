@@ -260,6 +260,10 @@ pub struct DurableComputeJob {
     pub log_bytes: u64,
 }
 
+mod records;
+pub use records::ComputeJobs;
+pub(crate) use records::{compute_parts, compute_state};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputeRouteOutcome {
     Route(DeviceKey),

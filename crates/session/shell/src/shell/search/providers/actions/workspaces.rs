@@ -78,19 +78,29 @@ mod tests {
     use automerge::AutoCommit;
 
     /// The workspace on screen and a second one after it, the second shown.
-    fn chrome_with_two_workspaces() -> (Chrome, crate::shell::state::WorkspaceId) {
+    /// The first one's room is placed on this device, whose native owner
+    /// is open: a workspace leaves with its room through that owner. Both
+    /// are the person's who governs that room, and the chrome acts as that
+    /// person. The room stays placed while the returned guard lives.
+    fn chrome_with_two_workspaces() -> (
+        Chrome,
+        crate::shell::state::WorkspaceId,
+        crate::shell::test_support::OwnHostedRoom,
+    ) {
         use crate::shell::state::{Workspace, WorkspaceId};
         let chrome = chrome_with_room();
+        let hosted = crate::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
+        chrome.borrow_mut().act_as(hosted.person.clone());
         let second = WorkspaceId::new();
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             let mut workspace = Workspace::new(second, "Second");
-            workspace.set_owner("shell-fixture");
+            workspace.set_owner(hosted.person.clone());
             tree.desktop.workspaces.push(workspace);
             tree.desktop.active = second;
         }
-        (chrome, second)
+        (chrome, second, hosted)
     }
 
     fn workspace_names(chrome: &Chrome) -> Vec<String> {
@@ -109,7 +119,9 @@ mod tests {
     /// workspace stays.
     #[test]
     fn deleting_a_workspace_asks_first_and_keeps_the_last_one() {
-        let (chrome, _) = chrome_with_two_workspaces();
+        let (chrome, _, _hosted) = chrome_with_two_workspaces();
+        // The first workspace is named as its room is.
+        let first = workspace_names(&chrome)[0].clone();
         let provider = ActionsProvider::new();
         let row = action_results(&provider, &chrome)
             .into_iter()
@@ -148,7 +160,7 @@ mod tests {
         assert_eq!(unconfirmed, Err(ActionError::ConfirmationRequired));
         // As an agent asks: refused without its confirmation.
         assert!(invoke_shell_action(&chrome, "workspace.delete", &serde_json::json!({})).is_err());
-        assert_eq!(workspace_names(&chrome), ["Demo", "Second"]);
+        assert_eq!(workspace_names(&chrome), [first.as_str(), "Second"]);
 
         invoke_shell_action(
             &chrome,
@@ -156,29 +168,28 @@ mod tests {
             &serde_json::json!({ "confirm": true }),
         )
         .expect("a confirmed deletion runs");
-        assert_eq!(workspace_names(&chrome), ["Demo"]);
-        assert!(
-            matches!(
-                invoke_shell_action(
-                    &chrome,
-                    "workspace.delete",
-                    &serde_json::json!({ "confirm": true }),
-                ),
-                Err(ActionError::Explained(_))
-            ),
-            "the last workspace stays, and the person is told why"
+        assert_eq!(workspace_names(&chrome), [first.as_str()]);
+        let last = invoke_shell_action(
+            &chrome,
+            "workspace.delete",
+            &serde_json::json!({ "confirm": true }),
         );
-        assert_eq!(workspace_names(&chrome), ["Demo"]);
+        assert!(
+            matches!(last, Err(ActionError::Explained(_))),
+            "the last workspace stays, and the person is told why: {last:?}"
+        );
+        assert_eq!(workspace_names(&chrome), [first.as_str()]);
     }
 
     /// Moving the workspace on screen earlier or later in the list is an
     /// action too, and says so when it is already at that end.
     #[test]
     fn a_workspace_moves_earlier_and_later_in_the_list() {
-        let (chrome, second) = chrome_with_two_workspaces();
+        let (chrome, second, _hosted) = chrome_with_two_workspaces();
+        let first = workspace_names(&chrome)[0].clone();
         invoke_shell_action(&chrome, "workspace.move-earlier", &serde_json::json!({}))
             .expect("the second workspace moves up");
-        assert_eq!(workspace_names(&chrome), ["Second", "Demo"]);
+        assert_eq!(workspace_names(&chrome), ["Second", first.as_str()]);
         assert_eq!(
             chrome.borrow().tree().desktop.active,
             second,
@@ -191,10 +202,10 @@ mod tests {
             ),
             "the first workspace moves no further up"
         );
-        assert_eq!(workspace_names(&chrome), ["Second", "Demo"]);
+        assert_eq!(workspace_names(&chrome), ["Second", first.as_str()]);
         invoke_shell_action(&chrome, "workspace.move-later", &serde_json::json!({}))
             .expect("and back down");
-        assert_eq!(workspace_names(&chrome), ["Demo", "Second"]);
+        assert_eq!(workspace_names(&chrome), [first.as_str(), "Second"]);
         assert!(
             matches!(
                 invoke_shell_action(&chrome, "workspace.move-later", &serde_json::json!({})),

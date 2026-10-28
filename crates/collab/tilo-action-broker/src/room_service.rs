@@ -23,8 +23,9 @@ pub(super) fn refused(code: &str, message: String) -> ServiceOutcome {
 impl CapnpBrokerState {
     /// Publish `surface` for its service peer and answer every invocation
     /// addressed to it with `serve`. An update that cannot be recorded stops
-    /// the service; it then unpublishes the surface
-    /// and runs `stopped` with whether the surface was still published.
+    /// the service; it then unpublishes the surface, answers what was still
+    /// pending on it as a peer that went away is answered, and runs
+    /// `stopped` with whether the surface was still published.
     pub(super) fn serve_room<S, F>(
         self: &Arc<Self>,
         surface: PublishedSurface,
@@ -77,9 +78,30 @@ impl CapnpBrokerState {
                 .surfaces
                 .lock()
                 .is_ok_and(|mut surfaces| surfaces.remove(&peer_id).is_some());
+            // Nothing is delivered to the stopped service any more, and
+            // whoever waits on an invocation it held is answered as when an
+            // app goes away: told its outcome, or that none comes from here.
+            // Never left waiting on a service that is gone.
+            state.end_service_stream(peer_id);
             stopped(&state, removed);
         });
         Ok(())
+    }
+
+    /// The service peer `peer_id` stopped: its invocation stream ends, and
+    /// each invocation still pending on it fails, or its outcome is unknown
+    /// where it was journaled.
+    fn end_service_stream(&self, peer_id: u64) {
+        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
+            capabilities.remove(&peer_id);
+        }
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock()
+            && subscribers.remove(&peer_id).is_some()
+        {
+            drop(subscribers);
+            self.invocation_streams_changed();
+        }
+        self.fail_pending_invocations_of(peer_id);
     }
 
     fn record_owner_commit_failure(&self, reason: String) {

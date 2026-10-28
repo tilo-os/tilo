@@ -122,6 +122,7 @@ fn program() -> Shortcut {
             chord: "super+shift+f".into(),
         }],
         saved_by: None,
+        saved_proof: None,
     }
 }
 
@@ -181,6 +182,7 @@ fn a_nested_block_is_indented_and_parsed_back_nested() {
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     };
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,
@@ -315,6 +317,7 @@ fn a_problem_the_checker_reports_lands_on_the_line_that_states_the_step() {
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     };
     let (text, outline) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,
@@ -393,6 +396,7 @@ fn every_kind_of_value_prints_the_same_program_back() {
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     };
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,
@@ -516,6 +520,7 @@ fn every_step(folder: Binding) -> Shortcut {
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 
@@ -640,6 +645,7 @@ fn every_kind_of_trigger_prints_the_same_program_back() {
         grant: Vec::new(),
         triggers: triggers.clone(),
         saved_by: None,
+        saved_proof: None,
     };
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,

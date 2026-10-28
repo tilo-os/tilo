@@ -646,7 +646,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     fn a_private_room_says_so_on_its_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
         // What boot does before the session paints: a room you made is one you own.
-        tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
+        tree.own_workspaces_for_test(|_| crate::shell::state::local_user_id());
         let cards = room_cards(&tree, &crate::shell::state::local_user_id());
         assert_eq!(cards.len(), 1);
         assert_eq!(room_access_label(&cards[0]), "Private to you");

@@ -123,12 +123,23 @@ pub fn no_exemptions(_: &Path) -> bool {
 }
 
 /// Integration test directories and in-tree test modules split into their
-/// own file (`tests.rs`, `*_tests.rs`). `#[cfg(test)]` items inside a
-/// production file are skipped line by line ([`test_module_spans`]).
+/// own file (`tests.rs`, `*_tests.rs`) or directory (`*_tests/` under a
+/// crate's `src`).
+/// `#[cfg(test)]` items inside a production file are skipped line by line
+/// ([`test_module_spans`]).
 pub fn is_test_file(path: &Path) -> bool {
     let s = path.to_string_lossy();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    s.contains("/tests/") || name == "tests.rs" || name.ends_with("_tests.rs")
+    s.contains("/tests/")
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
+        || path
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .map(|part| part.as_os_str().to_string_lossy())
+            .skip_while(|part| part != "src")
+            .any(|part| part.ends_with("_tests"))
 }
 
 /// The repository checkout this crate lives in.
@@ -785,6 +796,21 @@ fn test_module_spans_cover_exactly_the_test_code() {
 
 /// An allow marker names one pattern and a reason, and covers only the line
 /// right below it.
+#[test]
+fn test_modules_split_into_files_or_directories_are_test_files() {
+    for test in [
+        "crates/sdk/ui-core/tests/it.rs",
+        "apps/chat/src/tests.rs",
+        "apps/chat/src/room_tests.rs",
+        "crates/session/shell/src/shell/network/one_host_tests/member_controls.rs",
+    ] {
+        assert!(is_test_file(Path::new(test)), "{test}");
+    }
+    for production in ["apps/chat/src/room.rs", "apps/latest_tests/src/main.rs"] {
+        assert!(!is_test_file(Path::new(production)), "{production}");
+    }
+}
+
 #[test]
 fn an_allow_marker_covers_one_pattern_on_the_next_line_with_a_reason() {
     assert_eq!(

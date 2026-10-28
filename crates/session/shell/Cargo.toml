@@ -19,7 +19,7 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-joined-room/test-support"]
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
 # The name outlived the removed `--mode hosted` loop whose input socket it
@@ -399,6 +399,8 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # provider host, plus room administration and the workspace join client.
 # The relay daemon itself (`tilo-relay`) is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The room host every device runs for the rooms placed on it.
+tilo-room-host = { path = "../../hosting/tilo-room-host" }
 # The approver session that answers the questions this person's agents on
 # their hosts put to them.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
@@ -505,7 +507,7 @@ wgpu.workspace = true
 serial_test.workspace = true
 # Scoped, restoring environment changes for tests whose interface is the
 # environment itself.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../dev/test-env", features = ["document"] }
 # Naga is the WGSL parser/validator wgpu already pulls in transitively.
 # `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
 # WGSL kernel at test time so a shader edit doesn't silently break the

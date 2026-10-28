@@ -61,9 +61,8 @@ impl Widget for ShellOverlayHost {
             // that principal outside the workspaces the Unix account created.
             if (acquired_identity || finished)
                 && let Some(chrome) = self.chrome.as_ref()
-                && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
             {
-                chrome.borrow_mut().adopt_provisioned_identity(&account);
+                chrome.borrow_mut().adopt_provisioned_identity();
             }
             if finished {
                 self.onboarding = None;
@@ -341,7 +340,10 @@ impl Widget for ShellOverlayHost {
         let tab_rename_dirty = self.harvest_tab_renames();
         let hosted_windows_dirty = self.sync_hosted_windows();
         let hosted_windows_dirty = self.sync_window_shares() | hosted_windows_dirty;
-        let chips_dirty = self.sync_desktop_control_chips() | self.sync_dev_build_chips();
+        let chips_dirty = self.sync_desktop_control_chips()
+            | self.sync_dev_build_chips()
+            | self.sync_window_share_controls();
+        self.follow_shared_windows();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
         let opened_for_new_tab = self.harvest_pending_new_tab();

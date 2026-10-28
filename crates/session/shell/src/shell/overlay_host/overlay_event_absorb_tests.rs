@@ -545,7 +545,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         h.chrome
             .borrow_mut()
             .tree_mut()
-            .append_empty_workspace("Second");
+            .create_hosted_workspace("Second");
         let active_before = h.chrome.borrow().tree().desktop.active;
 
         // This is the exact lock-boundary call made by native.rs after it
@@ -677,7 +677,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         {
             let mut chrome = h.chrome.borrow_mut();
             let mut tree = chrome.tree_mut();
-            let second = tree.append_empty_workspace("Second");
+            let second = tree.create_hosted_workspace("Second").0;
             tree.desktop.active = second;
             let ws = tree.desktop.active_workspace_mut().expect("a workspace");
             ws.strips.push(crate::shell::state::Strip::new(
@@ -3276,7 +3276,7 @@ fn covering_workspace_settings_keeps_pointer_priority_over_palette_rows() {
 fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
     let profile = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+    tree.own_workspaces_for_test(|_| "shell-fixture".to_string());
     let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(profile.path()).unwrap();
     let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
     assert!(is_active_workspace_owner(&chrome.borrow()));

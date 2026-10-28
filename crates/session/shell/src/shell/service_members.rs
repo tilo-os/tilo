@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn a_grant_lists_its_purpose_scope_and_deadline_until_it_ends() {
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let owner = "owner".to_string();
         tree.desktop
             .workspaces
@@ -96,6 +96,7 @@ mod tests {
             Some(2_000),
         )
         .expect("an administrator grants");
+        tree.govern_requests_here_for_test(&owner);
         let ws = tree
             .desktop
             .workspaces
@@ -141,6 +142,7 @@ mod tests {
             revoke_service_member(&mut tree, workspace, &owner, &agent_run),
             1
         );
+        tree.govern_requests_here_for_test(&owner);
         let ws = tree
             .desktop
             .workspaces
@@ -206,7 +208,7 @@ mod tests {
         const SERVICE: u8 = 41;
         let owner = hex::encode(public(OWNER).as_bytes());
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Brief");
+        let workspace = tree.create_hosted_workspace("Brief").0;
         let room = tree.room_of(workspace).unwrap();
         tree.desktop
             .workspaces
@@ -240,10 +242,12 @@ mod tests {
         let mut steward = open(
             OWNER,
             steward_dir.path(),
-            Box::new(Polled(WorkspaceChannelDirectory::new(
-                tree.clone(),
-                Box::new(|_| Vec::new()),
-            ))),
+            Box::new(Polled(
+                WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
+                    .with_stewards(Box::new(|_| {
+                        Some((*public(OWNER).as_bytes(), *public(OWNER).as_bytes()))
+                    })),
+            )),
         );
         let mut service = open(
             SERVICE,
@@ -294,16 +298,20 @@ mod tests {
             ChannelAccess::Waiting
         ));
 
-        grant_service_member(
-            &mut tree.write(),
-            workspace,
-            &owner,
-            &public(SERVICE),
-            "Cloud agent: summarise the brief",
-            KindSet::READ_UNDOABLE,
-            Some(2_000),
-        )
-        .unwrap();
+        {
+            let mut tree = tree.write();
+            grant_service_member(
+                &mut tree,
+                workspace,
+                &owner,
+                &public(SERVICE),
+                "Cloud agent: summarise the brief",
+                KindSet::READ_UNDOABLE,
+                Some(2_000),
+            )
+            .unwrap();
+            tree.govern_requests_here_for_test(&owner);
+        }
         run(&mut steward, &mut service, &mut now, 1_000, 5);
         let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {
             panic!("a granted service member is admitted");

@@ -513,21 +513,37 @@ impl crate::services::KeyboardShortcutServices for Keyboard {
     }
 }
 
-#[derive(Default)]
-struct Library(Mutex<Vec<(tilo_actions::InvocationId, tilo_actions::ActionContext)>>);
+struct Library(
+    Mutex<Vec<(tilo_actions::InvocationId, tilo_actions::ActionContext)>>,
+    tokio::runtime::Runtime,
+);
+impl Default for Library {
+    fn default() -> Self {
+        Self(
+            Mutex::default(),
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        )
+    }
+}
 impl crate::services::ShortcutLibraryServices for Library {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
         settings_store::hardware::ShortcutConfig::default()
     }
-    fn store(&self, request: &crate::services::ShortcutLibraryRequest<'_>) -> Result<(), String> {
+    fn store(
+        &self,
+        request: crate::services::ShortcutLibraryRequest,
+    ) -> crate::services::ShortcutStore {
         self.0
             .lock()
             .unwrap()
-            .push((request.invocation, request.context.clone()));
-        Ok(())
+            .push((request.invocation, request.context));
+        Box::pin(async { Ok(()) })
     }
     fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
-        Err("no run requested".into())
+        Ok(self.1.handle().clone())
     }
 }
 

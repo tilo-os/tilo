@@ -17,10 +17,6 @@ trust_policy = { kind = "allow_matching_user" }
 # `full_content_replication` is enabled dynamically only while the aggregate
 # home-peer status proves every configured workspace is complete.
 
-# `allow_matching_user` hosts bind an owner workspace when it first subscribes.
-# Add an explicit entry only when you need a fixed, pre-pinned workspace:
-#
-# [[workspace]]
-# id = 12345
-# pin = true
-# replication = "workspace_only"
+# `allow_matching_user` hosts open an owner workspace when it first subscribes.
+# Any other room is held here because its governor made this relay one of
+# the room's hosts; nothing in this file names rooms.

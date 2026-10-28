@@ -2,10 +2,11 @@
 //!
 //! This module does not authenticate peers or construct certified evidence.
 //! Callers assemble a client only after the protocol-specific mutual proof.
-//! Two carriers: the Iroh transport, and a host's HTTPS routes
+//! Three carriers: the Iroh transport; any byte stream pair, for a host in
+//! the same process; and a host's HTTPS routes
 //! ([`tilo_relay_client::https::HttpsLink`]) for a host that publishes no
-//! iroh address. Both carry the same state envelopes; only Iroh carries the
-//! private v2 action channel.
+//! iroh address. All carry the same state envelopes; the first two also
+//! carry the private v2 action channel.
 
 use iroh::endpoint::{Connection, ConnectionStats, Endpoint};
 use n0_future::boxed::BoxFuture;
@@ -159,5 +160,57 @@ impl SessionCarrier for HttpsCarrier {
     fn close_owned(&self) -> BoxFuture<()> {
         // The host ends the session once its polls stop.
         self.disconnect()
+    }
+}
+
+/// Owns the pump of a session over any byte stream pair (an in-process
+/// duplex to a host in the same process). Stopping it ends the pump, which
+/// drops both halves: the host reads the end of the stream.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct StreamCarrier {
+    stop: tokio::sync::watch::Sender<bool>,
+    ended: tokio::sync::watch::Receiver<bool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamCarrier {
+    /// Run `pump` until it ends or the carrier stops.
+    pub(crate) fn start(pump: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let (ended_tx, ended) = tokio::sync::watch::channel(false);
+        n0_future::task::spawn(async move {
+            tokio::select! {
+                // Only `stop` sends, and only `true`.
+                _ = stopped.changed() => {}
+                () = pump => {}
+            }
+            ended_tx.send_replace(true);
+        });
+        Self { stop, ended }
+    }
+
+    fn stopped(&self) -> BoxFuture<()> {
+        self.stop.send_replace(true);
+        let mut ended = self.ended.clone();
+        Box::pin(async move {
+            // The pump task always sends before it ends; a closed channel
+            // means it is gone too.
+            let _ = ended.wait_for(|ended| *ended).await;
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SessionCarrier for StreamCarrier {
+    fn abort(&self, _reason: &'static [u8]) {
+        self.stop.send_replace(true);
+    }
+
+    fn disconnect(&self) -> BoxFuture<()> {
+        self.stopped()
+    }
+
+    fn close_owned(&self) -> BoxFuture<()> {
+        self.stopped()
     }
 }
