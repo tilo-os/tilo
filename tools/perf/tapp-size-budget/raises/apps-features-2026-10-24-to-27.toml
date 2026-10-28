@@ -1,0 +1,74 @@
+reason = "Apps grew with features that landed between 2026-10-24 and 2026-10-27, measured by t's app-sizes-aarch64 and app-sizes-x86_64 on the stable candidate dee76148b3 (run ra9218934c3). Link maps of Chat, Activity, Hex Editor and Terminal at 023797e6cf (the last commit with every app in budget) and at that candidate put most of it in each app's own code: Chat +346 KB of mapped code, of which its own views (channel arrangement, report replay, feedback recordings) +63 KB, the serde and collection instances of its new record types +90 KB and vtables +60 KB; Activity +90 KB, almost all its own views; Discord the account link, emoji upload and live window share; Tasks projects, areas and task threads; Shortcuts step nesting, folding and failure handling; Messages and Mail the shared conversation substrate and Mail's outbox; Themes theme import and previews; Diffmerge the decision half of the developer tools. The rest, 2 to 40 KB per app, is framework code each app instantiates: tilo-app's generics (about 5 KB in Hex Editor), the popover prompt's widget (about 4 KB) and four more Widget methods in every vtable. The two generic framework paths that did not depend on the app's type (history's binary preview, a person record's opening) now compile once in the runtime. Each amount is the measured overage plus the budget's 1 % headroom, rounded up to 64 KiB. x86_64 lines cover the apps whose x86_64 size this change could read (Activity 1,123,840 B and Browser 2,080,256 B in that run, Calculator 787,968 B in app-size/calculator-x86_64 at 76b678873f, run r46d79b18f2); the other x86_64 overages wait for their own measurement."
+run = "ra9218934c3"
+
+[apps."so.tilo.activity"]
+x86_64 = 131072
+aarch64 = 65536
+
+[apps."so.tilo.api-tester"]
+aarch64 = 65536
+
+[apps."so.tilo.browser"]
+x86_64 = 196608
+aarch64 = 131072
+
+[apps."so.tilo.calculator"]
+x86_64 = 131072
+aarch64 = 65536
+
+[apps."so.tilo.chat"]
+aarch64 = 458752
+
+[apps."so.tilo.clocks"]
+aarch64 = 65536
+
+[apps."so.tilo.diffmerge"]
+aarch64 = 131072
+
+[apps."so.tilo.discord"]
+aarch64 = 393216
+
+[apps."so.tilo.feeds"]
+aarch64 = 65536
+
+[apps."so.tilo.file-explorer"]
+aarch64 = 65536
+
+[apps."so.tilo.firewall"]
+aarch64 = 65536
+
+[apps."so.tilo.hex-editor"]
+aarch64 = 65536
+
+[apps."so.tilo.mail"]
+aarch64 = 131072
+
+[apps."so.tilo.messages"]
+aarch64 = 131072
+
+[apps."so.tilo.pdf-viewer"]
+aarch64 = 65536
+
+[apps."so.tilo.remote"]
+aarch64 = 65536
+
+[apps."so.tilo.sheets"]
+aarch64 = 65536
+
+[apps."so.tilo.shortcuts"]
+aarch64 = 196608
+
+[apps."so.tilo.tasks"]
+aarch64 = 196608
+
+[apps."so.tilo.terminal"]
+aarch64 = 65536
+
+[apps."so.tilo.themes"]
+aarch64 = 131072
+
+[apps."so.tilo.tube"]
+aarch64 = 65536
+
+[apps."so.tilo.video-editor"]
+aarch64 = 65536

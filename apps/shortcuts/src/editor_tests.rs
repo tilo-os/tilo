@@ -292,13 +292,13 @@ fn an_unanswered_catalogue_is_explained_plainly() {
 }
 
 /// A step that holds steps of its own: `if true then …`.
-fn condition(steps: serde_json::Value) -> Step {
+fn condition(steps: &serde_json::Value) -> Step {
     step(json!({"id": "maybe", "step": "if", "cond": {"literal": true}, "then": steps}))
 }
 
 #[test]
 fn a_step_rests_one_level_deeper_in_the_block_of_the_step_above_it() {
-    let top = vec![condition(json!([])), list()];
+    let top = vec![condition(&json!([])), list()];
     assert_eq!(
         nest_into(&top, "1"),
         Some(Nesting {
@@ -310,7 +310,7 @@ fn a_step_rests_one_level_deeper_in_the_block_of_the_step_above_it() {
 
     // Past whatever the block above already holds, so adding a step to a
     // condition that has some keeps the order it has.
-    let filled = vec![condition(json!([create(&json!({}))])), list()];
+    let filled = vec![condition(&json!([create(&json!({}))])), list()];
     assert_eq!(
         nest_into(&filled, "1"),
         Some(Nesting {
@@ -321,8 +321,8 @@ fn a_step_rests_one_level_deeper_in_the_block_of_the_step_above_it() {
 
     // A step already inside a block nests into its neighbour's block.
     let inside = vec![
-        condition(json!([condition(json!([])), list()])),
-        condition(json!([])),
+        condition(&json!([condition(&json!([])), list()])),
+        condition(&json!([])),
     ];
     assert_eq!(
         nest_into(&inside, "0.then.1"),

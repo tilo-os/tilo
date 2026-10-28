@@ -4,7 +4,7 @@
 //!
 //! The window's record is read as its workspace committed it, the state
 //! History and Activity read too; its last
-//! [`RECORDING_WINDOW_MS`](tilo_app::feedback::recording::RECORDING_WINDOW_MS)
+//! [`RECORDING_WINDOW_MS`]
 //! become a recording only once the person includes one in a review. The
 //! recording's bytes are kept where the destination Chat's content lives
 //! on this device, so whoever may read that Chat fetches them on its route

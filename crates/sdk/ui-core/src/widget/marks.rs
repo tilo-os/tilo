@@ -49,7 +49,7 @@ pub enum Mark {
     ExternalLink(String),
     /// A `link` whose target names another resource of this desktop: the
     /// address `tilo://open#…` a reference is written as
-    /// ([`crate::RESOURCE_LINK_SCHEME`](crate::convert::RESOURCE_LINK_SCHEME)).
+    /// (`RESOURCE_LINK_SCHEME`).
     /// The marked text is the label shown — the resource's title or its kind
     /// — and activating it opens the resource through its own app's `open`,
     /// as a chip does. The address, not the label, is what it opens.

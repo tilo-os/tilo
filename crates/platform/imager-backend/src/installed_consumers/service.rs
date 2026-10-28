@@ -152,6 +152,20 @@ pub struct Selected {
     pub bundle: PathBuf,
 }
 
+impl Selected {
+    /// What `--receiving-browser` prints, for the receiving fixture's admission.
+    pub fn json(&self) -> Value {
+        json!({
+            "package_id_hex": self.package_id_hex,
+            "publisher_key_hex": self.publisher_key_hex,
+            "runtime": self.runtime,
+            "browser": self.browser.to_string_lossy(),
+            "version": self.version,
+            "bundle": self.bundle.to_string_lossy(),
+        })
+    }
+}
+
 /// Where the image store keeps each package's signed record, `<package id>.pkg`.
 const IMAGE_PACKAGES: &str = "/usr/share/tilo-apps/pkgs";
 

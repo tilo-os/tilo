@@ -758,6 +758,33 @@ impl ChannelGroup {
         }
     }
 
+    /// Leave this member alone in the group, in one commit nobody else
+    /// receives: the group goes on at the next epoch with every content key
+    /// held so far. A device taking over a channel whose steward is away
+    /// starts so, as a genesis requires, and admits the others again as
+    /// they ask.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `OpenMLS` error when the removal cannot be committed.
+    pub(crate) fn remove_others(&mut self) -> Result<()> {
+        let own: &[u8] = self.member.name();
+        let others: Vec<LeafNodeIndex> = self
+            .member_identities()
+            .into_iter()
+            .filter(|(_, identity)| identity.as_slice() != own)
+            .map(|(leaf, _)| LeafNodeIndex::new(leaf))
+            .collect();
+        if others.is_empty() {
+            return Ok(());
+        }
+        self.group
+            .remove_members(&self.member.provider, &self.member.signer, &others)
+            .map_err(Error::openmls)?;
+        self.merge_pending_transaction()?;
+        Ok(())
+    }
+
     /// Finish a pending member commit restored from a sealed crash-recovery
     /// checkpoint. Returns `false` when no transaction is pending.
     ///

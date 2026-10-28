@@ -206,11 +206,18 @@ pub(crate) fn runs_of(tracker: &Tracker) -> Vec<TrackerRun> {
 /// The model a sub-issue's run plans with: its own, else its parent's, so a
 /// part of a task works on the model the task was set to and not on
 /// whichever model its own agent happens to plan with.
+///
+/// A run records the model it captured when it started, and an issue records
+/// the one a person chose for it afterwards; either answers for the issue.
 fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
     let mut seen = 0;
     let mut node = issue;
     loop {
-        if let Some(model) = node.run.as_ref().and_then(|run| run.model.clone()) {
+        if let Some(model) = node
+            .model
+            .clone()
+            .or_else(|| node.run.as_ref().and_then(|run| run.model.clone()))
+        {
             return Some(model);
         }
         seen += 1;
@@ -264,12 +271,12 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         starter: run.starter.clone(),
         active: run.phase.active(),
         paused_through: run.paused.as_ref().map(|paused| paused.through),
-        budget: issue
-            .budget
-            .map(|budget| collab_types::task_budget::TaskExecutionBudget {
+        budget: issue.budget.as_ref().map(|budget| {
+            collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
-            }),
+            }
+        }),
         subject: issue
             .subject
             .as_ref()
@@ -446,6 +453,25 @@ mod tests {
         assert_eq!(
             (chosen.profile.as_str(), chosen.model.as_str()),
             ("work", "large")
+        );
+        // The part's own choice answers for it, and its own run's capture
+        // does too, before the task's is reached.
+        let part = subtask.id.clone();
+        person
+            .apply(Tracker::CHOOSE_MODEL.with(tracker::ChooseModel {
+                issue: part.clone(),
+                model: Some(ModelChoice {
+                    profile: "fast".into(),
+                    model: "small".into(),
+                }),
+            }))
+            .unwrap();
+        let state = person.state().unwrap();
+        let subtask = state.issues.get(&part).unwrap();
+        let chosen = inherited_model(&state, subtask).expect("the part's own model answers first");
+        assert_eq!(
+            (chosen.profile.as_str(), chosen.model.as_str()),
+            ("fast", "small")
         );
     }
 }

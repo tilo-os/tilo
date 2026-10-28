@@ -18,7 +18,9 @@ pub mod queue;
 #[cfg(test)]
 mod tests;
 
-pub use event::{ConnectorEvent, Event, ItemRef, RecordEvent, event_of};
+pub use event::{
+    AppEvent, ConnectorEvent, Event, ItemRef, RecordEvent, app_event_object, event_of,
+};
 pub use matching::{
     Armed, Dispatched, Firer, Firing, Skipped, dispatch, edited_paths, field_matches, run_id,
     verbs_of,

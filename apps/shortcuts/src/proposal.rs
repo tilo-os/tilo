@@ -9,7 +9,7 @@
 //!
 //! A proposal is a draft like any other: ordinary invocations of the actions
 //! that were repeated, the least grant those steps need
-//! ([`grant::least_privilege`]), and the checker's verdict before it is
+//! (`grant::least_privilege`), and the checker's verdict before it is
 //! offered. Accepting one opens it as a draft to review; rejecting one is
 //! remembered in the workbench ([`crate::model::Workbench::ignore_proposal`]),
 //! so the same work is not offered twice.

@@ -2004,7 +2004,15 @@ impl Mount {
                 reasons.push("viewport".into());
             }
             if frame.queued_work {
-                reasons.push("queued work".into());
+                let sources = self.frame.queued_work_sources();
+                if sources.is_empty() {
+                    reasons.push("queued work".into());
+                }
+                reasons.extend(
+                    sources
+                        .into_iter()
+                        .map(|source| format!("queued: {source}")),
+                );
             }
             if frame.needs_animation_frame || due {
                 reasons.extend(
@@ -2277,11 +2285,6 @@ impl Mount {
             return self.keep_last_frame(output);
         }
         self.oversized_scene = false;
-        let mut physical = vello::Scene::new();
-        physical.append(
-            frame.scene,
-            Some(ui::scale::composite_transform(viewport.dpr)),
-        );
         self.metric_end("scene", stage);
         let stage = self.metric_start();
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
@@ -2307,6 +2310,10 @@ impl Mount {
             ui::retained_raster::Repaint::Full(_) => (&[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
         };
+        // A small damage renders only the parts that can reach it.
+        let culled = ui::retained_raster::culled_for_damage(frame.scene, parts, key, damage);
+        let mut physical = vello::Scene::new();
+        physical.append(culled.as_ref().unwrap_or(frame.scene), Some(key.to_device));
         let target = ui::retained_raster::RetainedTarget {
             texture: &gpu.surface.target_texture,
             view: &gpu.surface.target_view,
@@ -2372,12 +2379,18 @@ impl Mount {
         }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
+        let whole = culled.is_some().then(|| {
+            let mut whole = vello::Scene::new();
+            whole.append(frame.scene, Some(key.to_device));
+            whole
+        });
+        #[cfg(debug_assertions)]
         check_retained(
             &mut gpu.retained,
             &gpu.surface,
             &mut shared.renderer,
             handle,
-            &physical,
+            whole.as_ref().unwrap_or(&physical),
             key,
             full_redraw,
         );

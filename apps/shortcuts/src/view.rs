@@ -1355,7 +1355,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
 /// step that reaches into another app says so the moment it is added.
 fn grant_section(input: &EditorInput) -> Element {
     let Some((_, draft)) = &input.draft else {
-        return Box::new(ui::widget::optional(None));
+        return ui::widget::optional(None);
     };
     let permissions: Vec<Permission> =
         grant::least_privilege(&draft.program().steps, &input.catalog);
@@ -1382,7 +1382,6 @@ fn grant_section(input: &EditorInput) -> Element {
         ui::i18n!("shortcuts-grant"),
         vec![Box::new(Section::new(lines))],
     ))
-    .into()
 }
 
 /// The draft's program as the text language writes it: the same steps, in

@@ -145,6 +145,56 @@ assert "'brew install --cask tilo-imager' 'brew install tilo-imager'" in site_pu
 assert imager_workflow.count('brew tap "$TILO_HOMEBREW_TAP_NAME"') == 2
 assert "brew tap tilo/" not in imager_workflow
 
+# Every host/architecture the install contract declares is one the release
+# workflow builds and requires, and every download it declares is a file the
+# publication gate carries and the landing-page promotion links. A host whose
+# artifacts are declared and built but never mapped is how Windows ARM64 stayed
+# declared, built, and absent from the download matrix.
+required_matrix = imager_workflow.split("          required=(\n", 1)[1].split("          )\n", 1)[0]
+required_assets = {
+    line.strip() for line in required_matrix.splitlines() if line.strip()
+}
+assert required_assets, "the publication gate requires no artifact"
+
+declared_entries = {}
+for host in contract["imager"]["hosts"]:
+    assert host["architectures"], f"{host['os']} declares no architecture"
+    assert host["downloads"], f"{host['os']} declares no download"
+    for download in host["downloads"]:
+        assert set(download) == {"name", "asset", "pageKey"}, download
+        assert "{arch}" in download["asset"], download
+        assert "{archKey}" in download["pageKey"], download
+        for architecture in host["architectures"]:
+            release_file = download["asset"].replace("{arch}", architecture)
+            assert release_file in required_assets, f"{release_file} is not a release prerequisite"
+            runner = "windows" if host["os"].startswith("Windows") else host["os"].lower()
+            assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
+            arch_key = "X64" if architecture == "x86_64" else "Arm64"
+            entry = download["pageKey"].replace("{archKey}", arch_key)
+            assert entry not in declared_entries, f"{entry} is declared twice"
+            declared_entries[entry] = release_file
+
+# Windows ARM64 was the host this gap dropped: declared, built by its own
+# runner, required by the publication gate, and absent from the page.
+assert {
+    entry: release_file
+    for entry, release_file in declared_entries.items()
+    if entry.startswith("windowsArm64")
+} == {
+    "windowsArm64Setup": "tilo-imager-setup-windows-aarch64.exe",
+    "windowsArm64Standalone": "tilo-imager-windows-aarch64.exe",
+    "windowsArm64Portable": "tilo-imager-windows-aarch64.zip",
+}
+
+# The publisher may not keep a second copy of this list: it has to derive every
+# entry from the contract, and it has to verify the manifest it publishes rather
+# than a hard-kept subset of it.
+assert ".imager.hosts[] | .os as $os | .downloads[]" in site_publisher
+assert ".pageKey" in site_publisher
+assert "jq -r '.assets | keys[]' \"$manifest\"" in site_publisher
+for entry in declared_entries:
+    assert f'"{entry} "' not in site_publisher, entry
+
 # Imager's native Windows release includes `ui`, and with it the host
 # services that re-export the clipboard crate. The Wayland clipboard backend
 # consumes Unix file descriptors, so it must stay on the Linux target of

@@ -128,7 +128,7 @@ fn capture_millis() -> Option<i64> {
 /// Off by default. A test whose subject is a request says
 /// [`allow_external`](Self::allow_external) first, so the dependency is
 /// written down where it is taken, and a lane that requires it
-/// ([`crate::capability`]) can still prove the host has it.
+/// (`crate::capability`) can still prove the host has it.
 #[derive(Debug, Clone, Default)]
 pub struct Network {
     external: bool,

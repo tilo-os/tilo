@@ -74,7 +74,7 @@ pub struct Step {
     pub id: String,
     /// What the run does when the step does not succeed. Absent, the step
     /// must succeed and the run stops at it
-    /// ([`StepPolicy::Fail`](crate::StepPolicy::Fail)).
+    /// ([`StepPolicy::Fail`]).
     #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
     pub on_error: StepPolicy,
     #[serde(flatten)]
@@ -517,6 +517,14 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
     },
+    /// An event an application declared next to its actions, e.g.
+    /// `mail.message`: published as a change to a record of kind
+    /// `<app_id>.<kind>.event`, whose arguments are the event's payload.
+    /// The payload is the typed input.
+    AppEvent {
+        app_id: String,
+        kind: String,
+    },
     IncomingMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_id: Option<String>,
@@ -609,9 +617,10 @@ impl TriggerSpec {
             Self::WorkspaceJoined { .. } => &WORKSPACE_PAYLOAD,
             Self::FileChanged { .. } => &FILE_PAYLOAD,
             Self::FocusMode { .. } => &FOCUS_PAYLOAD,
-            Self::RecordChanged { .. } | Self::Connector { .. } | Self::IncomingMessage { .. } => {
-                &EVENT_PAYLOAD
-            }
+            Self::RecordChanged { .. }
+            | Self::Connector { .. }
+            | Self::IncomingMessage { .. }
+            | Self::AppEvent { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }
@@ -630,6 +639,7 @@ impl TriggerSpec {
             Self::DeviceConnected { .. } => "device_connected",
             Self::RecordChanged { .. } => "record_changed",
             Self::Connector { .. } => "connector",
+            Self::AppEvent { .. } => "app_event",
             Self::IncomingMessage { .. } => "incoming_message",
             Self::NearbyDevice { .. } => "nearby_device",
         }

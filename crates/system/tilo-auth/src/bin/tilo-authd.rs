@@ -35,6 +35,7 @@ fn run() -> Result<()> {
     std::thread::spawn(move || sweeper.forget_wrong_entries_when_due());
     daemon.take_boot_handoff();
     daemon.settle_volume_key();
+    daemon.settle_old_passwords();
     let listener = server::bind(&daemon)?;
     server::serve(&daemon, &listener);
     Ok(())

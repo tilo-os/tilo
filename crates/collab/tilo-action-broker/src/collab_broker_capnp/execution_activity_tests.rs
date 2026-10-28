@@ -1070,6 +1070,8 @@ async fn shortcut_step_observes_once_per_change() {
                     caused_by: None,
                     parent: None,
                     chain: Vec::new(),
+                    resume: None,
+                    from: None,
                 },
             )
             .await

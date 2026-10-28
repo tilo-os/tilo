@@ -13,8 +13,10 @@
 #    have ended, a fingerprint is not offered: a match unwraps nothing, so it
 #    may only confirm someone whose key is already in memory (§4.3). The
 #    pam_tilo step decides; when it cannot, the fingerprint step is skipped.
-# 3. The secret: password-auth, where pam_tilo asks tilo-authd before the old
-#    password check (os/scripts/authselect-tilo.py).
+# 3. The secret: password-auth, where pam_tilo asks tilo-authd, and its answer
+#    or silence is final for every local account; the old password check
+#    behind it sees only accounts tilo-authd does not know
+#    (os/scripts/authselect-tilo.py).
 -auth      sufficient                  pam_tilo.so boot_sign_in=greetd
 auth       [success=ignore default=1]  pam_tilo.so fingerprint
 -auth      sufficient                  pam_fprintd.so
