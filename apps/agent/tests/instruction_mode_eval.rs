@@ -19,8 +19,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, json};
-use tilo_agent::transform::{self, Interaction, RESPOND_TIMEOUT, TIMEOUT, TransformModel};
+use tilo_agent::transform::{self, RESPOND_TIMEOUT, TIMEOUT, TransformModel};
 use tilo_automation::AGENT_RESPOND_ACTION;
 
 /// The evaluation set, as the repository carries it.
