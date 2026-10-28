@@ -121,12 +121,21 @@ impl AgentParticipant {
                     }),
                 }
             }
+            // A question travels between a person's own devices; an agent
+            // neither asks it nor answers it.
+            RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+                RemoteActionMessage::ConfirmationResponse {
+                    correlation,
+                    result: Err(ActionHostError::ConfirmationRequired),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
-            | RemoteActionMessage::CancelResponse { .. } => return,
+            | RemoteActionMessage::CancelResponse { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {

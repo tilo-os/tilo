@@ -148,7 +148,7 @@ fn visit_dir(dir: &Path, excluded: &HashSet<PathBuf>, kinds: &mut Kinds) -> Resu
     if !dir.is_dir() || excluded.contains(dir) {
         return Ok(());
     }
-    let mut files = Vec::new();
+    let mut candidates = Vec::new();
     let mut dirs = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
@@ -157,22 +157,29 @@ fn visit_dir(dir: &Path, excluded: &HashSet<PathBuf>, kinds: &mut Kinds) -> Resu
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let declares = source.contains("resource") || source.contains("Resource");
-            if !declares && !source.contains("cfg(") {
+            // A kind is named only by a `resource(kind = "...")` attribute or
+            // the `KIND` of an `impl Resource for`: a file without either
+            // declares none, however often it says "resource".
+            let declares = (source.contains("resource(") && source.contains("kind"))
+                || (source.contains("Resource for") && source.contains("KIND"));
+            // A file that declares no kind is parsed only for the test-only
+            // modules it declares in files of their own (`#[cfg(test)] mod
+            // tests;`); most files carry only inline test modules, and parsing
+            // every one of them made a scan of the SDK take most of a minute.
+            if !declares && (!source.contains("cfg(") || !declares_module_file(&source)) {
                 continue;
             }
-            let file =
-                syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
-            files.push((path, declares, file));
+            candidates.push((path, source, declares));
         }
     }
+    let read = read_files(candidates)?;
     let mut excluded = excluded.clone();
-    for (path, _, file) in &files {
-        excluded.extend(test_only_module_paths(path, file));
+    for file in &read {
+        excluded.extend(file.test_only.iter().cloned());
     }
-    for (path, declares, mut file) in files {
-        if declares && !excluded.contains(&path) {
-            kinds.visit_file_mut(&mut file);
+    for file in read {
+        if !excluded.contains(&file.path) {
+            kinds.0.extend(file.kinds.0);
         }
     }
     for dir in dirs {
@@ -181,9 +188,78 @@ fn visit_dir(dir: &Path, excluded: &HashSet<PathBuf>, kinds: &mut Kinds) -> Resu
     Ok(())
 }
 
+/// What one source file says: the files of the test-only modules it
+/// declares, and the kinds it declares itself.
+struct ReadFile {
+    path: PathBuf,
+    test_only: Vec<PathBuf>,
+    kinds: Kinds,
+}
+
+/// Parse `candidates` (path, source, whether it may declare a kind) side by
+/// side: a directory of the SDK holds hundreds of files, and parsing them one
+/// after another was most of a scan. A parsed file stays on the thread that
+/// parsed it; only what it says comes back.
+fn read_files(candidates: Vec<(PathBuf, String, bool)>) -> Result<Vec<ReadFile>> {
+    let read_one = |(path, source, declares): (PathBuf, String, bool)| -> Result<ReadFile> {
+        let mut file =
+            syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+        let test_only = test_only_module_paths(&path, &file);
+        let mut kinds = Kinds::default();
+        if declares {
+            kinds.visit_file_mut(&mut file);
+        }
+        Ok(ReadFile {
+            path,
+            test_only,
+            kinds,
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if candidates.len() < 2 || threads < 2 {
+        return candidates.into_iter().map(read_one).collect();
+    }
+    let per_thread = candidates.len().div_ceil(threads);
+    let mut chunks = Vec::new();
+    let mut rest = candidates;
+    while !rest.is_empty() {
+        let tail = rest.split_off(per_thread.min(rest.len()));
+        chunks.push(rest);
+        rest = tail;
+    }
+    std::thread::scope(|scope| {
+        let reads: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || chunk.into_iter().map(read_one).collect::<Result<Vec<_>>>())
+            })
+            .collect();
+        let mut files = Vec::new();
+        for read in reads {
+            files.extend(
+                read.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("parsing a source file panicked")))?,
+            );
+        }
+        Ok(files)
+    })
+}
+
 /// Where the modules `file` declares out of line and only for tests live:
 /// `name.rs` and `name/` beside a `lib.rs`, `main.rs` or `mod.rs`, and under
 /// a directory named for any other file.
+/// Whether `source` may declare a module whose body is a file of its own
+/// (`mod name;`): a cheap look at the text, which may say yes for a file that
+/// does not, never no for one that does.
+fn declares_module_file(source: &str) -> bool {
+    source.lines().any(|line| {
+        let line = line.trim();
+        line.ends_with(';')
+            && !line.contains('{')
+            && (line.starts_with("mod ") || line.contains(" mod "))
+    })
+}
+
 fn test_only_module_paths(path: &Path, file: &syn::File) -> Vec<PathBuf> {
     let Some(dir) = path.parent() else {
         return Vec::new();

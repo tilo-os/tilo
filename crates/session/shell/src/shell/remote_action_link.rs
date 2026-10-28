@@ -43,6 +43,7 @@ pub enum ReplyKey {
     Cancel(InvocationId),
     Record(u64),
     Feedback(u64),
+    Confirmation(u64),
 }
 
 impl ReplyKey {
@@ -61,6 +62,9 @@ impl ReplyKey {
             RemoteActionMessage::FeedbackRequest { correlation, .. } => {
                 Self::Feedback(*correlation)
             }
+            RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+                Self::Confirmation(*correlation)
+            }
             _ => return None,
         })
     }
@@ -78,6 +82,9 @@ impl ReplyKey {
             RemoteActionMessage::RecordResponse { correlation, .. } => Self::Record(*correlation),
             RemoteActionMessage::FeedbackResponse { correlation, .. } => {
                 Self::Feedback(*correlation)
+            }
+            RemoteActionMessage::ConfirmationResponse { correlation, .. } => {
+                Self::Confirmation(*correlation)
             }
             _ => return None,
         })

@@ -93,10 +93,11 @@ def follow(run: str) -> dict[str, dict]:
     """Wait for `run` to end; its results by check."""
     results: dict[str, dict] = {}
     while True:
-        # `t follow` streams the run's results to its end; a client stopped early (a dropped
-        # connection) loses nothing, so follow again until t says the verification ended.
+        # `t follow` streams the run's results and ends with `done`; a client stopped early (a
+        # dropped connection) loses nothing, so follow again until the run is done.
         proc = subprocess.Popen(["t", "follow", run, "--json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
         assert proc.stdout
+        done = False
         for line in proc.stdout:
             try:
                 event = json.loads(line)
@@ -104,15 +105,18 @@ def follow(run: str) -> dict[str, dict]:
                 continue
             if event.get("type") == "result":
                 results[event["check"]] = event
+            done = done or event.get("type") == "done"
         proc.wait()
-        status = json.loads(t("stable"))
-        if any(v["run"] == run and v.get("finished_ms") for v in status.get("verifications", [])):
+        if done:
             return results
         time.sleep(5)
 
 
 def verify(sha: str, checks: list[str]) -> str:
-    out = subprocess.run(["t", "stable", "verify", sha, *checks, "--human"], cwd=ROOT,
+    usage = subprocess.run(["t", "stable", "verify", "--help"], cwd=ROOT, capture_output=True, text=True).stdout
+    # A candidate goes ahead of idle sweeps where this t lets the stabiliser say so.
+    priority = ["--priority", "high"] if "--priority" in usage else []
+    out = subprocess.run(["t", "stable", "verify", *priority, sha, *checks, "--human"], cwd=ROOT,
                          capture_output=True, text=True)
     line = (out.stdout + out.stderr).strip().splitlines()
     for word in " ".join(line).split():

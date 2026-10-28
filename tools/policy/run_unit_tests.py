@@ -58,7 +58,7 @@ SHARDS = {
     "test_ci_run.py": 3,
     "test_pre_push.py": 3,
     "test_component_manifest.py": 3,
-    "test_unused_dependencies.py": 3,
+    "test_unused_dependencies.py": 6,
     "test_changed_rust_comparison.py": 2,
     "test_browser_runtime_release.py": 2,
     "test_smoke_shards.py": 2,

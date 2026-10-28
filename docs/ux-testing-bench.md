@@ -66,7 +66,9 @@ Each native run exports the permission-filtered shell catalogue to `initial.acti
 
 ## Matrix and limits
 
-`--matrix` executes all eight original journeys across baseline, compact (800×700), light, high-contrast, Retina input scale and 200% text: 48 runs. Click routes use the actual semantic control bounds. Files scrolling uses its real viewport and a target-relative stationary workspace chip. Settings also scrolls its General body to the summary and back before renaming, within the original click/key budget.
+`--matrix` executes all nine journeys across baseline, compact (800×700), light, high-contrast, Retina input scale and 200% text: 54 runs. Click routes use the actual semantic control bounds. Files scrolling uses its real viewport and a target-relative stationary workspace chip. Settings also scrolls its General body to the summary and back before renaming, within the original click/key budget.
+
+`copy-paste.json` copies all of one document and pastes it into another, all through the keyboard: select all, copy, open the second file, paste. Its select-all checkpoint reads the editor's published value and text selection, which is the only way a document's selection is checkable without reading pixels. An editor that draws a selection but publishes none fails it at the source.
 
 Contrast remains two explicit rendered pixel pairs per variant at a minimum 4.5:1. `VARIANT_PIXEL_PROBES` in `run-suite.py` contains separately authored compact and large-text glyph interiors; other variants retain the original pairs. These probes deliberately sample the Home name and app shortcut hint, not icons or blank wallpaper. When typography/layout changes, inspect the rendered glyphs and re-author affected probes; do not lower the contrast threshold.
 

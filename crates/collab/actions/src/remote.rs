@@ -39,15 +39,23 @@ pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
 
 mod catalogue;
+mod confirmation;
 mod content_put;
 pub mod crash_records;
 pub mod feedback;
 mod nodes;
 pub mod own_device;
 mod pending;
+mod providers;
 mod wait;
 mod within;
 pub mod workspace_activity;
+
+pub use confirmation::{Confirmation, ConfirmationQuestion, ConfirmationReply};
+pub use providers::{
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
+    WORKSPACE_PROVIDER,
+};
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
@@ -723,37 +731,6 @@ impl InvokeRequest {
             && *appearance == other.appearance
     }
 }
-
-/// Explicit confirmation carried with an invocation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Confirmation {
-    Confirmed,
-    /// The caller typed the phrase the contract asks for.
-    Phrase(String),
-    /// The person the caller acts for confirmed this very invocation on
-    /// their own device: the host hands the caller this token, which names
-    /// that answer. Only a person acting themselves confirms by their own
-    /// word; anyone acting for them carries the person's answer.
-    Witnessed(String),
-}
-
-/// Provider token naming the calling application's own connection, for an
-/// app that routes one of its own actions through the host.
-pub const OWN_PROVIDER: &str = "self";
-
-/// Prefix of the provider token for actions a workspace itself offers
-/// rather than an application; see [`workspace_provider`].
-pub const WORKSPACE_PROVIDER: &str = "workspace";
-
-/// Resource prefix of a workspace's "open this application" actions.
-pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
-
-/// Resource kind of an installed Tilo application a workspace lists, which
-/// a catalogue query's `resource_name` answers whole.
-pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
-
-/// Action id that opens an application into a workspace.
-pub const APPLICATION_OPEN_ACTION: &str = "open";
 
 /// Action id that closes a running application's windows in a workspace.
 pub const APPLICATION_CLOSE_ACTION: &str = "close";
@@ -1463,6 +1440,16 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<RecordPiece, ActionHostError>,
     },
+    /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
+    ConfirmationRequest {
+        correlation: u64,
+        question: ConfirmationQuestion,
+    },
+    /// Answer to [`Self::ConfirmationRequest`], same correlation.
+    ConfirmationResponse {
+        correlation: u64,
+        result: Result<ConfirmationReply, ActionHostError>,
+    },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1562,6 +1549,7 @@ impl RemoteActionMessage {
                 | Self::Cancel { .. }
                 | Self::RecordRequest { .. }
                 | Self::FeedbackRequest { .. }
+                | Self::ConfirmationRequest { .. }
         )
     }
 }
@@ -1713,12 +1701,17 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 }),
             })
         }
+        // A question is the person's to answer, on the device they are at.
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
+            confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
+        ),
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::RecordResponse { .. }
-        | RemoteActionMessage::FeedbackResponse { .. } => return None,
+        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::ConfirmationResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1765,12 +1758,16 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+            confirmation::unanswered(*correlation, error)
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::RecordResponse { .. }
-        | RemoteActionMessage::FeedbackResponse { .. } => return None,
+        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::ConfirmationResponse { .. } => return None,
     })
 }
 

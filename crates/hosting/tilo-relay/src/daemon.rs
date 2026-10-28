@@ -342,6 +342,11 @@ pub struct Relay {
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
+    /// The one in-process access to its workspaces' records, shared with the
+    /// rooms: a read of a workspace's retention through it waits for every
+    /// host commit the rooms queued there, which a separate one would not
+    /// know of.
+    room_records: crate::room_records::RoomRecords,
     /// Exact server-side room ceiling for native interactive startup. A
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
@@ -889,6 +894,13 @@ impl Relay {
             node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
+        let room_records = crate::room_records::RoomRecords::new(
+            workspaces.clone(),
+            identity.device_cert.device_public_key,
+            identity.user_public_key,
+            identity.device_signing_key.clone(),
+            metrics.clone(),
+        );
         let rooms = if governs_rooms {
             Some(
                 crate::rooms::Rooms::open(
@@ -901,13 +913,7 @@ impl Relay {
                             state_root: cfg.state_root.clone(),
                             shell_payloads: shell_payloads.clone(),
                         },
-                        records: crate::room_records::RoomRecords::new(
-                            workspaces.clone(),
-                            identity.device_cert.device_public_key,
-                            identity.user_public_key,
-                            identity.device_signing_key.clone(),
-                            metrics.clone(),
-                        ),
+                        records: room_records.clone(),
                         endpoint: endpoint.clone(),
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
@@ -1050,6 +1056,7 @@ impl Relay {
             interactive_workspace_id,
             interactive_owner_trust,
             rooms,
+            room_records,
         })
     }
 
@@ -1343,13 +1350,7 @@ impl Relay {
     /// for a service embedded in the host process.
     #[must_use]
     pub fn room_records(&self) -> crate::room_records::RoomRecords {
-        crate::room_records::RoomRecords::new(
-            self.workspaces.clone(),
-            self.identity.cert.device_public_key,
-            self.identity.user_public_key,
-            self.identity.signing_key.clone(),
-            self.metrics.clone(),
-        )
+        self.room_records.clone()
     }
 }
 

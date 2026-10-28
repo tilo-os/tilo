@@ -304,6 +304,23 @@ pub fn claimed(before: &SharedDesktop, after: &SharedDesktop, writer: &str) -> V
         .collect()
 }
 
+/// The windows of `before` still in `after` that `after` binds to another
+/// record than the one they showed: a record route is a window's identity,
+/// so nobody rebinds it, not even its maker.
+#[must_use]
+pub fn rebound_windows(before: &SharedDesktop, after: &SharedDesktop) -> Vec<TabId> {
+    let shown = index(&after.tree);
+    let now: HashMap<TabId, &String> = after.records.iter().map(|(t, r)| (*t, r)).collect();
+    let mut rebound: Vec<TabId> = before
+        .records
+        .iter()
+        .filter(|(tab, record)| shown.tabs.contains_key(tab) && now.get(tab) != Some(&record))
+        .map(|(tab, _)| *tab)
+        .collect();
+    rebound.compact_sort();
+    rebound
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
