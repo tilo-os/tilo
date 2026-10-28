@@ -219,7 +219,10 @@ release = ["{commit}", "{rust}"]
 tlog = true
 dev_signed = true
 gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
-publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" } }
+# The publication pushes archives of both architectures, so where it runs changes nothing it
+# publishes. Pushes from the x86_64 micro-VMs stalled at about 1.2 GB of the builder's layers,
+# every time, while the same blobs go through from arm64.
+publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" }, requires = ["arch=arm64"] }
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"

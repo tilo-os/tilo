@@ -6565,7 +6565,7 @@ needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch6
 optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
 id_token = ["registry.tilo.so"]
-requires = ["arch=any"]
+requires = ["arch=arm64"]
 requirement = { cores = 2, memory = "24GiB" }
 on = ["main", "dispatch", "stable"]
 
