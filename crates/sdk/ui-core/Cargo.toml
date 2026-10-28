@@ -382,6 +382,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 
 [dev-dependencies]
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
+# The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
+# enabling it here runs the integration tests that drive them whenever the
+# package is tested, not only when a dependant happens to unify the feature in.
+tilo-ui = { path = ".", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true

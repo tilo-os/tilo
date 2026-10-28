@@ -20535,6 +20535,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-tts",
+ "tilo-ui",
  "tilo-ui-graph",
  "tilo-ui-paint",
  "tilo-vello",
