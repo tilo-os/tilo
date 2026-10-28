@@ -330,38 +330,61 @@ fn put(fixture: &Fixture, bytes: &[u8]) -> String {
     reference.trim_start_matches("tilo.content:").to_owned()
 }
 
-/// Each put appends one line beside the file's first, and the attributions
-/// stay bounded: once the lines reach the size of the snapshot, the next put
-/// rewrites the file whole instead of appending to it forever. Every
-/// attribution a room still holds survives that.
+/// Each put appends one line beside the file's first, and the file stays as
+/// long as the content the room holds, not as many puts as the device ever
+/// made: once the appended lines reach the size of the snapshot, the next put
+/// rewrites the file whole, dropping the attributions of content the room no
+/// longer holds on the way.
 #[test]
-fn the_attribution_log_stays_bounded_and_keeps_every_put_a_room_holds() {
+fn the_attribution_log_stays_bounded_by_what_rooms_hold() {
     let fixture = fixture();
     let path = fixture
         .journal
         .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
-    let mut hashes = Vec::new();
+    // Content the room keeps dropping, as an app discards what it uploaded.
     let mut longest = 0;
-    for n in 0..64_u32 {
-        let mut bytes = n.to_le_bytes().to_vec();
-        bytes.resize(64, b'x');
-        hashes.push(put(&fixture, &bytes));
-        let len = std::fs::metadata(&path).unwrap().len();
-        longest = longest.max(len);
+    for n in 0..256_u32 {
+        let hash = put(&fixture, &n.to_le_bytes().repeat(16));
+        fixture
+            .shelf
+            .lock()
+            .unwrap()
+            .stored
+            .retain(|(_, stored, _)| *stored != hash);
+        longest = longest.max(std::fs::metadata(&path).unwrap().len());
     }
-    // 64 puts of a 64-byte payload: appended lines would be tens of KiB. The
-    // file is bounded by its own snapshot instead, since compaction rewrote
-    // it rather than letting the lines grow-without-bound.
     assert!(
-        longest <= 4096,
-        "the attribution log grew past its snapshot: {longest} bytes"
+        longest < 4096,
+        "the attribution log grew with the puts made, not with what rooms hold: {longest} bytes"
     );
+    // A compaction only happens on the put after the appended lines outgrew
+    // the snapshot, so the file still holds the attributions of the few puts
+    // made since. That backlog is bounded too: it never outgrows the snapshot
+    // line, so the log is bounded by the content rooms hold plus that backlog,
+    // never by every put the device ever made.
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    assert!(
+        records.len() < 32,
+        "the attributions kept are a bounded backlog, not every put made: {}",
+        records.len()
+    );
+}
+
+/// However many puts a room keeps, each one stays attributed: a compaction
+/// folds the appended lines into its snapshot instead of dropping them.
+#[test]
+fn every_put_a_room_holds_keeps_its_attribution_through_a_compaction() {
+    let fixture = fixture();
+    let mut hashes = Vec::new();
+    for n in 0..64_u32 {
+        hashes.push(put(&fixture, &n.to_le_bytes().repeat(16)));
+    }
     let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
     let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
     for hash in &hashes {
         assert!(
             stored.contains(hash),
-            "a put the room holds was dropped: {hash}"
+            "a put the room holds lost its attribution: {hash}"
         );
     }
 }
