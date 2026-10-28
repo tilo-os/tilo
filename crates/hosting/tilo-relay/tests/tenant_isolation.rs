@@ -39,8 +39,7 @@ use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::rooms::{
     CREATE_ROOM, ENTER_ROOM, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
     IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
-    RoomReply, RoomSummary, Rooms, member_resource,
+    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomSummary, Rooms, member_resource,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -185,49 +184,30 @@ async fn governance(rooms: &Rooms, host: &TestDevice, room: &str) -> String {
     format!("{generation} {members:?} {pending:?} {:?}", summary.members)
 }
 
-/// The relay's answer to `command` from `admin`. A transport failure is
-/// neither a grant nor a refusal, so the exchange is tried again, a few
-/// times, before its error is the answer; a refusal or a grant is final.
-async fn administer(
-    admin: &RoomAdminClient,
-    relay: &Relay,
-    command: RoomCommand,
-) -> Result<RoomReply, RoomAdminError> {
-    for _ in 1..3 {
-        match admin.send(relay.node_addr(), command.clone()).await {
-            Err(RoomAdminError::Transport(_) | RoomAdminError::Timeout) => {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-            answer => return answer,
-        }
-    }
-    admin.send(relay.node_addr(), command).await
-}
-
-/// `admin` asks the administration door, whose one remaining command is
-/// removing a member, to remove `victim` from `room`: it must be refused.
+/// `device` asks the relay to remove `victim` from `room`: it must be
+/// refused.
 async fn removal_refused(
     who: &str,
-    admin: &RoomAdminClient,
+    device: &TestDevice,
     relay: &Relay,
     room: &RoomSummary,
     victim: [u8; 32],
 ) {
-    let answer = administer(
-        admin,
-        relay,
-        RoomCommand::Remove {
-            room: room.room.clone(),
-            request: RemoveMemberRequest {
+    let answer = relay
+        .rooms()
+        .unwrap()
+        .remove_member(
+            &room.room,
+            &device.cert,
+            RemoveMemberRequest {
                 request_id: [0xA4; 32],
                 user_public_key: victim,
             },
-        },
-    )
-    .await;
+        )
+        .await;
     assert!(
-        matches!(answer, Err(RoomAdminError::Refused(_))),
-        "{who} must be refused removing a member of {}: {answer:?}",
+        answer.is_err(),
+        "{who} must be refused removing a member of {}",
         room.name
     );
 }
@@ -595,14 +575,10 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
         );
     }
 
-    // The administration door's one command, removing a member, is refused.
-    let ann_admin = RoomAdminClient::new(
-        device_endpoint(&t.ann_laptop).await,
-        t.ann_laptop.cert.clone(),
-    );
+    // Removing a member is refused.
     removal_refused(
         "Acme's inviter",
-        &ann_admin,
+        &t.ann_laptop,
         &t.relay,
         &t.globex,
         t.bob.user_pk,
@@ -889,12 +865,10 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     t.relay.register_agent(delegation).unwrap();
 
     // An agent governs nothing, not even the room it is delegated, and it
-    // is no host person: the administration door refuses it removing anyone,
-    // and the one decision every door asks refuses it the host's
-    // operations and either room's governance.
-    let admin = RoomAdminClient::new(device_endpoint(&agent).await, agent.cert.clone());
-    removal_refused("the agent", &admin, &t.relay, &t.acme, t.ann.user_pk).await;
-    removal_refused("the agent", &admin, &t.relay, &t.globex, t.bob.user_pk).await;
+    // is no host person: the one decision every door asks refuses it
+    // removing anyone, the host's operations and either room's governance.
+    removal_refused("the agent", &agent, &t.relay, &t.acme, t.ann.user_pk).await;
+    removal_refused("the agent", &agent, &t.relay, &t.globex, t.bob.user_pk).await;
     let rooms = t.rooms();
     for room in [&t.acme.room, &t.globex.room] {
         let expires_at_ns = tilo_clock::unix_now_ns()

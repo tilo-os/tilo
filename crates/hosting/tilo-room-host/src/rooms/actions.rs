@@ -6,7 +6,7 @@
 //! a script, the palette or a screen reader invites, lists and cancels
 //! invitations, admits and declines join requests, sets roles, restricts and
 //! unbans members and runs calls over `Envelope::RemoteAction`, without the
-//! `tilo-room-admin/1` and `/rooms` doors those callers cannot speak. The
+//! `/rooms` pages those callers cannot speak. The
 //! desktop administers the rooms it holds this way too.
 //!
 //! Beside it, two providers carry what is not one room's governance

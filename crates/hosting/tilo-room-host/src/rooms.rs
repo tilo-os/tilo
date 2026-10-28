@@ -15,13 +15,11 @@
 //! `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
 //! of the relay's own user, and by other members as far as the room's
 //! governance lets them (`authority`, one decision for every door).
-//! [`ROOM_ADMIN_ALPN`] still removes members, until the actions can ask the
-//! person's own confirmation for it. Any device redeems an invitation over the shared workspace-join
+//! Any device redeems an invitation over the shared workspace-join
 //! protocol, and a page over HTTPS, where someone the room lets invite then
 //! admits it.
 
 mod actions;
-mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
 mod agent_members;
@@ -92,7 +90,6 @@ use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
 pub(crate) use actions::{GovernedPlane, HostRoomActions};
-pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
@@ -110,16 +107,15 @@ pub struct WaitListMail {
     /// link; the entry keeps only its SHA-256.
     pub removal: [u8; 32],
 }
-// The administration vocabulary (the actions' names and answers, and the
-// wire door's) and the device's client, under the daemon's historic paths.
+// The administration vocabulary (the actions' names and answers), under the
+// daemon's historic paths.
 pub use tilo_relay_session::rooms::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, DETACH_HOST,
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
     IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN,
-    RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply,
-    RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
+    PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, RemoveMemberRequest,
+    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;

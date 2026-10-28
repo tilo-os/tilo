@@ -23,7 +23,7 @@ use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::rooms::{
     CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, IssueInvitationRequest, IssuedInvitation,
-    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient, RoomListing, member_resource,
+    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomListing, member_resource,
 };
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
@@ -217,7 +217,6 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let address = relay.node_addr();
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
     // (That Bob's device cannot is `governance_actions`'s to show.)
@@ -406,20 +405,21 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     )
     .await;
 
-    // Alice removes Bob: the relay stops admitting his device. Removal is
-    // still asked at the administration door.
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let generation = admin
-        .remove(
-            address.clone(),
+    // Alice removes Bob: the relay stops admitting his device.
+    let generation = relay
+        .rooms()
+        .unwrap()
+        .remove_member(
             &room.room,
+            &laptop.cert,
             RemoveMemberRequest {
                 request_id: [9; 32],
                 user_public_key: bob.user_pk,
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .generation;
     assert!(generation > room.generation);
     let refused = async {
         let client = RelayClient::connect_to_pinned_host(

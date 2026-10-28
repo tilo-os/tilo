@@ -166,10 +166,9 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a room host answers on.
-const HOST_ALPNS: [&[u8]; 4] = [
+const HOST_ALPNS: [&[u8]; 3] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-    crate::rooms::ROOM_ADMIN_ALPN,
     tilo_relay_session::rooms::private::PRIVATE_ALPN,
 ];
 
@@ -477,10 +476,6 @@ fn host_handlers(
                     rooms.join_service(),
                 ),
             ),
-        ),
-        (
-            crate::rooms::ROOM_ADMIN_ALPN,
-            Arc::new(crate::rooms::RoomAdminProtocol::new(rooms.clone())),
         ),
         (
             tilo_relay_session::rooms::private::PRIVATE_ALPN,

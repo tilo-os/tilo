@@ -1,6 +1,5 @@
 //! Room administration from a device: the names of the actions a relay
-//! serves for it, and the wire vocabulary of [`ROOM_ADMIN_ALPN`] with the
-//! [`RoomAdminClient`] that speaks it.
+//! serves for it, and the requests they carry.
 //!
 //! A relay serves what it governs as actions over `Envelope::RemoteAction`,
 //! addressed to its own device, on a workspace the caller holds there:
@@ -17,25 +16,13 @@
 //!   empty record of an app they open there first) as provider
 //!   [`MEMBER_ACTIONS_PROVIDER`], on the room's workspace.
 //!
-//! [`ROOM_ADMIN_ALPN`] is kept only for [`RoomCommand::Remove`], which the
-//! actions do not run until the person's own confirmation can be asked for.
-//! A relay refuses every other command there and names the action that
-//! replaced it. One bounded postcard request and reply per bidirectional
-//! stream, as in the workspace-join protocol. The request names the caller's
-//! certificate; the relay accepts it only for the authenticated Iroh endpoint
-//! it arrived on. The relay's side, `RoomAdminProtocol`, stays in
-//! `tilo-relay`.
-//!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
 
 pub mod govern;
 pub mod private;
 
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::{GovernedMember, MemberRole};
 
 /// The provider a relay answers its host operations under: creating,
@@ -194,17 +181,6 @@ pub struct EnteredRoom {
     pub invitation: ActionInvitation,
 }
 
-/// ALPN of room administration: only [`RoomCommand::Remove`] is still
-/// answered here (see the module documentation).
-pub const ROOM_ADMIN_ALPN: &[u8] = b"tilo-room-admin/1";
-
-/// The largest encoded [`RoomAdminRequest`] either side accepts.
-pub const ROOM_ADMIN_MAX_REQUEST_BYTES: usize = 64 * 1024;
-/// The largest encoded [`RoomReply`] either side accepts.
-pub const ROOM_ADMIN_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
-/// How long one room administration exchange may take.
-pub const ROOM_ADMIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-
 pub use tilo_workspace_join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
 };
@@ -251,252 +227,6 @@ pub struct RoomSummary {
     pub generation: u64,
     /// Every person governance records, removed ones included.
     pub members: Vec<GovernedMember>,
-}
-
-/// What an administering device asks of the relay. `room` is a room UUID.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RoomCommand {
-    /// Create a governed workspace named `name`.
-    Create {
-        /// Its name, 1–80 printable characters.
-        name: String,
-    },
-    /// Every governed room.
-    List,
-    /// Admit the calling device to `room` as its owner.
-    Enter {
-        /// The room.
-        room: String,
-    },
-    /// Issue an invitation to `room`.
-    Invite {
-        room: String,
-        request: IssueInvitationRequest,
-    },
-    Cancel {
-        room: String,
-        request: CancelInvitationRequest,
-    },
-    /// The invitations to `room` still redeemable.
-    Pending {
-        /// The room.
-        room: String,
-    },
-    /// Change a member's role in `room`.
-    SetRole {
-        room: String,
-        /// The change.
-        request: SetMemberRoleRequest,
-    },
-    Remove {
-        room: String,
-        /// The removal.
-        request: RemoveMemberRequest,
-    },
-    /// Record only the authenticated admitted person's bounded terminal audit.
-    /// This grants no administration, application authorship or other authority.
-    RecordEffectReceipt {
-        /// The governed room.
-        room: String,
-        /// The broker's terminal invocation identifier.
-        invocation: uuid::Uuid,
-        /// Canonical redacted public receipt; never action arguments or results.
-        redacted: Vec<u8>,
-    },
-    /// Retired claim of a topology namespace: every member writes what it
-    /// made into a room's layout as its own. Kept so the commands after it
-    /// keep their encoded positions; no relay answers it.
-    RetiredClaimTopologyNamespace {
-        /// The governed room.
-        room: String,
-        salt: u16,
-    },
-    /// Let an application author `room`'s records: what opening an app there
-    /// for the first time asks of the room's governor. The host's person only.
-    GrantAppAuthorship {
-        /// The governed room.
-        room: String,
-        /// The application.
-        request: GrantAppAuthorshipRequest,
-    },
-}
-
-impl RoomCommand {
-    /// The provider and action a relay serves this command as, for every
-    /// command but [`Self::Remove`] and the retired namespace claim: what a
-    /// relay that no longer answers it at [`ROOM_ADMIN_ALPN`] names in its
-    /// refusal. `None` for the removal, still answered there, and for the
-    /// claim, answered nowhere.
-    #[must_use]
-    pub const fn replaced_by(&self) -> Option<(&'static str, &'static str)> {
-        /// A room's own governance provider, as `tilo-actions` names it.
-        const GOVERNANCE: &str = "tilo.workspace";
-        match self {
-            Self::Create { .. } => Some((HOST_ACTIONS_PROVIDER, CREATE_ROOM)),
-            Self::List => Some((HOST_ACTIONS_PROVIDER, LIST_ROOMS)),
-            Self::Enter { .. } => Some((HOST_ACTIONS_PROVIDER, ENTER_ROOM)),
-            Self::Invite { .. } => Some((GOVERNANCE, "invite")),
-            Self::Cancel { .. } => Some((GOVERNANCE, "invitation.cancel")),
-            Self::Pending { .. } => Some((GOVERNANCE, "invitation.list")),
-            Self::SetRole { .. } => Some((GOVERNANCE, "set-role")),
-            Self::RecordEffectReceipt { .. } => {
-                Some((MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT))
-            }
-            Self::GrantAppAuthorship { .. } => Some((HOST_ACTIONS_PROVIDER, GRANT_APP_AUTHORSHIP)),
-            Self::Remove { .. } | Self::RetiredClaimTopologyNamespace { .. } => None,
-        }
-    }
-}
-
-/// One room administration request on the wire: the caller's certificate and
-/// its command. The relay honours it only when the certificate's device key is
-/// the authenticated endpoint the request arrived on.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomAdminRequest {
-    /// The calling device's certificate.
-    pub device_cert: DeviceCert,
-    /// What it asks.
-    pub command: RoomCommand,
-}
-
-/// The relay's answer to one [`RoomCommand`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RoomReply {
-    /// The created room.
-    Room(RoomSummary),
-    /// Every governed room.
-    Rooms(Vec<RoomSummary>),
-    Entered {
-        /// Whether governance changed to admit it.
-        changed: bool,
-    },
-    Invitation(IssuedInvitation),
-    /// The redeemable invitations.
-    Pending(Vec<PendingInvitation>),
-    /// A committed governance change.
-    Governance {
-        generation: u64,
-    },
-    /// Done, with nothing to report.
-    Done,
-    /// Refused, and why.
-    Refused(String),
-}
-
-/// Why a room administration exchange failed.
-#[derive(Debug, thiserror::Error)]
-pub enum RoomAdminError {
-    /// The connection or stream failed.
-    #[error("room administration transport: {0}")]
-    Transport(String),
-    /// A message could not be encoded or decoded, or was unexpected.
-    #[error("room administration encoding: {0}")]
-    Codec(String),
-    /// The exchange did not finish in time.
-    #[error("room administration timed out")]
-    Timeout,
-    /// The relay refused the command.
-    #[error("room administration refused: {0}")]
-    Refused(String),
-}
-
-/// A certified device at a relay's [`ROOM_ADMIN_ALPN`]: it removes a member, the
-/// one command still answered there, as far as the room lets its person.
-#[derive(Clone, Debug)]
-pub struct RoomAdminClient {
-    endpoint: iroh::Endpoint,
-    device_cert: DeviceCert,
-}
-
-impl RoomAdminClient {
-    /// Administer from `endpoint`, whose key is `device_cert`'s device key.
-    #[must_use]
-    pub const fn new(endpoint: iroh::Endpoint, device_cert: DeviceCert) -> Self {
-        Self {
-            endpoint,
-            device_cert,
-        }
-    }
-
-    /// Send `command` to the relay at `relay` and return its reply.
-    /// A refusal is returned as [`RoomAdminError::Refused`].
-    pub async fn send(
-        &self,
-        relay: iroh::EndpointAddr,
-        command: RoomCommand,
-    ) -> Result<RoomReply, RoomAdminError> {
-        let reply =
-            n0_future::time::timeout(ROOM_ADMIN_EXCHANGE_TIMEOUT, self.exchange(relay, command))
-                .await
-                .map_err(|_| RoomAdminError::Timeout)??;
-        match reply {
-            RoomReply::Refused(reason) => Err(RoomAdminError::Refused(reason)),
-            reply => Ok(reply),
-        }
-    }
-
-    async fn exchange(
-        &self,
-        relay: iroh::EndpointAddr,
-        command: RoomCommand,
-    ) -> Result<RoomReply, RoomAdminError> {
-        let bytes = postcard::to_stdvec(&RoomAdminRequest {
-            device_cert: self.device_cert.clone(),
-            command,
-        })
-        .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
-        let connection = self
-            .endpoint
-            .connect(relay, ROOM_ADMIN_ALPN)
-            .await
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let (mut send, mut recv) = connection
-            .open_bi()
-            .await
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        tilo_relay_client::frame::write_frame(&mut send, &bytes)
-            .await
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        send.finish()
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let reply = tilo_relay_client::frame::read_frame(&mut recv, ROOM_ADMIN_MAX_REPLY_BYTES)
-            .await
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        connection.close(0u32.into(), b"done");
-        postcard::from_bytes(&reply).map_err(|error| RoomAdminError::Codec(error.to_string()))
-    }
-
-    /// Remove the member `request` names from `room`, and every device of
-    /// theirs: the one command this door still answers. Answers the room
-    /// generation that carries the removal.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::send`].
-    pub async fn remove(
-        &self,
-        relay: iroh::EndpointAddr,
-        room: &str,
-        request: RemoveMemberRequest,
-    ) -> Result<u64, RoomAdminError> {
-        match self
-            .send(
-                relay,
-                RoomCommand::Remove {
-                    room: room.into(),
-                    request,
-                },
-            )
-            .await?
-        {
-            RoomReply::Governance { generation } => Ok(generation),
-            reply => Err(unexpected(&reply)),
-        }
-    }
-}
-
-fn unexpected(reply: &RoomReply) -> RoomAdminError {
-    RoomAdminError::Codec(format!("unexpected room reply {reply:?}"))
 }
 
 #[cfg(test)]
