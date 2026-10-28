@@ -960,7 +960,7 @@ doc = false
 "settings-core" = { path = "../../../apps/settings-core", default-features = false, features = [] }
 "settings-rare" = { path = "../../../apps/settings-rare", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
+"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "test-support", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
@@ -1480,7 +1480,7 @@ doc = false
 "yasna-0_5_2" = { package = "yasna", version = "^0.5.2", default-features = false, features = ["default", "std", "time"] }
 "yazi-0_2_1" = { package = "yazi", version = "^0.2.1", default-features = false, features = ["std"] }
 "yoke-0_8_3" = { package = "yoke", version = "^0.8.3", default-features = false, features = ["alloc", "default", "derive", "serde", "zerofrom"] }
-"zbus-5_16_0" = { package = "zbus", version = "^5.16.0", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+"zbus-5_16_0" = { package = "zbus", path = "../../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 "zbus-lockstep-0_5_2" = { package = "zbus-lockstep", version = "^0.5.2", default-features = false, features = [] }
 "zbus_names-4_3_2" = { package = "zbus_names", version = "^4.3.2", default-features = false, features = [] }
 "zbus_xml-5_1_1" = { package = "zbus_xml", version = "^5.1.1", default-features = false, features = [] }
@@ -1673,7 +1673,7 @@ doc = false
 "derive_builder-0_20_2" = { package = "derive_builder", version = "^0.20.2", default-features = false, features = ["default", "std"] }
 "derive_builder_core-0_20_2" = { package = "derive_builder_core", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_builder_macro-0_20_2" = { package = "derive_builder_macro", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
-"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
+"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
 "derive_more-impl-2_1_1" = { package = "derive_more-impl", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
 "derive_utils-0_15_1" = { package = "derive_utils", version = "^0.15.1", default-features = false, features = [] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
@@ -1953,6 +1953,7 @@ doc = false
 "num-conv-0_2_0" = { package = "num-conv", version = "^0.2.0", default-features = false, features = [] }
 "num-derive-0_4_2" = { package = "num-derive", version = "^0.4.2", default-features = false, features = [] }
 "num-integer-0_1_46" = { package = "num-integer", version = "^0.1.46", default-features = false, features = ["default", "i128", "std"] }
+"num-iter-0_1_46" = { package = "num-iter", version = "^0.1.46", default-features = false, features = ["i128", "std"] }
 "num-traits-0_2_19" = { package = "num-traits", version = "^0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
@@ -2100,7 +2101,7 @@ doc = false
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "time"] }
+"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -2383,7 +2384,7 @@ doc = false
 "yasna-0_5_2" = { package = "yasna", version = "^0.5.2", default-features = false, features = ["default", "std", "time"] }
 "yoke-0_8_3" = { package = "yoke", version = "^0.8.3", default-features = false, features = ["alloc", "default", "derive", "serde", "zerofrom"] }
 "yoke-derive-0_8_2" = { package = "yoke-derive", version = "^0.8.2", default-features = false, features = [] }
-"zbus-5_16_0" = { package = "zbus", version = "^5.16.0", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+"zbus-5_16_0" = { package = "zbus", path = "../../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 "zbus-lockstep-0_5_2" = { package = "zbus-lockstep", version = "^0.5.2", default-features = false, features = [] }
 "zbus-lockstep-macros-0_5_2" = { package = "zbus-lockstep-macros", version = "^0.5.2", default-features = false, features = [] }
 "zbus_macros-5_16_0" = { package = "zbus_macros", version = "^5.16.0", default-features = false, features = ["blocking-api", "default"] }
@@ -3859,7 +3860,7 @@ doc = false
 "yasna-0_5_2" = { package = "yasna", version = "^0.5.2", default-features = false, features = ["default", "std", "time"] }
 "yazi-0_2_1" = { package = "yazi", version = "^0.2.1", default-features = false, features = ["std"] }
 "yoke-0_8_3" = { package = "yoke", version = "^0.8.3", default-features = false, features = ["alloc", "default", "derive", "serde", "zerofrom"] }
-"zbus-5_16_0" = { package = "zbus", version = "^5.16.0", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+"zbus-5_16_0" = { package = "zbus", path = "../../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 "zbus-lockstep-0_5_2" = { package = "zbus-lockstep", version = "^0.5.2", default-features = false, features = [] }
 "zbus_names-4_3_2" = { package = "zbus_names", version = "^4.3.2", default-features = false, features = [] }
 "zbus_xml-5_1_1" = { package = "zbus_xml", version = "^5.1.1", default-features = false, features = [] }
@@ -4757,7 +4758,7 @@ doc = false
 "yasna-0_5_2" = { package = "yasna", version = "^0.5.2", default-features = false, features = ["default", "std", "time"] }
 "yoke-0_8_3" = { package = "yoke", version = "^0.8.3", default-features = false, features = ["alloc", "default", "derive", "serde", "zerofrom"] }
 "yoke-derive-0_8_2" = { package = "yoke-derive", version = "^0.8.2", default-features = false, features = [] }
-"zbus-5_16_0" = { package = "zbus", version = "^5.16.0", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+"zbus-5_16_0" = { package = "zbus", path = "../../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 "zbus-lockstep-0_5_2" = { package = "zbus-lockstep", version = "^0.5.2", default-features = false, features = [] }
 "zbus-lockstep-macros-0_5_2" = { package = "zbus-lockstep-macros", version = "^0.5.2", default-features = false, features = [] }
 "zbus_macros-5_16_0" = { package = "zbus_macros", version = "^5.16.0", default-features = false, features = ["blocking-api", "default"] }

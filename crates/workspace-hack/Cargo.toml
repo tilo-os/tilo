@@ -248,7 +248,7 @@ winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
-zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+zbus = { path = "../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
 zeroize = { version = "1", features = ["derive", "serde"] }
@@ -495,7 +495,7 @@ winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
-zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
+zbus = { path = "../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 zbus_macros = { version = "5", features = ["blocking-api"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
