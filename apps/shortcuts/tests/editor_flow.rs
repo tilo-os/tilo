@@ -993,11 +993,13 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
         .and_then(|node| node.name.clone())
         .expect("the text view draws its text");
 
-    // Every step the blocks hold is a line of the text, named by the
-    // position the editor gives it, and the condition's block is indented.
-    for number in 1..=program.steps.len() + 2 {
+    // Every step the blocks hold is a line of the text, numbered by its
+    // position, and the condition's block is indented under it.
+    for number in 1..=program.steps.len() {
+        let numbered = format!("{number}. ");
         assert!(
-            text.contains(&format!("{number}.")),
+            text.lines()
+                .any(|line| line.trim_start().starts_with(&numbered)),
             "step {number} is in the text: {text}"
         );
     }
