@@ -25,7 +25,7 @@ pub(crate) use tilo_relay_store::durable::stamp;
 #[cfg(feature = "agents")]
 use tilo_relay_store::durable::sync_file_once;
 pub(crate) use tilo_relay_store::durable::{
-    GenerationGc, create_dir, current, durable_write, sync_dir, sync_dir_once,
+    GenerationGc, create_dir, current, durable_write, retire_entries, sync_dir, sync_dir_once,
 };
 use tilo_relay_store::frames::framed_envelope;
 pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
@@ -1510,8 +1510,9 @@ impl WorkspaceStore {
             &mut || write_synced(&checkpoint, bytes),
             &mut || write_synced(&selection, name.as_bytes()),
             &mut || sync_dir(&v2),
+            &mut || Ok(retire_entries(&staged)),
+            &mut || Ok(retire_entries(&lineage)),
         ])?;
-        barriers(&mut [&mut || sync_dir(&staged), &mut || sync_dir(&lineage)])?;
         Ok(Some(FreshCheckpoint {
             lineage,
             staged,
