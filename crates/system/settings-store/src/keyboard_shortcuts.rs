@@ -513,6 +513,14 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         ShortcutCategory::Accessibility,
         &[key(&["Alt", "Shift"], "numlock")],
     ),
+    // The chord every screen answers, before sign-in too
+    // (`ui::screen_reader_chord`); the one Windows uses.
+    fixed(
+        "fixed-toggle-screen-reader",
+        "shortcut-toggle-screen-reader",
+        ShortcutCategory::Accessibility,
+        &[key(&["Ctrl", "Super"], "enter")],
+    ),
 ];
 
 /// Chords the desktop keeps for itself only in some states, so they are
@@ -558,6 +566,17 @@ pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
         .iter()
         .chain(RESERVED_SHORTCUTS)
         .find(|fixed| fixed.owns(chord))
+}
+
+impl ShortcutConfig {
+    /// Whether the desktop answers `chord` before a stored binding of
+    /// `action` to it: a chord fixed since the binding was saved
+    /// (Ctrl+Super+Enter turns the screen reader on and off), other than
+    /// the action's own default in `self`, the default table. Such a
+    /// binding would never run.
+    pub(crate) fn shadows(&self, action: ShortcutAction, chord: &KeyChord) -> bool {
+        self.bindings.get(&action) != Some(chord) && desktop_owner(chord).is_some()
+    }
 }
 
 /// One row of the catalogue.
@@ -794,6 +813,32 @@ mod tests {
             Err(ShortcutConfigError::Fixed("fixed-close-tab"))
         );
         assert_eq!(config, before);
+    }
+
+    #[test]
+    fn the_screen_reader_chord_is_fixed_and_wins_over_a_stored_binding() {
+        let chord = chord("Ctrl+Super+Enter");
+        assert_eq!(
+            desktop_owner(&chord).map(|fixed| fixed.id),
+            Some("fixed-toggle-screen-reader")
+        );
+        let mut config = ShortcutConfig::default();
+        assert_eq!(
+            config.set(ShortcutAction::OpenFiles, chord.clone()),
+            Err(ShortcutConfigError::Fixed("fixed-toggle-screen-reader"))
+        );
+        // One saved before the desktop fixed it never runs; the action
+        // keeps its default instead of a dead chord.
+        let mut stored = ShortcutConfig::default();
+        stored.bindings.insert(ShortcutAction::OpenFiles, chord);
+        assert_eq!(
+            ShortcutConfig::normalise(stored)
+                .bindings
+                .get(&ShortcutAction::OpenFiles),
+            ShortcutConfig::default()
+                .bindings
+                .get(&ShortcutAction::OpenFiles)
+        );
     }
 
     #[test]

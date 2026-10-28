@@ -142,6 +142,7 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard shortcuts
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-toggle-screen-reader = Turn the screen reader on or off
 shortcut-vim-navigation = Vim navigation
 shortcut-dismiss = Dismiss
 
@@ -1030,6 +1031,8 @@ osd-pointer-held = The app holds the pointer. { $chord } releases it.
 osd-pointer-released = Pointer released
 osd-mouse-keys-on = Mouse keys on
 osd-mouse-keys-off = Mouse keys off
+osd-screen-reader-on = Screen reader on
+osd-screen-reader-off = Screen reader off
 
 # System status, the tray's accessible summary
 status-wired = Wired

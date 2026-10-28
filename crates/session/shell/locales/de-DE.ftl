@@ -140,6 +140,7 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastenkürzel
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-toggle-screen-reader = Bildschirmleser ein- oder ausschalten
 shortcut-vim-navigation = Vim-Navigation
 shortcut-dismiss = Schließen
 
@@ -1027,6 +1028,8 @@ osd-pointer-held = Die App hält den Zeiger. { $chord } gibt ihn frei.
 osd-pointer-released = Zeiger freigegeben
 osd-mouse-keys-on = Maustasten an
 osd-mouse-keys-off = Maustasten aus
+osd-screen-reader-on = Bildschirmleser an
+osd-screen-reader-off = Bildschirmleser aus
 
 # System status, the tray's accessible summary
 status-wired = Kabelgebunden

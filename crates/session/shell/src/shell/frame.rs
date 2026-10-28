@@ -4206,6 +4206,12 @@ impl FrameBuilder {
         self.narrator.enabled()
     }
 
+    /// The screen reader chord turned the reader `on` or off: say so now,
+    /// ahead of the settings poll that follows the saved change.
+    pub fn screen_reader_turned(&mut self, on: bool) {
+        self.narrator.turned_by_chord(on);
+    }
+
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme || self.shots_theme_pinned {
             return;
