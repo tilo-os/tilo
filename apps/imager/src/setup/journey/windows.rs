@@ -736,33 +736,23 @@ impl InstallerPreview {
                     )));
                 }
             }
-            let commands = self.commands.clone();
             content = content.push(Box::new(Field::new(
                 t("installer-windows-exclusion-reason"),
-                TextInput::from_state(&self.windows.exclusion_reason)
-                    .with_id("windows.exclusion-reason")
-                    .on_change(move |value| {
-                        commands.borrow_mut().push(
-                            InstallerPreviewEffect::SetWindowsExclusionReason {
-                                value: value.to_string(),
-                            },
-                        )
-                    }),
+                self.bound(
+                    TextInput::from_state(&self.windows.exclusion_reason)
+                        .with_id("windows.exclusion-reason"),
+                    InstallerPreviewEffect::SET_WINDOWS_EXCLUSION_REASON,
+                ),
             )));
-            let commands = self.commands.clone();
             content = content.push(Box::new(Field::new(
                 t("installer-windows-password"),
-                TextInput::from_state(&self.windows.password)
-                    .with_kind(TextInputKind::Password)
-                    .with_secret(true)
-                    .with_id("windows.password")
-                    .on_change(move |value| {
-                        commands.borrow_mut().push(
-                            InstallerPreviewEffect::SetWindowsPreparationPassword {
-                                value: value.to_string(),
-                            },
-                        )
-                    }),
+                self.bound(
+                    TextInput::from_state(&self.windows.password)
+                        .with_kind(TextInputKind::Password)
+                        .with_secret(true)
+                        .with_id("windows.password"),
+                    InstallerPreviewEffect::SET_WINDOWS_PREPARATION_PASSWORD,
+                ),
             )));
             content = content.push(Box::new(self.button(
                 "windows.export",

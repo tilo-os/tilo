@@ -460,10 +460,14 @@ impl Target {
 
     /// The destination-compatibility page. Important limitations are expanded
     /// by the shared report sections; working components stay compact.
-    pub(super) fn page(&self, commands: &Commands) -> Column {
+    pub(super) fn page(
+        &self,
+        commands: &Commands,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    ) -> Column {
         let mut body = page::stack().with_rhythm(Rhythm::Sibling);
         if self.report.is_none() {
-            body = body.push(Box::new(self.identity_section(commands)));
+            body = body.push(Box::new(self.identity_section(commands, actions)));
         }
         if let Some(report) = self.effective_report() {
             for section in crate::setup::view::another_computer_report_sections(&report) {
@@ -482,25 +486,26 @@ impl Target {
         body.push(Box::new(self.destination_check_section()))
     }
 
-    fn identity_section(&self, commands: &Commands) -> Section {
+    fn identity_section(
+        &self,
+        commands: &Commands,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    ) -> Section {
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (field, id) in FIELD_IDS {
-            let changes = commands.clone();
-            let submits = commands.clone();
             let field_name = field;
-            let name = field.to_string();
-            let input = TextInput::from_state(self.field_state(field))
-                .with_id(id)
-                .with_kind(TextInputKind::Name)
-                .on_change(move |value| {
-                    changes
-                        .borrow_mut()
-                        .push(InstallerPreviewEffect::SetTargetIdentityField {
-                            field: name.clone(),
-                            value: value.to_string(),
-                        });
-                })
-                .on_submit(move |_| queue_continue(&submits));
+            let input = super::submits(
+                actions,
+                super::bound(
+                    actions,
+                    TextInput::from_state(self.field_state(field))
+                        .with_id(id)
+                        .with_kind(TextInputKind::Name),
+                    InstallerPreviewEffect::SET_TARGET_IDENTITY_FIELD
+                        .map(move |value: String| (field.to_owned(), value)),
+                ),
+                super::continues(),
+            );
             let field = Field::new(self.field_label(field), input)
                 .with_label_placement(Some(LabelPlacement::Above));
             rows.push(Box::new(

@@ -83,13 +83,14 @@ use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, ResourceSurface, SurfaceCx, ViewCx,
+    ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::tilo_resource::{self, ActionRef, Binds, Effect};
 
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
@@ -607,6 +608,36 @@ fn queue_continue(commands: &Commands) {
     }
 }
 
+/// `input` whose Enter invokes the page's published `effect`, given the
+/// text; Enter does nothing where nothing hosts the page.
+pub(super) fn submits(
+    actions: Option<&Actions<Imager>>,
+    input: TextInput,
+    effect: impl Binds<InstallerPreviewEffect, String>,
+) -> TextInput {
+    match actions.and_then(|actions| actions.effect_binding(effect)) {
+        Some(binding) => input.on_submit_action(binding),
+        None => input.with_enter_submits(true),
+    }
+}
+
+/// Continue, as Enter in a field of the page asks for it.
+pub(super) fn continues() -> impl Binds<InstallerPreviewEffect, String> {
+    InstallerPreviewEffect::CONTINUE_PREVIEW.map(|_: String| ())
+}
+
+/// [`InstallerPreview::bound`], for the parts of the page built apart from it.
+pub(super) fn bound<I: 'static, C: ActionControl<I>>(
+    actions: Option<&Actions<Imager>>,
+    control: C,
+    effect: impl Binds<InstallerPreviewEffect, I>,
+) -> C {
+    match actions {
+        Some(actions) => actions.bind_effect(control, effect),
+        None => control,
+    }
+}
+
 pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
     let media = cx.local(false);
     let prepared = cx.local(None::<std::sync::Arc<prepared_media::PreparedMedia>>);
@@ -723,6 +754,9 @@ pub struct InstallerPreview {
     media_preparation: prepared_media::Controller,
     media_return: Option<ui::LocalState<Option<prepared_media::ReturnReason>>>,
     dispatcher: Option<ui::framework::Dispatcher<Imager>>,
+    /// The window's published effects, which the page's controls are bound
+    /// to; `None` where nothing hosts the page.
+    actions: Option<Actions<Imager>>,
     migration_selection: migration_selection::Selection,
     portable_source: portable_source::Selection,
     recovery: super::migration_recovery::Flow,
@@ -803,6 +837,7 @@ impl Default for InstallerPreview {
             media_return: None,
             media_preparation: prepared_media::Controller::default(),
             dispatcher: None,
+            actions: None,
             migration_selection: migration_selection::Selection::default(),
             portable_source: portable_source::Selection::default(),
             recovery: super::migration_recovery::Flow::default(),
@@ -3489,38 +3524,7 @@ impl InstallerPreview {
     fn your_data_view(&self) -> ui::widget::Element {
         let commands = self.commands.clone();
         let bindings = your_data::Bindings {
-            all: Rc::new({
-                let commands = commands.clone();
-                move |included| {
-                    commands
-                        .borrow_mut()
-                        .push(InstallerPreviewEffect::SetYourDataAll { included });
-                }
-            }),
-            source: Rc::new({
-                let commands = commands.clone();
-                move |source, included| {
-                    commands
-                        .borrow_mut()
-                        .push(InstallerPreviewEffect::SetYourDataSource { source, included });
-                }
-            }),
-            group: Rc::new({
-                let commands = commands.clone();
-                move |group, included| {
-                    commands
-                        .borrow_mut()
-                        .push(InstallerPreviewEffect::SetYourDataGroup { group, included });
-                }
-            }),
-            item: Rc::new({
-                let commands = commands.clone();
-                move |item, included| {
-                    commands
-                        .borrow_mut()
-                        .push(InstallerPreviewEffect::SetYourDataItem { item, included });
-                }
-            }),
+            actions: self.actions.clone(),
             expanded: Rc::new(move |source, expanded| {
                 commands
                     .borrow_mut()
@@ -4933,6 +4937,17 @@ impl InstallerPreview {
         }
     }
 
+    /// `control` bound to the page's published `effect`, given the value the
+    /// control commits: a person, a script and an agent take the same
+    /// effect. Inert where nothing hosts the page.
+    fn bound<I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        effect: impl Binds<InstallerPreviewEffect, I>,
+    ) -> C {
+        bound(self.actions.as_ref(), control, effect)
+    }
+
     fn choice(&self, key: &str, selected: bool) -> Card {
         let commands = self.commands.clone();
         let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
@@ -5145,12 +5160,9 @@ impl InstallerPreview {
     }
 
     fn field(&self, key: &str, value: &str, kind: TextInputKind) -> Field {
-        let commands = self.commands.clone();
-        let submits = self.commands.clone();
         let next_focus = self.password_next_focus.clone();
         let focus_confirmation = key == "password" && !self.unlocking_preparation();
         let submit_enabled = !self.personal_busy() && !self.migration_busy();
-        let field = key.to_string();
         let index = match key {
             "name" => 0,
             "device-name" => 1,
@@ -5158,33 +5170,29 @@ impl InstallerPreview {
             _ => 3,
         };
         self.field_values[index].set(value.to_string());
-        let mut widget = Field::new(
-            t(&format!("installer-preview-{key}-label")),
+        let input = self.bound(
             TextInput::from_state(&self.field_values[index])
                 .with_id(&format!("installer.{key}"))
                 .with_kind(kind)
-                .with_secret(kind == TextInputKind::Password)
-                .on_change(move |value| {
-                    let value = value.to_string();
-                    let effect = match field.as_str() {
-                        "name" => InstallerPreviewEffect::SetPreviewName { value },
-                        "device-name" => InstallerPreviewEffect::SetPreviewDeviceName { value },
-                        "password" => InstallerPreviewEffect::SetPreviewPassword { value },
-                        _ => InstallerPreviewEffect::SetPreviewConfirmation { value },
-                    };
-                    commands.borrow_mut().push(effect);
-                })
-                .on_submit(move |_| {
-                    if submit_enabled {
-                        if focus_confirmation {
-                            next_focus.set(true);
-                        } else {
-                            queue_continue(&submits);
-                        }
-                    }
-                }),
-        )
-        .with_label_placement(Some(LabelPlacement::Above));
+                .with_secret(kind == TextInputKind::Password),
+            match key {
+                "name" => InstallerPreviewEffect::SET_PREVIEW_NAME,
+                "device-name" => InstallerPreviewEffect::SET_PREVIEW_DEVICE_NAME,
+                "password" => InstallerPreviewEffect::SET_PREVIEW_PASSWORD,
+                _ => InstallerPreviewEffect::SET_PREVIEW_CONFIRMATION,
+            },
+        );
+        // Enter in the password moves on to its confirmation, in any other
+        // field it continues.
+        let input = if focus_confirmation {
+            input.on_submit(move |_| next_focus.set(submit_enabled))
+        } else if submit_enabled {
+            submits(self.actions.as_ref(), input, continues())
+        } else {
+            input.with_enter_submits(true)
+        };
+        let mut widget = Field::new(t(&format!("installer-preview-{key}-label")), input)
+            .with_label_placement(Some(LabelPlacement::Above));
         if let Some(error) = self.password_field_validation(key) {
             widget = widget.with_error_live(t(error), ui::a11y::Politeness::Assertive);
         } else if key == "password" && !self.unlocking_preparation() {
@@ -5196,6 +5204,7 @@ impl InstallerPreview {
 
 impl InstallerPreview {
     fn reattach_after_media(&mut self, cx: SurfaceCx<Imager>) {
+        self.actions = Some(cx.actions());
         {
             self.direct.context = Some(cx.clone());
         }
@@ -5320,6 +5329,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         }
     }
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        self.actions = Some(cx.actions());
         if cx.launch_flag("--demo") {
             // Reuse the capture fixture and production renderer without attaching
             // any native controllers. The effect door also enforces demo admission.
