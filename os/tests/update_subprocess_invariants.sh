@@ -4,7 +4,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-SOURCE="$ROOT/apps/settings/src/panes/updates.rs"
+SOURCE="$ROOT/apps/settings-rare/src/panes/updates.rs"
 
 if [ ! -r "$SOURCE" ]; then
     echo "FAIL: cannot inspect $SOURCE" >&2

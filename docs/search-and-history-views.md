@@ -51,25 +51,41 @@ visuals therefore come from `shots`. That belongs to the rendering owner.
 ## Palette information architecture
 
 **One door.** Super+Space and a bare Super tap open the same palette, scoped
-to Everywhere. The tap opens it as the Super surface: the field alone and
-empty at the top, a light scrim, the desk widgets open around it with the
-time and status; the first keystroke grows it into the same results. Ctrl+K opens it scoped to the focused app. The scope is one toggle, not a chip.
+to the workspace in front, with one control in the field (the scope token:
+click it or press Backspace) that widens it to every workspace. The tap
+opens it as the Super surface, over a light scrim with the desk widgets
+open around it and the time and status; holding Super shows the field
+alone, a glance at the widgets. Ctrl+K opens it scoped to the focused app.
 
-### Empty query: *Jump back in*
+### Empty query: the launcher
 
-What someone opening search with nothing typed most likely wants, in this order, each capped:
+With nothing typed, global search is the launcher
+(`crates/session/shell/src/shell/search/launcher.rs`), top to bottom, each
+section left out when it has nothing real to show:
 
-1. **Windows in this workspace** (≤4) that are not focused, most recently focused first, as
-   *Go to* rows.
-2. **Recent resources and files** (≤4) this person opened or edited, newest first.
-3. **Apps** (≤4) this person uses, by frequency and recency. The full app list is one keystroke
-   away; it is never the default.
-4. **Suggestions** (≤3), such as *Catch up* when there is something new or *Invite
-   people* in an empty workspace.
+1. **Happening now**: per workspace with someone in it, a row wearing their
+   faces, then a row per window someone is in (Enter goes there) and per
+   call in progress (Enter joins it). Read from the same presence the strip
+   and the window bar use.
+2. **Waiting on you**: calls ringing, messages and mentions, and questions
+   addressed to the person, from the notifications the desktop holds; Enter
+   does what the notification's own default action does. One sent from no
+   workspace (a call to the person, not to a room) shows in every scope.
+3. **Continue**: up to six places the person's windows were lately, newest
+   first: each window's location as its app declares it to the window bar,
+   reopening at the view's anchor when the app gives one.
+4. **Apps**: every app the person has (installed Tilo apps and the
+   device's own), the ones used most first, then grouped by what they are
+   for. Apps the catalogue offers to get are found by typing, never listed
+   here.
 
-Never in the default list: destructive rows (close, delete, revoke), transient rows whose
-subject is absent (keep/revert display, decline pairing), and meta rows about search itself.
-No result count is shown for the empty state.
+Every row says why it is there in its second line. A short card never
+trims the first three sections (their providers answer with only their
+few); the apps share the rows left, each purpose cut short offering the
+rest in place. Each section is a
+search provider answering the empty query
+(`SearchProvider::launcher_section`), and an empty `actions_enumerate`
+answers with the same sections under `launcher`.
 
 ### Typed query: ranking
 
@@ -88,8 +104,14 @@ The merge keeps today's lexical strength plus provider score, with these additio
 
 Groups are ordered by their best match and then by this fixed order: **Windows · Apps ·
 Resources** (one group per resource type, drawn by the app's renderer) **· Files · Actions ·
-Settings · People**. Native and Linux apps share one *Apps* group; a small badge marks a Linux
-app instead of "unconfined host app" on every row.
+Settings · People**. Native and Linux apps share one *Apps* group and one *Apps* filter; each Linux app's row
+states which kind of app it is (Flatpak, AppImage, program or the system's) as a fact, the
+same answer Files and `tilo app list` give. Store pages of third-party apps the person does
+not have are their own section, *In the Store*, after everything the person has, and the
+*Apps* filter keeps them;
+Tilo apps that open at once stay under *Apps*. No two groups share a heading. An open app is
+two kinds of row that rank together: the app, which starts it (a new window), and each of its
+windows, which switches to that window; Shift on a window opens a new window of its app here.
 
 A row shows **what** (title), **where** (app · workspace, path, or owner) and at most one
 live badge. Subtitles never show IDs.
@@ -154,7 +176,7 @@ Small PRs, each with production-path tests:
 2. Window rows: *Go to* first; close and move need their verb; readable subtitles; no ID matching.
 3. Row hygiene: per-row keywords and subtitles for workspace views, meta and transient rows
    only when meaningful, translated footer.
-4. *Jump back in* for the empty query.
+4. The launcher for the empty query.
 5. Activity: localize the `ui` history strings, drop the restated summary, and keep bootstrap
    writes and views out of Catch up and out of change counts.
 6. Time headings and a single filter row in Timeline; per-resource History from search.

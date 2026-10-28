@@ -3,7 +3,7 @@
 This is a fixture qualification and a single emulated development-image pilot,
 not a current-main performance baseline or evidence of an OS speedup. Raw
 observations, artifact provenance and excluded measurements are in
-[os-runtime-2026-10-06.json](os-runtime-2026-10-06.json).
+[os-runtime-2026-10-06.json](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-runtime-2026-10-06.json).
 
 ## Fixture
 

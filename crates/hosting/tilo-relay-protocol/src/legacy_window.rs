@@ -87,7 +87,6 @@ pub const MAX_CODEC_LABEL_BYTES: usize = 32;
 pub enum InputEvent {
     /// The pointer moved to surface-local `(x, y)`.
     PointerMotion {
-        /// Surface-local x, pixels.
         x: f64,
         /// Surface-local y, pixels.
         y: f64,
@@ -99,14 +98,10 @@ pub enum InputEvent {
         /// Pressed or released.
         pressed: bool,
     },
-    /// The pointer entered the window.
     PointerEnter {
-        /// The window's surface.
         surface: u64,
     },
-    /// The pointer left the window.
     PointerLeave {
-        /// The window's surface.
         surface: u64,
     },
     /// A key changed.
@@ -120,7 +115,6 @@ pub enum InputEvent {
     },
     /// Keyboard focus moved to or away from the window.
     KeyboardFocus {
-        /// The window's surface.
         surface: u64,
         /// Gained or lost.
         focused: bool,
@@ -235,23 +229,31 @@ pub struct Stream {
     pub app: String,
     /// `SurfaceStreamStart` codec label: one of [`VIDEO_CODECS`], or [`PAINT`].
     pub codec: String,
-    /// Picture width the session announced, pixels.
     pub width: u32,
     /// Picture height the session announced, pixels.
     pub height: u32,
     /// Record id of this stream's track under [`APP`].
     pub record: String,
+    /// The workspace layout's tab holding the window, 16 lowercase hex
+    /// digits, the same on every device of the workspace: a member shows the
+    /// stream in that tab, where the layout places it. Empty (and left out)
+    /// when the session names none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tab: String,
 }
 
 impl Stream {
     /// Whether metadata names the canonical record of a bridged codec with
     /// bounded dimensions.
     pub fn valid(&self) -> bool {
-        self.surface.len() == 16
-            && self
-                .surface
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        let hex16 = |id: &str| {
+            id.len() == 16
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        hex16(&self.surface)
+            && (self.tab.is_empty() || hex16(&self.tab))
             && !self.app.is_empty()
             && self.app.len() <= 128
             && bridged_codec(&self.codec)
@@ -262,7 +264,6 @@ impl Stream {
             && self.record == format!("@tilo:legacy-window:{}", self.surface)
     }
 
-    /// The stream of `surface`.
     pub fn new(surface: u64, app: &str, codec: &str, width: u32, height: u32) -> Self {
         Self {
             surface: format!("{surface:016x}"),
@@ -277,7 +278,27 @@ impl Stream {
             width,
             height,
             record: stream_record(surface).record,
+            tab: String::new(),
         }
+    }
+
+    /// This stream, naming the layout's tab `tab` holds the window; `0`
+    /// names none.
+    #[must_use]
+    pub fn with_tab(mut self, tab: u64) -> Self {
+        self.tab = if tab == 0 {
+            String::new()
+        } else {
+            format!("{tab:016x}")
+        };
+        self
+    }
+
+    /// The layout's tab the stream names, if it names one.
+    pub fn tab_id(&self) -> Option<u64> {
+        u64::from_str_radix(&self.tab, 16)
+            .ok()
+            .filter(|tab| *tab != 0)
     }
 }
 
@@ -310,7 +331,6 @@ pub fn parse_grant(capability: &str) -> Option<(u64, bool)> {
     Some((surface.parse().ok()?, granted))
 }
 
-/// One legacy-window frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     /// The publisher's current streams.
@@ -697,6 +717,24 @@ mod tests {
         let listed = Stream::new(7, "app", "h264", 2, 2);
         assert_eq!(listed.record, a.record);
         assert_eq!(listed.surface, "0000000000000007");
+    }
+
+    /// A stream names the layout's tab holding its window, and one naming
+    /// none encodes as before, so earlier decoders still take it.
+    #[test]
+    fn a_stream_names_its_layout_tab() {
+        let plain = Stream::new(7, "app", "h264", 2, 2);
+        assert_eq!(plain.tab_id(), None);
+        assert!(!String::from_utf8_lossy(&serde_json::to_vec(&plain).unwrap()).contains("tab"));
+        let placed = plain.clone().with_tab(0xab);
+        assert_eq!(placed.tab, "00000000000000ab");
+        assert_eq!(placed.tab_id(), Some(0xab));
+        assert_eq!(plain.clone().with_tab(0), plain);
+        let frame = Frame::Start(placed.clone());
+        assert_eq!(Frame::decode(&frame.encode().unwrap()).unwrap(), frame);
+        let mut bad = placed;
+        bad.tab = "AB".into();
+        assert!(Frame::Start(bad).encode().is_err());
     }
 
     #[test]

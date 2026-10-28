@@ -376,8 +376,8 @@ const GUEST_OWNED_DIRS: &[&str] = &[
 ];
 
 /// Whether a host directory may be granted: absolute, without `..`, not the
-/// root, and not a path the guest builds itself (see [`GUEST_OWNED_TREES`]
-/// and [`GUEST_OWNED_DIRS`]).
+/// root, and not a path the guest builds itself (see `GUEST_OWNED_TREES`
+/// and `GUEST_OWNED_DIRS`).
 pub fn is_grantable(path: &Path) -> bool {
     let Some(raw) = path.to_str() else {
         return false;

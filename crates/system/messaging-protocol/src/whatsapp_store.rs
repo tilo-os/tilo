@@ -50,7 +50,13 @@ pub const STATE_FORMAT: VaultFormat = VaultFormat {
 pub struct EncryptedBackend {
     inner: Arc<Mutex<Disk>>,
     owner: Owner,
+    clock: WallClock,
 }
+
+/// How this store reads the wall clock. `spawn_blocking` work runs on a pool
+/// thread, which a test's thread-scoped clock does not reach, so a test hands
+/// its store the time it pinned instead of pinning the whole process.
+type WallClock = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 /// The host retains its original native credential grant on SDK state access.
 /// This does not mint a credential or authorize network endpoints.
@@ -148,13 +154,24 @@ impl EncryptedBackend {
         Ok(Self {
             inner: Arc::new(Mutex::new(disk)),
             owner,
+            clock: Arc::new(tilo_clock::try_unix_now),
         })
+    }
+
+    /// Read the wall clock from `clock` (Unix seconds) instead of the system's:
+    /// a test's time, which the blocking pool this store works on does not
+    /// share.
+    #[cfg(test)]
+    pub(crate) fn with_wall_clock(
+        mut self,
+        clock: impl Fn() -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = Arc::new(clock);
+        self
     }
 
     /// Retain the original native account grant on every SDK state operation.
     /// The supplied key constructor alone does not establish host authority.
-    /// # Errors
-    /// Refuses a grant which is already revoked.
     pub fn guarded(self, authority: Arc<dyn StateAuthority>) -> Result<Self> {
         if !authority.allowed() {
             return Err(unavailable());
@@ -171,6 +188,13 @@ impl EncryptedBackend {
 
     pub fn owner(&self) -> &Owner {
         &self.owner
+    }
+
+    /// The wall clock, in Unix seconds, read here rather than on the
+    /// blocking pool: a test pins the clock of its own thread, and a pool
+    /// thread reads its own.
+    fn now(&self) -> Result<u64> {
+        (self.clock)().ok_or_else(unavailable)
     }
 
     async fn run<T: Send + 'static>(
@@ -190,6 +214,18 @@ impl EncryptedBackend {
         })
         .await
         .map_err(|_| unavailable())?
+    }
+
+    /// [`Self::run`] with the clock read as `now` — what the caller, on this
+    /// thread, read with [`Self::now`] — for work that must place a row in
+    /// time, such as an expiry.
+    async fn run_at<T: Send + 'static>(
+        &self,
+        now: u64,
+        work: impl FnOnce(&mut FixedWall<'_>) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.run(move |disk| work(&mut FixedWall { disk, now }))
+            .await
     }
 
     async fn get<T: DeserializeOwned + Send + 'static>(&self, key: Key) -> Result<Option<T>> {
@@ -272,6 +308,32 @@ struct Frame {
     sequence: u64,
     owner: Owner,
     rows: Vec<Row>,
+}
+
+/// The store's rows as work in time sees them, with `now` the clock the
+/// caller read on its own thread.
+struct FixedWall<'a> {
+    disk: &'a mut Disk,
+    now: u64,
+}
+
+impl FixedWall<'_> {
+    /// The wall clock, in Unix seconds, as the caller read it.
+    fn now(&self) -> u64 {
+        self.now
+    }
+
+    fn get<T: DeserializeOwned>(&self, key: &Key) -> Result<Option<T>> {
+        self.disk.get(key)
+    }
+
+    fn rows<T: DeserializeOwned>(&self, domain: &str, prefix: &[&str]) -> Result<Vec<(Key, T)>> {
+        self.disk.rows(domain, prefix)
+    }
+
+    fn commit(&mut self, changes: Vec<Change>) -> Result<()> {
+        self.disk.commit(changes)
+    }
 }
 
 struct Disk {

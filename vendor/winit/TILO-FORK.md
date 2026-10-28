@@ -6,7 +6,7 @@ keeps writing `winit::…`. Upstream: https://github.com/rust-windowing/winit
 (Apache-2.0, unchanged).
 
 The additions the SDK uses are `KeyEvent::synthetic`, Wayland drag sources
-(`start_drag`), swipe gestures, announcing a frame drawn off the event-loop
+(`start_drag`, whose offers are bytes or a file streamed when asked, `DragData`), swipe gestures, announcing a frame drawn off the event-loop
 thread (`Window::announce_frame`), Wayland pen tablets
 (`WindowEvent::PenSample` before each pointer event a stylus makes), and a
 macOS quit request (`set_quit_request_window`), and a surface-bound private
@@ -28,6 +28,10 @@ outside an admitted dictation session.
 crate that matches every `WindowEvent` does not build against this fork. The
 workspace has none: Smithay's `backend_winit`, the one that did, is not
 enabled.
+
+On X11 and Wayland, a Ctrl, Alt or Super chord on a non-Latin letter takes as
+its logical key the Latin character another layout of the keymap puts on the
+key, as GTK does, so shortcuts work whichever source is typing.
 
 `WindowEvent::KeyboardLayoutChanged` carries an immutable, bounded snapshot of
 the actual focused Wayland seat keymap's effective symbols and received modifier

@@ -436,7 +436,6 @@ mod tests {
 
     #[test]
     fn key_and_password_envelopes_round_trip_bound_with_fresh_nonces() {
-        // Phase `key_envelope_round_trip_and_binding`.
         {
             let key = SymmetricKey::generate().unwrap();
             let context = Context::new(Label::SecretVault, b"record-1");
@@ -459,7 +458,6 @@ mod tests {
                 open(&SymmetricKey::generate().unwrap(), context, &sealed),
                 Err(Error::WrongKey)
             );
-            // Every header byte is authenticated.
             for index in 0..sealed.len() {
                 let mut tampered = sealed.clone();
                 tampered[index] ^= 0x01;
@@ -467,7 +465,6 @@ mod tests {
             }
             assert!(open(&key, context, &sealed[..sealed.len() - 1]).is_err());
         }
-        // Phase `nonces_are_fresh`.
         {
             let key = SymmetricKey::generate().unwrap();
             let context = Context::new(Label::SecretVault, b"");
@@ -476,7 +473,6 @@ mod tests {
                 seal(&key, context, b"same").unwrap()
             );
         }
-        // Phase `password_envelope_stores_params`.
         {
             let context = Context::new(Label::IdentityBackup, b"backup");
             let sealed = seal_with_password(b"hunter2", CHEAP, context, b"identity").unwrap();
@@ -498,7 +494,6 @@ mod tests {
                 Err(Error::Authentication)
             );
         }
-        // Phase `wrap_and_unwrap`.
         {
             let kek = SymmetricKey::generate().unwrap();
             let key = SymmetricKey::generate().unwrap();
@@ -510,7 +505,6 @@ mod tests {
 
     #[test]
     fn hostile_or_unknown_envelopes_are_refused_explicitly() {
-        // Phase `hostile_password_params_are_refused_before_derivation`.
         {
             let context = Context::new(Label::IdentityBackup, b"");
             let mut sealed = seal_with_password(b"pw", CHEAP, context, b"x").unwrap();
@@ -521,7 +515,6 @@ mod tests {
                 Err(Error::PasswordParams(_))
             ));
         }
-        // Phase `unknown_version_and_algorithm_are_explicit`.
         {
             let key = SymmetricKey::generate().unwrap();
             let context = Context::new(Label::KeyWrap, b"");

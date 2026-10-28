@@ -822,8 +822,6 @@ pub fn resume_native_selected(
     }
 }
 /// Early administrative command, before graphics, portals or device discovery.
-/// # Errors
-/// Returns explicit authentication, grant and persistence failures.
 #[cfg(target_os = "linux")]
 pub fn maybe_run_command(args: &[String]) -> io::Result<Option<i32>> {
     static CANCEL: AtomicBool = AtomicBool::new(false);
@@ -1161,7 +1159,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_copy_passes_publish_only_verified_bytes() {
-        // Phase `native_bytes_two_passes_empty_directories_times_and_fresh_resume`.
         {
             let (_temp, dest, journal) = fixture();
             let state = Rc::new(RefCell::new(State::default()));
@@ -1209,7 +1206,6 @@ mod tests {
             );
         }
 
-        // Phase `native_second_pass_mutation_short_range_and_postflight_never_publish`.
         {
             for fault in [
                 "mutation",
@@ -1248,7 +1244,6 @@ mod tests {
             }
         }
 
-        // Phase `scoped_fixture_prefers_generated_sibling_image_over_original`.
         {
             let temp = tempfile::tempdir().unwrap();
             let original = temp.path().join("times.img");
@@ -1260,7 +1255,6 @@ mod tests {
             assert_eq!(scoped_fixture(temp.path(), "times"), Some(original));
         }
 
-        // Phase `native_failed_receipt_stops_before_later_entries`.
         {
             let (_temp, dest, journal) = fixture();
             let cancel = Arc::new(AtomicBool::new(false));
@@ -1738,10 +1732,8 @@ mod tests {
             serde_json::from_str(&std::env::var("TILO_NATIVE_COPY_COMMAND_ARGS").unwrap()).unwrap();
         assert!(maybe_run_command(&args).unwrap().is_some());
     }
-    /// Durable facts, root metadata and name budgets.
     #[test]
     fn native_facts_metadata_and_names_are_durable_safe_and_bounded() {
-        // Phase `durable_native_facts_exclude_and_refuse_observation_tokens`.
         {
             let mut item = PlanEntry {
                 entry: entry(&["file"], false, 0),
@@ -1756,7 +1748,6 @@ mod tests {
             assert!(serde_json::from_value::<PlanEntry>(value).is_err());
         }
 
-        // Phase `unsafe_root_metadata_never_authorizes_child_publication`.
         {
             let (_temp, dest, journal) = fixture();
             let cancel = Arc::new(AtomicBool::new(false));
@@ -1770,7 +1761,6 @@ mod tests {
             assert!(!dest.join("large.bin").exists());
         }
 
-        // Phase `native_budget_and_lossless_names_are_bounded`.
         {
             assert_eq!(request_cost(536_870_912, 4096).unwrap(), 1024);
             assert!(request_cost(536_870_913, 4096).is_err());
@@ -1801,7 +1791,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_resume_repairs_only_consistent_journals_and_directories() {
-        // Phase `relocated_journal_and_unreceipted_conflicts_preserve_bytes`.
         {
             let (_temp, dest, journal) = fixture();
             let cancel = Arc::new(AtomicBool::new(false));
@@ -1833,7 +1822,6 @@ mod tests {
             );
         }
 
-        // Phase `resume_rejects_file_edits_during_native_postflight_without_changing_mtime`.
         {
             for replace_name in [false, true] {
                 let (_temp, dest, journal) = fixture();
@@ -1889,7 +1877,6 @@ mod tests {
             }
         }
 
-        // Phase `resume_preserves_changed_completed_directory_and_root_timestamps`.
         {
             use std::io::Write;
             for relative in ["nested/empty-dir", ""] {
@@ -1926,7 +1913,6 @@ mod tests {
             }
         }
 
-        // Phase `resume_completes_previously_incomplete_directories`.
         {
             let (_temp, dest, journal) = fixture();
             let cancel = Arc::new(AtomicBool::new(false));
@@ -1969,7 +1955,6 @@ mod tests {
             );
         }
 
-        // Phase `foreign_output_and_abandoned_temporary_block_resume_before_tail_repair`.
         {
             use std::io::Write;
             let (_temp, dest, journal) = fixture();
@@ -1996,7 +1981,6 @@ mod tests {
             );
         }
 
-        // Phase `changed_selection_does_not_repair_torn_native_journal`.
         {
             use std::io::Write;
             let (_temp, dest, journal) = fixture();

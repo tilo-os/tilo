@@ -12,11 +12,6 @@ pub use advisory_lock::*;
 /// otherwise lock acquisition creates them without durability barriers, hiding
 /// their creation from a subsequent atomic write. Existing directories are left
 /// alone. Other targets retain the lock backend's parent-creation behavior.
-///
-/// # Errors
-///
-/// On Unix, preserves provisioning errors and their directory-creation state.
-/// No lock file is created when provisioning fails.
 pub fn prepare_parent(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

@@ -6,8 +6,10 @@ publish = false
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

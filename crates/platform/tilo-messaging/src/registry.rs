@@ -128,7 +128,12 @@ impl MessagingHost for Registry {
     }
 }
 impl HistoryHost for Registry {
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        route: Route,
+        cursor: Option<crate::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
         let client = self.snapshot();
         Box::pin(async move {
             if limit != crate::MAX_HISTORY_MESSAGES {
@@ -137,7 +142,7 @@ impl HistoryHost for Registry {
             client
                 .ok_or(crate::HistoryError::Unavailable)?
                 .history()
-                .read(route)
+                .read(route, cursor)
                 .await
         })
     }
@@ -179,7 +184,7 @@ mod tests {
         }
     }
     impl HistoryHost for Host {
-        fn read(&self, _: Route, _: usize) -> HistoryFuture {
+        fn read(&self, _: Route, _: Option<crate::HistoryCursor>, _: usize) -> HistoryFuture {
             Box::pin(async { Err(crate::HistoryError::Unavailable) })
         }
         fn observe(&self, changed: Arc<dyn Fn() + Send + Sync>) -> Option<Guard> {

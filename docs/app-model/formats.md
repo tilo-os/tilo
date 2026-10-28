@@ -268,7 +268,7 @@ runs the host's end-to-end tests against it.
 
 ### Package
 
-Same `tilo-app-package pack` flow as any other package. The
+Same `tilo package pack` flow as any other package. The
 `provider.wasm` file must sit at the payload root (a top-level file, not
 nested).
 
@@ -280,7 +280,7 @@ payload/
 Then:
 
 ```bash
-tilo-app-package pack \
+tilo package pack \
     --manifest manifest.toml \
     --payload  payload \
     --output   qdoc-md.tapp
@@ -288,7 +288,7 @@ tilo-app-package pack \
 
 ### Registration
 
-Install via `tilo-install install` (registers the package in `registry.toml`),
+Install via `tilo app install` (registers the package in `registry.toml`),
 then append the provider row to
 `~/.config/tilo/extensions/format-providers.toml` pointing at the payload:
 

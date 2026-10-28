@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Removable and malformed devices must not turn disk helpers into DoS inputs.
+# Removable and malformed devices must not turn disk helpers into DoS inputs:
+# Disks runs no programs at all. Every device operation is a udisks2 call
+# behind polkit, so no device can feed it unbounded output or stall it.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-probe="$root/apps/disks/src/probe.rs"
-ops="$root/apps/disks/src/ops.rs"
+src="$root/apps/disks/src"
 
-grep -Fq 'bounded_command::run(' "$probe"
-grep -Fq 'PROBE_OUTPUT_LIMIT' "$probe"
-grep -Fq 'PROBE_TIMEOUT' "$probe"
-! grep -Eq '\.output\(\)|wait_with_output\(' "$probe"
-
-grep -Fq 'bounded_command::run_prepared(' "$ops"
-! grep -Eq '\.output\(\)|wait_with_output\(' "$ops"
+grep -Fq 'udisks' "$src/ops.rs"
+! grep -rEn 'std::process|Command::new|\.output\(\)|wait_with_output\(|\.spawn\(\)' "$src"
 
 echo 'disk subprocess boundary: ok'

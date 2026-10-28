@@ -11,7 +11,6 @@ use word_processor::framework::WordProcessorApp;
 
 pub type App = TestApp<WordProcessorApp>;
 
-/// The app on a new document.
 pub fn open() -> App {
     ui::i18n::I18nManager::init("en-US");
     App::new().unwrap()

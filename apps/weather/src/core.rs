@@ -6,9 +6,9 @@
 //! * the **overview** is a *contentful* city list (each row carries quick
 //!   per-city info — the current condition and temperature); and
 //! * the **detail** is the full forecast for the selected city
-//!   ([`detail`]).
+//!   (`detail`).
 //!
-//! The window shell ([`ui::widget::NavShell`]) owns the header row, the
+//! The window shell ([`ui::widget::NavShell`]) owns the
 //! breakpoint, the side-by-side↔push transition and the Back button. This
 //! module owns the *content* of the two panes plus the state they share (the
 //! model, the add-place search, direct manipulation of the list) and the
@@ -58,6 +58,8 @@ pub use detail::RETRY_KEY;
 
 /// How long a recently-typed query stays "fresh" before we fire a geocode.
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
+/// Where places typed into the search come from, as a placeholder names it.
+const GEOCODER: &str = "Open-Meteo";
 
 /// An intent the overview raises for the shell to act on (push the detail
 /// in). Consumed by the root widget after routing an event.
@@ -147,6 +149,10 @@ pub struct Core {
     wheel_step: f64,
     /// The empty state's "Add place" action, while it shows.
     empty_action: Option<Rect>,
+    /// Whether the list and the forecast stand side by side, as last laid
+    /// out. Then the empty state takes the forecast's wide column instead of
+    /// the narrow list.
+    pub(crate) side_by_side: bool,
 
     // --- add a place: the shared Autocomplete, shown while adding ---
     /// The shared type-ahead field + suggestion overlay. Owns the query text,
@@ -165,6 +171,10 @@ pub struct Core {
     search_results: Vec<SavedLocation>,
     search_seq: u64,
     pending_query_at: Option<Instant>,
+    /// Since when the places being typed are on their way: the first
+    /// keystroke of a search with no matches shown yet. Their placeholder
+    /// steps on from then, however many keys follow.
+    search_asked: Option<Instant>,
     geocode_cache: HashMap<String, Vec<SavedLocation>>,
     geocode_inflight: bool,
 
@@ -180,6 +190,9 @@ pub struct Core {
     /// Where the out-of-date notice's Retry button takes a pointer, while
     /// it shows.
     retry_rect: Option<Rect>,
+    /// Where the forecast's age line landed, as last painted: the bounds of
+    /// the reading assistive technology hears.
+    updated_rect: Rect,
 
     // --- detail: the horizontally-scrollable 24h strip ---
     hourly_scroll_x: f64,
@@ -237,6 +250,7 @@ impl Core {
             swipe_commit: swipe_commit_dx(&ui::tokens::Metrics::BASE),
             wheel_step: 0.0,
             empty_action: None,
+            side_by_side: false,
             search: Autocomplete::new()
                 .with_id("weather.city_search")
                 .with_placeholder("City name"),
@@ -246,6 +260,7 @@ impl Core {
             search_results: Vec::new(),
             search_seq: 0,
             pending_query_at: None,
+            search_asked: None,
             geocode_cache: HashMap::new(),
             geocode_inflight: false,
             detail_rect: Rect::ZERO,
@@ -256,6 +271,7 @@ impl Core {
             body_track: Rect::ZERO,
             body_content_h: 0.0,
             retry_rect: None,
+            updated_rect: Rect::ZERO,
             hourly_scroll_x: 0.0,
             hourly_max_scroll: 0.0,
             hourly_viewport: Rect::ZERO,
@@ -275,8 +291,6 @@ impl Core {
             fixture_forecasts: None,
         }
     }
-
-    // ---- app-facing coordination ------------------------------------
 
     /// Take raw requests for offline consumers. Live dispatch uses the ticketed
     /// path below, preserving the identity assigned at enqueue time.
@@ -457,9 +471,9 @@ impl Core {
         self.inflight > 0
     }
 
-    /// Whether a geocode is armed or in flight. The app keeps pumping frames
-    /// while this holds so the result is drained and shown promptly (rather
-    /// than the loop parking on "Searching…" until the next input event).
+    /// Whether a geocode is armed or in flight: the places typed are on
+    /// their way. The armed one fires at [`Self::search_deadline`], and the
+    /// answer wakes the app when it lands.
     pub fn search_pending(&self) -> bool {
         self.geocode_inflight || self.pending_query_at.is_some()
     }
@@ -511,6 +525,38 @@ impl Core {
         if !self.model.locations.is_empty() {
             self.status = "Updating forecasts".to_string();
         }
+    }
+
+    /// Queue a fetch for every saved place that has no forecast and none on
+    /// the way. A change to the saved places fences the requests already
+    /// sent, so a place added a moment earlier would otherwise wait on a
+    /// reply that is discarded and show "Loading the forecast" for good.
+    /// Returns whether anything was queued.
+    pub(crate) fn fetch_missing_forecasts(&mut self) -> bool {
+        let pending: std::collections::HashSet<LocationId> = self
+            .outbox
+            .iter()
+            .filter_map(|request| match request {
+                Request::Tracked { request, .. } => match request.as_ref() {
+                    Request::Forecast { location_id, .. } => Some(*location_id),
+                    _ => None,
+                },
+                Request::Forecast { location_id, .. } => Some(*location_id),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<usize> = self
+            .model
+            .locations
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !self.model.snapshots.contains_key(&l.id) && !pending.contains(&l.id))
+            .map(|(index, _)| index)
+            .collect();
+        for &index in &missing {
+            self.refresh_location(index);
+        }
+        !missing.is_empty()
     }
 
     /// Open a saved city by id: select it, reset the forecast scroll, refresh
@@ -707,7 +753,8 @@ impl Core {
                     // A failed geocode must resolve the dropdown's spinner into
                     // an honest state rather than spin forever.
                     self.search_results.clear();
-                    self.search.set_busy(false);
+                    self.search_asked = None;
+                    self.search.set_arriving(None);
                     self.search.set_status(Some(
                         "Couldn't search for places. Check your connection.".into(),
                     ));
@@ -726,8 +773,17 @@ impl Core {
         }
         let q = self.search_query.trim().to_string();
         let pending = self.search_pending();
-        self.search
-            .set_busy(!q.is_empty() && self.search_results.is_empty() && pending);
+        let waiting = !q.is_empty() && self.search_results.is_empty() && pending;
+        if !waiting {
+            self.search_asked = None;
+        } else if self.search_asked.is_none() {
+            self.search_asked = Some(ui::time::now());
+        }
+        // The places come from the geocoder; the dropdown's placeholder
+        // says so once they take a while.
+        self.search.set_arriving(self.search_asked.map(|asked| {
+            ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
+        }));
         if q.is_empty() {
             self.search.set_suggestions(Vec::new());
             self.search.set_status(None);
@@ -747,7 +803,7 @@ impl Core {
             self.search.set_status(None);
         } else if pending {
             self.search.set_suggestions(Vec::new());
-            self.search.set_status(Some("Searching…".to_string()));
+            self.search.set_status(None);
         } else {
             self.search.set_suggestions(Vec::new());
             self.search
@@ -811,8 +867,6 @@ impl Core {
         // The spinner in the dropdown reflects the now-in-flight geocode.
         self.sync_search_view();
     }
-
-    // ---- adding a place (begin / commit / end) ----------------------
 
     /// Show and focus the add-place field with an empty query. Called by the
     /// header's Add button and the empty state's action.
@@ -1055,30 +1109,18 @@ impl Core {
         if self.model.locations.is_empty() {
             self.list_rect = Rect::ZERO;
             self.row_h = 0.0;
-            self.empty_action = if self.search.is_editing() || !self.model.locations.is_empty() {
-                None
-            } else {
-                let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
-                    crate::icon::draw_icon(
-                        ctx.scene,
-                        ctx.transform,
-                        Sky::PartlyCloudy,
-                        true,
-                        r,
-                        ctx.theme,
-                    );
+            // Side by side, the forecast's column shows the empty state.
+            if !self.side_by_side {
+                self.empty_action = if self.search.is_editing() {
+                    None
+                } else {
+                    paint_no_places(
+                        ctx,
+                        Rect::new(rect.x0, top, rect.x1, rect.y1),
+                        self.last_mouse,
+                    )
                 };
-                EmptyState::paint(
-                    ctx,
-                    Rect::new(rect.x0, top, rect.x1, rect.y1),
-                    &EmptyStateContent {
-                        illustration: Some(&glyph),
-                        action_label: Some("Add place"),
-                        ..EmptyStateContent::new("No places yet")
-                    },
-                    self.last_mouse,
-                )
-            };
+            }
             return;
         }
         self.empty_action = None;
@@ -1292,8 +1334,6 @@ impl Core {
             self.model.locations.len(),
         )
     }
-
-    // ---- overview drag / swipe helpers ------------------------------
 
     fn swipe_dx_for(&self, i: usize) -> f64 {
         match self.press {
@@ -1629,8 +1669,6 @@ impl Core {
         (handled, changed)
     }
 
-    // ---- test / scenario seams --------------------------------------
-
     /// Stage a live mid-drag reorder of the second saved place for a headless
     /// shot: the row floats free as a ghost under the cursor while the rest
     /// of the list has reflowed to open a gap near the tail where it will
@@ -1728,6 +1766,11 @@ impl Core {
     pub fn over_list_top(&self) -> f64 {
         self.over_list_top
     }
+    #[cfg(test)]
+    pub(crate) fn empty_action_for_test(&self) -> Option<Rect> {
+        self.empty_action
+    }
+
     #[cfg(test)]
     pub fn row_rect_for_test(&self, index: usize) -> Rect {
         self.row_rect(index).unwrap_or(Rect::ZERO)
@@ -1966,6 +2009,31 @@ fn wheel_dx(delta: winit::event::MouseScrollDelta, step: f64) -> f64 {
     }
 }
 
+/// The "No places yet" empty state in `rect`, returning where its Add place
+/// action is.
+pub(crate) fn paint_no_places(ctx: &mut PaintCtx<'_>, rect: Rect, mouse: Point) -> Option<Rect> {
+    let glyph = |ctx: &mut PaintCtx<'_>, r: Rect| {
+        crate::icon::draw_icon(
+            ctx.scene,
+            ctx.transform,
+            Sky::PartlyCloudy,
+            true,
+            r,
+            ctx.theme,
+        );
+    };
+    EmptyState::paint(
+        ctx,
+        rect,
+        &EmptyStateContent {
+            illustration: Some(&glyph),
+            action_label: Some("Add place"),
+            ..EmptyStateContent::new("No places yet")
+        },
+        mouse,
+    )
+}
+
 /// The encoded, unambiguous value for a geocoded search result — its display
 /// name plus subtitle — so the accepted [`Autocomplete`] value maps back to the
 /// exact place (two cities named "Paris" stay distinct).
@@ -1989,7 +2057,11 @@ mod search_tests {
                 let mut core = Core::new(WeatherModel::default(), Units::METRIC);
                 core.begin_search();
                 core.on_query_changed("London");
-                core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                core.pending_query_at = Some(
+                    ui::time::now()
+                        .checked_sub(GEOCODE_DEBOUNCE)
+                        .unwrap_or_else(ui::time::now),
+                );
                 core.maybe_fire_geocode();
                 let mut requests = core.take_tracked_outbox();
                 let Request::Tracked {
@@ -2029,7 +2101,11 @@ mod search_tests {
                 assert!(!core.geocode_cache.contains_key("paris"));
                 assert!(!core.geocode_inflight);
                 if next_query == "Paris" {
-                    core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                    core.pending_query_at = Some(
+                        ui::time::now()
+                            .checked_sub(GEOCODE_DEBOUNCE)
+                            .unwrap_or_else(ui::time::now),
+                    );
                     core.maybe_fire_geocode();
                     let mut requests = core.take_tracked_outbox();
                     let Request::Tracked {
@@ -2064,7 +2140,6 @@ mod search_tests {
 
     #[test]
     fn core_search_and_accessibility_drive_real_fetches() {
-        // Case `geocode_failure_does_not_complete_a_forecast_refresh`.
         {
             let model = crate::sample::sample_model();
             let mut core = Core::new(model, Units::METRIC);
@@ -2083,7 +2158,6 @@ mod search_tests {
                 "the forecast notice stays clear while only the place search failed"
             );
         }
-        // Case `accessible_place_search_selects_a_result_and_queues_its_forecast`.
         {
             use std::{cell::RefCell, rc::Rc};
             use ui::a11y::Action;
@@ -2124,7 +2198,6 @@ mod search_tests {
             assert!(core.search_query.is_empty());
             assert!(core.search_deadline().is_none());
         }
-        // Case `weather_accessibility_summarises_saved_places_and_forecast`.
         {
             let model = crate::sample::sample_model();
             let core = Core::new(model, Units::METRIC);
@@ -2154,7 +2227,6 @@ mod history_regressions {
 
     #[test]
     fn history_restore_fences_stale_gestures_searches_and_snapshots() {
-        // Case `history_restore_fences_gestures_queue_search_and_changed_coordinate_responses`.
         {
             let mut core = Core::new(crate::sample::sample_model(), Units::IMPERIAL);
             let loc = core.model.locations[0].clone();
@@ -2227,7 +2299,6 @@ mod history_regressions {
             assert!(core.open_location(loc.id));
             assert!(!core.take_outbox().is_empty());
         }
-        // Case `history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results`.
         {
             let mut core = Core::new(WeatherModel::default(), Units::METRIC);
             let old = SavedLocation::new("Old", "", "", "", 1., 2., "auto");
@@ -2236,7 +2307,6 @@ mod history_regressions {
             assert!(!core.commit_search_pick(&result_value(&old)));
             assert!(core.model.locations.is_empty());
         }
-        // Case `history_deleted_location_rejects_delayed_provider_snapshot`.
         {
             let mut model = crate::sample::sample_model();
             let snapshot = model.snapshots.values().next().unwrap().clone();

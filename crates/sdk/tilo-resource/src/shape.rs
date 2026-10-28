@@ -31,6 +31,40 @@ pub enum Shape {
     Map(&'static Shape),
 }
 
+/// Who may change a field without being asked, by what a change of it can
+/// do to the person: every door decides it from the published field edit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Trust {
+    /// Anyone with write access changes it.
+    #[default]
+    Ordinary,
+    /// A change can expose the person (what others see of them, where their
+    /// data goes): it asks for confirmation first, from whoever makes it.
+    Sensitive,
+    /// A change one way can weaken the person's security (a longer lock
+    /// delay, notifications shown on the lock screen): a change that way is
+    /// [`Self::Weakening`], any other is ordinary. Which way the value is
+    /// now decides it, so without it every change counts as weakening.
+    Weakens(tilo_action_policy::edits::Weaker<'static>),
+    /// Any change can weaken the person's security (who may control this
+    /// machine): it asks for confirmation and crosses a security boundary,
+    /// so a caller acting for the person (an agent, a script) needs their
+    /// own grant for it.
+    Weakening,
+}
+
+impl Trust {
+    /// The risk of an edit of a field of this trust.
+    #[must_use]
+    pub const fn risk(self) -> tilo_actions::RiskLevel {
+        match self {
+            Self::Ordinary => tilo_actions::RiskLevel::Low,
+            Self::Sensitive => tilo_actions::RiskLevel::Destructive,
+            Self::Weakens(_) | Self::Weakening => tilo_actions::RiskLevel::Privileged,
+        }
+    }
+}
+
 /// One named field of a [`Shape::Record`].
 #[allow(
     clippy::struct_excessive_bools,
@@ -69,6 +103,9 @@ pub struct FieldShape {
     /// field edit asks no confirmation. Otherwise it is destructive, as a
     /// delete verb is, so the generic edit is never a quieter way around it.
     pub quiet_remove: bool,
+    /// `#[model(trust = "..")]`: who may change the field without being
+    /// asked first.
+    pub trust: Trust,
     /// The JSON Schema of the field's value ([`Model::value_schema`](crate::Model::value_schema)).
     pub schema: fn() -> serde_json::Value,
     /// The first line of the field's text as stored ([`stored_text`]): what
@@ -178,6 +215,7 @@ impl PartialEq for FieldShape {
             && self.readonly == other.readonly
             && self.label == other.label
             && self.quiet_remove == other.quiet_remove
+            && self.trust == other.trust
             && self.resource.map(|nested| nested.kind) == other.resource.map(|nested| nested.kind)
     }
 }
@@ -263,6 +301,66 @@ impl Shape {
         let mut out = Vec::new();
         walk(*self, "", &mut out, 0);
         out
+    }
+
+    /// The fields below this shape that are not [`Trust::Ordinary`], by
+    /// their dotted paths (`*` for an item), as
+    /// [`tilo_action_policy::edits::dotted`] spells them.
+    #[must_use]
+    pub fn guarded_fields(&self) -> Vec<(String, Trust)> {
+        fn walk(shape: Shape, prefix: &str, out: &mut Vec<(String, Trust)>, depth: usize) {
+            if depth > 16 {
+                return;
+            }
+            match shape {
+                Shape::Record(fields) => {
+                    for field in fields {
+                        let path = if prefix.is_empty() {
+                            field.key.to_owned()
+                        } else {
+                            format!("{prefix}.{}", field.key)
+                        };
+                        if field.trust != Trust::Ordinary {
+                            out.push((path.clone(), field.trust));
+                        }
+                        walk(field.shape, &path, out, depth.saturating_add(1));
+                    }
+                }
+                Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
+                    walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
+                }
+                Shape::Value => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(*self, "", &mut out, 0);
+        out
+    }
+
+    /// The trust of the field at `path`: the strictest of the fields it is
+    /// at or below.
+    #[must_use]
+    pub fn trust_at(&self, path: &[crate::path::Segment]) -> Trust {
+        use crate::path::Segment;
+        let mut shape = *self;
+        let mut trust = Trust::Ordinary;
+        for segment in path {
+            match (shape, segment) {
+                (Self::Record(fields), Segment::Field(key)) => {
+                    let Some(field) = fields.iter().find(|field| field.key == key) else {
+                        break;
+                    };
+                    trust = trust.max(field.trust);
+                    shape = field.shape;
+                }
+                (
+                    Self::Collection(item) | Self::Keyed(item) | Self::Map(item),
+                    Segment::Item(_) | Segment::Key(_),
+                ) => shape = *item,
+                _ => break,
+            }
+        }
+        trust
     }
 
     /// Whether the field at `path` is `#[model(readonly)]`.

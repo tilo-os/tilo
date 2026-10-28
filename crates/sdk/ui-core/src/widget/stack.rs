@@ -158,6 +158,21 @@ impl Widget for Stack {
         }
     }
 
+    /// What its children changed. A stack with a permission gate or a
+    /// presence path paints over its whole box and keeps its conservative
+    /// bounds, as a `Container` does; a plain stack paints nothing of its own.
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        if self.permission_scope.is_some() || !self.presence_path.is_empty() {
+            if self.needs_redraw() {
+                regions.push(self.rect);
+            }
+        } else {
+            for child in &self.children {
+                child.collect_damage(regions);
+            }
+        }
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.children
             .iter()
@@ -208,6 +223,12 @@ impl Widget for Stack {
             .iter_mut()
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
+    }
+
+    /// A stack adds no structure of its own: a layer's change carried out
+    /// in place stays in place.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        crate::widget::StructureChange::of_children(self.children_mut())
     }
 }
 

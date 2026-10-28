@@ -41,6 +41,70 @@ pub enum HistoryControl {
     Open,
 }
 
+/// What the window says about its changes in the header row: quiet text
+/// ("Working offline…"), and the one thing the person can do about it when
+/// there is one (Retry), as a button beside it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowStatus {
+    pub text: String,
+    pub action: Option<StatusAction>,
+}
+
+impl WindowStatus {
+    /// A status that only says something.
+    #[must_use]
+    pub fn says(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            action: None,
+        }
+    }
+
+    /// The status, with a button beside it.
+    #[must_use]
+    pub fn with_action(mut self, action: StatusAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+}
+
+/// The button beside a window's status: its label and the window's own
+/// action it runs, the same one the palette, menus and assistive technology
+/// reach.
+#[derive(Clone)]
+pub struct StatusAction {
+    pub label: String,
+    pub binding: tilo_actions::ActionBinding<()>,
+}
+
+impl StatusAction {
+    /// The button, from the design system's components.
+    #[must_use]
+    pub fn button(&self) -> super::Button {
+        super::Button::new(STATUS_ACTION_ID, &self.label)
+            .control_size(super::ControlSize::Small)
+            .on_action(self.binding.clone())
+    }
+}
+
+/// The test id of the button beside a window's status.
+pub const STATUS_ACTION_ID: &str = "window-status-action";
+
+impl PartialEq for StatusAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label && self.binding.address() == other.binding.address()
+    }
+}
+
+impl std::fmt::Debug for StatusAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatusAction")
+            .field("label", &self.label)
+            .field("address", self.binding.address())
+            .finish()
+    }
+}
+
 impl HistoryControl {
     #[must_use]
     pub fn of(open: bool) -> Self {
@@ -93,9 +157,10 @@ pub trait WindowHeader {
     }
 
     /// Show the window's sync status ("Working offline…") as quiet text in
-    /// the row, before its trailing controls, or none. Returns whether the
-    /// row shows it; a row that does not leaves the host to present it.
-    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
+    /// the row, before its trailing controls, with its button (Retry) beside
+    /// it when it has one, or none. Returns whether the row shows it; a row
+    /// that does not leaves the host to present it.
+    fn set_sync_status(&mut self, status: Option<&WindowStatus>) -> bool {
         let _ = status;
         false
     }
@@ -172,7 +237,7 @@ pub(crate) fn window_bar_slot(root: &dyn Widget) -> Option<WindowBarSlot> {
 
 /// Hand the window's sync status to the first header row in `root`'s tree.
 /// Returns whether a row shows it.
-pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&str>) -> bool {
+pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_sync_status(status);
     }

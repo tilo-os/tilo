@@ -109,7 +109,6 @@ pub fn offered_in_files(tag: &str, files_json: &str) -> Vec<String> {
     offered
 }
 
-/// The disk format a hypervisor imports.
 pub fn format_for(hypervisor: &str) -> &'static str {
     if hypervisor == "hyperv" {
         "vhdx"
@@ -135,9 +134,6 @@ impl DiskManifest {
     /// Select only the bundle published in this disk manifest, with exact
     /// package URLs and file names. A bundle from another tag or architecture
     /// must never be paired with the selected disk.
-    ///
-    /// # Errors
-    /// The manifest is incomplete or disagrees with the selected disk.
     pub fn direct_boot_for(
         &self,
         tag: &str,
@@ -226,9 +222,6 @@ fn valid_sha256(value: &str) -> bool {
 
 /// Cache each small companion by the manifest's checksum and verify it on
 /// every use, including when a marker already exists.
-///
-/// # Errors
-/// Download, file access or checksum validation fails.
 pub fn fetch_direct_boot(
     runner: &mut dyn Runner,
     cache_dir: &Path,

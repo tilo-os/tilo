@@ -8,6 +8,7 @@ There are three answers, and they are ordered by how broken the machine is.
 |---|---|---|
 | boots, session works | `tilo rollback`, or Settings → Updates → Roll back | to be logged in |
 | boots, session does not work | it rolls back **by itself** after three tries | nothing |
+| does not boot (hangs at unlock, crashes) | it rolls back **by itself** after three tries; power off a hung try | nothing |
 | boots, nothing works | Repair Mode, from the boot menu | the disk passphrase |
 
 ## What a rollback changes
@@ -92,16 +93,48 @@ bootc's split kernel/initrd entries: `linux` and `initrd` from one
 `options` line. Such a deployment counts and rolls back the same way; it gets no
 repair entry, because that is derived from a UKI.
 
+sd-boot spends the try when it picks the entry, before the kernel starts. A
+boot that never reaches userspace (a disk unlock prompt nobody can answer
+because the keyboard is dead, a crash in the initrd) has spent its try all
+the same: switch the machine off and on, and after the third such boot the
+previous deployment starts. The counter has to be on the entry **before** the
+first reboot into it, so every path that stages an image runs the boot-entry
+pass right after staging: `tilo update`, `bootc-fetch-apply-updates`, and
+`tilo-vm vm upgrade` (and `vm rollback-image`). An image older than
+`tilo-esp-generator` cannot see its ESP from that pass; `tilo-vm` then counts
+the staged entry itself, on the ESP the boot loader names, so moving a
+machine off such an image is protected too.
+
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an
-unblessed boot keeps its spent try. Health means **the greeter came up and
-stayed up**, i.e. the machine reached the point where a person can log in:
-greetd is active, its greeter has presented a frame (or a person is already
-signed in through greetd), and for 20 seconds after that greetd is not
-restarted and the greeter keeps presenting. The check waits up to three
-minutes for the first frame, because a machine that renders in software needs
-tens of seconds for it.
+unblessed boot keeps its spent try. Good means **someone can sign in**: the
+sign-in screen is drawn and stays, and a keyboard or touch screen reaches it.
+It does not wait for a person, so an unattended machine is judged by itself,
+and a working update is not rolled back because the power went out at its
+sign-in screen:
+
+1. The greeter came up and stayed up: greetd is active, its greeter has
+   presented a frame (or a person is already signed in through greetd), and
+   for 20 seconds after that greetd is not restarted and the greeter keeps
+   presenting. The check waits up to three minutes for the first frame,
+   because a machine that renders in software needs tens of seconds for it,
+   and fails the boot when the greeter never holds.
+2. Input reaches it: the kiosk compositor gave the greeter's window a
+   keyboard or a touch screen. It advertises on its seat the keyboard and
+   touch devices it has opened, and the greeter records the first one in
+   `/run/tilo-greeter/input` (`crates/session/greeter/src/seat_input.rs`); a
+   mouse alone records nothing, so a machine with only a mouse falls back. A
+   person signed in through greetd settles this as well, whichever comes
+   first. A boot where neither happens within the
+   deadline (at least 30 seconds after the greeter held) fails.
+
+A disk with TPM unlock reaches its greeter without anyone; one that asks for
+a passphrase gets there once it was typed. A boot that never gets past the
+unlock prompt never reaches the check at all and keeps its spent try: that is
+the update whose keyboard does not work at unlock. `tilo-rollback-confirm`
+(which destroys the fallback) waits for the blessing rather than acting on an
+unproven boot.
 
 `greetd is active` alone is not enough. greetd restarts when its greeter
 exits, so it is active between restarts, and a greeter that cannot draw (an
@@ -141,10 +174,34 @@ the mount everyone sees is a read-only bind (`tilo-esp-mount`): bootc mounts the
 same ESP read-write to stage an update, and a read-only superblock would refuse
 that. The live installer is left alone: it refuses to install to a mounted ESP.
 
-Three failed boots and the previous deployment becomes the default. Nothing runs
-a rollback command — the boot loader simply declines to keep choosing an entry it
-has already given three chances, which is the only mechanism that still works when
+Three failed boots and the previous deployment starts. Nothing has to run for
+that — the boot loader simply declines to keep choosing an entry it has
+already given three chances, which is the only mechanism that still works when
 userspace is too broken to run anything.
+
+What the boot loader cannot do is change bootc's mind: bootc still queues the
+failed deployment as the default (`rollbackQueued` in `bootc status`), and the
+first thing that rewrites the entries would hand it fresh tries.
+`tilo-boot-fallback.service` settles that on the deployment that came back,
+once that boot is confirmed: when bootc queues a deployment whose entry was
+tried and never confirmed (`+LEFT-DONE`, at least one try spent), it runs
+`bootc rollback` so the running deployment is the default again, and writes a
+report to `/var/lib/tilo/boot-fallback/<when>-<composefs>/`:
+
+- `summary.txt`: the image and version that did not start, how many tries it
+  spent, and what each try left behind;
+- `boot-N.log`: for each try that got far enough to keep a journal, its
+  health verdict and its warnings;
+- the tries that left no log at all (stopped at the unlock prompt, in the
+  initrd, or in a crash) counted as such;
+- `pstore/`: crash records the firmware kept, as systemd-pstore archived them.
+
+The same happens when a person picks the previous entry from the boot menu
+after the new one failed: the failed one stays on the disk, but it no longer
+boots next. An entry that was never tried, or one that booted well before, was
+chosen deliberately and is left alone. At the next sign-in the person gets a
+notification that stays until dismissed (`tilo-boot-fallback-notice`), and
+`tilo status` shows the last fallback with the path of its report.
 
 The fallback order is:
 
@@ -285,9 +342,22 @@ TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
 RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
   ./os/tests/boot_assessment_rollback.sh registry.tilo.so/tilo/tilo-vm@sha256:<other-digest>
 
+# FAULT=unlock leaves the staged deployment's boots at a disk unlock prompt in
+# the initrd and power-cycles them there (RESET); after its tries the boot
+# loader goes back, and tilo-boot-fallback makes the previous deployment the
+# default again with a report of the failed one. t runs it on this tree's own
+# dev image, with an update that is that image plus one layer (tools/ci/boot-assessment.sh; fault=greetd or greeter
+# picks the other faults):
+t dispatch boot-assessment-x86_64 --ref <branch>
+
 # The health verdict itself against a stand-in greetd, no VM: a crash-looping
-# greeter fails, one that holds passes, boards are judged by their own unit.
+# greeter fails, one that holds needs the greeter's record of a keyboard or
+# touch screen (or a person signed in), boards are judged by their own unit.
 ./os/tests/boot_health_greeter.sh
+
+# Settling after a fallback against a stand-in bootc and journal, no VM: what is
+# made the default, what is left alone, and the report.
+./os/tests/boot_fallback.sh
 
 # The state-version refusal, against the compositor binary:
 cargo build -p shell --bin shell

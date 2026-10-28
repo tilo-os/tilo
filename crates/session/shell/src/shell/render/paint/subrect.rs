@@ -18,13 +18,13 @@ pub struct SubrectSource<'a> {
 /// `src_w * 4`) into an XRGB8888 destination (`[B, G, R, X]`, row stride `dst_pitch`).
 ///
 /// The per-output present primitive for multi-monitor: the compositor renders one scene
-/// spanning the combined output geometry into `source.src_rgba` (via [`VelloDrmBridge::paint`]),
+/// spanning the combined output geometry into `source.src_rgba` (via [`super::VelloDrmBridge::paint`]),
 /// then each output presents the sub-rect at its `Output.position`/`size` into its own scanout
 /// dumb buffer. `source.src_x`/`source.src_y` is the sub-rect's top-left in the source; `out_w`×`out_h`
 /// is the output's size.
 ///
 /// Rows/cols outside the source or destination bounds are skipped (clamped, not panicking). For
-/// a single output at the origin matching the combined geometry, this is byte-for-byte [`VelloDrmBridge::paint_into_xrgb8888`].
+/// a single output at the origin matching the combined geometry, this is byte-for-byte [`super::VelloDrmBridge::paint_into_xrgb8888`].
 pub fn swizzle_subrect_rgba_to_xrgb8888(
     source: SubrectSource<'_>,
     dst: &mut [u8],
@@ -405,7 +405,6 @@ mod tests {
             }
         }
 
-        // Phase `offset_subrect_picks_the_right_source_region`.
         {
             // Combined scene 6x2; second output is a 2x2 region at global position (4,0) — the swizzle must pull source columns 4 and 5, not 0 and 1.
             let (cw, ch) = (6usize, 2usize);
@@ -434,7 +433,6 @@ mod tests {
             assert_eq!(dst[d + 1], 1, "dst(1,1).G should be source row 1");
         }
 
-        // Phase `destination_pitch_padding_is_untouched`.
         {
             // A DRM dumb buffer's pitch usually exceeds out_w*4; the trailing padding bytes must stay as they were.
             let (w, h) = (2usize, 2usize);
@@ -460,7 +458,6 @@ mod tests {
             }
         }
 
-        // Phase `overhanging_output_is_clamped_not_panicking`.
         {
             // Output wider/taller than the source region remaining: must clamp.
             let (w, h) = (3usize, 3usize);
@@ -510,7 +507,6 @@ mod tests {
             assert_eq!((dst[bottom_left + 2], dst[bottom_left + 1]), (1, 2));
         }
 
-        // Phase `profiled_path_copies_only_the_output_viewport`.
         {
             let src = ramp_rgba(5, 2);
             let mut output = Vec::new();

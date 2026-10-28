@@ -15,13 +15,13 @@ pub enum Feature {
     /// site allows it to (CORS), unless the host provides a
     /// [`proxy`](crate::proxy).
     CrossOriginHttp,
-    /// WebSocket clients: [`ws`](crate::ws).
+    /// WebSocket clients: `ws`.
     WebSocket,
-    /// WebTransport sessions: [`webtransport`](crate::webtransport).
+    /// WebTransport sessions: `webtransport`.
     WebTransport,
-    /// Raw TCP, UDP and TLS over TCP: [`sockets`](crate::sockets).
+    /// Raw TCP, UDP and TLS over TCP: `sockets`.
     Sockets,
-    /// Endpoints peers dial by ticket: [`p2p`](crate::p2p).
+    /// Endpoints peers dial by ticket (the `tilo-net-p2p` crate).
     PeerToPeer,
     /// Whether the device is online: [`status`](crate::status).
     Status,

@@ -4,7 +4,7 @@ Status: the public streaming interface works within the unchanged resource limit
 but the interpreted execution path fails interactive latency qualification.
 No runtime, model, microphone permission or production catalogue was activated.
 
-The [measurement ledger](dictation-whistle-wasm-review.json) records exact artifacts,
+The [measurement ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-wasm-review.json) records exact artifacts,
 source and binary hashes, raw streaming responses, scoring and retained failures.
 This extends the [native initialization review](dictation-whistle-thread-review.md).
 

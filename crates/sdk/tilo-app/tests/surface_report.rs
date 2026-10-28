@@ -10,7 +10,11 @@ pub struct Counter {
     pub count: i64,
 }
 
-#[resource(kind = "test.counter", label = "Counter")]
+#[resource(
+    kind = "test.counter",
+    label = "Counter",
+    app = "so.tilo.test-surface-good"
+)]
 impl Counter {
     /// Count one more.
     #[action]
@@ -25,7 +29,11 @@ pub struct Prefs {
     pub compact: bool,
 }
 
-#[resource(kind = "test.counter-prefs", label = "Counter preferences")]
+#[resource(
+    kind = "test.counter-prefs",
+    label = "Counter preferences",
+    app = "so.tilo.test-surface-good"
+)]
 impl Prefs {}
 
 struct GoodApp;
@@ -49,14 +57,18 @@ impl ResourceApp for TypoApp {
     const TITLE: &'static str = "Counter";
 
     fn view(cx: &mut ViewCx<Counter>) -> Element {
-        let typo = ActionRef::<Counter, ()>::new("bunp", &[]);
+        let typo = ActionRef::<Counter, ()>::new(
+            "bunp",
+            &[],
+            tilo_resource::ResourceKind::of::<Counter>(),
+        );
         Box::new(cx.button("bump", typo.invoke()))
     }
 }
 
 #[test]
 fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
-    let report = tilo_app::framework::testing::surface_report::<GoodApp>();
+    let report = tilo_app::framework::headless::surface_report::<GoodApp>();
     let surface = &report["resources"][0];
     assert_eq!(surface["kind"], "test.counter");
     assert!(
@@ -88,7 +100,7 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
     );
     assert!(report["view"].is_null(), "{report}");
 
-    let report = tilo_app::framework::testing::surface_report::<TypoApp>();
+    let report = tilo_app::framework::headless::surface_report::<TypoApp>();
     let unbound = report["unbound"].as_array().unwrap();
     assert_eq!(unbound.len(), 1, "{report}");
     assert!(unbound[0].as_str().unwrap().contains("bunp"), "{report}");

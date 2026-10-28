@@ -78,12 +78,9 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
 
     let state = AppState::with_options(storage.clone(), identity, options);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    // The socket listens once this returns: a connect queues in its backlog
+    // until the accept loop takes it.
     let bound = bind_and_run(addr, state.clone()).await.expect("bind");
-
-    // Give the tokio::spawn'd accept loop a beat to actually be
-    // ready to accept. On a busy loopback stack the first
-    // `TcpStream::connect` occasionally beats the accept.
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     Harness {
         tmp,
@@ -418,6 +415,53 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     }
+    // phase: an_authentic_expired_snapshot_is_served_so_devices_can_say_it_expired
+    // On 2026-10-21 the channel authorization lapsed, the snapshot expired,
+    // and the server's 503 failed readiness on every replica: devices saw an
+    // unreachable registry instead of an expired catalogue. The signed bytes
+    // are served; the client refuses them by their expiry and says so.
+    {
+        let h = spawn_server(true).await;
+        let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
+        snapshot.issued_at_unix = 1_000;
+        snapshot.expires_at_unix = 2_000;
+        registry_types::sign_snapshot(&mut snapshot, &h.owner).unwrap();
+        std::fs::write(
+            h.storage.snapshot_path(),
+            serde_json::to_vec_pretty(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let client = tilo_net::http::client().build().expect("http client");
+        let response = client.get(url(h.addr, "/entries")).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let served =
+            registry_types::CatalogueSnapshot::from_json(&response.bytes().await.unwrap()).unwrap();
+        let owner = hex::encode(h.owner.verifying_key().to_bytes());
+        let now = tilo_clock::try_unix_now().unwrap();
+        assert!(served.verify(&owner, now).is_err());
+        assert_eq!(served.expired_at(&owner, now), Some(2_000));
+
+        let metrics = client
+            .get(url(h.addr, "/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            metrics
+                .lines()
+                .any(|line| line == "tilo_registry_snapshot_expires_at_seconds 2000"),
+            "{metrics}"
+        );
+        assert!(
+            metrics
+                .lines()
+                .any(|line| line == "tilo_registry_snapshot_verified 1"),
+            "{metrics}"
+        );
+    }
     // phase: registry_handshake_uses_stored_identity
     {
         let h = spawn_server(true).await;
@@ -591,7 +635,6 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             blobs.fetch_all(&[binary]).await.unwrap()[0].as_ref(),
             b"reviewed binary"
         );
-        // The backfill writes exactly the missing twin.
         let report = h.storage.compress_stored_objects().unwrap();
         assert_eq!(report.written, 1, "{report:?}");
         assert!(report.present >= 2, "{report:?}");
@@ -670,7 +713,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             "server preserves entry sig"
         );
 
-        // GET /entries/<id> returns the same row.
         let single: SignedRegistrySnapshot = client
             .get(url(h.addr, "/entries/so.tilo.editor"))
             .send()
@@ -876,7 +918,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
 
         let entry = sample_entry(&h.publisher, 100);
         let mut req = sign_change_request(EntryAction::Add, entry, &h.publisher);
-        // Flip a byte in the change-level signature.
         let mut bytes = hex::decode(&req.publisher_signature_hex).unwrap();
         bytes[0] ^= 1;
         req.publisher_signature_hex = hex::encode(bytes);
@@ -912,7 +953,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
 
-        // The allowlisted publisher creates an entry.
         let entry_v1 = sample_entry(&h.publisher, 100);
         client
             .post(url(h.addr, "/entries"))
@@ -1038,7 +1078,6 @@ async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
     assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
-/// A package signed by `key`, in full.
 fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
     let payload = dir.join(hex::encode(key.verifying_key().to_bytes()));
@@ -1294,6 +1333,7 @@ fn p50(samples: &mut [std::time::Duration]) -> std::time::Duration {
 /// blob asked for while other clients fetch the catalogue. Prints the
 /// numbers; the regression checks are the counters in the next test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
     let h = spawn_server(true).await;
     large_catalogue(&h, 1_000);
@@ -1418,7 +1458,7 @@ async fn a_client_that_stops_reading_holds_up_no_one() {
         stalled.push(stream);
     }
     let client = tilo_net::http::client().build().expect("http client");
-    let answered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let answered = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         for _ in 0..8 {
             let entries = client.get(url(h.addr, "/entries")).send().await.unwrap();
             assert_eq!(entries.status(), reqwest::StatusCode::OK);

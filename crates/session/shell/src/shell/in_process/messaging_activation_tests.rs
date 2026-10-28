@@ -11,9 +11,7 @@ fn wake_channel() -> (crate::session_runtime::Wake, mpsc::Receiver<()>) {
     )
 }
 fn completed(wakes: &mpsc::Receiver<()>) {
-    wakes
-        .recv_timeout(ui::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the worker's wake", wakes);
 }
 
 #[test]
@@ -79,9 +77,7 @@ fn cancelled_activation_stays_reserved_until_its_original_worker_finishes() {
     let pending = account
         .activate_on_worker(wake, move |_| {
             entered.send(()).unwrap();
-            proceed
-                .recv_timeout(ui::time::Duration::from_secs(5))
-                .unwrap();
+            proceed.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             Err(SendError::Unavailable)
         })
         .unwrap();
@@ -194,14 +190,14 @@ fn cancellation_interrupts_only_owned_provider_streams_and_releases_the_worker()
     let mut apps = rig.apps();
     let account = apps.prepare_signal_account(rig.startup()).unwrap();
     let (sender, peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut observed = BufReader::new(peer);
     let (receiver, untouched_receiver_peer) = UnixStream::pair().unwrap();
     let interrupts = [sender.try_clone().unwrap(), receiver.try_clone().unwrap()];
     let (mut other, mut other_peer) = UnixStream::pair().unwrap();
     other_peer
-        .set_read_timeout(Some(ui::time::Duration::from_secs(1)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let owner = rig.owner.clone();
     let root = rig.root.path().join("interrupted-owned");
@@ -216,11 +212,17 @@ fn cancellation_interrupts_only_owned_provider_streams_and_releases_the_worker()
     let probe: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(probe["method"], "listAccounts");
     // Withhold the provider reply: actual verification is blocked on this
-    // owned stream, and cancellation must end it before its 10s RPC deadline.
+    // owned stream, and cancellation must end it, not its 10s RPC deadline:
+    // the stream is already closed when the drop returns.
     drop(pending);
-    completed(&wakes);
+    observed.get_ref().set_nonblocking(true).unwrap();
     line.clear();
-    assert_eq!(observed.read_line(&mut line).unwrap(), 0);
+    assert_eq!(
+        observed.read_line(&mut line).unwrap(),
+        0,
+        "cancellation closes the owned stream at once"
+    );
+    completed(&wakes);
     other.write_all(b"live").unwrap();
     let mut alive = [0; 4];
     other_peer.read_exact(&mut alive).unwrap();
@@ -265,9 +267,7 @@ fn native_host_refuses_a_full_start_queue_before_registering_another_account() {
         accounts.push(
             apps.start_signal_account_on_worker(rig.startup(), move |_| {
                 entered.send(()).unwrap();
-                proceed
-                    .recv_timeout(ui::time::Duration::from_secs(5))
-                    .unwrap();
+                proceed.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 Err(SendError::Unavailable)
             })
             .unwrap(),
@@ -290,9 +290,7 @@ fn native_host_refuses_a_full_start_queue_before_registering_another_account() {
     for release in releases {
         release.send(()).unwrap();
     }
-    let deadline = ui::time::Instant::now()
-        .checked_add(ui::time::Duration::from_secs(5))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         apps.pump_messaging_records();
         if accounts.iter().all(|account| {

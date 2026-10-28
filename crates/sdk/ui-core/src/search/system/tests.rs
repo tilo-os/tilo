@@ -49,6 +49,58 @@ fn strongest_group_precedes_kind_order_and_ties_preserve_provider_order() {
     );
 }
 #[test]
+fn an_app_to_install_follows_every_hit_the_person_has_however_strong() {
+    // ((kind, availability, name), merged strength)
+    let mut merged = vec![
+        (
+            (
+                ResourceKind::Application,
+                Availability::ThirdPartyCatalogue,
+                "exact store page",
+            ),
+            9.5,
+        ),
+        ((ResourceKind::File, Availability::OnDevice, "file"), 2.5),
+        (
+            (
+                ResourceKind::Application,
+                Availability::ThirdPartyCatalogue,
+                "prefix store page",
+            ),
+            6.0,
+        ),
+        (
+            (
+                ResourceKind::Application,
+                Availability::OnDevice,
+                "installed app",
+            ),
+            8.0,
+        ),
+        (
+            (
+                ResourceKind::Application,
+                Availability::TiloCatalogue,
+                "tilo app",
+            ),
+            7.0,
+        ),
+    ];
+    order_hits(&mut merged, |(kind, availability, _)| (kind, *availability));
+    let names: Vec<&str> = merged.iter().map(|((_, _, name), _)| *name).collect();
+    assert_eq!(
+        names,
+        [
+            "installed app",
+            "tilo app",
+            "file",
+            "exact store page",
+            "prefix store page"
+        ]
+    );
+}
+
+#[test]
 fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
     let mut rows = vec![Row(ResourceKind::Application, 100, "app")];
     rows.extend((0..20).map(|_| Row(ResourceKind::File, 50, "file")));
@@ -64,7 +116,7 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
     let entries = command_entries(&groups);
     assert_eq!(entries.len(), 8);
     assert_eq!(entries[0].id, "result:0");
-    assert_eq!(entries[0].group.as_deref(), Some("Applications"));
+    assert_eq!(entries[0].group.as_deref(), Some("Apps"));
     assert_eq!(entries[0].icon, Some(crate::icons::Icon::LayoutGrid));
     assert_eq!(entries[1].group_total, Some(20));
     assert_eq!(entries[0].description.as_deref(), Some("detail"));
@@ -74,6 +126,33 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
             .len(),
         20
     );
+}
+#[test]
+fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
+    let groups = || {
+        let mut rows = vec![Row(ResourceKind::Action, 100, "action"); 66];
+        rows.extend(vec![Row(ResourceKind::Application, 50, "app"); 3]);
+        rows.extend(vec![Row(ResourceKind::File, 25, "file"); 19]);
+        group(rows, 0)
+    };
+    let trimmed = trim_groups(groups(), 12, &[]);
+    let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
+    assert_eq!(shown, vec![4, 3, 5], "a fair share, what's left rolls on");
+    assert!(trimmed[0].is_capped() && !trimmed[1].is_capped());
+    assert_eq!(trimmed[0].total, 66, "the header still counts every row");
+
+    let expanded = trim_groups(groups(), 12, &[ResourceKind::File]);
+    let file = expanded
+        .iter()
+        .find(|g| g.kind == ResourceKind::File)
+        .expect("files");
+    assert_eq!(file.results.len(), 19, "show all means all");
+    assert!(!file.is_capped());
+
+    let more = show_all_entry("more:0", "Actions", 66);
+    assert!(more.label.starts_with("Show all") && more.label.contains("66"));
+    assert_eq!(more.group.as_deref(), Some("Actions"));
+    assert_eq!(more.group_total, Some(66));
 }
 #[test]
 fn application_identity_and_metadata_share_native_match_bands() {
@@ -305,4 +384,51 @@ fn perfect_application_match_beats_an_exact_note_of_the_same_word() {
     assert!(
         strength(ResourceKind::Application, "Open Sheets") > strength(ResourceKind::Note, "Sheets")
     );
+}
+
+/// "power off" names Shut down as well as "shut" does: an action's word
+/// typed whole, which its provider scores as its title begun, counts at the
+/// merge as its title begun, though the title says neither word.
+#[test]
+fn an_actions_word_typed_whole_counts_as_its_title_begun() {
+    let action = merged_strength(
+        "power off",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        MAX_PROVIDER_SCORE,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    let begun = merged_strength(
+        "shut",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        MAX_PROVIDER_SCORE,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!((action - begun).abs() < f32::EPSILON);
+    let setting = merged_strength(
+        "power off",
+        &ResourceKind::Note,
+        "Power off after",
+        None,
+        84,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!(action > setting);
+    // A word only begun is no reason to lift it.
+    let partial = merged_strength(
+        "power",
+        &ResourceKind::Action,
+        "Shut down",
+        None,
+        60,
+        MAX_PROVIDER_SCORE,
+        0.0,
+    );
+    assert!(partial < begun);
 }

@@ -27,9 +27,10 @@ use std::io::{self, BufRead};
 
 use pam::Outcome;
 
-/// Default PAM service. On the Tilo image this is `os/etc/pam.d/tilo-unlock`
-/// (auth + account via the maintained `password-auth`, plus fingerprint /
-/// homed factors). If the service file is absent, `pam_start` fails and the
+/// Default PAM service. On the Tilo image this is `os/etc/pam.d/tilo-unlock`,
+/// which takes auth and account from the one sign-in service, tilo-auth; the
+/// Tilo session on another distribution installs dist/session/tilo-unlock.pam
+/// under the same name. If the service file is absent, `pam_start` fails and the
 /// helper exits fail-closed — a missing stack never authenticates anyone.
 /// Override with `TILO_UNLOCK_PAM_SERVICE` (e.g. `login` on a plain host).
 const DEFAULT_SERVICE: &str = "tilo-unlock";

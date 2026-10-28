@@ -3,7 +3,7 @@
 //! Every channel-level governance action (genesis, attestation
 //! issuance/revocation, ownership transfer, rename, settings update) is
 //! recorded as a `ChannelEvent`. Peers replay the event log to
-//! reconstruct the channel's current role table; the validator consults
+//! reconstruct the channel's grants; the validator consults
 //! that state to decide whether an inbound `SignedOp` is valid.
 //!
 //! Each variant carries its own `signature`, produced by a per-variant
@@ -82,7 +82,6 @@ pub enum ChannelEvent {
         /// Signer of this revocation — must be `Channel::owner` or hold a
         /// `Govern` grant.
         signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
         signature: Signature,
     },
     /// Change the channel's display name. Signed by the owner.
@@ -91,7 +90,6 @@ pub enum ChannelEvent {
         new_name: String,
         /// Signer of this rename.
         signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
         signature: Signature,
     },
     /// Apply a `ChannelSettingsDelta`. Signed by the owner.
@@ -121,7 +119,7 @@ pub enum ChannelEvent {
         welcome: Vec<u8>,
         /// Identity that issued the addition — must be authorised to add members
         /// (channel owner, or a delegate holding an equivalent `Govern` grant;
-        /// enforced via the role table on replay).
+        /// enforced against the author's grants on replay).
         signed_by: Ed25519PublicKey,
         /// Detached signature by `signed_by` over the canonical view minus this field.
         signature: Signature,
@@ -153,12 +151,6 @@ impl ChannelEvent {
     /// `signature`. `RoleAttestation` signs over the embedded `Attestation`'s
     /// own `signing_bytes`, so the validator can re-verify both the outer
     /// event signature and the inner attestation signature independently.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonicalising the variant's view
-    /// fails (for `AttestationIssued`, this includes the embedded
-    /// attestation's own `signing_bytes`).
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         match self {
             ChannelEvent::Genesis {
@@ -431,7 +423,6 @@ mod tests {
             let sid = SpaceId::new();
             let now = SystemTime::UNIX_EPOCH;
 
-            // Build the view, sign over it, stamp the signature back in.
             let mut g = ChannelEvent::Genesis {
                 channel_id: cid,
                 space: sid,
@@ -445,7 +436,6 @@ mod tests {
             if let ChannelEvent::Genesis { signature, .. } = &mut g {
                 *signature = sig;
             }
-            // Re-derive view bytes and verify.
             let view = g.signing_bytes().unwrap();
             assert!(verify_event(&view, &sig, &pk).is_ok());
         }

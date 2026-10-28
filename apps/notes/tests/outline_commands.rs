@@ -57,7 +57,6 @@ fn selected_prose_blocks_indent_together_without_replacing_text() {
     app.harness().key("Enter");
     app.harness().type_text("Second child");
     let before = rows(&app, page);
-    // Select exactly the final two blocks through the accessible editor door.
     app.harness()
         .perform_named(
             "block_editor",

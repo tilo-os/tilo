@@ -214,7 +214,6 @@ mod tests {
 
     #[test]
     fn keys_match_rfc7748_and_never_debug_secret_bytes() {
-        // Phase `debug_output_never_contains_secret_bytes`.
         {
             let key = SymmetricKey::from_bytes([0xab; 32]);
             let rendered = format!("{key:?}");

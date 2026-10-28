@@ -109,7 +109,7 @@ fn typed_app() -> (App, TypedBroker) {
         Box::new(AgentTarget::new()),
         broker.manager("person"),
     );
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    broker.wait_action_subscribers(1);
     (app, broker)
 }
 
@@ -154,7 +154,6 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
             state.commit_action_authored(None, None, Some(me.clone()));
         }
 
-        // And presses Ctrl+Z once. This is verbatim what the keybinding calls.
         let state = app.state_mut_for_test();
         state
             .undo_as(Some(&me), None, None, None)
@@ -190,7 +189,6 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
             "the boundary names the agent that performed it, not the person here"
         );
 
-        // And it is reversible under that name.
         let state = app.state_mut_for_test();
         state
             .undo_as(Some(&UserId(AGENT.into())), None, None, None)

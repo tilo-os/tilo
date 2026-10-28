@@ -197,9 +197,11 @@ fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
             let before = peer.durable().unwrap();
             let (snapshot_bytes, incremental) = edited_chat(&peer, operation);
             let result = if snapshot {
-                peer.publish_document(APP, "", snapshot_bytes, &key, now)
+                peer.publication_mut()
+                    .publish_document(APP, "", snapshot_bytes, &key, now)
             } else {
-                peer.publish_incremental(APP, "", incremental, &key, now)
+                peer.publication_mut()
+                    .publish_incremental(APP, "", incremental, &key, now)
             };
             assert!(
                 result.is_err(),
@@ -218,7 +220,8 @@ fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
     let (_, incremental) = edited_chat(&peer, 3);
-    peer.publish_incremental(APP, "", incremental, &key, now)
+    peer.publication_mut()
+        .publish_incremental(APP, "", incremental, &key, now)
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
@@ -403,10 +406,12 @@ fn room_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write(
     }
     let (_, delta) = edited_chat(&peer, 5);
     assert!(
-        peer.publish_incremental(APP, "", delta.clone(), &members[1].0, now)
+        peer.publication_mut()
+            .publish_incremental(APP, "", delta.clone(), &members[1].0, now)
             .is_err()
     );
-    peer.publish_incremental(APP, "", delta, &members[0].0, now)
+    peer.publication_mut()
+        .publish_incremental(APP, "", delta, &members[0].0, now)
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
@@ -494,7 +499,10 @@ fn room_media_room_first_restore_preserves_pending_exact_chat() {
     let (mut author, key, now) = fixture();
     let value = policy(&author);
     install_policy(&mut author, &key, now, &value).unwrap();
-    author.bootstrap_messages(&key, now).unwrap();
+    author
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     let receiver = room_first_receiver(&author, &key, now);
     let bytes = receiver.durable().unwrap();
     let restored = StatePeer::restore(
@@ -517,7 +525,10 @@ fn room_media_strict_missing_chat_snapshot_reaches_binding_guard() {
     let (mut author, key, now) = fixture();
     let value = policy(&author);
     install_policy(&mut author, &key, now, &value).unwrap();
-    author.bootstrap_messages(&key, now).unwrap();
+    author
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     let receiver = room_first_receiver(&author, &key, now);
     assert_invalid_then_valid_chat(receiver, &author, &key, now, value);
 }
@@ -525,14 +536,17 @@ fn room_media_strict_missing_chat_snapshot_reaches_binding_guard() {
 fn room_media_exact_record_foreign_room_and_alias_are_not_substitutes() {
     let (mut peer, key, now) = fixture();
     let other = edited_chat(&peer, 5).0;
-    peer.publish_document(APP, "second", other, &key, now)
+    peer.publication_mut()
+        .publish_document(APP, "second", other, &key, now)
         .unwrap();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
     let bad = edited_chat(&peer, 0).0;
-    peer.publish_document(APP, "second", bad.clone(), &key, now)
+    peer.publication_mut()
+        .publish_document(APP, "second", bad.clone(), &key, now)
         .unwrap();
-    peer.publish_document("dev.tilo.chat", "", bad, &key, now)
+    peer.publication_mut()
+        .publish_document("dev.tilo.chat", "", bad, &key, now)
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
     let mut wrong = value;
@@ -552,7 +566,9 @@ fn room_media_ended_call_allows_delete_but_cannot_restart_missing_object() {
     value.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
     install_policy(&mut peer, &key, now, &value).unwrap();
     let deleted = edited_chat(&peer, 0).0;
-    peer.publish_document(APP, "", deleted, &key, now).unwrap();
+    peer.publication_mut()
+        .publish_document(APP, "", deleted, &key, now)
+        .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
     value.calls.get_mut(&[7; 32]).unwrap().phase = media::CallPhaseV1::Active;
     value.calls.get_mut(&[7; 32]).unwrap().epoch = 3;
@@ -635,7 +651,9 @@ fn room_media_governance_role_removal_and_enrollment_refresh_once() {
             .authorization_revision,
         3
     );
-    peer.bootstrap_messages(&key, now).unwrap();
+    peer.publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     assert_eq!(
         peer.validated_media_policy()
             .unwrap()
@@ -664,6 +682,7 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(members[0].1.clone()),
             revocations: vec![revoked.clone()],
+            successions: Vec::new(),
         },
         now,
     )

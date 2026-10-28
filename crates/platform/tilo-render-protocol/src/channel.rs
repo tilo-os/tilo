@@ -44,10 +44,6 @@ pub enum ChannelError {
 
 impl Channel {
     /// Both ends of a new channel, close-on-exec.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the socket pair.
     pub fn pair() -> io::Result<(Self, Self)> {
         let (a, b) = rustix::net::socketpair(
             AddressFamily::UNIX,
@@ -79,16 +75,7 @@ impl Channel {
         self.socket.as_fd()
     }
 
-    /// The socket, for the broker to hand over.
-    pub fn into_socket(self) -> OwnedFd {
-        self.socket
-    }
-
     /// Send `message` with `fds`.
-    ///
-    /// # Errors
-    ///
-    /// When the message does not encode, is too large, or the send fails.
     pub fn send<T: Serialize>(
         &self,
         message: &T,
@@ -168,6 +155,17 @@ impl Channel {
             .ok_or(WireError::Malformed("receive length"))?;
         let message = control::decode(bytes)?;
         Ok(Received { message, fds })
+    }
+
+    /// End the channel in both directions: a receive waiting on it, on any
+    /// thread, returns [`ChannelError::Closed`], and so does every later one.
+    ///
+    /// # Errors
+    ///
+    /// When the socket refuses the shutdown.
+    pub fn shut_down(&self) -> io::Result<()> {
+        rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both)?;
+        Ok(())
     }
 
     /// Make receives return `WouldBlock` instead of waiting.

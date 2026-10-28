@@ -21,7 +21,7 @@ use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -685,10 +685,11 @@ impl<C: Widget> FloatingWindow<C> {
             width: taffy::AvailableSpace::Definite(inner.width() as f32),
             height: taffy::AvailableSpace::Definite(inner.height() as f32),
         };
-        let _ = taffy.compute_layout_with_measure(
+        let _ = super::layout::solve_layout(
+            &mut taffy,
             node,
             available,
-            |known, available, node_id, _, _| {
+            &mut |known, available, node_id| {
                 if let Some(&ptr) = map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, text_renderer) }
                 } else {
@@ -984,52 +985,40 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 visual,
                 &body,
             );
-            if self.overlay_chrome {
-                // Capture PiP is primarily the selected pixels, not a tiny
-                // utility window. Keep the controls compact and legible over
-                // arbitrary light/dark imagery without reserving any layout.
-                let title_size = theme.tokens.typography.size(TextRole::Caption);
-                let glyph_width = f64::from(title_size) * 0.56;
-                let estimated_title_width = (self
-                    .title
-                    .chars()
-                    .fold(20.0, |width, _| width + glyph_width))
-                .clamp(72.0, (self.rect.width() - 86.0).max(72.0));
-                // Same vertical band as the close chip, so the two overlay
-                // controls sit on one line inside the drag band.
-                let band = self.close_rect().inset(-1.0);
-                let chip_x0 = self.rect.x0 + f64::from(theme.tokens.spacing.s2);
-                let title_chip =
-                    Rect::new(chip_x0, band.y0, chip_x0 + estimated_title_width, band.y1);
-                scene.fill(
-                    Fill::NonZero,
-                    visual,
-                    theme.tokens.colors.surfaces.base.with_alpha_factor(
-                        if title_chip.contains(self.last_cursor) {
-                            0.94
-                        } else {
-                            0.86
-                        },
-                    ),
-                    None,
-                    &RoundedRect::from_rect(title_chip, title_chip.height() / 2.0),
+            // Over edge-to-edge content (a picture in picture), the name and
+            // close stand on their own strip of the floating material along
+            // the top edge, fading in with the chrome: never a pill over the
+            // content's own text.
+            let on_strip;
+            let theme = if self.overlay_chrome {
+                let strip = Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1,
+                    self.rect.y0 + self.title_bar_height(),
                 );
-                // The painted chip is the click target (`close_rect`) less a
-                // hairline, so what is tinted on hover is what a press hits
-                // at every `ui_scale`.
-                let close_chip = self.close_rect().inset(-1.0);
-                scene.fill(
-                    Fill::NonZero,
+                crate::floating_surface::paint_material(
+                    scene,
                     visual,
-                    if self.close_rect().contains(self.last_cursor) {
-                        theme.tokens.colors.semantic.danger.with_alpha_factor(0.28)
-                    } else {
-                        theme.tokens.colors.surfaces.base.with_alpha_factor(0.86)
-                    },
-                    None,
-                    &RoundedRect::from_rect(close_chip, close_chip.height() / 2.0),
+                    &strip,
+                    crate::floating_surface::Material::Floating,
+                    theme,
                 );
+                crate::surface::separator(
+                    scene,
+                    visual,
+                    strip.x0,
+                    strip.x1,
+                    strip.y1 - 0.5,
+                    0.0,
+                    crate::chrome::panel_ground(theme),
+                );
+                on_strip = theme.on_ground(crate::chrome::panel_ground(theme));
+                &on_strip
             } else {
+                theme
+            };
+            if !self.overlay_chrome {
                 let title_band = self.title_bar_rect();
                 scene.fill(
                     Fill::NonZero,
@@ -1528,8 +1517,10 @@ mod tests {
             // override remains exact no matter how much real time the PNG render
             // or debugger consumes after this call.
             let (_, first) = window.visual_transform(Affine::IDENTITY, false);
-            std::thread::sleep(Duration::from_millis(12));
-            let (_, later) = window.visual_transform(Affine::IDENTITY, false);
+            let (_, later) = crate::time::testing::with_monotonic_time(
+                crate::time::now() + Duration::from_secs(5),
+                || window.visual_transform(Affine::IDENTITY, false),
+            );
             assert!((first - 0.5).abs() < f64::EPSILON);
             assert_eq!(later, first);
             assert!(!Widget::needs_animation_frame(&window));
@@ -1881,7 +1872,6 @@ mod tests {
             let (mut w, _e) = laid_out(true);
             let start = w.window_rect();
 
-            // Fling the window far past the bottom-right corner.
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
             dispatch(&mut w, &mouse_press());
@@ -2102,7 +2092,6 @@ mod tests {
 
         fn outside_click_is_swallowed_not_passed_through() {
             let (mut w, events) = laid_out(true);
-            // Click far outside the window.
             dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
             let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "outside click must be swallowed");

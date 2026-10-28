@@ -1,4 +1,3 @@
-//! Public import, resource navigation and real retained placement geometry.
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, Project as ChipProject, VerificationRecord};
 use serde_json::{Value, json};

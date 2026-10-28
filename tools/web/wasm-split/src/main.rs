@@ -28,6 +28,7 @@
 //! crates/browser/tilo-web-desktop/src/split.rs.
 
 mod data;
+mod dedupe;
 mod split;
 #[cfg(test)]
 mod tests;

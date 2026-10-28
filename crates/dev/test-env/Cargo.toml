@@ -3,17 +3,37 @@ name = "tilo-test-env"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Serialised, self-restoring process environment, XDG fixtures and hang-bounded waits for tests"
+description = "Serialised, self-restoring process environment, XDG fixtures, scenarios and hang-bounded waits for tests"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tempfile.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+
+[features]
+# `FakeDocumentNet`: a `FakeNet` whose devices carry Automerge changes. Off by
+# default, so a package that only needs the environment does not link a CRDT;
+# `document` is what a package whose devices carry a document enables.
+document = ["dep:automerge", "dep:serde_json", "dep:tilo-automerge"]
+
+[dependencies.automerge]
+workspace = true
+optional = true
+
+[dependencies.serde_json]
+workspace = true
+optional = true
+
+[dependencies.tilo-automerge]
+workspace = true
+optional = true
 
 [lints]
 workspace = true

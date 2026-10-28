@@ -372,7 +372,6 @@ pub(crate) mod tests {
         let mut written = Vec::new();
         for step in 0..10_u32 {
             let now = t0 + ms(33) * step;
-            // The writer wakes for every move and every due instant.
             while let Some(due) = pacer.next_due().filter(|due| *due < now) {
                 written.extend(pacer.take_due(due).into_iter().map(|e| (due, e)));
             }
@@ -416,7 +415,6 @@ pub(crate) mod tests {
         let fresher_due = t0 + ms(64) + ARRIVAL_SLACK;
         assert_eq!(pacer.next_due(), Some(fresher_due));
         assert!(pacer.take_due(t0 + POINTER_GAP).is_empty());
-        // It comes, and goes at once in place of the stale one.
         let c = pointer("tile", 3.0);
         pacer.hold(key_of(&c), c.clone(), t0 + ms(64));
         assert_eq!(pacer.take_due(t0 + ms(64)), vec![c]);

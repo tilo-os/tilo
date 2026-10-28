@@ -6,7 +6,7 @@
 //! form, and a small set of named styles for currency/percent/date cells,
 //! declared in `styles.xml`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -29,15 +29,11 @@ pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
 }
 
 /// Read every sheet of the `.ods` document `bytes` into tables.
-///
-/// # Errors
-///
-/// As [`read_ods`], for a package that is already read.
 pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = OdsCodec::parse(bytes)?;
     // ODF types dates explicitly (they arrive as ISO text), so no style marks
     // a number as a date.
-    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
+    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeMap::new())
 }
 
 /// Write tables to an `.ods` document.
@@ -153,6 +149,7 @@ mod tests {
     fn sample_table() -> SheetTable {
         SheetTable {
             name: "Budget".into(),
+            hidden: false,
             rows: vec![
                 vec![
                     Some(cell("Item", CellFormat::Text)),
@@ -190,14 +187,12 @@ mod tests {
         out
     }
 
-    /// ODS values, currency styles, formulas, syntax and content XML.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn ods_round_trips_values_styles_and_formulas() {
-        // Case `ods_round_trips`.
         {
             let path = std::env::temp_dir().join("sheets-ods-test.ods");
             write_ods(&path, std::slice::from_ref(&sample_table())).unwrap();
@@ -214,7 +209,6 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        // Case `ods_export_uses_the_cells_actual_currency_style`.
         {
             for (currency, style) in [
                 (Currency::USD, "coUSD"),
@@ -229,6 +223,7 @@ mod tests {
             ] {
                 let table = SheetTable {
                     name: "S".into(),
+                    hidden: false,
                     rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
                 };
                 let xml = written_part(std::slice::from_ref(&table), "content.xml");
@@ -281,7 +276,6 @@ mod tests {
                 Some("=A3*2")
             );
 
-            // Re-evaluating the imported formulas reproduces the results.
             let mut reimported: HashMap<Addr, String> = HashMap::new();
             for (r, row) in back[0].rows.iter().enumerate() {
                 for (c, cell) in row.iter().enumerate() {
@@ -298,16 +292,13 @@ mod tests {
             assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(24.0)));
         }
 
-        // Case `ods_formula_syntax`.
         {
             // A1 refs become bracketed current-table refs under the of: namespace.
             assert_eq!(to_ods_formula("=SUM(A1:A3)"), "of:=SUM([.A1:.A3])");
             assert_eq!(to_ods_formula("=B2+C2"), "of:=[.B2]+[.C2]");
-            // Function names and numeric literals are left alone.
             assert_eq!(to_ods_formula("=A1*2"), "of:=[.A1]*2");
         }
 
-        // Case `content_xml_carries_values_formulas_and_escaped_names`.
         {
             let mut table = sample_table();
             table.name = "Budget <&> \"Q1\"".into();

@@ -63,9 +63,6 @@ impl HostPolicy {
     /// shared vocabulary: "Always" (`Never`, or a deadline) on disk; "This
     /// session" (`EndOfSession`) and "Allow" (`AfterUse`) in this session
     /// only.
-    ///
-    /// # Errors
-    /// Returns the write error for a decision kept on disk.
     pub fn record_allow(
         store: &crate::store::Store,
         app_id: &str,
@@ -113,9 +110,6 @@ impl HostPolicy {
     }
 
     /// Write the decisions that outlive a restart.
-    ///
-    /// # Errors
-    /// Returns the write error.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let durable = Self {
             capabilities: self
@@ -199,11 +193,6 @@ struct Handoff {
     app_id: String,
 }
 
-/// Encode the launcher's handoff for `app_id`.
-///
-/// # Errors
-///
-/// Returns an error if the app id is too long to fit the bounded handoff.
 pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
     let json = serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": app_id }))
         .map_err(std::io::Error::other)?;
@@ -221,10 +210,6 @@ pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
 /// Read who is calling from the head of a connection. Returns the caller and
 /// the bytes already consumed that belong to the request (a connection
 /// without a handoff starts directly with its JSON line).
-///
-/// # Errors
-///
-/// Returns an error if a handoff starts but is malformed or truncated.
 pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)> {
     // One byte first: a request is JSON and never starts with the magic's
     // first byte, so a short request (`{}`) is never waited on for more.
@@ -259,7 +244,6 @@ pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RequestedBy {
-    /// The person, through the Terminal's own controls.
     #[default]
     Person,
     /// An agent, through the Terminal's published actions.
@@ -362,11 +346,6 @@ impl HostDenied {
 }
 
 /// Decide a Host request. Pure, so every refusal is testable without a pty.
-///
-/// # Errors
-///
-/// Returns the first gate the request fails, in the order the module
-/// documentation lists them.
 pub fn decide_host(
     caller: &Caller,
     requested_by: RequestedBy,
@@ -438,31 +417,31 @@ pub fn login_account() -> Option<LoginAccount> {
     })
 }
 
-/// The command a Host session runs: the login shell as a login shell
-/// (`argv[0]` prefixed with `-`), or the requested program run by it. With
-/// `runs` (a key and the rc file [`crate::runs::bash_rc`] wrote) a `bash`
-/// starts on that rc file instead, which reads the profile as a login shell
-/// would and marks each command run.
+/// The command a Host session runs: the login shell as the session's
+/// interactive login shell ([`crate::shell_start`], a `bash` on `rc`), or
+/// the requested program run by the login shell (`argv[0]` prefixed with
+/// `-`). `runs` is the key a marking rc file reads.
 pub fn host_command(
     account: &LoginAccount,
     term: &str,
     program: &[String],
-    runs: Option<(&str, &Path)>,
+    rc: Option<&Path>,
+    runs: Option<&str>,
 ) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&account.shell);
-    let name = account
-        .shell
-        .file_name()
-        .map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned());
     cmd.env_remove(crate::runs::KEY_ENV);
-    if let (Some((key, rc)), true) = (runs, program.is_empty()) {
-        cmd.arg("--rcfile").arg(rc).arg("-i");
-        cmd.env(crate::runs::KEY_ENV, key);
+    if program.is_empty() {
+        cmd.args(crate::shell_start::interactive_args(&account.shell, rc));
+        if let Some(key) = runs {
+            cmd.env(crate::runs::KEY_ENV, key);
+        }
     } else {
+        let name = account
+            .shell
+            .file_name()
+            .map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned());
         cmd.arg0(format!("-{name}"));
-    }
-    if !program.is_empty() {
         cmd.arg("-c");
         cmd.arg(exec_script(program));
     }
@@ -592,7 +571,6 @@ mod tests {
             ));
         assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
 
-        // Allowing twice keeps one record.
         let mut twice = allowed();
         twice.allow_host_shell(TERMINAL_APP_ID);
         assert_eq!(twice.capabilities.len(), 1);
@@ -660,14 +638,14 @@ mod tests {
             home: dir.path().to_path_buf(),
             shell: PathBuf::from("/usr/bin/fish"),
         };
-        let cmd = host_command(&account, "xterm-256color", &[], None);
+        let cmd = host_command(&account, "xterm-256color", &[], None, None);
         assert_eq!(cmd.get_program(), "/usr/bin/fish");
-        assert_eq!(cmd.get_args().count(), 0);
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["-l"]);
         assert_eq!(cmd.get_current_dir(), Some(dir.path()));
         let home = (std::ffi::OsStr::new("HOME"), Some(dir.path().as_os_str()));
         assert!(cmd.get_envs().any(|pair| pair == home));
 
-        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None);
+        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None, None);
         let args: Vec<_> = run.get_args().collect();
         assert_eq!(args, ["-c", "exec 'htop' '-d'"]);
     }

@@ -1,0 +1,1 @@
+{"architecture": "arm64", "config": {"Labels": {"org.opencontainers.image.revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "org.opencontainers.image.version": "fixture"}}, "os": "linux"}

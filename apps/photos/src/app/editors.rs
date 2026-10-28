@@ -13,7 +13,7 @@ use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Id;
-use ui::widget::{Button, ButtonFace, ButtonRole, ScrollMetrics, TextInput, Widget};
+use ui::widget::{Button, ButtonFace, ButtonRole, ScrollRegion, TextInput, Widget};
 use ui::widget::{SegmentedFace, ToggleGroup};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -73,6 +73,9 @@ impl PhotosApp {
         self.album_editor_id = Some(id);
         self.album_name_input.set_text(&tr("photos-untitled-album"));
         self.album_name_input.set_focus(true);
+        // The suggested name is selected, so typing replaces it rather than
+        // appending to "Untitled album".
+        self.album_name_input.select_all();
         self.album_editor_members.clear();
         self.album_delete_confirm = false;
         self.album_editor_focus = 0;
@@ -217,6 +220,9 @@ impl PhotosApp {
         ] {
             input.set_placeholder(if mixed { &mixed_hint } else { &ordinary });
         }
+        self.metadata_seed = self
+            .metadata_draft_inputs()
+            .map(|input| input.value().to_owned());
         self.metadata_folder_input.set_focus(true);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
@@ -226,12 +232,36 @@ impl PhotosApp {
         self.metadata_longitude_input.set_focus(false);
         self.metadata_editor_section = MetadataEditorSection::Organize;
         self.metadata_editor_focus = 0;
-        self.metadata_editor_scroll = 0.0;
+        self.editor_scroll.set_offset(vello::kurbo::Vec2::ZERO);
         self.metadata_editor_reveal_focus = true;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
         // in the persistent status band made it wrap below a phone viewport.
         self.notice = None;
+    }
+
+    /// The draft's text fields in [`Self::metadata_seed`] order.
+    fn metadata_draft_inputs(&self) -> [&TextInput; 7] {
+        [
+            &self.metadata_folder_input,
+            &self.metadata_people_input,
+            &self.metadata_tags_input,
+            &self.metadata_captured_at_input,
+            &self.metadata_place_input,
+            &self.metadata_latitude_input,
+            &self.metadata_longitude_input,
+        ]
+    }
+
+    /// Whether the details draft differs from what the editor opened with:
+    /// a field edited, or one marked to clear for every photo.
+    pub(super) fn metadata_draft_changed(&self) -> bool {
+        self.metadata_force_clear.contains(&true)
+            || self
+                .metadata_draft_inputs()
+                .iter()
+                .zip(&self.metadata_seed)
+                .any(|(input, seed)| input.value() != seed)
     }
 
     pub(super) fn cancel_metadata_editor(&mut self) {
@@ -253,7 +283,8 @@ impl PhotosApp {
         reason = "builds the single atomic batch metadata action from all sheet fields in one place"
     )]
     pub(super) fn save_metadata_editor(&mut self) {
-        if self.metadata_editor_ids.is_empty() {
+        // Save stands disabled while nothing changed; no path saves then.
+        if self.metadata_editor_ids.is_empty() || !self.metadata_draft_changed() {
             return;
         }
         let optional = |input: &TextInput| {
@@ -373,7 +404,7 @@ impl PhotosApp {
         self.metadata_editor = false;
         self.metadata_editor_ids.clear();
         self.metadata_editor_focus = 0;
-        self.notice = Some(if count == 1 {
+        self.say_when_kept(if count == 1 {
             tr("photos-details-saved")
         } else {
             tr_count("photos-details-saved-many", count)
@@ -406,7 +437,7 @@ impl PhotosApp {
 
     pub(super) fn set_metadata_editor_section(&mut self, section: MetadataEditorSection) {
         self.metadata_editor_section = section;
-        self.metadata_editor_scroll = 0.0;
+        self.editor_scroll.set_offset(vello::kurbo::Vec2::ZERO);
         self.set_metadata_editor_focus(0);
     }
 
@@ -506,6 +537,38 @@ impl PhotosApp {
         self.album_editor_focus = 0;
     }
 
+    /// Back's first step while an editor stands as the narrow window's
+    /// sheet: raised to the whole window it comes down to half, else the
+    /// editor is put away as Cancel puts it. Returns whether there was such
+    /// a sheet to take the step; the window bar's Back, Escape and the
+    /// system's back gesture all ask it before anything navigates.
+    pub(super) fn sheet_back(&mut self) -> bool {
+        if !self.editor_sheet_shown() {
+            return false;
+        }
+        let motion = self.layout_theme.motion();
+        if !self.chrome.inspector.lower_sheet(motion) {
+            self.cancel_editor();
+        }
+        true
+    }
+
+    /// Whether an editor stands as the narrow window's sheet.
+    pub(super) fn editor_sheet_shown(&self) -> bool {
+        (self.album_editor || self.metadata_editor)
+            && self.chrome.inspector.is_open()
+            && self.chrome.inspector.sheet_detent().is_some()
+    }
+
+    /// Put the open editor away, its edits discarded.
+    fn cancel_editor(&mut self) {
+        if self.album_editor {
+            self.cancel_album_editor();
+        } else if self.metadata_editor {
+            self.cancel_metadata_editor();
+        }
+    }
+
     pub(super) fn cancel_album_editor(&mut self) {
         self.album_editor = false;
         self.album_editor_id = None;
@@ -570,11 +633,15 @@ impl PhotosApp {
             self.commit_group(&edits);
         }
         self.active_album = Some(id);
+        // The editor is done with this album: its own save landing must not
+        // read as someone else changing the album under an open draft.
         self.album_editor = false;
+        self.album_editor_id = None;
+        self.album_editor_members.clear();
         self.album_delete_confirm = false;
         self.album_name_input.set_focus(false);
         self.album_editor_focus = 0;
-        self.notice = Some(tr("photos-album-saved"));
+        self.say_when_kept(tr("photos-album-saved"));
     }
 
     pub(super) fn delete_active_album(&mut self) {
@@ -591,7 +658,7 @@ impl PhotosApp {
         self.album_editor_id = None;
         self.album_delete_confirm = false;
         self.album_editor_focus = 0;
-        self.notice = Some(tr("photos-album-deleted"));
+        self.say_when_kept(tr("photos-album-deleted"));
     }
 
     #[allow(
@@ -646,7 +713,9 @@ impl PhotosApp {
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.cancel_album_editor();
+                    if !self.sheet_back() {
+                        self.cancel_album_editor();
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -664,7 +733,8 @@ impl PhotosApp {
                             self.delete_active_album();
                         }
                         (false, 2) => self.album_delete_confirm = true,
-                        (true, 2) | (false, 3) => self.save_album_editor(),
+                        // Enter in the name field saves, as in any form.
+                        (_, 0) | (true, 2) | (false, 3) => self.save_album_editor(),
                         _ => {}
                     }
                     *ctx.handled = true;
@@ -787,7 +857,9 @@ impl PhotosApp {
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.cancel_metadata_editor();
+                    if !self.sheet_back() {
+                        self.cancel_metadata_editor();
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -811,22 +883,25 @@ impl PhotosApp {
                 _ => {}
             }
         }
-        // A wheel over the sheet scrolls its field list (clamped at paint,
-        // where the content height is known).
-        if let winit::event::WindowEvent::MouseWheel { delta, .. } = event
-            && self.metadata_editor_body.contains(self.pointer)
+        // A wheel over the field list is the scroll region's: it moves the
+        // list, fades its edges and glides on as every scroller does.
+        if let winit::event::WindowEvent::MouseWheel { .. } = event
+            && self.editor_scroll_viewport.contains(self.pointer)
         {
-            let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
-                // Physical pixels, like every pointer position this app
-                // converts; without the division a 2× display scrolls twice
-                // the trackpad distance.
-                winit::event::MouseScrollDelta::PixelDelta(position) => {
-                    position.y / ctx.scale_factor
-                }
-            };
-            self.metadata_editor_scroll = (self.metadata_editor_scroll - dy).max(0.0);
-            *ctx.handled = true;
+            let mut handled = false;
+            let changed = self.editor_scroll.handle_window_event(
+                event,
+                ctx.scale_factor,
+                ctx.modifiers.state(),
+                &mut handled,
+                &self.layout_theme,
+            );
+            if handled {
+                *ctx.handled = true;
+            }
+            if changed {
+                self.editor_scroll_landed();
+            }
             return true;
         }
         // A press outside the field list's visible region belongs to the
@@ -837,7 +912,7 @@ impl PhotosApp {
                 state: winit::event::ElementState::Pressed,
                 ..
             }
-        ) && !self.metadata_editor_body.contains(self.pointer);
+        ) && !self.editor_scroll_viewport.contains(self.pointer);
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -921,41 +996,95 @@ impl PhotosApp {
         let rhythm = &local.tokens.spacing.rhythm;
         let control_h = ui::widget::ControlSize::Regular.height(&local);
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, &local);
-        let body = frame.body;
-        let mut y = body.y0;
-        ctx.text_role(
-            &tr("photos-people-name"),
-            ui::TextRole::Label,
-            local.text_dim,
-            Point::new(body.x0, y),
-            None,
+        // Edit album's body is the same scroll region the details sheet's
+        // field list uses: the name, its guidance and the count fill the
+        // sheet from the header down to the footer, and scroll under its
+        // edge fade when the sheet is short.
+        // Down to the footer's own rows, as the details sheet's list runs.
+        let body = Rect::new(
+            frame.body.x0,
+            frame.body.y0,
+            frame.body.x1,
+            frame.footer.y0.max(frame.body.y0),
         );
-        y += Self::line_of(&local, ui::TextRole::Label) + f64::from(rhythm.tight);
-        self.album_name_input
-            .apply_layout_external(Rect::new(body.x0, y, body.x1, y + control_h));
-        self.album_name_input
-            .draw(ctx.scene, transform, ctx.text, &local, presence);
-        y += control_h + f64::from(rhythm.group);
+        self.editor_scroll.set_viewport(body, &local);
+        let region = self.editor_scroll.content_rect();
+        self.editor_scroll_viewport = region;
+        let label_h = Self::line_of(&local, ui::TextRole::Label);
         let guidance = tr("photos-album-editor-hint");
         let guidance_h = ctx
-            .measure_role(&guidance, ui::TextRole::Body, Some(body.width() as f32))
+            .measure_role(&guidance, ui::TextRole::Body, Some(region.width() as f32))
             .height;
-        ctx.text_role(
-            &guidance,
-            ui::TextRole::Body,
-            local.text_dim,
-            Point::new(body.x0, y),
-            Some(body.width() as f32),
+        let content_h = label_h
+            + f64::from(rhythm.tight)
+            + control_h
+            + f64::from(rhythm.group)
+            + guidance_h
+            + f64::from(rhythm.related)
+            + Self::line_of(&local, ui::TextRole::Caption);
+        self.editor_scroll
+            .set_content_size(region.width(), content_h);
+        // The rows in content coordinates, as the list rests against them,
+        // so the region lands the offset between them when the sheet is
+        // short.
+        let guidance_band = Rect::new(
+            region.x0,
+            label_h + f64::from(rhythm.tight) + control_h + f64::from(rhythm.group),
+            region.x1,
+            label_h + f64::from(rhythm.tight) + control_h + f64::from(rhythm.group) + guidance_h,
         );
-        y += guidance_h + f64::from(rhythm.related);
-        ctx.text_role(
-            &tr_count("photos-album-members", self.album_editor_members.len()),
-            ui::TextRole::Caption,
-            local.text_dim,
-            Point::new(body.x0, y),
-            None,
+        let count_band = Rect::new(
+            region.x0,
+            guidance_band.y1 + f64::from(rhythm.related),
+            region.x1,
+            content_h,
         );
-
+        self.editor_field_bands = vec![guidance_band, count_band];
+        self.editor_scroll_landed();
+        // The rows stand where the region shows them: its origin less the
+        // offset, in window coordinates, as the details sheet's fields do.
+        let shown = self.editor_scroll.offset();
+        let top = region.y0 - shown.y;
+        let name = Rect::new(
+            region.x0,
+            top + label_h + f64::from(rhythm.tight),
+            region.x1,
+            top + label_h + f64::from(rhythm.tight) + control_h,
+        );
+        let guidance_at = guidance_band - vello::kurbo::Vec2::new(0.0, shown.y);
+        let count_at = count_band - vello::kurbo::Vec2::new(0.0, shown.y);
+        let album_scroll = std::mem::replace(
+            &mut self.editor_scroll,
+            ScrollRegion::vertical().with_edge_fade(),
+        );
+        album_scroll.paint(scene, transform, &local, |scene, _content| {
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &tr("photos-people-name"),
+                ui::TextRole::Label,
+                local.text_dim,
+                Point::new(region.x0, top),
+                None,
+            );
+            self.album_name_input.apply_layout_external(name);
+            self.album_name_input
+                .draw(scene, transform, text_renderer, &local, presence);
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &guidance,
+                ui::TextRole::Body,
+                local.text_dim,
+                Point::new(guidance_at.x0, guidance_at.y0),
+                Some(region.width() as f32),
+            );
+            PaintCtx::new(scene, transform, text_renderer, &local).text_role(
+                &tr_count("photos-album-members", self.album_editor_members.len()),
+                ui::TextRole::Caption,
+                local.text_dim,
+                Point::new(count_at.x0, count_at.y0),
+                None,
+            );
+        });
+        self.editor_scroll = album_scroll;
+        let ctx = PaintCtx::new(scene, transform, text_renderer, &local);
         // Footer: delete leading, cancel and save trailing.
         let footer = frame.footer;
         let gap = f64::from(rhythm.related);
@@ -1034,8 +1163,6 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use vello::peniko::Fill;
-
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -1100,7 +1227,9 @@ impl PhotosApp {
             transform,
             text_renderer,
             &local,
-            &SegmentedFace::new(&segments, &label_refs, selected).hovered(hovered),
+            &SegmentedFace::new(&segments, &label_refs, selected)
+                .style(ui::widget::SegmentedStyle::Tabs)
+                .hovered(hovered),
         );
         hits.extend(
             [MetadataEditorHit::Organize, MetadataEditorHit::TimeAndPlace]
@@ -1108,51 +1237,131 @@ impl PhotosApp {
                 .zip(segments.iter().copied()),
         );
 
-        let fields_top = strip.y1 + sibling;
-        let region = Rect::new(body.x0, fields_top, body.x1, body.y1.max(fields_top));
-        self.metadata_editor_body = region;
+        // The field list is a scroll region filling the sheet from the tabs
+        // down to the footer, so the last field is reachable and no empty
+        // sheet is left below an edge the list was cut at. The footer's own
+        // rows are in `frame.footer`, below the body the frame reserves for
+        // it, so the list ends where they start.
+        let start = Rect::new(
+            body.x0,
+            strip.y1 + sibling,
+            body.x1,
+            frame.footer.y0.max(strip.y1 + sibling),
+        );
+        self.editor_scroll.set_viewport(start, &local);
+        let region = self.editor_scroll.content_rect();
+        self.editor_scroll_viewport = region;
         let row_h = label_h + tight + control_h + sibling;
-        // The map gives up height first, so in a short window the
-        // coordinates under it stay in view; it never shrinks below a
-        // target the pointer can still pick from.
-        let preferred_map =
-            (region.width() * 0.5).min(f64::from(local.tokens.metrics.panel_width_utility) * 0.6);
-        let least_map = 2.0 * f64::from(local.tokens.metrics.min_pointer_target);
-        let map_h = preferred_map
-            .min(region.height() - 3.0 * row_h - sibling)
-            .max(least_map.min(preferred_map));
+        let content = MetadataFieldList::new(region, row_h, sibling);
         let time_and_place = self.metadata_editor_section == MetadataEditorSection::TimeAndPlace;
-        let content_h = if time_and_place {
-            3.0 * row_h + map_h + sibling
+        // The map gives up height first, so in a short window the
+        // coordinates under it stay in view; it never shrinks below a target
+        // the pointer can still pick from.
+        let least_map = 2.0 * f64::from(local.tokens.metrics.min_pointer_target);
+        let map_h = if time_and_place {
+            content.map_h(&local, least_map)
         } else {
-            3.0 * row_h
+            0.0
         };
-        if std::mem::take(&mut self.metadata_editor_reveal_focus) {
-            let focused_row_top = match (time_and_place, self.metadata_editor_focus) {
-                (false, focus @ 0..=2) | (true, focus @ 0..=1) => Some(focus as f64 * row_h),
-                (true, 2 | 3) => Some(2.0 * row_h + map_h + sibling),
-                _ => None,
+        // Its whole height is known before a field is placed, so the region
+        // clamps the offset against it and can land it between two fields.
+        let reveal = self
+            .metadata_editor_reveal_focus
+            .then_some(self.metadata_editor_focus);
+        self.editor_scroll_bands(&content, map_h, reveal);
+        self.metadata_editor_reveal_focus = false;
+        // The rows stand where the list shows them: the region's origin,
+        // less the offset. A field is laid out in window coordinates (hover,
+        // press and caret hit-testing read them), so the rows are placed
+        // there and drawn with the window's own transform, while the clip
+        // and the edge fades come from the region.
+        let shown = self.editor_scroll.offset();
+        let place = MetadataFieldPlacement {
+            region,
+            fields_y: region.y0 - shown.y,
+            map_y: region.y0 + 2.0 * row_h - shown.y,
+            map_h,
+            row_h,
+            sibling,
+            label_h,
+            control_h,
+            tight,
+            related,
+        };
+        // The region borrows no part of the app while it paints, so the
+        // fields it holds can reach the app's own inputs.
+        let scroll = std::mem::replace(
+            &mut self.editor_scroll,
+            ScrollRegion::vertical().with_edge_fade(),
+        );
+        scroll.paint(scene, transform, &local, |scene, _content| {
+            self.draw_metadata_fields(
+                scene,
+                transform,
+                text_renderer,
+                &local,
+                presence,
+                &place,
+                &mut hits,
+            );
+        });
+        self.editor_scroll = scroll;
+        // Footer: cancel and save, trailing.
+        let footer = frame.footer;
+        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            (3, 4)
+        } else {
+            (4, 5)
+        };
+        let mut x1 = footer.x1;
+        let changed = self.metadata_draft_changed();
+        for (hit, focused) in [
+            (
+                MetadataEditorHit::Save,
+                self.metadata_editor_focus == footer_focus.1,
+            ),
+            (
+                MetadataEditorHit::Cancel,
+                self.metadata_editor_focus == footer_focus.0,
+            ),
+        ] {
+            let label = if hit == MetadataEditorHit::Save {
+                tr("photos-save-changes")
+            } else {
+                tr("photos-cancel")
             };
-            if let Some(top) = focused_row_top {
-                let bottom = top + row_h - sibling;
-                if top < self.metadata_editor_scroll {
-                    self.metadata_editor_scroll = top;
-                } else if bottom > self.metadata_editor_scroll + region.height() {
-                    self.metadata_editor_scroll = bottom - region.height();
+            let width = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(text_renderer, &local);
+            let rect = Rect::new(x1 - width, footer.y0, x1, footer.y1);
+            x1 = rect.x0 - related;
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                if hit == MetadataEditorHit::Save {
+                    button.set_enabled(changed);
                 }
+                button.set_focus(focused);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, &local, presence);
             }
         }
-        self.metadata_editor_scroll = self
-            .metadata_editor_scroll
-            .clamp(0.0, (content_h - region.height()).max(0.0));
-        let fields_y = fields_top - self.metadata_editor_scroll;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &region,
-        );
+        self.metadata_editor_hits = hits;
+    }
+
+    /// The field list's rows, in the content coordinates its scroll region
+    /// paints with: every field's band, the map's, and the pair of
+    /// coordinates under it.
+    fn draw_metadata_fields(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        local: &Theme,
+        presence: &PresenceCtx,
+        place: &MetadataFieldPlacement,
+        hits: &mut Vec<(MetadataEditorHit, Rect)>,
+    ) {
         // One field: its label, and the input under it. A field a batch edit
         // can clear for every photo carries that as a toggle in its trailing
         // accessory; `clear` is whether it is on.
@@ -1162,12 +1371,12 @@ impl PhotosApp {
                      label: &str,
                      clear: Option<bool>,
                      rect: Rect| {
-            PaintCtx::new(scene, transform, text_renderer, &local).text_role_in_band(
+            PaintCtx::new(scene, transform, text_renderer, local).text_role_in_band(
                 label,
                 ui::TextRole::Label,
                 local.text_dim,
                 rect.x0,
-                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + label_h),
+                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + place.label_h),
                 None,
             );
             if let Some(forced) = clear {
@@ -1175,16 +1384,16 @@ impl PhotosApp {
             }
             input.apply_layout_external(Rect::new(
                 rect.x0,
-                rect.y0 + label_h + tight,
+                rect.y0 + place.label_h + place.tight,
                 rect.x1,
-                rect.y0 + label_h + tight + control_h,
+                rect.y0 + place.label_h + place.tight + place.control_h,
             ));
-            input.draw(scene, transform, text_renderer, &local, presence);
+            input.draw(scene, transform, text_renderer, local, presence);
         };
-
+        let region = place.region;
         let column = |index: f64| {
-            let y = fields_y + index * row_h;
-            Rect::new(region.x0, y, region.x1, y + row_h - sibling)
+            let y = place.fields_y + index * place.row_h;
+            Rect::new(region.x0, y, region.x1, y + place.row_h - place.sibling)
         };
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
@@ -1227,82 +1436,83 @@ impl PhotosApp {
                 );
                 // A pick surface for the location: the offline map, with the
                 // drafted position marked.
-                let map_y = fields_y + 2.0 * row_h;
-                let map = Rect::new(region.x0, map_y, region.x1, map_y + map_h);
+                let map = Rect::new(region.x0, place.map_y, region.x1, place.map_y + place.map_h);
                 self.metadata_location_map_bounds = map;
-                self.paint_location_map(scene, transform, &local, map);
+                self.paint_location_map(scene, transform, local, map);
                 hits.push((MetadataEditorHit::PlaceOnMap, map.intersect(region)));
-                let y = map.y1 + sibling;
-                let half = (region.width() - related) / 2.0;
+                let y = map.y1 + place.sibling;
+                let half = (region.width() - place.related) / 2.0;
+                let (latitude, longitude) = (tr("photos-latitude"), tr("photos-longitude"));
                 for (label, input, x) in [
+                    (&latitude, &mut self.metadata_latitude_input, region.x0),
                     (
-                        tr("photos-latitude"),
-                        &mut self.metadata_latitude_input,
-                        region.x0,
-                    ),
-                    (
-                        tr("photos-longitude"),
+                        &longitude,
                         &mut self.metadata_longitude_input,
-                        region.x0 + half + related,
+                        region.x0 + half + place.related,
                     ),
                 ] {
                     field(
                         scene,
                         text_renderer,
                         input,
-                        &label,
+                        label,
                         None,
-                        Rect::new(x, y, x + half, y + row_h - sibling),
+                        Rect::new(x, y, x + half, y + place.row_h - place.sibling),
                     );
                 }
             }
         }
-        scene.pop_layer();
-        let metrics = ScrollMetrics::new(content_h, region.height(), self.metadata_editor_scroll);
-        if metrics.overflows() {
-            let gutter = f64::from(local.tokens.metrics.scrollbar_gutter);
-            let track = Rect::new(region.x1, region.y0, region.x1 + gutter, region.y1);
-            ui::widget::scrollbar::Scrollbar::vertical()
-                .draw(scene, transform, track, metrics, &local, false);
-        }
+    }
 
-        // Footer: cancel and save, trailing.
-        let footer = frame.footer;
-        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
-            (3, 4)
-        } else {
-            (4, 5)
+    /// Where each field's band stands in the field list's content, and the
+    /// list's height with the map at `map_h`.
+    fn editor_field_bands(&self, content: &MetadataFieldList, map_h: f64) -> (Vec<Rect>, f64) {
+        let region = content.region;
+        let row_h = content.row_h;
+        let band = |index: f64| {
+            let y = index * row_h;
+            Rect::new(region.x0, y, region.x1, y + row_h)
         };
-        let mut x1 = footer.x1;
-        for (hit, focused) in [
-            (
-                MetadataEditorHit::Save,
-                self.metadata_editor_focus == footer_focus.1,
-            ),
-            (
-                MetadataEditorHit::Cancel,
-                self.metadata_editor_focus == footer_focus.0,
-            ),
-        ] {
-            let label = if hit == MetadataEditorHit::Save {
-                tr("photos-save-changes")
-            } else {
-                tr("photos-cancel")
-            };
-            let width = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(text_renderer, &local);
-            let rect = Rect::new(x1 - width, footer.y0, x1, footer.y1);
-            x1 = rect.x0 - related;
-            if let Some((_, button)) = self
-                .metadata_editor_buttons
-                .iter_mut()
-                .find(|(candidate, _)| *candidate == hit)
-            {
-                button.set_focus(focused);
-                button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, &local, presence);
-            }
+        if self.metadata_editor_section == MetadataEditorSection::Organize {
+            let rows = (0..3_u32).map(|index| band(f64::from(index))).collect();
+            return (rows, content.height(0.0));
         }
-        self.metadata_editor_hits = hits;
+        let map = Rect::new(region.x0, 2.0 * row_h, region.x1, 2.0 * row_h + map_h);
+        let y = map.y1 + content.sibling;
+        let coordinates = Rect::new(region.x0, y, region.x1, y + row_h);
+        (
+            vec![band(0.0), band(1.0), map, coordinates],
+            content.height(map_h),
+        )
+    }
+
+    /// Lay the list out as the frame will draw it, remember the bands its
+    /// fields stand in, then move the offset to where the list rests and,
+    /// when focus moved this frame, reveal the focused field: the region
+    /// clamps it, so the list never ends past its last field.
+    fn editor_scroll_bands(
+        &mut self,
+        content: &MetadataFieldList,
+        map_h: f64,
+        focus: Option<usize>,
+    ) {
+        let (bands, height) = self.editor_field_bands(content, map_h);
+        self.editor_scroll
+            .set_content_size(content.region.width(), height);
+        self.editor_field_bands = bands;
+        self.editor_scroll_landed();
+        if let Some(band) = focus
+            .and_then(|index| self.editor_field_bands.get(index))
+            .copied()
+        {
+            self.editor_scroll.scroll_into_view(band);
+            self.editor_scroll_landed();
+        }
+    }
+
+    /// Put the field list where it rests between two fields.
+    fn editor_scroll_landed(&mut self) {
+        self.editor_scroll.land_between(&self.editor_field_bands);
     }
 
     /// The location pick surface: the offline land silhouettes on the
@@ -1423,7 +1633,14 @@ pub(super) fn build_metadata_editor_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
+        // Save is the sheet's primary action, as in the album sheet.
+        let role = if hit == MetadataEditorHit::Save {
+            ButtonRole::Primary
+        } else {
+            ButtonRole::Secondary
+        };
         let button = Button::new(&format!("photos-metadata-{id}"), label)
+            .role(role)
             .tooltip(label)
             .with_accessible_name(label);
         (hit, bound(button, &hit.effect(), actions))
@@ -1473,5 +1690,59 @@ impl MetadataEditorHit {
             Self::ClearLocation => PhotosEffect::ClearDraftLocation,
             Self::PlaceOnMap => PhotosEffect::PlaceDraftOnMap,
         }
+    }
+}
+
+/// Where the field list stands this frame: the region it shows in, and the
+/// content coordinates its rows start from.
+struct MetadataFieldPlacement {
+    region: Rect,
+    fields_y: f64,
+    map_y: f64,
+    map_h: f64,
+    row_h: f64,
+    sibling: f64,
+    label_h: f64,
+    control_h: f64,
+    tight: f64,
+    related: f64,
+}
+
+/// The field list's shape in the sheet: the region it scrolls in, one
+/// field's pitch and the space between a field and the next.
+struct MetadataFieldList {
+    region: Rect,
+    row_h: f64,
+    sibling: f64,
+}
+
+impl MetadataFieldList {
+    fn new(region: Rect, row_h: f64, sibling: f64) -> Self {
+        Self {
+            region,
+            row_h,
+            sibling,
+        }
+    }
+
+    /// How tall the map may stand: half the list's width, at most most of a
+    /// utility panel's.
+    fn preferred_map_h(&self, theme: &Theme) -> f64 {
+        (self.region.width() * 0.5).min(f64::from(theme.tokens.metrics.panel_width_utility) * 0.6)
+    }
+
+    /// The map gives up height first, so in a short window the coordinates
+    /// under it stay in view. It never shrinks below `least`, a target the
+    /// pointer can still pick from, unless even that leaves the fields no
+    /// room.
+    fn map_h(&self, theme: &Theme, least: f64) -> f64 {
+        let preferred = self.preferred_map_h(theme);
+        let room = self.region.height() - 3.0 * self.row_h - self.sibling;
+        preferred.min(room).max(least.min(preferred))
+    }
+
+    /// The whole list's height, the map (`0` for Organize) included.
+    fn height(&self, map_h: f64) -> f64 {
+        3.0 * self.row_h + map_h + self.sibling
     }
 }

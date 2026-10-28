@@ -31,6 +31,9 @@ blake3.workspace = true
 hex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+# Finds the built binaries where the test run put them; on Linux the worker
+# and launcher also read the device's stores from the environment it sets.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # A compute worker, its catalogue and its launcher sandbox (bubblewrap plus
 # the Landlock shim) exist on Linux only.
@@ -43,8 +46,6 @@ launcher = { path = "../../crates/packaging/launcher" }
 package-store = { path = "../../crates/packaging/package-store", features = ["store"] }
 # Bakes and signs the runtime build the package names.
 runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
-# The worker and launcher read the device's stores from the environment.
-tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # The packaged entrypoint run by the production compute worker under the
 # real launcher sandbox. Its own `main`, because the launcher re-enters the

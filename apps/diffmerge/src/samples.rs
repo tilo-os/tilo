@@ -160,3 +160,40 @@ format = \"json\"
 
     (base, ours, theirs)
 }
+
+/// A folder comparison for the sample and the screenshots: what a
+/// working tree looks like after a morning's edits, in the shape the walk
+/// reports.
+pub fn folder_comparison() -> crate::folder::FolderComparison {
+    use crate::folder::{FolderComparison, FolderEntry, FolderKind};
+    let entry = |path: &str, kind, left_len, right_len, by_length| FolderEntry {
+        path: path.to_owned(),
+        kind,
+        left_len,
+        right_len,
+        by_length,
+    };
+    FolderComparison {
+        left_label: "release-1.4".into(),
+        left_root: "/work/rate-limiter/release-1.4".into(),
+        right_label: "main".into(),
+        right_root: "/work/rate-limiter/main".into(),
+        entries: vec![
+            entry("Cargo.toml", FolderKind::Modified, 1_204, 1_261, true),
+            entry("README.md", FolderKind::Modified, 8_120, 8_120, false),
+            entry("docs/limits.md", FolderKind::Added, 3_040, 0, false),
+            entry("src/bucket.rs", FolderKind::Modified, 12_880, 13_402, true),
+            entry(
+                "src/limiter.rs",
+                FolderKind::Modified,
+                20_115,
+                20_115,
+                false,
+            ),
+            entry("src/legacy.rs", FolderKind::Removed, 0, 4_310, false),
+            entry("tests/bucket.rs", FolderKind::Added, 5_602, 0, false),
+            entry("tests/rate.rs", FolderKind::Modified, 9_310, 9_884, true),
+        ],
+        truncated: false,
+    }
+}

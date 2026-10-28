@@ -1,38 +1,32 @@
 //! Root widget for the code editor. Owns the [`Session`] (project + open
-//! buffers), the editor pane, the file-tree sidebar, the file header, the status
-//! model and the bottom panel — and coordinates the data flow between them.
+//! buffers), the editor pane, the status model and the bottom panel, and
+//! coordinates the data flow between them and the file tree in the shell's
+//! sidebar.
 //!
-//! Layout:
+//! Layout, in the shell's content column:
 //! ```text
-//! +----------+-------------------------------+
-//! | file     |  file header                      |
-//! | tree     +-------------------------------+
-//! | sidebar  |  find bar (when open)         |
-//! |          +-------------------------------+
-//! |          |  editor view                  |
-//! |          +-------------------------------+
-//! |          |  bottom panel (problems/term) |
-//! |          +-------------------------------+
-//! |          |  status bar                   |
-//! +----------+-------------------------------+
+//! +-------------------------------+
+//! |  editor view                  |
+//! +-------------------------------+
+//! |  bottom panel (problems/term) |
+//! +-------------------------------+
+//! |  status bar                   |
+//! +-------------------------------+
 //! ```
 //! The caret and diagnostics readout is a real row: the status bar reserves its
-//! band under the editor, so nothing is ever drawn over code. Searching the
-//! project and running a command belong to the platform search, which this root
-//! opens with Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
+//! band under the editor, so nothing is ever drawn over code. The shown file's
+//! name, the bottom panel toggle, and find and replace in the buffer are the
+//! window bar's ([`window_bar`], [`find_workflow`]). Searching the project and
+//! running a command belong to the platform search, which this root opens with
+//! Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
 //!
-//! ## Responsive sidebar
+//! ## The sidebar
 //!
-//! The file-tree sidebar is a toolkit [`SidebarDrawer`]: **docked** beside the
-//! editor when the window is wide, a floating drawer over it (behind a scrim)
-//! when it is narrow. The toolkit draws the sidebar toggle, at the top-leading
-//! corner of the sidebar and, when the sidebar is not docked open, at the
-//! leading edge of the file header. The scrim, Escape, or the toggle again
-//! dismiss the drawer.
-//!
-//! The editor is not a master-detail list, so there is no push navigation —
-//! the single primary sidebar simply docks or floats per the toolkit's
-//! breakpoint.
+//! The file tree is the shell's sidebar ([`ui::widget::NavShell`]): docked
+//! beside the editor when the window is wide, a drawer over it when it is
+//! narrow, with its toggle in the window's bar. The editor shows the project
+//! through an [`ExplorerFeed`] and reads the sidebar through its
+//! [`ui::widget::WindowBarLink`].
 
 mod continuity;
 
@@ -42,7 +36,9 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
+mod code_help;
 mod dialogs;
+mod disk_work;
 mod file_workflow;
 mod find_workflow;
 mod format_workflow;
@@ -50,14 +46,14 @@ mod lsp_workflow;
 mod surface;
 #[cfg(test)]
 mod tests;
+mod window_bar;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::Effect as _;
-use ui::widget::{Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, Text, Widget};
+use ui::widget::{Widget, WindowBarLink};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -69,293 +65,12 @@ use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk};
-use crate::explorer::{self, Explorer, ExplorerEvent, ExplorerEvents};
+use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
 use ui::time::Instant;
-
-/// Retained toggle for the bottom dock. [`Button`] owns pointer, keyboard,
-/// focus, painting, and the canonical action emitter; this thin wrapper adds
-/// the disclosure state that a generic momentary button cannot infer for
-/// accessibility, and swaps the button's icon and name with it.
-struct BottomPanelToggle {
-    button: Button,
-    expanded: bool,
-    dirty: bool,
-}
-
-impl BottomPanelToggle {
-    const ID: &'static str = "code.bottom-panel-toggle";
-
-    fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
-        Self {
-            button: Self::button(binding, false),
-            expanded: false,
-            dirty: true,
-        }
-    }
-
-    fn name(expanded: bool) -> &'static str {
-        if expanded { "Hide panel" } else { "Show panel" }
-    }
-
-    fn button(binding: tilo_actions::ActionBinding<()>, expanded: bool) -> Button {
-        let icon = if expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        Button::icon_only(Self::ID, icon, Self::name(expanded)).on_action(binding)
-    }
-
-    /// Captures and past versions have no executor for the panel effect.
-    /// Publish the actual control as unavailable rather than retaining an
-    /// action binding to a door that this host does not offer.
-    fn suspend(&mut self) {
-        let icon = if self.expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        self.button =
-            Button::icon_only(Self::ID, icon, Self::name(self.expanded)).with_enabled(false);
-        self.dirty = true;
-    }
-
-    fn set_expanded(&mut self, expanded: bool) {
-        if self.expanded == expanded {
-            return;
-        }
-        self.expanded = expanded;
-        let icon = if expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        let name = Self::name(expanded);
-        // Keep the retained emitter: rebuilding an action-bound button here
-        // discards the host's custody and availability, reviving a door that
-        // a capture or past version has already refused.
-        let button = std::mem::replace(&mut self.button, Button::icon_only(Self::ID, icon, name));
-        self.button = button
-            .with_icon(icon)
-            .with_accessible_name(name)
-            .tooltip(name);
-        self.dirty = true;
-    }
-}
-
-impl Widget for BottomPanelToggle {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.button.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.button.build_layout(taffy, theme, node_map);
-        // The wrapper, not the button, answers for the node, so events and
-        // layout reach the disclosure state too.
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.button.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.button
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.is_focused()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        logical_key: Key::Named(
-                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space
-                        ),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-            )
-            && self.button.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut ctx.state,
-                ctx.path,
-            )
-        {
-            *ctx.handled = true;
-            return;
-        }
-        self.button.handle_event(event, ctx);
-    }
-
-    fn name(&self) -> &'static str {
-        "BottomPanelToggle"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some(Self::ID)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.button.get_rect()
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.button.cursor_shape(point)
-    }
-
-    fn tooltip(&self) -> Option<&str> {
-        <Button as Widget>::tooltip(&self.button)
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.button.is_focusable()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.button.set_focus(focused);
-    }
-
-    fn is_focused(&self) -> bool {
-        self.button.is_focused()
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.button.is_enabled()
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        Some(
-            AccessNode::new(Role::ToggleButton)
-                .with_semantic_key(Self::ID)
-                .with_name(Self::name(self.expanded))
-                .with_description("Problems and terminal")
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.is_focusable())
-                        .focused(self.is_focused())
-                        .disabled(!self.is_enabled())
-                        .checked(self.expanded)
-                        .selected(self.expanded)
-                        .expanded(self.expanded),
-                ),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.button.perform_action(action, &[], state, path)
-    }
-
-    fn set_interaction_environment(
-        &mut self,
-        environment: ui::interaction::InteractionEnvironment,
-    ) {
-        self.button.set_interaction_environment(environment);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty || self.button.needs_redraw()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        self.button.mark_drawn();
-    }
-}
-
-impl ui::widget::controls::ActionControls for BottomPanelToggle {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.button.install_control_custody(domain, attachment);
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.button.has_pending_control_invocation()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
-    }
-}
-
-/// A control's binding to one of Code's effects, published on the project
-/// resource beside its document actions.
-#[allow(
-    clippy::expect_used,
-    reason = "every effect of the vocabulary is published with no parameters left to supply"
-)]
-pub(crate) fn effect_binding(
-    effect: &crate::effects::CodeEditorEffect,
-) -> tilo_actions::ActionBinding<()> {
-    let resource = tilo_actions::Resource::new(
-        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-        "Code",
-    )
-    .with_action(effect.bound());
-    tilo_actions::ActionBinding::unit_for(&resource, effect.id())
-        .expect("a bound effect takes no arguments")
-}
-
-/// The editor header's file-name text, and the label it reads.
-fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<String>>) {
-    let label = std::rc::Rc::new(std::cell::RefCell::new(
-        session
-            .active_buffer()
-            .map_or_else(String::new, |buffer| buffer.name.clone()),
-    ));
-    let source = label.clone();
-    (
-        Text::dynamic(move || source.borrow().clone())
-            .with_role(ui::tokens::TextRole::Heading)
-            .with_kind(ui::TextKind::Identifier)
-            .with_id("code-editor.file"),
-        label,
-    )
-}
 
 pub(crate) fn language_from_label(label: &str) -> Option<Language> {
     [
@@ -443,27 +158,21 @@ struct Opened {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (panel visibility, one-time seed guard, terminal focus, find bar visibility) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
+    reason = "each bool is an independent, unrelated flag (panel visibility, one-time seed guard, terminal focus, liveness) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
 )]
 pub struct CodeApp {
     session: Session,
-    /// The project explorer (a toolkit `TreeView`); its activation and
-    /// expansion signals land in `explorer_events`.
-    sidebar: Explorer,
+    /// What the shell's sidebar lists: the project and the file on screen.
+    /// What the person does there lands in `explorer_events`.
+    explorer: ExplorerFeed,
     explorer_events: ExplorerEvents,
-    /// The editor header's file name. A window shows one file; other files
-    /// open beside it as desktop tabs, so there is no file header here.
-    header: Text,
-    header_label: std::rc::Rc<std::cell::RefCell<String>>,
+    /// The shell around the editor: its sidebar, open or put away.
+    bar: Option<WindowBarLink>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
     status: StatusModel,
     panel: BottomPanel,
-    panel_toggle: BottomPanelToggle,
-    /// Opens the platform search over this app: the one search affordance in
-    /// the chrome.
-    search_button: Button,
 
     /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
@@ -488,36 +197,11 @@ pub struct CodeApp {
     /// The file a New File command created, opened once its record arrives.
     pending_open: Option<String>,
 
-    /// The file-tree sidebar: docked when the window is wide, a floating
-    /// drawer when it is narrow.
-    drawer: SidebarDrawer,
-    /// Last known allocated width, cached so `build_layout` (which runs before
-    /// `apply_layout` has measured the window) can resolve docked vs. drawer
-    /// on the very first frame. Seeded wide so a fresh desktop window docks.
-    last_width: f64,
-    /// Where the sidebar toggle is drawn (the sidebar's header or the tab
-    /// strip's leading edge), and whether the pointer is over it.
-    /// The sidebar's no-project state, with its one "Open folder" action.
-    sidebar_empty: EmptyState,
-    /// The header row's height and the width the file header gives up to the
-    /// sidebar toggle, from the theme at layout time.
-    header_h: f64,
-    toggle_slot_w: f64,
-    /// Whether the last layout gave the file header's leading slot to the
-    /// sidebar toggle. The drawer learns the window's width only when it is
-    /// drawn, so a layout made before that (a phone-width window's first)
-    /// put the search button where the toggle is painted.
-    laid_out_toggle_in_strip: bool,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
 
     rect: Rect,
-    sidebar_node: Option<NodeId>,
-    header_node: Option<NodeId>,
-    editor_header_node: Option<NodeId>,
-    panel_toggle_node: Option<NodeId>,
-    search_button_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     status_node: Option<NodeId>,
@@ -583,13 +267,14 @@ pub struct CodeApp {
     /// Languages whose server failed to start, so we report the failure once
     /// and do not respawn a missing binary on every frame.
     lsp_failed: std::collections::HashSet<crate::model::Language>,
+    /// Where language servers are looked for: the person's tool folders
+    /// ([`tilo_process::tools::ToolDirs::current`]) unless set.
+    lsp_tools: Option<tilo_process::tools::ToolDirs>,
+    /// A language server is being launched on a background thread.
+    lsp_launching: bool,
 
-    /// The toolkit's find bar over the active buffer, and the matches the
-    /// editor answered it with. The bar is a band above the editor while
-    /// `find_open`.
-    find: FindBar,
-    find_open: bool,
-    find_node: Option<NodeId>,
+    /// The matches of the window search's query in the active buffer, and
+    /// which of them is current ([`find_workflow`]).
     find_matches: Vec<crate::find::Match>,
     find_current: Option<usize>,
 
@@ -629,7 +314,7 @@ pub struct CodeApp {
     /// The chrome laid out last (dock shown, its tab, the find bar), so a
     /// change made outside an event (an effect, a staged scenario) rebuilds
     /// the layout before it is drawn.
-    laid_out: (bool, PanelTab, bool),
+    laid_out: (bool, PanelTab),
     structure_dirty: bool,
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
@@ -637,6 +322,10 @@ pub struct CodeApp {
     /// The answer owed to the effect that is opening or saving a file, given
     /// once the picker or the write settles.
     file_reply: Option<ui::framework::EffectReply>,
+    /// Disk work under way where the window must not wait for it.
+    disk_work: disk_work::DiskWork,
+    /// Whether the shown file is being looked at for changes on disk.
+    staleness_looking: bool,
     /// A save an effect asked for, written on the next sync, where the
     /// buffer's text is.
     pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
@@ -659,6 +348,7 @@ pub struct CodeApp {
     close_prompt: Option<ClosePrompt>,
     /// The sheet a question is asked in: it keeps where its answers landed.
     question_sheet: ui::widget::ModalSheet,
+    code_help: code_help::CodeHelpReadout,
 
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
@@ -721,7 +411,6 @@ struct ClosePrompt {
 /// The three ways out of an unsaved-close prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseChoice {
-    /// Save the buffer, then close the tab.
     Save,
     /// Close the tab, discarding the unsaved edits.
     Discard,
@@ -746,33 +435,24 @@ pub enum LspStatus {
     },
     /// Up and answering.
     Ready { server: String },
-    /// Could not start; carries the reason.
-    Failed(String),
+    /// Not answering, and why.
+    Failed(crate::lsp::LspFailure),
 }
 
 impl LspStatus {
-    /// The short label the status bar shows.
+    /// What the status bar says while the project is still being read, in
+    /// the person's words: nothing once it is ready.
     pub fn label(&self) -> String {
         match self {
-            LspStatus::None => String::new(),
-            LspStatus::Starting { server } => format!("{server}: starting\u{2026}"),
+            LspStatus::None | LspStatus::Ready { .. } | LspStatus::Failed(_) => String::new(),
+            LspStatus::Starting { .. }
+            | LspStatus::Busy {
+                percentage: None, ..
+            } => "Loading project\u{2026}".to_owned(),
             LspStatus::Busy {
-                server,
-                title,
-                detail,
-                percentage,
-            } => {
-                let mut s = format!("{server}: {}", title.to_lowercase());
-                if let Some(d) = detail {
-                    let _ = write!(s, " {d}");
-                }
-                if let Some(p) = percentage {
-                    let _ = write!(s, " {p}%");
-                }
-                s
-            }
-            LspStatus::Ready { server } => format!("{server}: ready"),
-            LspStatus::Failed(e) => format!("Language server: {e}"),
+                percentage: Some(percentage),
+                ..
+            } => format!("Loading project {percentage}%"),
         }
     }
 
@@ -895,26 +575,18 @@ impl CodeApp {
         reason = "one constructor listing every field of the editor once"
     )]
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
-        let explorer_events = ExplorerEvents::default();
-        let mut sidebar = explorer::explorer(&session.project, &explorer_events);
-        explorer::set_current(&mut sidebar, default);
-
-        let (header, header_label) = file_header(&session);
-
-        let panel_toggle = BottomPanelToggle::new(effect_binding(
-            &crate::effects::CodeEditorEffect::ToggleBottomPanel,
-        ));
+        let explorer = ExplorerFeed::default();
+        explorer.show(&session.project);
+        explorer.set_current(default);
 
         CodeApp {
             session,
-            sidebar,
-            explorer_events,
-            header,
-            header_label,
+            explorer,
+            explorer_events: ExplorerEvents::default(),
+            bar: None,
             editor: EditorView::new(),
             status: StatusModel::new(),
             panel: BottomPanel::new(),
-            panel_toggle,
             #[cfg(test)]
             test_hook: None,
             dispatch: None,
@@ -924,26 +596,9 @@ impl CodeApp {
             demanded: Vec::new(),
             pending_command: None,
             pending_open: None,
-            drawer: SidebarDrawer::new(),
-            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
-            // Seed wide so the first frame of a desktop window (and `--shots`,
-            // 1280px) docks the sidebar; corrected from the real width once
-            // `apply_layout` measures the window.
-            last_width: f64::MAX,
-            sidebar_empty: EmptyState::new("No folder open")
-                .with_icon(ui::icons::Icon::FolderOpen)
-                .with_action("Open folder"),
-            header_h: 0.0,
-            toggle_slot_w: 0.0,
-            laid_out_toggle_in_strip: false,
             last_cursor: Point::ZERO,
             panel_visible: false,
             rect: Rect::ZERO,
-            sidebar_node: None,
-            header_node: None,
-            editor_header_node: None,
-            panel_toggle_node: None,
-            search_button_node: None,
             editor_node: None,
             panel_node: None,
             status_node: None,
@@ -968,9 +623,8 @@ impl CodeApp {
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
-            find: FindBar::new().with_replace(),
-            find_open: false,
-            find_node: None,
+            lsp_tools: None,
+            lsp_launching: false,
             find_matches: Vec::new(),
             find_current: None,
             search_job: None,
@@ -992,9 +646,11 @@ impl CodeApp {
             portal_intent: None,
             live: false,
             settings: None,
-            laid_out: (false, PanelTab::Problems, false),
+            laid_out: (false, PanelTab::Problems),
             structure_dirty: false,
             file_reply: None,
+            disk_work: disk_work::DiskWork::default(),
+            staleness_looking: false,
             pending_save: None,
             formatting: None,
             formatted: None,
@@ -1003,15 +659,11 @@ impl CodeApp {
             conflict: None,
             close_prompt: None,
             question_sheet: ui::widget::ModalSheet::new(),
+            code_help: code_help::CodeHelpReadout::default(),
             notice: None,
             pending_jump: None,
             pending_continuation: None,
         }
-    }
-
-    /// Whether there is a project to list: the root alone is no project.
-    fn has_project(&self) -> bool {
-        self.session.project.nodes.len() > 1
     }
 
     /// The project root on disk, when a real directory is open.
@@ -1036,82 +688,42 @@ impl CodeApp {
         &self.lsp_status
     }
 
-    /// Resolve docked vs. drawer from the allocated width. Uses the cached
-    /// `last_width` so the decision is stable across all five passes — in
-    /// particular `build_layout`, which runs before `apply_layout` has set
-    /// `self.rect` to the real window size.
-    fn sidebar_layout(&self) -> SplitLayout {
-        self.drawer.layout_for(self.last_width)
+    /// Stand in the shell: list the project in its sidebar through
+    /// `explorer`, hear the tree through `events`, and read the sidebar
+    /// through `bar`.
+    #[must_use]
+    pub(crate) fn in_shell(
+        mut self,
+        explorer: &ExplorerFeed,
+        events: &ExplorerEvents,
+        bar: WindowBarLink,
+    ) -> Self {
+        explorer.show(&self.session.project);
+        explorer.set_current(self.session.active_buffer().map(|buffer| buffer.node));
+        self.explorer = explorer.clone();
+        self.explorer_events = std::rc::Rc::clone(events);
+        self.bar = Some(bar);
+        self
     }
 
-    /// Seed the width the responsive layout resolves against, as the first
-    /// laid-out frame would, and settle the drawer to that layout's resting
-    /// state so tests read the layout without running frames.
-    #[cfg(test)]
-    pub(crate) fn set_width_hint(&mut self, width: f64) {
-        self.last_width = width;
-        self.drawer.resolve(Rect::new(0.0, 0.0, width, 1.0));
-        self.drawer.snap(self.drawer.is_open());
+    /// Show or hide the sidebar (Ctrl+B, the palette command), as the
+    /// window bar's toggle does.
+    fn toggle_sidebar(&self) {
+        if let Some(bar) = &self.bar {
+            bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        }
     }
 
-    /// Whether the sidebar is currently resolved open (preference or default).
-    fn sidebar_open(&self) -> bool {
-        self.drawer.is_open()
-    }
-
-    /// Flip the sidebar open/closed (its toggle, Ctrl+B, the palette command).
-    fn toggle_sidebar(&mut self) {
-        self.drawer.toggle();
-    }
-
-    /// Snap the drawer to a final open/closed state with no animation — used by
-    /// the single-frame `--shots` renderer so a captured frame shows a settled
-    /// sidebar rather than one mid-slide.
     pub fn shots_snap_sidebar(&mut self, open: bool) {
-        self.drawer.snap(open);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(open);
+        }
     }
 
-    /// Whether the sidebar panel is on screen: docked with some width, or the
-    /// drawer open or still sliding.
-    fn sidebar_visible(&self) -> bool {
-        self.drawer.reveal() > 0.001
-    }
-
-    /// The sidebar panel's header row and the body under it, where the
-    /// explorer lives.
-    fn sidebar_header_and_body(&self, theme: &Theme) -> (Rect, Rect) {
-        let panel = self.drawer.sidebar_rect();
-        let header_h = f64::from(theme.tokens.metrics.header_height).min(panel.height());
-        (
-            Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + header_h),
-            Rect::new(panel.x0, panel.y0 + header_h, panel.x1, panel.y1),
-        )
-    }
-
-    /// The width the file header gives up to the sidebar toggle when the toggle
-    /// sits at the strip's leading edge: the toggle and a gap.
-    fn toggle_slot_width(theme: &Theme) -> f64 {
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
-        inset + side + f64::from(theme.tokens.spacing.s2)
-    }
-
-    /// Whether the toggle sits in the file header: whenever the sidebar panel
-    /// is not itself a docked column with a header to hold it.
-    fn toggle_in_tab_strip(&self) -> bool {
-        self.sidebar_layout() == SplitLayout::Overlay || self.drawer.reveal() <= 0.5
-    }
-
-    /// The window's header row, across the top of the editor: the drawer
-    /// lays its toggle out at the leading corner.
-    fn window_header_row(&mut self, theme: &Theme) -> Rect {
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.header_h,
-        );
-        self.drawer.header(area, theme).toggle
+    fn put_drawer_away(&self) {
+        if let Some(bar) = &self.bar {
+            bar.put_drawer_away();
+        }
     }
 
     /// Apply `action` to `doc` now, through the framework's door: within the
@@ -1260,43 +872,6 @@ impl CodeApp {
         self.reopen_phase_micros.demand = started.elapsed().as_micros();
     }
 
-    /// Read a disk-backed file into its buffer the first time this session
-    /// opens it. The document may already hold text for it — a collaborator's
-    /// or a previous session's unsaved edits, which are not ours to discard —
-    /// so the seed only creates text that is missing; the file's bytes and
-    /// stamp become the comparison a save is checked against either way.
-    ///
-    /// A read failure closes the tab again: a file that opened as a silently
-    /// empty buffer would be written back empty by the next Ctrl+S.
-    fn seed_buffer(&mut self, node: TreeId) {
-        let Some(buffer) = self.session.buffer_of(node) else {
-            return;
-        };
-        if buffer.stamp.is_some() || self.session.project.disk_path_of(node).is_none() {
-            return;
-        }
-        let name = buffer.name.clone();
-        match self.session.project.file_seed(node) {
-            Ok((text, stamp)) => {
-                // The text itself is recorded by the next settlement
-                // ([`Self::record_missing_text`]), as the person's own edit.
-                let path = self.session.project.disk_path_of(node);
-                if let Some(buffer) = self.session.buffer_of_mut(node) {
-                    buffer.path = path;
-                    buffer.mark_saved(text, stamp);
-                }
-            }
-            Err(error) => {
-                if self.session.buffer_of(node).is_some() {
-                    self.session.close_file(node);
-                    self.invalidate_search_projection();
-                }
-                self.note(format!("Could not open {name}: {error}"), true);
-                self.bound_node = None;
-            }
-        }
-    }
-
     /// Record the files and folders the editor read from disk since it last
     /// looked — the folder it opened, a folder expanded, the way to a search
     /// hit — so each is a file of the project its collaborators, the palette
@@ -1417,10 +992,22 @@ impl CodeApp {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
         self.live = live;
-        if !live {
-            self.panel_toggle.suspend();
-        }
+        self.editor.set_text_zoom(settings.get().editor_zoom);
         self.settings = Some(settings);
+    }
+
+    /// Change the editor's text size one step, store it for this person, and
+    /// answer the factor the code now shows. The window bar says the level
+    /// through the host's content-zoom indicator, as for any content that
+    /// zooms itself.
+    pub(crate) fn zoom_editor_text(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
+        let factor = self.editor.text_zoom();
+        let next = step.apply(factor);
+        self.editor.set_text_zoom(next);
+        if let Some(settings) = &self.settings {
+            let _ = settings.update(|stored| stored.editor_zoom = self.editor.text_zoom());
+        }
+        self.editor.text_zoom()
     }
 
     pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
@@ -1461,7 +1048,7 @@ impl CodeApp {
             }
         }
         self.session.project.order_collaborative_children(&ordering);
-        explorer::refresh(&mut self.sidebar, &self.session.project);
+        self.explorer.show(&self.session.project);
     }
 
     fn buffer_key(&self, node: TreeId) -> String {
@@ -1499,24 +1086,6 @@ impl CodeApp {
         next: &str,
     ) -> Result<(), tilo_actions::ActionError> {
         self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
-    }
-
-    /// Keep the header naming the shown file, with a marker while it has
-    /// unsaved edits. Idempotent: safe to call more than once a frame.
-    fn refresh_header(&self) {
-        let label = self
-            .session
-            .active_buffer()
-            .map_or_else(String::new, |buffer| {
-                if buffer.dirty {
-                    format!("{} \u{2022}", buffer.name)
-                } else {
-                    buffer.name.clone()
-                }
-            });
-        if *self.header_label.borrow() != label {
-            *self.header_label.borrow_mut() = label;
-        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -1689,6 +1258,7 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
+            code_help: self.code_help_readout(),
         });
     }
 
@@ -1871,9 +1441,8 @@ impl CodeApp {
         }
         self.seed_buffer(node);
         self.invalidate_search_projection();
-        explorer::set_current(&mut self.sidebar, Some(node));
+        self.explorer.set_current(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.refresh_header();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1899,37 +1468,34 @@ impl CodeApp {
                     .get(id)
                     .is_some_and(crate::model::TreeNode::is_folder)
                 {
-                    // Echoes back as `Expand` through the tree's own
-                    // `on_expand`, which is where the folder is read.
-                    self.sidebar.toggle_expand(explorer::node_key(id));
+                    let open = !self.session.project.get(id).is_some_and(|node| {
+                        matches!(node.kind, NodeKind::Folder { expanded: true, .. })
+                    });
+                    self.apply_tree_event(ExplorerEvent::Expand(id, open));
                     return;
                 }
                 self.open_node(id);
-                // As a drawer, opening a file dismisses it so the user lands on
-                // the freshly-opened buffer (single-pane feel). Docked, the
-                // sidebar stays pinned.
-                if self.sidebar_layout() == SplitLayout::Overlay {
-                    self.drawer.close();
-                }
+                // The file lands on screen: a drawer over it goes away, a
+                // docked sidebar stays.
+                self.put_drawer_away();
             }
             ExplorerEvent::Expand(id, open) => {
                 // Reading the folder's children happens here, on first
                 // expansion, rather than when the project was opened — one
                 // directory level at a time is what makes opening a large
                 // repository instant.
-                if open && let Err(e) = self.session.project.load_children(id) {
-                    let name = self
-                        .session
-                        .project
-                        .get(id)
-                        .map(|n| n.name.clone())
-                        .unwrap_or_default();
-                    self.note(format!("Could not read {name}: {e}"), true);
+                if open && let Some(folder) = self.session.project.folder_to_read(id) {
+                    self.on_disk(
+                        "code-read-folder",
+                        move || crate::model::read_folder(&folder),
+                        move |app, listing| app.read_folder(id, listing),
+                    );
                 }
                 self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
             }
+            ExplorerEvent::OpenFolder => self.request_open_folder(),
         }
     }
 
@@ -1955,8 +1521,7 @@ impl CodeApp {
             self.session.close_file(node);
             self.invalidate_search_projection();
             self.bound_node = None;
-            explorer::set_current(&mut self.sidebar, None);
-            self.refresh_header();
+            self.explorer.set_current(None);
         }
         if let Some(next) = then_open {
             self.show_node(next);
@@ -1975,13 +1540,16 @@ impl CodeApp {
                     .buffer_of(prompt.node)
                     .is_some_and(|b| b.path.is_some());
                 if has_path {
-                    // Save synchronously; close only if it actually landed. A
+                    // Close only once the save landed. A
                     // save that hits a disk conflict leaves the tab open so the
                     // conflict prompt (now showing) gets answered first.
                     let snapshot = doc.clone();
-                    if self.save_buffer(&snapshot, prompt.node, false) {
-                        self.close_node(prompt.node, prompt.then_open);
-                    }
+                    self.save_buffer_then(
+                        &snapshot,
+                        prompt.node,
+                        false,
+                        file_workflow::AfterSave::Close(prompt.then_open),
+                    );
                 } else {
                     // No file yet: the destination has to be chosen first. The
                     // Save As runs async through the portal, so the tab stays
@@ -2063,8 +1631,8 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
-            Command::Find => self.open_find(),
-            Command::Replace => self.open_replace(),
+            Command::Find => Self::open_find(ui::window_toolbar::SearchOpening::Find),
+            Command::Replace => Self::open_find(ui::window_toolbar::SearchOpening::Replace),
             Command::SearchProject => {
                 // The platform search, seeded from the selection the way
                 // every editor does.
@@ -2082,13 +1650,7 @@ impl CodeApp {
             Command::MoveLineDown => self.editor.move_lines(doc, false),
             Command::DeleteLine => self.editor.delete_lines(doc),
             Command::ToggleComment => self.editor.toggle_line_comment(doc),
-            Command::ToggleBottomPanel => {
-                if self.panel_visible {
-                    self.close_bottom_panel();
-                } else {
-                    self.panel_visible = true;
-                }
-            }
+            Command::ToggleBottomPanel => self.toggle_bottom_panel(),
             Command::ToggleSidebar => {
                 self.toggle_sidebar();
             }
@@ -2102,8 +1664,16 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
-        self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Show the bottom panel, or close it (Ctrl+J, the window bar's toggle).
+    fn toggle_bottom_panel(&mut self) {
+        if self.panel_visible {
+            self.close_bottom_panel();
+        } else {
+            self.panel_visible = true;
+        }
     }
 
     /// Close the retained dock without destroying its selected tab or live
@@ -2112,13 +1682,13 @@ impl CodeApp {
     fn close_bottom_panel(&mut self) {
         self.panel_visible = false;
         self.terminal_focused = false;
-        self.panel_toggle.set_expanded(false);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
     fn drain_child_events(&mut self) {
+        self.run_window_toolbar();
         self.drain_explorer_events();
         // Closing a tab of the dock closes the dock; choosing the Terminal
         // tab starts the shell it shows.
@@ -2131,10 +1701,14 @@ impl CodeApp {
         }
         if let Some(index) = self.panel.take_search_jump()
             && let Some(hit) = self.search_hits.get(index).cloned()
-            && let Some(node) = self.session.project.reveal_path(&hit.path)
         {
-            self.open_node(node);
-            self.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
+            self.reveal_on_disk(hit.path.clone(), move |app, node| {
+                if let Some(node) = node {
+                    app.explorer.show(&app.session.project);
+                    app.open_node(node);
+                    app.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
+                }
+            });
         }
         // Choosing a problem takes the caret to where it was reported.
         if let Some((line, col)) = self.panel.take_jump()
@@ -2221,8 +1795,6 @@ impl CodeApp {
             .set_terminal_note(Some("No terminal is running".to_string()));
     }
 
-    // ---- headless `--shots` scenario staging ------------------------------
-
     /// Open the Terminal dock tab and spawn the live shell (for a screenshot of
     /// the embedded terminal).
     pub fn shots_open_terminal(&mut self) {
@@ -2246,16 +1818,6 @@ impl CodeApp {
         self.terminal
             .as_ref()
             .map(|terminal| terminal.widget().grid_text())
-    }
-
-    /// Stage the find bar over the active buffer with a real query, so the shot
-    /// shows real match highlighting and a real count.
-    pub fn shots_open_find(&mut self, query: &str, doc: &AutoCommit) {
-        self.open_find();
-        self.find.set_query(query);
-        // The bar runs the query on its first drive and lands on the first
-        // match, so the current-match outline is visible.
-        self.drive_find(&mut ui::widget::Edits::lend(&mut doc.clone()));
     }
 
     /// Stage the "changed on disk" prompt for the active buffer.
@@ -2386,143 +1948,20 @@ impl CodeApp {
     // ---- build_layout helpers (split out of `Widget::build_layout`, which
     // assembles their results into the content row and outer column) ----
 
-    /// Lay out the sidebar node: docked (a real column, eased by the drawer's
-    /// reveal) or a drawer (collapsed to zero width — it paints off-flow,
-    /// sliding in over the content; see `draw`).
-    fn build_sidebar(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.drawer.scale_for(theme);
-        let layout = self.sidebar_layout();
-        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let docked_w = match layout {
-            SplitLayout::Docked => self.drawer.resolved_docked_width() * self.drawer.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let _ = taffy.set_style(
-            sidebar_node,
-            Style {
-                size: Size {
-                    width: Dimension::length(docked_w as f32),
-                    height: Dimension::percent(1.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            },
-        );
-        self.sidebar_node = Some(sidebar_node);
-        sidebar_node
-    }
-
-    /// Lay out the editor column: file header and panel toggle, find bar, editor,
-    /// (when visible) the bottom panel, and the status bar, stacked into one
-    /// flex column.
+    /// Lay out the editor column: the editor, (when visible) the bottom panel,
+    /// and the status bar, stacked into one flex column.
     ///
     /// # Panics
     /// Panics if taffy's internal tree storage is corrupted — this only
     /// inserts freshly built child nodes into a tree this same call already
     /// holds a mutable reference to, so there is no data-dependent failure
     /// path to recover from.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one flex column assembled in one place: each row's style and its node stay adjacent so the stacking order reads top to bottom"
-    )]
     fn build_editor_column(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let spacing = &theme.tokens.spacing;
-        self.header_h = f64::from(theme.tokens.metrics.header_height);
-        self.toggle_slot_w = Self::toggle_slot_width(theme);
-
-        let header_node = self.header.build_layout(taffy, theme, node_map);
-        self.laid_out_toggle_in_strip = self.toggle_in_tab_strip();
-        if let Ok(existing) = taffy.style(header_node).cloned() {
-            let inset = if self.laid_out_toggle_in_strip {
-                self.toggle_slot_w
-            } else {
-                f64::from(spacing.s6)
-            };
-            let _ = taffy.set_style(
-                header_node,
-                Style {
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::auto(),
-                    },
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(inset as f32),
-                        ..existing.margin
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.header_node = Some(header_node);
-
-        self.panel_toggle.set_expanded(self.panel_visible);
-        let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(panel_toggle_node).cloned() {
-            let _ = taffy.set_style(
-                panel_toggle_node,
-                Style {
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(spacing.s2),
-                        right: taffy::LengthPercentageAuto::length(spacing.s3),
-                        top: taffy::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::LengthPercentageAuto::length(0.0),
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.panel_toggle_node = Some(panel_toggle_node);
-
-        let search_button_node = self.search_button.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(search_button_node).cloned() {
-            let _ = taffy.set_style(
-                search_button_node,
-                Style {
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(spacing.s2),
-                        right: taffy::LengthPercentageAuto::length(0.0),
-                        top: taffy::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::LengthPercentageAuto::length(0.0),
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.search_button_node = Some(search_button_node);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
-        )]
-        let editor_header_node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    align_items: Some(taffy::AlignItems::Center),
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(self.header_h as f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &[header_node, search_button_node, panel_toggle_node],
-            )
-            .unwrap();
-        self.editor_header_node = Some(editor_header_node);
-
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
@@ -2540,17 +1979,7 @@ impl CodeApp {
         }
         self.editor_node = Some(editor_node);
 
-        let mut editor_col_children = vec![editor_header_node];
-        // The find bar sits between the tabs and the buffer, so it never covers
-        // the code it is searching.
-        if self.find_open {
-            let find_node = self.find.build_layout(taffy, theme, node_map);
-            self.find_node = Some(find_node);
-            editor_col_children.push(find_node);
-        } else {
-            self.find_node = None;
-        }
-        editor_col_children.push(editor_node);
+        let mut editor_col_children = vec![editor_node];
         if self.panel_visible {
             let panel_node = self.panel.build_layout(taffy, theme, node_map);
             self.panel_node = Some(panel_node);
@@ -2601,15 +2030,6 @@ impl CodeApp {
         editor_col
     }
 
-    /// What the sidebar column holds: the explorer, or the no-project state.
-    fn sidebar_child(&self) -> &dyn Widget {
-        if self.has_project() {
-            &self.sidebar
-        } else {
-            &self.sidebar_empty
-        }
-    }
-
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
@@ -2618,22 +2038,6 @@ impl CodeApp {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
-    }
-
-    /// The drawer's own parts: its toggle, the show/hide shortcut, Escape
-    /// and a press on the scrim of an open floating drawer. Returns `true`
-    /// when the drawer took the event.
-    fn handle_sidebar_chrome(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        self.drawer.resolve(self.rect);
-        if self.drawer.handle_event(event, ctx) {
-            *ctx.handled = true;
-            return true;
-        }
-        false
     }
 
     /// Global shortcuts: Ctrl/Cmd+P and Ctrl/Cmd+Shift+P (the platform
@@ -2695,30 +2099,14 @@ impl CodeApp {
             let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
             if closes_bottom_panel {
-                *focus_target = self.panel_toggle_node;
+                // The panel's toggle is in the window's bar: the keyboard
+                // goes back to the code.
+                *focus_target = self.editor_node;
             }
             *handled = true;
             return true;
         }
         false
-    }
-
-    /// The find bar takes keyboard input while it is open and focused (its
-    /// field owns typing; Enter, F3 and Escape are its transport). Returns
-    /// `true` when the find bar newly consumed the event (the caller should
-    /// stop routing).
-    fn handle_find_bar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        if !self.find_open {
-            return false;
-        }
-        let Some(n) = self.find_node else {
-            return false;
-        };
-        let before = *ctx.handled;
-        self.find
-            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        self.drive_find(&mut ctx.state);
-        *ctx.handled && !before
     }
 
     /// While the Terminal dock tab shows a live terminal, a click in its
@@ -2772,71 +2160,8 @@ impl CodeApp {
         )
     }
 
-    /// Route the event to the sidebar (when it is on screen), header, bottom
-    /// panel, and editor, plus the drawer's own click-capture.
-    ///
-    /// Sidebar routing depends on the layout:
-    ///  * Docked: route whenever the column has width (reveal > 0); the tree
-    ///    hit-tests against the rect `place_at` gave it.
-    ///  * Drawer: route only while it is open.
-    fn route_to_children(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        overlay: bool,
-    ) {
-        if self.sidebar_visible()
-            && let Some(n) = self.sidebar_node
-        {
-            if self.has_project() {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            } else {
-                // The no-project state offers to open one.
-                self.sidebar_empty
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                if self.sidebar_empty.take_action() {
-                    self.request_open_folder();
-                }
-            }
-        }
-
-        // While the drawer is open, it captures pointer presses over its area
-        // so clicks don't leak to the content behind it (the tree only
-        // self-marks `handled` on a row hit — empty rows would otherwise fall
-        // through). The scrim outside it was already handled above.
-        if overlay
-            && self.sidebar_open()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-            && self.drawer.sidebar_contains(self.last_cursor)
-        {
-            *ctx.handled = true;
-        }
-
-        // A press in the editor takes keyboard focus off the find bar, whose
-        // keys the editor would otherwise lose.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.editor.get_rect().contains(self.last_cursor)
-        {
-            self.find.set_focus(false);
-        }
-
-        if let Some(n) = self.search_button_node {
-            self.search_button
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
-        if let Some(n) = self.panel_toggle_node {
-            self.panel_toggle
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
+    /// Route the event to the bottom panel and the editor.
+    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.panel_visible
             && let Some(n) = self.panel_node
         {
@@ -2857,7 +2182,7 @@ impl CodeApp {
 /// every splice has to be converted here rather than from a byte offset — a
 /// buffer containing any non-ASCII character would otherwise splice in the
 /// wrong place.
-fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
+pub(crate) fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
     let mut idx = 0usize;
     for (i, l) in text.split('\n').enumerate() {
         let len = l.chars().count();
@@ -2925,16 +2250,31 @@ impl ui::presence::capability::PublishesPresence for CodeApp {
     }
 }
 
+impl ui::semantic_document_read::SemanticReaders for CodeApp {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::text_operations::SNAPSHOT_READERS
+    }
+}
+
+/// The editor's text zooms by itself: Ctrl+Plus, Ctrl+Minus, Ctrl+0, a
+/// Ctrl+scroll or a pinch change the code and its line numbers, not the
+/// window's chrome. The chosen size is kept in the person's preferences, so
+/// it follows them to the next window and device.
+impl ui::content_zoom::ContentZoom for CodeApp {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        Some(self.zoom_editor_text(step))
+    }
+}
+
 impl Widget for CodeApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Continuable,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::content_zoom::ContentZoom,
+        dyn ui::widget::Findable,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::semantic_document_read::SemanticReaders
     );
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::text_operations::SNAPSHOT_READERS
-    }
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -2996,6 +2336,9 @@ impl Widget for CodeApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        if let Some(settings) = &self.settings {
+            self.editor.set_text_zoom(settings.get().editor_zoom);
+        }
         if !self.seeded {
             self.seed_terminal();
         }
@@ -3015,6 +2358,7 @@ impl Widget for CodeApp {
         self.continue_staging(state);
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
+        self.run_window_toolbar();
         self.restore_pending_continuation(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
@@ -3056,14 +2400,9 @@ impl Widget for CodeApp {
         self.poll_lsp();
 
         self.check_disk_staleness();
-        self.refresh_find();
-        self.refresh_header();
-        self.header.sync(state, path);
-        self.search_button.sync(state, path);
-        self.panel_toggle.sync(state, path);
         self.refresh_diagnostics(state);
         self.refresh_status();
-        let chrome = (self.panel_visible, self.panel.active_tab(), self.find_open);
+        let chrome = (self.panel_visible, self.panel.active_tab());
         if chrome != self.laid_out {
             self.laid_out = chrome;
             self.structure_dirty = true;
@@ -3075,6 +2414,7 @@ impl Widget for CodeApp {
         if let Some(hook) = self.test_hook.take() {
             hook(self, state);
         }
+        self.apply_disk_work(state);
         if let Some(command) = self.pending_command.take() {
             self.apply_command(command, state);
         }
@@ -3088,7 +2428,6 @@ impl Widget for CodeApp {
         self.apply_formatted(state);
         self.record_missing_text(state);
         self.dispatch_editor_text_edits(state);
-        self.drive_find(state);
         for child in self.children_mut() {
             child.settle(&mut state.reborrow(), path);
         }
@@ -3107,19 +2446,10 @@ impl Widget for CodeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // --- Sidebar ---
-        //
-        // Docked (wide): the sidebar occupies a real column, its width eased by
-        // the drawer's reveal so it collapses/expands smoothly and the editor
-        // is inset by exactly that much. Drawer (narrow): the column collapses
-        // to zero so the content spans the full width — the sidebar is instead
-        // painted off-flow, sliding in over the content (see `draw`).
-        let sidebar_node = self.build_sidebar(taffy, theme, node_map);
-
         // --- Editor column: file header + editor + (optional) bottom panel ---
         let editor_col = self.build_editor_column(taffy, theme, node_map);
 
-        // --- Content row: sidebar + editor column ---
+        // --- Content row: the editor column ---
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -3137,7 +2467,7 @@ impl Widget for CodeApp {
                     flex_basis: Dimension::length(0.0),
                     ..Default::default()
                 },
-                &[sidebar_node, editor_col],
+                &[editor_col],
             )
             .unwrap();
         self.content_node = Some(content_node);
@@ -3156,37 +2486,11 @@ impl Widget for CodeApp {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let new_origin = self.rect.origin();
 
-        // Cache the real measured width so `sidebar_layout()` is consistent
-        // across passes (it's read in `build_layout`, before this runs), and
-        // let the drawer adopt the new mode's geometry (wide => docked open,
-        // narrow => drawer closed) before the next draw.
-        self.last_width = self.rect.width();
-        self.drawer.resolve(self.rect);
-
         if let Some(content_node) = self.content_node {
             let content_origin = ui::widget::layout_rect(taffy, content_node, new_origin).origin();
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.apply_layout(taffy, n, content_origin);
-            }
             // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
                 let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
-                if let Some(header_node) = self.editor_header_node {
-                    let header_origin =
-                        ui::widget::layout_rect(taffy, header_node, col_origin).origin();
-                    if let Some(n) = self.header_node {
-                        self.header.apply_layout(taffy, n, header_origin);
-                    }
-                    if let Some(n) = self.search_button_node {
-                        self.search_button.apply_layout(taffy, n, header_origin);
-                    }
-                    if let Some(n) = self.panel_toggle_node {
-                        self.panel_toggle.apply_layout(taffy, n, header_origin);
-                    }
-                }
-                if let Some(n) = self.find_node {
-                    self.find.apply_layout(taffy, n, col_origin);
-                }
                 if let Some(n) = self.editor_node {
                     self.editor.apply_layout(taffy, n, col_origin);
                 }
@@ -3208,30 +2512,9 @@ impl Widget for CodeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The framework painted the window ground; each region below stands on
-        // its own tier. Advance the drawer's easing (frame-rate independent)
-        // before computing geometry, so the slide and scrim fade animate while
-        // the host keeps redrawing (`needs_animation_frame`).
-        self.drawer.scale_for(theme);
-        self.drawer.resolve(self.rect);
-        self.drawer.tick(theme);
-        let layout = self.sidebar_layout();
-        self.window_header_row(theme);
-
-        if layout == SplitLayout::Docked && self.sidebar_visible() {
-            self.draw_sidebar(scene, transform, text_renderer, theme, presence);
-        }
+        // The framework painted the window ground; each region stands on its
+        // own tier.
         self.draw_content(scene, transform, text_renderer, theme, presence);
-        if layout == SplitLayout::Overlay && self.sidebar_visible() {
-            // The drawer floats over the content.
-            self.draw_sidebar(scene, transform, text_renderer, theme, presence);
-        }
-        if self.toggle_in_tab_strip() {
-            // With no docked sidebar column to hold it the toggle leads the
-            // file header.
-            self.drawer
-                .paint_toggle(scene, transform, text_renderer, theme);
-        }
 
         // The embedded terminal renders its live grid over the panel's content
         // region whenever the Terminal dock tab is showing.
@@ -3275,8 +2558,8 @@ impl Widget for CodeApp {
             );
             return;
         }
-
-        if self.handle_sidebar_chrome(event, ctx) {
+        if self.code_help_pointer(event) {
+            *ctx.handled = true;
             return;
         }
 
@@ -3287,12 +2570,6 @@ impl Widget for CodeApp {
             ctx.handled,
             ctx.focus_target,
         ) {
-            return;
-        }
-
-        // The find bar takes keyboard input while it is open (its fields own
-        // typing; Enter and Escape are its transport).
-        if self.handle_find_bar(event, ctx) {
             return;
         }
 
@@ -3313,7 +2590,7 @@ impl Widget for CodeApp {
             )
         {
             self.close_bottom_panel();
-            *ctx.focus_target = self.panel_toggle_node;
+            *ctx.focus_target = self.editor_node;
             *ctx.handled = true;
             return;
         }
@@ -3334,8 +2611,7 @@ impl Widget for CodeApp {
         }
 
         // Route to child widgets.
-        let overlay = self.sidebar_layout() == SplitLayout::Overlay;
-        self.route_to_children(event, ctx, overlay);
+        self.route_to_children(event, ctx);
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
         // F12), issue it now with the caret position.
@@ -3349,7 +2625,6 @@ impl Widget for CodeApp {
             self.request_open_file();
         }
 
-        // Drain whatever the children produced, then refresh derived views.
         self.drain_child_events();
         self.refresh_diagnostics(ctx.state.doc());
         self.refresh_status();
@@ -3366,11 +2641,7 @@ impl Widget for CodeApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
-            self.toggle_sidebar();
-            return true;
-        }
-        false
+        self.code_help_action(target, action)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3410,8 +2681,7 @@ impl Widget for CodeApp {
                     }),
             );
         }
-        // The sidebar toggle is painted by the toolkit, so it is published here.
-        children.extend(self.drawer.toggle_accessibility());
+        children.extend(self.code_help_access());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
@@ -3423,7 +2693,7 @@ impl Widget for CodeApp {
         }
         Some(
             AccessNode::new(Role::Document)
-                .with_name(format!("Code — {}", self.session.project.name))
+                .with_name(format!("Code: {}", self.session.project.name))
                 .with_description(
                     "Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.",
                 )
@@ -3437,16 +2707,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![
-            self.sidebar_child(),
-            &self.header,
-            &self.search_button,
-            &self.panel_toggle,
-        ];
-        if self.find_open {
-            out.push(&self.find);
-        }
-        out.push(&self.editor);
+        let mut out: Vec<&dyn Widget> = vec![&self.editor];
         if self.panel_visible {
             out.push(&self.panel);
         }
@@ -3454,21 +2715,7 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let has_project = self.has_project();
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![
-            if has_project {
-                &mut self.sidebar
-            } else {
-                &mut self.sidebar_empty
-            },
-            &mut self.header,
-            &mut self.search_button,
-            &mut self.panel_toggle,
-        ];
-        if self.find_open {
-            out.push(&mut self.find);
-        }
-        out.push(&mut self.editor);
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.editor];
         if self.panel_visible {
             out.push(&mut self.panel);
         }
@@ -3484,9 +2731,9 @@ impl Widget for CodeApp {
     }
 
     /// A capture waits while a scenario is still staging, a project search
-    /// is still streaming its hits, or the sidebar is still sliding.
+    /// is still streaming its hits.
     fn has_pending_visual_work(&self) -> bool {
-        self.staging.is_some() || self.search_job.is_some() || self.drawer.is_animating()
+        self.staging.is_some() || self.search_job.is_some()
     }
 
     fn get_rect(&self) -> Rect {
@@ -3494,23 +2741,17 @@ impl Widget for CodeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.sidebar.needs_redraw()
-            || self.header.needs_redraw()
-            || self.search_button.needs_redraw()
-            || self.panel_toggle.needs_redraw()
-            || self.editor.needs_redraw()
+        self.editor.needs_redraw()
             || self.panel.needs_redraw()
-            || self.find.needs_redraw()
             || self.question().is_some()
-            || self.drawer.is_animating()
+            || self.code_help_needs_redraw()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
     }
 
-    /// Advance the explorer and drain the retained terminal before settlement.
+    /// Advance the editor and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = self.sidebar.update(state, path);
-        changed |= self.editor.update(state, path);
+        let mut changed = self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
             changed |= terminal.widget_mut().update(state, path);
         }
@@ -3518,20 +2759,16 @@ impl Widget for CodeApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while the sidebar drawer is
-        // mid-transition (so the slide + scrim fade play out) OR while a live
-        // terminal is visible — its PTY is drained during update, which the
-        // App repeats while an animation frame is requested.
+        // Keep the event loop pumping frames while a live terminal is
+        // visible: its PTY is drained during update, which the App repeats
+        // while an animation frame is requested.
         //
         // A running search or an in-flight file picker also needs frames: both
         // deliver over a channel drained in `sync`, so without a frame their
         // results would sit unread until the user happened to move the mouse.
         // A language server that is still working needs them too, so the
         // indexing readout actually advances.
-        self.drawer.is_animating()
-            || self.sidebar.needs_animation_frame()
-            || self.panel.needs_animation_frame()
-            || self.header.needs_animation_frame()
+        self.panel.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
             || self.portal.is_some()
@@ -3539,23 +2776,12 @@ impl Widget for CodeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // While the drawer eases in DOCKED mode the sidebar column's width is
-        // taffy-driven (set from `reveal` in `build_layout`), so the tree must
-        // be rebuilt each animating frame to widen/collapse smoothly. A
-        // floating drawer computes its geometry in `draw` and needs no rebuild.
         std::mem::take(&mut self.structure_dirty)
-            || self.sidebar_layout() == SplitLayout::Docked && self.drawer.is_animating()
-            || self.toggle_in_tab_strip() != self.laid_out_toggle_in_strip
     }
 
     fn mark_drawn(&mut self) {
-        self.sidebar.mark_drawn();
-        self.header.mark_drawn();
-        self.search_button.mark_drawn();
-        self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
-        self.find.mark_drawn();
     }
 }
 

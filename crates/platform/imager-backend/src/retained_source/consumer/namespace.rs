@@ -11,10 +11,6 @@ pub struct ManagedConsumerNamespace {
 
 impl ManagedConsumerNamespace {
     /// Verify the actual signed helper role before isolating its namespace.
-    /// # Errors
-    /// Returns an error if helper authentication or root credential checks fail,
-    /// namespace isolation or mount privatization fails, validation fails, or the
-    /// host is unsupported.
     pub fn isolate() -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {

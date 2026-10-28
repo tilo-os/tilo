@@ -545,8 +545,22 @@ pub fn write_shard(path: &Path, audit: &str, unit: &str, counts: &Counts) -> Res
     fs::write(path, text).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-/// Line ranges (half-open, 0-based) covered by a `#[cfg(test)]` item, or the
-/// whole file for a `#![cfg(test)]` crate attribute.
+/// The length of a test-only `cfg` attribute that starts `line`:
+/// `#[cfg(test)]`, or `#[cfg(all(test, …))]`, which narrows it further.
+fn test_attribute_len(line: &str) -> Option<usize> {
+    if line.starts_with("#[cfg(test)]") {
+        return Some("#[cfg(test)]".len());
+    }
+    let rest = line.strip_prefix("#[cfg(all(test")?;
+    if !rest.starts_with([',', ')']) {
+        return None;
+    }
+    line.find(']').map(|end| end.saturating_add(1))
+}
+
+/// Line ranges (half-open, 0-based) covered by a test-only `cfg` item
+/// ([`test_attribute_len`]), or the whole file for a `#![cfg(test)]` crate
+/// attribute.
 ///
 /// The attribute applies to exactly one item. When that item opens a body
 /// (`mod tests {`, `fn helper() {`, `impl Fixture {`, possibly after further
@@ -558,7 +572,6 @@ pub fn write_shard(path: &Path, audit: &str, unit: &str, counts: &Counts) -> Res
 /// string literal would still fool the count; the failure mode is a skipped
 /// line.
 pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
-    const ATTRIBUTE: &str = "#[cfg(test)]";
     let lines: Vec<&str> = content.lines().collect();
     if lines.iter().any(|line| line.trim() == "#![cfg(test)]") {
         return vec![(0, lines.len())];
@@ -567,14 +580,14 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim_start();
-        if !trimmed.starts_with(ATTRIBUTE) {
+        let Some(attribute) = test_attribute_len(trimmed) else {
             i = i.saturating_add(1);
             continue;
-        }
+        };
         // The item starts on the attribute's own line if anything follows the
         // attribute there (`#[cfg(test)] mod tests {`), otherwise on the first
         // following line that is not itself an attribute.
-        let mut j = if trimmed[ATTRIBUTE.len()..].trim().is_empty() {
+        let mut j = if trimmed[attribute..].trim().is_empty() {
             i.saturating_add(1)
         } else {
             i
@@ -582,7 +595,6 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
         while j < lines.len() && j != i && lines[j].trim_start().starts_with("#[") {
             j = j.saturating_add(1);
         }
-        // Walk a multi-line signature to the line that decides the shape.
         while j < lines.len() && !lines[j].contains('{') && !lines[j].contains(';') {
             j = j.saturating_add(1);
         }
@@ -591,7 +603,7 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
             break;
         }
         let decisive = if j == i {
-            &lines[j].trim_start()[ATTRIBUTE.len()..]
+            &lines[j].trim_start()[attribute..]
         } else {
             lines[j]
         };
@@ -757,6 +769,11 @@ fn test_module_spans_cover_exactly_the_test_code() {
         assert!(in_span(3) && !in_span(5));
         assert!(in_span(10) && !in_span(12));
         assert!(in_span(13) && !in_span(14));
+    }
+    // Phase `a_narrowed_test_cfg_is_test_code_and_a_widened_one_is_not`.
+    {
+        let source = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\nmod cpu {\n    const F: f64 = 1.0;\n}\n#[cfg(any(test, feature = \"x\"))]\nconst A: f64 = 8.0;\n#[cfg(all(testing))]\nconst B: f64 = 9.0;\n";
+        assert_eq!(test_module_spans(source), vec![(0, 4)]);
     }
     // Phase `a_file_gated_to_tests_has_no_production_lines`.
     {

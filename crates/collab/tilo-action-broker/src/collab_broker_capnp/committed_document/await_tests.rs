@@ -19,6 +19,7 @@ const ROOM: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
 enum Owner {
     At([u8; 32]),
     Pending,
+    Absent,
 }
 
 struct Service {
@@ -72,6 +73,7 @@ impl NativeDocumentReads for Service {
                 body: Box::new(Bytes(vec![1])),
             },
             Owner::Pending => NativeDocumentRead::Pending,
+            Owner::Absent => NativeDocumentRead::Absent,
         })
     }
     fn unchanged(
@@ -127,14 +129,52 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
 }
 
 fn unchanged(service: &Service, custody: &Arc<AtomicBool>, known: Option<[u8; 32]>) -> bool {
+    holds(service, custody, known, false)
+}
+
+/// Whether a wait holds for a reader holding `known`, or for `None` the
+/// `Absent` (`absent`) or `Unavailable` its last Open answered.
+fn holds(
+    service: &Service,
+    custody: &Arc<AtomicBool>,
+    known: Option<[u8; 32]>,
+    absent: bool,
+) -> bool {
     read_unchanged(
         service,
         || Ok(context(custody)),
         &Arc::new(Budget::default()),
         ROOM,
         known,
+        absent,
     )
     .is_some()
+}
+
+#[test]
+fn a_reader_told_a_record_is_absent_waits_until_that_changes() {
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::Pending, true);
+    assert!(holds(&service, &custody, None, false));
+    *service.owner.lock().unwrap() = Owner::Absent;
+    assert!(
+        !holds(&service, &custody, None, false),
+        "the hosts saying they have none ends a wait on a record arriving"
+    );
+    assert!(
+        holds(&service, &custody, None, true),
+        "an absent record holds a reader told so"
+    );
+    *service.owner.lock().unwrap() = Owner::Pending;
+    assert!(
+        !holds(&service, &custody, None, true),
+        "a host connecting ends the wait of a reader told it is absent"
+    );
+    *service.owner.lock().unwrap() = Owner::At([1; 32]);
+    assert!(
+        !holds(&service, &custody, None, true),
+        "the record arriving ends it too"
+    );
 }
 
 #[test]
@@ -186,6 +226,7 @@ fn a_refusal_ends_the_wait_so_the_reader_s_open_meets_it() {
             &Arc::new(Budget::default()),
             ROOM,
             Some([1; 32]),
+            false,
         )
         .is_none(),
         "a refused admission is never held"
@@ -207,7 +248,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     let custody = Arc::new(AtomicBool::new(true));
     let service = Service::new(Owner::At([1; 32]), false);
     let budget = Arc::new(Budget::default());
-    let held: Vec<_> = std::iter::from_fn(|| budget.reserve().ok()).collect();
+    let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
     assert!(!held.is_empty());
     assert!(
         read_unchanged(
@@ -216,6 +257,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
             &budget,
             ROOM,
             Some([1; 32]),
+            false,
         )
         .is_none(),
         "with the budget spent the wait answers Stale and the Open decides"
@@ -229,6 +271,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
             &budget,
             ROOM,
             Some([1; 32]),
+            false,
         )
         .is_some()
     );

@@ -3,8 +3,8 @@
 //! that cannot turn on says why.
 
 use super::*;
-use crate::shell::quick_settings::radio::WifiProblem;
 use parking_lot::Mutex;
+use tilo_quick_settings::radio::WifiProblem;
 
 /// `NetworkManager` and the kernel's kill switch, as far as Wi-Fi on/off
 /// goes: its flag, a soft block (which turning the flag off sets, and
@@ -110,7 +110,6 @@ impl Panel {
         let action = {
             let mut state = self.chrome.borrow_mut();
             let qs = &mut state.quick_settings;
-            // Lay the page out where nothing is.
             let _ = self
                 .host
                 .qs_root
@@ -133,9 +132,7 @@ impl Panel {
 
     /// Let the radio worker finish and land its result.
     fn settle(&mut self) {
-        self.wake
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the radio change completes");
+        tilo_test_env::recv("the radio change to complete", &self.wake);
         let doc = automerge::AutoCommit::new();
         self.host.update(&doc, &automerge::ROOT);
     }

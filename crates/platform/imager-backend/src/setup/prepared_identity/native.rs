@@ -343,6 +343,61 @@ impl PreparedIdentity {
         self.public_key
     }
 
+    /// The root capability and public record a fresh destination joins before
+    /// it can receive this person's prepared package. The root secret stays in
+    /// this prepared-identity vault; only a signature leaves it.
+    pub fn bootstrap_source_identity(&self) -> io::Result<tilo_handoff::SourceIdentity> {
+        self.validate()?;
+        if self.enrolled.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This identity's root is held by another device",
+            ));
+        }
+        let metadata = self.metadata()?;
+        let record = tilo_handoff::public_identity_record(
+            &metadata.display_name,
+            metadata.avatar_color,
+            self.public_key,
+            metadata.profile_photo.clone(),
+        )?;
+        // A newly prepared or restored identity keeps its root in this
+        // directory. An explicitly reviewed current identity signs through
+        // this session's active root record, and the signer rechecks that it
+        // names the same person before any signature leaves.
+        let record_path = if self.current.is_some() {
+            let directory = runtime_identity::identity_dir_from_env()?;
+            runtime_identity::resolve_active_identity(&directory).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "This identity's active root is unavailable",
+                )
+            })?
+        } else {
+            self.directory.join("primary.json")
+        };
+        let expected = self.public_key;
+        let signer = Arc::new(move |digest: &[u8]| {
+            let identity = runtime_identity::load_from_path(record_path.clone())
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            if identity.group_public_key() != expected {
+                return Err(io::Error::other(
+                    "The prepared identity's root signer changed",
+                ));
+            }
+            identity
+                .sign(digest)
+                .map_err(|error| io::Error::other(error.to_string()))
+        });
+        Ok(tilo_handoff::SourceIdentity {
+            identity_public_key: self.public_key,
+            identity_record: record,
+            certificates: Vec::new(),
+            home_peers: Vec::new(),
+            signer,
+        })
+    }
+
     fn validate(&self) -> io::Result<()> {
         self.pin.validate_destination()?;
         if let Some(current) = &self.current {
@@ -508,7 +563,7 @@ mod tests {
             .unwrap()
             .sign(b"proof")
             .unwrap();
-        prepared.update_profile("ada", [4, 5, 6]).unwrap();
+        prepared.update_profile("Ada", [4, 5, 6]).unwrap();
         let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
         prepared.update_photo(Some(photo.clone())).unwrap();
         assert_eq!(
@@ -546,7 +601,7 @@ mod tests {
         )
         .unwrap();
         let signer = runtime_identity::load_from_path(imported).unwrap();
-        assert_eq!(signer.display_name(), "ada");
+        assert_eq!(signer.display_name(), "Ada");
         assert_eq!(signer.avatar_color(), [4, 5, 6]);
         assert_eq!(signer.profile_photo(), Some(&photo));
         assert_eq!(signer.sign(b"proof").unwrap(), before);

@@ -8,6 +8,7 @@
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
@@ -217,7 +218,7 @@ impl ChordChart {
             .iter()
             .filter(|geom| geom.end > geom.start)
             .collect();
-        order.sort_by(|a, b| (b.end - b.start).total_cmp(&(a.end - a.start)));
+        order.compact_sort_by(|a, b| (b.end - b.start).total_cmp(&(a.end - a.start)));
         let mut placed = Vec::new();
         for geom in order {
             let label = self.node(&geom.id).map_or("", |n| n.label.as_str());
@@ -614,8 +615,6 @@ impl Widget for ChordChart {
 mod tests {
     use super::*;
 
-    /// At every size the arc labels stay outside the ring, inside the
-    /// chart, and clear of each other.
     #[test]
     fn arc_labels_stay_off_the_ring_and_off_each_other() {
         let theme = Theme::dark();

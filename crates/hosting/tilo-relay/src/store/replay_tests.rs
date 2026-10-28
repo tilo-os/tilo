@@ -962,7 +962,6 @@ fn authored(author: u8, channel: u8, value: u8, timestamp: u64) -> ([u8; 32], Ve
     ([channel; 32], bytes)
 }
 
-/// The lineage directory name of `author` on `channel`.
 fn lineage_name(author: u8, channel: u8) -> OsString {
     format!(
         "{}-{}",

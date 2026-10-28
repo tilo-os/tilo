@@ -10,7 +10,7 @@ fn anthropic() -> ProviderProfile {
 }
 
 fn sent(profile: &ProviderProfile, body: Value) -> Value {
-    outbound_body(profile, "claude-x", body, false).unwrap()
+    outbound_body(profile, "claude-x", body, false, false).unwrap()
 }
 
 fn markers(body: &Value) -> usize {
@@ -122,7 +122,9 @@ fn array_system_and_trailing_blocks_mark_the_last_cacheable_block() {
             ]
         }),
     );
-    assert!(body["system"][0].get("cache_control").is_none());
+    // The last system block, and the first of several, which holds when
+    // what follows it changes.
+    assert_eq!(body["system"][0]["cache_control"]["type"], EPHEMERAL);
     assert_eq!(body["system"][1]["cache_control"]["type"], EPHEMERAL);
     // A deferred tool is not in the prefix; the last sent tool is marked.
     assert_eq!(body["tools"][0]["cache_control"]["type"], EPHEMERAL);
@@ -136,6 +138,56 @@ fn array_system_and_trailing_blocks_mark_the_last_cacheable_block() {
             .get("cache_control")
             .is_none()
     );
+}
+
+/// A planner's turn: its instructions and its apps as two system blocks,
+/// then the conversation. A change of apps leaves the tools and the
+/// instructions cached, under their own breakpoint; the conversation's
+/// tail takes the fourth, before the last tool.
+#[test]
+fn stable_instructions_keep_a_breakpoint_before_the_system_context() {
+    let body = sent(
+        &anthropic(),
+        json!({
+            "system": [{"type": "text", "text": "instructions"}, {"type": "text", "text": "apps"}],
+            "tools": [{"name": "plan", "input_schema": {"type": "object"}}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "the request"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "plan", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "refused"}
+                ]}
+            ]
+        }),
+    );
+    for at in [0, 1] {
+        assert_eq!(body["system"][at]["cache_control"]["type"], EPHEMERAL);
+    }
+    assert_eq!(
+        body["messages"][2]["content"][0]["cache_control"]["type"],
+        EPHEMERAL
+    );
+    assert_eq!(body["tools"][0]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(markers(&body), 4);
+    // One system block is both: marked once.
+    let mut single = body;
+    single["system"] = json!("instructions");
+    for message in single["messages"].as_array_mut().unwrap() {
+        if let Some(blocks) = message["content"].as_array_mut() {
+            for block in blocks {
+                block.as_object_mut().unwrap().remove("cache_control");
+            }
+        }
+    }
+    single["tools"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("cache_control");
+    let single = sent(&anthropic(), single);
+    assert_eq!(single["system"].as_array().unwrap().len(), 1);
+    assert_eq!(markers(&single), 3);
 }
 
 #[test]
@@ -373,7 +425,7 @@ fn openai_compatible_bodies_get_no_breakpoints() {
         ],
         "tools": [{"type": "function", "function": {"name": "invoke", "parameters": {}}}]
     });
-    let body = outbound_body(&profile, "claude-x", caller.clone(), true).unwrap();
+    let body = outbound_body(&profile, "claude-x", caller.clone(), true, false).unwrap();
     assert!(!body.to_string().contains("cache_control"));
     assert_eq!(body["messages"], caller["messages"]);
     assert_eq!(body["tools"], caller["tools"]);

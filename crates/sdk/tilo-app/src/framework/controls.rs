@@ -53,8 +53,15 @@ action_control! {
     NumberInput => f64, |control| control.with_enabled(false);
     Dropdown => String, |control| control.with_enabled(false);
     ui_core::widget::ToggleGroup => usize, |control| control.with_enabled(false);
+    ui_core::widget::PictureChoice => usize, |control| control.with_enabled(false);
+    // Unavailable, a swatch grid is left unbound, which chooses nothing.
+    ui_core::widget::ColorSwatchPicker => usize, |control| control;
     ui_core::KeyboardMapSelection => String, |control| control.with_enabled(false);
+    // Unavailable, a recorder records nothing it could commit.
+    ui_core::widget::ShortcutRecorder => String, |control| control;
     Button => (), |control| control.with_enabled(false);
+    // Unavailable, a chip is left unbound, which makes it inert.
+    ui_core::widget::Chip => (), |control| control;
     // A row that does something when chosen (a service to link).
     ui_core::widget::ListRow => (), |control| control.with_enabled(false);
     // Unavailable, a card is left unbound, which makes it inert.
@@ -143,12 +150,14 @@ type Arguments<I> =
 pub(crate) struct ActionTable {
     /// The app whose resource this is, for the keys of its actions.
     app: &'static str,
-    /// The resource's kind.
     kind: &'static str,
     resource: Rc<RefCell<Published>>,
     /// Another record than the app's own, published at this id, whose
     /// actions a live row may offer; `None` for the app's own resource.
     record: Option<Rc<str>>,
+    /// The provider keeping that record, which runs its actions
+    /// ([`Records::kept_by`](super::Records::kept_by)).
+    kept_by: Option<&'static str>,
 }
 
 /// What bound controls look up: a publication shared with the root that
@@ -160,12 +169,21 @@ struct Published {
 }
 
 impl Published {
-    /// The published spec of action `id`.
-    fn find(&self, id: &str) -> Option<&tilo_actions::ActionSpec> {
+    /// The published spec of the action `key` names, or why this publication
+    /// offers none: one of another kind is another record's, and one of
+    /// another app than `key` names is reached through the app publishing it.
+    fn find(&self, key: &ActionKey) -> Result<&tilo_actions::ActionSpec, String> {
+        if self.base.kind != key.kind {
+            return Err(format!("the resource is a `{}`", self.base.kind));
+        }
+        if let Some(app) = self.base.app().filter(|app| *app != key.app) {
+            return Err(format!("it publishes `{app}`'s actions"));
+        }
         self.overlay
             .iter()
-            .find(|spec| spec.id == id)
-            .or_else(|| self.base.actions.iter().find(|spec| spec.id == id))
+            .find(|spec| spec.id == key.action)
+            .or_else(|| self.base.actions.iter().find(|spec| spec.id == key.action))
+            .ok_or_else(|| "the resource does not publish it".to_owned())
     }
 }
 
@@ -179,12 +197,15 @@ impl ActionTable {
                 overlay: Vec::new(),
             })),
             record: None,
+            kept_by: None,
         }
     }
 
-    /// Route the actions to the record `record`, where it may be changed.
-    fn route(&mut self, record: &str, editable: bool) {
+    /// Route the actions to the record `record`, where it may be changed,
+    /// kept by the provider `kept_by` when another provider runs them.
+    fn route(&mut self, record: &str, editable: bool, kept_by: Option<&'static str>) {
         self.record = editable.then(|| Rc::from(record));
+        self.kept_by = kept_by;
     }
 
     /// Follow the canonical publication of this same hosted resource.
@@ -209,63 +230,91 @@ impl ActionTable {
         }
     }
 
-    /// The key of action `id`.
     fn key(&self, id: &str) -> ActionKey {
         ActionKey::new(self.app, self.kind, id)
     }
 
-    /// The published spec of the action `key` names, or why there is none.
-    fn spec(&self, key: &ActionKey) -> Result<tilo_actions::ActionSpec, String> {
+    /// The published spec of the action `key` names, read as a control opened
+    /// in the app `opened_in` names it: a window drawing another app's record
+    /// binds it under the app id it publishes that record by, which
+    /// `fallback` supplies.
+    fn spec_of(&self, key: &ActionKey, fallback: &str) -> Result<tilo_actions::ActionSpec, String> {
         let published = self.resource.borrow();
-        if published.base.kind != key.kind {
-            return Err(format!("the resource is a `{}`", published.base.kind));
+        match published.find(key) {
+            Err(why) if key.app == self.app && key.kind == self.kind => published
+                .find(&ActionKey::new(
+                    fallback,
+                    key.kind.as_str(),
+                    key.action.as_str(),
+                ))
+                .cloned()
+                .map_err(|_| why),
+            found => found.cloned(),
         }
-        published
-            .find(&key.action)
-            .cloned()
-            .ok_or_else(|| "the resource does not publish it".to_owned())
     }
 
     /// The binding of action `id` for a control with input `I`, or why
     /// there is none.
     fn binding<I: 'static>(
         &self,
-        id: &str,
+        key: ActionKey,
         arguments: Arguments<I>,
     ) -> Result<ActionBinding<I>, (ActionKey, String)> {
-        let key = self.key(id);
-        let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
+        self.binding_in(key, self.app, arguments)
+    }
+
+    /// [`Self::binding`], `key`'s app id read in `opened_in`'s place when the
+    /// table was opened for another ([`Self::control_binding_in`]).
+    fn binding_in<I: 'static>(
+        &self,
+        key: ActionKey,
+        opened_in: &str,
+        arguments: Arguments<I>,
+    ) -> Result<ActionBinding<I>, (ActionKey, String)> {
+        let spec = self
+            .spec_of(&key, opened_in)
+            .map_err(|why| (key.clone(), why))?;
         let published = self.exporting(spec.clone());
         ActionBinding::fallible(&published, &spec, arguments)
             .map_err(|error| (key, error.to_string()))
     }
 
     /// The binding of one fully specified invocation of action `id`, or why
-    /// there is none.
+    /// there is none: `key`'s app id read in `opened_in`'s place as
+    /// [`Self::binding_in`] reads it, so a button and a typed control bind
+    /// the same published action.
     fn invocation(
         &self,
-        id: &str,
+        key: ActionKey,
+        opened_in: &str,
         refusal: Option<&str>,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionBinding<()>, (ActionKey, String)> {
-        let key = self.key(id);
         if let Some(refusal) = refusal {
             return Err((key, refusal.to_owned()));
         }
-        let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
+        let spec = self
+            .spec_of(&key, opened_in)
+            .map_err(|why| (key.clone(), why))?;
         let published = self.exporting(spec.clone());
         ActionBinding::static_json(&published, &spec, arguments)
             .map_err(|error| (key, error.to_string()))
     }
 
-    /// [`Self::binding`] for a control being built: an action the resource
-    /// does not publish fails tests and `tilo-app check`.
-    fn control_binding<I: 'static>(
+    /// [`Self::binding`] for a control being built, where an action the
+    /// resource does not publish fails tests and `tilo-app check`: `key`'s
+    /// app id read in `opened_in`'s place where a control built from a typed
+    /// reference names the app by
+    /// [`Resource::APP_ID`](tilo_resource::Resource::APP_ID) and this table
+    /// was opened for another app: a window drawing another app's record
+    /// binds it under the id that record is published by.
+    fn control_binding_in<I: 'static>(
         &self,
-        id: &str,
+        key: ActionKey,
+        opened_in: &str,
         arguments: Arguments<I>,
     ) -> Option<ActionBinding<I>> {
-        self.binding(id, arguments)
+        self.binding_in(key, opened_in, arguments)
             .map_err(|(key, why)| unbound_of(self.kind, &format!("`{key}`"), &why))
             .ok()
     }
@@ -274,7 +323,7 @@ impl ActionTable {
     /// input `I`, each committed input becoming the edit `edit` makes;
     /// `None`, and a failure in tests, when the resource has no field edits
     /// (`edits`) or the field is read-only.
-    fn edit_binding<I: 'static>(
+    fn edit_binding<I: 'static, T: Resource>(
         &self,
         what: &str,
         edits: bool,
@@ -293,7 +342,10 @@ impl ActionTable {
             );
             return None;
         }
-        let spec = match self.spec(&self.key(tilo_resource::FIELD_EDIT)) {
+        // A field edit is the record's own action, under whatever app the
+        // control that binds it names it by
+        // ([`Self::control_binding_in`]).
+        let spec = match self.spec_of(&self.key(tilo_resource::FIELD_EDIT), T::APP_ID) {
             Ok(spec) => spec,
             Err(why) => {
                 unbound_of(self.kind, what, &why);
@@ -316,7 +368,7 @@ impl ActionTable {
     /// The binding of setting the field at `segments` (described as `what`)
     /// for a control with input `I`, each committed input becoming the value
     /// `value` makes of it.
-    fn set_binding<I: 'static>(
+    fn set_binding<I: 'static, T: Resource>(
         &self,
         what: &str,
         edits: bool,
@@ -325,7 +377,7 @@ impl ActionTable {
         value: Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync>,
     ) -> Option<ActionBinding<I>> {
         let path = serde_json::to_value(segments).unwrap_or_default();
-        self.edit_binding(
+        self.edit_binding::<I, T>(
             what,
             edits,
             readonly,
@@ -349,6 +401,7 @@ impl ActionTable {
         tilo_actions::Resource {
             id: published.id.clone(),
             semantic_identity: published.semantic_identity.clone(),
+            app_id: published.app_id.clone(),
             kind: published.kind.clone(),
             label: published.label.clone(),
             presentation: None,
@@ -362,35 +415,50 @@ impl ActionTable {
     /// input `I`.
     fn effect_binding<I: 'static>(
         &self,
-        id: &str,
+        key: &ActionKey,
         spec: Option<tilo_actions::ActionSpec>,
         arguments: Arguments<I>,
     ) -> Option<ActionBinding<I>> {
-        let resource = self.exporting(spec?);
-        let spec = resource.actions.first()?.clone();
+        let (resource, spec) = self.effect_publication(key, spec)?;
         ActionBinding::fallible(&resource, &spec, arguments)
-            .map_err(|error| tracing::warn!(%error, effect = id, "control not bound"))
+            .map_err(|error| unbound_of(&key.kind, &format!("`{key}`"), &error.to_string()))
             .ok()
     }
 
-    /// The binding of one fully specified effect `id`, for a button.
+    /// The binding of one fully specified effect, for a button.
     fn effect_invocation(
         &self,
-        id: &str,
+        key: &ActionKey,
         spec: Option<tilo_actions::ActionSpec>,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ActionBinding<()>> {
-        let resource = self.exporting(spec?);
-        let spec = resource.actions.first()?.clone();
+        let (resource, spec) = self.effect_publication(key, spec)?;
         ActionBinding::static_json(&resource, &spec, arguments)
-            .map_err(|error| tracing::warn!(%error, effect = id, "control not bound"))
+            .map_err(|error| unbound_of(&key.kind, &format!("`{key}`"), &error.to_string()))
             .ok()
     }
-}
 
-/// The spec `E` declares for effect `id`.
-fn effect_spec<E: Effect>(id: &str) -> Option<tilo_actions::ActionSpec> {
-    E::specs().into_iter().find(|spec| spec.id == id)
+    /// The resource and spec an effect control is bound to, or `None` after
+    /// reporting why the view declared no such effect.
+    fn effect_publication(
+        &self,
+        key: &ActionKey,
+        spec: Option<tilo_actions::ActionSpec>,
+    ) -> Option<(tilo_actions::Resource, tilo_actions::ActionSpec)> {
+        let spec = match spec {
+            Some(spec) if spec.id == key.action => spec,
+            Some(_) | None => {
+                unbound_of(
+                    &key.kind,
+                    &format!("`{key}`"),
+                    "the view declares no such effect",
+                );
+                return None;
+            }
+        };
+        let resource = self.exporting(spec.clone());
+        Some((resource, spec))
+    }
 }
 
 /// The actions a resource publishes, for binding controls that are built
@@ -420,8 +488,13 @@ impl<R: Resource> Actions<R> {
 
     /// These actions as another record's, published at `record`: a live row
     /// may offer them ([`Self::operation`]) where it may change it.
-    pub(crate) fn routed_to(mut self, record: &str, editable: bool) -> Self {
-        self.table.route(record, editable);
+    pub(crate) fn routed_to(
+        mut self,
+        record: &str,
+        editable: bool,
+        kept_by: Option<&'static str>,
+    ) -> Self {
+        self.table.route(record, editable, kept_by);
         self
     }
 
@@ -438,10 +511,68 @@ impl<R: Resource> Actions<R> {
         decl: &tilo_resource::ActionDecl<R>,
     ) -> Option<tilo_actions::ActionSpec> {
         let record = self.table.record.as_deref()?;
-        Some(super::record::route_spec(
-            tilo_resource::declaration_spec(decl),
-            record,
-        ))
+        let spec = super::record::route_spec(tilo_resource::declaration_spec(decl), record);
+        Some(match self.table.kept_by {
+            // The provider keeping the record runs the action this one
+            // invokes of it.
+            Some(provider) => spec.run_as(tilo_actions::RunBy {
+                provider: provider.to_owned(),
+                resource: Some(record.to_owned()),
+                invokes: AsRef::<tilo_resource::Declaration>::as_ref(decl)
+                    .invokes
+                    .clone(),
+            }),
+            None => spec,
+        })
+    }
+
+    /// The resource's own actions as published now: what a query view's
+    /// "In this app" group searches, beside the app's effects.
+    #[must_use]
+    pub fn published(&self) -> Vec<tilo_actions::ActionSpec> {
+        let published = self.table.resource.borrow();
+        let mut specs = published.overlay.clone();
+        specs.extend(
+            published
+                .base
+                .actions
+                .iter()
+                .filter(|spec| !published.overlay.iter().any(|over| over.id == spec.id))
+                .cloned(),
+        );
+        specs
+    }
+
+    /// The binding of a button that runs `spec`, one of the resource's
+    /// published actions or one of its effects, with no arguments; `None`
+    /// where it asks for some.
+    #[must_use]
+    pub fn spec_binding(&self, spec: &tilo_actions::ActionSpec) -> Option<ActionBinding<()>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        ActionBinding::static_json(&resource, &spec, serde_json::Map::new())
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
+    }
+
+    /// The binding of a switch that runs `spec`, with no arguments, whichever
+    /// way it is flipped: the action itself flips what it controls.
+    #[must_use]
+    pub fn spec_switch_binding(
+        &self,
+        spec: &tilo_actions::ActionSpec,
+    ) -> Option<ActionBinding<bool>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        let arguments: Arguments<bool> = Box::new(|_| Ok(serde_json::Map::new()));
+        ActionBinding::fallible(&resource, &spec, arguments)
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
+    }
+
+    /// The id the resource is published at.
+    pub(crate) fn resource_id(&self) -> String {
+        self.table.resource.borrow().base.id.0.clone()
     }
 
     /// The table these actions bind from, which follows the publication
@@ -454,9 +585,9 @@ impl<R: Resource> Actions<R> {
     /// the resource does not publish it (an edit bound to view state that
     /// is not there now).
     pub fn binding<I: 'static>(&self, action: impl Binds<R, I>) -> Option<ActionBinding<I>> {
-        let id = action.action_id();
+        let key = action.action_key();
         self.table
-            .binding(id, Box::new(move |input| action.arguments(input)))
+            .binding(key, Box::new(move |input| action.arguments(input)))
             .ok()
     }
 
@@ -465,7 +596,12 @@ impl<R: Resource> Actions<R> {
     pub fn invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
         let refusal = invoke.refusal().map(str::to_owned);
         self.table
-            .invocation(invoke.id, refusal.as_deref(), invoke.arguments)
+            .invocation(
+                self.table.key(invoke.id),
+                R::APP_ID,
+                refusal.as_deref(),
+                invoke.arguments,
+            )
             .ok()
     }
 
@@ -475,16 +611,20 @@ impl<R: Resource> Actions<R> {
         &self,
         action: impl Binds<R, I>,
     ) -> Option<ActionBinding<I>> {
-        let id = action.action_id();
-        self.table
-            .control_binding(id, Box::new(move |input| action.arguments(input)))
+        let key = action.action_key();
+        self.table.control_binding_in(
+            key,
+            R::APP_ID,
+            Box::new(move |input| action.arguments(input)),
+        )
     }
 
     /// [`Self::invocation`] for a control being built.
     pub(crate) fn control_invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
         let refusal = invoke.refusal().map(str::to_owned);
+        let key = self.table.key(invoke.id);
         self.table
-            .invocation(invoke.id, refusal.as_deref(), invoke.arguments)
+            .invocation(key, R::APP_ID, refusal.as_deref(), invoke.arguments)
             .map_err(|(key, why)| unbound_of(R::KIND, &format!("`{key}`"), &why))
             .ok()
     }
@@ -493,14 +633,14 @@ impl<R: Resource> Actions<R> {
     /// arguments `arguments` makes when it is pressed (a form's values).
     pub(crate) fn deferred_binding(
         &self,
-        id: &str,
+        key: ActionKey,
         arguments: impl Fn() -> Result<serde_json::Map<String, serde_json::Value>, String>
         + Send
         + Sync
         + 'static,
     ) -> Option<ActionBinding<()>> {
         self.table
-            .control_binding(id, Box::new(move |()| arguments()))
+            .control_binding_in(key, R::APP_ID, Box::new(move |()| arguments()))
     }
 
     /// The binding of the field at `path` for a control with input `V`:
@@ -527,7 +667,7 @@ impl<R: Resource> Actions<R> {
     ) -> Option<ActionBinding<I>> {
         let what = format!("the field {path:?}");
         let readonly = R::shape().is_some_and(|shape| shape.readonly_at(path.segments()));
-        self.table.edit_binding(
+        self.table.edit_binding::<I, R>(
             &what,
             R::EDITS,
             readonly,
@@ -555,7 +695,7 @@ impl<R: Resource> Actions<R> {
         let readonly = R::shape().is_some_and(|shape| shape.readonly_at(path.segments()));
         let segments = path.into_segments();
         self.table
-            .set_binding(&what, R::EDITS, readonly, &segments, json_of(value))
+            .set_binding::<I, R>(&what, R::EDITS, readonly, &segments, json_of(value))
     }
 
     /// [`Self::set_binding`] of a control whose input is the field's value.
@@ -589,24 +729,20 @@ impl<R: Resource> Actions<R> {
         &self,
         effect: impl Binds<E, I>,
     ) -> Option<ActionBinding<I>> {
-        let id = effect.action_id();
+        let key = effect_key::<E, I>(&effect);
         self.table.effect_binding(
-            id,
-            effect_spec::<E>(id),
+            &key,
+            E::spec(&key.action),
             Box::new(move |input| effect.arguments(input)),
         )
     }
 
     /// The binding of one fully specified effect, for a button.
     pub fn effect<E: Effect>(&self, effect: &E) -> Option<ActionBinding<()>> {
-        self.table.effect_invocation(
-            effect.id(),
-            effect_spec::<E>(effect.id()),
-            effect.arguments(),
-        )
+        self.table
+            .effect_invocation(&effect.key(), E::spec(effect.id()), effect.arguments())
     }
 
-    /// `control`, bound to effect `effect`.
     pub fn bind_effect<E: Effect, I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -631,14 +767,19 @@ impl<R: Resource> Actions<R> {
     }
 }
 
-/// `value` with its result in its JSON form, the same for every resource.
+/// The key the effect a control is bound to is offered under: the one its
+/// reference names, and for a vocabulary's [`Effect`] alone, the one
+/// [`Effect::key`] reads.
+fn effect_key<E: Effect, I>(effect: &impl Binds<E, I>) -> ActionKey {
+    ActionKey::new(E::APP_ID, E::OPERATION, effect.action_id())
+}
+
 fn json_of<V: tilo_resource::Model, I>(
     value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
 ) -> Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync> {
     Box::new(move |input| value(input).map(|value| value.to_json()))
 }
 
-/// A control's value, set as it is.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the shape every value conversion has"

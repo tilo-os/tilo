@@ -19,9 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use thumbnail::batch::{
-    BatchError, ENTRYPOINT, EXIT_UNDECODABLE, PACKAGE, output_name, thumbnail_batch,
-};
+use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
 use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::view::read_manifest;
 use tilo_app_package::{Manifest, SigningIdentity, Verification, pack, tapp, unpack, verify};
@@ -45,7 +43,7 @@ fn packaged() -> Unpacked {
     let staging = dir.path().join("staging");
     std::fs::create_dir_all(staging.join("bin")).unwrap();
     std::fs::copy(
-        env!("CARGO_BIN_EXE_thumbnail-batch"),
+        tilo_test_env::package_binary!("thumbnail-batch"),
         staging.join("bin").join(ENTRYPOINT),
     )
     .unwrap();
@@ -203,10 +201,13 @@ fn the_packaged_entrypoint_writes_the_thumbnails_the_requester_would_make() {
         String::from_utf8_lossy(&output.stderr)
     );
     let expected: BTreeMap<String, Vec<u8>> = thumbnail_batch(&inputs)
-        .unwrap()
         .into_iter()
         .enumerate()
-        .map(|(index, thumbnail)| (output_name(index), thumbnail))
+        .filter_map(|(index, thumbnail)| {
+            thumbnail
+                .ok()
+                .map(|thumbnail| (output_name(index), thumbnail))
+        })
         .collect();
     assert_eq!(written.len(), inputs.len());
     assert_eq!(
@@ -216,22 +217,33 @@ fn the_packaged_entrypoint_writes_the_thumbnails_the_requester_would_make() {
 }
 
 #[test]
-fn the_packaged_entrypoint_fails_a_batch_with_a_non_image_whole() {
+fn the_packaged_entrypoint_names_a_non_image_and_still_writes_the_rest() {
     let package = packaged();
-    let inputs = vec![
-        picture(32, 32, 9, image::ImageFormat::Png),
-        b"not a picture".to_vec(),
-    ];
-    assert_eq!(
-        thumbnail_batch(&inputs),
-        Err(BatchError::Undecodable { index: 1 })
-    );
+    let bad = b"not a picture".to_vec();
+    let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad.clone()];
+    let made = thumbnail_batch(&inputs);
+    assert!(made[0].is_ok());
+    let failure = made[1].as_ref().unwrap_err();
+    assert_eq!(failure.digest, *blake3::hash(&bad).as_bytes());
     let (output, written) = run_job(&package, &inputs);
-    assert_eq!(output.status.code(), Some(i32::from(EXIT_UNDECODABLE)));
+    assert!(output.status.success(), "the job still completes");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("input 1 is not an image"),
-        "the worker returns the reason on stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains(&hex::encode(failure.digest)),
+        "the worker names the content it could not read: {stderr}"
     );
-    assert!(written.is_empty(), "a failed batch writes no thumbnail");
+    assert!(
+        !stderr.contains("input 1"),
+        "the failure is never a position: {stderr}"
+    );
+    assert_eq!(
+        written.len(),
+        1,
+        "the good picture still gets its thumbnail"
+    );
+    assert_eq!(
+        written.get(&output_name(0)),
+        made[0].as_ref().ok(),
+        "the good picture's thumbnail is the local batch's"
+    );
 }

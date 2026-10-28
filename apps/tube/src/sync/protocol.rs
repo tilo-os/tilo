@@ -198,11 +198,6 @@ pub fn encode_frame(opcode: u8, sub_opcode: u8, content_encoding: u8, payload: &
 
 /// Inverse of [`encode_frame`], with the same `size == length - 4` validation
 /// Grayjay's `handleData` performs.
-///
-/// # Errors
-///
-/// Returns `Err` if `buf` is shorter than [`HEADER_SIZE`] or its declared
-/// length doesn't match the actual buffer size.
 pub fn decode_frame(buf: &[u8]) -> Result<Frame, FrameError> {
     let Some(header) = buf.get(0..HEADER_SIZE) else {
         return Err(FrameError::TooShort);
@@ -372,9 +367,7 @@ mod tests {
 
     #[test]
     fn grayjay_wire_constants_and_framing_match_source() {
-        // Case `opcode_values_match_grayjay_source`.
         {
-            // Opcode.kt
             assert_eq!(opcode::PING, 0);
             assert_eq!(opcode::PONG, 1);
             assert_eq!(opcode::NOTIFY, 2);
@@ -383,7 +376,6 @@ mod tests {
             assert_eq!(opcode::REQUEST, 5);
             assert_eq!(opcode::RESPONSE, 6);
             assert_eq!(opcode::RELAY, 7);
-            // GJSyncOpcodes.kt
             assert_eq!(sync_opcode::SEND_TO_DEVICES, 101);
             assert_eq!(sync_opcode::SYNC_STATE_EXCHANGE, 150);
             assert_eq!(sync_opcode::SYNC_EXPORT, 201);
@@ -392,11 +384,9 @@ mod tests {
             assert_eq!(sync_opcode::SYNC_SUBSCRIPTION_GROUPS, 204);
             assert_eq!(sync_opcode::SYNC_PLAYLISTS, 205);
             assert_eq!(sync_opcode::SYNC_WATCH_LATER, 206);
-            // ContentEncoding.kt
             assert_eq!(content_encoding::RAW, 0);
             assert_eq!(content_encoding::GZIP, 1);
         }
-        // Case `framing_constants_match_source`.
         {
             assert_eq!(MAXIMUM_PACKET_SIZE, 65519);
             assert_eq!(MAXIMUM_PACKET_SIZE_ENCRYPTED, 65535);
@@ -405,7 +395,6 @@ mod tests {
             assert_eq!(NOISE_PATTERN_PAIRING, "Noise_N_25519_ChaChaPoly_BLAKE2b");
             assert_eq!(ANDROID_LISTEN_PORT, 12315);
         }
-        // Case `frame_round_trips_and_validates_size`.
         {
             let payload = b"hello grayjay";
             let bytes = encode_frame(
@@ -425,7 +414,6 @@ mod tests {
             assert_eq!(frame.content_encoding, content_encoding::GZIP);
             assert_eq!(frame.payload, payload);
         }
-        // Case `decode_rejects_corrupt_size`.
         {
             let mut bytes = encode_frame(opcode::PING, 0, content_encoding::RAW, b"");
             bytes[0] = 0xFF; // corrupt the declared size
@@ -439,7 +427,6 @@ mod tests {
 
     #[test]
     fn grayjay_json_packages_match_source_shapes() {
-        // Case `subscriptions_package_matches_grayjay_json_shape`.
         {
             // A hand-written JSON in Grayjay's exact shape must decode.
             let json = r#"{
@@ -477,12 +464,10 @@ mod tests {
                 Some(&1_699_999_999)
             );
 
-            // And our own serialization round-trips.
             let reencoded = serde_json::to_string(&pkg).unwrap();
             let pkg2: SyncSubscriptionsPackage = serde_json::from_str(&reencoded).unwrap();
             assert_eq!(pkg, pkg2);
         }
-        // Case `device_info_blob_parses`.
         {
             let json = r#"{"publicKey":"abc==","addresses":["192.168.1.5"],"port":12315,"pairingCode":"ABCD1234"}"#;
             let info: SyncDeviceInfo = serde_json::from_str(json).unwrap();

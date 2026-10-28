@@ -207,7 +207,6 @@ fn copies_and_moves_preserve_bytes_links_and_conflicts() {
     }
     // phase: copy_tree_keeps_source
     {
-        // This independently owned destination outlives the fixture's joined worker.
         let destination = tempfile::tempdir().unwrap();
         let f = Fixture::new(true);
         fs::create_dir_all(f.src("tree/empty")).unwrap();

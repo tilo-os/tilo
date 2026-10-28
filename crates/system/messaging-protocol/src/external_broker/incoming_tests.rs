@@ -72,7 +72,7 @@ async fn actual_whatsapp_inbound_is_private_durable_and_idempotent_without_netwo
         .broker
         .client()
         .history()
-        .read(fixture.route.clone())
+        .read(fixture.route.clone(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -99,7 +99,7 @@ async fn actual_whatsapp_inbound_is_private_durable_and_idempotent_without_netwo
             .broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await,
         Err(HistoryError::Revoked)
     );
@@ -214,7 +214,7 @@ async fn foreign_or_unsupported_whatsapp_inbound_cannot_mutate_private_history()
                 .broker
                 .client()
                 .history()
-                .read(fixture.route.clone())
+                .read(fixture.route.clone(), None)
                 .await
                 .unwrap()
                 .messages
@@ -240,9 +240,9 @@ async fn actual_whatsapp_inbound_wakes_selected_messages_view_without_shared_pla
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(5), |h| {
-                h.a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("new private WhatsApp arrival"))
+                h.a11y_nodes().iter().any(|(_, node)| {
+                    super::tests::speaks(node.label(), "new private WhatsApp arrival")
+                })
             }),
         "native inbound arrival must refresh the selected private view"
     );
@@ -321,8 +321,8 @@ async fn same_whatsapp_stanza_id_from_two_direct_chats_never_merges_people_or_me
             .unwrap()
     );
     let history = fixture.broker.client().history();
-    let first = history.read(fixture.route.clone()).await.unwrap();
-    let second = history.read(other.clone()).await.unwrap();
+    let first = history.read(fixture.route.clone(), None).await.unwrap();
+    let second = history.read(other.clone(), None).await.unwrap();
     let first_in = first
         .messages
         .iter()
@@ -338,7 +338,7 @@ async fn same_whatsapp_stanza_id_from_two_direct_chats_never_merges_people_or_me
             .await
             .unwrap()
     );
-    assert_eq!(history.read(other).await.unwrap().messages.len(), 1);
+    assert_eq!(history.read(other, None).await.unwrap().messages.len(), 1);
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 }
 
@@ -364,7 +364,7 @@ async fn ordinary_whatsapp_transport_metadata_stays_in_sdk_custody_and_never_wea
         .broker
         .client()
         .history()
-        .read(fixture.route.clone())
+        .read(fixture.route.clone(), None)
         .await
         .unwrap();
     assert!(
@@ -436,7 +436,7 @@ async fn ordinary_whatsapp_transport_metadata_stays_in_sdk_custody_and_never_wea
             .broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages
@@ -444,6 +444,35 @@ async fn ordinary_whatsapp_transport_metadata_stays_in_sdk_custody_and_never_wea
         2
     );
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A page before a message holds only what is older, and says whether there
+/// is more beneath it; a cursor naming nothing here is refused.
+fn pages_before_a_message(history: &History, route: Route) {
+    let newest = history.page(route.clone(), 128).unwrap();
+    assert_eq!(newest.messages.len(), 3);
+    let cursor = tilo_messaging::HistoryCursor::before(&newest.messages[1]);
+    let older = history
+        .page_before(route.clone(), Some(&cursor), 1)
+        .unwrap();
+    assert_eq!(older.messages.len(), 1);
+    assert_eq!(older.messages[0].id, newest.messages[0].id);
+    assert!(!older.more);
+    let cursor = tilo_messaging::HistoryCursor::before(&newest.messages[2]);
+    assert!(
+        history
+            .page_before(route.clone(), Some(&cursor), 1)
+            .unwrap()
+            .more
+    );
+    let forged = tilo_messaging::HistoryCursor::before(&tilo_messaging::Message {
+        id: "unknown".into(),
+        ..newest.messages[0].clone()
+    });
+    assert_eq!(
+        history.page_before(route, Some(&forged), 128),
+        Err(tilo_messaging::HistoryError::InvalidCursor)
+    );
 }
 
 #[tokio::test]
@@ -498,7 +527,7 @@ async fn sdk_durability_hook_commits_batches_atomically_before_success() {
             .wait_until(ui::time::Duration::from_secs(5), |h| {
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("durable second text"))
+                    .any(|(_, node)| super::tests::speaks(node.label(), "durable second text"))
             })
     );
     assert!(!app.harness().dump_json().contains("durable first text"));
@@ -528,7 +557,7 @@ async fn sdk_durability_hook_commits_batches_atomically_before_success() {
         secret_vault::VaultKey::from_bytes([8; 32]),
     )
     .unwrap();
-    assert_eq!(reopened.page(route, 128).unwrap().messages.len(), 3);
+    pages_before_a_message(&reopened, route);
     let ciphertext = std::fs::read(root.path().join("history/history.enc")).unwrap();
     assert!(
         !ciphertext
@@ -565,7 +594,7 @@ async fn durability_hook_refuses_limits_and_storage_failure_without_success_or_v
         broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages
@@ -593,7 +622,11 @@ async fn durability_hook_refuses_limits_and_storage_failure_without_success_or_v
     );
     assert_eq!(wakes.load(Ordering::SeqCst), 0);
     assert_eq!(
-        broker.client().history().read(fixture.route.clone()).await,
+        broker
+            .client()
+            .history()
+            .read(fixture.route.clone(), None)
+            .await,
         Err(HistoryError::Unavailable)
     );
     assert_eq!(std::fs::read(previous).unwrap(), before);
@@ -651,7 +684,7 @@ async fn history_count(broker: &ExternalBroker, route: &Route) -> usize {
     broker
         .client()
         .history()
-        .read(route.clone())
+        .read(route.clone(), None)
         .await
         .unwrap()
         .messages

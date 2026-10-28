@@ -257,7 +257,6 @@ struct MarkCx<'a> {
     ground: (&'a Heightfield, f64),
     /// Pictures decoded and graded, kept between frames.
     pictures: &'a mut Pictures,
-    /// The adjustments of the layer the marks are on.
     layer_adjust: Option<&'a Adjust>,
 }
 
@@ -284,7 +283,6 @@ pub struct Options {
     pub wet: Option<Mark>,
     /// Only these marks of plain layers, when given.
     pub marks: Option<Vec<String>>,
-    /// The selection's outline over the artwork.
     pub selection: bool,
     /// How closely the artwork is shown: closer than a painted layer's
     /// simulation, the part shown is simulated finer; farther, its picture
@@ -2008,7 +2006,7 @@ fn byte_of(value: f64) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
-/// A tile of light and shade (see [`speck`]) laid over marks: grain, or the
+/// A tile of light and shade (see `speck`) laid over marks: grain, or the
 /// ground's tooth showing through a layer.
 #[derive(Clone)]
 pub struct Speckle {
@@ -2271,7 +2269,6 @@ fn draw_shadow(
     );
 }
 
-/// The toolkit's text style for a text shape.
 pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
     let Shape::Text {
         size,
@@ -2514,7 +2511,6 @@ fn pen(style: &crate::model::Style, width: f64) -> Stroke {
     }
 }
 
-/// Draw one mark as vector art.
 pub fn draw_vector(
     mark: &Mark,
     palette: &[Pigment],

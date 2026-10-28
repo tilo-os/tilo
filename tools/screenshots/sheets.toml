@@ -72,4 +72,8 @@ invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-0000000000
 invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A1:D1", bold = true } }
 
 [[situation.steps]]
-invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "comment", args = { range = "C3", text = "Amira asked to swap Tuesday afternoon with Wen; fine by me if Wen agrees." } }
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "comment", args = { range = "C3", text = "Amira asked to swap Tuesday afternoon with Wen; fine by me if Wen agrees." }, bind = "note" }
+
+# Opening the comment selects its cell, which shows the thread beside it.
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/derived/comment:{{note.resources.0|last}}", action = "open" }

@@ -63,6 +63,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "import-theme"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "document", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "reset"
 kind = "undoable"
 params = [

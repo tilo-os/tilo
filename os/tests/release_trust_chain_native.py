@@ -16,8 +16,7 @@ signed by another log, and a signature with no log entry are refused; and
 that the key-mode policy accepts the bare key signature and refuses a
 certificate entry, which is why release images carry both during the cutover.
 
-Needs skopeo, openssl and python3; build-image.yml runs it on its native
-runners.
+Needs skopeo, openssl and python3.
 """
 import base64
 import contextlib

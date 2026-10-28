@@ -74,7 +74,7 @@ struct ApplyRequest {
 
 fn require_root() -> anyhow::Result<()> {
     if std::fs::metadata("/proc/self")?.uid() != 0 {
-        bail!("tilo-home-peer-control must be started through polkit");
+        bail!("tilo-home-peer-control must be started through polkit or sudo");
     }
     Ok(())
 }
@@ -371,11 +371,26 @@ fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     result
 }
 
+/// The account this root process acts for: whoever polkit authorised, or
+/// whoever ran it through sudo (an SSH session has no polkit agent). Only
+/// root starts this helper, so either variable comes from the launcher that
+/// authenticated them.
 fn invoking_uid() -> anyhow::Result<u32> {
-    std::env::var("PKEXEC_UID")
-        .context("polkit did not identify the requesting user")?
+    invoking_uid_from(
+        std::env::var("PKEXEC_UID").ok().as_deref(),
+        std::env::var("SUDO_UID").ok().as_deref(),
+    )
+}
+
+fn invoking_uid_from(pkexec: Option<&str>, sudo: Option<&str>) -> anyhow::Result<u32> {
+    let (value, launcher) = match (pkexec, sudo) {
+        (Some(value), _) => (value, "polkit"),
+        (None, Some(value)) => (value, "sudo"),
+        (None, None) => bail!("neither polkit nor sudo identified the requesting user"),
+    };
+    value
         .parse()
-        .context("polkit supplied an invalid requesting user")
+        .with_context(|| format!("{launcher} supplied an invalid requesting user"))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -521,7 +536,7 @@ fn approve_enrollment(
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
-    let mut command = Command::new("/usr/bin/tilo-enroll");
+    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
     command
         .args(["approve", "--timeout", "60", "--identity-root"])
         .arg(&identity_root);
@@ -545,7 +560,13 @@ fn approve_enrollment(
     }
     if let Some(identity_dir) = identity_dir {
         let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-        command.arg("--identity-dir").arg(identity_dir);
+        // The directory is checked now, but the approval runs for up to its
+        // timeout, while the person can replace it; tilo-enroll writes there
+        // only as them.
+        command
+            .arg("--identity-dir")
+            .arg(identity_dir)
+            .args(["--person-uid", &uid.to_string()]);
         if tilo_user_identity::IdentityPaths::under(&identity_root)
             .user_privkey
             .exists()
@@ -617,13 +638,14 @@ fn approve_personal_device(
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-    let mut command = Command::new("/usr/bin/tilo-enroll");
+    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
     command
         .arg("approve-device")
         .arg("--identity-root")
         .arg(&identity_root)
         .arg("--identity-dir")
         .arg(identity_dir)
+        .args(["--person-uid", &uid.to_string()])
         .args(["--expected-device", expected_device])
         .args(["--expected-service", expected_service]);
     // A seed under the identity root is opened by whoever owns that root, as
@@ -689,8 +711,15 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     #[test]
+    fn the_requesting_account_comes_from_polkit_or_sudo() {
+        assert_eq!(invoking_uid_from(Some("1000"), Some("1001")).unwrap(), 1000);
+        assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
+        assert!(invoking_uid_from(None, None).is_err());
+        assert!(invoking_uid_from(None, Some("person")).is_err());
+    }
+
+    #[test]
     fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {
-        // Phase `passwd_lookup_keeps_the_requesting_primary_group_and_home`.
         {
             let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
             assert_eq!(
@@ -703,7 +732,6 @@ mod tests {
             );
             assert_eq!(account_from_passwd(passwd, 7), None);
         }
-        // Phase `enrollment_failure_preserves_the_bounded_child_diagnostic`.
         {
             let error = enrollment_command_result(
                 &bounded_command::Output {
@@ -719,7 +747,6 @@ mod tests {
                 "personal-device enrollment was not completed: requester lease expired"
             );
         }
-        // Phase `enrollment_failure_without_stderr_still_reports_exit_status`.
         {
             let error = enrollment_command_result(
                 &bounded_command::Output {
@@ -741,7 +768,6 @@ mod tests {
             assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
             assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
         }
-        // Phase `request_projects_only_bounded_role_services_and_workspace_ids`.
         {
             let request = ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
@@ -770,7 +796,6 @@ mod tests {
                     .all(|entry| entry.pin && entry.replication == ReplicationIntent::FullWorkspace)
             );
         }
-        // Phase `approval_identity_root_is_owned_and_confined_to_the_invoking_home`.
         {
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
@@ -794,7 +819,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn config_and_workspace_changes_reload_or_roll_back() {
-        // Phase `failed_reload_rolls_back_config`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
@@ -808,7 +832,6 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"old");
             assert_eq!(std::fs::read(&home).unwrap(), b"old-home");
         }
-        // Phase `successful_reload_keeps_new_config`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
@@ -817,7 +840,6 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"new");
             assert_eq!(std::fs::read(&home).unwrap(), b"new-home");
         }
-        // Phase `service_rollback_restores_enabled_and_active_independently`.
         {
             assert_eq!(
                 service_state_actions(ServiceState {
@@ -834,7 +856,6 @@ mod tests {
                 ("disable", "restart")
             );
         }
-        // Phase `stock_desktop_always_on_selection_self_provisions_full_sync`.
         {
             let config = desired_config(&ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
@@ -850,7 +871,6 @@ mod tests {
             assert!(needs_local_home_peer_export(&config, false));
             assert!(!needs_local_home_peer_export(&config, true));
         }
-        // Phase `workspace_add_remove_reloads_mapping_and_keeps_continuity`.
         {
             let dir = tempfile::tempdir().unwrap();
             let relay = dir.path().join("relay.toml");

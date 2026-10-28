@@ -1,15 +1,16 @@
-//! Everything the job's first process needs, prepared before `clone3`.
+//! Everything the job's init needs, prepared by the worker.
 //!
-//! The child is a copy of a multithreaded process: another thread may have
-//! held the allocator's lock at the moment of the copy, so the child must
-//! never allocate. This module turns a [`JobSpec`] into C strings, pointer
-//! arrays, mount operations, Landlock rules and BPF programs, so the child
-//! only reads them and makes system calls.
+//! This module turns a [`JobSpec`] into C strings, mount operations, Landlock
+//! rules and BPF programs: the worker reads the host's files and makes the
+//! idmapped mounts, and the init (a new program in the job's namespaces, which
+//! reads this plan from the worker) only makes system calls.
 
 use std::ffi::{CString, OsStr};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::sys;
 use crate::job::SpawnError;
@@ -21,7 +22,7 @@ const OLD: &str = "/oldroot";
 const NEW: &str = "/newroot";
 
 /// One step of building the job's filesystem.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Op {
     /// `mkdir`; failure is ignored (the mount that needs it reports).
     Mkdir(CString),
@@ -94,14 +95,16 @@ impl Op {
 }
 
 /// A Landlock rule: a path inside the new root and the rights beneath it.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Rule {
     pub path: CString,
     pub access: u64,
 }
 
-/// What the child does, all of it prepared.
-#[derive(Debug)]
+/// What the init does, all of it prepared. The worker's descriptors and its
+/// own notes stay with the worker: the init finds the descriptors at the
+/// numbers its `Control` names.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Plan {
     /// The directory the staging tmpfs is mounted on (an existing one).
     pub stage: CString,
@@ -109,9 +112,11 @@ pub struct Plan {
     pub stage_new: CString,
     pub ops: Vec<Op>,
     /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
+    #[serde(skip)]
     pub trees: Vec<OwnedFd>,
     /// Writable host paths bound without an idmap (their filesystem can't take one): the job,
     /// as a user of its own, may not be able to write their owner's files.
+    #[serde(skip)]
     pub unmapped: Vec<PathBuf>,
     /// The job's ids in its own namespace, which the init takes on before
     /// it builds the root: with a block of host ids, the init starts as
@@ -124,14 +129,23 @@ pub struct Plan {
     pub candidates: Vec<CString>,
     pub argv: Vec<CString>,
     pub envp: Vec<CString>,
-    pub landlock: Option<(OwnedFd, Vec<Rule>)>,
-    /// Installed in order.
-    pub seccomp: Vec<Vec<libc::sock_filter>>,
+    /// The Landlock ruleset, when the job runs under Landlock.
+    #[serde(skip)]
+    pub landlock: Option<OwnedFd>,
+    pub rules: Vec<Rule>,
+    /// BPF programs (`struct sock_filter` arrays, as bytes), installed in
+    /// order.
+    pub seccomp: Vec<Vec<u8>>,
     pub cap_last: u32,
-    /// Where the caller's environment and arguments sit in its memory
-    /// (`/proc/self/stat` fields 48–51), to be blanked in the job's init.
-    pub env_area: (usize, usize),
-    pub arg_area: (usize, usize),
+    /// The job has a network namespace of its own, whose `lo` the init
+    /// brings up; false where it joins one its owner configures.
+    pub own_net: bool,
+    /// A helper of the caller's (see [`crate::job::helper`]): a mount
+    /// namespace of its own and nothing else, keeping the caller's ids and
+    /// capabilities.
+    pub helper: bool,
+    /// Raise the open file limit to its hard limit before the command runs.
+    pub nofile_max: bool,
 }
 
 fn cstr(bytes: &[u8], what: &str) -> Result<CString, SpawnError> {
@@ -384,6 +398,22 @@ impl Builder {
                 // writes into a shared image, not even a mount point.
                 self.attr(new, RO, false)?;
             }
+            Root::Layers {
+                lowers,
+                upper,
+                work,
+            } => {
+                // Writable while the root is built, so mount points go into the
+                // job's own upper; read-only once built (see `filesystem`).
+                let opts = self.overlay_options(lowers, Some((upper, work)), Owners::System)?;
+                self.ops.push(Op::Mount {
+                    src: Some(cstr(b"overlay", "overlay")?),
+                    dst: under(NEW, new)?,
+                    fstype: Some(cstr(b"overlay", "overlay")?),
+                    flags: libc::MS_NOSUID | libc::MS_NODEV,
+                    data: Some(cstr(opts.as_bytes(), "overlay options")?),
+                });
+            }
             Root::Host { extra } => {
                 self.ops.push(Op::Mount {
                     src: Some(cstr(b"tmpfs", "tmpfs")?),
@@ -613,7 +643,7 @@ impl Builder {
                 upper,
                 work,
             } => {
-                let opts = self.overlay_options(lowers, Some((upper, work)))?;
+                let opts = self.overlay_options(lowers, Some((upper, work)), Owners::Job)?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -629,7 +659,7 @@ impl Builder {
                         inside.display()
                     )));
                 }
-                let opts = self.overlay_options(lowers, None)?;
+                let opts = self.overlay_options(lowers, None, Owners::Job)?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -668,6 +698,7 @@ impl Builder {
         &mut self,
         lowers: &[PathBuf],
         writes: Writes<'_>,
+        owners: Owners,
     ) -> Result<String, SpawnError> {
         use std::fmt::Write as _;
         if lowers.is_empty() {
@@ -688,7 +719,7 @@ impl Builder {
             None => None,
         };
         let (lowers, writes) = if self.userns.is_some() {
-            self.idmapped_layers(&lowers, writes)?
+            self.idmapped_layers(&lowers, writes, owners)?
         } else {
             let old = |p: &Path| PathBuf::from(format!("{OLD}{}", p.display()));
             (
@@ -730,6 +761,7 @@ impl Builder {
         &mut self,
         lowers: &[PathBuf],
         writes: Option<(PathBuf, PathBuf)>,
+        owners: Owners,
     ) -> Result<Named, SpawnError> {
         let at = PathBuf::from(format!("/layers/{}", self.overlays));
         self.overlays = self.overlays.saturating_add(1);
@@ -745,7 +777,7 @@ impl Builder {
                 path_c(&lower_at)?,
                 libc::MS_BIND | libc::MS_REC,
                 Idmap::Required,
-                Owners::Job,
+                owners,
             )?;
             named.push(lower_at);
         }
@@ -770,7 +802,7 @@ impl Builder {
             path_c(&upper_at)?,
             libc::MS_BIND | libc::MS_REC,
             Idmap::Required,
-            Owners::Job,
+            owners,
         )?;
         let (upper, work) = (
             upper_at.join(beneath(&upper)),
@@ -915,7 +947,7 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     let mut b = Builder {
         ops: Vec::new(),
         made: Vec::new(),
-        root_writable: matches!(spec.root, Root::Host { .. }),
+        root_writable: matches!(spec.root, Root::Host { .. } | Root::Layers { .. }),
         rules: vec![Rule {
             path: path_c(Path::new("/"))?,
             access: sys::LL_READ,
@@ -936,6 +968,11 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     let root_dir = match &spec.root {
         Root::Image(dir) => dir.as_path(),
         Root::Host { .. } => Path::new("/"),
+        // The account files the job sees are the topmost layer's.
+        Root::Layers { lowers, .. } => lowers
+            .iter()
+            .find(|l| l.join("etc/passwd").is_file())
+            .map_or_else(|| Path::new("/nonexistent"), PathBuf::as_path),
     };
     b.account(root_dir, spec.ids.inside_uid, spec.ids.inside_gid)?;
     b.proc_and_dev(spec)?;
@@ -982,22 +1019,7 @@ fn candidates(spec: &JobSpec) -> Result<Vec<CString>, SpawnError> {
         .collect()
 }
 
-/// Where this process's environment and arguments are in its memory.
-fn areas() -> ((usize, usize), (usize, usize)) {
-    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
-    // The command name (field 2) may contain spaces; fields after it don't.
-    let after = stat.rsplit_once(')').map_or("", |(_, rest)| rest);
-    let fields: Vec<usize> = after
-        .split_whitespace()
-        .map(|f| f.parse().unwrap_or(0))
-        .collect();
-    // Fields 48–51 of the whole line are arg_start, arg_end, env_start,
-    // env_end: indices 45–48 after the command name (field 3 is index 0).
-    let get = |i: usize| fields.get(i).copied().unwrap_or(0);
-    ((get(45), get(46)), (get(47), get(48)))
-}
-
-fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<libc::sock_filter>>, SpawnError> {
+fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<u8>>, SpawnError> {
     use sandbox_core::seccomp;
     let Seccomp::Ci(profile) = mode else {
         return Ok(Vec::new());
@@ -1007,23 +1029,7 @@ fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<libc::sock_filter>>, SpawnEr
         seccomp::clone3_compat_program().map_err(compile)?,
         seccomp::ci_program(profile).map_err(compile)?,
     ];
-    Ok(programs
-        .iter()
-        .map(|p| {
-            seccomp::program_bytes(p)
-                .chunks_exact(8)
-                .map(|c| {
-                    let word = |a: usize, b: usize| c.get(a..b).unwrap_or_default();
-                    libc::sock_filter {
-                        code: u16::from_ne_bytes(word(0, 2).try_into().unwrap_or([0; 2])),
-                        jt: c.get(2).copied().unwrap_or(0),
-                        jf: c.get(3).copied().unwrap_or(0),
-                        k: u32::from_ne_bytes(word(4, 8).try_into().unwrap_or([0; 4])),
-                    }
-                })
-                .collect()
-        })
-        .collect())
+    Ok(programs.iter().map(seccomp::program_bytes).collect())
 }
 
 fn landlock(
@@ -1078,7 +1084,7 @@ impl Plan {
         };
         let (ops, rules, trees, unmapped) = filesystem(spec)?;
         let stage = stage_dir();
-        let (arg_area, env_area) = areas();
+        let (landlock, rules) = landlock(landlock_mode(spec), rules)?.unzip();
         let cap_last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
             .ok()
             .and_then(|s| s.trim().parse().ok())
@@ -1110,11 +1116,13 @@ impl Plan {
                     cstr(&kv, "an environment variable")
                 })
                 .collect::<Result<_, _>>()?,
-            landlock: landlock(landlock_mode(spec), rules)?,
+            landlock,
+            rules: rules.unwrap_or_default(),
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
-            env_area,
-            arg_area,
+            own_net: true,
+            helper: false,
+            nofile_max: false,
         })
     }
 }

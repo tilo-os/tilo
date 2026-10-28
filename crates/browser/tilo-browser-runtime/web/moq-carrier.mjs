@@ -27,6 +27,24 @@ export class MediaAdmissionError extends Error {
   constructor() {super('media admission denied'); this.name = 'MediaAdmissionError';}
 }
 
+/** This browser cannot open a carrier at all: no retry will help. */
+export class CarrierUnsupportedError extends Error {
+  constructor(message) {super(message); this.name = 'CarrierUnsupportedError';}
+}
+
+/**
+ * Why this browser cannot open a carrier, or null when it can. The host
+ * accepts only sessions that offer `MOQ_PROTOCOL`, which a browser does
+ * only where WebTransport negotiates subprotocols (`protocol` on the
+ * session: Chrome 143, Firefox 155, Safari 26.4 on); an older one is
+ * answered 404 every time.
+ */
+export function carrierUnsupported(WebTransport = globalThis.WebTransport) {
+  if (typeof WebTransport !== 'function') return 'WebTransport is unavailable';
+  if (!('protocol' in (WebTransport.prototype ?? {}))) return 'WebTransport cannot negotiate the carrier protocol';
+  return null;
+}
+
 /** The admission preface bytes for `grant`. */
 export function encodePreface(grant) {
   if (!(grant instanceof Uint8Array) || grant.byteLength === 0 || grant.byteLength > MAX_GRANT_BYTES) {
@@ -52,13 +70,16 @@ async function readByte(reader) {
  * Open a WebTransport session to `url`, present `grant`, and resolve once the
  * host admitted it. Resolves `{transport, revoked, authorityLost, close}`: `transport` is the
  * WebTransport to give `@moq/net`, `revoked` settles when the host revokes the
- * session (the transport is closed by then). `authorityLost` resolves only
+ * session or the admission stream ends; the holder then closes what it
+ * publishes and calls `close`, and the transport closes in the next task if
+ * it did not. `authorityLost` resolves only
  * on an explicit authenticated refusal/revocation, never ordinary path loss.
  */
-export async function openCarrier({url, grant, serverCertificateHashes, signal, WebTransport = globalThis.WebTransport}) {
+export async function openCarrier({url, grant, serverCertificateHashes, signal, WebTransport = globalThis.WebTransport, setTimer = (callback, delay) => globalThis.setTimeout(callback, delay)}) {
   signal?.throwIfAborted?.();
   const preface = encodePreface(grant);
-  if (typeof WebTransport !== 'function') throw new Error('WebTransport is unavailable');
+  const unsupported = carrierUnsupported(WebTransport);
+  if (unsupported) throw new CarrierUnsupportedError(unsupported);
   const options = {protocols: [MOQ_PROTOCOL], allowPooling: false, congestionControl: 'low-latency'};
   if (serverCertificateHashes) options.serverCertificateHashes = serverCertificateHashes;
   const transport = new WebTransport(url.href, options);
@@ -85,9 +106,16 @@ export async function openCarrier({url, grant, serverCertificateHashes, signal, 
     if (status === STATUS_DENIED) throw new MediaAdmissionError();
     if (status !== STATUS_ADMITTED) throw new Error('media admission denied');
     signal?.throwIfAborted?.();
+    // The holder closes what it built on the transport when `revoked`
+    // settles, its tracks first and then the transport (`close`). Closed here
+    // first, `@moq/net` would go on serving those tracks into a closed
+    // session and warn for each ("publish error ... The session is closed"),
+    // which every expected session renewal would print. The next task closes
+    // the transport for a holder that did not; the host closes it after its
+    // grace period either way.
     const revoked = readByte(reader).catch(() => undefined).then(status => {
       if (status === STATUS_REVOKED) loseAuthority();
-      close();
+      setTimer(close, 0);
     });
     return {transport, revoked, authorityLost, get admissionRevoked() {return admissionRevoked;}, close};
   } catch (error) {

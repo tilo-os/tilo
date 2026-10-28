@@ -216,7 +216,6 @@ mod tests {
 
     #[test]
     fn build_targets_are_directory_safe_and_evicted_least_recently_used() {
-        // Phase `ids_are_directory_safe`.
         {
             assert!(valid_worktree_id("agent-a74-3f9c1a2b"));
             assert!(!valid_worktree_id("../etc"));
@@ -224,7 +223,6 @@ mod tests {
             assert!(!valid_worktree_id(""));
             assert!(!valid_worktree_id(&"a".repeat(65)));
         }
-        // Phase `eviction_is_least_recently_used_first`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = store_with(
@@ -267,17 +265,23 @@ mod tests {
                 ["mid", "new"]
             );
         }
-        // Phase `touch_keeps_the_measured_size`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = TargetStore::new(root.path());
             store.touch("wt-1", Owner::default()).unwrap();
             fs::create_dir_all(store.src("wt-1").join("target")).unwrap();
             fs::write(store.src("wt-1").join("target/big"), vec![1_u8; 8192]).unwrap();
+            // What the file occupies depends on the filesystem (compression,
+            // delayed allocation), so only check the measurement is recorded.
             let bytes = store.measure("wt-1").unwrap();
-            assert!(bytes >= 8192);
+            assert_eq!(store.load("wt-1").unwrap().bytes, bytes);
+            let measured = TargetRecord {
+                bytes: 8192,
+                ..store.load("wt-1").unwrap()
+            };
+            store.save(&measured).unwrap();
             let again = store.touch("wt-1", Owner::default()).unwrap();
-            assert_eq!(again.bytes, bytes);
+            assert_eq!(again.bytes, 8192);
             assert!(store.touch("../x", Owner::default()).is_err());
         }
     }

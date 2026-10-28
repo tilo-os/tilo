@@ -44,14 +44,12 @@ pub struct Asset {
     pub sha256: String,
 }
 
-/// One wallpaper of the catalog.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wallpaper {
     /// Stable id, the `appearance.wallpaper` value that chooses it.
     pub id: String,
     pub tone: Tone,
-    /// The work's title at its source.
     pub title: String,
     pub author: String,
     /// SPDX identifier, or `public-domain` for a work with no copyright.
@@ -106,7 +104,6 @@ pub fn default_wallpaper() -> Option<&'static Wallpaper> {
     find(&catalog.default).or_else(|| catalog.wallpaper.first())
 }
 
-/// The wallpaper with `id`.
 #[must_use]
 pub fn find(id: &str) -> Option<&'static Wallpaper> {
     all().iter().find(|wallpaper| wallpaper.id == id)
@@ -115,7 +112,6 @@ pub fn find(id: &str) -> Option<&'static Wallpaper> {
 /// What an `appearance.wallpaper` value shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
-    /// A wallpaper of the catalog.
     Bundled(&'static Wallpaper),
     /// The person's own picture.
     Custom,

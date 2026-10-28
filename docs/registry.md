@@ -123,7 +123,8 @@ and the length prefix on collections. See
 ```
 GET  /registry            → RegistryHandshake         (server identity)
 GET  /health              → { "ok": true }
-GET  /entries             → SignedRegistrySnapshot
+GET  /metrics             → Prometheus gauges: channel authorization and snapshot expiry
+GET  /entries             → SignedRegistrySnapshot      (expired or not; clients judge freshness)
 GET  /entries?format=compact → CompactRegistrySnapshot  (the full one until it exists)
 GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
 GET  /indexes/<blake3>.json → RegistryVersionIndex      (named by a compact snapshot)
@@ -158,7 +159,7 @@ object the registry keeps a **twin**, the same bytes as one zstd frame at
 level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
 blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
 The release pipeline uploads `<file>.tapp.zst` beside every tapp it
-publishes (`tilo-app-package compress`). Measured on real packages, twins are
+publishes (`tilo package compress`). Measured on real packages, twins are
 34–42 % of an app tapp and 32 % of the runtime's payload.
 
 A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
@@ -373,6 +374,21 @@ tilo-registry-server add-publisher \
     --first-party
 ```
 
+`add-publisher` replaces a row, so the namespaces it names are the whole of
+what the publisher may claim afterwards. To give an allowlisted publisher one
+more namespace beside the ones it owns already, pass `--grant`: the namespaces
+it does not own yet are added to its row and the rest of the row is left as it
+is. A grant never creates a publisher — that is an add — so a key that is not
+allowlisted yet is refused, and the replace path stays for correcting a row.
+
+```
+tilo-registry-server add-publisher \
+    --pubkey <publisher-hex> \
+    --can-add-new \
+    --namespace com.acme \
+    --grant
+```
+
 **Upgrading an existing registry.** Rows written before namespaces existed
 were read as `so.tilo`; they now own nothing. `serve` and `list-publishers`
 log a warning naming each such key, and `list-publishers` shows it with
@@ -415,7 +431,7 @@ CI can generate the complete request from those final bytes with the same
 identity that signed the package:
 
 ```text
-tilo-app-package entry \
+tilo package entry \
   --identity /run/secrets/app-publisher.json \
   --action update \
   --previous-entry current-entry.json \
@@ -461,14 +477,14 @@ hash and a room stores the same bytes. The answer's `url` is
 approves a version that binds it. Pruning keeps a program blob while any
 retained entry binds it.
 
-`tilo-app-package bot-entry` builds a bot entry from a program file in any
+`tilo package bot-entry` builds a bot entry from a program file in any
 formatting. It re-encodes the Shortcut canonically, derives the apps,
 triggers and appearance the program needs, refuses `--connector
 <id>@<min version>` lists that differ from the connectors its triggers use,
 and with `--upload` sends the canonical bytes first:
 
 ```text
-tilo-app-package bot-entry \
+tilo package bot-entry \
   --identity /run/secrets/app-publisher.json \
   --package-id so.tilo.bots.echo --version 1.0.0 \
   --action add --upload echo.json > request.json
@@ -544,7 +560,7 @@ families are accepted (`registry_types::target`):
 | `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Linux, Windows,
+each tapp's target with `tilo package entry --arch`. Linux, Windows,
 macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
 is `(version, platform, architecture)`, and a Tilo OS client installs only
 `tilo-os` versions.
@@ -557,7 +573,7 @@ names the executable as `module` (the GUI entrypoint must name the same path)
 and the linked release as `runtime`, equal to `[package].runtime`
 (`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
-design target; `tilo-app-package entry --platform linux|windows|macos|android`
+design target; `tilo package entry --platform linux|windows|macos|android`
 binds it.
 
 ### 6. Moderator workflow
@@ -624,6 +640,50 @@ tilo-registry-server authorize-channel \
   --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
   --generation 1
 ```
+
+#### Renewing the channel before it expires
+
+A channel authorization lives at most 31 days, and only the offline root can
+issue the next one, so renewal is a deliberate operation that no schedule
+performs. Once it lapses the signers refuse to sign (`registry channel
+authorization is invalid`) and the 24-hour snapshot runs out within a day: on
+2026-10-21 generation 1 expired unnoticed and every device lost the catalogue.
+
+Renew with the same owner, channel key, publisher and bounds, and the next
+generation, then sign once with the channel so the snapshot carries the new
+authorization:
+
+```text
+tilo-registry-server authorize-channel \
+  --owner-key-file /secure/registry-owner.seed \
+  --channel-pubkey "$CHANNEL_PUBKEY" \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
+  --generation "$((CURRENT + 1))" \
+  --valid-for-seconds 2592000 \
+  --max-snapshot-validity-seconds 86400 --max-snapshot-entries 10000
+tilo-registry-server sign-delegated-snapshot \
+  --channel-key-file /run/secrets/registry-channel/seed --valid-for-seconds 86400
+```
+
+The current generation is in `channel-authorization.json` in the data dir, in
+the `channel_authorization` of any published snapshot, and in `/metrics`.
+apps.tilo.so's operators render and apply exactly this as a one-off Job with
+`operations/registry-channel-renewal/renew.py` in the infrastructure
+repository.
+
+`GET /metrics` reports `tilo_registry_channel_authorization_expires_at_seconds`,
+`tilo_registry_channel_authorization_generation`,
+`tilo_registry_snapshot_expires_at_seconds` and `tilo_registry_snapshot_verified`
+from the catalogue the server already verified, so alerts can ask for the
+renewal days ahead and for the signer hours before the snapshot expires. The
+route is for the operator's monitoring and is not published at the public edge.
+
+`/entries` serves an authentic snapshot after it expires too. Freshness is the
+client's check, and with the signed bytes a device can tell an expired
+catalogue from an unreachable registry: the Store then says that the
+repository's app catalogue has expired and that installed apps keep working.
+Only a snapshot that fails its signatures or the active channel is refused
+(503), and only that should fail a readiness probe.
 
 Each recurring promotion has two security boundaries. A networked collector
 has no signing key and writes exact tapp bytes under their BLAKE3 names. A
@@ -707,10 +767,10 @@ runtime download; an older one downloads the runtime the newest version names.
 
 On the device, a downloaded runtime build lives in
 `$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
-(`runtime_bundle::gc`). After every `tilo-install install`, `update` and
-`uninstall`, and on `tilo-install gc`, a build is removed unless an installed
+(`runtime_bundle::gc`). After every `tilo app install`, `update` and
+`uninstall`, and on `tilo app gc`, a build is removed unless an installed
 package (the user's or the image's) names it as its `runtime` or among its
-`optional-runtimes`, it is pinned (`tilo-install runtime pin`, or installed
+`optional-runtimes`, it is pinned (`tilo app runtime pin`, or installed
 with `--pinned`), it was installed within the last hour (an app's first open
 installs its runtime and then the app, in two steps), or a running app has it
 mounted. A build leaves its version's directory in one rename before any file

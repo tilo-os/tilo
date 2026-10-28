@@ -225,12 +225,21 @@ pub fn clamp_pointer_to_outputs(
         }
         let min_x = f64::from(x);
         let min_y = f64::from(y);
+        // On the output is its whole half-open extent, the last pixel's
+        // fraction included: judged by the last pixel's left edge instead, a
+        // pointer moving slower than half a pixel per event was snapped back
+        // from that fraction each time and never crossed onto the output
+        // beside it.
+        if pointer.0 >= min_x
+            && pointer.1 >= min_y
+            && pointer.0 < min_x + f64::from(width)
+            && pointer.1 < min_y + f64::from(height)
+        {
+            return pointer;
+        }
         let max_x = min_x + f64::from(width.saturating_sub(1));
         let max_y = min_y + f64::from(height.saturating_sub(1));
         let candidate = (pointer.0.clamp(min_x, max_x), pointer.1.clamp(min_y, max_y));
-        if candidate == pointer {
-            return pointer;
-        }
         let dx = pointer.0 - candidate.0;
         let dy = pointer.1 - candidate.1;
         let distance_squared = dx.mul_add(dx, dy * dy);
@@ -293,7 +302,6 @@ mod tests {
         );
         // A connector not lit yet takes what configuration picks.
         assert_eq!(retained_mode(None, None, false, &advertised), None);
-        // A mode chosen in Settings is applied.
         assert_eq!(
             retained_mode(Some(lit), Some(mode(2560, 1440)), false, &advertised),
             None
@@ -307,7 +315,6 @@ mod tests {
             retained_mode(Some(mirrored), None, false, &advertised),
             None
         );
-        // An unchanged request keeps the configured mode lit.
         assert_eq!(
             retained_mode(Some(mirrored), Some(mode(1024, 768)), false, &advertised),
             Some(mode(1024, 768))
@@ -355,7 +362,6 @@ mod tests {
             retained_mode(Some(survivor), None, false, &advertised),
             Some(arranged)
         );
-        // A layout remembered for the new set that names a mode applies.
         assert_eq!(
             retained_mode(Some(lit), Some(mode(1024, 768)), true, &advertised),
             None
@@ -374,13 +380,11 @@ mod tests {
         };
         let kept = retained_presentation(shown, None, false, true);
         assert_eq!(kept, Some(shown), "the survivor stays at 1.25x");
-        // Later rescans and relayouts of that same set keep it.
         assert_eq!(retained_presentation(shown, kept, false, false), kept);
         // A scale arranged for the new set — or chosen for it in Settings
         // afterwards — applies instead.
         assert_eq!(retained_presentation(shown, None, true, true), None);
         assert_eq!(retained_presentation(shown, kept, true, false), None);
-        // Rotation is kept the same way.
         let portrait = Presentation {
             scale: 1.0,
             transform: OutputTransform::Rotate90,
@@ -408,7 +412,6 @@ mod tests {
 
     #[test]
     fn output_diff_classifies_additions_removals_and_mode_changes() {
-        // Phase `nothing_changed_is_a_noop`.
         {
             // The common `Changed` edge: a DPMS cycle or an EDID re-read. Any
             // work here would flicker the panel for no reason.
@@ -417,7 +420,6 @@ mod tests {
             let p = plan(&l, &c);
             assert!(p.is_noop(), "unchanged hardware must imply no work: {p:?}");
         }
-        // Phase `plugging_in_an_external_display_is_an_addition`.
         {
             // The laptop panel is live; a monitor is plugged into HDMI.
             let l = [live(1, 10, 0, (1920, 1080))];
@@ -427,7 +429,6 @@ mod tests {
             assert!(p.removed.is_empty());
             assert!(p.remoded.is_empty());
         }
-        // Phase `unplugging_a_display_removes_exactly_that_output_id`.
         {
             let l = [live(1, 10, 0, (1920, 1080)), live(1, 11, 1, (2560, 1440))];
             let c = [conn(1, 10, (1920, 1080))];
@@ -439,7 +440,6 @@ mod tests {
             );
             assert!(p.remoded.is_empty());
         }
-        // Phase `a_mode_change_keeps_the_output_id`.
         {
             // A monitor renegotiating its mode must read as the same display
             // at a new size, not as an unplug followed by a plug — otherwise
@@ -452,7 +452,6 @@ mod tests {
             assert!(p.removed.is_empty());
             assert_eq!(p.remoded, vec![(OutputId(7), conn(1, 10, (3840, 2160)))]);
         }
-        // Phase `everything_unplugged_removes_everything`.
         {
             // A dock pulled out. All outputs go; the compositor keeps serving
             // its socket headless rather than exiting.
@@ -461,7 +460,6 @@ mod tests {
             assert_eq!(p.removed, vec![OutputId(0), OutputId(1)]);
             assert!(p.added.is_empty());
         }
-        // Phase `the_first_display_of_a_headless_session_is_an_addition`.
         {
             let p = plan(&[], &[conn(1, 10, (1920, 1080))]);
             assert_eq!(p.added.len(), 1);
@@ -471,7 +469,6 @@ mod tests {
 
     #[test]
     fn multi_gpu_and_alt_mode_replug_keep_output_identity() {
-        // Phase `a_second_gpu_does_not_collide_with_the_first_on_connector_ids`.
         {
             // Connector handles restart per card, so keying on the handle
             // alone would make card1's connector 10 look like card0's.
@@ -481,7 +478,6 @@ mod tests {
             assert_eq!(p.added, vec![conn(2, 10, (1280, 1024))]);
             assert!(p.removed.is_empty());
         }
-        // Phase `fake_hybrid_cards_replug_without_disturbing_the_other_gpu`.
         {
             // Deterministic fake connector snapshots for a normal hybrid laptop:
             // the internal panel belongs to one card and the dock connector to
@@ -513,7 +509,6 @@ mod tests {
             assert!(replug.removed.is_empty());
             assert!(replug.remoded.is_empty());
         }
-        // Phase `usb_c_dp_alt_mode_replug_keeps_its_output_identity`.
         {
             // The kernel exposes DP Alt Mode as an ordinary DP connector. Its
             // connector handle survives a cable cycle on the same DRM card, so
@@ -540,9 +535,7 @@ mod tests {
 
     #[test]
     fn layout_packs_outputs_and_extent_spans_them() {
-        // Phase `layout_places_a_single_output_at_the_origin`.
         assert_eq!(layout(&[(1920, 1080)]), vec![(0, 0)]);
-        // Phase `layout_repacks_after_a_middle_output_is_removed`.
         {
             // Three monitors at 0 / 1920 / 3200. Pull the middle one and the
             // third must slide left to 1920 — leaving it at 3200 would open a
@@ -552,44 +545,35 @@ mod tests {
             let after = layout(&[(1920, 1080), (2560, 1440)]);
             assert_eq!(after, vec![(0, 0), (1920, 0)]);
         }
-        // Phase `layout_of_nothing_is_nothing`.
         assert!(layout(&[]).is_empty());
-        // Phase `combined_extent_spans_every_output`.
         {
             let sizes = [(1920u32, 1080u32), (1280, 1024)];
             let pos = layout(&sizes);
             assert_eq!(combined_extent(&pos, &sizes), (3200, 1080));
         }
-        // Phase `combined_extent_of_nothing_is_zero`.
         assert_eq!(combined_extent(&[], &[]), (0, 0));
     }
 
     #[test]
     fn pointer_is_clamped_onto_the_nearest_surviving_output() {
-        // Phase `the_pointer_comes_back_onto_the_surviving_display`.
         {
             // This is the concrete "stranded off-screen" case: the pointer was
             // on the external monitor when it was unplugged.
             let clamped = clamp_pointer_to_outputs((3000.0, 900.0), [((0, 0), (1920, 1080))]);
             assert_eq!(clamped, (1919.0, 900.0));
         }
-        // Phase `a_pointer_already_in_bounds_is_left_alone`.
         assert_eq!(
             clamp_pointer_to_outputs((100.0, 200.0), [((0, 0), (1920, 1080))]),
             (100.0, 200.0)
         );
-        // Phase `the_pointer_is_clamped_vertically_too`.
-        // Unplugging a taller monitor shrinks the height of the space.
         assert_eq!(
             clamp_pointer_to_outputs((10.0, 1400.0), [((0, 0), (1920, 1080))]),
             (10.0, 1079.0)
         );
-        // Phase `a_pointer_in_a_space_with_no_outputs_parks_at_the_origin`.
         assert_eq!(
             clamp_pointer_to_outputs((3000.0, 900.0), std::iter::empty()),
             (0.0, 0.0)
         );
-        // Phase `pointer_is_projected_out_of_an_l_shaped_topology_gap`.
         {
             let outputs = [((0, 0), (1920, 1080)), ((1920, 360), (1280, 720))];
             assert_eq!(
@@ -603,7 +587,6 @@ mod tests {
                 "a point on the offset monitor must be preserved"
             );
         }
-        // Phase `pointer_can_cross_the_shared_edge_of_vertically_offset_outputs`.
         {
             let outputs = [((0, 0), (1920, 1080)), ((1920, 360), (1280, 720))];
             assert_eq!(
@@ -611,7 +594,6 @@ mod tests {
                 (1924.0, 500.0)
             );
         }
-        // Phase `nearest_output_wins_across_a_real_topology_gap`.
         {
             let outputs = [((0, 0), (800, 600)), ((1000, 0), (800, 600))];
             assert_eq!(
@@ -623,7 +605,6 @@ mod tests {
                 (1000.0, 300.0)
             );
         }
-        // Phase `mirrored_outputs_and_total_disconnect_are_deterministic`.
         {
             let mirrors = [((0, 0), (1920, 1080)), ((0, 0), (1920, 1080))];
             assert_eq!(

@@ -130,10 +130,6 @@ pub fn await_compensation() -> Vec<String> {
 /// with `redo`, its redo) queued: the next attempt's marker, negative for an
 /// undo, positive for a redo. The step stays as it was until
 /// [`settle_compensation`] completes it.
-///
-/// # Errors
-/// Refuses when the attempts exceed the budget or the document refuses the
-/// write.
 pub fn await_settlement(doc: &mut Doc, hash: &str, redo: bool) -> Result<(), ActionError> {
     use automerge::ReadDoc as _;
     let key = format!("{UNDONE_KEY}{hash}");
@@ -638,10 +634,6 @@ fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
 /// a device that has the app does with every change it receives, beside the
 /// relay's grant check: an author granted an action who wrote something else
 /// inside its storage units is caught here.
-///
-/// # Errors
-/// Refuses a change that is not in `doc`, whose base is incomplete, or that
-/// its recorded action does not reproduce.
 pub fn verify_change(
     doc: &mut Doc,
     hash: automerge::ChangeHash,

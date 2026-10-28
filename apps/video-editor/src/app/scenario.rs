@@ -65,18 +65,12 @@ pub enum ShotScenario {
     /// The keyframe menu open on a key under the playhead: remove, the three
     /// shapes with the one in force ticked, and the steps either side.
     KeyMenu,
-    /// The project menu open under the project button: Open, Save, Save As,
-    /// and the recent projects under a separator.
-    ProjectMenu,
     /// The window while the OS is hovering a file over it, so the drop
     /// invitation can be seen to cover everything a drop actually reaches.
     FileDrop,
     /// The question asked before an Open replaces a project that was never
     /// saved anywhere.
     DiscardOpen,
-    /// A project that has been saved to a file: the button carries the file's
-    /// name and no unsaved badge, and the notice says where it went.
-    SavedProject,
     /// The tone-curve editor, shaped: an S on the master with the amount
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
@@ -86,13 +80,6 @@ pub enum ShotScenario {
     /// in their colours -- next to this participant's own selection, so the
     /// capture shows the two reading as different people.
     Collaborators,
-    /// A render in flight with its dialog already dismissed: the editor is
-    /// fully usable and the export still reports itself, from the chip under
-    /// the Export button.
-    ExportRunning,
-    /// The render after it failed, with the reason it gives, so the failing
-    /// half of the chip can be reviewed as well as the working half.
-    ExportFailed,
     /// The export dialog open over the editor, before a render starts.
     ExportDialog,
     /// The export dialog showing why a render failed, at full length, so the
@@ -156,7 +143,6 @@ impl ShotScenario {
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
                 | ShotScenario::KeyMenu
-                | ShotScenario::ProjectMenu
                 | ShotScenario::Curves
                 | ShotScenario::Collaborators
                 | ShotScenario::ProjectFormat
@@ -196,14 +182,10 @@ impl ShotScenario {
         "keymenu",
         "help",
         "goto",
-        "projectmenu",
         "filedrop",
         "discard",
-        "saved",
         "curves",
         "collaborators",
-        "exporting",
-        "exportfailed",
         "exportdialog",
         "exportfaileddialog",
         "range",
@@ -238,14 +220,10 @@ impl ShotScenario {
             "keymenu" => ShotScenario::KeyMenu,
             "help" => ShotScenario::HelpSheet,
             "goto" => ShotScenario::GotoTimecode,
-            "projectmenu" => ShotScenario::ProjectMenu,
             "filedrop" => ShotScenario::FileDrop,
             "discard" => ShotScenario::DiscardOpen,
-            "saved" => ShotScenario::SavedProject,
             "curves" => ShotScenario::Curves,
             "collaborators" => ShotScenario::Collaborators,
-            "exporting" => ShotScenario::ExportRunning,
-            "exportfailed" => ShotScenario::ExportFailed,
             "exportdialog" => ShotScenario::ExportDialog,
             "exportfaileddialog" => ShotScenario::ExportFailedDialog,
             "range" => ShotScenario::RenderRange,
@@ -372,38 +350,18 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
     )]
-    pub(super) fn apply_shot_scenario(&mut self, state: &AutoCommit) {
+    pub(super) fn apply_shot_scenario(&mut self) {
         match self.shot_scenario {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.navigation.help_open = true,
             ShotScenario::GotoTimecode => self.goto_entry = Some(interaction::goto_field("1:30")),
-            ShotScenario::ProjectMenu => {
-                // Recents the menu can list. Fabricated only for the capture —
-                // the live app reads them off disk and never invents one.
-                self.recents = ["Reel_2026", "Interview_rough", "Titles_pass"]
-                    .iter()
-                    .map(|n| PathBuf::from(format!("/home/you/Videos/{n}.qvp")))
-                    .collect();
-            }
             ShotScenario::FileDrop => self.presentation.file_hovering = true,
             ShotScenario::DiscardOpen => {
                 self.pending_open = Some(PendingOpen {
                     path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
+                    contents: None,
                     losing: self.project.name.clone(),
                 });
-            }
-            ShotScenario::ExportRunning => {
-                // Part-way through a real encode, with the dialog dismissed:
-                // the state the editor used to have nowhere to show.
-                self.presentation.export_open = false;
-                self.export_status = ExportStatus::Rendering { progress: 0.62 };
-            }
-            ShotScenario::ExportFailed => {
-                // The persistent chip, with the dialog dismissed.
-                self.presentation.export_open = false;
-                self.export_status = ExportStatus::Failed {
-                    reason: "no encoder for H.264 on this machine".to_string(),
-                };
             }
             ShotScenario::ExportDialog => self.presentation.export_open = true,
             ShotScenario::ExportFailedDialog => {
@@ -583,14 +541,6 @@ impl VideoEditorApp {
                 self.project.set_mark_out(19.0);
                 self.project.set_mark_in(6.5);
                 self.playhead = 11.0;
-            }
-            ShotScenario::SavedProject => {
-                let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
-                self.project_path = Some(path);
-                // Saved *as it stands*, so the badge is off — which is the
-                // half of the button this scenario exists to show.
-                self.saved_heads = Some(state.committed_heads());
-                self.doc_heads = state.committed_heads();
             }
             ShotScenario::SelectedFilters => {
                 // Select the graded drone clip on V1 and park the playhead a
@@ -797,12 +747,6 @@ impl VideoEditorApp {
                     .iter()
                     .position(|row| *row == InspectorRow::Field(NumField::Brightness))
                     .unwrap_or(0);
-            }
-            ShotScenario::ProjectMenu => {
-                let btn = r.project_btn;
-                if btn.width() > 0.0 {
-                    self.open_project_menu(Point::new(btn.x0, btn.y1 + 4.0));
-                }
             }
             ShotScenario::BinMenu => {
                 // A row is only pressed where it can be seen: on a window

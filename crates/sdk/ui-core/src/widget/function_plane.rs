@@ -492,7 +492,6 @@ mod tests {
         let world = Point::new(3.5, 0.25);
         let back = plane.to_world(plane.to_screen(world));
         assert!((back - world).hypot() < 1e-9);
-        // World y grows upward on screen.
         assert!(plane.to_screen(Point::new(1.0, 0.0)).y < 100.0);
     }
 
@@ -530,7 +529,6 @@ mod tests {
                 assert!(!overlaps(a.rect, b.rect, gap - 0.01), "{a:?} touches {b:?}");
             }
         }
-        // A negative label keeps its minus sign whole on the leading edge.
         let negative = labels.iter().find(|l| l.text.starts_with('-'));
         if let Some(negative) = negative {
             assert!(negative.rect.x0 >= plane.canvas.x0);

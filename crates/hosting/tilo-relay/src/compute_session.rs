@@ -29,13 +29,16 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::compute::{ComputeContentStore, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES};
+use crate::compute::{
+    ComputeContentStore, ComputeJobPhase, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES,
+};
 use crate::compute_content::{
     ContentFetchError, answer_content, answer_proof, fetch_job_content, refuse, refuse_proof,
 };
 use crate::compute_transport::{
-    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
-    MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED, WORKER_REVOKED,
+    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
+    ComputeTransportError, MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED,
+    WORKER_REVOKED,
 };
 use crate::environment_host::{EnvironmentStreamError, read_message};
 use crate::frame::{read_frame, write_frame};
@@ -164,6 +167,29 @@ impl ProtocolHandler for ComputeProtocol {
     }
 }
 
+/// The workspace a message offers this device's compute in, if it is an
+/// offer.
+fn advertised_in(incoming: &ComputeEnvelope) -> Option<u64> {
+    match incoming {
+        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+        _ => None,
+    }
+}
+
+/// What a device that does not drive this host's compute is told: a ping is
+/// answered, so the device learns it reaches the relay at all, and anything
+/// else is refused. Answers whether the session carries on.
+async fn controls_refused(
+    incoming: &ComputeEnvelope,
+    send: &mut SendStream,
+) -> Result<bool, ComputeSessionError> {
+    if matches!(incoming, ComputeEnvelope::Ping) {
+        write_compute(send, &ComputeEnvelope::Pong).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 async fn run_server_session(
     protocol: ComputeProtocol,
     connection: Connection,
@@ -171,6 +197,11 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
+    // The session's loop below also waits on outbound deliveries and
+    // authority changes; a frame read inside it would be dropped half-read
+    // whenever one of those won the race, and the rest of the stream then
+    // reads as garbage. The control stream is read by a task of its own.
+    let (mut inbound, _reader) = spawn_compute_reader(receive);
     let host_person = crate::host_authority::HostOperation::ComputeControl
         .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
@@ -213,7 +244,10 @@ async fn run_server_session(
                     let Some(outgoing) = outgoing else { break Ok(()); };
                     write_compute(&mut send, &outgoing).await?;
                 }
-                incoming = read_compute(&mut receive) => {
+                incoming = inbound.recv() => {
+                    // The reader ends only after handing over the error
+                    // that ended it.
+                    let Some(incoming) = incoming else { break Ok(()); };
                     let incoming = incoming?;
                     // The host's person drives its compute, never an agent
                     // of theirs: asked per message, so an agent registered
@@ -221,11 +255,7 @@ async fn run_server_session(
                     let controls =
                         host_person && !protocol.trust().is_agent(&peer.device_public_key);
                     if !controls {
-                        // Another user's device reaches environments on its
-                        // own streams; the control stream is the host's
-                        // person's.
-                        if matches!(incoming, ComputeEnvelope::Ping) {
-                            write_compute(&mut send, &ComputeEnvelope::Pong).await?;
+                        if controls_refused(&incoming, &mut send).await? {
                             continue;
                         }
                         break Err(ComputeSessionError::Protocol(
@@ -253,10 +283,7 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
-                    let advertising = match &incoming {
-                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
-                        _ => None,
-                    };
+                    let advertising = advertised_in(&incoming);
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }
@@ -274,7 +301,14 @@ async fn run_server_session(
             let lost = advertised
                 .contains(&workspace_id)
                 .then(|| refused.get(&workspace_id).copied().unwrap_or(WORKER_LOST));
-            release_workspace(workspace, peer.device_public_key, &disconnect, lost).await;
+            release_workspace(
+                workspace,
+                peer.device_public_key,
+                &disconnect,
+                advertised.is_empty(),
+                lost,
+            )
+            .await;
         }
     }
     outcome
@@ -322,12 +356,17 @@ async fn refused_workspaces(
 
 /// Release `device`'s compute state in `workspace` when this session (whose
 /// disconnect signal is `disconnect`) still holds it, and when it was
-/// working there, end its jobs with `lost`. The job scan is blocking I/O,
-/// so it runs on the blocking pool with the workspace lock moved along.
+/// working there, end its jobs with `lost`. A session that never offered
+/// compute is a requester's, and a requester keeps the results it is owed:
+/// ending it drops only its delivery channel, so the durable queue it was
+/// replaying stays whole for its device's next session instead of being
+/// withdrawn with a worker's job. The job scan is blocking I/O, so it runs
+/// on the blocking pool with the workspace lock moved along.
 async fn release_workspace(
     workspace: SharedWorkspace,
     device: [u8; 32],
     disconnect: &mpsc::Sender<()>,
+    requester_session: bool,
     lost: Option<&'static str>,
 ) {
     let Some(code) = lost else {
@@ -342,6 +381,10 @@ async fn release_workspace(
     let disconnect = disconnect.clone();
     let released = tokio::task::spawn_blocking(move || {
         let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *runtime;
+        if requester_session {
+            compute.leave_requester(&device, &disconnect);
+            return Ok(0);
+        }
         if !compute.detach_session(&device, &disconnect) {
             return Ok(0);
         }
@@ -606,13 +649,13 @@ async fn dispatch_compute(
                 )?;
                 return Ok(None);
             }
-            ComputeEnvelope::Request { spec } => compute.accept_request(
-                peer.device_public_key,
-                workspace_id,
-                unix_now_ms(),
-                store,
-                spec,
-            )?,
+            ComputeEnvelope::Request { spec } => {
+                match accept_or_refuse(compute, store, peer.device_public_key, workspace_id, spec)?
+                {
+                    Ok(outcome) => outcome,
+                    Err(refusal) => return Ok(Some(refusal)),
+                }
+            }
             ComputeEnvelope::Cancel { binding } => {
                 compute.accept_cancel(peer.device_public_key, store, binding)?
             }
@@ -647,6 +690,44 @@ async fn dispatch_compute(
     Ok(None)
 }
 
+/// Claim `spec` for its worker, or the refusal its requester is told on the
+/// stream it asked on: a job the relay will not run ends now, the session
+/// goes on, and nothing waits for a job that never began. A forged route or
+/// a store failure is an error of the session instead.
+fn accept_or_refuse(
+    compute: &crate::compute_transport::ComputeTransportState,
+    store: &crate::store::WorkspaceStore,
+    requester: [u8; 32],
+    workspace_id: u64,
+    spec: &ComputeJobSpec,
+) -> Result<Result<ComputeRouteOutcome, ComputeEnvelope>, ComputeSessionError> {
+    match compute.accept_request(requester, workspace_id, unix_now_ms(), store, spec) {
+        Ok(outcome) => Ok(Ok(outcome)),
+        Err(error) => match error.refusal_code() {
+            Some(code) => Ok(Err(refused_job(spec, code))),
+            None => Err(error.into()),
+        },
+    }
+}
+
+/// The terminal result of a job the relay refused before it began: failed
+/// with `code`, one step after the pending it never left.
+fn refused_job(spec: &ComputeJobSpec, code: &str) -> ComputeEnvelope {
+    ComputeEnvelope::Result {
+        result: ComputeResultUpdate {
+            binding: ComputeJobBinding {
+                workspace_id: spec.workspace_id,
+                job_id: spec.job_id,
+                requester: spec.requester,
+                worker: spec.worker,
+            },
+            sequence: 1,
+            phase: ComputeJobPhase::Failed { code: code.into() },
+            log_tail: Vec::new(),
+        },
+    }
+}
+
 fn is_server_only(envelope: &ComputeEnvelope) -> bool {
     matches!(
         envelope,
@@ -669,6 +750,29 @@ pub(crate) fn next_queue_sequence() -> u64 {
         .map_or(observed, |previous| {
             observed.max(previous.saturating_add(1))
         })
+}
+
+/// Read `receive`'s compute messages on a task of their own until the first
+/// error, which is handed over last. A frame is never half-read by a
+/// waiter that was cancelled: the reader is the only one reading, and the
+/// task ends with the returned guard.
+fn spawn_compute_reader(
+    mut receive: RecvStream,
+) -> (
+    mpsc::Receiver<Result<ComputeEnvelope, ComputeSessionError>>,
+    AbortOnDrop,
+) {
+    let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
+    let reader = AbortOnDrop(tokio::spawn(async move {
+        loop {
+            let read = read_compute(&mut receive).await;
+            let ended = read.is_err();
+            if delivered.send(read).await.is_err() || ended {
+                break;
+            }
+        }
+    }));
+    (deliveries, reader)
 }
 
 async fn read_compute(receive: &mut RecvStream) -> Result<ComputeEnvelope, ComputeSessionError> {
@@ -790,11 +894,6 @@ pub struct ComputeDelivery {
 
 impl ComputeClient {
     /// Connect and mutually authenticate to an exact same-owner relay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when dialing, framing, or certified-device
-    /// authentication fails, including a mismatched pinned relay device.
     pub async fn connect(
         endpoint: Endpoint,
         relay_address: EndpointAddr,
@@ -833,16 +932,7 @@ impl ComputeClient {
         }
         let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
-        let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
-        let reader = AbortOnDrop(tokio::spawn(async move {
-            loop {
-                let read = read_compute(&mut receive).await;
-                let ended = read.is_err();
-                if delivered.send(read).await.is_err() || ended {
-                    break;
-                }
-            }
-        }));
+        let (deliveries, reader) = spawn_compute_reader(receive);
         Ok(Self {
             relay_peer,
             own_device,
@@ -946,10 +1036,6 @@ impl ComputeClient {
     }
 
     /// Send one bounded typed compute envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when encoding or writing the frame fails.
     pub async fn send(&mut self, envelope: &ComputeEnvelope) -> Result<(), ComputeSessionError> {
         write_compute(&mut self.send, envelope).await
     }
@@ -958,11 +1044,6 @@ impl ComputeClient {
     ///
     /// Cancel-safe: the control stream is read by a task of the client's
     /// own, so a `receive` dropped in a `select!` or a timeout loses nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on EOF, an oversize frame, or invalid encoding, and
-    /// once the stream has ended.
     pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
         let envelope = self.deliveries.recv().await.ok_or_else(|| {
             ComputeSessionError::Connection("the compute control stream has ended".into())
@@ -994,6 +1075,12 @@ impl ComputeClient {
                 sequence: Some(sequence),
                 envelope: *message,
             });
+        }
+        // A job the relay refused ends with a result told directly.
+        if let ComputeEnvelope::Result { result } = &envelope
+            && result.binding.requester == self.own_device
+        {
+            self.submitted.lock_recover().remove(&result.binding.job_id);
         }
         Ok(ComputeDelivery {
             workspace_id: envelope.workspace_id(),

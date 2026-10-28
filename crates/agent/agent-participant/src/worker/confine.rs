@@ -7,7 +7,12 @@
 //! 1. closes every inherited descriptor but stdio and arranges to die with
 //!    its supervisor (`tilo-sandbox`'s `detach`), and caps its descriptors
 //!    and core dumps;
-//! 2. on Linux:
+//! 2. starts the app runtime (`ui::rt::app`) that apps' views and effects
+//!    hand their work to. Starting a tokio runtime makes the process's
+//!    signal pipe, a `socketpair` the parser policy refuses; started here,
+//!    after `detach` so its descriptors stay open, the runtime and the pipe
+//!    every later runtime shares already exist when an app first asks;
+//! 3. on Linux:
 //!    - restricts itself with a Landlock ruleset that handles every
 //!      filesystem right and TCP bind and connect and grants none, where the
 //!      kernel supports it;
@@ -21,7 +26,7 @@
 //!      kernel with seccomp, so the worker cannot read the supervisor's
 //!      state directory (its device keys, `agents.json`) even where the
 //!      kernel lacks Landlock;
-//! 3. on macOS: the `tilo-sandbox` Seatbelt profile with no readable path.
+//! 4. on macOS: the `tilo-sandbox` Seatbelt profile with no readable path.
 //!
 //! Every step is irreversible for the worker and must succeed: a worker that
 //! cannot confine itself reports why and serves nothing, and the supervisor
@@ -34,7 +39,8 @@
 /// Why a step failed; the worker then serves nothing.
 pub(super) fn confine() -> Result<(), String> {
     tilo_sandbox::confine::detach().map_err(|error| error.to_string())?;
-    // The socket, stdio, and nothing else.
+    ui::rt::try_app().map_err(|error| format!("app runtime: {error}"))?;
+    // The socket, stdio, the app runtime's, and nothing else.
     tilo_sandbox::confine::limit_resources(16).map_err(|error| error.to_string())?;
     sys::confine()
 }

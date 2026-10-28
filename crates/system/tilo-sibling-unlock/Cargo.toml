@@ -27,11 +27,11 @@ hex.workspace = true
 # The peer network: a sibling is reached directly or through a relay.
 iroh.workspace = true
 iroh-base.workspace = true
-libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 tempfile.workspace = true
+tilo-ask-password = { path = "../ask-password" }
 tilo-seal = { path = "../tilo-seal" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }

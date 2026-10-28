@@ -9,8 +9,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
-
 use automerge::sync::{Message, State, SyncDoc};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT};
@@ -62,25 +60,25 @@ fn exchange(
     panic!("the exchange did not complete");
 }
 
-/// The fastest of several idle exchanges between two copies of a document
-/// of `changes` changes, each resuming from the persisted state of the
-/// last, and the bytes one of them sent.
-fn idle_exchange(changes: u64) -> (Duration, usize) {
+/// The most changes of the history any of several idle exchanges between
+/// two copies of a document of `changes` changes visited, each resuming from
+/// the persisted state of the last, and the bytes one of them sent.
+fn idle_exchange(changes: u64) -> (u64, usize) {
     let mut a = history(changes);
     let mut b = AutoCommit::load(&a.save()).unwrap();
     let (mut a_state, mut b_state) = (State::new(), State::new());
     exchange((&mut a, &mut a_state), (&mut b, &mut b_state));
-    let mut fastest = Duration::MAX;
+    let mut visited = 0;
     let mut bytes = 0;
     for _ in 0..20 {
         let mut a_resumed = State::decode(&a_state.encode()).unwrap();
         let mut b_resumed = State::decode(&b_state.encode()).unwrap();
-        let started = Instant::now();
+        let before = automerge::work().visited_changes;
         bytes = exchange((&mut a, &mut a_resumed), (&mut b, &mut b_resumed));
-        fastest = fastest.min(started.elapsed());
+        visited = visited.max(automerge::work().visited_changes - before);
         (a_state, b_state) = (a_resumed, b_resumed);
     }
-    (fastest, bytes)
+    (visited, bytes)
 }
 
 #[test]
@@ -91,10 +89,10 @@ fn an_idle_resumed_exchange_does_not_walk_the_history() {
         short_bytes, long_bytes,
         "an idle exchange sends heads, not a summary of the history"
     );
-    // Walking 20,000 ancestors for every message takes most of a
+    // Walking 20,000 ancestors for every message took most of a
     // millisecond; the exchange itself, a few microseconds at either size.
     assert!(
-        long <= short * 10 + Duration::from_micros(200),
-        "an idle exchange took {long:?} over 20,000 changes and {short:?} over 200"
+        long <= short * 2 + 16,
+        "an idle exchange visited {long} changes over 20,000 and {short} over 200"
     );
 }

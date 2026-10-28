@@ -95,9 +95,6 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
 /// Wait up to `timeout` for `child` to exit, and reap it. `None` when it is
 /// still running at the deadline; it is left running. On Unix this sleeps in
 /// [`wait_child_or`] rather than polling.
-///
-/// # Errors
-/// Returns the error of inspecting or reaping the child.
 pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
     let deadline = Instant::now().checked_add(timeout);
     #[cfg(unix)]
@@ -121,9 +118,6 @@ pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
 
 /// [`wait_timeout`], then kill and reap a child still running at the
 /// deadline. `None` when it had to be killed.
-///
-/// # Errors
-/// Returns the error of inspecting or reaping the child.
 pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
     let status = wait_timeout(child, timeout)?;
     if status.is_none() {
@@ -136,9 +130,6 @@ pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
 /// Mark a script or program file executable for everyone and writable only
 /// by its owner (mode `0755` on Unix). A no-op where executability is not a
 /// file permission.
-///
-/// # Errors
-/// Returns the metadata lookup's or permission change's error.
 pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -162,7 +153,6 @@ pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 pub struct Output {
     /// Child exit status.
     pub status: ExitStatus,
-    /// Captured standard output.
     pub stdout: Vec<u8>,
     /// Captured standard error.
     pub stderr: Vec<u8>,
@@ -196,7 +186,6 @@ pub enum Error {
     /// One output stream crossed its allocation ceiling.
     #[error("command {stream} exceeds {limit} bytes")]
     OutputTooLarge {
-        /// Stream which crossed the limit.
         stream: &'static str,
         /// Configured maximum bytes.
         limit: usize,
@@ -315,9 +304,6 @@ pub fn spawn_prepared(
 /// Up to sixteen 4096-byte chunks await observation. A slow observer disables
 /// this informational lane instead of blocking the child or capture readers.
 /// Output bytes, limits, cancellation and process-tree ownership are unchanged.
-///
-/// # Errors
-/// Returns the same input failures as [`spawn_prepared`].
 pub fn spawn_prepared_observing_stderr(
     command: Command,
     input: Option<&[u8]>,
@@ -361,7 +347,7 @@ fn spawn_prepared_inner(
     let worker = std::thread::spawn(move || {
         let outcome = run_prepared_inner(
             command,
-            input,
+            input.map_or(Stdin::Null, Stdin::Bytes),
             output_limit,
             output_limit,
             timeout,
@@ -416,12 +402,6 @@ fn read_bounded_observed(pipe: impl Read, limit: usize, capture: Option<StderrCa
 /// `stdout` and `stderr` each receive their own `output_limit`. On timeout the
 /// complete child process group is killed, closing pipes inherited by helper
 /// descendants as well.
-///
-/// # Errors
-///
-/// Returns an error for oversized input/output, spawn/wait failures, a reader
-/// failure, or expiration of `timeout`. A non-zero child status is returned in
-/// [`Output`] for the caller to interpret without exposing unbounded diagnostics.
 pub fn run(
     program: &str,
     args: &[&str],
@@ -433,11 +413,6 @@ pub fn run(
 }
 
 /// Run a bounded command whose arguments may contain non-UTF-8 OS strings.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_os(
     program: impl AsRef<OsStr>,
     args: &[impl AsRef<OsStr>],
@@ -451,11 +426,6 @@ pub fn run_os(
 }
 
 /// Run a bounded UTF-8 command with an explicit environment overlay.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_with_env(
     program: &str,
     args: &[&str],
@@ -471,11 +441,6 @@ pub fn run_with_env(
 
 /// Run a caller-prepared command while replacing its standard streams and
 /// process-group configuration with the bounded policy.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_prepared(
     command: Command,
     input: Option<&[u8]>,
@@ -489,11 +454,6 @@ pub fn run_prepared(
 ///
 /// This variant is intended for helpers whose primary output is legitimately
 /// much larger than their diagnostics, such as image acquisition tools.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run_prepared`].
 pub fn run_prepared_with_limits(
     command: Command,
     input: Option<&[u8]>,
@@ -515,11 +475,6 @@ pub fn run_prepared_with_limits(
 ///
 /// Most callers should retain [`MAX_INPUT_BYTES`] through [`run_prepared`].
 /// This entry point exists for bounded bulk payloads such as print documents.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run_prepared`].
 pub fn run_prepared_with_input_limit(
     command: Command,
     input: Option<&[u8]>,
@@ -533,7 +488,9 @@ pub fn run_prepared_with_input_limit(
     }
     run_prepared_inner(
         command,
-        input.map(|bytes| Zeroizing::new(bytes.to_vec())),
+        input.map_or(Stdin::Null, |bytes| {
+            Stdin::Bytes(Zeroizing::new(bytes.to_vec()))
+        }),
         stdout_limit,
         stderr_limit,
         timeout,
@@ -542,21 +499,51 @@ pub fn run_prepared_with_input_limit(
     )
 }
 
+/// Run a prepared command reading `file` as its standard input: a handle the
+/// caller holds (a file the person chose) given to the program as it is,
+/// rather than a path it would open itself.
+pub fn run_prepared_with_stdin(
+    command: Command,
+    file: std::fs::File,
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<Output, Error> {
+    run_prepared_inner(
+        command,
+        Stdin::File(file),
+        output_limit,
+        output_limit,
+        timeout,
+        None,
+        None,
+    )
+}
+
+/// What a bounded command reads as its standard input.
+enum Stdin {
+    Null,
+    /// Bytes written to it through a pipe.
+    Bytes(Zeroizing<Vec<u8>>),
+    /// A file it reads itself.
+    File(std::fs::File),
+}
+
 fn run_prepared_inner(
     mut command: Command,
-    input: Option<Zeroizing<Vec<u8>>>,
+    input: Stdin,
     stdout_limit: usize,
     stderr_limit: usize,
     timeout: Duration,
     cancel: Option<&AtomicBool>,
     stderr_capture: Option<StderrCapture>,
 ) -> Result<Output, Error> {
+    let (stdin, input) = match input {
+        Stdin::Null => (Stdio::null(), None),
+        Stdin::Bytes(bytes) => (Stdio::piped(), Some(bytes)),
+        Stdin::File(file) => (Stdio::from(file), None),
+    };
     command
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     own_process_tree(&mut command);
@@ -641,8 +628,23 @@ mod tests {
     const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
 
     #[test]
+    fn a_file_given_as_stdin_is_what_the_program_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chosen");
+        fs::write(&path, b"chosen bytes").unwrap();
+        let output = run_prepared_with_stdin(
+            Command::new("cat"),
+            fs::File::open(&path).unwrap(),
+            64,
+            UNTESTED_TIMEOUT,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"chosen bytes");
+    }
+
+    #[test]
     fn input_and_output_limits_are_enforced_independently() {
-        // Phase `rejects_input_and_both_output_stream_overflows`.
         {
             assert!(matches!(
                 run(
@@ -670,7 +672,6 @@ mod tests {
                 );
             }
         }
-        // Phase `enforces_independent_output_limits`.
         {
             let mut command = Command::new("sh");
             command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
@@ -684,7 +685,6 @@ mod tests {
                 }
             ));
         }
-        // Phase `explicit_input_limit_supports_bounded_bulk_payloads`.
         {
             let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
             let output = run_prepared_with_input_limit(
@@ -713,63 +713,72 @@ mod tests {
         }
     }
 
+    /// Runs `call` on its own thread and returns what it returned. Each
+    /// child below would outlive the hang bound on its own, so the call
+    /// returning at all shows it ended the child rather than waited for it.
+    fn returns<T: Send + 'static>(what: &str, call: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(call());
+        });
+        tilo_test_env::recv(what, &returned)
+    }
+
+    /// A child that runs for an hour unless it is ended.
+    const OUTLIVES_THE_TEST: &str = "#!/bin/sh\nsleep 3600\n";
+
     #[test]
     fn timeouts_and_dropped_handles_terminate_children_promptly() {
-        // Phase `timeout_kills_descendants_which_inherit_output_pipes`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::write(&helper, OUTLIVES_THE_TEST).unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-            let started = Instant::now();
-            let error = run(
-                helper.to_str().unwrap(),
-                &[],
-                None,
-                4096,
-                Duration::from_millis(25),
-            )
+            let error = returns("the timeout to kill the descendant", move || {
+                run(
+                    helper.to_str().unwrap(),
+                    &[],
+                    None,
+                    4096,
+                    Duration::from_millis(25),
+                )
+            })
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
-            assert!(started.elapsed() < Duration::from_secs(1));
         }
-        // Phase `timeout_interrupts_a_child_which_does_not_read_input`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::write(&helper, OUTLIVES_THE_TEST).unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-            let started = Instant::now();
-            let error = run(
-                helper.to_str().unwrap(),
-                &[],
-                Some(&vec![0; MAX_INPUT_BYTES]),
-                4096,
-                Duration::from_millis(25),
-            )
+            let error = returns("the timeout to interrupt the child", move || {
+                run(
+                    helper.to_str().unwrap(),
+                    &[],
+                    Some(&vec![0; MAX_INPUT_BYTES]),
+                    4096,
+                    Duration::from_millis(25),
+                )
+            })
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
-            assert!(started.elapsed() < Duration::from_secs(1));
         }
-        // Phase `asynchronous_handle_is_nonblocking_and_drop_cancels_promptly`.
         {
             let mut command = Command::new("sh");
-            command.args(["-c", "printf ready; sleep 5"]);
-            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
+            command.args(["-c", "printf ready; sleep 3600"]);
+            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(3600)).unwrap();
             assert!(child.try_wait().is_none());
-
-            let started = Instant::now();
-            drop(child);
-            assert!(started.elapsed() < Duration::from_secs(1));
+            returns("dropping the handle to end the child", move || drop(child));
         }
-        // Phase `terminate_tree_escalates_when_the_grace_period_is_ignored`.
         {
             let mut command = Command::new("sh");
-            command.args(["-c", "trap '' TERM; sleep 5"]);
-            let mut child = own_process_tree(&mut command).spawn().unwrap();
-            let started = Instant::now();
-            terminate_tree(&mut child, Duration::from_millis(50));
-            assert!(started.elapsed() < Duration::from_secs(1));
+            command.args(["-c", "trap '' TERM; sleep 3600"]);
+            let child = own_process_tree(&mut command).spawn().unwrap();
+            let mut child = returns("the escalation to kill the tree", move || {
+                let mut child = child;
+                terminate_tree(&mut child, Duration::from_millis(50));
+                child
+            });
             assert!(child.try_wait().unwrap().is_some());
         }
     }
@@ -817,14 +826,14 @@ mod tests {
             (b"first\n".as_slice(), first_gate),
             (b"first\nsecond\n".as_slice(), second_gate),
         ] {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while observed.len() < expected.len() && Instant::now() < deadline {
+            tilo_test_env::wait_until("the phase's stderr", || {
                 match child.try_stderr() {
                     Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
                     Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
-                    None => std::thread::sleep(Duration::from_millis(5)),
+                    None => {}
                 }
-            }
+                observed.len() >= expected.len()
+            });
             assert_eq!(
                 observed, expected,
                 "the phase is observable before its gate is released"
@@ -835,14 +844,8 @@ mod tests {
             );
             fs::write(gate, b"release").unwrap();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let output = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap();
-            }
-            assert!(Instant::now() < deadline, "owned child did not complete");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let output =
+            tilo_test_env::wait_for("the owned child to complete", || child.try_wait()).unwrap();
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(output.stdout, b"stdout");
         assert_eq!(
@@ -857,17 +860,9 @@ mod tests {
         command.args(["-c", "head -c 262144 /dev/zero >&2"]);
         let mut child =
             spawn_prepared_observing_stderr(command, None, 262_144, UNTESTED_TIMEOUT).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let output = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "a full observation queue blocked the capture"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        // A full observation queue that blocked the capture would never
+        // let the child finish.
+        let output = tilo_test_env::wait_for("the capture to finish", || child.try_wait()).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stderr, vec![0; 262_144]);
         assert!(matches!(
@@ -882,14 +877,8 @@ mod tests {
         overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);
         let mut child =
             spawn_prepared_observing_stderr(overflowing, None, 1024, UNTESTED_TIMEOUT).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let error = loop {
-            if let Some(result) = child.try_wait() {
-                break result.unwrap_err();
-            }
-            assert!(Instant::now() < deadline, "bounded child did not complete");
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        let error = tilo_test_env::wait_for("the bounded child to complete", || child.try_wait())
+            .unwrap_err();
         assert!(matches!(
             error,
             Error::OutputTooLarge {

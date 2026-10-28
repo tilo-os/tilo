@@ -146,6 +146,14 @@ impl Places {
                 account: None,
                 status: None,
             },
+            // Every app in the person's app list, and ~/Applications.
+            Location {
+                icon: Icon::LayoutGrid,
+                label: t("files-place-applications"),
+                path: crate::applications::location(),
+                account: None,
+                status: None,
+            },
             Location {
                 icon: Icon::HardDrive,
                 label: t("files-place-root"),
@@ -388,9 +396,8 @@ impl Places {
         let sections = self.sections();
         let places = Rc::new(self);
         let mut list = NavList::new(sections)
-            .with_id("places_sidebar")
             .with_accessible_name(t("files-a11y-places"))
-            .on_select({
+            .on_view("places_sidebar", {
                 let sink = sink.clone();
                 let chosen = Rc::clone(chosen);
                 move |id| {

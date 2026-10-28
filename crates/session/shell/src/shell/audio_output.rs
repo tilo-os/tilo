@@ -599,8 +599,6 @@ impl AudioOutputServices for AudioOutputService {
 
 #[cfg(test)]
 mod tests {
-    //! Production service/lifecycle/PCM tests with synthetic callers and device streams.
-    //! Launcher custody is tested separately on the broker's actual RPC path.
     use super::super::collab_broker_capnp::LocalSessionAuthority;
     use super::*;
     use media::pw_stream::DeviceTiming;
@@ -655,7 +653,6 @@ mod tests {
     fn governed_output_slow_admission_does_not_hold_the_revocation_lock() {
         use std::sync::atomic::AtomicUsize;
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let (owner, service, sources) = fixture();
         let (entered_tx, entered_rx) = mpsc::sync_channel(1);
@@ -696,14 +693,15 @@ mod tests {
                 )
             })
             .unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the retained admission check", &entered_rx);
         let lifecycle = owner.lifecycle();
         let (locked_tx, locked_rx) = mpsc::sync_channel(1);
         let locking = std::thread::spawn(move || {
             lifecycle.set_locked(true);
             locked_tx.send(()).unwrap();
         });
-        let revoked_without_waiting = locked_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        // The admission check stays held: locking must finish regardless.
+        let revoked_without_waiting = locked_rx.recv_timeout(tilo_test_env::hang_bound()).is_ok();
         // Always release and join before asserting, including on the red path.
         release_tx.send(()).unwrap();
         let result = command.join().unwrap();
@@ -724,7 +722,6 @@ mod tests {
     fn governed_output_replacement_survives_an_old_slow_admission_check() {
         use std::sync::atomic::AtomicUsize;
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let (_owner, service, sources) = fixture();
         let (entered_tx, entered_rx) = mpsc::sync_channel(1);
@@ -764,7 +761,7 @@ mod tests {
                 )
             })
             .unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        tilo_test_env::recv("the retained admission check", &entered_rx);
         let replacing_service = service.clone();
         let (replaced_tx, replaced_rx) = mpsc::sync_channel(1);
         let replacing = std::thread::spawn(move || {
@@ -776,7 +773,10 @@ mod tests {
             replaced_tx.send(()).unwrap();
             result
         });
-        let replaced_without_waiting = replaced_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        // The old admission check stays held: the replacement must open regardless.
+        let replaced_without_waiting = replaced_rx
+            .recv_timeout(tilo_test_env::hang_bound())
+            .is_ok();
         release_tx.send(()).unwrap();
         let old_result = command.join().unwrap();
         let replacement = replacing.join().unwrap().unwrap();
@@ -865,31 +865,17 @@ mod tests {
         assert_eq!(render(&sources, 0, 2), vec![0.0; 2]);
     }
 
-    /// Waits up to `bound` for `done`, polling the test's own clock.
-    fn eventually(bound: std::time::Duration, done: impl Fn() -> bool) -> bool {
-        let started = std::time::Instant::now();
-        while started.elapsed() < bound {
-            if done() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        done()
-    }
     fn parked(service: &AudioOutputService) -> bool {
         service.0.watch.state.lock().unwrap().parked
     }
 
     #[tokio::test]
     async fn governed_output_watchdog_parks_without_outputs_and_still_fences_revocation() {
-        use std::time::Duration;
-
         let (_owner, service, sources) = fixture();
         // No output open: the production watchdog blocks without a timeout.
-        assert!(
-            eventually(Duration::from_secs(2), || parked(&service)),
-            "the audio authority watchdog kept ticking with no output open"
-        );
+        tilo_test_env::wait_until("the idle audio authority watchdog to park", || {
+            parked(&service)
+        });
 
         let current = Arc::new(AtomicBool::new(true));
         let checked = current.clone();
@@ -914,15 +900,9 @@ mod tests {
         // Opening woke it: the lapse is fenced by the watchdog alone, with no
         // command and no manual revalidation, within a few intervals.
         current.store(false, Ordering::Release);
-        assert!(
-            eventually(Duration::from_secs(1), || service
-                .0
-                .outputs
-                .lock()
-                .unwrap()
-                .entries
-                .is_empty()),
-            "an open output whose admission lapsed was not fenced"
+        tilo_test_env::wait_until(
+            "the watchdog to fence the output whose admission lapsed",
+            || service.0.outputs.lock().unwrap().entries.is_empty(),
         );
         assert_eq!(render(&sources, 0, 2), vec![0.0; 2]);
         assert!(
@@ -931,18 +911,16 @@ mod tests {
                 .is_err()
         );
         // Nothing left to watch: it parks again.
-        assert!(
-            eventually(Duration::from_secs(2), || parked(&service)),
-            "the watchdog did not park after the last output ended"
-        );
+        tilo_test_env::wait_until("the watchdog to park after the last output ended", || {
+            parked(&service)
+        });
 
         // It exits with the service rather than staying parked forever.
         let watch = Arc::downgrade(&service.0.watch);
         drop(service);
-        assert!(
-            eventually(Duration::from_secs(2), || watch.upgrade().is_none()),
-            "the watchdog outlived its service"
-        );
+        tilo_test_env::wait_until("the watchdog to exit with its service", || {
+            watch.upgrade().is_none()
+        });
     }
 
     #[test]

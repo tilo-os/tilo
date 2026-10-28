@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the reviewed Cosign binary from the persistent, checksum-verified
-# external-input cache. cache-github-assets.sh is the only network fallback and
-# resumes interrupted transfers before accepting the exact pinned digest.
+# external-input cache, which cache-github-assets.sh fills (in t, the
+# signing-tools check's outputs, with TILO_ASSET_OFFLINE=1).
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

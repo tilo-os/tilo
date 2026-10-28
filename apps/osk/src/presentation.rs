@@ -1,7 +1,7 @@
 //! Immutable keyboard geometry and paint shared by the live root and History.
 use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 use crate::suggest::{Suggestion, suggestion_rects};
-use crate::toolbar::{OskToolbarItem, toolbar_rects};
+use crate::toolbar::{Latch, ModifierLatches, OskToolbarAction, OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
 use ui::text_render::TextWeight;
 use ui::widget::{Button, ButtonFace, ButtonInteract, ButtonRole, ChipFace};
@@ -110,6 +110,8 @@ pub(crate) struct KeyboardPresentation<'a> {
     pub finger_keys: &'a [KeyId],
     pub hovered_tool: Option<usize>,
     pub pressed_tool: Option<usize>,
+    /// The terminal row's Ctrl and Alt, shown on their keys.
+    pub modifiers: ModifierLatches,
     pub hovered_sugg: Option<usize>,
     pub pressed_sugg: Option<usize>,
     pub empty_hint: &'a str,
@@ -279,13 +281,13 @@ impl KeyboardPresentation<'_> {
             let Some(item) = self.toolbar.get(*i) else {
                 continue;
             };
-            draw_toolbar_item(
-                &mut ctx,
-                *r,
-                item,
-                self.hovered_tool == Some(*i),
-                self.pressed_tool == Some(*i),
-            );
+            let hovered = self.hovered_tool == Some(*i);
+            let pressed = self.pressed_tool == Some(*i);
+            if item.is_key() {
+                draw_row_key(&mut ctx, *r, item, self.modifiers, hovered, pressed);
+            } else {
+                draw_toolbar_item(&mut ctx, *r, item, hovered, pressed);
+            }
         }
 
         // The bands are told apart by one hairline each, never by a fill.
@@ -749,6 +751,83 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
             }
         }
     }
+}
+
+/// One key of the terminal row, drawn as the keys below it are. A held Ctrl
+/// or Alt takes the inverted fill, as Shift does; a locked one also shows the
+/// lock icon beside or above its label.
+fn draw_row_key(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    item: &OskToolbarItem,
+    modifiers: ModifierLatches,
+    hovered: bool,
+    pressed: bool,
+) {
+    let latch = match item.action {
+        OskToolbarAction::Modifier(key) => modifiers.get(key),
+        _ => Latch::Off,
+    };
+    let tone = if latch.is_on() {
+        CellTone::Active
+    } else {
+        CellTone::Modifier
+    };
+    let locked = latch == Latch::Locked;
+    // A locked key lays the lock icon out with its label, so it is drawn
+    // here rather than as the cell's face.
+    let face = if locked {
+        CellFace::Label { text: "" }
+    } else {
+        CellFace::new(item.icon, &item.label)
+    };
+    draw_cell(
+        ctx,
+        rect,
+        face,
+        CellState {
+            hovered,
+            pressed,
+            tone,
+            ..CellState::default()
+        },
+    );
+    if locked {
+        draw_locked_label(ctx, rect.inset(-key_pad(rect)), &item.label);
+    }
+}
+
+/// The lock icon and the label of a locked modifier, side by side when the
+/// key is wide enough and stacked when it is not.
+fn draw_locked_label(ctx: &mut PaintCtx<'_>, cell: Rect, label: &str) {
+    let ink = ctx.theme.tokens.colors.intent.on_accent;
+    let icon = f64::from(ctx.theme.tokens.metrics.icon_sm);
+    let gap = f64::from(ctx.theme.tokens.spacing.s1);
+    let word = ctx.measure_role(label, TextRole::Label, None);
+    let room = cell.width() - 2.0 * key_pad(cell);
+    let centre = cell.center();
+    let (lock, origin) = if icon + gap + word.width <= room {
+        let x0 = centre.x - (icon + gap + word.width) * 0.5;
+        (
+            Rect::from_center_size((x0 + icon * 0.5, centre.y), (icon, icon)),
+            Point::new(x0 + icon + gap, centre.y - word.height * 0.5),
+        )
+    } else {
+        let y0 = centre.y - (icon + word.height) * 0.5;
+        (
+            Rect::from_center_size((centre.x, y0 + icon * 0.5), (icon, icon)),
+            Point::new(centre.x - word.width * 0.5, y0 + icon),
+        )
+    };
+    icons::draw_icon(
+        ctx.scene,
+        ctx.transform,
+        lock,
+        Icon::Lock,
+        ink,
+        icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    ctx.text_role(label, TextRole::Label, ink, origin, None);
 }
 
 /// One toolbar item: an icon-only plain button centred in its cell. The cell

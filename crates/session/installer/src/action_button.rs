@@ -55,6 +55,12 @@ pub struct ActionButton {
     /// state. Legacy callers may include a compact `[x]` prefix; drawing and
     /// assistive technology both strip it in favour of a real checkbox mark.
     checked: Option<bool>,
+    /// The checkbox's mark on its way in or out. The view builds the
+    /// button anew on each change, so the motion goes on from the button
+    /// it replaces (`motion::keep`, by its test id or label).
+    check: ui::widget::CheckMotion,
+    /// It has looked for the motion its predecessor left.
+    check_taken: bool,
     primary: bool,
     /// Text-link look for a low-key alternative: no fill, no hairline.
     quiet: bool,
@@ -77,6 +83,8 @@ impl ActionButton {
             control,
             test_id: None,
             checked: None,
+            check: ui::widget::CheckMotion::default(),
+            check_taken: false,
             primary: false,
             quiet: false,
             large: false,
@@ -131,6 +139,18 @@ impl ActionButton {
     pub fn checkbox(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self
+    }
+
+    /// The checkbox is still on its way.
+    fn check_moving(&self) -> bool {
+        self.checked.is_some() && self.check.is_moving(ui::motion::frame_now())
+    }
+
+    /// Its identity across rebuilds: its test id, else what it says.
+    fn carry_key(&self) -> String {
+        self.test_id
+            .clone()
+            .unwrap_or_else(|| self.accessible_label().to_owned())
     }
 
     /// Mark disabled: dimmed, non-interactive, and removed from the focus
@@ -291,6 +311,72 @@ mod tests {
             assert_eq!(node.state.checked, Some(true));
         }
     }
+
+    /// The view builds the box anew on each change; the rebuilt button goes
+    /// on from the motion its predecessor left, and a key lands.
+    #[test]
+    fn a_rebuilt_checkbox_fades_its_mark_on_from_the_box_it_replaces() {
+        use ui::time::testing::with_monotonic_time;
+        use ui::tokens::MotionSource;
+        let theme = Theme::dark();
+        // What the view does: build the button for the value and lay it out.
+        let built = |checked: bool| {
+            let (control, _) = Control::detached(
+                "installer.review",
+                "set-recovery-promise",
+                serde_json::json!({ "acknowledged": !checked }),
+            );
+            let mut button = ActionButton::new("I will save my recovery key", control)
+                .with_test_id("recovery_ack")
+                .checkbox(checked);
+            button.build_layout(&mut TaffyTree::new(), &theme, &mut HashMap::new());
+            button.rect = Rect::new(0.0, 0.0, 320.0, 40.0);
+            button
+        };
+        let paint = |button: &mut ActionButton| {
+            button.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        let t0 = ui::time::now();
+        let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
+        let mut button = built(false);
+        with_monotonic_time(t0, || paint(&mut button));
+        assert!(!button.needs_animation_frame(), "first seen, it rests");
+        // A click: the view drops the button and builds a checked one.
+        drop(button);
+        let mut button = built(true);
+        with_monotonic_time(at(10), || {
+            ui::motion::note_source(MotionSource::Pointer);
+            paint(&mut button);
+        });
+        with_monotonic_time(at(20), || {
+            assert!(button.needs_animation_frame(), "the mark fades in");
+            assert!(button.needs_redraw());
+        });
+        // Rebuilt again mid-fade, it goes on fading rather than landing.
+        drop(button);
+        let mut button = built(true);
+        with_monotonic_time(at(30), || {
+            paint(&mut button);
+            assert!(button.needs_animation_frame(), "still on its way");
+        });
+        with_monotonic_time(at(2_000), || {
+            assert!(!button.needs_animation_frame(), "then rests");
+        });
+        // A key lands at once.
+        drop(button);
+        let mut button = built(false);
+        with_monotonic_time(at(3_000), || {
+            ui::motion::note_source(MotionSource::Keyboard);
+            paint(&mut button);
+            assert!(!button.needs_animation_frame());
+        });
+    }
 }
 
 impl Widget for ActionButton {
@@ -332,6 +418,13 @@ impl Widget for ActionButton {
                 ..Default::default()
             },
         };
+        if self.checked.is_some() && !self.check_taken {
+            // Built again by its view: go on from the box it replaces.
+            self.check_taken = true;
+            if let Some(kept) = ui::motion::take_kept(&self.carry_key()) {
+                self.check = kept;
+            }
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -345,6 +438,14 @@ impl Widget for ActionButton {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // The checkbox goes where its value is, as the input that changed
+        // it asks.
+        let now = ui::motion::frame_now();
+        let check_pose = self.checked.map(|checked| {
+            self.check
+                .follow_input(checked, ui::widget::CheckGlyph::Check, theme.motion(), now);
+            self.check.pose(now)
+        });
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
 
         let (bg, label_color) = self.face(theme);
@@ -388,13 +489,12 @@ impl Widget for ActionButton {
                 tx + side,
                 self.rect.center().y + side / 2.0,
             );
-            // The shared checkbox face: the on state with its drawn mark.
-            ui::widget::Checkbox::paint(
-                scene,
-                transform,
-                theme,
-                &ui::widget::CheckboxFace::new(box_rect, checked),
-            );
+            // The shared checkbox face, posed by its motion.
+            let mut face = ui::widget::CheckboxFace::new(box_rect, checked);
+            if let Some(pose) = check_pose {
+                face = face.pose(pose);
+            }
+            ui::widget::Checkbox::paint(scene, transform, theme, &face);
         }
         text_renderer.draw_text(
             scene,
@@ -455,6 +555,14 @@ impl Widget for ActionButton {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.check_moving()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.check_moving()
     }
 
     fn name(&self) -> &'static str {
@@ -527,5 +635,19 @@ impl ui::widget::controls::ActionControls for ActionButton {
             self.control
                 .metadata(self.test_id().unwrap_or(self.label.as_str())),
         ]
+    }
+}
+
+/// A checkbox a rebuild drops leaves its motion for the one put in its place.
+impl Drop for ActionButton {
+    fn drop(&mut self) {
+        if self.checked.is_none() || !self.check_taken {
+            return;
+        }
+        ui::motion::keep(
+            self.carry_key(),
+            Some(self.rect),
+            std::mem::take(&mut self.check),
+        );
     }
 }

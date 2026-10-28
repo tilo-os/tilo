@@ -123,7 +123,8 @@ device="$(tilo-enroll device-key | sed -n 's/.*"device_public_key": *"\([0-9a-f]
 tilo-enroll certify --root-key "$work/root.key" --device "$device" \
   --label "Paired laptop" --capability own --out "$work/member.cert"
 installed="$(printf '%s\n' "$pass" | sudo -S -p '' \
-  tilo-enroll install-cert --identity-dir "$identity_dir" --cert "$work/member.cert")"
+  tilo-enroll install-cert --identity-dir "$identity_dir" --person-uid "$(id -u)" \
+    --cert "$work/member.cert")"
 record="${installed#installed }"
 [ -s "$record" ] || { echo "install-cert named no identity record: $installed" >&2; exit 1; }
 printf '%s' "$(basename "$record" .json)" > "$identity_dir/active"
@@ -173,9 +174,11 @@ fi
 [ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"
 # An authored app starts on the joined device: its launch brokers the joined
-# identity, which holds no key of its own, and only reads the identity store.
-identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | LC_ALL=C sort \
-  && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
+# identity, which holds no key of its own, and writes none of its records. The
+# local index (registry.json) may record which identity the workspace it opens
+# in uses.
+identity_manifest="cd $identity_dir && find . -mindepth 1 ! -path ./registry.json -printf '%p %y %m %i %s %T@\n' | LC_ALL=C sort \
+  && find . -type f ! -path ./registry.json -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
 "$vm" ssh "$identity_manifest" > "$out/identity-before-notes.txt" \
   || die "could not record the identity directory"
 "$vm" test installed-atspi-apps.sh 'open Notes' > "$out/notes-open.txt" 2>&1 || {

@@ -114,7 +114,6 @@ pub struct SeatbeltProfile {
     pub params: Vec<(String, String)>,
 }
 
-/// Render `policy`.
 pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
     let mut out = Builder::default();
     out.baseline();

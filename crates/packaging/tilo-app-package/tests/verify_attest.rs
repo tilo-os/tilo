@@ -99,7 +99,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
     {
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let mut manifest = manifest_with_key(&publisher_pub_hex);
-        // Clear the fixture's placeholder claim row.
         manifest.trust.attested_by.clear();
 
         let (attestor_sk, attestor_pub_hex) = fresh_key();

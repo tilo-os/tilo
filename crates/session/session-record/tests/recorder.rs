@@ -15,11 +15,13 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_session_record::recorder::LOG_LIMIT;
 
-const RECORDER: &str = env!("CARGO_BIN_EXE_tilo-flight-recorder");
+fn recorder() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-flight-recorder")
+}
 const LAUNCH: &[u8] = b"\x1b[2m2026-10-11T02:22:31.204118Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mtilo::launch_latency\x1b[0m\x1b[2m:\x1b[0m application launch requested package_id=com.onepassword.OnePassword\n";
 const XWAYLAND: &[u8] = b"2026-10-11T02:22:31.981004Z  INFO tilo::xwayland: starting Xwayland bridge for its first client display=:1\n";
 const PAINT_STATS: &[u8] = b"paint-stats: 3/14 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | locked=false blanked=true | anim_sources host=0x0000 host_labels=\"\" | 60.000 Hz target\n";
@@ -30,17 +32,12 @@ const APP_STDERR: &[u8] =
 
 /// Waits for `path` to hold exactly `expected`; bounds only a hang.
 fn wait_for(path: &Path, expected: &[u8]) {
-    let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline {
-        if fs::read(path).is_ok_and(|actual| actual == expected) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!(
-        "live flight record was {:?}, expected {:?}",
-        fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
-        String::from_utf8_lossy(expected)
+    tilo_test_env::wait_until(
+        format!(
+            "the live flight record to read {:?}",
+            String::from_utf8_lossy(expected)
+        ),
+        || fs::read(path).is_ok_and(|actual| actual == expected),
     );
 }
 
@@ -52,7 +49,7 @@ fn mode(path: &Path) -> u32 {
 fn the_record_persists_while_the_session_runs_and_keeps_the_last_bytes() {
     let directory = tempfile::tempdir().expect("directory");
     let log = directory.path().join("latest.log");
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args([
             log.to_str().expect("path"),
             "now",
@@ -109,7 +106,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
     let gone = directory.path().join("removed");
     fs::create_dir(&gone).expect("record directory");
     let log = gone.join("latest.log");
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args([log.to_str().expect("path"), "now", "1", "/usr/bin/shell"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -117,10 +114,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
         .expect("recorder");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
-    let deadline = tilo_test_env::hang_deadline();
-    while !log.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the first record", || log.exists());
     fs::remove_dir_all(&gone).expect("remove storage");
     let reader = std::thread::spawn(move || {
         let mut relayed = Vec::new();
@@ -140,8 +134,46 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
     assert!(child.wait().expect("exit").success());
 }
 
+#[test]
+fn asked_to_finish_the_recorder_publishes_what_it_relayed_without_end_of_input() {
+    // An app the compositor started can keep the pipe open after the
+    // compositor exits, so the session wrapper ends the recorder with
+    // SIGTERM. The output relayed so far must still reach the record.
+    let directory = tempfile::tempdir().expect("directory");
+    let log = directory.path().join("latest.log");
+    let mut child = Command::new(recorder())
+        .args([log.to_str().expect("path"), "now", "7", "/usr/bin/shell"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("recorder");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let header = b"tilo-flight-record-v1 start=now pid=7 shell=/usr/bin/shell\n";
+    wait_for(&log, header);
+    let last = b"the compositor's last words\n";
+    stdin.write_all(last).expect("write");
+    stdin.flush().expect("flush");
+    let mut relayed = vec![0_u8; last.len()];
+    stdout.read_exact(&mut relayed).expect("relay");
+    assert_eq!(relayed, last);
+    let signalled = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(signalled.success());
+    // The input stays open: the recorder finishes on the request alone.
+    let status = child.wait().expect("exit");
+    assert!(status.success(), "the recorder finished cleanly: {status}");
+    assert_eq!(
+        fs::read(&log).expect("record"),
+        [header.as_slice(), last].concat()
+    );
+    drop(stdin);
+}
+
 fn run(args: &[&str], input: &[u8]) -> Vec<u8> {
-    let mut child = Command::new(RECORDER)
+    let mut child = Command::new(recorder())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -208,7 +240,7 @@ fn the_event_record_keeps_its_own_bound_and_a_bad_invocation_is_refused() {
     assert!(kept.ends_with(XWAYLAND));
     assert_eq!(fs::metadata(&log).expect("record").len(), LOG_LIMIT as u64);
 
-    let status = Command::new(RECORDER)
+    let status = Command::new(recorder())
         .args(["a", "b"])
         .stdin(Stdio::null())
         .status()

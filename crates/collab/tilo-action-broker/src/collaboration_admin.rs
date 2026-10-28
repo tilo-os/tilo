@@ -200,10 +200,6 @@ pub enum CollaborationAdminOperation {
 }
 
 /// Decode one canonical action id and its exact JSON argument.
-///
-/// # Errors
-///
-/// Returns a message when the action is unknown or its argument is missing, oversized or malformed.
 pub fn parse_operation(
     action: &str,
     argument: Option<&str>,

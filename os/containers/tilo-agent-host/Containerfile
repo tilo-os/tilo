@@ -17,15 +17,13 @@
 #     podman build -f os/containers/tilo-relay/Containerfile \
 #         -t registry.tilo.so/tilo/tilo-relay:latest .
 #
-# Publish via the existing forgejo CI workflow — see
-# `.forgejo/workflows/release-relay.yml` (companion to the OS image job).
+# No check publishes this image; build it locally as above.
 # ============================================================================
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
 # Digest-pinned snapshot and base shared with the desktop + host bootc images.
 # RPMS_REF comes from resolve-rpm-snapshot.sh and BASE_REF from
-# os/base-snapshot.env — see os/dev/build-image.sh and the
-# .forgejo/workflows/release-relay.yml build. Declared before the first FROM so
+# os/base-snapshot.env — see os/dev/build-image.sh. Declared before the first FROM so
 # both are global rather than scoped to the preceding stage.
 ARG BASE_REF
 ARG RPMS_REF
@@ -172,9 +170,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         -print -quit | /usr/bin/busybox grep -q .
 
 COPY --from=builder /out/tilo-runtime /usr/bin/tilo-runtime
-COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/tilo-enroll /usr/libexec/tilo/tilo-enroll
 COPY os/containers/tilo-agent-host/tilo-agent-mcp /usr/bin/tilo-agent-mcp
-RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp \
+    && /usr/bin/busybox ln -s ../libexec/tilo/tilo-enroll /usr/bin/tilo-enroll
 
 # Runtime profile (identity, sockets, joined rooms) and MCP token dir.
 VOLUME ["/var/lib/tilo-runtime", "/run/tilo"]

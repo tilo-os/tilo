@@ -11,7 +11,7 @@
 //! - one library resource, `shortcuts`, carrying `create`, `update`,
 //!   `delete` and `list`, which take and return the shortcut's JSON.
 //!
-//! A shortcut is saved only after [`tilo_automation::check`] accepts it
+//! A shortcut is saved only after [`tilo_automation::check()`] accepts it
 //! against the catalogue the saving person is offered at that moment, and
 //! the host stores it through its [`ShortcutLibraryServices`]. It runs as the
 //! person who invoked it, inside its own grant, through the same broker;
@@ -36,15 +36,15 @@ use tilo_actions::remote::workspace_provider;
 use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
-    ActionCatalog, AskRequest, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, RunHooks,
-    RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
-    SHORTCUTS_APP_ID, Schedule, Shortcut, TriggerSpec, shortcut_id_of, shortcut_resource_id,
+    ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
+    RunHooks, RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND,
+    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec,
+    shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
 /// The resource carrying the shortcut library's actions.
 pub const LIBRARY_RESOURCE: &str = "shortcuts";
-/// Kind of [`LIBRARY_RESOURCE`].
 pub const LIBRARY_RESOURCE_KIND: &str = "shortcuts.library";
 /// Save a new shortcut.
 pub const CREATE_ACTION: &str = "create";
@@ -54,6 +54,10 @@ pub const UPDATE_ACTION: &str = "update";
 pub const DELETE_ACTION: &str = "delete";
 /// Every shortcut saved in the workspace.
 pub const LIST_ACTION: &str = "list";
+/// Stop a run of a saved shortcut that is still going.
+pub const STOP_ACTION: &str = "stop";
+/// Stop every run going in the workspace.
+pub const STOP_ALL_ACTION: &str = "stop-all";
 
 /// How long a running step is left before it is observed again, when its
 /// host cannot say when it changes. The broker's own door can, so this is
@@ -67,31 +71,39 @@ const MAX_FINISHED_RUNS: usize = 64;
 /// actions, then `run` on each saved shortcut.
 #[must_use]
 pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
-    [CREATE_ACTION, UPDATE_ACTION, DELETE_ACTION, LIST_ACTION]
-        .into_iter()
-        .filter_map(library_descriptor)
-        .chain(workspace.shortcuts.iter().map(run_descriptor))
-        .collect()
+    [
+        CREATE_ACTION,
+        UPDATE_ACTION,
+        DELETE_ACTION,
+        LIST_ACTION,
+        STOP_ACTION,
+        STOP_ALL_ACTION,
+    ]
+    .into_iter()
+    .filter_map(library_descriptor)
+    .chain(workspace.shortcuts.iter().map(run_descriptor))
+    .collect()
 }
 
-/// The descriptor of library action `action`, when it is one.
+/// The one parameter saving a shortcut takes: the shortcut itself.
+fn shortcut_param() -> ActionParam {
+    let mut param = ActionParam::required(
+        "shortcut",
+        ParamType::Object,
+        "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+    );
+    param.schema = Some(
+        serde_json::json!({
+            "type": "object",
+            "required": ["id", "name", "steps"]
+        })
+        .into(),
+    );
+    param
+}
+
 #[must_use]
 pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
-    let shortcut_param = || {
-        let mut param = ActionParam::required(
-            "shortcut",
-            ParamType::Object,
-            "The shortcut, as JSON: id, name, inputs, steps, output and grant",
-        );
-        param.schema = Some(
-            serde_json::json!({
-                "type": "object",
-                "required": ["id", "name", "steps"]
-            })
-            .into(),
-        );
-        param
-    };
     let saved = ResultSpec::Resource {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
     };
@@ -130,6 +142,28 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
                 schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
             },
         ),
+        STOP_ACTION => (
+            "Stop a run",
+            "Stop a running shortcut before its next step; what it already did is kept and can be undone",
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut whose run to stop",
+            )],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+        ),
+        STOP_ALL_ACTION => (
+            "Stop every run",
+            "Stop every running shortcut before its next step; what they already did is kept and can be undone",
+            Vec::new(),
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
+            },
+        ),
         _ => return None,
     };
     Some(ActionDescriptor {
@@ -138,6 +172,8 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         resource_kind: LIBRARY_RESOURCE_KIND.into(),
         resource_label: "Shortcuts".into(),
         action_label: label.into(),
+        keywords: Vec::new(),
+        icon: None,
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
@@ -167,28 +203,94 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
         resource_label: shortcut.name.clone(),
         action_label: format!("Run {}", shortcut.name),
+        // A shortcut is found by the words its inputs and its name use, so a
+        // caller choosing a tool among many sees what it asks for.
+        keywords: shortcut
+            .inputs
+            .iter()
+            .map(|input| input.name.to_string())
+            .collect(),
+        icon: None,
         description: Some(run_description(shortcut)),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
             kind: ActionKind::Read,
-            result: if shortcut.output.is_some() {
-                ResultSpec::Json {
-                    schema: serde_json::json!({}),
-                }
-            } else {
-                ResultSpec::None
-            },
+            result: output_result(shortcut),
             ..ActionContract::default()
         },
         input: InputSpec::None,
+        // The inputs are the parameters; what the run answers is `output`.
         params: shortcut.inputs.clone(),
         view: None,
     }
 }
 
-/// What `run` on `shortcut` says about itself: its steps, what starts it
-/// on its own, and which confirmations its saver gave in advance.
+/// What a run of `shortcut` answers: the schema its `output` binds a value
+/// of, so a caller is handed the shortcut's own typed result rather than an
+/// unconstrained one. A shortcut that binds nothing answers nothing.
+fn output_result(shortcut: &Shortcut) -> ResultSpec {
+    shortcut
+        .output
+        .as_ref()
+        .map_or(ResultSpec::None, |output| ResultSpec::Json {
+            schema: output_schema(output, &shortcut.inputs),
+        })
+}
+
+/// The JSON schema of the value `output` binds.
+///
+/// The value a binding produces is known type by type; one that reads an
+/// earlier step is held to that step's own result when the shortcut is saved,
+/// and read as text here.
+fn output_schema(output: &Binding, inputs: &[ActionParam]) -> serde_json::Value {
+    let of_input = |name: &str| {
+        inputs
+            .iter()
+            .find(|input| input.name.as_ref() == name)
+            .map(|input| serde_json::json!({"type": schema_type(input.ty)}))
+    };
+    match output {
+        Binding::Literal(serde_json::Value::Object(_)) | Binding::Object(_) => {
+            serde_json::json!({"type": "object"})
+        }
+        Binding::Literal(serde_json::Value::Array(_)) | Binding::List(_) => {
+            serde_json::json!({"type": "array"})
+        }
+        Binding::Literal(serde_json::Value::Null) => serde_json::json!({"type": "null"}),
+        Binding::Literal(serde_json::Value::Bool(_)) => serde_json::json!({"type": "boolean"}),
+        Binding::Literal(serde_json::Value::Number(number)) if number.is_i64() => {
+            serde_json::json!({"type": "integer"})
+        }
+        Binding::Literal(serde_json::Value::Number(_)) => {
+            serde_json::json!({"type": "number"})
+        }
+        Binding::Literal(serde_json::Value::String(_)) | Binding::Template(_) => {
+            serde_json::json!({"type": "string"})
+        }
+        Binding::Input(name) => {
+            of_input(name).unwrap_or_else(|| serde_json::json!({"type": "string"}))
+        }
+        // A variable or an earlier step's value is held to its own type where
+        // the shortcut is saved; a caller is promised text here.
+        Binding::Var(_) | Binding::StepOutput { .. } => serde_json::json!({"type": "string"}),
+    }
+}
+
+/// A parameter's type in JSON schema's words.
+fn schema_type(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Text | ParamType::Secret | ParamType::Resource | ParamType::DateTime => "string",
+        ParamType::Integer => "integer",
+        ParamType::Number => "number",
+        ParamType::Boolean => "boolean",
+        ParamType::Object => "object",
+        ParamType::Array => "array",
+    }
+}
+
+/// What `run` on `shortcut` says about itself: its inputs, its steps, what
+/// starts it on its own, and which confirmations its saver gave in advance.
 #[must_use]
 pub fn run_description(shortcut: &Shortcut) -> String {
     let mut description = format!(
@@ -197,6 +299,23 @@ pub fn run_description(shortcut: &Shortcut) -> String {
         shortcut.steps.len(),
         if shortcut.steps.len() == 1 { "" } else { "s" }
     );
+    let inputs: Vec<String> = shortcut
+        .inputs
+        .iter()
+        .map(|input| {
+            format!(
+                "`{}` ({}{}): {}",
+                input.name,
+                input.ty.label(),
+                if input.required { "" } else { ", optional" },
+                input.description
+            )
+        })
+        .collect();
+    if !inputs.is_empty() {
+        description.push_str(". Takes ");
+        description.push_str(&inputs.join(", "));
+    }
     let triggers: Vec<String> = shortcut.triggers.iter().map(trigger_summary).collect();
     if !triggers.is_empty() {
         description.push_str(". Runs by itself ");
@@ -321,7 +440,7 @@ pub fn check_triggers(
             ));
         }
     }
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let others = &workspace.shortcuts;
     let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
@@ -380,6 +499,10 @@ pub enum LibraryOperation {
     Create(Shortcut),
     Update(Shortcut),
     Delete(String),
+    /// Stop the runs of shortcut `id` that are still going.
+    Stop(String),
+    /// Stop every run going in the workspace.
+    StopAll,
     List,
 }
 
@@ -423,6 +546,14 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
                 .trim()
                 .to_string(),
         ),
+        STOP_ACTION => LibraryOperation::Stop(
+            bound
+                .text("id")
+                .ok_or("`id` is required")?
+                .trim()
+                .to_string(),
+        ),
+        STOP_ALL_ACTION => LibraryOperation::StopAll,
         _ => LibraryOperation::List,
     })
 }
@@ -442,7 +573,6 @@ pub struct SaveContext<'a> {
 /// A shortcut to store, or remove, in one workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShortcutChange {
-    /// Save this shortcut, replacing a saved shortcut with the same id.
     Save(Box<Shortcut>),
     /// Remove the saved shortcut with this id.
     Delete(String),
@@ -453,11 +583,20 @@ pub enum ShortcutChange {
 pub enum LibraryPlan {
     /// Answer without changing anything.
     Answer(ActionOutput),
+    /// Stop the runs the operation names, then answer.
+    Stop(StopRequest),
     /// Store `change`, then answer with `output`.
     Change {
         change: ShortcutChange,
         output: ActionOutput,
     },
+}
+
+/// Which runs a stop names: one shortcut's, or every one going.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StopRequest {
+    Shortcut(String),
+    All,
 }
 
 /// Plan `operation` against the shortcuts saved in `workspace`.
@@ -491,6 +630,13 @@ pub fn plan_library(
                 output: ActionOutput::default(),
             });
         }
+        LibraryOperation::Stop(id) => {
+            if !saved.iter().any(|shortcut| shortcut.id == id) {
+                return Err(format!("there is no shortcut `{id}`"));
+            }
+            return Ok(LibraryPlan::Stop(StopRequest::Shortcut(id)));
+        }
+        LibraryOperation::StopAll => return Ok(LibraryPlan::Stop(StopRequest::All)),
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
@@ -540,6 +686,173 @@ pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
         )))
 }
 
+/// A broker's shortcut runs that are not over: the steps waiting on their
+/// person, and the runs going so one can be stopped between two steps.
+#[derive(Clone, Default)]
+pub struct RunLedger {
+    pub prompts: StepPrompts,
+    pub running: RunningRuns,
+}
+
+/// The runs this broker has going, by the room and the shortcut each runs.
+///
+/// A run registers itself before its first step and leaves when it ends;
+/// A run of a shortcut going on from where an earlier one got to: the run
+/// that happened, and the step of it to go on from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Continued {
+    pub report: RunReport,
+    pub from: StepPath,
+}
+
+/// stopping one marks it, and the interpreter asks before every step that
+/// would invoke something. What a stopped run already did stands, and is
+/// recorded and undone like a completed run's.
+#[derive(Clone, Default)]
+pub struct RunningRuns {
+    running: std::sync::Arc<Mutex<Vec<RunningRun>>>,
+}
+
+/// One run going, as a stop names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningRun {
+    pub room: String,
+    pub shortcut: String,
+    /// What the shortcut is called, for a person reading the answer.
+    pub name: String,
+    pub run: RunId,
+    /// The step the run has reached, as it last said where it was.
+    pub at: Option<String>,
+    /// Why it is being stopped, once someone has.
+    pub stopped: Option<String>,
+}
+
+impl RunningRuns {
+    /// Note a run as going, before its first step.
+    pub fn register(&self, run: RunningRun) {
+        if let Ok(mut running) = self.running.lock() {
+            running.retain(|other| other.run != run.run);
+            running.push(run);
+        }
+    }
+
+    /// Note a run as over.
+    pub fn leave(&self, run: RunId) {
+        if let Ok(mut running) = self.running.lock() {
+            running.retain(|other| other.run != run);
+        }
+    }
+
+    /// Note where run `run` has reached. A stop only lands while the run is
+    /// between two answers, so the last place it named is where it ends.
+    fn moved(&self, run: RunId, at: &str) {
+        if let Ok(mut running) = self.running.lock()
+            && let Some(running) = running.iter_mut().find(|other| other.run == run)
+        {
+            running.at = Some(at.to_owned());
+        }
+    }
+
+    /// Whether run `run` has been told to stop, and why.
+    fn stopped(&self, run: RunId) -> Option<String> {
+        self.running
+            .lock()
+            .ok()?
+            .iter()
+            .find(|other| other.run == run)?
+            .stopped
+            .clone()
+    }
+
+    /// Stop the runs `request` names, in `room`. Returns those it stopped;
+    /// a run that is not going is not an error, since stopping one that has
+    /// just finished is what someone asking for it wanted anyway.
+    pub fn stop(&self, room: &str, request: &StopRequest, reason: &str) -> Vec<RunningRun> {
+        let Some(mut running) = self.running.lock().ok() else {
+            return Vec::new();
+        };
+        let named = |run: &RunningRun| {
+            run.room == room
+                && match request {
+                    StopRequest::Shortcut(id) => run.shortcut == *id,
+                    StopRequest::All => true,
+                }
+        };
+        // Only a run still going is stopped; one already told to stop is
+        // left to end, and asking again names nothing new.
+        let mut stopping = Vec::new();
+        for run in running.iter_mut().filter(|run| named(run)) {
+            if run.stopped.is_none() {
+                run.stopped = Some(reason.to_owned());
+                stopping.push(run.clone());
+            }
+        }
+        stopping
+    }
+
+    /// Every run going in `room`.
+    pub fn going(&self, room: &str) -> Vec<RunningRun> {
+        self.running
+            .lock()
+            .map(|running| {
+                running
+                    .iter()
+                    .filter(|run| run.room == room)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The shortcuts a run about to start in `room` is told are running
+    /// above it: the shortcut it is being started for, plus the shortcut of
+    /// every run going in the room whose own id is the group its steps will
+    /// carry (`parent`), which is how a run reads the shortcut that called
+    /// it.
+    ///
+    /// A step's [`InvokeRequest`](tilo_actions::remote::InvokeRequest) names
+    /// its group, and a host starts a run called that way with that group as
+    /// its `parent`, so the runs going inside the caller's group are the
+    /// calls it made. Two shortcuts that call each other are therefore one
+    /// run inside the other and the inner one is refused; two runs a person
+    /// started side by side carry their own groups and are not each other's
+    /// parents, and neither is a run in another room.
+    #[must_use]
+    pub fn above(&self, room: &str, parent: Option<&str>, own: &str) -> Vec<String> {
+        let Ok(running) = self.running.lock() else {
+            return Vec::new();
+        };
+        let mut above: Vec<String> = running
+            .iter()
+            .filter(|run| run.room == room)
+            .filter(|run| parent.is_some_and(|parent| parent == run.run.0.to_string()))
+            .map(|run| run.shortcut.clone())
+            .collect();
+        above.push(own.to_owned());
+        above
+    }
+}
+
+/// What stopping says it stopped, for whoever asked: one entry per run it
+/// reached, with where each had got to.
+#[must_use]
+pub fn stopped_output(stopped: &[RunningRun]) -> ActionOutput {
+    let runs: Vec<Value> = stopped
+        .iter()
+        .map(|run| {
+            serde_json::json!({
+                "shortcut": run.shortcut,
+                "name": run.name,
+                "reached": run.at,
+            })
+        })
+        .collect();
+    ActionOutput {
+        value: Some(Value::Array(runs)),
+        resources: Vec::new(),
+    }
+}
+
 /// How a run started through the door treats a person-shaped question.
 ///
 /// Whoever invokes `run` answers for its confirmations up front: evidence
@@ -564,6 +877,11 @@ pub struct RunStart {
     pub mode: RunMode,
     /// Values for the shortcut's inputs.
     pub inputs: Map<String, Value>,
+    /// The work unit this run belongs to when something else asked for it:
+    /// a task that called the shortcut, named by its own group. The run's
+    /// steps are stamped with it, so the run shows up inside that task rather
+    /// than beside it, and undoing the task undoes what it asked for.
+    pub parent: Option<tilo_actions::context::ActionGroup>,
 }
 
 /// [`RunHooks`] for a run started through the door.
@@ -571,14 +889,24 @@ pub struct DoorHooks {
     confirmation: Option<Confirmation>,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
+    /// The runs going, so one of them can be stopped from elsewhere.
+    runs: RunningRuns,
+    run: RunId,
 }
 
 impl DoorHooks {
     #[must_use]
-    pub fn new(confirmation: Option<Confirmation>, runtime: tokio::runtime::Handle) -> Self {
+    pub fn new(
+        confirmation: Option<Confirmation>,
+        runtime: tokio::runtime::Handle,
+        runs: RunningRuns,
+        run: RunId,
+    ) -> Self {
         Self {
             confirmation,
             runtime,
+            runs,
+            run,
         }
     }
 }
@@ -596,6 +924,14 @@ impl RunHooks for DoorHooks {
 
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
         settle_later(&self.runtime)
+    }
+
+    fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        self.runs.moved(self.run, what.path.as_str());
+        Pending::ready(match self.runs.stopped(self.run) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        })
     }
 }
 
@@ -677,6 +1013,9 @@ pub struct SheetHooks {
     shortcut: String,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
+    /// The runs going, so one of them can be stopped from elsewhere.
+    runs: RunningRuns,
+    run: RunId,
 }
 
 impl SheetHooks {
@@ -685,11 +1024,15 @@ impl SheetHooks {
         prompts: StepPrompts,
         shortcut: impl Into<String>,
         runtime: tokio::runtime::Handle,
+        runs: RunningRuns,
+        run: RunId,
     ) -> Self {
         Self {
             prompts,
             shortcut: shortcut.into(),
             runtime,
+            runs,
+            run,
         }
     }
 
@@ -721,6 +1064,14 @@ impl RunHooks for SheetHooks {
             })
     }
 
+    fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        self.runs.moved(self.run, what.path.as_str());
+        Pending::ready(match self.runs.stopped(self.run) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        })
+    }
+
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
         settle_later(&self.runtime)
     }
@@ -730,10 +1081,16 @@ impl RunHooks for SheetHooks {
 #[must_use]
 pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpdate {
     match &report.outcome {
-        RunOutcome::Completed => InvocationUpdate::Succeeded {
+        // A stopped run did not fail: it ends where it was told to. What it
+        // had already done is recorded and can be undone as one step, so it
+        // answers like a completed run, with the report saying it stopped.
+        // A run that finished degraded still succeeded: the steps that
+        // fell short are recorded in the report, and carry the recovery the
+        // shortcut asked for, so nobody mistakes it for an untouched run.
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {
-                value: report.output.clone(),
+                value: report.reported_value(),
                 resources: Vec::new(),
             },
         },
@@ -764,16 +1121,36 @@ pub struct FinishedShortcutRun {
 #[derive(Default)]
 pub struct ShortcutRuns {
     finished: Mutex<VecDeque<FinishedShortcutRun>>,
+    /// The same runs, kept by id after they were taken, newest last.
+    kept: Mutex<VecDeque<FinishedShortcutRun>>,
 }
 
 impl ShortcutRuns {
     pub fn push(&self, run: FinishedShortcutRun) {
+        if let Ok(mut kept) = self.kept.lock() {
+            kept.push_back(run.clone());
+            while kept.len() > MAX_FINISHED_RUNS {
+                kept.pop_front();
+            }
+        }
         if let Ok(mut finished) = self.finished.lock() {
             finished.push_back(run);
             while finished.len() > MAX_FINISHED_RUNS {
                 finished.pop_front();
             }
         }
+    }
+
+    /// The run `run` produced of `shortcut`, when it is one this broker kept.
+    #[must_use]
+    pub fn report(&self, run: RunId, shortcut: &str) -> Option<RunReport> {
+        self.kept
+            .lock()
+            .ok()?
+            .iter()
+            .rev()
+            .find(|finished| finished.report.run == run && finished.shortcut.id == shortcut)
+            .map(|finished| finished.report.clone())
     }
 
     /// Whether a finished run is waiting to be taken.
@@ -846,6 +1223,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::RecordChanged { kind, .. } if kind.trim().is_empty() => {
             Err("a record trigger names the record kind it watches".into())
         }
+        TriggerSpec::AppEvent { app_id, .. } if app_id.trim().is_empty() => {
+            Err("an app-event trigger names the application that declares the event".into())
+        }
+        TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
+            Err("an app-event trigger names the event the application declares".into())
+        }
         TriggerSpec::Connector { .. } => Err(
             "connector triggers run only bots, on the room's host; a Shortcut cannot watch one"
                 .into(),
@@ -855,11 +1238,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
         | TriggerSpec::RecordChanged { .. }
-        | TriggerSpec::IncomingMessage { .. } => Ok(()),
+        | TriggerSpec::IncomingMessage { .. }
+        | TriggerSpec::AppEvent { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed, focus-mode, record-changed and \
-             incoming-message triggers can",
+             workspace-joined, file-changed, focus-mode, record-changed, \
+             incoming-message and app-event triggers can",
             other.kind()
         )),
     }
@@ -887,7 +1271,7 @@ pub fn readable_folder(
     if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
         return Err("the saver is not a member of the workspace".into());
     }
-    let actor = collab_types::Actor::person(saver).in_room(workspace.room.to_string());
+    let actor = collab_types::Actor::person(saver).in_room(workspace.room().to_string());
     if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),
@@ -941,7 +1325,110 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            decode_library(STOP_ACTION, Some(&slot(serde_json::json!({"id": "tidy"})))),
+            Ok(LibraryOperation::Stop("tidy".into()))
+        );
+        assert_eq!(
+            decode_library(STOP_ALL_ACTION, None),
+            Ok(LibraryOperation::StopAll)
+        );
+        assert!(decode_library(STOP_ACTION, None).is_err());
         assert!(decode_library("rename", None).is_err());
+    }
+
+    fn going(room: &str, shortcut: &str, name: &str) -> RunningRun {
+        RunningRun {
+            room: room.into(),
+            shortcut: shortcut.into(),
+            name: name.into(),
+            run: RunId::new(),
+            at: None,
+            stopped: None,
+        }
+    }
+
+    #[test]
+    fn stopping_names_one_shortcuts_runs_or_every_run_going_in_the_room() {
+        let runs = RunningRuns::default();
+        let tidy = going("desk", "tidy", "Tidy");
+        let sweep = going("desk", "sweep", "Sweep");
+        let elsewhere = going("study", "tidy", "Tidy");
+        for run in [&tidy, &sweep, &elsewhere] {
+            runs.register(run.clone());
+        }
+        runs.moved(tidy.run, "1");
+        let stopped = runs.stop("desk", &StopRequest::Shortcut("tidy".into()), "asked");
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].shortcut, "tidy");
+        assert_eq!(stopped[0].at.as_deref(), Some("1"));
+        // The other room's run of the same shortcut is somebody else's.
+        assert!(runs.stopped(elsewhere.run).is_none());
+        assert!(runs.stopped(sweep.run).is_none());
+
+        // Stopping everything names what is still going, not the run already
+        // told to stop.
+        let all = runs.stop("desk", &StopRequest::All, "asked");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].shortcut, "sweep");
+        assert!(runs.stopped(sweep.run).is_some());
+        assert!(runs.stopped(tidy.run).is_some());
+        // Asking again stops nothing new: a run is told once.
+        assert!(
+            runs.stop("desk", &StopRequest::All, "asked again")
+                .is_empty()
+        );
+        assert_eq!(runs.going("desk").len(), 2);
+        runs.leave(tidy.run);
+        assert_eq!(runs.going("desk").len(), 1);
+    }
+
+    #[test]
+    fn a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not() {
+        let runs = RunningRuns::default();
+        // `outer` is going on its own group, as a run with nothing above it
+        // does; the run its step calls is stamped with that group.
+        let outer = going("desk", "outer", "Outer");
+        let group = outer.run.0.to_string();
+        runs.register(outer.clone());
+        // The call inside it: its own id is running, and so is `outer`'s.
+        assert_eq!(
+            runs.above("desk", Some(&group), "inner"),
+            ["outer", "inner"]
+        );
+        // Another room's outer run above the same group is somebody else's.
+        runs.register(going("study", "other", "Other"));
+        assert_eq!(
+            runs.above("desk", Some(&group), "inner"),
+            ["outer", "inner"]
+        );
+        // A run a person started has no parent naming another run, so it is
+        // told only of itself: two runs side by side do not block each other.
+        assert_eq!(runs.above("desk", None, "beside"), ["beside"]);
+        assert_eq!(runs.above("desk", Some("elsewhere"), "beside"), ["beside"]);
+        // Once the outer run is over, a run its group names has nothing
+        // above it.
+        runs.leave(outer.run);
+        assert_eq!(runs.above("desk", Some(&group), "inner"), ["inner"]);
+    }
+
+    #[test]
+    fn a_stop_says_which_runs_it_reached_and_where_each_had_got_to() {
+        let runs = RunningRuns::default();
+        let tidy = going("desk", "tidy", "Tidy");
+        runs.register(tidy.clone());
+        runs.moved(tidy.run, "then.2");
+        let output = stopped_output(&runs.stop("desk", &StopRequest::All, "asked"));
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!([{
+                "shortcut": "tidy",
+                "name": "Tidy",
+                "reached": "then.2",
+            }]))
+        );
+        // Nothing running is not a failure: the run just finished.
+        assert_eq!(stopped_output(&[]).value, Some(serde_json::json!([])));
     }
 
     #[test]
@@ -971,6 +1458,8 @@ mod tests {
                 "shortcuts#update",
                 "shortcuts#delete",
                 "shortcuts#list",
+                "shortcuts#stop",
+                "shortcuts#stop-all",
                 "shortcuts.shortcut:tidy#run",
             ]
         );
@@ -978,6 +1467,99 @@ mod tests {
         assert_eq!(run.params, workspace.shortcuts[0].inputs);
         assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
         assert_eq!(run_target(&run.address), Some("tidy"));
+    }
+
+    /// What a task chooses a tool by: the words its inputs and its name use,
+    /// what it answers, and what it says it takes.
+    #[test]
+    fn a_shortcut_reads_as_a_typed_tool_with_its_inputs_and_output() {
+        let folder = ActionParam::required("folder", ParamType::Text, "Where the receipts are");
+        let limit = ActionParam::optional("week", ParamType::Integer, "Which week, 0 for this one");
+        let tidy = shortcut(serde_json::json!({
+            "id": "file-receipts",
+            "name": "File receipts",
+            "inputs": [&folder, &limit],
+            "steps": [],
+            "output": {"literal": {"filed": 3}}
+        }));
+        let run = run_descriptor(&tidy);
+        assert_eq!(
+            run.params,
+            vec![folder.clone(), limit.clone()],
+            "its declared inputs, typed"
+        );
+        assert_eq!(run.keywords, vec!["folder".to_owned(), "week".to_owned()]);
+        assert_eq!(
+            run.contract.result,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"})
+            },
+            "a caller is promised the shape the shortcut answers"
+        );
+        let description = run.description.expect("a shortcut says what it offers");
+        assert!(description.contains("`folder` (text)"), "{description}");
+        assert!(
+            description.contains("Where the receipts are"),
+            "{description}"
+        );
+        assert!(
+            description.contains("`week` (integer, optional)"),
+            "{description}"
+        );
+
+        // An output that hands back one of its inputs answers with that
+        // input's own type.
+        let echo = shortcut(serde_json::json!({
+            "id": "echo",
+            "name": "Echo the week",
+            "inputs": [&folder, &limit],
+            "steps": [],
+            "output": {"input": "week"}
+        }));
+        assert_eq!(
+            run_descriptor(&echo).contract.result,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "integer"})
+            }
+        );
+
+        let silent = shortcut(serde_json::json!({
+            "id": "tidy",
+            "name": "Tidy",
+            "steps": []
+        }));
+        assert_eq!(
+            run_descriptor(&silent).contract.result,
+            ResultSpec::None,
+            "a shortcut that binds no output answers none"
+        );
+    }
+
+    #[test]
+    fn an_app_event_trigger_names_the_app_and_the_event() {
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: "mail.message".into(),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: " ".into(),
+                kind: "mail.message".into(),
+            })
+            .unwrap_err()
+            .contains("names the application")
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: " ".into(),
+            })
+            .unwrap_err()
+            .contains("names the event")
+        );
     }
 
     #[test]

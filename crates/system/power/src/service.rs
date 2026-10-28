@@ -237,7 +237,7 @@ pub type LogindInhibitorRow = (String, String, String, String, u32, u32);
 /// A `block` lock on `sleep` holds off idle-suspend only, so the screen still blanks and locks
 /// while, say, a remote admin keeps the machine awake; a `block` lock on `idle` is a request to
 /// keep the whole session awake and holds both. `delay` locks, Tilo's own locks
-/// ([`OWN_INHIBITOR_WHO`]) and anything this process (`own_pid`) holds are not outside holds.
+/// (`OWN_INHIBITOR_WHO`) and anything this process (`own_pid`) holds are not outside holds.
 #[must_use]
 pub fn foreign_sleep_hold(rows: &[LogindInhibitorRow], own_pid: u32) -> Option<(Vec<String>, u32)> {
     let mut reasons = Vec::new();
@@ -619,17 +619,29 @@ impl PowerService {
 
     fn apply_active_profile(&mut self, profile: &str) {
         self.bridge.note_active_profile(profile);
-        let policy = crate::config::load_policy_for_profile(Some(profile));
+        self.reapply_policy();
+    }
+
+    /// Resolve the policy for the profile and power source last seen, and
+    /// hand the compositor its idle-suspend timeout when that changed.
+    fn reapply_policy(&mut self) {
+        let profile = self.bridge.active_profile();
+        let on_battery = self.bridge.on_battery();
+        let policy = crate::config::load_policy_for_profile(profile.as_deref(), on_battery);
         if policy == self.policy {
             return;
         }
-        info!(target: "tilo::power", %profile, ?policy, "active power profile policy applied");
+        info!(target: "tilo::power", ?profile, on_battery, ?policy, "power policy applied");
         self.policy = policy;
         self.bridge
             .push_signal(PowerSignal::IdleSuspendChanged(policy.idle_suspend));
     }
 
     async fn apply_battery_snapshot(&mut self, snap: BatterySnapshot) {
+        // Unplugged or plugged in: each source has its own suspend timer.
+        if self.bridge.note_on_battery(snap.runs_on_battery()) {
+            self.reapply_policy();
+        }
         let events = self.battery.evaluate(&snap, &self.policy);
         if events.is_empty() {
             return;
@@ -894,14 +906,12 @@ mod tests {
 
     #[test]
     fn service_reacts_to_lid_sleep_and_signal_edges() {
-        // Phase `ended_signal_streams_back_off_before_resubscribe`.
         {
             let now = Instant::now();
             let retry = stream_retry_after(now);
             assert!(retry > now);
             assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
         }
-        // Phase `only_the_button_seat_takes_the_key_delegation`.
         {
             assert!(receives_seat_buttons(Some("seat0")));
             assert!(receives_seat_buttons(None));
@@ -909,7 +919,6 @@ mod tests {
             assert!(!receives_seat_buttons(Some("seat-pr1307")));
             assert!(!receives_seat_buttons(Some("seat1")));
         }
-        // Phase `outside_block_locks_hold_idle_suspend`.
         {
             let row = |what: &str, who: &str, mode: &str, pid: u32| -> LogindInhibitorRow {
                 (what.into(), who.into(), "why".into(), mode.into(), 0, pid)
@@ -951,7 +960,6 @@ mod tests {
                 ))
             );
         }
-        // Phase `lid_edge_only_acts_on_close_transition`.
         {
             let mut p = PowerPolicy {
                 lid_close_action: PowerAction::Suspend,
@@ -966,25 +974,21 @@ mod tests {
             assert_eq!(lid_edge_effect(Some(true), true, &p), Effect::None);
             // closing→opening does not act.
             assert_eq!(lid_edge_effect(Some(true), false, &p), Effect::None);
-            // Policy is honoured on the edge.
             p.lid_close_action = PowerAction::Lock;
             assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::Lock);
             p.lid_close_action = PowerAction::Ignore;
             assert_eq!(lid_edge_effect(Some(false), true, &p), Effect::None);
         }
-        // Phase `effect_from_action`.
         {
             assert_eq!(Effect::from(Some(PowerAction::Suspend)), Effect::Suspend);
             assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
             assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
             assert_eq!(Effect::from(None), Effect::None);
         }
-        // Phase `sleep_always_locks_before_resume_is_reported`.
         {
             assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
             assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
         }
-        // Phase `suspend_failure_is_reported_to_cancel_a_pre_sleep_latch`.
         {
             let bridge = crate::bridge::PowerBridge::new();
             bridge.push_signal(PowerSignal::SuspendFailed);
@@ -994,7 +998,6 @@ mod tests {
 
     #[test]
     fn deadlines_follow_the_policy_and_the_history() {
-        // Phase `the_loop_wakes_for_the_earliest_deadline_only`.
         {
             let now = Instant::now();
             let mut deadlines = Deadlines::default();
@@ -1013,7 +1016,6 @@ mod tests {
             );
             assert_eq!(deadlines.next(), Some(now + HISTORY_SAMPLE_RETRY));
         }
-        // Phase `foreign_locks_matter_only_while_an_idle_timeout_is_armed`.
         {
             let never = PowerPolicy {
                 idle_blank: None,
@@ -1039,7 +1041,6 @@ mod tests {
                 assert!(idle_timeout_armed(&armed));
             }
         }
-        // Phase `history_is_sampled_when_a_point_can_land_and_never_twice_a_minute`.
         {
             let now_secs = 1_000 * 60 + 30;
             assert_eq!(
@@ -1059,7 +1060,6 @@ mod tests {
 
     #[test]
     fn battery_events_toast_and_suspend_according_to_policy() {
-        // Phase `low_event_becomes_a_noncritical_toast_no_suspend`.
         {
             let p = PowerPolicy::default();
             let (signals, suspend) = battery_reaction(&[BatteryEvent::Low(12)], &p);
@@ -1073,7 +1073,6 @@ mod tests {
                 other => panic!("expected a notify, got {other:?}"),
             }
         }
-        // Phase `critical_event_toasts_and_suspends_when_policy_says_suspend`.
         {
             let p = PowerPolicy {
                 critical_action: PowerAction::Suspend,
@@ -1083,7 +1082,6 @@ mod tests {
             assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
             assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
         }
-        // Phase `critical_event_does_not_suspend_when_policy_ignores`.
         {
             let p = PowerPolicy {
                 critical_action: PowerAction::Ignore,
@@ -1095,7 +1093,6 @@ mod tests {
             assert_eq!(signals.len(), 1);
             assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
         }
-        // Phase `recovered_event_is_silent`.
         {
             let p = PowerPolicy::default();
             let (signals, suspend) = battery_reaction(&[BatteryEvent::Recovered], &p);

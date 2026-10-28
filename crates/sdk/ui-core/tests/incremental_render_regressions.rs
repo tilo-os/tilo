@@ -393,8 +393,7 @@ fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
 
         // Frame 0: full repaint (every leaf starts `dirty == true`).
         // Frame 1: only spinners + progress bars remain dirty —
-        // exactly the "post-scroll steady state" the user reported
-        // broken. If a future change reintroduces an unconditional
+        // the post-scroll steady state. If a future change reintroduces an unconditional
         // damage-region clip across the whole `draw`,
         // the second frame will drop all static widgets and this
         // test will fail.

@@ -106,11 +106,21 @@ impl ShellNetwork {
         if self.hosted_sites.left(site) {
             return Pass::Idle;
         }
-        if let Some(room) = self.hosted_sites.room_of_site(site)
-            && self.holds_room(room)
-            && !self.host_was_set_up_again(site, room)
-        {
-            return Pass::Held;
+        if let Some(room) = self.hosted_sites.room_of_site(site) {
+            // A workspace whose host stopped admitting the person says it
+            // needs joining again and waits for them: the pass never asks
+            // the door behind their back. A join that failed is tried again
+            // below, with the proof its workspace keeps.
+            if self
+                .hosted_sites
+                .join_of(room)
+                .is_some_and(|join| join.progress == hosted_sites::JoinProgress::NeedsJoinAgain)
+            {
+                return Pass::Held;
+            }
+            if self.holds_room(room) && !self.host_was_set_up_again(site, room) {
+                return Pass::Held;
+            }
         }
         match self.join_site(site) {
             Ok(_) => Pass::Held,
@@ -125,22 +135,20 @@ impl ShellNetwork {
         }
     }
 
+    /// Whether this device holds `room`: its replica is installed here, not
+    /// merely being joined.
     pub(super) fn holds_room(&self, room: RoomId) -> bool {
-        self.replica.lock().is_ok_and(|replica| {
-            replica
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room)
-        })
+        self.replica
+            .lock()
+            .is_ok_and(|replica| replica.tree.read().holds_room(room))
     }
 
     /// Whether another host than the one `room` was joined at answers for
     /// `site` now: another device at its origin, or another origin the
-    /// site names. The workspace of the host before is dropped here, so the
-    /// site is joined anew; a site or host not reached is not judged.
+    /// site names. The site then names another room, joined as a workspace
+    /// of its own; the room of the host before and its workspace stay, with
+    /// whatever this device holds of them, until the person deletes them. A
+    /// site or host not reached is not judged.
     fn host_was_set_up_again(&self, site: &url::Url, room: RoomId) -> bool {
         let Some(hosted) = self.hosted_sites.hosted(room) else {
             return false;
@@ -162,33 +170,26 @@ impl ShellNetwork {
         {
             return false;
         }
-        tracing::info!(%room, "the community workspace's host was set up again; joining it anew");
-        self.drop_hosted_room(room);
+        tracing::info!(%room, "the community workspace's host was set up again; joining the room it names now");
+        if let Err(error) = self.hosted_sites.forget(room) {
+            tracing::warn!(%error, %room, "the site's room before is still remembered as its own");
+        }
         true
     }
 
-    /// Stop holding `room`, a room held through a site, here.
-    pub(crate) fn drop_hosted_room(&self, room: RoomId) {
-        self.remove_workspace_of(room);
+    /// Stop holding `room`, a room held through a site or a link, here: its
+    /// workspace and this device's replica of it go together
+    /// ([`Self::release_room`]), and the site no longer names it here.
+    ///
+    /// # Errors
+    ///
+    /// When the room's record cannot be changed.
+    pub(crate) fn drop_hosted_room(&self, room: RoomId) -> Result<(), String> {
+        self.release_room(room)?;
         if let Err(error) = self.hosted_sites.forget(room) {
             tracing::warn!(%error, %room, "a dropped site room is still remembered");
         }
-    }
-
-    /// Take the workspace showing `room` off this computer's desktop.
-    pub(crate) fn remove_workspace_of(&self, room: RoomId) {
-        if let Ok(replica) = self.replica.lock() {
-            let mut tree = replica.tree.write();
-            let slot = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room == room)
-                .map(|workspace| workspace.id);
-            if let Some(slot) = slot {
-                tree.delete_workspace(slot);
-            }
-        }
+        Ok(())
     }
 
     /// Keep this computer in its configured community workspace for as long
@@ -202,11 +203,6 @@ impl ShellNetwork {
         let spawned = std::thread::Builder::new()
             .name("tilo-community".into())
             .spawn(move || {
-                // Before the first pass, which retries the saved proof in
-                // its slot: the empty slots earlier passes made beside it go.
-                if let Some(network) = net.upgrade() {
-                    network.retire_duplicate_site_slots();
-                }
                 let mut retry = FIRST_RETRY;
                 while let Some(network) = net.upgrade() {
                     let pass = network.keep_community(&site);

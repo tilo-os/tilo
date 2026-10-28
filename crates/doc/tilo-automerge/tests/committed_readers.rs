@@ -1,5 +1,3 @@
-//! Reading a document's committed history through a shared reference.
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 

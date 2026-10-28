@@ -149,7 +149,12 @@ async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_wit
     let fixture = fixture().await;
     let history = fixture.broker.client().history();
     assert_eq!(
-        history.read(fixture.route.clone()).await.unwrap().messages[0].delivery,
+        history
+            .read(fixture.route.clone(), None)
+            .await
+            .unwrap()
+            .messages[0]
+            .delivery,
         Some(Delivery::Uncertain)
     );
     let wakes = Arc::new(AtomicUsize::new(0));
@@ -163,14 +168,14 @@ async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_wit
     assert!(!observe(&fixture, ReceiptType::Sent).await.unwrap());
     assert_eq!(wakes.load(Ordering::SeqCst), 0);
     assert!(observe(&fixture, ReceiptType::Delivered).await.unwrap());
-    let delivered = history.read(fixture.route.clone()).await.unwrap();
+    let delivered = history.read(fixture.route.clone(), None).await.unwrap();
     assert_eq!(
         delivered.messages[0].delivery,
         Some(Delivery::RecipientDelivered)
     );
     assert!(observe(&fixture, ReceiptType::Read).await.unwrap());
     assert!(!observe(&fixture, ReceiptType::Delivered).await.unwrap());
-    let read = history.read(fixture.route.clone()).await.unwrap();
+    let read = history.read(fixture.route.clone(), None).await.unwrap();
     assert_eq!(read.messages[0].delivery, Some(Delivery::RecipientRead));
     assert_eq!(
         read.messages[0].timestamp_ms,
@@ -184,7 +189,7 @@ async fn actual_sdk_recipient_evidence_reaches_private_history_monotonically_wit
         Err(SendError::Revoked)
     );
     assert_eq!(
-        history.read(fixture.route.clone()).await,
+        history.read(fixture.route.clone(), None).await,
         Err(HistoryError::Revoked)
     );
     drop(history);
@@ -276,7 +281,7 @@ async fn foreign_sdk_and_wrong_recipient_or_operation_cannot_promote_history() {
             .broker
             .client()
             .history()
-            .read(fixture.route.clone())
+            .read(fixture.route.clone(), None)
             .await
             .unwrap()
             .messages[0]
@@ -341,10 +346,9 @@ async fn actual_receipt_wakes_messages_and_refreshes_visible_recipient_evidence_
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                harness
-                    .a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("Read by recipient"))
+                harness.a11y_nodes().iter().any(|(_, node)| {
+                    super::tests::speaks(node.label(), &ui::widget::DeliveryState::Read.label())
+                })
             }),
         "native evidence wakes and refreshes the selected private conversation"
     );

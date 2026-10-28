@@ -23,10 +23,12 @@
 //! items it handed out since it was copied, so the edits between it and the
 //! items it was copied from ([`Model::diff`], what a surface that edited a
 //! local copy submits) compare only those: an edit of one clip of 600 costs
-//! one clip, not 600. Items added at the end ([`Items::push`]) are remembered
-//! the same way, so cutting a clip in two costs the two halves. Saving a
-//! [`Keyed`] copy over the items it was copied from writes only the items
-//! changed and added, and those someone else touched meanwhile.
+//! one clip, not 600. Items added at the end ([`Items::push`]) and items
+//! removed ([`Items::retain`], [`Items::take`], [`Items::remove`]) are
+//! remembered the same way, so cutting a clip in two costs the two halves
+//! and deleting one costs that one. Saving a copy over the items it was
+//! copied from writes only the items changed, added and removed, and for a
+//! [`Keyed`] those someone else touched meanwhile.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -34,6 +36,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as Atomic};
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
@@ -88,27 +91,129 @@ struct Stock<T> {
     since: Option<Since>,
 }
 
-/// Items still as the ones they were copied from, except at `changed` and
-/// past their number.
+/// Items still as the ones they were copied from, except as noted: some
+/// changed in place, some removed, some added at the end. Nothing else
+/// changed: handing out all the items, or any change that moves one,
+/// forgets the copy.
 struct Since {
     /// The [`Stock::mark`] of the items copied.
     copied: u64,
-    /// Positions, ascending, handed out one at a time to change since the
-    /// copy. Every item past the ones copied was added at the end
-    /// ([`Items::push`]) under an id none held. Nothing else changed:
-    /// handing out all the items, or any change that moves one, forgets the
-    /// copy.
+    /// How many of the items copied these still hold: `items[..held]` are
+    /// they, in the order copied. Every item past them was added at the end
+    /// ([`Items::push`]) under an id no item held then.
+    held: usize,
+    /// Positions among the items copied, ascending, of items still held
+    /// that were handed out one at a time to change ([`Items::find_mut`]).
     changed: Vec<usize>,
+    /// Positions among the items copied, ascending, of items removed.
+    removed: Vec<usize>,
+    /// The id each item past `held` was added under, in order.
+    added: Vec<Arc<str>>,
+}
+
+impl Since {
+    fn new(copied: u64, held: usize) -> Self {
+        Self {
+            copied,
+            held,
+            changed: Vec::new(),
+            removed: Vec::new(),
+            added: Vec::new(),
+        }
+    }
+
+    /// The item at `at` was handed out to change. An item added since is
+    /// written whole whatever it holds, so only one copied is noted.
+    fn handed_out(&mut self, at: usize) {
+        if at < self.held {
+            note(&mut self.changed, copied_at(&self.removed, at));
+        }
+    }
+
+    /// The items at the positions `doomed` (ascending) are being removed.
+    fn removing(&mut self, doomed: &[usize]) {
+        let held = doomed.partition_point(|&at| at < self.held);
+        let (copied, added) = doomed.split_at(held);
+        // Where each was among the items copied, against the removals so far.
+        let mut gone = 0usize;
+        let mut origins = Vec::with_capacity(copied.len());
+        for &at in copied {
+            while self
+                .removed
+                .get(gone)
+                .is_some_and(|&removed| removed <= at.saturating_add(gone))
+            {
+                gone = gone.saturating_add(1);
+            }
+            origins.push(at.saturating_add(gone));
+        }
+        self.changed
+            .retain(|origin| origins.binary_search(origin).is_err());
+        // The added ones were never copied: they are simply no longer added.
+        let first_added = self.held;
+        let added: Vec<usize> = added
+            .iter()
+            .map(|at| at.saturating_sub(first_added))
+            .collect();
+        remove_positions(&mut self.added, &added);
+        self.held = self.held.saturating_sub(origins.len());
+        self.removed.extend_from_slice(&origins);
+        self.removed.sort_unstable();
+    }
+}
+
+/// The position among the items copied of the item now at `at`, one of
+/// those still held, given the positions `removed` (ascending) of the
+/// copied items removed since.
+fn copied_at(removed: &[usize], at: usize) -> usize {
+    let mut origin = at;
+    for &gone in removed {
+        if gone > origin {
+            break;
+        }
+        origin = origin.saturating_add(1);
+    }
+    origin
+}
+
+/// Remove the elements at the positions `doomed` (ascending) of `items`.
+fn remove_positions<X>(items: &mut Vec<X>, doomed: &[usize]) {
+    if doomed.is_empty() {
+        return;
+    }
+    let mut at = 0usize;
+    let mut next = doomed.iter().peekable();
+    items.retain(|_| {
+        let gone = next.next_if_eq(&&at).is_some();
+        at = at.saturating_add(1);
+        !gone
+    });
 }
 
 /// What changed in items since they were copied ([`Stock::changed_since`]).
 #[derive(Clone, Copy)]
 struct Changes<'a> {
-    /// Positions, ascending, of items that may have changed in place; some
-    /// may be past `copied`.
+    /// Positions among the items copied, ascending, of items held that may
+    /// have changed in place.
     changed: &'a [usize],
-    /// How many items were copied: the ones past them were added at the end.
-    copied: usize,
+    /// Positions among the items copied, ascending, of items removed.
+    removed: &'a [usize],
+    /// How many of the items copied are held: the ones past them were added
+    /// at the end, under the ids `added`.
+    held: usize,
+    added: &'a [Arc<str>],
+}
+
+impl Changes<'_> {
+    /// No change to `count` items.
+    fn none(count: usize) -> Self {
+        Changes {
+            changed: &[],
+            removed: &[],
+            held: count,
+            added: &[],
+        }
+    }
 }
 
 /// A [`Stock::mark`] no other stock has had.
@@ -155,19 +260,59 @@ impl<T> Stock<T> {
             note(&mut self.stale, at);
         }
         if let Some(since) = &mut self.since {
-            note(&mut since.changed, at);
+            since.handed_out(at);
         }
         self.items.get_mut(at)
+    }
+
+    /// Forget the items at the positions `doomed` (ascending, each held)
+    /// everywhere but in the items themselves; the copy remembers they
+    /// left.
+    fn forget(&mut self, doomed: &[usize]) {
+        self.mark = fresh_mark();
+        if let Some(since) = &mut self.since {
+            since.removing(doomed);
+        }
+        if let Some(ids) = &mut self.ids {
+            remove_positions(ids, doomed);
+        }
+        self.stale = self
+            .stale
+            .iter()
+            .filter_map(|&at| match doomed.binary_search(&at) {
+                Ok(_) => None,
+                Err(before) => Some(at.saturating_sub(before)),
+            })
+            .collect();
+    }
+
+    /// Remove the items at the positions `doomed` (ascending, each held).
+    fn remove_all(&mut self, doomed: &[usize]) {
+        if doomed.is_empty() {
+            return;
+        }
+        self.forget(doomed);
+        remove_positions(&mut self.items, doomed);
+    }
+
+    /// Remove the item at `at`, which is held.
+    fn remove_one(&mut self, at: usize) -> T {
+        self.forget(&[at]);
+        self.items.remove(at)
     }
 
     /// What changed since these items were copied from `origin`, when they
     /// were and `origin` is still as it was then.
     fn changed_since(&self, origin: &Self) -> Option<Changes<'_>> {
         let since = self.since.as_ref()?;
-        let still_as_copied = since.copied == origin.mark;
-        (still_as_copied && self.items.len() >= origin.items.len()).then_some(Changes {
+        let still_as_copied = since.copied == origin.mark
+            && origin.items.len() == since.held.saturating_add(since.removed.len())
+            && self.items.len() == since.held.saturating_add(since.added.len());
+        still_as_copied.then_some(Changes {
             changed: since.changed.as_slice(),
-            copied: origin.items.len(),
+            removed: since.removed.as_slice(),
+            held: since.held,
+            added: since.added.as_slice(),
         })
     }
 }
@@ -205,10 +350,7 @@ impl<T: Clone> Clone for Stock<T> {
             ids: self.ids.clone(),
             stale: self.stale.clone(),
             mark: fresh_mark(),
-            since: Some(Since {
-                copied: self.mark,
-                changed: Vec::new(),
-            }),
+            since: Some(Since::new(self.mark, self.items.len())),
         }
     }
 }
@@ -266,16 +408,9 @@ pub trait ItemStorage: 'static {
     /// What a stored value that is not of this storage is called in errors.
     const NAME: &'static str;
 
-    /// The items stored in the map `map`.
-    ///
-    /// # Errors
-    /// Returns an item that does not read.
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError>;
 
     /// Write `items` into `slot`.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     fn store<T: Model + Identified>(
         items: &[T],
         doc: &mut Doc,
@@ -283,9 +418,6 @@ pub trait ItemStorage: 'static {
     ) -> Result<(), ModelError>;
 
     /// Bring `items` up to date after `delta`; the default reads them again.
-    ///
-    /// # Errors
-    /// Returns an item that does not read.
     #[inline(never)]
     fn refresh<T: Model + Identified>(
         items: &mut Vec<T>,
@@ -316,14 +448,37 @@ pub trait ItemStorage: 'static {
         Self::refresh(items, doc, map, delta)
     }
 
+    /// [`Self::diff`] over items whose type a table describes, compiled
+    /// once for every item type.
+    #[doc(hidden)]
+    const DIFF: ErasedDiff;
+
     /// The edits that turn `before` into `after`, below `path`.
     fn diff<T: Model + Identified, R>(
         before: &[T],
         after: &[T],
         path: &[Segment],
         out: &mut Vec<Edit<R>>,
-    );
+    ) {
+        let mut found = Vec::new();
+        Self::DIFF(T::TABLE, (&Rows(before), &Rows(after)), path, &mut found);
+        out.extend(found.into_iter().map(Edit::retyped));
+    }
 }
+
+/// [`ItemStorage::diff`] with the item type erased: the edits turning the
+/// items `before` into `after`, whose type the table describes, below a
+/// path.
+#[doc(hidden)]
+pub type ErasedDiff = fn(
+    &'static crate::table::ModelTable,
+    (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    &[Segment],
+    &mut Vec<Edit<()>>,
+);
 
 /// [`Keyed`] storage: each item under its id, in memory by id and then
 /// [`Identified::order`].
@@ -450,7 +605,6 @@ impl<T: Identified, S> Items<T, S> {
         Self::default()
     }
 
-    /// Where the item `id` is.
     pub fn position_of(&self, id: &Id) -> Option<usize> {
         let stock = self.stock.get();
         match &stock.ids {
@@ -469,7 +623,6 @@ impl<T: Identified, S> Items<T, S> {
         }
     }
 
-    /// The item `id`.
     pub fn find(&self, id: &Id) -> Option<&T> {
         self.items().get(self.position_of(id)?)
     }
@@ -492,6 +645,17 @@ impl<T: Identified, S> Items<T, S> {
         stock.one_mut(at)
     }
 
+    /// The item at position `at`, to change, remembered as
+    /// [`find_mut`](Self::find_mut) remembers it: changing a few items
+    /// picked by position costs those items, where changing them through
+    /// `iter_mut` hands out every item.
+    pub fn at_mut(&mut self, at: usize) -> Option<&mut T> {
+        if at >= self.items().len() {
+            return None;
+        }
+        self.stock.make_mut().one_mut(at)
+    }
+
     /// Add `item` at the end, as `Vec::push` does. The items are copied
     /// first when a clone still shares them; the copy remembers the item
     /// came, so comparing it with what it was copied from, or saving it over
@@ -511,18 +675,55 @@ impl<T: Identified, S> Items<T, S> {
                 }
                 stock.ids = Some(ids);
             }
+            let id: Arc<str> = Arc::from(id.as_str());
+            if let Some(since) = &mut stock.since {
+                since.added.push(Arc::clone(&id));
+            }
             if let Some(ids) = &mut stock.ids {
-                ids.push(Arc::from(id.as_str()));
+                ids.push(id);
             }
         }
         stock.mark = fresh_mark();
         stock.items.push(item);
     }
 
-    /// Remove the item `id`.
+    /// Remove the item `id`. The items are copied first when a clone still
+    /// shares them, and only when the item is there; the copy remembers the
+    /// item left, so comparing it with what it was copied from, or saving
+    /// it over that, visits the items removed rather than every item.
     pub fn take(&mut self, id: &Id) -> Option<T> {
         let at = self.position_of(id)?;
-        Some(self.items_mut().remove(at))
+        Some(self.stock.make_mut().remove_one(at))
+    }
+
+    /// Remove and return the item at `at`, as `Vec::remove` does, and
+    /// remember it left as [`take`](Self::take) does.
+    ///
+    /// # Panics
+    /// When `at` is past the items, as `Vec::remove` does.
+    pub fn remove(&mut self, at: usize) -> T {
+        let stock = self.stock.make_mut();
+        if at >= stock.items.len() {
+            // Out of range: `Vec::remove` says so.
+            return stock.all_mut().remove(at);
+        }
+        stock.remove_one(at)
+    }
+
+    /// Keep only the items `keep` accepts, asking it once for each item in
+    /// order, as `Vec::retain` does. Items it keeps all are not copied or
+    /// changed; otherwise the copy remembers which items left, as
+    /// [`take`](Self::take) does.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        let doomed: Vec<usize> = self
+            .items()
+            .iter()
+            .enumerate()
+            .filter_map(|(at, item)| (!keep(item)).then_some(at))
+            .collect();
+        if !doomed.is_empty() {
+            self.stock.make_mut().remove_all(&doomed);
+        }
     }
 }
 
@@ -547,13 +748,11 @@ impl<R, T: Model + Identified, S> Path<R, Items<T, S>> {
         T::paths_at(self.child(Segment::Item(id.clone())))
     }
 
-    /// The path of the item `id` itself.
     #[must_use]
     pub fn item_path(&self, id: &Id) -> Path<R, T> {
         self.child(Segment::Item(id.clone()))
     }
 
-    /// Remove the item `id`.
     #[must_use]
     pub fn remove(&self, id: &Id) -> Edit<R> {
         self.edit(EditOp::RemoveItem { id: id.clone() })
@@ -576,7 +775,7 @@ impl<R, T: Model + Identified> Path<R, Keyed<T>> {
     pub fn insert(&self, item: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(item.id()),
-            at: 0,
+            at: crate::At::Index(0),
             value: item.to_json(),
         })
     }
@@ -667,16 +866,7 @@ impl ItemStorage for ById {
         Ok(())
     }
 
-    fn diff<T: Model + Identified, R>(
-        before: &[T],
-        after: &[T],
-        path: &[Segment],
-        out: &mut Vec<Edit<R>>,
-    ) {
-        let mut found = Vec::new();
-        diff_by_id_in(T::TABLE, (&Rows(before), &Rows(after)), path, &mut found);
-        out.extend(found.into_iter().map(Edit::retyped));
-    }
+    const DIFF: ErasedDiff = diff_by_id_in;
 }
 
 /// [`ById::diff`] over items whose type `table` describes, compiled once for
@@ -707,7 +897,7 @@ fn diff_by_id_in(
             path.to_vec(),
             EditOp::InsertItem {
                 id: Some(id.clone()),
-                at: 0,
+                at: crate::At::Index(0),
                 value: (table.ops.to_json)(table, item),
             },
         ));
@@ -749,36 +939,52 @@ fn edit_by_id(
             doc.delete(&map, id.as_str())?;
             Ok(())
         }
+        (
+            None,
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+        ) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            let mut candidates = Vec::new();
+            for key in doc.keys(&map).collect::<Vec<_>>() {
+                if let Some((automerge::Value::Object(ObjType::Map), fields)) =
+                    doc.get(&map, key.as_str())?
+                {
+                    candidates.push(crate::upsert::Candidate {
+                        id: Id::from_raw(key),
+                        fields,
+                    });
+                }
+            }
+            if let Some(item) = crate::upsert::matching_one(doc, &candidates, matching)? {
+                for (key, field) in crate::upsert::changed_fields(doc, &item.fields, value)? {
+                    (edits.item)(
+                        doc,
+                        Slot::Key(&map, item.id.as_str()),
+                        &[Segment::Field(key)],
+                        &EditOp::Set { value: field },
+                        cx,
+                    )
+                    .located(item.id.as_str())?;
+                }
+                return Ok(());
+            }
+            let insert = crate::collection::upserted(doc, &map, matching, value, id.as_ref())?;
+            edit_by_id(doc, slot, path, &insert, cx, edits)
+        }
         _ => (edits.whole)(doc, slot, path, op),
     }
 }
 
 /// The edits removing what `after` lacks and changing what both hold, given
-/// the id of each item of `after`; returns the id of each item of `before`.
-/// Each item is asked for its id once.
-pub(crate) fn removed_and_changed<T: Model + Identified, R>(
-    before: &[T],
-    after: &[T],
-    after_ids: &[Id],
-    path: &[Segment],
-    out: &mut Vec<Edit<R>>,
-) -> Vec<Id> {
-    let mut found = Vec::new();
-    let before_ids = removed_and_changed_in(
-        T::TABLE,
-        (&Rows(before), &Rows(after)),
-        after_ids,
-        path,
-        &mut found,
-    );
-    out.extend(found.into_iter().map(Edit::retyped));
-    before_ids
-}
-
-/// [`removed_and_changed`] over items whose type `table` describes, compiled
-/// once for every item type.
+/// the id of each item of `after`, for items whose type `table` describes;
+/// returns the id of each item of `before`. Compiled once for every item
+/// type.
 #[inline(never)]
-fn removed_and_changed_in(
+pub(crate) fn removed_and_changed_in(
     table: &'static crate::table::ModelTable,
     (before, after): (
         &dyn crate::collection::ItemList,
@@ -827,57 +1033,97 @@ impl<T: Identified + 'static> crate::collection::ItemList for Rows<'_, T> {
     }
 }
 
-/// The items of `changes` that changed in place and kept their ids, by
-/// position, with their id: `None` when one changed its id, as then items
-/// left and came, which only comparing them all can tell.
+/// What a copy's [`Changes`] come to, item by item: what comparing every
+/// item would find, found without visiting the others.
+struct Plan {
+    /// The items copied that changed in place or left, in the order copied.
+    steps: Vec<Step>,
+    /// The id of each item added at the end, in order.
+    added: Vec<Id>,
+}
+
+/// An item copied that changed in place, or left.
+struct Step {
+    /// Where it was among the items copied.
+    was: usize,
+    /// Where it is now; `None` when it left.
+    now: Option<usize>,
+    id: Id,
+}
+
+/// The [`Plan`] of the changes `changes` between `before` and `after`;
+/// `None` when an item changed its id (or one added since did), or one was
+/// added under the id of one removed: then items left and came, which only
+/// comparing them all can tell.
 #[inline(never)]
-fn kept_ids(
+fn plan(
     before: &dyn crate::collection::ItemList,
     after: &dyn crate::collection::ItemList,
     changes: Changes<'_>,
-) -> Option<Vec<(usize, Id)>> {
-    let mut kept = Vec::with_capacity(changes.changed.len());
-    for &at in changes.changed {
-        if at >= changes.copied {
-            // Added since: written whole.
-            break;
+) -> Option<Plan> {
+    let mut steps = Vec::with_capacity(changes.changed.len().saturating_add(changes.removed.len()));
+    let (mut in_place, mut left) = (changes.changed.iter(), changes.removed.iter());
+    let (mut next_changed, mut next_removed) = (in_place.next(), left.next());
+    let mut gone = 0usize;
+    loop {
+        match (next_changed, next_removed) {
+            (None, None) => break,
+            (Some(&was), next) if next.is_none_or(|&removed| was < removed) => {
+                let now = was.checked_sub(gone)?;
+                let (id, _) = before.item(was)?;
+                if after.item(now)?.0 != id {
+                    return None;
+                }
+                steps.push(Step {
+                    was,
+                    now: Some(now),
+                    id,
+                });
+                next_changed = in_place.next();
+            }
+            (_, Some(&was)) => {
+                steps.push(Step {
+                    was,
+                    now: None,
+                    id: before.item(was)?.0,
+                });
+                gone = gone.saturating_add(1);
+                next_removed = left.next();
+            }
+            (Some(_), None) => return None,
         }
-        let (id, _) = before.item(at)?;
-        if after.item(at)?.0 != id {
+    }
+    if after.count() < changes.held {
+        return None;
+    }
+    let mut added = Vec::with_capacity(changes.added.len());
+    for (at, came) in (changes.held..after.count()).zip(changes.added) {
+        let (id, _) = after.item(at)?;
+        if *id.as_str() != **came {
             return None;
         }
-        kept.push((at, id));
+        added.push(id);
     }
-    Some(kept)
+    if !added.is_empty() && !changes.removed.is_empty() {
+        let left: HashSet<&Id> = steps
+            .iter()
+            .filter(|step| step.now.is_none())
+            .map(|step| &step.id)
+            .collect();
+        if added.iter().any(|id| left.contains(id)) {
+            return None;
+        }
+    }
+    Some(Plan { steps, added })
 }
 
-/// The edits between `before` and `after`, which holds the same items at
-/// the same positions except as `changes` says: each item changed in place,
-/// field by field, then each added one, in the order [`ItemStorage::diff`]
-/// would list them (an [`Ordered`](crate::Ordered) item inserted at its
-/// position, `arranged`). `false`, with nothing written, when one changed
-/// its id.
-fn diff_changed<T: Model + Identified, R>(
-    (before, after): (&[T], &[T]),
-    changes: Changes<'_>,
-    arranged: bool,
-    path: &[Segment],
-    out: &mut Vec<Edit<R>>,
-) -> bool {
-    let mut found = Vec::new();
-    let diffed = diff_changed_in(
-        T::TABLE,
-        (&Rows(before), &Rows(after)),
-        changes,
-        arranged,
-        (path, &mut found),
-    );
-    out.extend(found.into_iter().map(Edit::retyped));
-    diffed
-}
-
-/// [`diff_changed`] over items whose type `table` describes, compiled once
-/// for every item type.
+/// The edits between `before` and `after`, which holds the same items in
+/// the same order except as `changes` says: each item copied that changed
+/// in place, field by field, or left, then each added one, in the order
+/// [`ItemStorage::diff`] would list them (an [`Ordered`](crate::Ordered)
+/// item inserted at its position, `arranged`). `false`, with nothing
+/// written, when only comparing every item can tell ([`plan`]). For items
+/// whose type `table` describes, compiled once for every item type.
 #[inline(never)]
 fn diff_changed_in(
     table: &'static crate::table::ModelTable,
@@ -889,27 +1135,33 @@ fn diff_changed_in(
     arranged: bool,
     (path, out): (&[Segment], &mut Vec<Edit<()>>),
 ) -> bool {
-    let Some(kept) = kept_ids(before, after, changes) else {
+    let Some(plan) = plan(before, after, changes) else {
         return false;
     };
     let mut at = Vec::with_capacity(path.len().saturating_add(1));
     at.extend_from_slice(path);
-    for (position, id) in kept {
-        if let (Some((_, was)), Some((_, now))) = (before.item(position), after.item(position)) {
-            at.push(Segment::Item(id));
-            (table.ops.diff)(table, was, now, &at, out);
-            at.pop();
+    for step in plan.steps {
+        match step.now {
+            Some(now) => {
+                if let (Some((_, was)), Some((_, now))) = (before.item(step.was), after.item(now)) {
+                    at.push(Segment::Item(step.id));
+                    (table.ops.diff)(table, was, now, &at, out);
+                    at.pop();
+                }
+            }
+            None => out.push(Edit::new(path.to_vec(), EditOp::RemoveItem { id: step.id })),
         }
     }
-    for index in changes.copied..after.count() {
-        let Some((id, item)) = after.item(index) else {
+    for (offset, id) in plan.added.into_iter().enumerate() {
+        let index = changes.held.saturating_add(offset);
+        let Some((_, item)) = after.item(index) else {
             continue;
         };
         out.push(Edit::new(
             path.to_vec(),
             EditOp::InsertItem {
                 id: Some(id),
-                at: if arranged { index } else { 0 },
+                at: crate::At::Index(if arranged { index } else { 0 }),
                 value: (table.ops.to_json)(table, item),
             },
         ));
@@ -917,31 +1169,112 @@ fn diff_changed_in(
     true
 }
 
+/// [`Model::diff`] of [`Items`] whose type `table` describes, stored as
+/// `diff` and `arranged` say: from `changes` when the copy's changes tell,
+/// comparing every item otherwise. Compiled once for every item type.
+#[inline(never)]
+fn diff_items_in(
+    (table, diff, arranged): (&'static crate::table::ModelTable, ErasedDiff, bool),
+    lists: (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    changes: Option<Changes<'_>>,
+    path: &[Segment],
+    out: &mut Vec<Edit<()>>,
+) {
+    if let Some(changes) = changes
+        && diff_changed_in(table, lists, changes, arranged, (path, &mut *out))
+    {
+        return;
+    }
+    diff(table, lists, path, out);
+}
+
+/// Finds an item by id.
+type PositionOf<'a> = &'a dyn Fn(&Id) -> Option<usize>;
+
+/// Writes items whole into a slot.
+type StoreWhole<'a> = &'a dyn Fn(&mut Doc, Slot<'_>) -> Result<(), ModelError>;
+
+/// [`Model::store_changed`] of [`Items`] `now` over the items `was` they
+/// were copied from, changed as `changes` says when known, whose type
+/// `table` describes and stored arranged or not: only what changed when the
+/// changes tell, the whole items through `store` otherwise. `position_of`
+/// finds an item of `now` by id. Compiled once for every item type.
+#[inline(never)]
+fn store_items_changed_in(
+    (table, arranged): (&'static crate::table::ModelTable, bool),
+    lists: (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    changes: Option<Changes<'_>>,
+    (position_of, store): (PositionOf<'_>, StoreWhole<'_>),
+    (doc, slot, dirty): (&mut Doc, Slot<'_>, &Delta),
+) -> Result<(), ModelError> {
+    match changes {
+        Some(changes) if !arranged => {
+            store_by_id_changed_in(table, position_of, lists, changes, (doc, slot, dirty))
+        }
+        Some(changes) => {
+            if store_arranged_changed_in(table, lists, changes, (doc, slot, dirty))? {
+                return Ok(());
+            }
+            store(doc, slot)
+        }
+        None => store(doc, slot),
+    }
+}
+
+/// Hand each item of the JSON form of [`Items`] to `read`: a list of
+/// items, or `null` for none.
+/// Compiled once for every item type.
+///
+/// # Errors
+/// Returns that `value` is no list of items, or the first item that does
+/// not read.
+#[inline(never)]
+fn each_item_json(
+    value: &serde_json::Value,
+    read: &mut dyn FnMut(&serde_json::Value) -> Result<(), ModelError>,
+) -> Result<(), ModelError> {
+    match value {
+        serde_json::Value::Array(items) => items.iter().try_for_each(read),
+        serde_json::Value::Null => Ok(()),
+        _ => Err(ModelError::shape("a list of items")),
+    }
+}
+
+/// Write `item`, which `held` was, under `key` of `map`, as
+/// [`write_key_changed`](crate::model::write_key_changed) writes it, for
+/// items whose type `table` describes.
+fn write_item_changed(
+    table: &'static crate::table::ModelTable,
+    (doc, map, key): (&mut Doc, &ObjId, &str),
+    item: &dyn std::any::Any,
+    held: &dyn std::any::Any,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    match dirty.key(map, key) {
+        Touch::Written => (table.ops.store)(table, item, doc, Slot::Key(map, key)).located(key),
+        Touch::Untouched if (table.ops.stores_as)(table, item, held) => Ok(()),
+        Touch::Untouched | Touch::Below => {
+            (table.ops.store_changed)(table, item, held, doc, Slot::Key(map, key), dirty)
+                .located(key)
+        }
+    }
+}
+
 /// [`Model::store_changed`] of [`Keyed`] items `now` over the items `was`
-/// they were copied from, changed and added to as `changes` says: the
-/// operations [`ById::store`] writes, found without visiting the other
+/// they were copied from, changed, removed and added to as `changes` says:
+/// the operations [`ById::store`] writes, found without visiting the other
 /// items. The map holds each of `was` under its id as a store left it,
 /// except where `dirty` says someone else wrote since; an item no change
 /// touched is the very item `was` holds there, and storing it writes
-/// nothing. `items` finds an item by id.
-fn store_by_id_changed<T: Model + Identified, S>(
-    items: &Items<T, S>,
-    (now, was): (&[T], &[T]),
-    changes: Changes<'_>,
-    (doc, slot): (&mut Doc, Slot<'_>),
-    dirty: &Delta,
-) -> Result<(), ModelError> {
-    store_by_id_changed_in(
-        T::TABLE,
-        &|id| items.position_of(id),
-        (&Rows(now), &Rows(was)),
-        changes,
-        (doc, slot, dirty),
-    )
-}
-
-/// [`store_by_id_changed`] over items whose type `table` describes, compiled
-/// once for every item type.
+/// nothing. `position_of` finds an item by id.
+/// For items whose type `table` describes, compiled once for every item
+/// type.
 #[inline(never)]
 fn store_by_id_changed_in(
     table: &'static crate::table::ModelTable,
@@ -959,46 +1292,49 @@ fn store_by_id_changed_in(
         return store_by_id_in(table, now, doc, slot);
     };
     let touched = dirty.under(&map);
-    let kept = match kept_ids(was, now, changes) {
-        Some(kept) if !touched.is_all() => kept,
+    let plan = match plan(was, now, changes) {
+        Some(plan) if !touched.is_all() => plan,
         _ => return store_by_id_in(table, now, doc, slot),
     };
-    // What to write: the items changed and added, and those someone else
-    // touched; what to delete: a key no item is under, which only someone
-    // else can have written.
-    let mut writes: Vec<usize> = kept.iter().map(|(at, _)| *at).collect();
-    writes.extend(changes.copied..now.count());
+    // What to write, by position now and then: the items changed and
+    // added, and those someone else touched; what to delete: the keys of
+    // the items removed, and a key someone else wrote no item is under.
+    let mut writes: Vec<(usize, Option<usize>)> = Vec::new();
     let mut stale: Vec<&str> = Vec::new();
-    for key in touched.keys() {
-        match position_of(&Id::from_raw(key)) {
-            Some(at) => writes.push(at),
-            None if doc.get(&map, key)?.is_some() => stale.push(key),
-            None => {}
+    for step in &plan.steps {
+        match step.now {
+            Some(now) => writes.push((now, Some(step.was))),
+            None => stale.push(step.id.as_str()),
         }
     }
-    // In the order `store` writes: deletes by key, then items in order.
-    stale.sort_unstable();
-    for key in stale {
-        doc.delete(&map, key)?;
+    writes.extend((changes.held..now.count()).map(|at| (at, None)));
+    for key in touched.keys() {
+        match position_of(&Id::from_raw(key)) {
+            Some(at) if at < changes.held => {
+                writes.push((at, Some(copied_at(changes.removed, at))));
+            }
+            Some(at) => writes.push((at, None)),
+            None => stale.push(key),
+        }
     }
-    writes.sort_unstable();
-    writes.dedup();
-    for at in writes {
+    // In the order `store` writes: deletes by key, then items in order. It
+    // deletes only what the map holds.
+    stale.compact_sort();
+    stale.dedup();
+    for key in stale {
+        if doc.get(&map, key)?.is_some() {
+            doc.delete(&map, key)?;
+        }
+    }
+    writes.compact_sort_by_key(|(now, _)| *now);
+    writes.dedup_by_key(|(now, _)| *now);
+    for (at, then) in writes {
         let Some((id, item)) = now.item(at) else {
             continue;
         };
         let key = id.as_str();
-        match was.item(at).filter(|_| at < changes.copied) {
-            Some((_, held)) => match dirty.key(&map, key) {
-                Touch::Written => {
-                    (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?;
-                }
-                Touch::Untouched if (table.ops.stores_as)(table, item, held) => {}
-                Touch::Untouched | Touch::Below => {
-                    (table.ops.store_changed)(table, item, held, doc, Slot::Key(&map, key), dirty)
-                        .located(key)?;
-                }
-            },
+        match then.and_then(|then| was.item(then)) {
+            Some((_, held)) => write_item_changed(table, (doc, &map, key), item, held, dirty)?,
             None => (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?,
         }
     }
@@ -1033,6 +1369,82 @@ fn store_by_id_in(
         (table.ops.store)(table, item, doc, Slot::Key(&map, id.as_str())).located(id.as_str())?;
     }
     Ok(())
+}
+
+/// [`Model::store_changed`] of [`Ordered`](crate::Ordered) items `now` over
+/// the items `was` they were copied from, changed, removed and added to as
+/// `changes` says: the operations [`Arranged::store`](crate::Arranged)
+/// writes, found without visiting the other items. `false`, with nothing
+/// written, when only the whole write can say.
+///
+/// The map holds an entry `{ k, v }` for each of `was` as a store left it,
+/// unless `dirty` says someone else wrote there since; then it is written
+/// whole. A store leaves order keys rising strictly from item to item, so a
+/// whole write keeps every order key of the items still held (they rise in
+/// the order kept), deletes the entries of the items removed, writes the
+/// items changed field by field and mints keys after the last item held for
+/// the items added; nothing else.
+/// For items whose type `table` describes, compiled once for every item
+/// type.
+#[inline(never)]
+fn store_arranged_changed_in(
+    table: &'static crate::table::ModelTable,
+    (now, was): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    changes: Changes<'_>,
+    (doc, slot, dirty): (&mut Doc, Slot<'_>, &Delta),
+) -> Result<bool, ModelError> {
+    use crate::collection::{ORDER, VALUE, put_entry};
+    let Some((Value::Object(ObjType::Map), map)) = slot.current(doc)? else {
+        return Ok(false);
+    };
+    if dirty.touches(&map) {
+        return Ok(false);
+    }
+    let Some(plan) = plan(was, now, changes) else {
+        return Ok(false);
+    };
+    // The key the last item held is stored under, read before any write.
+    let last_key = match changes.held.checked_sub(1).and_then(|at| now.item(at)) {
+        Some((id, _)) if !plan.added.is_empty() => {
+            let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? else {
+                return Ok(false);
+            };
+            Some(
+                crate::model::read_key::<crate::Atom>(doc, &entry, ORDER)
+                    .located(id.as_str())?
+                    .0,
+            )
+        }
+        _ => None,
+    };
+    // Deletes first, in stored order: the order the items were copied in.
+    for step in &plan.steps {
+        if step.now.is_none() {
+            doc.delete(&map, step.id.as_str())?;
+        }
+    }
+    for step in &plan.steps {
+        if let (Some(at), Some((_, held))) = (step.now, was.item(step.was))
+            && let Some((_, item)) = now.item(at)
+        {
+            let id = step.id.as_str();
+            let entry = Slot::Key(&map, id).object(doc, ObjType::Map)?;
+            write_item_changed(table, (doc, &entry, VALUE), item, held, dirty).located(id)?;
+        }
+    }
+    let keys = crate::order::sequence(last_key.as_deref(), None, plan.added.len());
+    for ((offset, id), key) in plan.added.iter().enumerate().zip(keys) {
+        let Some((_, item)) = now.item(changes.held.saturating_add(offset)) else {
+            continue;
+        };
+        put_entry(doc, &map, id, key, false, &|doc, slot| {
+            (table.ops.store)(table, item, doc, slot)
+        })?;
+    }
+    Ok(true)
 }
 
 impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
@@ -1089,15 +1501,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        match value {
-            serde_json::Value::Array(items) => items
-                .iter()
-                .map(T::from_json)
-                .collect::<Result<Vec<_>, _>>()
-                .map(Self::from),
-            serde_json::Value::Null => Ok(Self::default()),
-            _ => Err(ModelError::shape("a list of items")),
-        }
+        let mut items = Vec::new();
+        each_item_json(value, &mut |item| {
+            items.push(T::from_json(item)?);
+            Ok(())
+        })?;
+        Ok(Self::from(items))
     }
 
     #[inline(never)]
@@ -1123,9 +1532,9 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         self.stock.same(&before.stock)
     }
 
-    /// A [`Keyed`] copy changed one item at a time and added to writes
-    /// only those items, and the ones someone else touched; anything else
-    /// is written as [`store`](Model::store) writes it.
+    /// A copy changed one item at a time, removed from and added to writes
+    /// only those items, and for a [`Keyed`] the ones someone else touched;
+    /// anything else is written as [`store`](Model::store) writes it.
     #[inline(never)]
     fn store_changed(
         &self,
@@ -1136,19 +1545,19 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     ) -> Result<(), ModelError> {
         let (now, was) = (self.stock.get(), before.stock.get());
         let changes = if self.stock.same(&before.stock) {
-            Some(Changes {
-                changed: &[],
-                copied: was.items.len(),
-            })
+            Some(Changes::none(was.items.len()))
         } else {
             now.changed_since(was)
         };
-        match changes {
-            Some(changes) if !S::ARRANGED => {
-                store_by_id_changed(self, (&now.items, &was.items), changes, (doc, slot), dirty)
-            }
-            _ => S::store(self.items(), doc, slot),
-        }
+        store_items_changed_in(
+            (T::TABLE, S::ARRANGED),
+            (&Rows(&now.items), &Rows(&was.items)),
+            changes,
+            (&|id| self.position_of(id), &|doc, slot| {
+                self.store(doc, slot)
+            }),
+            (doc, slot, dirty),
+        )
     }
 
     #[inline(never)]
@@ -1173,7 +1582,6 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         stock.ids = ids;
         refreshed
     }
-
     #[inline(never)]
     fn edit(
         doc: &mut Doc,
@@ -1209,18 +1617,15 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         if self.stock.same(&after.stock) {
             return;
         }
-        if let Some(changes) = after.stock.get().changed_since(self.stock.get())
-            && diff_changed(
-                (self.items(), after.items()),
-                changes,
-                S::ARRANGED,
-                path,
-                out,
-            )
-        {
-            return;
-        }
-        S::diff(self.items(), after.items(), path, out);
+        let mut found = Vec::new();
+        diff_items_in(
+            (T::TABLE, S::DIFF, S::ARRANGED),
+            (&Rows(self.items()), &Rows(after.items())),
+            after.stock.get().changed_since(self.stock.get()),
+            path,
+            &mut found,
+        );
+        out.extend(found.into_iter().map(Edit::retyped));
     }
 
     fn check(&self) -> Result<(), Refusal> {

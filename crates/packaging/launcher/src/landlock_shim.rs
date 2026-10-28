@@ -767,7 +767,6 @@ mod tests {
 
     #[test]
     fn shim_command_line_parses_strictly() {
-        // Phase `parses_minimal_command`.
         {
             let args = vec!["--".into(), "/bin/echo".into(), "hi".into()];
             let parsed = ShimArgs::parse(&args).expect("parse");
@@ -776,7 +775,6 @@ mod tests {
             assert!(!parsed.net_restricted);
             assert_eq!(parsed.command, vec!["/bin/echo".to_string(), "hi".into()]);
         }
-        // Phase `parses_rules_and_flags`.
         {
             let args = vec![
                 "--ro".into(),
@@ -796,7 +794,6 @@ mod tests {
             assert_eq!(parsed.keep_fds, vec![17]);
             assert_eq!(parsed.command, vec!["/app".to_string()]);
         }
-        // Phase `missing_separator_is_error`.
         {
             let args = vec!["--ro".into(), "/usr".into()];
             assert_eq!(
@@ -804,7 +801,6 @@ mod tests {
                 Err(ShimParseError::MissingSeparator)
             );
         }
-        // Phase `dangling_flag_is_error`.
         {
             let args = vec!["--ro".into()];
             assert!(matches!(
@@ -812,7 +808,6 @@ mod tests {
                 Err(ShimParseError::DanglingValue(_))
             ));
         }
-        // Phase `unknown_policy_flag_is_error_instead_of_a_silent_downgrade`.
         {
             let args = vec!["--future-restriction".into(), "--".into(), "/app".into()];
             assert_eq!(
@@ -820,7 +815,6 @@ mod tests {
                 Err(ShimParseError::UnknownFlag("--future-restriction".into()))
             );
         }
-        // Phase `invalid_or_standard_keep_fd_is_rejected`.
         {
             for value in ["no", "-1", "2", "1025"] {
                 let args = vec!["--keep-fd".into(), value.into(), "--".into(), "/app".into()];
@@ -830,7 +824,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `empty_command_is_error`.
         {
             let args = vec!["--".into()];
             assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::EmptyCommand));
@@ -839,7 +832,6 @@ mod tests {
 
     #[test]
     fn shim_fd_and_access_plans_are_pinned() {
-        // Phase `ambient_fd_plan_preserves_only_named_brokers`.
         {
             assert_eq!(
                 ambient_fd_close_ranges(&[18, 17, 18]).expect("plan"),
@@ -850,7 +842,6 @@ mod tests {
                 vec![(3, u32::MAX)]
             );
         }
-        // Phase `access_plan_ro_and_rw`.
         {
             let plan = access_plan(
                 &[PathBuf::from("/usr")],
@@ -887,8 +878,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `pinned_shim_rulesets`.
-        // Each network shape of the shim argv, and the ruleset it installs.
         {
             let base = ShimArgs::parse(&[
                 "--ro".into(),
@@ -940,7 +929,6 @@ mod tests {
             });
             assert_eq!(both, gated);
 
-            // A port without a gate socket opens nothing.
             let portless = ruleset_spec(&ShimArgs {
                 net_gate_port: Some(8118),
                 ..base
@@ -952,12 +940,10 @@ mod tests {
 
     #[test]
     fn only_the_internal_relay_mode_runs_without_landlock() {
-        // Phase `ordinary_shim_invocations_require_landlock`.
         {
             let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");
             assert!(!parsed.no_landlock);
         }
-        // Phase `only_the_explicit_internal_relay_mode_skips_landlock`.
         {
             let parsed = ShimArgs::parse(&["--no-landlock".into(), "--".into(), "/app".into()])
                 .expect("parse");

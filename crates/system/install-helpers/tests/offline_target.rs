@@ -247,7 +247,6 @@ fn direct_import_preserves_digest_and_uses_immutable_id() {
         }
         assert_eq!(argv[0..2], ["podman", "run"]);
         assert!(argv.iter().any(|word| word == "--network=none"));
-        // The target image resolves its own origin with its compiled reader.
         let origin = update();
         assert_eq!(
             argv[argv.len() - 5..],

@@ -7,7 +7,7 @@ use crate::workspace_server::{WorkspaceBackend, WorkspaceFileBackend};
 use crate::{DirEntry, EntryKind, FileGrant, FsSession, GrantedEntry, Metadata, OpenMode};
 
 /// Presentation below this private service. This label conveys no authority.
-pub const SELECTED_FILE: &str = "file";
+pub use tilo_fs_client::SELECTED_FILE;
 
 /// Consumes an existing opaque session/grant rather than opening a caller path.
 /// The authenticating host must retain its source and target-person lifetime in

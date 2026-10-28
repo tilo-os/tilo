@@ -156,6 +156,9 @@ No multi-resource atomic snapshots, branch/merge product workflow, all-types
 schema-evolution proof or universal redaction proof is delivered here. Closed
 resources, cold/remote hosts and restart routing need end-to-end tests for this
 new workflow. Broader coverage and UI review-action integration remain work.
+What isolation and integration could mean, given that none of it is a branch,
+is investigated in [isolated-work-and-integration.md](isolated-work-and-integration.md);
+that page is a recommendation, not an agreed product.
 
 That old **#3875 was closed unmerged** describes that PR, not absence of
 the architecture: Git records **`d8bc16deea` — “feat: one

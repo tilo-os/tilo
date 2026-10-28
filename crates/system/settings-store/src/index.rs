@@ -23,13 +23,75 @@ pub struct Page {
 pub struct Setting {
     /// Stable name, as links and search hits address the setting.
     pub id: &'static str,
-    /// The slug of the page it is on.
     pub page: &'static str,
     /// The widget id of the control that changes it. One `*` stands for any
     /// run of characters (one display's id among several); `|` separates the
     /// ids of the controls the page may show instead (one layout's chooser
     /// or the list of several).
     pub control: &'static str,
+    /// The switch it is, where it is one: a yes-or-no field of a settings
+    /// section the session keeps. Search then offers the switch itself,
+    /// flipped through the section's field edit as its control in Settings
+    /// flips it.
+    pub switch: Option<Switch>,
+    /// The choice it is, where it is one: a field of a settings section the
+    /// session keeps that holds one of a few named values. Search then
+    /// offers each value by its name, set through the section's field edit
+    /// as its control in Settings sets it.
+    pub choice: Option<Choice>,
+}
+
+/// A setting that holds one of a few values, as the section that holds it
+/// publishes it: a yes-or-no shown as two choices is one too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    /// The section's kind (`settings.input`).
+    pub section: &'static str,
+    /// The field's path in the section, its names joined by dots.
+    pub field: &'static str,
+    pub options: &'static [ChoiceOption],
+}
+
+/// One value of a [`Choice`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChoiceOption {
+    /// The value as the field stores it, as JSON (`"edge"`, `true`).
+    pub value: &'static str,
+    /// The value's name in the catalogue, under its setting's
+    /// ([`Setting::option_key`]).
+    pub name: &'static str,
+}
+
+impl Choice {
+    /// The names of the field's path, outermost first.
+    pub fn path(self) -> impl Iterator<Item = &'static str> {
+        self.field.split('.')
+    }
+}
+
+impl ChoiceOption {
+    /// The value as JSON.
+    #[must_use]
+    pub fn json(self) -> serde_json::Value {
+        serde_json::from_str(self.value).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// A yes-or-no setting, as the section that holds it publishes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switch {
+    /// The section's kind (`settings.appearance`).
+    pub section: &'static str,
+    /// The field's path in the section, its names joined by dots
+    /// (`focus.enabled`).
+    pub field: &'static str,
+}
+
+impl Switch {
+    /// The names of the field's path, outermost first.
+    pub fn path(self) -> impl Iterator<Item = &'static str> {
+        self.field.split('.')
+    }
 }
 
 impl Page {
@@ -51,7 +113,6 @@ impl Page {
         format!("settings-index-page-{}-words", key(self.slug))
     }
 
-    /// The link that opens the page.
     #[must_use]
     pub fn link(self) -> String {
         format!("settings://{}", self.slug)
@@ -66,7 +127,6 @@ impl Page {
 }
 
 impl Setting {
-    /// The catalogue key of the setting's name.
     #[must_use]
     pub fn name_key(self) -> String {
         format!("settings-index-setting-{}", key(self.id))
@@ -78,10 +138,43 @@ impl Setting {
         format!("settings-index-setting-{}-words", key(self.id))
     }
 
+    /// The catalogue key of the name of its choice `option`.
+    #[must_use]
+    pub fn option_key(self, option: ChoiceOption) -> String {
+        format!(
+            "settings-index-setting-{}-{}",
+            key(self.id),
+            key(option.name)
+        )
+    }
+
     /// The link that opens the setting's page at the setting.
     #[must_use]
     pub fn link(self) -> String {
         format!("settings://{}#{}", self.page, self.id)
+    }
+
+    /// Every word the setting is found by, in every language, lowercased:
+    /// its names, the other words people use for it and the names of the
+    /// values it may hold. Settings' own search
+    /// and the desktop palette rank a setting by these alike.
+    #[must_use]
+    pub fn search_words(self) -> Vec<String> {
+        let mut words = names_in_every_locale(&self.name_key());
+        let options = self
+            .choice
+            .iter()
+            .flat_map(|choice| choice.options)
+            .flat_map(|option| names_in_every_locale(&self.option_key(*option)));
+        for word in words_in_every_locale(&self.words_key())
+            .into_iter()
+            .chain(options)
+        {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words
     }
 
     /// Whether `widget_id` is the id of a control that changes this setting.
@@ -110,7 +203,6 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     }
 }
 
-/// The page with `slug`.
 #[must_use]
 pub fn page(slug: &str) -> Option<Page> {
     PAGES.iter().copied().find(|page| page.slug == slug)
@@ -231,7 +323,41 @@ pub const PAGES: &[Page] = &[
 ];
 
 const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setting {
-    Setting { id, page, control }
+    Setting {
+        id,
+        page,
+        control,
+        switch: None,
+        choice: None,
+    }
+}
+
+impl Setting {
+    /// The setting is the field `field` of the section `section`, holding
+    /// one of `options`.
+    const fn choice(
+        self,
+        section: &'static str,
+        field: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self {
+            choice: Some(Choice {
+                section,
+                field,
+                options,
+            }),
+            ..self
+        }
+    }
+
+    /// The setting is the yes-or-no field `field` of the section `section`.
+    const fn switch(self, section: &'static str, field: &'static str) -> Self {
+        Self {
+            switch: Some(Switch { section, field }),
+            ..self
+        }
+    }
 }
 
 /// The settings people look for by name, page by page.
@@ -245,6 +371,7 @@ pub const SETTINGS: &[Setting] = &[
     // Bluetooth
     s("bluetooth.enabled", "bluetooth", "bluetooth.toggle"),
     // Displays
+    s("display.arrangement", "displays", "display.arrangement"),
     s("display.brightness", "displays", "display.brightness"),
     s(
         "display.auto_brightness",
@@ -259,6 +386,11 @@ pub const SETTINGS: &[Setting] = &[
     ),
     s("display.scale", "displays", "display.output.*.scale"),
     s("display.resolution", "displays", "display.output.*.mode"),
+    s(
+        "display.refresh_rate",
+        "displays",
+        "display.output.*.refresh",
+    ),
     s("display.rotation", "displays", "display.output.*.rotation"),
     s("display.hdr", "displays", "display.output.*.hdr"),
     s("display.vrr", "displays", "display.output.*.vrr"),
@@ -309,11 +441,43 @@ pub const SETTINGS: &[Setting] = &[
         "pointing.secondary_click",
         "pointing",
         "input.touchpad_click_method",
+    )
+    .choice(
+        "settings.input",
+        "touchpad_click_method",
+        &[
+            ChoiceOption {
+                value: "\"default\"",
+                name: "default",
+            },
+            ChoiceOption {
+                value: "\"areas\"",
+                name: "areas",
+            },
+            ChoiceOption {
+                value: "\"clickfinger\"",
+                name: "clickfinger",
+            },
+        ],
     ),
     s(
         "pointing.scroll_method",
         "pointing",
         "input.touchpad_scroll_method",
+    )
+    .choice(
+        "settings.input",
+        "touchpad_scroll_method",
+        &[
+            ChoiceOption {
+                value: "\"two_finger\"",
+                name: "two_finger",
+            },
+            ChoiceOption {
+                value: "\"edge\"",
+                name: "edge",
+            },
+        ],
     ),
     s("pointing.gestures", "pointing", "input.touchpad_gestures"),
     s(
@@ -339,10 +503,16 @@ pub const SETTINGS: &[Setting] = &[
     // Power
     s("power.profile", "power", "power.profile"),
     s("power.charge_limit", "power", "power.charge_limit"),
-    s("power.auto_suspend", "power", "power.auto_suspend"),
-    s("power.suspend_after", "power", "power.suspend"),
+    s("power.auto_suspend", "power", "power.auto_suspend").switch("settings.power", "auto_suspend"),
+    s(
+        "power.suspend_after",
+        "power",
+        "power.suspend|power.suspend_battery|power.profile_suspend",
+    ),
     s("power.blank", "power", "power.blank"),
     s("power.lock_after", "power", "power.lock"),
+    s("power.lock_on_sleep", "power", "power.lock_on_sleep")
+        .switch("settings.power", "lock_on_sleep"),
     s("power.lid", "power", "power.lid"),
     s("power.power_key", "power", "power.power_key"),
     s("power.critical", "power", "power.critical"),
@@ -354,87 +524,120 @@ pub const SETTINGS: &[Setting] = &[
         "appearance",
         "appearance.wallpaper.*",
     ),
-    s("appearance.text_size", "appearance", "appearance.text_size"),
     s("appearance.ui_scale", "appearance", "appearance.ui_scale"),
     s(
-        "appearance.high_contrast",
-        "appearance",
-        "appearance.high_contrast",
-    ),
-    s(
-        "appearance.reduce_motion",
-        "appearance",
-        "appearance.reduce_motion",
-    ),
-    s(
         "appearance.hide_top_bar",
         "appearance",
         "appearance.hide_top_bar",
     ),
-    // Accessibility
+    // Accessibility. High contrast, reduce motion and text size are set in
+    // Accessibility alone; their ids keep the `appearance.` names links use.
+    s("appearance.text_size", "accessibility", "a11y.text_size"),
+    s(
+        "appearance.high_contrast",
+        "accessibility",
+        "a11y.high_contrast",
+    )
+    .switch("settings.appearance", "high_contrast"),
+    s(
+        "appearance.reduce_motion",
+        "accessibility",
+        "a11y.reduce_motion",
+    )
+    .switch("settings.appearance", "reduce_motion"),
     s("a11y.screen_reader", "accessibility", "a11y.screen_reader"),
     s(
         "a11y.on_screen_keyboard",
         "accessibility",
         "a11y.on_screen_keyboard",
     ),
-    s("a11y.large_cursor", "accessibility", "a11y.large_cursor"),
+    s("a11y.large_cursor", "accessibility", "a11y.large_cursor")
+        .switch("settings.accessibility", "large_cursor"),
     s("a11y.cursor_size", "accessibility", "a11y.cursor_size"),
     s("a11y.magnifier", "accessibility", "a11y.magnifier"),
     s("a11y.colour_filter", "accessibility", "a11y.color_filter"),
-    s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys"),
-    s("a11y.slow_keys", "accessibility", "a11y.slow_keys"),
-    s("a11y.bounce_keys", "accessibility", "a11y.bounce_keys"),
-    s("a11y.mouse_keys", "accessibility", "a11y.mouse_keys"),
-    s("a11y.visual_alerts", "accessibility", "a11y.visual_alerts"),
+    s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys")
+        .switch("settings.accessibility", "sticky_keys"),
+    s("a11y.slow_keys", "accessibility", "a11y.slow_keys")
+        .switch("settings.accessibility", "slow_keys"),
+    s("a11y.bounce_keys", "accessibility", "a11y.bounce_keys")
+        .switch("settings.accessibility", "bounce_keys"),
+    s("a11y.mouse_keys", "accessibility", "a11y.mouse_keys")
+        .switch("settings.accessibility", "mouse_keys"),
+    s("a11y.visual_alerts", "accessibility", "a11y.visual_alerts")
+        .switch("settings.accessibility", "visual_alerts"),
     s(
         "a11y.switch_control",
         "accessibility",
         "a11y.switch_control",
-    ),
+    )
+    .switch("settings.accessibility", "switch_control"),
     s(
         "a11y.dictation_language",
         "accessibility",
         "a11y.dictation_language",
     ),
     // Notifications
-    s("notifications.dnd", "notifications", "notifications.dnd"),
+    s("notifications.dnd", "notifications", "notifications.dnd")
+        .switch("settings.notifications", "do_not_disturb"),
     s(
         "notifications.banners",
         "notifications",
         "notifications.banners",
-    ),
+    )
+    .switch("settings.notifications", "show_banners"),
     s(
         "notifications.previews",
         "notifications",
         "notifications.previews",
+    )
+    .choice(
+        "settings.notifications",
+        "show_previews",
+        &[
+            ChoiceOption {
+                value: "true",
+                name: "shown",
+            },
+            ChoiceOption {
+                value: "false",
+                name: "hidden",
+            },
+        ],
     ),
     s(
         "notifications.lock_screen",
         "notifications",
         "notifications.lock_screen",
-    ),
+    )
+    .switch("settings.notifications", "show_on_lock_screen"),
     s(
         "notifications.sounds",
         "notifications",
         "notifications.sounds",
-    ),
+    )
+    .switch("settings.notifications", "play_sounds"),
     s(
         "notifications.badges",
         "notifications",
         "notifications.badges",
-    ),
+    )
+    .switch("settings.notifications", "show_badges"),
     s(
         "notifications.quiet_hours",
         "notifications",
         "notifications.focus.enabled",
-    ),
+    )
+    .switch("settings.notifications", "focus.enabled"),
     // Spelling & dictionary
-    s("spelling.check", "spelling", "text.check_spelling"),
-    s("spelling.autocorrect", "spelling", "text.auto_correct"),
+    s("spelling.check", "spelling", "text.check_spelling")
+        .switch("settings.text-assistance", "check_spelling"),
+    s("spelling.autocorrect", "spelling", "text.auto_correct")
+        .switch("settings.text-assistance", "auto_correct"),
     s("spelling.language", "spelling", "text.spelling_language"),
     s("spelling.dictionary", "spelling", "dictionary.word"),
     // Region & formats
+    s("region.language", "region_formats", "region.language"),
     s("region.currency", "region_formats", "region.currency"),
     s("region.date", "region_formats", "region.date"),
     s("region.time", "region_formats", "region.time"),
@@ -478,6 +681,9 @@ mod tests {
         for setting in SETTINGS {
             wanted.insert(setting.name_key());
             wanted.insert(setting.words_key());
+            for option in setting.choice.iter().flat_map(|choice| choice.options) {
+                wanted.insert(setting.option_key(*option));
+            }
         }
         for (locale, catalogue) in CATALOGUES {
             let have: BTreeSet<String> =
@@ -486,6 +692,29 @@ mod tests {
             let extra: Vec<_> = have.difference(&wanted).collect();
             assert!(missing.is_empty(), "{locale} lacks {missing:?}");
             assert!(extra.is_empty(), "{locale} holds unused {extra:?}");
+        }
+    }
+
+    /// A choice's values are JSON, each named once, and a setting is a
+    /// switch or a choice, not both.
+    #[test]
+    fn every_choice_names_values_its_field_can_hold() {
+        for setting in SETTINGS {
+            let Some(choice) = setting.choice else {
+                continue;
+            };
+            assert!(setting.switch.is_none(), "{}", setting.id);
+            assert!(choice.options.len() >= 2, "{}", setting.id);
+            let mut names = HashSet::new();
+            for option in choice.options {
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(option.value).is_ok(),
+                    "{}: {} is JSON",
+                    setting.id,
+                    option.value
+                );
+                assert!(names.insert(option.name), "{}: {}", setting.id, option.name);
+            }
         }
     }
 

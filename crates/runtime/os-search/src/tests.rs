@@ -106,8 +106,12 @@ impl ActionHost for Host {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 }
 
@@ -136,6 +140,8 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             resource_kind: "notes.page".into(),
             resource_label: label.into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::View,
@@ -191,7 +197,8 @@ async fn only_resources_with_a_quiet_opening_action_are_indexed() {
             reason: "x".into(),
         };
         let mut hidden = row("7", "page:hidden", "Offered to callers only", "open");
-        hidden.action.as_mut().unwrap().contract.tags = vec![tilo_actions::PROGRAMMATIC_TAG.into()];
+        hidden.action.as_mut().unwrap().contract.tags =
+            vec![tilo_actions::AGENTS_AUDIENCE_TAG.into()];
         catalogue.rows = vec![
             row("7", "page:plain", "Plain view", "open"),
             row("7", "page:peek", "Peek only", "peek"),
@@ -200,7 +207,6 @@ async fn only_resources_with_a_quiet_opening_action_are_indexed() {
             edits,
             disabled,
             hidden,
-            // The workspace's own rows open applications the host lists.
             row(
                 &workspace_provider(ROOM),
                 "app.so.tilo.notes",

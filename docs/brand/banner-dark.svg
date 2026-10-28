@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title description">
+  <title id="title">Tilo</title>
+  <desc id="description">A desktop for doing things together.</desc>
+  <rect width="1200" height="320" fill="#12110f"/>
+  <svg x="64" y="44" width="470" height="149" viewBox="-249.48 44 696.48 220"><g transform="translate(-249.48304886101465 -7.764705882352942) scale(3.235294117647059) translate(-10.979892448752274 0)"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></g><g fill="#f3f1ea"><path d="M64 61H87A6 6 0 0 1 93 67V99H128A6 6 0 0 1 134 105V127A6 6 0 0 1 128 133H93V211C93 224 100 232 112 232H140A6 6 0 0 1 146 238V258A6 6 0 0 1 140 264H106C80 264 58 241 58 208V133H36A7 7 0 0 1 29 126V106A7 7 0 0 1 36 99H48C54 99 57 97 58 91V67A6 6 0 0 1 64 61Z"/><circle cx="184" cy="64" r="22"/><path d="M184 99C194.493 99 203 107.507 203 118V258Q203 264 197 264H171Q165 264 165 258V118C165 107.507 173.507 99 184 99Z"/><path d="M230 44H255A6 6 0 0 1 261 50V258Q261 264 255 264H230Q224 264 224 258V50A6 6 0 0 1 230 44Z"/><path fill-rule="evenodd" d="M363 98a84 84 0 1 0 .01 0ZM363 133a49 49 0 1 1 -.01 0Z"/></g></svg>
+  <text x="64" y="265" fill="#efe8d6" font-family="Atkinson Hyperlegible Next, system-ui, sans-serif" font-size="35">A desktop for doing things together.</text>
+  <rect x="1100" width="100" height="107" fill="#d0291c"/>
+  <rect x="1100" y="107" width="100" height="106" fill="#1f45a6"/>
+  <rect x="1100" y="213" width="100" height="107" fill="#f2b51c"/>
+</svg>

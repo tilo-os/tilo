@@ -135,7 +135,6 @@ fn assert_remapped_blocks(
             };
         }
         expected.id.clone_from(&new.id);
-        // A copied fence is a fence of its own.
         assert_eq!(new.code_group.is_some(), expected.code_group.is_some());
         if new.code_group.is_some() {
             assert_ne!(new.code_group, expected.code_group);
@@ -192,7 +191,6 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 );
             })
             .unwrap();
-        // Typing a word is one history entry, recorded once the word ends.
         assert_eq!(revision(&f, &checkout), before);
         driver.key("Enter");
         assert_eq!(
@@ -442,8 +440,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
             })
             .unwrap();
         context_menu_select(&mut a, copied_root, "Delete");
-        // Deleting a page asks first; the person confirms.
-        assert!(a.confirm_asked().is_some(), "the host asks first");
+        // Undo takes a deleted page back, so nobody is asked.
+        assert!(a.asking().is_none(), "nothing asks first");
         assert_eq!(revision(&f, &checkout), 4);
         f.records
             .read(&checkout.id, |doc| {
@@ -750,9 +748,10 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         );
         assert_eq!(revision(&f, &checkout), 2);
         let stale = id;
-        *f.authority.borrow_mut() =
+        f.authority.set(
             ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
-                .at_unix_time(100);
+                .at_unix_time(100),
+        );
         let before = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -1360,9 +1359,10 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         })
         .unwrap();
     a.relayout();
-    *f.authority.borrow_mut() =
+    f.authority.set(
         ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
-            .at_unix_time(100);
+            .at_unix_time(100),
+    );
     assert!(
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {

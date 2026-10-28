@@ -68,7 +68,6 @@ enum MenuAction {
 }
 
 struct Menu {
-    /// The page the menu targets.
     index: usize,
     rect: Rect,
     /// `(action, row-rect)` — separators are absent (drawn between groups).
@@ -203,7 +202,6 @@ fn shifted(rect: Rect, dy: f64) -> Rect {
 }
 
 pub struct PageSidebar {
-    // ---- configuration ----
     /// Thumbnail height as a multiple of its width (`page_h / page_w`).
     aspect: f64,
     header: String,
@@ -216,12 +214,10 @@ pub struct PageSidebar {
     /// Geometry this frame lays out and paints with; see [`RailMetrics`].
     m: RailMetrics,
 
-    // ---- per-frame inputs ----
     count: usize,
     current: usize,
     rect: Rect,
 
-    // ---- derived geometry (recomputed in begin_frame) ----
     list_vp: Rect,
     thumb_w: f64,
     thumb_h: f64,
@@ -229,7 +225,6 @@ pub struct PageSidebar {
     max_scroll: f64,
     add_rect: Rect,
 
-    // ---- interaction state ----
     scroll: f64,
     drag: DragController<usize>,
     /// Index pressed this gesture (used to distinguish a click from a drag).
@@ -391,8 +386,6 @@ impl PageSidebar {
         std::mem::take(&mut self.pending)
     }
 
-    // ---- geometry ----------------------------------------------------
-
     /// [`Self::begin_frame`] with the geometry read from `theme`
     /// ([`RailMetrics::from_theme`]) rather than the restated scale — the
     /// variant for a host whose layout pass has a `Theme` in hand.
@@ -513,8 +506,6 @@ impl PageSidebar {
         (0..self.count).find(|&i| self.thumb_rect(i).contains(p))
     }
 
-    // ---- pointer input ----------------------------------------------
-
     /// A left-button press at logical point `p`. Returns true when the rail
     /// consumed it (so the host stops routing). Opens/uses the context menu,
     /// the add button, or begins a select + potential reorder drag.
@@ -557,6 +548,10 @@ impl PageSidebar {
     pub fn on_right_press(&mut self, p: Point) -> bool {
         self.last_pointer = p;
         self.menu = None;
+        // A secondary press during a left press ends its pick-up: the page
+        // stays where it is and the left button's lift is no click.
+        self.drag.cancel();
+        self.press_idx = None;
         let Some(i) = self.thumb_at(p) else {
             return self.list_vp.contains(p);
         };
@@ -605,6 +600,13 @@ impl PageSidebar {
         let before = self.scroll;
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll);
         (self.scroll - before).abs() > f64::EPSILON
+    }
+
+    /// Whether a finger held at `p` picks up a page to move it: on a page,
+    /// in a rail that reorders, with no menu open
+    /// ([`crate::interaction::TouchClaim::HoldDrag`]).
+    pub fn lifts_by_hold(&self, p: Point) -> bool {
+        !self.read_only && self.menu.is_none() && self.thumb_at(p).is_some()
     }
 
     /// Escape: cancel a live drag or close the menu. Returns true if either
@@ -676,8 +678,6 @@ impl PageSidebar {
             _ => {}
         }
     }
-
-    // ---- drawing -----------------------------------------------------
 
     /// Paint the rail. `thumb` draws the host's page/slide content into the
     /// given slot rect (the widget frames it, rings it, numbers it, and
@@ -1090,7 +1090,6 @@ mod tests {
 
     #[test]
     fn page_list_operations_reorder_duplicate_and_measure() {
-        // Case `move_item_matches_remove_insert`.
         {
             let mut v = vec![0, 1, 2, 3];
             move_item(&mut v, 0, 3);
@@ -1150,7 +1149,6 @@ mod tests {
             assert_eq!(plain.thumb_rects()[0].1.x0, d.pad + d.num_gutter);
         }
 
-        // Case `thumb_rects_are_ordered_and_sized`.
         {
             let s = rail(4);
             let rects = s.thumb_rects();
@@ -1167,7 +1165,6 @@ mod tests {
 
     #[test]
     fn thumbnail_pointer_selects_drags_and_scrolls() {
-        // Case `press_on_thumbnail_selects_it`.
         {
             let mut s = rail(4);
             let (_, r2) = s.thumb_rects()[2];
@@ -1175,7 +1172,6 @@ mod tests {
             assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(2)]);
         }
 
-        // Case `drag_reorder_emits_reorder_on_release`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();
@@ -1191,7 +1187,6 @@ mod tests {
             );
         }
 
-        // Case `tiny_move_stays_a_click_not_a_reorder`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();
@@ -1203,7 +1198,6 @@ mod tests {
             assert!(s.take_events().is_empty(), "a click produces no reorder");
         }
 
-        // Case `escape_cancels_a_live_drag`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();
@@ -1221,7 +1215,6 @@ mod tests {
             );
         }
 
-        // Case `wheel_scrolls_and_clamps`.
         {
             // Many pages so the content overflows the viewport.
             let mut s = rail(40);
@@ -1233,7 +1226,6 @@ mod tests {
             assert_eq!(s.scroll(), 0.0);
         }
 
-        // Case `add_button_emits_add`.
         {
             let mut s = rail(4);
             assert!(s.on_press(s.add_rect.center()));
@@ -1243,7 +1235,6 @@ mod tests {
 
     #[test]
     fn page_menu_duplicates_deletes_and_moves_within_bounds() {
-        // Case `right_click_menu_duplicate_and_delete`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();
@@ -1269,7 +1260,6 @@ mod tests {
             assert_eq!(s.take_events(), vec![PageSidebarEvent::Delete(2)]);
         }
 
-        // Case `menu_move_up_down_map_to_reorder`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();
@@ -1292,7 +1282,6 @@ mod tests {
             );
         }
 
-        // Case `first_page_menu_has_no_move_up`.
         {
             let mut s = rail(4);
             let rects = s.thumb_rects();

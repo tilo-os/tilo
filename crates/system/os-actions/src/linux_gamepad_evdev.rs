@@ -84,7 +84,6 @@ mod tests {
 
     #[test]
     fn kernel_codes_map_only_to_fixed_schema() {
-        // BTN_SOUTH, BTN_MODE, ABS_RZ.
         assert_eq!(button(0x130), Some(GamepadButton::South));
         assert_eq!(button(0x13c), Some(GamepadButton::Guide));
         assert_eq!(axis(0x05), Some(GamepadAxis::RightTrigger));

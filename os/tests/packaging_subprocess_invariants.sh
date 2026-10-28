@@ -13,13 +13,14 @@ for source in "$app_cli" "$app_host"; do
   fi
 done
 
-image="$root/os/Containerfile"
-grep -Fq -- '-p app-cli' "$image"
-grep -Fq -- '--bin app' "$image"
-grep -Fq 'ln -s app /out/store' "$image"
-grep -Fq 'ln -s tilo /out/system' "$image"
-grep -Fq 'target/release/tilo completions bash' "$image"
-grep -Fq 'target/release/app completions fish' "$image"
+# The image's binaries are compiled outside the image build, by this script.
+compile="$root/os/image/compile.sh"
+grep -Fq -- '-p app-cli' "$compile"
+grep -Fq -- '--bin app ' "$compile"
+grep -Fq 'ln -s app "$out"/store' "$compile"
+grep -Fq 'ln -s tilo "$out"/system' "$compile"
+grep -Fq 'target/release/tilo completions bash' "$compile"
+grep -Fq 'target/release/app completions fish' "$compile"
 components="$root/os/components.toml"
 grep -Fq 'to = "/usr/share/bash-completion/completions/tilo"' "$components"
 grep -Fq 'to = "/usr/share/bash-completion/completions/app"' "$components"

@@ -376,11 +376,6 @@ async fn dial(
 impl RelayClient {
     /// Execute an owner-authorized lifecycle operation against a pinned home
     /// peer. The mutual handshake proves both enrolled device certificates.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or mutual authentication
-    /// fails, including when the relay's pinned user or device differs.
     pub async fn manage_home_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -440,11 +435,6 @@ impl RelayClient {
     }
     /// Resolve the authenticated direct filesystem endpoint advertised by a
     /// relay. The returned address is never the relay socket itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or authenticated
-    /// discovery fails.
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -470,11 +460,6 @@ impl RelayClient {
 
     /// Resolve both the content endpoint and authenticated Files workspace
     /// ticket needed by a fresh device to join the live record plane.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or authenticated
-    /// discovery fails.
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -622,10 +607,6 @@ impl RelayClient {
     /// this device's versioned hello without a word may have refused it, or
     /// may be one that cannot read it; this tells the two apart. Nothing is
     /// authenticated or kept: the connection closes after the answer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when the host is not reached.
     pub async fn probe_handshake_version(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -683,11 +664,6 @@ impl RelayClient {
     /// certificate and the exact enrolled device certificate.  The relay
     /// service endpoint is intentionally a separate Iroh key, so endpoint
     /// pinning alone cannot establish the identity behind it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or the pinned
-    /// user/device authentication check fails.
     pub async fn connect_to_enrolled_home_peer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -818,9 +794,6 @@ impl RelayClient {
     /// home peer, signing the private actions this device sends. Durable
     /// action execution remains unavailable; private routing is opt-in per
     /// subscribed room via `EnableActions`.
-    ///
-    /// # Errors
-    /// Returns an error for unsupported ALPN, authentication or transport failure.
     pub async fn connect_v2_to_enrolled_home_peer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -852,11 +825,6 @@ impl RelayClient {
     /// interactive-owner hint. The opaque trust token binds the service key,
     /// governing certificate, room, and workspace; the resulting client
     /// rejects every state or action frame outside that scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] for a mismatched endpoint pin, invalid or
-    /// non-exact governor ACK, unsupported protocol, or transport failure.
     pub async fn connect_v2_to_interactive_workspace_owner(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -984,7 +952,6 @@ impl RelayClient {
             postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &own_ack2_bytes).await?;
 
-        // Split into pump halves.
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
@@ -1059,11 +1026,6 @@ impl RelayClient {
     }
 
     /// Convenience: send an envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns the envelope back to the caller, boxed, if the outbound
-    /// channel to the pump task is closed (the connection is gone).
     pub fn send(&self, env: Envelope) -> Result<(), Box<Envelope>> {
         if self
             .workspace_scope
@@ -1105,10 +1067,6 @@ impl RelayClient {
     /// Queue one private frame. A session without a private channel (the
     /// HTTPS carrier) reports unavailable explicitly. State continues to use
     /// `send` and `recv`, sharing a single wire reader.
-    ///
-    /// # Errors
-    /// Returns an error without a private channel, on invalid/oversized
-    /// frames, or on bounded backpressure.
     pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
         let tx = self
             .action_outbound
@@ -1427,7 +1385,18 @@ async fn run_v2_reader<R>(
                 }
                 // Closing on bounded receiver overflow makes loss explicit;
                 // the future journal owner can recover status on reconnect.
-                if action_sink.try_send(action).is_err() {
+                if let Err(error) = action_sink.try_send(action) {
+                    let (reason, frame) = match error {
+                        mpsc::error::TrySendError::Full(frame) => ("its reader is behind", frame),
+                        mpsc::error::TrySendError::Closed(frame) => ("nobody reads it", frame),
+                    };
+                    let frame: String = format!("{frame:?}").chars().take(120).collect();
+                    tracing::warn!(
+                        reason,
+                        frame,
+                        capacity = action_sink.max_capacity(),
+                        "relay session closed: a private frame found its queue full or closed"
+                    );
                     return;
                 }
             }
@@ -2853,7 +2822,6 @@ mod handshake_probe_tests {
         sig_over_client_nonce: Vec<u8>,
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_probe_tells_a_host_from_before_versions_from_one_that_refused_this_device() {
         let ours = crate::auth::PEER_PROTOCOL_VERSION;

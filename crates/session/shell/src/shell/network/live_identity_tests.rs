@@ -90,7 +90,7 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
                 payload: collab_types::PeerPresencePayload::Pointer { x: 0.5, y: 0.5 },
             },
         );
-        network.live_participant()
+        ShellNetwork::live_participant()
     });
     assert_eq!(participant.label, "Ada");
     drop(network);
@@ -103,7 +103,7 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
 /// is not a name they gave.
 #[test]
 fn the_owner_is_called_by_their_name_else_their_accounts_never_a_guest() {
-    let account = || "bob Example".to_owned();
+    let account = || "Bob Example".to_owned();
     assert_eq!(
         super::own_person_name_or(Some("Ada".into()), account),
         "Ada"
@@ -112,14 +112,14 @@ fn the_owner_is_called_by_their_name_else_their_accounts_never_a_guest() {
         super::own_person_name_or(Some("  Ada  ".into()), account),
         "Ada"
     );
-    assert_eq!(super::own_person_name_or(None, account), "bob Example");
+    assert_eq!(super::own_person_name_or(None, account), "Bob Example");
     assert_eq!(
         super::own_person_name_or(Some("   ".into()), account),
-        "bob Example"
+        "Bob Example"
     );
     assert_eq!(
         super::own_person_name_or(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), account),
-        "bob Example"
+        "Bob Example"
     );
     assert!(!super::own_person_name(None).trim().is_empty());
 }

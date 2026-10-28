@@ -124,10 +124,6 @@ impl crate::widget::Decorator for OwnedText {
         self.publish(doc, root);
         performed
     }
-
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.committed.take()
-    }
 }
 
 impl crate::undo::CommittedActions for OwnedText {

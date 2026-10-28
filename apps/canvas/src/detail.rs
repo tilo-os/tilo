@@ -165,7 +165,6 @@ fn byte(value: f32) -> u8 {
 
 /// A painted layer's marks at a finer level, kept while its marks stay.
 pub struct LayerLevel {
-    /// The layer's content and the level.
     pub key: blake3::Hash,
     pub scale: f64,
     pub marks: Arc<[Painted]>,
@@ -516,8 +515,10 @@ impl Tiles {
         let todo: Vec<&Job> = jobs
             .filter(|job| !self.ready.contains_key(&job.key))
             .collect();
-        let done: Vec<(blake3::Hash, ImageData)> =
-            todo.par_iter().map(|job| (job.key, job.run())).collect();
+        // On the CPU pool, as every app's parallel work: the pool sizes it
+        // to the device, and in a browser page its one thread.
+        let done: Vec<(blake3::Hash, ImageData)> = ui::rt::cpu_pool()
+            .install(|| todo.par_iter().map(|job| (job.key, job.run())).collect());
         for (key, image) in done {
             self.ready.insert(key, (image, self.frame));
         }

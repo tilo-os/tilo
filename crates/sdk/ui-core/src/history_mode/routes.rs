@@ -87,17 +87,14 @@ fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
     AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 
-/// Load an incremental stream into `doc`. Automerge's incremental loader
-/// accepts a valid prefix on partial parse errors, so the whole stream is
-/// first loaded strictly on its own. MissingDeps comes only after a complete
-/// parse and is expected for deltas that need the receiver's history.
-fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
-    match AutoCommit::load(bytes) {
-        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-        Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
-    }
-    doc.load_incoming(bytes)
-        .map(|_| ())
+/// Apply an incremental stream to `doc`, whole or not at all. Automerge's
+/// incremental loader takes a valid prefix of a stream that stops parsing,
+/// so every chunk is parsed first; the parsed changes are then applied, and
+/// the ones that need history `doc` lacks wait for it, as every delta's may.
+pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
+    let changes = automerge::Automerge::parse_changes(bytes)
+        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+    doc.apply_incoming(changes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {
@@ -203,6 +200,13 @@ impl PendingRemote {
         self.queue.is_empty()
     }
 }
+/// A route an owner holds that the transport is not yet joined to, and the
+/// kind its record holds.
+pub(crate) struct RouteJoin {
+    pub(crate) route: RouteSpec,
+    pub(crate) record_kind: crate::record::RecordKind,
+}
+
 pub(crate) struct OwnerRoute {
     pub(crate) route: RouteSpec,
     pub(crate) owners: Vec<HistoryOwner>,
@@ -217,7 +221,20 @@ pub(crate) struct OwnerRoute {
     /// no host replays its route, so a snapshot that leaves this replica
     /// ahead of its sender is answered with this replica's own.
     pub(crate) answers_snapshots: bool,
+    /// Joined, and not yet open for documents: its first publication
+    /// waits for the route instead of failing. A record a running action
+    /// created (the next part of a chain) has no route until the action
+    /// made it.
+    pub(crate) opening: bool,
 }
+/// A record of a live owner's tree, and the lifetime its owner on the
+/// route lives by.
+struct TreeRecord {
+    store: crate::record::RecordStore,
+    checkout: crate::record::RecordCheckout,
+    lifetime: std::rc::Rc<super::owner::LegacyHistoryLifetime>,
+}
+
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
     pub(crate) witness: Option<PrimaryRouteWitness>,
@@ -229,6 +246,9 @@ pub(crate) struct OwnerDocumentRoutes {
     /// peers. Cleared by the next accepted change.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
+    /// The records held as part of a live owner's tree ([`RecordId::tree`])
+    /// that no view owns: each keeps its route while its store has it open.
+    tree: Vec<TreeRecord>,
     #[cfg(test)]
     pub(crate) sent: Vec<(RouteSpec, crate::collaboration::CollabRequest)>,
     /// Transport outcome the recording test transport reports for owned
@@ -237,6 +257,69 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
+    /// Give every record of a live owner's tree its own owner: a chat's
+    /// message parts, a container's child records. They are records of the
+    /// owner's store, synced on their own routes like the owner's record,
+    /// whether or not a view shows them. Without this a part only one device
+    /// wrote never left it.
+    fn hold_trees(&mut self, current: &mut Vec<(HistoryOwner, bool)>) {
+        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+        for (owner, _) in current.iter() {
+            let (store, _) = owner.store_checkout();
+            if !stores.iter().any(|known| known.same_owner(store)) {
+                stores.push(store.clone());
+            }
+        }
+        let mut held = Vec::new();
+        for store in &stores {
+            for checkout in store.open_tree_records() {
+                let owned = current.iter().any(|(owner, _)| {
+                    let (other, owned) = owner.store_checkout();
+                    other.same_owner(store) && owned == &checkout
+                });
+                if owned {
+                    continue;
+                }
+                let index = self
+                    .tree
+                    .iter()
+                    .position(|entry| entry.store.same_owner(store) && entry.checkout == checkout);
+                let entry = match index {
+                    Some(index) => self.tree.swap_remove(index),
+                    None => TreeRecord {
+                        store: store.clone(),
+                        checkout,
+                        lifetime: super::owner::LegacyHistoryLifetime::new(),
+                    },
+                };
+                held.push(entry);
+            }
+        }
+        // What closed, or a view now owns, gives up its tree owner.
+        for gone in self.tree.drain(..) {
+            gone.lifetime.active.set(false);
+        }
+        for entry in &held {
+            current.push((
+                HistoryOwner::legacy(entry.store.clone(), entry.checkout.clone(), &entry.lifetime),
+                true,
+            ));
+        }
+        self.tree = held;
+    }
+
+    /// Whether `entry` syncs only records held for a live owner's tree
+    /// ([`Self::hold_trees`]): no view shows them and no published action
+    /// names them, so the window's published surface never waits for them.
+    pub(crate) fn holds_only_tree_records(&self, entry: &OwnerRoute) -> bool {
+        entry.owners.iter().all(|owner| {
+            let (store, checkout) = owner.store_checkout();
+            self.tree
+                .iter()
+                .any(|held| held.store.same_owner(store) && &held.checkout == checkout)
+        })
+    }
+
     pub(crate) fn retired_route(&self, route: &RouteSpec) -> bool {
         self.retired.contains(route)
     }
@@ -246,7 +329,7 @@ impl OwnerDocumentRoutes {
         witness: Option<PrimaryRouteWitness>,
         generation: u64,
         outer: &AutoCommit,
-    ) -> Vec<RouteSpec> {
+    ) -> Vec<RouteJoin> {
         fn collect(root: &dyn Widget, owners: &mut Vec<(HistoryOwner, bool)>) {
             let held = root.history_owner().map(|owner| (owner, false));
             let beside = root.record_owners().into_iter().map(|owner| (owner, true));
@@ -262,6 +345,22 @@ impl OwnerDocumentRoutes {
                 collect(child, owners);
             }
         }
+        if !self.observe_witness(witness, generation) {
+            return vec![];
+        }
+        let mut current = vec![];
+        collect(root, &mut current);
+        self.hold_trees(&mut current);
+        // Hidden live subtrees retain their admitted collaboration owners.
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current)
+        });
+        self.install(current, outer)
+    }
+
+    /// Follow the primary route `witness` (of `generation`): another one
+    /// starts every route over. Whether there is one to sync beside.
+    fn observe_witness(&mut self, witness: Option<PrimaryRouteWitness>, generation: u64) -> bool {
         if self.witness != witness || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
@@ -275,15 +374,40 @@ impl OwnerDocumentRoutes {
             self.witness = witness;
             self.primary_generation = generation;
         }
-        if self.witness.is_none() {
+        self.witness.is_some()
+    }
+
+    /// [`Self::reconcile`] for a holder without a widget tree, whose
+    /// records are `owners`: every one answers snapshot requests, as no host
+    /// replays its route.
+    #[cfg(feature = "broker-transport")]
+    pub(crate) fn reconcile_owners(
+        &mut self,
+        owners: &[HistoryOwner],
+        witness: Option<PrimaryRouteWitness>,
+        outer: &AutoCommit,
+    ) -> Vec<RouteJoin> {
+        let generation = self.primary_generation;
+        if !self.observe_witness(witness, generation) {
             return vec![];
         }
-        let mut current = vec![];
-        collect(root, &mut current);
-        // Hidden live subtrees retain their admitted collaboration owners.
-        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
-            collect(live, &mut current)
-        });
+        let mut current: Vec<(HistoryOwner, bool)> = Vec::new();
+        for owner in owners {
+            if !current.iter().any(|(known, _)| known.same_owner(owner)) {
+                current.push((owner.clone(), true));
+            }
+        }
+        self.install(current, outer)
+    }
+
+    /// Hold the routes of the `current` owners (each with whether it
+    /// answers snapshot requests), giving up those no owner holds any more.
+    /// The routes newly joined.
+    fn install(
+        &mut self,
+        current: Vec<(HistoryOwner, bool)>,
+        outer: &AutoCommit,
+    ) -> Vec<RouteJoin> {
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| {
                 current.iter().any(|(actual, _)| actual.same_owner(owner))
@@ -305,6 +429,7 @@ impl OwnerDocumentRoutes {
             if self.retired.contains(&route) {
                 continue;
             }
+            let record_kind = owner.record_kind();
             if let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) {
                 if !entry
                     .owners
@@ -317,7 +442,10 @@ impl OwnerDocumentRoutes {
                 let Ok(doc) = owner.document(outer) else {
                     continue;
                 };
-                joins.push(route.clone());
+                joins.push(RouteJoin {
+                    route: route.clone(),
+                    record_kind: record_kind.clone(),
+                });
                 self.owners.push(OwnerRoute {
                     route,
                     owners: vec![owner],
@@ -326,6 +454,7 @@ impl OwnerDocumentRoutes {
                     pending: PendingRemote::default(),
                     outbound_failure: None,
                     answers_snapshots,
+                    opening: true,
                 });
             }
         }
@@ -404,5 +533,85 @@ mod round2_tests {
         assert!(queue.admit(fresh));
         queue.pop_applied();
         assert!(queue.failure.is_none());
+    }
+}
+
+#[cfg(test)]
+mod committed_changes_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// What a window holds, and the room's next committed change as the
+    /// owner hands it over: changes that build on what the window holds.
+    fn held_and_delta() -> (AutoCommit, AutoCommit, Vec<u8>) {
+        let mut room = AutoCommit::new();
+        room.put(automerge::ROOT, "title", "notes").unwrap();
+        room.commit();
+        let held = room.fork();
+        let before = room.get_heads();
+        room.put(automerge::ROOT, "note", "new").unwrap();
+        room.commit();
+        let delta = room.save_after(&before);
+        (room, held, delta)
+    }
+
+    /// The ERROR lines logged while `run` runs on this thread.
+    fn errors_during(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Sink::default();
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn committed_changes_that_build_on_held_history_apply_and_log_nothing() {
+        let (mut room, mut held, delta) = held_and_delta();
+        let mutation = DocumentMutation::Incremental(delta);
+        let mut changed = None;
+        let errors = errors_during(|| {
+            changed = Some(merge_committed_into_copy(&mut held, &mutation).unwrap());
+        });
+        assert_eq!(errors, "", "a valid delta logged an error");
+        assert_eq!(changed, Some(true));
+        assert!(held.get_missing_deps(&[]).is_empty());
+        assert_eq!(
+            super::super::sorted_heads(held.get_heads()),
+            super::super::sorted_heads(room.get_heads())
+        );
+    }
+
+    #[test]
+    fn a_truncated_delta_is_refused_whole() {
+        let (_, mut held, delta) = held_and_delta();
+        let before = held.get_heads();
+        for end in 1..delta.len() {
+            let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
+            let refused = merge_committed_into_copy(&mut held, &mutation);
+            assert!(
+                matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
+                "truncated at {end}"
+            );
+            assert_eq!(
+                held.get_heads(),
+                before,
+                "truncated at {end}: nothing applied"
+            );
+        }
     }
 }

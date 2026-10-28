@@ -82,7 +82,7 @@ impl BoolControl {
     /// click on the control gave it.
     #[must_use]
     pub fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     pub fn effectively_enabled(&self) -> bool {
@@ -111,14 +111,28 @@ impl BoolControl {
     /// Flip the value the way a click does: through the action when there is
     /// one, else through the binding. `on_change` hears the new value only
     /// when no action owns it.
+    ///
+    /// A control whose action writes a value it also follows (an action and
+    /// a binding) shows the value the store holds, never its own guess: it
+    /// changes when the binding reports the stored change, so a write that
+    /// never lands is never shown as made.
     pub fn flip(&mut self) {
-        let flipped = !self.is_checked;
+        self.choose(!self.is_checked);
+    }
+
+    /// Ask for `flipped` the way a click does ([`Self::flip`]), for a hand
+    /// that dragged a switch's knob to one side: the side it left it on.
+    pub fn choose(&mut self, flipped: bool) {
         if let Some(action) = &mut self.action {
-            let _ = action.emit(flipped);
+            if let Err(error) = action.emit(flipped) {
+                tracing::warn!(%error, "the switch's action refused its value");
+            }
         } else if let Some(binding) = &mut self.binding {
             binding.publish(&flipped);
         }
-        self.is_checked = flipped;
+        if self.action.is_none() || self.binding.is_none() {
+            self.is_checked = flipped;
+        }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
         {
@@ -290,7 +304,8 @@ macro_rules! bool_control_api {
 pub(super) use bool_control_api;
 
 /// The `Widget` methods a [`BoolControl`] answers on its own; `$kind` is the
-/// default test id.
+/// default test id. Events are the widget's own: a checkbox hands them to
+/// [`BoolControl::handle_event`], a switch also lets its knob be dragged.
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
         crate::provides!(
@@ -308,14 +323,6 @@ macro_rules! bool_control_widget_methods {
 
         fn sync(&mut self, state: &crate::widget::AppModel, root: &crate::widget::ModelPath) {
             self.control.sync(state, root);
-        }
-
-        fn handle_event(
-            &mut self,
-            event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-            self.control.handle_event(event, ctx);
         }
 
         fn test_id(&self) -> Option<&str> {

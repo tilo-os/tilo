@@ -17,9 +17,12 @@ CI_RUN = ROOT / "scripts" / "ci-run.sh"
 spec = importlib.util.spec_from_file_location("cgroup_memory", ROOT / "tools/ci/cgroup_memory.py")
 cgroup_memory = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cgroup_memory)
-timing_spec = importlib.util.spec_from_file_location('timing_report', ROOT / 'tools/ci/timing_report.py')
-timing_report = importlib.util.module_from_spec(timing_spec)
-timing_spec.loader.exec_module(timing_report)
+
+
+def receipt_values(output):
+    """The `key=value` lines of a `==> ... measurements` receipt."""
+    return dict(line.strip().split('=', 1) for line in output.splitlines()
+                if line.startswith('    ') and '=' in line)
 
 
 def shell_path(path):
@@ -104,10 +107,9 @@ class CiRunMemoryTests(unittest.TestCase):
         receipt = output.getvalue()
         self.assertNotIn('private', receipt)
         self.assertIn('cgroup_cpu_stat_before=unavailable', receipt)
-        timestamped = '\n'.join('2026-10-11T01:00:00Z ' + line for line in receipt.splitlines())
-        metrics = timing_report.extract_job_metrics(timestamped)['measurements'][0]
-        self.assertNotIn('cgroup_cpu_seconds', metrics)
-        self.assertIsNone(metrics['cpu_limit'])
+        values = receipt_values(receipt)
+        self.assertEqual(values['cgroup_cpu_max'], 'unavailable')
+        self.assertEqual(values['cgroup_cpuset_cpus_effective'], 'unavailable')
         self.assertEqual(cgroup_memory.numeric_stat('usage_usec -1'), 'unavailable')
         self.assertEqual(cgroup_memory.numeric_stat('usage_usec 1\nusage_usec 2'), 'unavailable')
 
@@ -124,15 +126,16 @@ class CiRunMemoryTests(unittest.TestCase):
             output = self.run_fixture(root, command, status=0)
             self.assertNotIn('CI_CGROUP_MEMORY_', output)
             self.assertEqual(output.count('==> memory measurements'), 1)
-            timestamped = '\n'.join('2026-10-11T01:00:00Z ' + line for line in output.splitlines())
-            metrics = timing_report.extract_job_metrics(timestamped)['measurements']
-            self.assertEqual(len(metrics), 1)
-            self.assertEqual(metrics[0]['cgroup_cpu_seconds'], 0.75)
-            self.assertEqual(metrics[0]['cpu_limit'], 2)
-            self.assertEqual(metrics[0]['cpuset_cpu_count'], 4)
-            self.assertEqual(metrics[0]['cgroup_memory_peak'], 8192)
-            self.assertEqual(metrics[0]['cgroup_memory_max'], 4294967296)
-            self.assertGreaterEqual(metrics[0]['wall_seconds'], 0)
+            values = receipt_values(output)
+            self.assertEqual(values['cgroup_cpu_stat_before'],
+                             'usage_usec 1000000 user_usec 900000 system_usec 100000')
+            self.assertEqual(values['cgroup_cpu_stat_after'],
+                             'usage_usec 1750000 user_usec 1500000 system_usec 250000')
+            self.assertEqual(values['cgroup_cpu_max'], '200000 100000')
+            self.assertEqual(values['cgroup_cpuset_cpus_effective'], '0-3')
+            self.assertEqual(values['cgroup_memory_peak'], '8192')
+            self.assertEqual(values['cgroup_memory_max'], '4294967296')
+            self.assertGreaterEqual(float(values['wall_seconds']), 0)
 
     def test_outer_measurement_keeps_one_reading_and_exact_command_status(self):
         for status in (0, 7):

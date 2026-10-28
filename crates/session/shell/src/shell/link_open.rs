@@ -336,7 +336,7 @@ impl LinkWorkspaces for SessionWorkspaces {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room == room)?,
+                    .find(|workspace| workspace.room() == room)?,
                 // On a native desktop the person's own room is the one they
                 // are in.
                 None => tree.desktop.active_workspace()?,
@@ -346,7 +346,7 @@ impl LinkWorkspaces for SessionWorkspaces {
             workspace
         };
         let Some(app) = &open.app else {
-            return Some(Ok(workspace.room));
+            return Some(Ok(workspace.room()));
         };
         if open.maximized {
             tracing::debug!(app, "full-tab links open as a regular window natively");
@@ -360,7 +360,7 @@ impl LinkWorkspaces for SessionWorkspaces {
                 open.record.as_deref(),
                 &tilo_action_broker::services::LaunchPlace::Focus,
             )
-            .map(|()| workspace.room),
+            .map(|()| workspace.room()),
         )
     }
 }
@@ -538,8 +538,8 @@ mod tests {
             &self,
             _: &Caller,
             _: &tilo_actions::InvocationId,
-        ) -> Result<(), ActionHostError> {
-            Err(ActionHostError::UnknownInvocation)
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
         }
     }
 
@@ -559,6 +559,8 @@ mod tests {
             resource_kind: "word_processor.block".into(),
             resource_label: "Block".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
@@ -624,7 +626,7 @@ mod tests {
 
     fn block_link(query: &str) -> String {
         format!(
-            "tilo://open#/@ada.tilo.example/w/{ROOM}/so.tilo.word-processor/{RECORD}/{BLOCK}{query}"
+            "tilo://open#/@ada.tilo.cloud/w/{ROOM}/so.tilo.word-processor/{RECORD}/{BLOCK}{query}"
         )
     }
 
@@ -708,7 +710,7 @@ mod tests {
     fn a_link_to_a_members_room_opens_in_place() {
         let (opener, rooms, browser) = opener();
         let uri = format!(
-            "https://tilo.so/app/#/@ada.tilo.example/w/reading~{ROOM}/so.tilo.chat/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/chat.channel:general"
+            "https://tilo.so/app/#/@ada.tilo.cloud/w/reading~{ROOM}/so.tilo.chat/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/chat.channel:general"
         );
         opener.open(&uri).unwrap();
         assert!(browser.opened_uris().is_empty());
@@ -728,7 +730,7 @@ mod tests {
         let (opener, rooms, browser) = opener();
         opener
             .open(&format!(
-                "tilo://open#/@ada.tilo.example/w/{ROOM}/so.tilo.chat/-/chat.channel:general"
+                "tilo://open#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.channel:general"
             ))
             .unwrap();
         assert!(browser.opened_uris().is_empty());
@@ -742,7 +744,7 @@ mod tests {
     #[test]
     fn links_outside_the_persons_rooms_go_to_the_browser() {
         let (opener, rooms, browser) = opener();
-        let stranger = format!("https://tilo.so/#/@ada.tilo.example/w/{STRANGER}/so.tilo.chat");
+        let stranger = format!("https://tilo.so/#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat");
         for uri in [
             "https://example.com/#/me/so.tilo.chat",
             "https://tilo.so/pricing",
@@ -766,13 +768,13 @@ mod tests {
         let (opener, _, browser) = opener();
         opener
             .open(&format!(
-                "tilo://open#/@ada.tilo.example/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
+                "tilo://open#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
             ))
             .unwrap();
         assert_eq!(
             browser.opened_uris(),
             [format!(
-                "https://tilo.so/#/@ada.tilo.example/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
+                "https://tilo.so/#/@ada.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
             )]
         );
     }

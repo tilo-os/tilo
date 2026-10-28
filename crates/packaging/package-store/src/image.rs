@@ -235,10 +235,6 @@ impl ImageTrust {
     /// and whose signature verifies, from a publisher that is trusted or
     /// attested and not revoked. Returns the attestor id, empty when a
     /// trusted publisher signed it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the reason the image is refused.
     pub fn check(&self, meta: &PackageMeta) -> Result<String, MaterializeError> {
         self.admit(meta, false)
     }
@@ -742,9 +738,6 @@ pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, Mater
 /// another overlay over those exceeds the kernel's stacking limit. Rebuild the
 /// same signed tree from verified bytes in the existing content store instead.
 /// Every call checks current publisher trust before consulting this cache.
-///
-/// # Errors
-/// Returns the ordinary image resolution errors, or an integrity/store error.
 pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
     let Resolved {
         meta,

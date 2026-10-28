@@ -105,7 +105,7 @@ impl App {
     fn local_pointer_key(&self) -> PresenceKey {
         match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
-            None => PresenceKey::local_surface_pointer(),
+            None => crate::presence::local_surface_pointer(),
         }
     }
 
@@ -262,6 +262,7 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     pub(super) fn broadcast_doc_delta(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {
@@ -392,7 +393,7 @@ impl App {
             return;
         }
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let subset = crate::view::ViewSubset::from_view(&view);
+        let subset = crate::view::broadcast_subset(&view);
         if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
@@ -607,9 +608,12 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let action_surface_needs_publication = self.collaboration.manager.is_connected()
+        // Held own invocations wait for the publication this pump makes once
+        // the route is ready, or for the refusal once the connection is gone.
+        let action_surface_needs_publication = (self.collaboration.manager.is_connected()
             && (self.actions.last_published_actions.is_none()
-                || self.actions.action_directory_snapshot.is_none());
+                || self.actions.action_directory_snapshot.is_none()))
+            || !self.actions.held_own_invocations.is_empty();
         // The broker refused the last surface: republish it now, not on the
         // next unrelated change.
         let refused_surface = self.collaboration.manager.take_action_surface_failed();
@@ -758,7 +762,13 @@ impl App {
         else {
             return;
         };
-        let own = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        // The window's own lane, the one its record content travels on:
+        // what another window of this app in this process asked for is not
+        // this window's to send.
+        let own = {
+            let _entry = self.enter_wake_scope();
+            ContentLane::of_window()
+        };
         let lanes = std::iter::once((None, own)).chain(
             ContentLane::routed(&route.app_id)
                 .into_iter()
@@ -813,6 +823,9 @@ impl App {
                 | CollabEvent::OpenSelectedResult { .. }
                 | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::NearbyTransferChanged
+                | CollabEvent::SpeakersChanged
+                | CollabEvent::DrivesChanged
+                | CollabEvent::ApplicationsChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -839,6 +852,8 @@ impl App {
             CollabEvent::HistoryAgents { cluster_id, agents } => {
                 crate::history_source::set_room_agents(&cluster_id, agents);
             }
+            CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
+            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
@@ -852,6 +867,13 @@ impl App {
                     route.record.as_deref().unwrap_or(""),
                 )
                 .arrive(hash, bytes);
+            }
+            CollabEvent::RecordContentState { route, hash, state } => {
+                crate::collaboration::record_content::ContentLane::of(
+                    &route.app_id,
+                    route.record.as_deref().unwrap_or(""),
+                )
+                .stands(hash, state);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
@@ -935,6 +957,9 @@ impl App {
             | CollabEvent::OpenSelectedV2Result { .. }
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
+            | CollabEvent::SpeakersChanged
+            | CollabEvent::DrivesChanged
+            | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }
@@ -1106,6 +1131,7 @@ impl App {
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
         if self.settle_follow_up(request_id, &result)
+            || self.settle_hosted(request_id, &result)
             || self.close_broker_result(request_id, &result)
         {
             return;
@@ -1305,6 +1331,8 @@ impl App {
             CollabEvent::HistoryAgents { cluster_id, agents } => {
                 crate::history_source::set_room_agents(&cluster_id, agents);
             }
+            CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
+            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
             CollabEvent::Invocation {
                 invocation,
                 id,

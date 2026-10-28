@@ -7,16 +7,22 @@
 //!   it downloads first, through the on-demand path a missing app's window
 //!   takes ([`catalogue::install_and_launch`]), with its place held by the
 //!   opening card.
-//! - A **Flathub app** is installed explicitly: Enter installs it and opens
-//!   it when that is done. Its other action shows it in the App Store.
+//! - A **Flathub app** is never installed by picking it: Enter opens its App
+//!   Store page, where the person decides. Installing from the row is its
+//!   other action, named for what it does ("Install and open"). One Flathub
+//!   builds only for another processor (Steam, on an ARM device) is found
+//!   all the same: its row says it is not available for this device, Enter
+//!   shows the Store page that says why, and there is nothing to install.
 //! - A Tilo app's **document** ("Workbook") opens the app, which starts on a
 //!   new one; its **action** ("Show tasks") gets the app if needed and runs
 //!   through the session's action host, which starts the app as it does for
 //!   any closed app's offered action.
 //!
-//! Rows rank just below installed apps of equal match, never stand for an
-//! app the device already has (a Tilo package, a host or Flatpak app), and
-//! never show an app that is blocked.
+//! A Tilo app's rows rank just below installed apps of equal match; a
+//! Flathub app's Store page ranks after everything the person has, however
+//! well its name matches ([`Availability::ThirdPartyCatalogue`]). Rows never
+//! stand for an app the device already has (a Tilo package, a host or
+//! Flatpak app), and never show an app that is blocked.
 
 use std::cell::Ref;
 use std::collections::HashMap;
@@ -37,15 +43,15 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
-    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
-    SearchResult, provider_score,
+    Availability, ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage,
+    SearchProvider, SearchResult, provider_score,
 };
 
 /// The provider's id, which also keys what was chosen from it.
 pub const PROVIDER_ID: &str = "store-catalogue";
 
 /// The id of the provider of the documents and closed actions of the Tilo
-/// apps this device has ([`Scope::Installed`]).
+/// apps this device has (`Scope::Installed`).
 pub const INSTALLED_PROVIDER_ID: &str = "installed-offers";
 
 /// Which apps' rows a provider lists.
@@ -74,6 +80,19 @@ impl Scope {
 /// match of an installed app above a better one of an offered app.
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 
+/// `score`, a tiebreak lower ([`NOT_INSTALLED_TIEBREAK`]), but never from a
+/// real match into the band of a typo: a row holding every word typed must
+/// not give way as a loose match because it is not on this device.
+fn below_an_equal_match(score: i32) -> i32 {
+    let real = provider_score(tilo_search::SPANNING_RANK);
+    let lowered = score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1);
+    if score >= real {
+        lowered.max(real)
+    } else {
+        lowered
+    }
+}
+
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// Row ids: a Tilo app keeps the `app:` address its Store offer always had.
@@ -83,8 +102,8 @@ const FLATHUB_PREFIX: &str = "flathub:";
 const DOCUMENT_PREFIX: &str = "new:";
 /// `offer:<app>/<resource>/<action>`.
 const ACTION_PREFIX: &str = "offer:";
-/// The "Show in App Store" row of a Flathub app's other actions.
-const STORE_PAGE_PREFIX: &str = "store-page:";
+/// The "Install and open" row of a Flathub app's other actions.
+const FLATHUB_INSTALL_PREFIX: &str = "flathub-install:";
 
 /// Matching like the installed apps': words spread over fields, typos in
 /// names.
@@ -138,6 +157,11 @@ impl StoreCatalogueTestSource {
     fn generation(&self) -> Generation {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
         (generation, generation, generation, generation)
+    }
+
+    /// While the guard lives, an index build reading this source waits.
+    pub(crate) fn hold(&self) -> std::sync::MutexGuard<'_, StoreCatalogueTestState> {
+        self.state.lock().expect("catalogue test source lock")
     }
 
     pub(crate) fn replace(&self, state: StoreCatalogueTestState) {
@@ -263,12 +287,12 @@ impl StoreCatalogueProvider {
                     CatalogueSnapshot::from_parts(&installed, &state.tilo, &state.shared)
                 }
                 Scope::Installed => CatalogueSnapshot::installed(
-                    state
+                    &state
                         .tilo
                         .iter()
                         .filter(|app| state.installed.contains(&app.package_id))
                         .cloned()
-                        .collect(),
+                        .collect::<Vec<_>>(),
                     &state.shared,
                 ),
             };
@@ -277,7 +301,7 @@ impl StoreCatalogueProvider {
         let (installed_generation, installed_apps) = launcher::gui_apps_snapshot();
         if scope == Scope::Installed {
             let (shared_generation, shared) = catalogue::shared_snapshot();
-            let here = installed_apps
+            let here: Vec<CatalogueApp> = installed_apps
                 .iter()
                 .filter(|app| app_catalogue::fleet::metadata(&app.package_id).is_some())
                 .map(|app| CatalogueApp {
@@ -289,7 +313,7 @@ impl StoreCatalogueProvider {
                 .collect();
             return (
                 (installed_generation, 0, shared_generation, 0),
-                CatalogueSnapshot::installed(here, &shared),
+                CatalogueSnapshot::installed(&here, &shared),
             );
         }
         let (tilo_generation, tilo) = catalogue::available_apps_snapshot();
@@ -348,10 +372,19 @@ impl StoreCatalogueProvider {
         let score = if here {
             score
         } else {
-            score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
+            below_an_equal_match(score)
         };
         match row {
-            Row::App(at) => Some(app_row(snapshot.entries.get(at)?, score)),
+            Row::App(at) => {
+                let entry = snapshot.entries.get(at)?;
+                // One this device cannot run ranks below an equal match it can.
+                let score = if entry.not_built_for_this_device {
+                    below_an_equal_match(score)
+                } else {
+                    score
+                };
+                Some(app_row(entry, score))
+            }
             Row::Document { entry, kind } => {
                 let entry = snapshot.entries.get(entry)?;
                 let kind = entry.resource_types.get(kind)?;
@@ -412,7 +445,7 @@ impl CatalogueSnapshot {
     /// The documents and closed actions of `here`, the Tilo apps this
     /// device has, as the fleet's manifest metadata describes them; a
     /// blocked app offers none.
-    fn installed(here: Vec<CatalogueApp>, shared: &SharedCatalogue) -> Self {
+    fn installed(here: &[CatalogueApp], shared: &SharedCatalogue) -> Self {
         let entries: Vec<CatalogueEntry> = here
             .iter()
             .map(app_catalogue::tilo::entry)
@@ -471,7 +504,7 @@ fn app_of_row(id: &str) -> Option<&str> {
     if let Some(app) = id
         .strip_prefix(TILO_PREFIX)
         .or_else(|| id.strip_prefix(FLATHUB_PREFIX))
-        .or_else(|| id.strip_prefix(STORE_PAGE_PREFIX))
+        .or_else(|| id.strip_prefix(FLATHUB_INSTALL_PREFIX))
     {
         return Some(app);
     }
@@ -545,6 +578,9 @@ fn row_fields(entries: &[CatalogueEntry], row: Row) -> Option<Vec<(String, Field
 /// An app row's second line: what the app is, or where it comes from when
 /// its source says nothing about it.
 fn app_subtitle(entry: &CatalogueEntry) -> String {
+    if entry.not_built_for_this_device {
+        return t("search-catalogue-not-for-this-device");
+    }
     if !entry.tagline.trim().is_empty() {
         return entry.tagline.trim().to_owned();
     }
@@ -568,6 +604,9 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
             move |_doc, _root, chrome: &Chrome| open_tilo_app(chrome, &id, &name),
         ),
         Source::Flathub { .. } => {
+            // Picking it opens its Store page, where the person decides to
+            // install (or reads why it is not available here); it never
+            // installs on its own.
             let mut row = SearchResult::nullary_fallible(
                 ResourceKind::Application,
                 PROVIDER_ID,
@@ -575,11 +614,14 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
                 entry.name.clone(),
                 Some(app_subtitle(entry)),
                 score,
-                move |_doc, _root, chrome: &Chrome| install_flathub_app(chrome, &id, &name),
+                move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &id, &name),
             );
+            // Showing a page changes nothing on this device; installing is
+            // the separate "Install and open" effect.
+            row.operation_kind = tilo_actions::OperationKind::View;
             // Where it comes from is said once: beside the tag line, or as
             // the second line when there is no tag line.
-            if !entry.tagline.trim().is_empty() {
+            if entry.not_built_for_this_device || !entry.tagline.trim().is_empty() {
                 row.badge = Some(t("search-catalogue-source-flathub"));
             }
             row
@@ -591,7 +633,7 @@ fn document_row(
     scope: Scope,
     entry: &CatalogueEntry,
     kind: &app_catalogue::ResourceType,
-    score: i32,
+    rank: i32,
 ) -> SearchResult {
     let id = entry.id.clone();
     let name = entry.name.clone();
@@ -604,7 +646,7 @@ fn document_row(
             "search-catalogue-document-subtitle",
             &[("app", entry.name.as_str().into())],
         )),
-        score,
+        rank,
         move |_doc, _root, chrome: &Chrome| match scope {
             Scope::Installed => super::applications::launch_installed_app(chrome, &id, &name),
             Scope::Offered => open_tilo_app(chrome, &id, &name),
@@ -617,7 +659,7 @@ fn action_row(
     entry: &CatalogueEntry,
     action: &app_catalogue::CatalogueAction,
     sessions: Option<ActionSessionSource>,
-    score: i32,
+    rank: i32,
 ) -> SearchResult {
     let offered = OfferedAction {
         package_id: entry.id.clone(),
@@ -632,7 +674,7 @@ fn action_row(
         action_row_id(&entry.id, &action.resource, &action.action),
         action.label.clone(),
         Some(entry.name.clone()),
-        score,
+        rank,
         move |_doc, _root, chrome: &Chrome| run_offered_action(chrome, sessions.as_ref(), &offered),
     )
 }
@@ -644,7 +686,7 @@ fn launch_context(chrome: &Chrome) -> Option<(crate::shell::state::RoomId, Launc
     let tree = st.tree();
     tree.desktop
         .active_workspace()
-        .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
+        .map(|ws| (ws.room(), ws.launch_grants(tilo_clock::unix_now())))
 }
 
 type LaunchGrants = collab_types::caps::LaunchGrants;
@@ -742,7 +784,8 @@ fn install_flathub_app(
         let workspace = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
+        drop(tree);
         (placement, workspace)
     };
     {
@@ -784,9 +827,18 @@ fn store_detail_uri(app_id: &str) -> Result<String, ActionError> {
     Ok(format!("tilo-store:app/{app_id}"))
 }
 
+/// The App Store pages a test asked to open, in order.
+#[cfg(test)]
+static STORE_PAGES_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Open the App Store at `app_id`'s page.
 fn show_in_store(chrome: &Chrome, app_id: &str, display_name: &str) -> Result<(), ActionError> {
     let uri = store_detail_uri(app_id)?;
+    #[cfg(test)]
+    STORE_PAGES_OPENED
+        .lock()
+        .expect("store pages opened lock")
+        .push(uri.clone());
     let Some((room, capabilities)) = launch_context(chrome) else {
         return Err(report_no_workspace(chrome, display_name));
     };
@@ -843,7 +895,7 @@ fn run_offered_action(
         let tree = st.tree();
         tree.desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
     };
     let Some(room) = room else {
         return Err(report_no_workspace(chrome, &offered.display_name));
@@ -888,6 +940,10 @@ fn run_offered_action(
 /// Invoke `resource`'s `action` of `package_id` through the action host. A
 /// refusal is reported as the app's failure to open, since that is what the
 /// person sees not happen.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the action session stays open until its pending install has its answer handler"
+)]
 fn invoke_offered(
     sessions: &ActionSessionSource,
     room: &str,
@@ -945,6 +1001,20 @@ impl SearchProvider for StoreCatalogueProvider {
         &self.kinds
     }
 
+    /// An app this device has is never offered here, so every row is one
+    /// to get: a Tilo app's opens at once; a Flathub app's is its Store
+    /// page, which ranks after everything the person has. The documents and
+    /// closed actions of the Tilo apps the device has are the person's.
+    fn availability(&self, result: &SearchResult) -> Availability {
+        match self.scope {
+            Scope::Installed => Availability::OnDevice,
+            Scope::Offered if result.id.starts_with(FLATHUB_PREFIX) => {
+                Availability::ThirdPartyCatalogue
+            }
+            Scope::Offered => Availability::TiloCatalogue,
+        }
+    }
+
     /// While an app is open its own published actions answer for it, so
     /// what it offers while closed would be the same thing twice.
     fn hidden_from_people(
@@ -987,17 +1057,28 @@ impl SearchProvider for StoreCatalogueProvider {
         let Some(app_id) = result.id.strip_prefix(FLATHUB_PREFIX) else {
             return Vec::new();
         };
+        // An app not built for this device has nothing to install.
+        if self.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.id == app_id && entry.not_built_for_this_device)
+        }) {
+            return Vec::new();
+        }
         let app_id = app_id.to_owned();
         let name = result.title.clone();
-        vec![SearchResult::nullary_fallible(
+        let mut install = SearchResult::nullary_fallible(
             ResourceKind::Action,
             PROVIDER_ID,
-            format!("{STORE_PAGE_PREFIX}{app_id}"),
-            t("search-catalogue-show-in-store"),
+            format!("{FLATHUB_INSTALL_PREFIX}{app_id}"),
+            t("search-catalogue-install-and-open"),
             None,
             result.score,
-            move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &app_id, &name),
-        )]
+            move |_doc, _root, chrome: &Chrome| install_flathub_app(chrome, &app_id, &name),
+        );
+        install.operation_kind = tilo_actions::OperationKind::Effect;
+        vec![install]
     }
 
     fn query_incomplete_reason(
@@ -1040,6 +1121,21 @@ impl SearchProvider for StoreCatalogueProvider {
                 || self.source_generation(),
                 || self.builder(),
             );
+        }
+        // A Flathub app's "Install and open" is addressed on its own, so an
+        // install is always asked for by name, never by picking the app.
+        if let Some(app) = id.strip_prefix(FLATHUB_INSTALL_PREFIX) {
+            let app_row = {
+                let snapshot = self.snapshot()?;
+                let row = snapshot.rows.iter().copied().find(|row| {
+                    snapshot.row_id(*row).as_deref() == Some(&format!("{FLATHUB_PREFIX}{app}"))
+                })?;
+                self.row(&snapshot, row, provider_score(0))?
+            };
+            return self
+                .secondary_actions(&app_row)
+                .into_iter()
+                .find(|action| action.id == id);
         }
         let snapshot = self.snapshot()?;
         let row = snapshot
@@ -1177,11 +1273,12 @@ mod tests {
         provider.query(ctx)
     }
 
-    // USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my
-    // unlocked passwords, the app store for flatpaks – i cannot search
-    // ANYTHING."
     #[test]
-    fn spotify_from_the_cached_flathub_catalogue_is_found_and_installs() {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
+    fn spotify_from_the_cached_flathub_catalogue_is_found() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
             state(&[], &[]),
         ));
@@ -1206,9 +1303,9 @@ mod tests {
             spotify.score < 100,
             "an app to install ranks below an installed app of the same match"
         );
-        let store = provider.secondary_actions(spotify);
-        assert_eq!(store.len(), 1, "its other action shows it in the Store");
-        assert_eq!(store[0].id, "store-page:com.spotify.Client");
+        let other = provider.secondary_actions(spotify);
+        assert_eq!(other.len(), 1, "its other action installs it");
+        assert_eq!(other[0].id, "flathub-install:com.spotify.Client");
         let snapshot = provider.snapshot().expect("indexed");
         assert_eq!(
             snapshot.icons.get(&spotify.id),
@@ -1219,9 +1316,142 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit
-    // installation" — and an app this device has is never offered again.
+    /// Flathub builds Steam for `x86_64` only. On another processor search
+    /// still finds it: the row says it is not available for this device,
+    /// Enter shows its App Store page (which says why), and there is nothing
+    /// to install.
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
+    fn an_app_without_a_build_for_this_processor_is_found_and_not_installed() {
+        let mut state = state(&[], &[]);
+        let mut entries = flathub();
+        let mut steam = entries[0].clone();
+        steam.id = "com.valvesoftware.Steam".into();
+        steam.name = "Steam".into();
+        steam.other_names.clear();
+        steam.keywords.clear();
+        steam.tagline = "Launcher for the Steam software distribution service".into();
+        steam.not_built_for_this_device = true;
+        entries.push(steam);
+        state.shared.flathub = std::sync::Arc::new(entries);
+        let provider =
+            StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(state));
+        let rows = search(&provider, "steam");
+        let steam = rows
+            .iter()
+            .find(|row| row.id == "flathub:com.valvesoftware.Steam")
+            .expect("\"steam\" finds Steam");
+        assert_eq!(
+            steam.subtitle.as_deref(),
+            Some("Not available for this device")
+        );
+        assert_eq!(steam.badge.as_deref(), Some("Flathub"));
+        assert!(
+            provider.secondary_actions(steam).is_empty(),
+            "there is nothing to install"
+        );
+        let spotify = search(&provider, "spotify");
+        let spotify = spotify
+            .iter()
+            .find(|row| row.id == "flathub:com.spotify.Client")
+            .expect("Spotify is still offered");
+        assert_eq!(provider.secondary_actions(spotify).len(), 1);
+    }
+
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
+    fn searching_for_a_flatpak_opens_its_store_page_it_never_installs_on_its_own() {
+        let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
+            state(&[], &[]),
+        ));
+        let rows = search(&provider, "spotify");
+        let spotify = rows
+            .iter()
+            .find(|row| row.id == "flathub:com.spotify.Client")
+            .expect("\"spotify\" finds Spotify from Flathub");
+        assert_eq!(
+            spotify.operation_kind,
+            tilo_actions::OperationKind::View,
+            "picking it shows something; it changes nothing on this device"
+        );
+
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut doc = AutoCommit::new();
+        // No Store is installed in a test, so the launch itself may fail;
+        // what matters is the page it asked for, and what did not happen.
+        let _ = (spotify.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &tilo_actions::ActionArgs::none(),
+        );
+        assert!(
+            STORE_PAGES_OPENED
+                .lock()
+                .expect("store pages opened lock")
+                .iter()
+                .any(|uri| uri == "tilo-store:app/com.spotify.Client"),
+            "picking it opens the App Store at its page"
+        );
+        assert!(
+            !catalogue::installing_from_flathub("com.spotify.Client"),
+            "picking a Flatpak never starts an install"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.title != "Installing Spotify"),
+            "nor says it is installing"
+        );
+
+        let other = provider.secondary_actions(spotify);
+        assert_eq!(other.len(), 1, "installing is a separate, explicit action");
+        assert_eq!(other[0].title, "Install and open", "named for what it does");
+        assert_eq!(other[0].operation_kind, tilo_actions::OperationKind::Effect);
+        let state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Application, ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let resolved = provider
+            .resolve("flathub-install:com.spotify.Client", ctx)
+            .expect("the install is addressable on its own");
+        assert_eq!(resolved.title, "Install and open");
+    }
+
+    /// An app to get ranks a tiebreak below an installed one of equal match,
+    /// but a row holding every word typed stays a real match: it never sinks
+    /// into the band of a typo, where it would give way to any other row.
+    #[test]
+    fn an_offered_app_matching_every_word_stays_a_real_match() {
+        let real = provider_score(tilo_search::SPANNING_RANK);
+        assert_eq!(below_an_equal_match(real), real);
+        assert_eq!(below_an_equal_match(real + 1), real);
+        assert_eq!(below_an_equal_match(100), 99);
+        assert!(
+            below_an_equal_match(real - 1) < real - 1,
+            "a typo stays one"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn installed_apps_are_never_offered_and_tilo_apps_just_open() {
         let source = StoreCatalogueTestSource::new(state(&[], &[]));
         let provider = StoreCatalogueProvider::with_test_source(Arc::clone(&source));
@@ -1255,8 +1485,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the
-    // app store"
     #[test]
     fn blocked_apps_appear_nowhere_in_search() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
@@ -1276,9 +1504,11 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed"
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn an_uninstalled_tilo_apps_documents_and_actions_are_found() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
             state(&[], &[]),
@@ -1352,16 +1582,20 @@ mod tests {
             &self,
             _: &tilo_actions::remote::Caller,
             _: &tilo_actions::InvocationId,
-        ) -> Result<(), tilo_actions::remote::ActionHostError> {
-            Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+        ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>>
+        {
+            tilo_actions::remote::Pending::ready(Err(
+                tilo_actions::remote::ActionHostError::UnknownInvocation,
+            ))
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed" — and choosing one gets
-    // the app and runs it.
     #[test]
     #[serial_test::serial(process_env)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn choosing_an_uninstalled_apps_action_gets_the_app_then_runs_the_action() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().expect("a scratch directory");
@@ -1396,7 +1630,7 @@ mod tests {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .expect("an active workspace");
         let mut doc = AutoCommit::new();
         (row.on_open)(
@@ -1437,10 +1671,11 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed" — and those of the
-    // apps this device has, whether or not they ever ran.
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn the_documents_and_closed_actions_of_installed_apps_are_found_and_run_at_once() {
         let host = Arc::new(RecordingHost::default());
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
@@ -1494,6 +1729,51 @@ mod tests {
                 .all(|row| app_of_row(&row.id) != Some("so.tilo.sheets")),
             "a blocked app offers nothing"
         );
+    }
+
+    /// The launcher's Apps lists the apps the person has; what the
+    /// catalogue offers to get, Flathub's above all, is found by typing and
+    /// never crowds the launcher.
+    #[test]
+    fn the_launcher_never_lists_apps_the_person_does_not_have() {
+        use crate::shell::chrome_state::SearchScope;
+        let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
+            state(&[], &[]),
+        ));
+        assert!(
+            search(&provider, "spotify")
+                .iter()
+                .any(|row| row.title == "Spotify"),
+            "precondition: Flathub's Spotify is in the catalogue"
+        );
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(std::rc::Rc::new(provider));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        for scope in [SearchScope::Workspace, SearchScope::All] {
+            let groups = crate::shell::search::launcher::groups(
+                &registry,
+                &crate::shell::search::QueryArgs {
+                    needle: "",
+                    scope,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+            );
+            assert!(
+                groups.is_empty(),
+                "nothing the person does not have is listed: {:?}",
+                groups
+                    .iter()
+                    .flat_map(|group| &group.rows)
+                    .map(|row| &row.title)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

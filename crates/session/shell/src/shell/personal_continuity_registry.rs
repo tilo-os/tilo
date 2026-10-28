@@ -254,7 +254,7 @@ impl ContinuationRegistry {
     pub(crate) fn drain_owner_views(
         &mut self,
     ) -> Vec<(
-        ui::collaboration::owner_view::OwnerView,
+        collab_types::handoff::OwnerView,
         Option<crate::shell::network::AuthenticatedPersonalRoute>,
     )> {
         self.owner_views.drain()
@@ -320,10 +320,6 @@ impl ContinuationRegistry {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the app identifier or resume metadata is not
-    /// valid for a synchronizable continuation record.
     pub fn report(
         &mut self,
         room: RoomId,
@@ -1320,7 +1316,6 @@ pub(crate) mod tests {
             ContinuitySemanticSchema::PublicationPositionV1.wire_tag(),
             br#"{"book_id":"../x","chapter":3,"page":42}"#,
         ));
-        // Untagged, nothing says what the payload means.
         assert!(!validate_app_metadata(READER, 1, PAGE_42));
     }
 

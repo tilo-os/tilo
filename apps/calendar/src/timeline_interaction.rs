@@ -1212,7 +1212,6 @@ mod tests {
 
     #[test]
     fn drag_gestures_own_threshold_snap_grab_offset_select_and_cancel() {
-        // Case `create_drag_owns_threshold_day_mapping_and_snap`.
         {
             let mut controller = TimelineInteraction::new();
             controller.test_set_offset_y(0.0);
@@ -1231,7 +1230,6 @@ mod tests {
                 })
             );
         }
-        // Case `move_drag_preserves_duration_and_pointer_grab_offset`.
         {
             let mut controller = TimelineInteraction::new();
             controller.test_set_offset_y(0.0);
@@ -1259,7 +1257,6 @@ mod tests {
                 })
             );
         }
-        // Case `pending_event_press_is_a_select_not_a_move`.
         {
             let mut controller = TimelineInteraction::new();
             controller.test_set_offset_y(0.0);
@@ -1281,7 +1278,6 @@ mod tests {
                 Some(TimelineEffect::Select(id))
             );
         }
-        // Case `cancel_discards_pending_drag_without_an_effect`.
         {
             let mut controller = TimelineInteraction::new();
             let days = days();
@@ -1306,7 +1302,6 @@ mod tests {
             end_min: 10 * 60,
             lane: Lane::default(),
         };
-        // Just above the bottom edge is the grip.
         let mut grip = point_at(2, 10 * 60);
         grip.y -= 2.0;
         assert!(controller.resize_grip_at(area(), &days, &[span], grip));
@@ -1341,7 +1336,6 @@ mod tests {
             lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
             vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
         );
-        // Three at once take three lanes.
         assert_eq!(
             lanes(&[(540, 600), (540, 600), (540, 600)]),
             vec![lane(0, 3), lane(1, 3), lane(2, 3)]
@@ -1351,7 +1345,6 @@ mod tests {
             lanes(&[(540, 600), (600, 660)]),
             vec![lane(0, 1), lane(0, 1)]
         );
-        // A block hit lands in its own lane.
         let mut controller = TimelineInteraction::new();
         controller.test_set_offset_y(0.0);
         let days = days();

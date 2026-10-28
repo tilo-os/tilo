@@ -66,6 +66,7 @@ pub mod backend;
 pub mod control;
 pub mod disk_row;
 pub mod disks;
+pub mod hardware_report;
 mod i18n;
 pub mod install;
 pub mod installer_app;
@@ -81,6 +82,7 @@ pub mod seg_choice;
 pub mod status_log;
 pub mod step_indicator;
 pub mod timezones;
+pub mod unattended;
 pub mod windows_hint_source;
 
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};

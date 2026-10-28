@@ -160,11 +160,128 @@ fn every_chrome_surface_lets_the_desktop_idle() {
     desk.fb.with_chrome(|c| c.show_osd(Osd::brightness(0.4)));
     let fade_done = Instant::now()
         + shell::shell::osd::OSD_HOLD
-        + shell::shell::osd::OSD_FADE
+        + shell::shell::osd::osd_fade()
         + Duration::from_millis(50);
     while Instant::now() < fade_done {
         desk.frame();
         std::thread::sleep(Duration::from_millis(16));
     }
     desk.settle("after the brightness readout");
+}
+
+/// Three windows side by side, each narrower than the screen, so widening
+/// them overflows the strip.
+fn three_windows() -> WorkspaceTree {
+    use shell::shell::state::{DesktopTree, Tab, WindowGroup, WindowWidth};
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    let strip = &mut tree.desktop.workspaces[0].strips[0];
+    let original = strip.window_groups.remove(0);
+    let mut tabs = original.tabs.into_iter();
+    let (notes, files) = (tabs.next().unwrap(), tabs.next().unwrap());
+    let rest: Vec<Tab> = tabs.collect();
+    let group = |id: u64, tabs: Vec<Tab>| WindowGroup {
+        id,
+        active_tab: tabs[0].id,
+        tabs,
+        width: WindowWidth::Fraction(300),
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    strip.window_groups = vec![
+        group(920_001, vec![notes]),
+        group(920_002, vec![files]),
+        group(920_003, rest),
+    ];
+    let strip_id = strip.id;
+    let DesktopTree { active_group, .. } = &mut tree.desktop;
+    active_group.insert(strip_id, 920_001);
+    tree
+}
+
+/// Windows resized on a strip wider than the screen spring to their widths,
+/// and the springs end. Each width spring steps once per painted frame; a
+/// frame the frame builder painted without the host also saying the frame
+/// turned left every spring stopped after its first step, asking for frames
+/// forever while nothing moved.
+#[test]
+fn windows_resized_on_an_overflowing_strip_reach_their_widths_and_idle() {
+    let mut desk = Desk::new(three_windows());
+    desk.settle("three windows");
+    let strip = desk
+        .fb
+        .chrome()
+        .active_strip_id()
+        .expect("the desktop shows a strip");
+    let row = desk
+        .fb
+        .host_mut()
+        .group_row_mut_for_tests(strip)
+        .expect("the strip has a row");
+    assert_eq!(row.groups.len(), 3, "three windows on the strip");
+    let narrow: Vec<f64> = row
+        .groups
+        .iter()
+        .map(ui::widget::WindowGroup::layout_width_px)
+        .collect();
+    for group in &mut row.groups {
+        group.set_width(ui::widget::WindowWidth::Fraction(700));
+    }
+    let before = Instant::now();
+    desk.frame();
+    assert!(
+        !desk.fb.animation_owners_at(before).is_empty(),
+        "the windows spring to their new widths"
+    );
+    desk.settle("after widening the windows");
+    let row = desk
+        .fb
+        .host_mut()
+        .group_row_mut_for_tests(strip)
+        .expect("the strip has a row");
+    for (group, narrow) in row.groups.iter().zip(narrow) {
+        assert!(
+            group.layout_width_px() > 2.0 * narrow,
+            "a window widened from 30 % to 70 % arrives there: {narrow} then {}",
+            group.layout_width_px()
+        );
+    }
+    drop(desk);
+}
+
+/// A window made fullscreen by its key is whole at once, and the windows
+/// it covers go with it: the fullscreen bar fades over the window and then
+/// nothing is left moving behind it, so the desktop asks for no frame after
+/// the one that finishes the fade.
+#[test]
+fn a_fullscreen_by_key_lands_and_asks_for_no_frames_after() {
+    use winit::keyboard::{Key, ModifiersState};
+    let mut desk = Desk::new(three_windows());
+    desk.settle("three windows");
+    let press = ui::synthetic_input::key_press(Key::Character("f".into()), Some("f"));
+    let super_held = winit::event::Modifiers::from(ModifiersState::SUPER);
+    let mut focus = None;
+    assert!(
+        desk.fb.dispatch_event(
+            &press,
+            &super_held,
+            &mut ui::widget::Edits::lend(&mut desk.doc),
+            &ROOT,
+            &mut focus,
+        ),
+        "Super+F is the desktop's"
+    );
+    assert!(
+        desk.fb.chrome().fullscreen_group().is_some(),
+        "the focused window is fullscreen"
+    );
+    // The window is whole on the frame the key lands; only its bar's fade is
+    // in flight, over it, so nothing under it moves.
+    desk.frame();
+    desk.settle("the fullscreen bar's fade");
+    assert!(
+        desk.fb.animation_owners().is_empty(),
+        "landed: nothing is left moving over the window"
+    );
+    assert_eq!(desk.busy(), None, "and nothing else wakes the desktop");
+    drop(desk);
 }

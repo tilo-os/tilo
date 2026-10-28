@@ -37,7 +37,6 @@ pub fn control_socket(slot: &str) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub slot: String,
-    /// The system unit that runs it.
     pub unit: String,
     pub user: String,
     /// Units besides `unit` and the user manager that run the session's
@@ -97,6 +96,16 @@ impl SlotRecord {
     }
 }
 
+/// The machine's own identity tree, as a device's first login leaves it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MachineIdentity {
+    /// A person's identity holds the machine (`user-identity/pubkey.bin`).
+    pub person: bool,
+    /// The machine's device key is certified (`device/cert.bin`), which is
+    /// what starts `fs.service`.
+    pub certified: bool,
+}
+
 pub fn user_unit(uid: u32) -> String {
     format!("user@{uid}.service")
 }
@@ -135,6 +144,8 @@ pub trait Apply {
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     /// Private device identity for a disposable slot, inside its removable home.
     fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError>;
+    /// What the machine's own identity tree (`/var/lib/tilo`) holds.
+    fn machine_identity(&mut self) -> MachineIdentity;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
     /// Prepare one readonly combined filesystem view for a stand-in slot.
@@ -207,7 +218,7 @@ pub trait Apply {
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,
-    /// or `None` when it is not running.
+    /// or `None` when it is not running as the slot user (yet).
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess>;
     /// The main process of the running session unit, whose mount
     /// namespace has the slot's layers over `/usr`.
@@ -601,7 +612,9 @@ pub fn activate(
     }
 
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
-    if session.stand_in {
+    // This VM's person runs on the machine's identity tree, as a device's
+    // first login does; every other stand-in gets a private, removable one.
+    if session.stand_in && !record.device_identity {
         dropin.push_str(&apply.slot_identity_environment(&session.user)?);
     }
     for unit in layered_units(&session, uid) {
@@ -827,12 +840,13 @@ pub struct RecordingApply {
     pub cohort_selections: std::collections::VecDeque<crate::SelectedApps>,
     /// Runtime namespace supplied by cohort fixtures.
     pub cohort_runtime_root: Option<PathBuf>,
-    /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Notices published for the owner's desktop, by name.
     pub notices: BTreeMap<String, String>,
     /// Every call is copied here too, for a test that hands this to a daemon.
     pub mirror: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+    /// What the machine's identity tree holds; onboarding a person sets both.
+    pub machine: MachineIdentity,
 }
 
 impl RecordingApply {
@@ -914,6 +928,22 @@ impl Apply for RecordingApply {
     fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
         slot_identity_environment(std::path::Path::new(&format!("/home/{user}")))
     }
+    /// Pressing onboarding's last control makes the user the machine's person
+    /// and certifies its device key, as the session's onboarding would.
+    fn machine_identity(&mut self) -> MachineIdentity {
+        if self
+            .calls
+            .iter()
+            .any(|call| call.contains("onboarding.finish.button"))
+        {
+            MachineIdentity {
+                person: true,
+                certified: true,
+            }
+        } else {
+            self.machine
+        }
+    }
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
         self.call(format!("remove_user {user}"));
         self.users.remove(user);
@@ -976,6 +1006,15 @@ impl Apply for RecordingApply {
         // A login's scope runs as long as the login does.
         if unit.starts_with("session-") || unit == GREETER_UNIT {
             return "active".into();
+        }
+        // fs-identity.path starts fs once the device key is certified.
+        if unit == "fs.service" && !self.units.contains_key(unit) {
+            return if self.machine_identity().certified {
+                "active"
+            } else {
+                "inactive"
+            }
+            .into();
         }
         if self.units.get(unit).copied().unwrap_or(false) {
             "active"
@@ -1246,6 +1285,7 @@ mod tests {
             seat0: None,
             outputs: Vec::new(),
             device: None,
+            device_identity: false,
         }
     }
 
@@ -1334,6 +1374,29 @@ mod tests {
         }
     }
 
+    /// This VM's person runs on the machine's identity tree, as a device's
+    /// first login does; other stand-ins keep their private, removable root.
+    #[test]
+    fn only_the_vms_person_runs_without_a_private_identity_root() {
+        for (device_identity, private) in [(false, true), (true, false)] {
+            let mut apply = RecordingApply::default();
+            let mut slot = record("a", SlotKind::Headless);
+            slot.device_identity = device_identity;
+            activate(
+                &mut apply,
+                &mut slot,
+                &Generation::default(),
+                &[],
+                Policy::NoRestart,
+                &Restarts::default(),
+                SessionChange::Ensure,
+            )
+            .unwrap();
+            let dropin = &apply.dropins[&(session_unit("a"), LAYERS_DROPIN.into())];
+            assert_eq!(dropin.contains("TILO_IDENTITY_ROOT"), private, "{dropin}");
+        }
+    }
+
     #[test]
     fn component_refresh_does_not_start_inactive_services() {
         let mut apply = RecordingApply::default();
@@ -1367,7 +1430,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn apply_scope_decides_swap_refresh_and_session_policy() {
-        // Phase `swap_policy_follows_scope`.
         {
             let user = record("a", SlotKind::Headless);
             let base = generation(
@@ -1437,7 +1499,6 @@ mod tests {
             assert_eq!(policy(&vm, &kernel, &fs2).unwrap().0, Policy::Reboot);
             assert_eq!(policy(&vm, &kernel, &kernel).unwrap().0, Policy::NoRestart);
         }
-        // Phase `scope_misuse_is_refused`.
         {
             let user = record("a", SlotKind::Headful);
             let vm = record("vm", SlotKind::Vm);
@@ -1454,7 +1515,6 @@ mod tests {
             assert!(check_scope(&user, "shell", &shell).is_ok());
             assert!(check_scope(&vm, "fs", &fs).is_ok());
         }
-        // Phase `app_only_change_keeps_session`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("a", SlotKind::Headless);
@@ -1476,7 +1536,6 @@ mod tests {
             );
             assert!(matches!(actions.last(), Some(Action::Deferred { .. })));
         }
-        // Phase `vm_slot_refreshes_sysext_and_restarts_units`.
         {
             let mut apply = RecordingApply::default();
             let mut vm = record("vm", SlotKind::Vm);
@@ -1596,7 +1655,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn session_lifecycle_matches_greetd_and_cleans_up() {
-        // Phase `parity_matches_a_greetd_session`.
         {
             let greetd = SessionProcess {
                 cap_amb: 0,
@@ -1626,7 +1684,6 @@ mod tests {
                 "{problem}"
             );
         }
-        // Phase `session_restart_restarts_user_manager_between_logout_and_login`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("a", SlotKind::Headless);
@@ -1668,7 +1725,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `the_device_session_restarts_through_its_own_unit_as_its_account`.
         {
             let mut apply = RecordingApply::with_device("tester");
             let mut device = record("device", SlotKind::Device);
@@ -1719,11 +1775,9 @@ mod tests {
                 session.control_socket,
                 PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
             );
-            // Without the session found, the slot has none.
             device.device = None;
             assert_eq!(device.session(), None);
         }
-        // Phase `the_owners_login_merges_system_wide_and_restarts_its_desktop_in_place`.
         {
             let mut apply = RecordingApply::with_login("tester");
             let mut device = record("device", SlotKind::Device);
@@ -1808,7 +1862,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `headful_ensures_its_seat_on_every_activation`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("b", SlotKind::Headful);
@@ -1847,7 +1900,6 @@ mod tests {
             )];
             assert!(seat.contains("TILO_VM_BACKEND=drm XDG_SEAT=seat-b"));
         }
-        // Phase `deactivate_cleans_up`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("b", SlotKind::Headful);

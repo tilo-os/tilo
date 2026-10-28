@@ -1,0 +1,27 @@
+[package]
+name = "tilo-innertube"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The YouTube queries Music and Tube make, each compiled once beside rustypipe instead of into each app."
+
+# rustypipe's queries are generic and async, so an app that awaits one compiles
+# the query's whole request and response path into its own binary, although
+# rustypipe itself is in libtilo_youtube_engine.so. Each function here is one
+# query with its types fixed, returned boxed: its code is compiled in this
+# crate, which the engine library re-exports (crates/runtime/engines/youtube),
+# and the app keeps a call through the future's vtable.
+
+[lib]
+name = "tilo_innertube"
+path = "src/lib.rs"
+
+[dependencies]
+# The features Music, Tube and the engine build it with: one rustypipe in the
+# thin graph.
+rustypipe = { workspace = true, features = ["rustls-no-provider"] }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

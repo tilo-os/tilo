@@ -200,8 +200,6 @@ impl crate::resources::PublishesResources for SemanticCountingPublisher {
 
 impl crate::widget::controls::ActionControls for SemanticCountingPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
     }
 }
@@ -269,18 +267,24 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
         let mut app =
             App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        // A root swapped in place, with nothing the walks follow moving: the
+        // walks are owed as after any change of the tree.
+        let swap = |app: &mut App, root: Box<dyn Widget>| {
+            app.root_widget = root;
+            app.layout.walks = super::runtime::TreeWalks::default();
+        };
         app.refresh_control_action_availability();
         assert!(app.actions.last_control_availability.is_none());
         let (root, enabled) = inventory_only_publisher();
-        app.root_widget = root;
+        swap(&mut app, root);
         app.refresh_control_action_availability();
         assert!(enabled.get());
         assert!(app.actions.last_control_availability.is_some());
-        app.root_widget = Box::new(crate::widget::Column::new());
+        swap(&mut app, Box::<crate::widget::Column>::default());
         app.refresh_control_action_availability();
         assert!(app.actions.last_control_availability.is_none());
         let (root, enabled) = inventory_only_publisher();
-        app.root_widget = root;
+        swap(&mut app, root);
         app.refresh_control_action_availability();
         assert!(
             enabled.get(),
@@ -366,8 +370,6 @@ impl crate::resources::PublishesResources for InventoryOnlyPublisher {
 
 impl crate::widget::controls::ActionControls for InventoryOnlyPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
     }
     fn refresh_control_action_availability(
@@ -421,8 +423,6 @@ impl crate::resources::PublishesResources for FastInventoryPublisher {
 
 impl crate::widget::controls::ActionControls for FastInventoryPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
     }

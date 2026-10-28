@@ -406,7 +406,6 @@ mod tests {
         // An app the file never knew is handed nothing to adopt.
         secrets.secret_for("org.example.New").await.unwrap();
         assert_eq!(fake.seen.lock().unwrap()[1].1, None);
-        // When the last one is adopted the file and its key are deleted.
         secrets.secret_for("org.example.Two").await.unwrap();
         assert!(!path.exists());
         assert!(!key_path(&path).exists());

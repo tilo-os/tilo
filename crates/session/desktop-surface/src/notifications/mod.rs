@@ -33,7 +33,7 @@ pub use model::{
     PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
 };
 pub use persistence::{decode_history, encode_history};
-pub use stack::NotificationStack;
+pub use stack::{NotificationStack, transient_slot};
 
 /// What the banner stack and the notification centre need from the desktop
 /// that shows them. Reads go through [`Self::log`]; every mutation is the

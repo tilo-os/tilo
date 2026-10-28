@@ -30,6 +30,10 @@ can be made (other systems, or a refused call) the actor polls as before.
 So on Linux the actor sleeps until the network or the clock changes, and a
 resume is now noticed, where the poll missed it.
 
+Since tokio 1.53.3 deprecates the safe `AsyncFd` constructors as unsound,
+the timerfd is registered with the unsafe `AsyncFd::register_with_interest`.
+The AsyncFd owns the descriptor, which meets its contract.
+
 ## Upstream
 
 Prepared for an upstream issue/PR against `n0-computer/net-tools` (not

@@ -143,7 +143,6 @@ fn increasing_pairs(targets: &[Option<usize>]) -> Vec<(usize, usize)> {
     chain
 }
 
-/// A run of characters in a text diff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextRun {
     pub op: RunOp,

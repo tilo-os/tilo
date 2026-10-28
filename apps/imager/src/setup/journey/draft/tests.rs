@@ -14,6 +14,8 @@ fn choices() -> PublicChoices {
         excluded_flatpak_apps: std::collections::BTreeSet::default(),
         device_label: "My laptop".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
     }
 }
 fn namespace(root: &Path) -> PathBuf {
@@ -40,7 +42,7 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     );
     let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![12, 34, 56, 255]).unwrap();
     prepared.update_photo(Some(photo.clone())).unwrap();
-    prepared.update_name("ada").unwrap();
+    prepared.update_name("Ada").unwrap();
     let before = runtime_identity::load_from_path(custody.join("primary.json"))
         .unwrap()
         .sign(b"restart-proof")
@@ -49,6 +51,8 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     let changed = PublicChoices {
         device_label: "Another device".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     store.update_choices_for(&prepared, &changed).unwrap();
@@ -62,7 +66,7 @@ fn closed_preparation_reopens_exact_identity_photo_and_public_choices_without_se
     assert_eq!(ready.kind(), IdentityKind::New);
     assert_eq!(ready.choices(), &changed);
     let prepared = ready.resume().unwrap();
-    assert_eq!(prepared.metadata().unwrap().display_name, "ada");
+    assert_eq!(prepared.metadata().unwrap().display_name, "Ada");
     assert_eq!(prepared.metadata().unwrap().profile_photo, Some(photo));
     let after = runtime_identity::load_from_path(custody.join("primary.json"))
         .unwrap()
@@ -356,6 +360,8 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     let newest_choices = PublicChoices {
         device_label: "Current device".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     let second = store.reserve(&newest_choices, IdentityKind::New).unwrap();
@@ -374,6 +380,8 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
     let stale = PublicChoices {
         device_label: "Old queued choice".into(),
         purpose: install_profile_model::default_purpose(),
+        deferred: false,
+        target: None,
         ..choices()
     };
     assert!(store.update_choices_for(&old, &stale).is_err());

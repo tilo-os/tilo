@@ -64,6 +64,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
 serial_test.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # Schema-validate the app manifest (`tilo-app.toml`) in a test so the vCard
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.

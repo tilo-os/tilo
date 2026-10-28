@@ -60,7 +60,8 @@ impl CommandHistory {
     /// Remember a run a session recorded.
     ///
     /// The terminal keeping the person's history, not an edit of theirs to
-    /// take back.
+    /// take back: this is housekeeping about the history, which the `record`
+    /// op of the same run carries out as what it is.
     #[action(housekeeping)]
     pub fn remember(
         &mut self,
@@ -69,6 +70,28 @@ impl CommandHistory {
     ) -> Result<(), Refusal> {
         if ran.command.trim().is_empty() || ran.command.len() > crate::resource::MAX_COMMAND_BYTES {
             return Err(Refusal::new("a run names its command line"));
+        }
+        self.keep(cx, ran);
+        Ok(())
+    }
+
+    /// The runs whose command line contains `text`, newest first.
+    pub fn matching<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a Remembered> {
+        self.runs
+            .values()
+            .rev()
+            .filter(move |run| run.command.0.contains(text))
+    }
+
+    /// Remember `ran` in the newest place, keeping [`MAX_REMEMBERED`]
+    /// entries; a run already remembered keeps its place.
+    fn keep(&mut self, cx: &mut ActionCx, ran: Ran) {
+        if self
+            .runs
+            .values()
+            .any(|remembered| remembered.run == ran.run)
+        {
+            return;
         }
         while self.runs.len() >= MAX_REMEMBERED {
             let Some(oldest) = self.runs.ids().next().cloned() else {
@@ -89,16 +112,5 @@ impl CommandHistory {
                 run: ran.run,
             },
         );
-        Ok(())
-    }
-}
-
-impl CommandHistory {
-    /// The runs whose command line contains `text`, newest first.
-    pub fn matching<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a Remembered> {
-        self.runs
-            .values()
-            .rev()
-            .filter(move |run| run.command.0.contains(text))
     }
 }

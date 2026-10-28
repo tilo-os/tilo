@@ -47,12 +47,12 @@ reloads. An owner whose turns add up to 1000 ms in a second is saturated.
 
 `tools/perf/room_capacity.py sweep` runs the plan below one run after another
 on one runner, and `summarize` derives the per-guest figures and prices them
-with `[room_node.*]` of `tools/perf/prices.toml`. The **Perf / room host
-capacity** workflow (`.forgejo/workflows/perf-room-capacity.yml`, manual
-dispatch) runs both:
+with `[room_node.*]` of `tools/perf/prices.toml`. t's `perf-room-capacity`
+check runs both:
 
 ```sh
-fgj actions workflow run perf-room-capacity.yml -R tilo/tilo -r <branch> -f plan=full
+t dispatch perf-room-capacity --input plan=full
+t outputs perf-room-capacity
 ```
 
 Every run uses production's allocator setting (`MALLOC_ARENA_MAX=2`, which the
@@ -196,5 +196,5 @@ marginal cost today is a share of a node it already pays for.
   (`tilo_rooms_max_guests` and `tilo_rooms_max_spectators`, which the room
   service now exports), and the container above 85 % of its memory limit.
 
-The nightly **Perf / scheduled** `hosting-room` job guards the 100-guest
+t's `perf-hosting-room` check, in the performance run, guards the 100-guest
 point (`tools/perf/kpi-budgets.toml`, `hosting.room.*.g100`).

@@ -15,6 +15,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT.parent / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -47,7 +49,7 @@ class ConsoleTransport(unittest.TestCase):
                 self.assertEqual(console.state('tcp://127.0.0.1:12345'), {'app': 'installer'})
         finally:
             client.close()
-            worker.join(timeout=2)
+            worker.join(timeout=HANG_BOUND)
         self.assertFalse(worker.is_alive())
 
     def test_malformed_state_is_retryable_not_an_attribute_error(self):
@@ -178,8 +180,8 @@ class Transport(unittest.TestCase):
             'schema':'tilo.installer-code-uki-fixture.v1','physical_admission':False,'readonly':True,
             'sha256':'b'*64,'bytes':1024*1024}))
         with patch.object(host.subprocess, 'run', side_effect=git):
-            receipt = host.refresh(self.source, port, self.source / 'receipt.json', timeout=3)
-        worker.join(3)
+            receipt = host.refresh(self.source, port, self.source / 'receipt.json', timeout=HANG_BOUND)
+        worker.join(HANG_BOUND)
         self.assertFalse(worker.is_alive())
         self.assertEqual(results[0]['usr/libexec/tilo-install'], self.file.read_bytes())
         self.assertEqual(json.loads((self.source / 'receipt.json').read_text()), receipt)

@@ -83,18 +83,18 @@ pub struct AccountCredentials {
 
 impl AccountCredentials {
     /// Open signed-in user custody, refusing an unreadable or unavailable vault.
-    ///
-    /// # Errors
-    /// Returns credential storage failures rather than an empty account view.
     pub fn open() -> Result<Self, String> {
         Self::from_vault(SecretVault::open())
     }
 
-    /// Open explicit-root custody for recovery and isolated tests.
-    ///
-    /// # Errors
-    /// Returns credential storage failures.
+    /// Open the credentials kept under the config root `root`. The person's
+    /// own root ([`crate::config_root`]) is sealed under session custody, so
+    /// it opens as [`Self::open`] does; any other root (a test, capture or
+    /// `--data-dir` profile, a recovery copy) under its own private key.
     pub fn open_in(root: &Path) -> Result<Self, String> {
+        if crate::config_root().as_deref() == Some(root) {
+            return Self::open();
+        }
         Self::from_vault(SecretVault::open_in(root))
     }
 
@@ -123,9 +123,6 @@ impl AccountCredentials {
     }
 
     /// Commit staged edits using the vault's locked, conflict-checked atomic write.
-    ///
-    /// # Errors
-    /// Returns custody, concurrent modification and durable write failures.
     pub fn try_save(&self) -> Result<(), String> {
         self.vault.try_save()
     }
@@ -157,8 +154,6 @@ impl ServiceCredentials {
         Ok(vault)
     }
 
-    /// # Errors
-    /// Returns storage errors instead of guessing when custody is unavailable.
     pub fn custody(&self) -> Result<SecretCustody, BrokerError> {
         Ok(self.vault()?.custody())
     }
@@ -200,8 +195,6 @@ impl ServiceCredentials {
         Ok(Self::entry(&self.vault()?, reference, authorization)?.is_some())
     }
 
-    /// # Errors
-    /// Returns authorization, integrity or storage failures.
     pub fn resolve(
         &self,
         reference: &CredentialRef,
@@ -211,8 +204,6 @@ impl ServiceCredentials {
             .map(|entry| Zeroizing::new(entry.value)))
     }
 
-    /// # Errors
-    /// Returns invalid-value, authorization, integrity or durable write failures.
     pub fn store(
         &self,
         reference: &CredentialRef,
@@ -251,8 +242,6 @@ impl ServiceCredentials {
         Ok(())
     }
 
-    /// # Errors
-    /// Returns authorization, integrity or durable write failures.
     pub fn remove(
         &self,
         reference: &CredentialRef,
@@ -279,9 +268,6 @@ impl ServiceCredentials {
     }
 
     /// Diagnose an unbound provider key without disclosing it or guessing its origin.
-    ///
-    /// # Errors
-    /// Returns invalid identifiers or custody failures.
     pub fn legacy_agent_provider_status(&self, profile_id: &str) -> Result<bool, BrokerError> {
         let key = Self::legacy_agent_key(profile_id)?;
         Ok(self.vault()?.get(&key).is_some())
@@ -289,9 +275,6 @@ impl ServiceCredentials {
 
     /// Remove only the explicitly selected unbound provider entry.
     /// Bound credentials are never affected, including after an endpoint edit.
-    ///
-    /// # Errors
-    /// Returns invalid identifiers, custody or durable write failures.
     pub fn remove_legacy_agent_provider(&self, profile_id: &str) -> Result<bool, BrokerError> {
         let key = Self::legacy_agent_key(profile_id)?;
         let mut vault = self.vault()?;
@@ -306,9 +289,6 @@ impl ServiceCredentials {
     /// configuration owner must supply the original endpoint, not a newly edited
     /// endpoint: old entries carried no origin binding. Never guess that origin.
     /// Existing bound entries win, making retries idempotent.
-    ///
-    /// # Errors
-    /// Returns invalid identifiers, origin mismatch, integrity or write failures.
     pub fn migrate_agent_provider(
         &self,
         profile_id: &str,
@@ -337,5 +317,24 @@ impl ServiceCredentials {
         vault.remove(&legacy);
         vault.try_save().map_err(BrokerError::Storage)?;
         Ok(reference)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The person's vault opened by its root is the session's vault: the
+    /// same custody, refused or opened alike, and never sealed afresh under
+    /// a key file of its own.
+    #[test]
+    fn the_persons_root_opens_under_session_custody() {
+        let Some(root) = crate::config_root() else {
+            return;
+        };
+        let by_root =
+            AccountCredentials::open_in(&root).map(|credentials| credentials.vault.custody());
+        let session = AccountCredentials::open().map(|credentials| credentials.vault.custody());
+        assert_eq!(by_root, session);
     }
 }

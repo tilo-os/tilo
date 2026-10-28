@@ -7,43 +7,93 @@
 //! for a symlink and have root create, replace or hand them a file wherever
 //! the link points. So those writes run with the person's own filesystem
 //! identity instead: they reach exactly what the person could reach
-//! themselves, and what they create is the person's from the start.
+//! themselves, and what they create is the person's from the start. Whom
+//! they run as comes from the caller, never from the directory: the person
+//! can point their directory at one that root owns.
 
 use std::io;
 use std::path::Path;
 
-/// Run `write` as the owner of `path`, or of its nearest existing ancestor,
-/// when this process is root and that owner is not. Only the calling
-/// thread's filesystem identity changes (Linux `setfsuid`, which also drops
-/// root's filesystem capabilities while it lasts), and it is restored when
-/// `write` returns or unwinds. Anywhere else `write` runs as it is.
+/// Run `write` as the account `person` names: an explicit uid when a root
+/// process acts for someone, or `None` for this process's own account.
+///
+/// `identity_dir`, or its nearest existing ancestor while it is still to be
+/// created, must be a real directory (not a symlink to one) owned by that
+/// account; anything else is refused before `write` runs. A root process
+/// writing for another account does so with that account's filesystem
+/// identity (Linux `setfsuid`, which also drops root's filesystem
+/// capabilities while it lasts), so a directory swapped after the check
+/// leads only where the person could write themselves. It never falls back
+/// to writing as root for anyone but root. A process that is not root can
+/// write only for itself, and with `None` runs `write` as it is: it can
+/// reach nothing it could not reach anyway.
 ///
 /// # Errors
 ///
-/// Why the owner could not be read or assumed, or `write`'s own error.
-pub fn as_owner_of<T>(path: &Path, write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+/// `PermissionDenied` when the directory is a symlink, not a directory or
+/// not the account's, or the account is not this process's own and this
+/// process is not root; why the identity could not be assumed; or `write`'s
+/// own error.
+pub fn as_person<T>(
+    person: Option<u32>,
+    identity_dir: &Path,
+    write: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::MetadataExt as _;
-
-        if rustix::process::geteuid().as_raw() != 0 {
+        let process = rustix::process::geteuid().as_raw();
+        if process != 0 && person.is_none() {
             return write();
         }
-        let owner = path
-            .ancestors()
-            .find_map(|ancestor| std::fs::metadata(ancestor).ok())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no ancestor exists"))?;
-        if owner.uid() == 0 {
+        let uid = person.unwrap_or(process);
+        if process != 0 && uid != process {
+            return Err(refused("only root writes for another account"));
+        }
+        let gid = owned_directory(identity_dir, uid)?;
+        if uid == process {
             return write();
         }
-        let _person = FilesystemIdentity::assume(owner.uid(), owner.gid())?;
+        let _person = FilesystemIdentity::assume(uid, gid)?;
         write()
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = path;
+        let _ = (person, identity_dir);
         write()
     }
+}
+
+/// Check that `identity_dir`, or its nearest existing ancestor, is a
+/// directory `uid` owns, reached without following a symlink at that last
+/// component, and return its group.
+#[cfg(target_os = "linux")]
+fn owned_directory(identity_dir: &Path, uid: u32) -> io::Result<u32> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+    let existing = identity_dir
+        .ancestors()
+        .find(|ancestor| std::fs::symlink_metadata(ancestor).is_ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no ancestor exists"))?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(existing)
+        .map_err(|error| match error.raw_os_error() {
+            Some(libc::ELOOP | libc::ENOTDIR) => {
+                refused("the identity directory is not a directory")
+            }
+            _ => error,
+        })?;
+    let metadata = directory.metadata()?;
+    if metadata.uid() != uid {
+        return Err(refused("the identity directory belongs to another account"));
+    }
+    Ok(metadata.gid())
+}
+
+#[cfg(target_os = "linux")]
+fn refused(why: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, why.to_owned())
 }
 
 /// The calling thread's filesystem identity, switched to a person's until
@@ -156,12 +206,49 @@ mod tests {
     }
 
     #[test]
+    fn a_symlinked_or_foreign_identity_directory_is_refused() {
+        let own = rustix::process::geteuid().as_raw();
+        let home = tempfile::tempdir().unwrap();
+        let real = home.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut ran = false;
+        for planted in [link.clone(), link.join("not-yet/identity")] {
+            let refused = as_person(Some(own), &planted, || {
+                ran = true;
+                std::fs::write(real.join("fleet.json"), b"{}")
+            });
+            assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        }
+        assert!(!ran);
+        assert!(!real.join("fleet.json").exists());
+
+        if own != 0 {
+            // Its nearest existing ancestor is root's.
+            let foreign = as_person(
+                Some(own),
+                Path::new("/tilo-no-such-dir/identity"),
+                || Ok(()),
+            );
+            assert_eq!(foreign.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            let other = as_person(Some(own.wrapping_add(1)), &real, || Ok(()));
+            assert_eq!(other.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        as_person(Some(own), &real.join("identity"), || {
+            std::fs::create_dir_all(real.join("identity/fleets"))?;
+            std::fs::write(real.join("identity/fleets/new.json"), b"{}")
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn root_writes_into_a_persons_directory_only_as_the_person() {
         let person = another_person().filter(|_| rustix::process::geteuid().as_raw() == 0);
         let Some(person_uid) = person else {
             // Not root, or no other person exists here: nothing switches.
-            let dir = tempfile::tempdir().unwrap();
-            as_owner_of(dir.path(), || std::fs::write(dir.path().join("a"), b"a")).unwrap();
             return;
         };
         let home = tempfile::tempdir().unwrap();
@@ -175,24 +262,44 @@ mod tests {
         }
         let protected = home.path().join("protected");
         std::fs::create_dir(&protected).unwrap();
+        let identity = person.join("identity");
 
         // What it creates is the person's from the start.
-        as_owner_of(&person.join("fleets/new.json"), || {
-            std::fs::create_dir_all(person.join("fleets"))?;
-            std::fs::write(person.join("fleets/new.json"), b"{}")
+        as_person(Some(person_uid), &identity, || {
+            std::fs::create_dir_all(identity.join("fleets"))?;
+            std::fs::write(identity.join("fleets/new.json"), b"{}")
         })
         .unwrap();
-        let written = std::fs::metadata(person.join("fleets/new.json")).unwrap();
+        let written = std::fs::metadata(identity.join("fleets/new.json")).unwrap();
         assert_eq!((written.uid(), written.gid()), (person_uid, person_uid));
 
-        // A directory the person swapped for a link to root's leads nowhere.
-        std::fs::remove_dir_all(person.join("fleets")).unwrap();
-        std::os::unix::fs::symlink(&protected, person.join("fleets")).unwrap();
-        let refused = as_owner_of(&person, || {
-            std::fs::write(person.join("fleets/new.json"), b"{}")
+        // A directory below it swapped for a link to root's leads nowhere.
+        std::fs::remove_dir_all(identity.join("fleets")).unwrap();
+        std::os::unix::fs::symlink(&protected, identity.join("fleets")).unwrap();
+        let refused = as_person(Some(person_uid), &identity, || {
+            std::fs::write(identity.join("fleets/new.json"), b"{}")
         });
         assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+
+        // Neither does the identity directory itself swapped for one, nor a
+        // root-owned directory reached through a swapped ancestor: both are
+        // refused before anything is written, even though root owns the
+        // target.
+        std::fs::remove_dir_all(&identity).unwrap();
+        std::os::unix::fs::symlink(&protected, &identity).unwrap();
+        let swapped_ancestor = home.path().join("swapped");
+        std::os::unix::fs::symlink(home.path(), &swapped_ancestor).unwrap();
+        for planted in [identity, swapped_ancestor.join("protected")] {
+            let refused = as_person(Some(person_uid), &planted, || {
+                std::fs::write(planted.join("new.json"), b"{}")
+            });
+            assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        }
         assert!(!protected.join("new.json").exists());
+
+        // Root acting for itself refuses the person's directory.
+        let own = as_person(None, &person, || std::fs::write(person.join("a"), b"a"));
+        assert_eq!(own.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
 
         // The thread is root's again afterwards.
         std::fs::write(protected.join("root.json"), b"{}").unwrap();

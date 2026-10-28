@@ -7,8 +7,8 @@ resource: setting the count is an edit at its path
 (`Counter::paths().count.set(42)`), `add` and `reset` are its `#[action]`
 verbs, and the model's `check` keeps the count in range whichever way it
 changes. The buttons are bound to the verbs rather than to click handlers.
-That one decision gives the app validation for every caller, undo, a
-confirmation for the destructive reset, a disabled view for a viewer, and a
+That one decision gives the app validation for every caller, undo (so the
+destructive reset runs at once and offers Undo), a disabled view for a viewer, and a
 surface the palette, agents and scripts use exactly as the buttons do.
 
 Read:

@@ -9,8 +9,6 @@ impl App {
     ///     .run();
     /// ```
     #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
     #[allow(
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
@@ -58,7 +56,7 @@ impl App {
     /// Starts a new autosave generation so writes queued for the previous
     /// document are recognised as stale. A `u64` counter never wraps in
     /// practice; wrapping keeps this total instead of panicking.
-    fn advance_autosave_generation(&mut self) {
+    pub(super) fn advance_autosave_generation(&mut self) {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
@@ -161,7 +159,15 @@ impl App {
         &self.collaboration.manager
     }
 
+    /// The window's collaboration, for a test of what it does once the
+    /// transport fails.
+    #[cfg(test)]
+    pub(crate) fn collaboration_manager_mut(&mut self) -> &mut CollaborationManager {
+        &mut self.collaboration.manager
+    }
+
     pub fn record_tick(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.record_tick");
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();
         let initial = if native {

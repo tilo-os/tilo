@@ -20,7 +20,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use tilo_relay::daemon::Relay;
 
-use crate::support::{Device, ROOM, enrol, route, workspace};
+use crate::support::{Device, ROOM, enrol, route, scratch_dir, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -65,12 +65,11 @@ pub struct HeldAdmission(Arc<AdmissionGate>);
 impl HeldAdmission {
     /// Prove the real member requested this channel before proceeding.
     pub async fn requested(&self) {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+        tilo_test_env::within(
+            "the held member to request its channel",
             self.0.entered.notified(),
         )
-        .await
-        .expect("the held member never requested its channel");
+        .await;
     }
 }
 
@@ -92,7 +91,7 @@ impl Steward {
     pub async fn start(host: &Relay, root: &SigningKey) -> Self {
         let device = enrol(root, "steward", DeviceCapabilities::primary());
         let channels = Arc::new(Mutex::new(Channels {
-            dir: tempfile::tempdir().unwrap(),
+            dir: scratch_dir(),
             key: device.key.clone(),
             stewards: HashMap::new(),
         }));
@@ -103,6 +102,7 @@ impl Steward {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(device.cert.clone()),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
         );
         let note = route();
@@ -176,7 +176,6 @@ impl Steward {
         HeldAdmission(gate)
     }
 
-    /// The current content keys of `route`'s channel.
     pub fn content_keys(&self, route: &tilo_browser_peer::DocumentRoute) -> ChannelContentKeys {
         self.channels
             .lock()

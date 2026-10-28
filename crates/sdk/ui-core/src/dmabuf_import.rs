@@ -39,6 +39,8 @@
 //!
 //! [`ImportError::NotVulkan`]: crate::dmabuf_import::ImportError::NotVulkan
 //! [`ImportError::StrideMismatch`]: crate::dmabuf_import::ImportError::StrideMismatch
+//!
+//! [`explicit_layout_available`]: crate::dmabuf_import::explicit_layout_available
 
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
 use std::sync::Arc;
@@ -619,7 +621,7 @@ fn has_modifier_extension(hal_device: &vulkan::Device) -> bool {
 
 /// The DRM modifiers `device` can sample for a single-plane dma-buf of
 /// `fourcc`: each one the driver lists for the format and confirms
-/// ([`VulkanImporter::check_modifier`], the check every import repeats at its
+/// (`VulkanImporter::check_modifier`, the check every import repeats at its
 /// real size) can be imported and sampled. Empty when the device is not
 /// Vulkan, lacks `VK_EXT_image_drm_format_modifier`, or has no such format.
 ///
@@ -836,7 +838,6 @@ pub fn write_fence_waits() -> u64 {
     WRITE_FENCE_WAITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// `struct dma_buf_export_sync_file`.
 #[repr(C)]
 struct DmaBufExportSyncFile {
     flags: u32,
@@ -1613,7 +1614,6 @@ impl<'a> VulkanImporter<'a> {
             return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
         }
 
-        // Free the image + imported memory when the wgpu texture drops.
         let dev_owned = dev.clone();
         let drop_cb: vello::wgpu::hal::DropCallback = Box::new(move || unsafe {
             dev_owned.destroy_image(vk_image, None);
@@ -1688,7 +1688,6 @@ mod tests {
 
     #[test]
     fn render_target_contract_accepts_only_exact_linear_scanout_formats() {
-        // Case `a_tiled_modifier_is_refused_rather_than_sampled_as_pixels`.
         {
             // The AMD GFX9 tiled modifier a VA-API decoder exports. Importing it
             // as linear would read the tiling pattern as picture content.
@@ -1700,7 +1699,6 @@ mod tests {
             );
         }
 
-        // Case `scanout_target_contract_accepts_only_exact_linear_xrgb`.
         {
             let file = tempfile::tempfile().expect("temporary descriptor");
             let planes = one_plane(&file, 0, 256);
@@ -1742,7 +1740,6 @@ mod tests {
             ));
         }
 
-        // Case `hdr_scanout_formats_map_to_their_ten_bit_and_half_float_views`.
         {
             let file = tempfile::tempfile().expect("temporary descriptor");
             let planes = one_plane(&file, 0, 256);
@@ -1791,7 +1788,6 @@ mod tests {
             );
         }
 
-        // Case `scanout_target_contract_rejects_offset_and_short_stride`.
         {
             let file = tempfile::tempfile().expect("temporary descriptor");
             let offset_planes = one_plane(&file, 4, 256);
@@ -1855,7 +1851,6 @@ mod tests {
             assert_eq!(specs[1].texel_bytes, 4);
         }
 
-        // Case `odd_dimensions_keep_a_whole_chroma_sample_for_the_last_row_and_column`.
         {
             // Rounding down would drop the right column and bottom row of chroma,
             // tinting the edges of an odd-sized picture.
@@ -1863,7 +1858,6 @@ mod tests {
             assert_eq!((specs[1].width, specs[1].height), (960, 540));
         }
 
-        // Case `yuyv_is_imported_at_half_width_because_one_texel_holds_two_pixels`.
         {
             let (layout, specs) = plane_specs(DRM_FORMAT_YUYV, 1920, 1080).unwrap();
             assert_eq!(layout, PlaneLayout::PackedYuv422);
@@ -1872,7 +1866,6 @@ mod tests {
             assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::Rgba8Unorm);
         }
 
-        // Case `drm_rgb_names_map_to_the_matching_vulkan_byte_order`.
         {
             // Getting this backwards swaps red and blue — the classic dmabuf bug.
             // DRM names by little-endian word order, so AR24 (ARGB8888) is
@@ -1889,7 +1882,6 @@ mod tests {
             let (_, x) = plane_specs(DRM_FORMAT_XRGB8888, 64, 64).unwrap();
             assert_eq!(x[0].wgpu_format, wgpu::TextureFormat::Bgra8Unorm);
 
-            // Ten-bit and half-float client buffers keep their precision.
             let (_, ten) = plane_specs(DRM_FORMAT_XBGR2101010, 64, 64).unwrap();
             assert_eq!(ten[0].wgpu_format, wgpu::TextureFormat::Rgb10a2Unorm);
             assert_eq!(ten[0].format, vk::Format::A2B10G10R10_UNORM_PACK32);
@@ -1898,7 +1890,6 @@ mod tests {
             assert_eq!(half[0].texel_bytes, 8);
         }
 
-        // Case `an_unknown_fourcc_is_rejected_rather_than_guessed_at`.
         {
             assert!(plane_specs(media::dmabuf::fourcc(b'Z', b'Z', b'Z', b'Z'), 64, 64).is_none());
         }

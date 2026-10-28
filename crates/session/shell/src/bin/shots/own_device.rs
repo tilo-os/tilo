@@ -62,6 +62,7 @@ fn hosted(id: u64, app: &str, title: &str) -> Tab {
             kind: AppKind::Other(app.into()),
             label: title.into(),
         },
+        app_title: None,
     }
 }
 
@@ -70,9 +71,8 @@ fn hosted(id: u64, app: &str, title: &str) -> Tab {
 /// Returns its room.
 pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomId {
     let id = WorkspaceId(salted(salt, 1));
-    let mut workspace = Workspace::new(id, "Research");
     let room = RoomId::new();
-    workspace.set_room(room);
+    let mut workspace = Workspace::in_room(id, room, "Research");
     workspace.set_owner(person.to_string());
     let mut strip = Strip::new(StripId(salted(salt, 2)), "Thesis");
     let draft = salted(salt, 4);
@@ -106,7 +106,12 @@ pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomI
 /// end of the strip, as the device under `salt` does when a person drags it
 /// out there.
 pub fn split_outline(tree: &mut WorkspaceTree, room: RoomId, salt: u16) {
-    let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+    let Some(workspace) = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.room() == room)
+    else {
         return;
     };
     let Some(strip) = workspace.strips.first_mut() else {

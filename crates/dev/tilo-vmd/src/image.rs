@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_vm_protocol::{HeldLayer, ImageChange, Provenance, SlotLayers};
+use tilo_vm_protocol::{Declaration, HeldLayer, ImageChange, Provenance, SlotLayers};
 
 use crate::error::DaemonError;
 use crate::fsutil::write_atomic;
@@ -43,7 +43,6 @@ use crate::slots::{SlotStore, now};
 const IMAGE_FILE: &str = "image.json";
 /// The last [`ImageChange`].
 const CHANGE_FILE: &str = "image-change.json";
-/// The layers held on the booted image.
 const HELD_FILE: &str = "held-layers.json";
 /// The notice the desktop shows about held layers.
 pub const HELD_NOTICE: &str = "held-layers.json";
@@ -63,12 +62,16 @@ pub fn running_image() -> Option<String> {
 /// What a layer is checked against on the booted image.
 #[derive(Debug, Clone, Default)]
 pub struct BootedImage {
-    /// As [`booted_image`] names it.
     pub id: String,
     /// The base digest layers record (`base.json`'s `image_digest`).
     pub digest: Option<String>,
     /// The image's `[interfaces]` ([`tilo_vm_protocol::SYSTEM_INTERFACES`]).
     pub interfaces: BTreeMap<String, u32>,
+    /// The image's own declaration, as recorded for the swap check
+    /// ([`crate::interfaces`]); `None` when what `/usr` shows is not the
+    /// image's alone (system extensions are merged over it), so it is not
+    /// recorded as the image's.
+    pub declaration: Option<Declaration>,
 }
 
 impl BootedImage {
@@ -82,6 +85,7 @@ impl BootedImage {
             interfaces: std::fs::read_to_string(interfaces_file)
                 .map(|text| tilo_vm_protocol::system_interfaces(&text))
                 .unwrap_or_default(),
+            declaration: (!usr_is_merged()).then(|| Declaration::read(interfaces_file)),
         }
     }
 
@@ -123,6 +127,30 @@ impl BootedImage {
     }
 }
 
+/// Whether system extensions are merged over `/usr` (a `sysext` overlay is
+/// mounted there), so a file under it may be a layer's, not the image's.
+/// The early-boot unit runs before `systemd-sysext`, and sees the image's.
+fn usr_is_merged() -> bool {
+    std::fs::read_to_string("/proc/self/mountinfo").is_ok_and(|info| usr_merged_in(&info))
+}
+
+fn usr_merged_in(mountinfo: &str) -> bool {
+    mountinfo.lines().any(|line| {
+        let mut halves = line.splitn(2, " - ");
+        let (Some(mount), Some(source)) = (halves.next(), halves.next()) else {
+            return false;
+        };
+        mount.split(' ').nth(4) == Some("/usr") && source.split(' ').nth(1) == Some("sysext")
+    })
+}
+
+/// The image's own system-interface declaration, as the boot recorded it;
+/// `None` when no boot has recorded it yet.
+#[must_use]
+pub fn recorded_declaration(root: &Path) -> Option<Declaration> {
+    read_json::<Recorded>(&root.join(IMAGE_FILE)).and_then(|r| r.interfaces)
+}
+
 fn short(digest: &str) -> &str {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     hex.get(..12).unwrap_or(hex)
@@ -131,7 +159,11 @@ fn short(digest: &str) -> &str {
 #[derive(Debug, Serialize, Deserialize)]
 struct Recorded {
     image: String,
-    recorded_at: String,
+    #[serde(rename = "recorded_at")]
+    at: String,
+    /// The image's own declaration ([`BootedImage::declaration`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interfaces: Option<Declaration>,
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
@@ -163,13 +195,11 @@ pub fn last_change(root: &Path) -> Option<ImageChange> {
     read_json(&root.join(CHANGE_FILE))
 }
 
-/// The layers held on the booted image.
 #[must_use]
 pub fn held(root: &Path) -> Vec<HeldLayer> {
     read_json(&root.join(HELD_FILE)).unwrap_or_default()
 }
 
-/// The hashes of [`held`].
 #[must_use]
 pub fn held_hashes(root: &Path) -> BTreeSet<String> {
     held(root).into_iter().map(|h| h.layer).collect()
@@ -231,7 +261,19 @@ pub fn reconcile(
     booted: &BootedImage,
 ) -> Result<Option<ImageChange>, DaemonError> {
     let recorded: Option<Recorded> = read_json(&root.join(IMAGE_FILE));
-    if recorded.as_ref().is_some_and(|r| r.image == booted.id) {
+    if let Some(same) = recorded.as_ref().filter(|r| r.image == booted.id) {
+        // A boot before recorded this image without its declaration (an
+        // older tilo-vmd): record it now when it can be read as the image's.
+        if same.interfaces.is_none() && booted.declaration.is_some() {
+            write_json(
+                &root.join(IMAGE_FILE),
+                &Recorded {
+                    image: same.image.clone(),
+                    at: same.at.clone(),
+                    interfaces: booted.declaration.clone(),
+                },
+            )?;
+        }
         return Ok(None);
     }
     let at = now();
@@ -296,7 +338,8 @@ pub fn reconcile(
         &root.join(IMAGE_FILE),
         &Recorded {
             image: booted.id.clone(),
-            recorded_at: at,
+            at,
+            interfaces: booted.declaration.clone(),
         },
     )?;
     Ok(change)
@@ -357,6 +400,9 @@ mod tests {
             id: id.to_owned(),
             digest: Some("sha256:new".into()),
             interfaces: interfaces(&[("shell-ui", 10), ("runtime", 2), ("system", 1)]),
+            declaration: Some(Declaration::Versions {
+                versions: interfaces(&[("shell-ui", 10), ("runtime", 2), ("system", 1)]),
+            }),
         }
     }
 
@@ -415,7 +461,6 @@ mod tests {
         let vmd = import(&layers, "vmd");
         swap(&slots, "a", "shell", &shell, session_info());
         swap(&slots, "vm", "vmd", &vmd, vm_info());
-        // The marker an older tilo-vmd left to delete layers later.
         std::fs::write(root.path().join(COLLECT_MARKER), b"").unwrap();
         let before = state(&slots, &layers);
 
@@ -527,7 +572,6 @@ mod tests {
         );
         assert_eq!(held(root.path()), change.held);
 
-        // A swap that names the held shell brings it back deliberately.
         release(root.path(), &shell).unwrap();
         assert_eq!(
             layers.merged_paths(&generation.layers).unwrap(),
@@ -539,8 +583,6 @@ mod tests {
         );
     }
 
-    /// The record the laptop holds from the older tilo-vmd still reads as
-    /// what happened.
     #[test]
     fn a_drop_an_older_tilo_vmd_recorded_still_reads_as_one() {
         let record = r#"{"from": null, "to": "composefs:1c9ab8", "at": "2026-10-19T19:32:21Z",
@@ -564,5 +606,48 @@ mod tests {
             .unwrap();
         slots.save(&record).unwrap();
         record.name
+    }
+
+    /// The image's own declaration is what the swap check judges the
+    /// image's components by. It is recorded with the image, and recorded
+    /// later for an image an older tilo-vmd recorded without it; a reading
+    /// taken while layers are merged over `/usr` is never recorded as the
+    /// image's.
+    #[test]
+    fn the_image_s_own_declaration_is_recorded_and_a_merged_reading_never_is() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let mut merged = image("composefs:one");
+        merged.declaration = None;
+        reconcile(root.path(), &slots, &layers, &merged).unwrap();
+        assert_eq!(recorded_declaration(root.path()), None);
+
+        let booted = image("composefs:one");
+        assert_eq!(
+            reconcile(root.path(), &slots, &layers, &booted).unwrap(),
+            None,
+            "the same image is no change"
+        );
+        assert_eq!(recorded_declaration(root.path()), booted.declaration);
+
+        reconcile(root.path(), &slots, &layers, &merged).unwrap();
+        assert_eq!(
+            recorded_declaration(root.path()),
+            booted.declaration,
+            "a later merged reading keeps the image's"
+        );
+    }
+
+    #[test]
+    fn a_sysext_overlay_on_usr_counts_as_merged() {
+        let merged =
+            "36 25 0:44 / /usr ro,nodev,relatime shared:20 - overlay sysext ro,lowerdir=/x:/usr\n";
+        let image = "25 1 0:33 / / ro,relatime shared:1 - overlay composefs:1c9a ro\n";
+        assert!(usr_merged_in(merged));
+        assert!(!usr_merged_in(image));
+        assert!(!usr_merged_in(
+            "40 25 0:50 / /usr/local rw shared:3 - overlay sysext rw\n"
+        ));
     }
 }

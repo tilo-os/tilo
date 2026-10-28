@@ -671,7 +671,6 @@ mod tests {
 
     #[test]
     fn boot_packs_and_catalogues_are_digest_pinned_signed_and_matched() {
-        // Phase `boot_pack_image_must_be_digest_pinned_and_match_manifest`.
         {
             let digest = "a".repeat(64);
             assert_eq!(
@@ -697,7 +696,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `image_digest_requires_an_exact_pin`.
         {
             let digest = "a".repeat(64);
             assert_eq!(
@@ -706,7 +704,6 @@ mod tests {
             );
             assert_eq!(image_digest("registry/tilo:latest"), None);
         }
-        // Phase `shipped_pci_catalogue_has_a_valid_separate_signature`.
         {
             let signed: SignedPciRecommendationCatalog = serde_json::from_slice(include_bytes!(
                 "../../../../../os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json"
@@ -728,7 +725,6 @@ mod tests {
             };
             assert!(verify_pci_catalog_against(&renamed, &renamed_key).is_err());
         }
-        // Phase `subsystem_rule_wins_over_generic_pci_rule`.
         {
             let device = PciDevice {
                 vendor_id: 0x10de,
@@ -755,7 +751,6 @@ mod tests {
 
     #[test]
     fn catalog_ids_and_terminal_failures_are_bounded() {
-        // Phase `catalog_id_cannot_be_a_path_or_command_fragment`.
         {
             for invalid in ["../nvidia", "nvidia open", "nvidia\nopen", "", "-driver"] {
                 assert!(
@@ -765,7 +760,6 @@ mod tests {
             }
             assert!(validate_id("nvidia-open.580").is_ok());
         }
-        // Phase `terminal_failure_consumes_the_queue_and_cannot_retry_forever`.
         {
             let directory = tempfile::tempdir().unwrap();
             let request = directory.path().join("boot-pack-request");
@@ -780,7 +774,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn privileged_helpers_run_fixed_argv_with_bounded_capture() {
-        // Phase `bootc_switch_executes_only_its_fixed_argv`.
         {
             use std::os::unix::fs::PermissionsExt;
 
@@ -800,7 +793,6 @@ mod tests {
                 format!("switch\n--transport=registry\n{image}\n")
             );
         }
-        // Phase `privileged_helper_capture_rejects_overflow_and_timeout`.
         {
             use std::os::unix::fs::PermissionsExt;
 

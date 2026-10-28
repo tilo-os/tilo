@@ -112,7 +112,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                     );
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
-                assert!(state.host_workers.lock().unwrap().contains_key(&903));
+                assert!(state.host_workers.lock().unwrap().holds(903));
                 assert!(matches!(
                     handle
                         .resolve_published_action(903, "original-r1", "workspace:atlas", "open")

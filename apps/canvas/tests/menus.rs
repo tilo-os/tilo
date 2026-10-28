@@ -108,3 +108,29 @@ fn rename_chosen_with_the_pointer_takes_the_typed_name() {
         .collect();
     assert!(names.contains(&"Hills".to_owned()), "{names:?}");
 }
+
+#[test]
+fn every_context_menu_ends_with_telling_an_agent_about_where_it_was_opened() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "draw",
+        json!({"marks": [{"id": "sun", "name": "Sun", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 1200, "height": 900}, "fill": "#f6b73c"}]}),
+    )
+    .unwrap();
+    app.harness().key("v");
+    let _ = ui::shared_selection::take_agent_requests();
+    // The toolkit's menu offers it while a desktop agent can be told, with
+    // no code of the app's own.
+    ui::shared_selection::set_agent_host_available(true);
+    let canvas = app.harness().targets()["canvas"];
+    let at = (canvas.center().x, canvas.center().y);
+    right_click(&mut app, at);
+    // Up from the first entry wraps to the last.
+    app.harness().key("ArrowUp");
+    app.harness().key("Enter");
+    ui::shared_selection::set_agent_host_available(false);
+    let asked = ui::shared_selection::take_agent_requests();
+    assert_eq!(asked.len(), 1, "one request to tell an agent");
+    assert_eq!(asked[0].at, Some(ui::kurbo::Point::new(at.0, at.1)));
+    assert_eq!(app.state().marks.len(), 1, "no app entry ran");
+}

@@ -2,10 +2,12 @@
 # tilo-deployment — what a Tilo machine can do about the image it booted.
 #
 #   tilo-deployment list [--json]     the deployments on this disk, and which boots
+#   tilo-deployment serve-status      `list` for tilo-deployment-status.socket
 #   tilo-deployment rollback [--yes]  boot the previous deployment from now on
-#   tilo-deployment boot ENTRY        boot ENTRY once, then go back to normal
+#   tilo-deployment boot ENTRY        boot ENTRY (or booted, staged, rollback) once
 #   tilo-deployment update [--yes]    fetch and stage the current image again
 #   tilo-deployment entries           maintain the boot counters and repair entry
+#   tilo-deployment fallback          after the boot loader went back, keep it there
 #   tilo-deployment repair-entry      just the repair entry
 #
 # Root only, and deliberately not a D-Bus service: everything here is a handful of
@@ -81,23 +83,129 @@ UKI_CMDLINE="${TILO_UKI_CMDLINE:-/usr/libexec/tilo-uki-cmdline}"
 IMAGE_FLAVOUR_FILE="${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}"
 
 # --- the ESP -----------------------------------------------------------------
-# Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
-# UKIs live beside the loader entries; on an installed system (a separate ext4
-# /boot, tilo-esp-generator) and on the ostree layout the ESP hangs off
-# /boot/efi. Detect rather than assume — acting on the wrong directory silently
-# does nothing.
-esp_path() {
-  if [ -n "${TILO_ESP:-}" ]; then printf '%s\n' "$TILO_ESP"; return; fi
-  if [ -d /boot/loader/entries ]; then printf '%s\n' /boot; return; fi
-  if [ -d /boot/efi/loader/entries ]; then printf '%s\n' /boot/efi; return; fi
+# The ESP is the one the boot loader started from, which it names in
+# LoaderDevicePartUUID. A disk shared with Windows has two, and the first one
+# found under /boot or /boot/efi can be the other system's, so the partition is
+# looked up in the mount table by its device, wherever it is mounted. On the
+# sealed composefs layout that is /boot itself, with the UKIs beside the loader
+# entries; on an installed system with a separate ext4 /boot it is /boot/efi.
+#
+# An ESP that is not mounted at all (its mount failed this boot, or the image
+# predates tilo-esp-generator) is mounted read-only on demand, by root, where
+# tilo-esp-generator puts it: every other tool that reads or writes the ESP (the
+# ESP writer, systemd-bless-boot, bootctl) looks there and nowhere else.
+#
+# Boards started by a loader without the Boot Loader Interface name no ESP;
+# there the first of /boot and /boot/efi that holds loader entries is it.
+EFIVARS="${TILO_EFIVARS:-/sys/firmware/efi/efivars}"
+LOADER_GUID=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+ESP_CANDIDATES="${TILO_ESP_CANDIDATES:-/boot /boot/efi}"
+ESP_MOUNT="${TILO_ESP_MOUNT:-/usr/libexec/tilo-esp-mount}"
+
+loader_var() {  # NAME
+  local f="$EFIVARS/$1-$LOADER_GUID"
+  [ -r "$f" ] || return 1
+  # Four bytes of attributes, then UTF-16LE; every variable read here is ASCII.
+  tail -c +5 "$f" | tr -d '\000'
+}
+
+loader_partuuid() {
+  local u
+  u="$(loader_var LoaderDevicePartUUID)" || return 1
+  u="$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]')"
+  [[ "$u" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  printf '%s\n' "$u"
+}
+
+# Matched by the partition's identity in udev's database, so a bind mount
+# (tilo-esp-mount's read-only view) counts, another FAT partition never does,
+# and a unit with no /dev (PrivateDevices=) can still tell. tilo-esp-mount's
+# root-only staging directory and bootc's transient mounts are no place to read
+# from when one of the usual places has it.
+UDEV_DATA="${TILO_UDEV_DATA:-/run/udev/data}"
+esp_mounted_at() {  # PARTUUID
+  local target mm first="" usual
+  # Listing a directory triggers an automount where /boot is one.
+  for usual in $ESP_CANDIDATES; do ls "$usual" >/dev/null 2>&1 || true; done
+  while read -r target mm; do
+    grep -qix "E:ID_PART_ENTRY_UUID=$1" "$UDEV_DATA/b$mm" 2>/dev/null || continue
+    target="$(printf '%b' "$target")"  # findmnt -r writes a space as \x20
+    case "$target" in /run/tilo-esp-mount/*) continue ;; esac
+    for usual in $ESP_CANDIDATES; do
+      [ "$target" = "$usual" ] && { printf '%s\n' "$target"; return 0; }
+    done
+    [ -n "$first" ] || first="$target"
+  done < <(findmnt -rn -o TARGET,MAJ:MIN 2>/dev/null)
+  [ -n "$first" ] && printf '%s\n' "$first"
+}
+
+esp_mount_on_demand() {  # PARTUUID
+  [ "$(id -u)" = 0 ] || return 1
+  if systemctl cat tilo-esp-mount.service >/dev/null 2>&1; then
+    systemctl start tilo-esp-mount.service >&2 || true
+    esp_mounted_at "$1" && return 0
+  fi
+  local where
+  for where in $ESP_CANDIDATES; do
+    [ -d "$where" ] || continue
+    mountpoint -q "$where" && continue
+    "$ESP_MOUNT" "/dev/disk/by-partuuid/$1" "$where" >&2 || return 1
+    esp_mounted_at "$1"
+    return
+  done
   return 1
 }
 
-# The loader entry sd-boot booted this time. `bootctl` reads it out of the
-# LoaderEntrySelected EFI variable, which is the boot loader's own report rather
-# than an inference from /proc/cmdline.
+esp_path() {
+  if [ -n "${TILO_ESP:-}" ]; then printf '%s\n' "$TILO_ESP"; return; fi
+  local partuuid where
+  if partuuid="$(loader_partuuid)"; then
+    esp_mounted_at "$partuuid" || esp_mount_on_demand "$partuuid"
+    return
+  fi
+  for where in $ESP_CANDIDATES; do
+    [ -d "$where/loader/entries" ] && { printf '%s\n' "$where"; return 0; }
+  done
+  return 1
+}
+
+# Why esp_path found nothing, in words a person can act on.
+esp_missing() {
+  local partuuid
+  if [ -n "${TILO_ESP:-}" ]; then
+    printf 'TILO_ESP names %s, which is not there\n' "$TILO_ESP"
+  elif ! partuuid="$(loader_partuuid)"; then
+    printf 'the boot loader did not say which ESP it started from, and neither /boot nor /boot/efi holds loader entries\n'
+  elif [ "$(id -u)" != 0 ]; then
+    printf 'the ESP this machine started from (PARTUUID %s) is not mounted, and mounting it needs root: sudo tilo status\n' "$partuuid"
+  else
+    printf 'the ESP this machine started from (PARTUUID %s) is not mounted and could not be mounted read-only\n' "$partuuid"
+  fi
+}
+
+esp_or_die() {
+  local esp
+  esp="$(esp_path)" && [ -n "$esp" ] || die "$(esp_missing)"
+  [ -r "$esp" ] && [ -x "$esp" ] \
+    || die "the ESP at $esp is readable by root only: sudo tilo status"
+  printf '%s\n' "$esp"
+}
+
+# The loader entry sd-boot booted this time: the boot loader's own report
+# (LoaderEntrySelected) rather than an inference from /proc/cmdline.
 current_entry() {
+  local entry
+  if entry="$(loader_var LoaderEntrySelected)" && [ -n "$entry" ]; then
+    printf '%s\n' "$entry"
+    return
+  fi
   bootctl 2>/dev/null | sed -n 's/^ *Current Entry: *//p' | head -1
+}
+
+# The boot menu as sd-boot builds it, read from the ESP found above rather than
+# from wherever bootctl would look by itself.
+bootctl_list() {  # ESP
+  bootctl --esp-path="$1" --no-pager list 2>/dev/null
 }
 
 # Strip a boot counter off an entry file name: `name+2-1.conf` -> `name.conf`.
@@ -188,6 +296,72 @@ image_label() {  # $1 = bootc status JSON, $2 = booted|staged|rollback
   printf '%s%s%s' "$image" "${version:+ $version}" "${built:+, built ${built%%T*}}"
 }
 
+# The composefs identity a loader entry boots: from the sealed command line of
+# the UKI it names, or from a dev image's kernel/initrd entry.
+entry_digest() {  # ESP ENTRY-FILE
+  local uki_rel digest
+  uki_rel="$(sed -n 's/^uki[[:space:]]\{1,\}//p' "$2" | head -1)"
+  if [ -z "$uki_rel" ]; then
+    type1_entry_digest "$2"
+    return
+  fi
+  digest="$($UKI_CMDLINE show "$1/${uki_rel#/}" 2>/dev/null | tr ' \t' '\n\n' \
+    | sed -n 's/^composefs=//p' | head -1)"
+  [ -n "$digest" ] && printf '%s\n' "${digest#sha512:}"
+}
+
+# What sd-boot's boot counting says about one entry file, from its name:
+# `name+LEFT-DONE.conf`, `name+LEFT.conf`, or no counter at all.
+entry_trial() {  # ENTRY-FILE
+  local base="${1##*/}" counter left done
+  base="${base%.conf}"
+  case "$base" in
+    *+*) counter="${base##*+}" ;;
+    *) printf 'good\n'; return ;;
+  esac
+  left="${counter%%-*}"
+  case "$counter" in *-*) done="${counter#*-}" ;; *) done=0 ;; esac
+  if [ "$left" = 0 ]; then
+    printf 'failed %s times, so the boot loader starts it only when chosen\n' "$done"
+  else
+    printf 'on trial, %s of %s tries left\n' "$left" "$((left + done))"
+  fi
+}
+
+# One deployment from a bootc status snapshot, with the loader entries that boot
+# it. Entries are matched by the composefs identity they boot, never by file
+# name: bootc renumbers every entry when it stages one.
+print_deployment() {  # ESP STATUS ROLE CURRENT-ENTRY
+  local esp="$1" status="$2" role="$3" cur="$4"
+  local image version built digest f id gen matched=0 where
+  image="$(status_field "$status" "$role-image")"
+  if [ -z "$image" ]; then
+    printf '  %-9s none\n' "$role"
+    return
+  fi
+  version="$(status_field "$status" "$role-version")"
+  built="$(status_field "$status" "$role-timestamp")"
+  digest="$(status_field "$status" "$role-composefs")"
+  digest="${digest#sha512:}"
+  printf '  %-9s %s%s\n' "$role" "$image" "${version:+ $version}"
+  [ "$role" != booted ] || gen="$(tilo_running_generation)"
+  if [ -n "$built" ] || [ -n "${gen:-}" ]; then
+    printf '  %-9s %s%s%s\n' "" "${built:+built ${built%%T*}}" \
+      "${built:+${gen:+, }}" "${gen:+generation $gen}"
+  fi
+  for f in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do
+    [ -f "$f" ] || continue
+    [ -n "$digest" ] && [ "$(entry_digest "$esp" "$f")" = "$digest" ] || continue
+    id="$(entry_id_of "$f")"
+    where=""
+    case "$f" in */entries.staged/*) where=", in the menu after the next shutdown" ;; esac
+    [ "$id" != "$cur" ] || [ "$role" != booted ] || where=", booted now"
+    printf '  %-9s entry %s%s: %s\n' "" "$id" "$where" "$(entry_trial "$f")"
+    matched=1
+  done
+  [ "$matched" = 1 ] || printf '  %-9s no boot loader entry on this ESP\n' ""
+}
+
 cmd_list() {
   local json=0
   [ "${1:-}" = "--json" ] && json=1
@@ -196,54 +370,51 @@ cmd_list() {
     return
   fi
 
-  local esp cur
-  esp="$(esp_path)" || die "no systemd-boot layout found under /boot — this machine
-  does not boot from loader entries, so there is nothing here to list."
+  local esp cur next status source
+  esp="$(esp_or_die)" || exit 1
   cur="$(current_entry)"
+  next="$(next_boot_entry "$esp")"
+  source="$(findmnt -n -o SOURCE --mountpoint "$esp" 2>/dev/null | sed 's/\[.*//' | head -1)"
+  printf 'Started from the ESP %sat %s\n\n' "${source:+on $source }" "$esp"
 
-  printf 'Deployments (from bootc):\n'
-  local booted staged rollback status
   # One coherent snapshot is both faster and more accurate than asking bootc
-  # four times while a deployment may be changing underneath us.
+  # once per deployment while one may be changing underneath us.
   status="$(bootc_status_json)"
-  booted="$(image_label "$status" booted)"
-  staged="$(image_label "$status" staged)"
-  rollback="$(image_label "$status" rollback)"
-  printf '  booted   : %s\n' "${booted:-<unknown>}"
-  printf '             generation %s, composefs %.16s\n' \
-    "$(tilo_running_generation)" \
-    "$(status_field "$status" booted-composefs)"
-  printf '  staged   : %s\n' "${staged:-<none>}"
-  printf '  rollback : %s\n' "${rollback:-<none>}"
+  printf 'Deployments:\n'
+  print_deployment "$esp" "$status" booted "$cur"
+  print_deployment "$esp" "$status" staged "$cur"
+  print_deployment "$esp" "$status" rollback "$cur"
 
-  printf '\nBoot loader entries (what the firmware will actually offer):\n'
+  printf '\nBoot menu:\n'
   # From the boot loader, not from a directory listing. The repair image is a
-  # Type #2 entry — a bare .efi with no .conf — so a listing of loader/entries
-  # would leave the one entry a person in trouble is looking for out of the list.
-  if ! bootctl list 2>/dev/null | awk -v cur="$cur" '
+  # Type #2 entry, a bare .efi with no .conf, so a listing of loader/entries
+  # would leave out the one entry a person in trouble is looking for.
+  if ! bootctl_list "$esp" | awk -v cur="$cur" -v next_id="$next" '
+      function show() {
+        if (id == "") return
+        note = ""
+        if (id == cur) note = note ", booted now"
+        if (id == next_id) note = note ", starts next"
+        if (note != "") note = " (" substr(note, 3) ")"
+        printf "  %-28s %s%s\n", id, t, note
+        id = ""; t = ""
+      }
+      /^[[:space:]]*type:/ { show() }
       /^[[:space:]]*id:/ { sub(/^[[:space:]]*id:[[:space:]]*/, ""); id = $0 }
-      /^[[:space:]]*title:/ { t = $0; sub(/^[[:space:]]*title:[[:space:]]*/, "", t) }
-      /^[[:space:]]*sort-key:/ {
-        printf "  %-24s %s%s\n", id, t, (id == cur ? "  (booted now)" : "")
-      }' | grep .; then
+      /^[[:space:]]*title:/ {
+        t = $0; sub(/^[[:space:]]*title:[[:space:]]*/, "", t)
+        gsub(/ \((default|selected|reported\/absent|not reported\/new)\)/, "", t)
+      }
+      END { show() }' | grep .; then
     printf '  (the boot loader could not be asked; from the ESP:)\n'
     local f
     for f in "$esp"/loader/entries/*.conf "$esp"/EFI/Linux/*.efi; do
       [ -e "$f" ] || continue
-      printf '    %s\n' "${f##*/}"
+      printf '  %s\n' "${f##*/}"
     done
   fi
-  # The try counters live in the file names, and nothing bootctl prints shows
-  # them, so they are read where they are.
-  local f name tries
-  for f in "$esp"/loader/entries/*.conf; do
-    [ -e "$f" ] || continue
-    name="${f##*/}"
-    case "$name" in
-      *+*) tries="${name#*+}"; tries="${tries%.conf}"
-           printf '  %-24s tries left %s\n' "$(entry_id_of "$f")" "${tries%%-*}" ;;
-    esac
-  done
+  print_last_fallback
+  printf '\nStart one entry once: sudo tilo boot ENTRY, or sudo tilo boot rollback\n'
 }
 
 tilo_running_generation() {
@@ -251,12 +422,15 @@ tilo_running_generation() {
   # available to the boot-entry maintenance service under ProcSubset=pid, while
   # preserving the trust property of the former /proc/cmdline source: the value
   # comes from the signed UKI's sealed .cmdline section.
-  local esp entry conf uki_rel cmdline
+  local esp entry conf="" f uki_rel cmdline
   esp="$(esp_path)" || return 0
   entry="$(current_entry)"
   [ -n "$entry" ] || return 0
-  conf="$esp/loader/entries/$entry"
-  [ -f "$conf" ] && [ ! -L "$conf" ] || return 0
+  # The entry's id carries no boot counter; its file does while it is on trial.
+  for f in "$esp/loader/entries/$entry" "$esp/loader/entries/${entry%.conf}"+*.conf; do
+    [ -f "$f" ] && [ ! -L "$f" ] && { conf="$f"; break; }
+  done
+  [ -n "$conf" ] || return 0
   uki_rel="$(sed -n 's/^uki *//p' "$conf" | head -1)"
   [ -n "$uki_rel" ] || return 0
   cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}" 2>/dev/null || true)"
@@ -301,7 +475,7 @@ next_boot_entry() {
   # the ordinary machine where every title is distinct — and "no default" is
   # indistinguishable from "could not tell", which is the failure this whole
   # file is careful about.
-  best="$(bootctl list 2>/dev/null | awk '
+  best="$(bootctl_list "$esp" | awk '
     /^[[:space:]]*title:/ { want = ($0 ~ /\(default\)/) }
     /^[[:space:]]*id:/    { if (want) { sub(/^[[:space:]]*id:[[:space:]]*/, ""); print; exit } }
   ')"
@@ -323,7 +497,7 @@ cmd_rollback() {
   while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; *) die "rollback: unknown argument $1" ;; esac; shift; done
   [ "$(id -u)" = 0 ] || die "rollback needs root"
 
-  local esp; esp="$(esp_path)" || die "no boot loader entries under /boot"
+  local esp; esp="$(esp_or_die)" || exit 1
   local before after cur
   cur="$(current_entry)"
   before="$(next_boot_entry "$esp")"
@@ -348,14 +522,16 @@ cmd_rollback() {
     case "$a" in y|Y|yes|YES) ;; *) die "cancelled" ;; esac
   fi
 
-  if bootc rollback; then
+  if bootc_with_writable_esp rollback; then
     log "bootc rollback accepted"
   else
     warn "bootc rollback failed (bootc#2208 is the known one on this backend);
   falling back to setting the boot loader's default entry directly"
   fi
 
-  cmd_entries >/dev/null 2>&1 || true
+  # A subshell: the pass exits on any refusal, and that must not end the
+  # rollback before it has checked what the next boot will be.
+  ( cmd_entries ) >/dev/null 2>&1 || true
   after="$(next_boot_entry "$esp")"
 
   if [ -n "$after" ] && [ "$after" != "$cur" ]; then
@@ -399,34 +575,300 @@ on the disk and stays in the boot menu, so this is reversible from either side.
 EOT
 }
 
+# --- bootc and the ESP ----------------------------------------------------------
+# bootc mounts the ESP itself to rewrite the loader entries. A second
+# read-write mount of a FAT superblock that is mounted read-only elsewhere
+# fails with EBUSY, which is the state a dev disk's ESP is in (its entry's
+# systemd.mount-extra mounts it read-only), and bootc then reports success for
+# nothing or fails outright. So bootc runs with the superblock writable, which
+# the callers' units keep private to themselves (PrivateMounts=yes; the global
+# mount keeps its own read-only flag), and the superblock goes back to
+# read-only afterwards. On an installed system tilo-esp-mount already leaves
+# the superblock writable behind a read-only bind, and nothing is remounted.
+bootc_with_writable_esp() {
+  local m remounted="" rc
+  for m in $ESP_CANDIDATES; do
+    mountpoint -q "$m" 2>/dev/null || continue
+    [ "$(findmnt -n -o FSTYPE --mountpoint "$m" | head -1)" = vfat ] || continue
+    if findmnt -n -o FS-OPTIONS --mountpoint "$m" | head -1 | tr , '\n' | grep -qx ro; then
+      mount -o remount,rw "$m" && remounted="$remounted $m"
+    fi
+  done
+  bootc "$@"; rc=$?
+  for m in $remounted; do
+    mount -o remount,ro "$m" || warn "could not make $m read-only again"
+  done
+  return "$rc"
+}
+
+# --- after the boot loader fell back ---------------------------------------------
+#
+# A deployment that keeps failing to boot spends the tries in its entry's file
+# name, and sd-boot then starts the previous deployment instead (see
+# `entries`). That much works when nothing in userspace runs at all. What it
+# leaves behind is a machine whose bootc still queues the failed deployment as
+# the default: `bootc status` says rollbackQueued, the boot menu's own ordering
+# still names the failed entry first, and the first thing that rewrites the
+# entries (an update, a `bootc rollback`, a renumbering) hands the failed
+# deployment fresh tries. The same holds after a person picks the previous
+# entry by hand from the boot menu.
+#
+# `fallback` runs on every boot (tilo-boot-fallback.service) and settles that:
+# when bootc queues a deployment other than the running one, and that
+# deployment's entry has been tried and never confirmed (`name+LEFT-DONE.conf`
+# with DONE >= 1), the running deployment becomes bootc's default and the
+# person is told what failed, with whatever the failed tries left behind. An
+# entry that was never tried (`+N`), or one that has booted well (no counter),
+# was chosen deliberately and is left alone.
+FALLBACK_DIR="${TILO_FALLBACK_DIR:-/var/lib/tilo/boot-fallback}"
+PSTORE_ARCHIVE="${TILO_PSTORE_ARCHIVE:-/var/lib/systemd/pstore}"
+# How many earlier boots the journal is searched for the failed deployment's.
+FALLBACK_BOOTS="${TILO_FALLBACK_BOOTS:-20}"
+
+# Writes the report for one failed deployment and prints its directory. A
+# deployment is reported once: a second boot that finds it still queued (its
+# settling failed) adds nothing new.
+fallback_report() {  # STATUS DIGEST TRIES
+  local status="$1" digest="$2" tries="$3"
+  local short="${digest:0:16}" dir existing rows b n=0 logged=0 first first_epoch
+  local threshold image version built now_image now_version
+  for existing in "$FALLBACK_DIR"/*-"$short"; do
+    [ -d "$existing" ] && { printf '%s\n' "$existing"; return 0; }
+  done
+  install -d -m 0755 "$FALLBACK_DIR" || return 1
+  dir="$FALLBACK_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$short"
+  install -d -m 0755 "$dir" || return 1
+
+  image="$(status_field "$status" rollback-image)"
+  version="$(status_field "$status" rollback-version)"
+  built="$(status_field "$status" rollback-timestamp)"
+  now_image="$(status_field "$status" booted-image)"
+  now_version="$(status_field "$status" booted-version)"
+
+  # The failed deployment's boots that got far enough to keep a journal: the
+  # kernel logs its command line, which names the composefs identity it boots.
+  # Tries that stopped earlier (at the disk unlock prompt, in the initrd, in a
+  # crash) leave nothing on the disk; they are counted by the boot loader.
+  # Each boot as "INDEX BOOT-ID FIRST-ENTRY-USEC"; index 0 is this boot, whose
+  # start bounds the crash records below.
+  rows="$(journalctl --list-boots --no-pager -q -o json 2>/dev/null | tr '{' '\n' \
+    | sed -n 's/.*"index":\(-\{0,1\}[0-9]*\),"boot_id":"\([0-9a-f]*\)","first_entry":\([0-9]*\).*/\1 \2 \3/p')"
+  threshold="$(awk '$1 == 0 { print int($3 / 1000000) }' <<<"$rows")"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold="$(date +%s)"
+  : > "$dir/boots"
+  for b in $(awk '$1 != 0 { print $2 }' <<<"$rows" | tail -n "$FALLBACK_BOOTS"); do
+    journalctl -b "$b" -k -q --no-pager -o cat --grep "composefs=$digest" -n 1 2>/dev/null | grep -q . || continue
+    n=$((n + 1)); logged=$((logged + 1))
+    first="$(journalctl -b "$b" -q --no-pager -o short-unix 2>/dev/null | head -1 | cut -d' ' -f1)"
+    first_epoch="${first%%.*}"
+    if [[ "$first_epoch" =~ ^[0-9]+$ ]] && [ "$first_epoch" -lt "$threshold" ]; then threshold="$first_epoch"; fi
+    {
+      printf 'Boot %s of the deployment that did not start\n\n' "$b"
+      printf 'Its boot health verdict:\n'
+      journalctl -b "$b" -q --no-pager -o short-iso -u tilo-boot-health.service 2>/dev/null | tail -n 40
+      printf '\nIts warnings and errors:\n'
+      journalctl -b "$b" -q --no-pager -o short-monotonic -p warning 2>/dev/null | tail -n 400
+    } > "$dir/boot-$n.log"
+    printf '%s %s boot-%s.log %s\n' "$b" "${first_epoch:-?}" "$n" \
+      "$(journalctl -b "$b" -q --no-pager -o cat -u tilo-boot-health.service 2>/dev/null | grep -E 'WARNING|good' | tail -1)" \
+      >> "$dir/boots"
+  done
+
+  # Crash records the firmware kept (pstore). systemd-pstore archives them at
+  # the first boot that reaches userspace, which for a try that crashed early
+  # is this one.
+  if [ -d "$PSTORE_ARCHIVE" ]; then
+    find "$PSTORE_ARCHIVE" -mindepth 1 -maxdepth 1 -newermt "@$threshold" 2>/dev/null | sort | while read -r f; do
+      install -d -m 0750 "$dir/pstore" && cp -a "$f" "$dir/pstore/" 2>/dev/null
+    done
+  fi
+  # Logs can name the machine's hardware and accounts: the device admins
+  # (wheel) read them, as they read the journal.
+  chgrp -R wheel "$dir" 2>/dev/null || true
+  chmod 0640 "$dir"/boot-*.log 2>/dev/null || true
+
+  {
+    printf 'image=%s\n' "$image"
+    printf 'version=%s\n' "$version"
+    printf 'built=%s\n' "$built"
+    printf 'composefs=%s\n' "$digest"
+    printf 'tries=%s\n' "$tries"
+    printf 'logged=%s\n' "$logged"
+    printf 'running_image=%s\n' "$now_image"
+    printf 'running_version=%s\n' "$now_version"
+  } > "$dir/report"
+
+  {
+    printf 'Tilo went back to the version that worked before.\n\n'
+    printf 'Did not start:  %s%s%s\n' "${image:-an unnamed image}" "${version:+ $version}" "${built:+ (built ${built%%T*})}"
+    printf '                composefs %s\n' "$short"
+    printf 'Tried:          %s times; no try reached a signed-in session with working input\n' "$tries"
+    printf 'Running now:    %s%s\n\n' "${now_image:-the previous image}" "${now_version:+ $now_version}"
+    printf 'What the failed tries left behind (in %s):\n' "$dir"
+    if [ "$logged" -gt 0 ]; then
+      while read -r b first_epoch file verdict; do
+        printf '  a try on %s started the system: %s\n' \
+          "$(date -d "@$first_epoch" '+%F %T' 2>/dev/null || echo "$first_epoch")" "$file"
+        [ -z "$verdict" ] || printf '    %s\n' "$verdict"
+      done < "$dir/boots"
+    fi
+    if [ "$tries" -gt "$logged" ]; then
+      printf '  %s tries left no log: they stopped before the system had started,\n' "$((tries - logged))"
+      printf '    for example at the disk unlock prompt, in the initrd, or in a crash\n'
+    fi
+    if [ -d "$dir/pstore" ]; then
+      printf '  crash records the firmware kept: pstore/\n'
+    fi
+  } > "$dir/summary.txt"
+  chmod 0644 "$dir/report" "$dir/summary.txt" "$dir/boots"
+  printf '%s\n' "$dir"
+}
+
+cmd_fallback() {
+  [ "$(id -u)" = 0 ] || die "fallback needs root"
+  local esp; esp="$(esp_path)" || { log "$(esp_missing); nothing to check"; return 0; }
+  local status queued digest f file="" name counter left done id report settled
+  status="$(bootc_status_json)"
+  [ -n "$status" ] || die "bootc status said nothing"
+  if [ -n "$(status_field "$status" staged-image)" ]; then
+    log "an update is staged and boots next; nothing to settle"
+    return 0
+  fi
+  queued="$(status_field "$status" rollback-queued)"
+  if [ "$queued" != true ]; then
+    log "the running deployment is the one that boots next; nothing to settle"
+    return 0
+  fi
+  digest="$(status_field "$status" rollback-composefs)"; digest="${digest#sha512:}"
+  [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || { warn "bootc queues a deployment with no composefs identity; leaving it"; return 0; }
+  for f in "$esp"/loader/entries/*.conf; do
+    [ -f "$f" ] || continue
+    [ "$(entry_digest "$esp" "$f")" = "$digest" ] || continue
+    file="$f"; break
+  done
+  [ -n "$file" ] || { warn "bootc queues composefs ${digest:0:16}, which no boot loader entry starts; leaving it"; return 0; }
+  id="$(entry_id_of "$file")"
+  name="${file##*/}"; name="${name%.conf}"
+  case "$name" in
+    *+*-*) counter="${name##*+}" ;;
+    *+*) log "$id boots next and has not been tried yet; it was chosen, not failed"; return 0 ;;
+    *) log "$id boots next and has booted well before; it was chosen, not failed"; return 0 ;;
+  esac
+  left="${counter%%-*}"; done="${counter#*-}"
+  if ! [[ "$left" =~ ^[0-9]+$ && "$done" =~ ^[0-9]+$ ]] || [ "$done" -lt 1 ]; then
+    log "$id carries the counter $counter; nothing to settle"
+    return 0
+  fi
+
+  if [ "$left" = 0 ]; then
+    log "$id failed all $done of its tries and the boot loader went back by itself"
+  else
+    log "$id failed $done tries and the previous deployment was chosen from the boot menu"
+  fi
+  report="$(fallback_report "$status" "$digest" "$done")" || warn "could not write the report under $FALLBACK_DIR"
+
+  # bootc's own ordering is what every later rewrite of the entries starts
+  # from, so it is changed there and nowhere else: a boot loader default
+  # (LoaderEntryDefault) would pin an entry id that bootc renumbers.
+  if bootc_with_writable_esp rollback; then
+    log "bootc rollback accepted"
+  else
+    warn "bootc rollback failed"
+  fi
+  if [ "$(bootc_field rollback-queued)" = false ]; then
+    settled=yes
+    log "the running deployment is bootc's default again; $id stays on the disk"
+  else
+    settled=no
+    warn "bootc still queues $id. The boot loader keeps starting the running deployment while"
+    warn "$id has no tries left, but the next rewrite of the entries could give it new ones."
+  fi
+  [ -z "${report:-}" ] || printf 'settled=%s\n' "$settled" >> "$report/report"
+  # bootc rewrote the entries; give whatever it wrote the counters it needs.
+  ( cmd_entries ) || warn "the boot counters could not be brought up to date"
+  [ "$settled" = yes ]
+}
+
+# The newest fallback report, for `list`.
+print_last_fallback() {
+  local dir="" d version image tries when
+  for d in "$FALLBACK_DIR"/*-*; do [ -f "$d/report" ] && dir="$d"; done
+  [ -n "$dir" ] || return 0
+  image="$(sed -n 's/^image=//p' "$dir/report" | head -1)"
+  version="$(sed -n 's/^version=//p' "$dir/report" | head -1)"
+  tries="$(sed -n 's/^tries=//p' "$dir/report" | head -1)"
+  when="${dir##*/}"; when="${when%%-*}"
+  printf '\nLast fallback (%s):\n' "$when"
+  printf '  %s%s did not start after %s tries, so this machine went back.\n' \
+    "${image:-an image}" "${version:+ $version}" "${tries:-its}"
+  printf '  What it left behind: %s/summary.txt\n' "$dir"
+}
+
+# The loader entry that boots one of bootc's deployments, matched by the
+# composefs identity it boots. Only entries already in the menu: a staged
+# deployment's entry is still under entries.staged until the next shutdown.
+entry_for_role() {  # ESP ROLE
+  local digest f
+  digest="$(status_field "$(bootc_status_json)" "$2-composefs")"
+  digest="${digest#sha512:}"
+  [ -n "$digest" ] || return 1
+  for f in "$1"/loader/entries/*.conf; do
+    [ -f "$f" ] || continue
+    [ "$(entry_digest "$1" "$f")" = "$digest" ] || continue
+    entry_id_of "$f"
+    return 0
+  done
+  return 1
+}
+
+# The ids sd-boot would offer: its own list, or, when bootctl cannot be asked,
+# the same ids read off the ESP (Type #1 files without their counters, and the
+# Type #2 images at the top of EFI/Linux).
+menu_ids() {  # ESP
+  local ids f
+  ids="$(bootctl_list "$1" | sed -n 's/^[[:space:]]*id:[[:space:]]*//p')"
+  if [ -n "$ids" ]; then
+    printf '%s\n' "$ids"
+    return
+  fi
+  for f in "$1"/loader/entries/*.conf; do
+    [ -f "$f" ] && entry_id_of "$f"
+  done
+  for f in "$1"/EFI/Linux/*.efi; do
+    [ -f "$f" ] && printf '%s\n' "${f##*/}"
+  done
+}
+
 cmd_boot() {
   local entry="${1:-}"
-  [ -n "$entry" ] || die "boot needs an entry id (see \`tilo-deployment list\`)"
+  [ -n "$entry" ] || die "boot needs an entry id, or booted, staged or rollback (see \`tilo status\`)"
   [ "$(id -u)" = 0 ] || die "boot needs root"
-  local esp; esp="$(esp_path)" || die "no boot loader entries under /boot"
-  # Checked against what the boot loader lists, not against a directory: the
-  # repair image is a Type #2 entry with no .conf, so a file-based check would
-  # refuse the one entry most worth booting once. And an id sd-boot does not know
-  # is silently ignored, so the machine would boot exactly as before while this
-  # reported success.
+  local esp; esp="$(esp_or_die)" || exit 1
+  case "$entry" in
+    booted|staged|rollback)
+      local role="$entry"
+      entry="$(entry_for_role "$esp" "$role")" \
+        || die "no entry in the boot menu starts the $role deployment. \`tilo status\` shows what there is."
+      ;;
+  esac
+  # Checked against the boot menu: an id sd-boot does not know is silently
+  # ignored, so the machine would boot exactly as before while this reported
+  # success.
   local known
-  known="$(bootctl list 2>/dev/null | sed -n 's/^[[:space:]]*id:[[:space:]]*//p')"
-  if [ -z "$known" ]; then
-    die "the boot loader could not be asked what entries exist, so an id cannot be
-  checked before it is written. Select the entry from the firmware's boot menu."
-  fi
+  known="$(menu_ids "$esp")"
+  [ -n "$known" ] || die "the ESP at $esp has no boot entries"
   if ! printf '%s\n' "$known" | grep -qx -- "$entry"; then
     # One forgiving retry: `.conf` is easy to leave off a Type #1 id.
     if printf '%s\n' "$known" | grep -qx -- "$entry.conf"; then
       entry="$entry.conf"
     else
-      die "no boot entry called $entry. The boot loader offers:
+      die "no boot entry called $entry. The boot menu has:
 $(printf '%s\n' "$known" | sed 's/^/  /')"
     fi
   fi
   bootctl set-oneshot "$entry" \
-    || die "could not write LoaderEntryOneShot — the firmware may not expose EFI
-  variables read-write. Select $entry from the firmware's own boot menu instead."
+    || die "could not write LoaderEntryOneShot; the firmware may not expose EFI
+  variables read-write. Select $entry from the boot menu instead."
   log "next boot only: $entry"
 }
 
@@ -510,7 +952,7 @@ stage_rollback_generation() {
 # which is why this is a rename and not a rebuild.
 cmd_entries() {
   [ "$(id -u)" = 0 ] || die "entries needs root"
-  local esp; esp="$(esp_path)" || { log "no systemd-boot layout — nothing to maintain"; return 0; }
+  local esp; esp="$(esp_path)" || { log "$(esp_missing); nothing to maintain"; return 0; }
   command -v flock >/dev/null 2>&1 || die "entries needs flock"
   [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
   exec 6<"$esp"
@@ -588,7 +1030,7 @@ cmd_entries() {
 # the two-pass digest reseal bootc#2334 forces.
 cmd_repair_entry() {
   [ "$(id -u)" = 0 ] || die "repair-entry needs root"
-  local esp; esp="$(esp_path)" || { log "no systemd-boot layout — no repair entry to make"; return 0; }
+  local esp; esp="$(esp_path)" || { log "$(esp_missing); no repair entry to make"; return 0; }
   command -v flock >/dev/null 2>&1 || die "repair-entry needs flock"
   [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
   # One repair derivation remains in flight across the sealed-key service call.
@@ -791,14 +1233,32 @@ remove_stale_repair_entry() {
   return 0
 }
 
+# `tilo status` for someone who is not root: the device admin connects to
+# tilo-deployment-status.socket, which runs this with the connection as stdin
+# and stdout. The request is one word, text or json; the answer is the exit
+# status on the first line and the listing after it. Nothing a caller sends
+# reaches anything but this case statement.
+cmd_serve_status() {
+  local request="" out code
+  IFS= read -r -t 5 request || true
+  case "$request" in
+    text) out="$(cmd_list 2>&1)"; code=$? ;;
+    json) out="$(cmd_list --json 2>&1)"; code=$? ;;
+    *) out="tilo-deployment: unknown status request"; code=2 ;;
+  esac
+  printf '%s\n%s\n' "$code" "$out"
+}
+
 case "${1:-}" in
   list)         shift; cmd_list "$@" ;;
+  serve-status) cmd_serve_status ;;
   rollback)     shift; cmd_rollback "$@" ;;
   boot)         shift; cmd_boot "$@" ;;
   update)       shift; cmd_update "$@" ;;
   entries)      shift; cmd_entries "$@" ;;
+  fallback)     cmd_fallback ;;
   repair-entry) shift; cmd_repair_entry "$@" ;;
   caveats)      print_rollback_caveats ;;
-  -h|--help|"") sed -n '2,10p' "$0" ;;
+  -h|--help|"") sed -n '2,12p' "$0" ;;
   *)            die "unknown subcommand: $1 (try --help)" ;;
 esac

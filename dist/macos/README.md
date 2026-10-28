@@ -123,8 +123,8 @@ the Forgejo repository, or export them to `build-app.sh`:
 | `vars.TILO_RUNTIME_UPDATE_PUBLIC_KEY` | `TILO_RUNTIME_UPDATE_PUBLIC_KEY` | the key's public half, 64 lowercase hex digits |
 | `secrets.TILO_RUNTIME_UPDATE_KEY` | `TILO_RUNTIME_UPDATE_KEY_FILE` (a path) | the signing key, `{"secret_key_hex": …}` |
 
-Create the key with `tilo-runtime-bundle key generate --out KEY` and read the
-public half with `tilo-runtime-bundle key pubkey KEY`. With these set,
+Create the key with `tilo package runtime key generate --out KEY` and read the
+public half with `tilo package runtime key pubkey KEY`. With these set,
 `build-app.sh` also writes `tilo-macos-update.json` and its `.sig` for the
 stapled zip it just built, and the rendered cask declares `auto_updates true`.
 The signed workflow run uploads both files as the `tilo-macos-update-feed`

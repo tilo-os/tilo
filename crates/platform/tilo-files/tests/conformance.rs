@@ -314,15 +314,24 @@ async fn an_async_lock_waits_for_release(dir: &Dir) {
     let path = p("wait.lock");
     let held = dir.lock(&path, LockMode::Exclusive).await.unwrap();
     let acquired = Arc::new(AtomicBool::new(false));
+    let (started, tid) = std::sync::mpsc::channel();
     let waiter = {
         let (dir, path, acquired) = (dir.clone(), path.clone(), Arc::clone(&acquired));
         thread::spawn(move || {
+            started
+                .send(tilo_test_env::idle::current_thread_id().ok())
+                .unwrap();
             let lock = block_on(dir.lock(&path, LockMode::Exclusive)).unwrap();
             acquired.store(true, Ordering::SeqCst);
             drop(lock);
         })
     };
-    thread::sleep(Duration::from_millis(100));
+    // Observe the waiter blocked on the held lock, where the platform can.
+    if let Some(tid) = tilo_test_env::recv("the waiter to start", &tid).map(|t| t.to_string()) {
+        tilo_test_env::wait_until("the waiter to block on the held lock", || {
+            tilo_test_env::idle::blocked(&tid)
+        });
+    }
     assert!(!acquired.load(Ordering::SeqCst), "granted while held");
     drop(held);
     waiter.join().unwrap();
@@ -431,18 +440,13 @@ async fn watches_report_changes_below_them(dir: &Dir) {
     dir.write_atomic(&p("w/a.md"), b"two").await.unwrap();
     dir.remove(&p("w/a.md")).await.unwrap();
     let mut seen = Vec::new();
-    for _ in 0..100 {
+    tilo_test_env::wait_until("the removal to be watched", || {
         while let Some(change) = watch.try_next() {
             seen.push(change);
         }
-        if seen
-            .iter()
+        seen.iter()
             .any(|change| change.path == p("w/a.md") && change.kind == ChangeKind::Removed)
-        {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
+    });
     assert!(
         seen.iter()
             .all(|change| change.path.as_str().starts_with('w')),

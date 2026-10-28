@@ -27,6 +27,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 blake3.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [[bin]]
 name = "scripted-connector-worker"

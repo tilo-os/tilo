@@ -78,6 +78,35 @@ impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
         let author = self.message_author_label(message);
         let mut label = format!("{author}: {}", message.text);
+        // A shared file is the message, or part of it: name it, so a
+        // screen reader hears more than who posted.
+        if let Some(attachment) = &message.attachment {
+            if !message.text.is_empty() {
+                label.push('\n');
+            }
+            label.push_str(attachment.name());
+        }
+        // A shared window: what it is and how it stands, as its card says.
+        if let Some(share) = &message.share {
+            if !message.text.is_empty() {
+                label.push('\n');
+            }
+            if let Some(reference) = &message.reference {
+                label.push_str(&reference.label);
+                label.push('\n');
+            }
+            if share.ended {
+                label.push_str(&crate::i18n::t("chat-share-ended"));
+            } else {
+                if share.open {
+                    label.push_str(&crate::i18n::t("chat-share-live"));
+                    label.push('\n');
+                }
+                // What the card says to this reader, not the share's
+                // access alone: an Editor hears they can edit it anyway.
+                label.push_str(&self.share_caption(message, share));
+            }
+        }
         if let Some(stream) = message.work.as_ref().and_then(|work| work.stream.as_ref()) {
             label.push('\n');
             label.push_str(&crate::i18n::t(stream.status_key()));
@@ -119,8 +148,25 @@ impl ChatApp {
                 .map(|appearance| appearance.name.as_str())
                 .filter(|name| !name.trim().is_empty())
                 .map_or_else(|| crate::i18n::t("chat-model-author"), str::to_owned)
+        } else if message.author.starts_with("bot:") {
+            self.bot_name(message)
         } else {
             self.user_name(&message.author)
+        }
+    }
+
+    /// What a bot is called: what the room calls it, else after the service
+    /// it bridges ("Discord bridge"), never a placeholder for an unknown id.
+    fn bot_name(&self, message: &crate::model::Message) -> String {
+        let named = self.user_name(&message.author);
+        if named != crate::identity::unnamed_label(&message.author) {
+            return named;
+        }
+        match bridged_service(message) {
+            Some(service) => {
+                crate::i18n::t_args("chat-bridge-name", &[("service", service.into())])
+            }
+            None => crate::i18n::t("chat-bot-name"),
         }
     }
 
@@ -133,6 +179,19 @@ impl ChatApp {
                     ("model", name.into()),
                     ("person", self.user_name(&message.author).into()),
                 ],
+            )
+        } else if message.author.starts_with("bot:")
+            && let Some(service) = bridged_service(message)
+        {
+            // A person a bridge speaks for, by their own name and where
+            // they are: "Dana, from Discord".
+            let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
+            let shown = self
+                .message_author(message, &name, "", None)
+                .label(&members);
+            crate::i18n::t_args(
+                "chat-via-attribution",
+                &[("name", shown.into()), ("service", service.into())],
             )
         } else if message.author.starts_with("bot:") {
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
@@ -446,4 +505,11 @@ impl Attempt {
         }
         (!events.is_empty(), events)
     }
+}
+
+/// The service a bot's message speaks for a person on, as a word
+/// (`discord` reads `Discord`), when its appearance is such a persona.
+fn bridged_service(message: &crate::model::Message) -> Option<String> {
+    let service = &message.appearance.as_ref()?.persona.as_ref()?.service;
+    Some(ui::author::service_label(service)).filter(|label| !label.is_empty())
 }

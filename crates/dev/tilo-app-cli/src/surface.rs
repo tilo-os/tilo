@@ -3,7 +3,7 @@
 //! The app's own binary reports what its resource publishes (its verbs, their
 //! parameters and kinds, its stored fields) and which of its view's controls
 //! are bound to something the resource does not publish
-//! (`ui::framework::testing::surface_report`, run as `<app> --surface`).
+//! (`ui::framework::headless::surface_report`, run as `<app> --surface`).
 //! `tilo-app surface` commits the surface next to the manifest, where review
 //! sees every rename and the OS reads what an app that is not running
 //! offers. `tilo-app check` and CI compare the committed file with the code:
@@ -139,6 +139,32 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
         bail!("{command:?} failed with {}", output.status);
     }
     parse_report(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Keep the surface report `app`'s `executable` prints in `dir` as `<app>.json`, so a
+/// surface that is behind its code can be written without building the app again:
+/// `tilo-app surface apps/<app> --report <dir>/<app>.json` (certify's outputs on t).
+///
+/// # Errors
+/// Returns why the binary printed no report, or the file could not be written.
+pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf> {
+    let name = app.file_name().unwrap_or_default().to_string_lossy();
+    let output = ProcessCommand::new(executable)
+        .arg(FLAG)
+        .current_dir(app)
+        .output()
+        .with_context(|| format!("running {} {FLAG}", executable.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} {FLAG} failed with {}",
+            executable.display(),
+            output.status
+        );
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let file = dir.join(format!("{name}.json"));
+    std::fs::write(&file, output.stdout).with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
 }
 
 /// `value` without JSON nulls, which TOML cannot hold and which mean "not
@@ -594,8 +620,10 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
 
 /// What `tilo-app check` reports about the app's surface: unbound controls,
 /// drift from the committed file, incompatible storage changes without a
-/// version bump, and missing history messages. A missing committed file is
-/// `missing`'s level.
+/// version bump, and history messages the catalogue lacks. A missing
+/// committed file is `missing`'s level; a missing history message is an
+/// error whenever the catalogue was read, because the app's history then
+/// reads in the framework's generic words instead of its own.
 #[must_use]
 pub fn findings(
     app: &str,
@@ -698,7 +726,7 @@ pub fn findings(
             let _ = write!(message, "{}", missing.join(", "));
             out.findings.push(ContractFinding {
                 path: PathBuf::from("locales/en-US.ftl"),
-                ..finding(Level::Warning, "history-message", message)
+                ..finding(Level::Error, "history-message", message)
             });
         }
     }
@@ -740,7 +768,108 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         report_of(&app_dir, None)?
     };
     let path = write(&app_dir, &report.resources)?;
+    sync_resource_kinds(&app_dir)?;
     Ok((path, report))
+}
+
+/// Add to the manifest's `[resources] kinds`, which the package signs, the
+/// app's own kinds it does not list yet: a resource added or renamed in
+/// code would otherwise be one a governed room never lets the app create.
+/// Kinds the manifest names already stay, whether the sources declare them
+/// or not.
+///
+/// # Errors
+/// Returns why the sources or the manifest do not read, or the manifest
+/// cannot be written.
+pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
+    let owned = crate::resource_kinds::owned_by_app(app_dir)?;
+    let manifest = app_dir.join("tilo-app.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let mut kinds: Vec<String> = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|table| {
+            table
+                .get("resources")?
+                .get("kinds")?
+                .clone()
+                .try_into()
+                .ok()
+        })
+        .unwrap_or_default();
+    for kind in owned {
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    if let Some(updated) = with_resource_kinds(&text, &kinds) {
+        std::fs::write(&manifest, updated)
+            .with_context(|| format!("writing {}", manifest.display()))?;
+    }
+    Ok(())
+}
+
+/// `manifest` with its `[resources] kinds` set to `kinds`, or `None` when
+/// it names them already (or the app declares none and the manifest has no
+/// such table).
+fn with_resource_kinds(manifest: &str, kinds: &[String]) -> Option<String> {
+    let declared: Option<Vec<String>> =
+        toml::from_str::<toml::Table>(manifest)
+            .ok()
+            .and_then(|table| {
+                table
+                    .get("resources")?
+                    .get("kinds")?
+                    .clone()
+                    .try_into()
+                    .ok()
+            });
+    if declared.as_deref() == Some(kinds) || (declared.is_none() && kinds.is_empty()) {
+        return None;
+    }
+    let line = format!(
+        "kinds = [{}]",
+        kinds
+            .iter()
+            .map(|kind| format!("{kind:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();
+    if let Some(at) = lines.iter().position(|l| l.trim() == "[resources]") {
+        let end = lines
+            .iter()
+            .skip(at.saturating_add(1))
+            .position(|l| l.trim_start().starts_with('['))
+            .map_or(lines.len(), |offset| {
+                at.saturating_add(1).saturating_add(offset)
+            });
+        let existing = (at.saturating_add(1)..end).find(|&i| {
+            lines
+                .get(i)
+                .is_some_and(|l| l.trim_start().starts_with("kinds"))
+        });
+        match existing {
+            Some(i) => {
+                if let Some(slot) = lines.get_mut(i) {
+                    *slot = line;
+                }
+            }
+            None => lines.insert(at.saturating_add(1), line),
+        }
+    } else {
+        let before = lines
+            .iter()
+            .position(|l| l.trim() == "[publisher]")
+            .unwrap_or(lines.len());
+        lines.splice(
+            before..before,
+            ["[resources]".to_owned(), line, String::new()],
+        );
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Some(out)
 }
 
 fn ensure_framework_app(app_dir: &Path) -> Result<()> {
@@ -783,22 +912,47 @@ pub fn check_app(
         return Ok(None);
     }
     let report = report_of(&app_dir, executable)?;
+    check_report(&app_dir, &report, level).map(Some)
+}
+
+/// What [`check_app`] finds in the framework app at `app_dir` once its
+/// surface `report` is in hand, however it was obtained.
+pub fn check_report(
+    app_dir: &Path,
+    report: &SurfaceReport,
+    level: Level,
+) -> Result<ContractReport> {
     let catalog = match level {
-        Level::Error => crate::contract::source_catalog(&app_dir)?,
+        Level::Error => crate::contract::source_catalog(app_dir)?,
         Level::Warning => None,
     };
-    Ok(Some(findings(
-        &app_id(&app_dir)?,
-        &report,
-        committed(&app_dir)?.as_deref(),
+    Ok(findings(
+        &app_id(app_dir)?,
+        report,
+        committed(app_dir)?.as_deref(),
         catalog.as_ref(),
         level,
-    )))
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_manifest_names_the_kinds_the_sources_declare() {
+        let kinds = vec!["so.example.table".to_owned()];
+        let fresh = "[package]\nid = \"so.example\"\n\n[publisher]\nidentity = \"x\"\n";
+        let added = with_resource_kinds(fresh, &kinds).unwrap();
+        assert!(added.contains("[resources]\nkinds = [\"so.example.table\"]\n\n[publisher]"));
+        assert_eq!(with_resource_kinds(&added, &kinds), None, "already named");
+        let renamed = added.replace("so.example.table", "so.example.greeting");
+        assert_eq!(
+            with_resource_kinds(&renamed, &kinds).as_deref(),
+            Some(added.as_str())
+        );
+        assert_eq!(with_resource_kinds(fresh, &[]), None, "nothing to declare");
+    }
 
     fn resource(version: u64, title_type: &str, verbs: &[&str]) -> Value {
         serde_json::json!({
@@ -884,12 +1038,10 @@ mod tests {
         assert_eq!(surface.fields[0].stored, "value");
         assert_eq!(surface.fields[1].stored, "collection");
         assert!(surface.fields[2].readonly);
-        // A changed operation vocabulary still shows as drift.
         let ops = surface.fields[1].ops.clone().unwrap();
         assert!(ops.as_str().unwrap().starts_with("sha256:"));
         book["fields"][1]["ops"]["title"] = "Other ops".into();
         assert_ne!(filed(&book)["fields"][1]["ops"], ops);
-        // Writing what was read writes the same bytes.
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 
@@ -911,8 +1063,12 @@ mod tests {
             [
                 ("storage", Level::Error),
                 ("surface", Level::Error),
-                ("history-message", Level::Warning)
+                ("history-message", Level::Error)
             ]
+        );
+        assert!(
+            !found.passed(),
+            "an app whose history messages the catalogue lacks is not checked"
         );
         assert!(found.findings[1].message.contains("verb `retitle`"));
         assert!(found.findings[2].message.contains("notes-retitle"));
@@ -1000,5 +1156,29 @@ mod tests {
         )
         .unwrap();
         assert!(!is_framework_app(temp.path()));
+    }
+
+    /// Messages publishes verbs and field edits, so every one of them has to
+    /// read in the app's own words: the live report and the catalogue it is
+    /// checked against are the app's, not a fixture standing in for it. The
+    /// report is the one `messages --surface` prints, taken in this process
+    /// from the app linked into the test rather than by building and running
+    /// its binary here, which made the test as slow as a cold build of the app.
+    #[test]
+    fn messages_history_reads_in_its_own_words() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");
+        assert!(is_framework_app(&app_dir), "Messages is a framework app");
+        let printed =
+            ui::framework::headless::surface_report::<messages::MessagesShell>().to_string();
+        let surface = parse_report(&printed).expect("Messages reports its surface");
+        let report = check_report(&app_dir, &surface, Level::Error).expect("the check runs");
+        let missing: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == "history-message")
+            .map(|finding| finding.message.as_str())
+            .collect();
+        assert!(missing.is_empty(), "{missing:#?}");
+        assert!(report.passed(), "{:#?}", report.findings);
     }
 }

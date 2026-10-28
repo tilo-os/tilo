@@ -48,7 +48,6 @@ pub fn messages(source: &str) -> BTreeMap<String, String> {
     messages
 }
 
-/// The `$variables` a pattern interpolates.
 fn variables(pattern: &str) -> BTreeSet<String> {
     pattern
         .split('$')
@@ -158,9 +157,17 @@ impl UsedKeys {
     pub fn scan_with_namespaces(dirs: &[impl AsRef<Path>], namespaces: &[&str]) -> Self {
         let mut found = BTreeMap::new();
         for dir in dirs {
+            // The crate the directory is the sources of (`…/shell/src`):
+            // its own name reaches its own catalogue too.
+            let own = dir
+                .as_ref()
+                .parent()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().replace('-', "_"))
+                .unwrap_or_default();
             for path in rust_files(dir.as_ref()) {
                 let source = std::fs::read_to_string(&path).expect("read source file");
-                let keys = literal_keys(&source).into_iter().chain(
+                let keys = literal_keys(&source, &own).into_iter().chain(
                     namespaces
                         .iter()
                         .flat_map(|prefix| namespaced_keys(&source, prefix)),
@@ -185,10 +192,6 @@ impl UsedKeys {
 
     /// Panic unless every catalogue defines every key the code asks for: a
     /// missing one renders as the raw key, or as English in a translation.
-    ///
-    /// # Panics
-    ///
-    /// When the scan found too few keys or a catalogue lacks one.
     pub fn check_defined(&self, catalogs: &[(&str, &str)]) {
         assert!(
             self.found.len() >= self.min_keys,
@@ -237,7 +240,7 @@ fn is_key(text: &str) -> bool {
 }
 
 /// The string literal that opens each `t(` / `t_args(` call in `source`.
-fn literal_keys(source: &str) -> Vec<String> {
+fn literal_keys(source: &str, own: &str) -> Vec<String> {
     let mut keys = Vec::new();
     for call in ["t(", "t_args("] {
         for (start, _) in source.match_indices(call) {
@@ -245,7 +248,9 @@ fn literal_keys(source: &str) -> Vec<String> {
                 .get(..start)
                 .and_then(|before| before.chars().next_back())
                 .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-            if preceded_by_ident {
+            if preceded_by_ident
+                || other_crates_lookup(source.get(..start).unwrap_or_default(), own)
+            {
                 continue;
             }
             let Some(rest) = source.get(start..).and_then(|rest| rest.strip_prefix(call)) else {
@@ -262,6 +267,27 @@ fn literal_keys(source: &str) -> Vec<String> {
         }
     }
     keys
+}
+
+/// Whether the call that `before` ends at is qualified by another crate's
+/// path (`file_explorer::i18n::t`): it looks its key up in that crate's
+/// catalogue, not the scanned crate's. A call through `crate::`, `self::`,
+/// `super::` or the scanned crate's own name `own`, or an unqualified one,
+/// is the scanned crate's.
+fn other_crates_lookup(before: &str, own: &str) -> bool {
+    let qualifier: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let Some(path) = qualifier.strip_suffix("::") else {
+        return false;
+    };
+    let first = path.split("::").next().unwrap_or_default();
+    !first.is_empty() && first != own && !matches!(first, "crate" | "self" | "super")
 }
 
 /// Every string literal in `source` that starts with `prefix` and is
@@ -285,7 +311,16 @@ mod tests {
     #[test]
     fn literal_key_scan_finds_direct_and_wrapped_calls() {
         let source = "t(\"a-b\") + crate::shell::i18n::t_args(\n    \"c-d\", &[]) + format(\"x\") + tt(\"no\")";
-        assert_eq!(literal_keys(source), vec!["a-b", "c-d"]);
+        assert_eq!(literal_keys(source, "shell"), vec!["a-b", "c-d"]);
+    }
+
+    #[test]
+    fn a_lookup_in_another_crates_catalogue_is_not_this_crates_key() {
+        let source = "file_explorer::i18n::t(\"files-open-unavailable\") + super::i18n::t(\"own-key\") + self::t(\"own-too\") + shell::shell::i18n::t(\"by-name\")";
+        assert_eq!(
+            literal_keys(source, "shell"),
+            vec!["own-key", "own-too", "by-name"]
+        );
     }
 
     #[test]

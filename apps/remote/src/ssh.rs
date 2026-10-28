@@ -20,6 +20,7 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, load_secret_key};
 use russh::{ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::session::SessionStatus;
@@ -166,11 +167,6 @@ impl KnownHostStore {
 
 /// Explicitly trust the exact fingerprint shown by a failed first-contact
 /// check. A changed key is never overwritten: callers must forget it first.
-///
-/// # Errors
-///
-/// Returns an error for an insecure/corrupt trust store or when the target
-/// already has a different trusted key.
 pub fn trust_host_key(
     store: &KnownHostStore,
     host: &str,
@@ -240,11 +236,6 @@ fn verify_known_host(
 /// password; key auth uses the first of the usual `~/.ssh` identities that
 /// exists, unlocked with the connection's saved passphrase if it has one.
 /// Credentials come from this device's secret store, never the document.
-///
-/// # Errors
-///
-/// Returns an error if key auth is requested and no default identity file
-/// exists, or if password auth is requested and no password is saved.
 pub fn resolve_auth(
     prefer_key: bool,
     secret: Option<String>,
@@ -277,12 +268,35 @@ pub fn default_key_paths() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Which way a file moves over an SSH session.
+#[derive(Clone, Debug)]
+pub enum TransferDirection {
+    /// From this device to the remote machine.
+    Put {
+        local_path: PathBuf,
+        remote_path: String,
+    },
+    /// From the remote machine to this device.
+    Fetch {
+        remote_path: String,
+        local_path: PathBuf,
+    },
+}
+
+/// One file transfer handed to the session worker.
+struct TransferCommand {
+    direction: TransferDirection,
+    job: ui::jobs::Running,
+    completion: std::sync::mpsc::Sender<Result<u64, String>>,
+}
+
 /// A live SSH session handle held by the UI.
 pub struct SshSession {
     grid: VtGrid,
     status: Arc<Mutex<SessionStatus>>,
     output_rx: Receiver<Vec<u8>>,
     input_tx: Sender<InputMessage>,
+    command_tx: Sender<TransferCommand>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
     // The session task on the app runtime. Dropping the handle does not
     // cancel it: the input channel closes with this session, which tells the
@@ -302,6 +316,7 @@ impl SshSession {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = channel::<Vec<u8>>(SSH_OUTPUT_QUEUE_CAPACITY);
         let (input_tx, input_rx) = channel::<InputMessage>(SSH_INPUT_QUEUE_CAPACITY);
+        let (command_tx, command_rx) = channel::<TransferCommand>(4);
         let grid = VtGrid::new(cfg.cols as usize, cfg.rows as usize);
         let host_key_issue = Arc::new(Mutex::new(None));
 
@@ -314,6 +329,7 @@ impl SshSession {
                 host_key_issue_worker,
                 output_tx,
                 input_rx,
+                command_rx,
             )
             .await
             {
@@ -329,6 +345,7 @@ impl SshSession {
             status,
             output_rx,
             input_tx,
+            command_tx,
             host_key_issue,
             _worker: worker,
         })
@@ -360,11 +377,6 @@ impl SshSession {
     }
 
     /// Send keystrokes to the remote PTY.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when input is empty, too large, the bounded queue is
-    /// full, or the session worker has stopped.
     pub fn send_input(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.queue_input(InputMessage { bytes, ack: None })
     }
@@ -372,10 +384,6 @@ impl SshSession {
     /// Queue bytes and receive an acknowledgement only after russh has
     /// accepted them on the live channel. Resource actions use this instead
     /// of mistaking insertion into the UI→worker queue for delivery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the input worker has already stopped.
     pub fn send_input_ack(
         &self,
         bytes: Vec<u8>,
@@ -386,6 +394,30 @@ impl SshSession {
             ack: Some(tx),
         })?;
         Ok(rx)
+    }
+
+    /// Move one file over this session. The work runs on the session's
+    /// worker, which reports the bytes to `job` and answers through the
+    /// returned channel when it ends.
+    pub fn transfer(
+        &self,
+        direction: TransferDirection,
+        job: ui::jobs::Running,
+    ) -> Result<std::sync::mpsc::Receiver<Result<u64, String>>, String> {
+        let (completion, done) = std::sync::mpsc::channel();
+        self.command_tx
+            .try_send(TransferCommand {
+                direction,
+                job,
+                completion,
+            })
+            .map_err(|error: TrySendError<TransferCommand>| match error {
+                TrySendError::Full(_) => {
+                    "the session is already moving as many files as it allows".to_string()
+                }
+                TrySendError::Closed(_) => "the SSH session is closed".to_string(),
+            })?;
+        Ok(done)
     }
 
     fn queue_input(&self, message: InputMessage) -> Result<(), String> {
@@ -468,12 +500,42 @@ async fn load_key(
         .map_err(|e| anyhow!("load key {}: {e}", path.display()))
 }
 
+/// Authenticate the session the way `cfg` says: a password, or a key from
+/// `path`, ordered by whatever hash the server supports.
+async fn authenticate(
+    session: &mut client::Handle<Handler>,
+    cfg: &SshConfig,
+) -> anyhow::Result<()> {
+    let auth_ok = match &cfg.auth {
+        SshAuth::Password(pw) => session
+            .authenticate_password(cfg.user.clone(), pw.clone())
+            .await?
+            .success(),
+        SshAuth::Key { path, passphrase } => {
+            let key = load_key(path, passphrase.as_deref()).await?;
+            let hash = session.best_supported_rsa_hash().await?.flatten();
+            session
+                .authenticate_publickey(
+                    cfg.user.clone(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                )
+                .await?
+                .success()
+        }
+    };
+    if !auth_ok {
+        bail!("Authentication failed");
+    }
+    Ok(())
+}
+
 async fn run_session(
     cfg: SshConfig,
     status: Arc<Mutex<SessionStatus>>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
     output_tx: Sender<Vec<u8>>,
     mut input_rx: Receiver<InputMessage>,
+    mut commands: Receiver<TransferCommand>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(3600)),
@@ -500,26 +562,7 @@ async fn run_session(
         )
     })?;
 
-    let auth_ok = match &cfg.auth {
-        SshAuth::Password(pw) => session
-            .authenticate_password(cfg.user.clone(), pw.clone())
-            .await?
-            .success(),
-        SshAuth::Key { path, passphrase } => {
-            let key = load_key(path, passphrase.as_deref()).await?;
-            let hash = session.best_supported_rsa_hash().await?.flatten();
-            session
-                .authenticate_publickey(
-                    cfg.user.clone(),
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
-                .await?
-                .success()
-        }
-    };
-    if !auth_ok {
-        bail!("Authentication failed");
-    }
+    authenticate(&mut session, &cfg).await?;
 
     let channel = session.channel_open_session().await?;
     channel
@@ -538,8 +581,15 @@ async fn run_session(
     *status.lock_recover() = SessionStatus::Connected;
 
     let mut channel = channel;
+    let session = std::sync::Arc::new(session);
     loop {
         tokio::select! {
+            command = commands.recv() => {
+                if let Some(command) = command {
+                    let session = std::sync::Arc::clone(&session);
+                    tokio::spawn(async move { run_transfer(session, command).await });
+                }
+            }
             msg = channel.wait() => match msg {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     // Awaiting bounded output capacity deliberately slows the
@@ -585,13 +635,223 @@ async fn run_session(
     Ok(())
 }
 
+/// Run one file transfer over a second SSH channel, then end its job.
+async fn run_transfer(session: std::sync::Arc<client::Handle<Handler>>, command: TransferCommand) {
+    let TransferCommand {
+        direction,
+        job,
+        completion,
+    } = command;
+    let result = match &direction {
+        TransferDirection::Put {
+            local_path,
+            remote_path,
+        } => put_file(&session, local_path, remote_path, &job).await,
+        TransferDirection::Fetch {
+            remote_path,
+            local_path,
+        } => fetch_file(&session, remote_path, local_path, &job).await,
+    };
+    match &result {
+        Ok(bytes) => job.done(format!(
+            "Transferred {}: {}",
+            transfer_name(&direction),
+            ui::format::memory(*bytes)
+        )),
+        Err(reason) if job.is_stopped() => job.stopped(),
+        Err(reason) => job.failed(reason.clone()),
+    }
+    let _ = completion.send(result);
+}
+
+/// The file a transfer names, for a job's ending sentence.
+pub(crate) fn transfer_name(direction: &TransferDirection) -> String {
+    match direction {
+        TransferDirection::Put { local_path, .. } => local_path.file_name().map_or_else(
+            || local_path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
+        TransferDirection::Fetch { remote_path, .. } => remote_path.clone(),
+    }
+}
+
+/// A path as one POSIX shell word, so a remote path is never read as shell
+/// syntax.
+fn shell_quote(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+/// Send a local file to `remote_path`, reporting the bytes to `job`.
+async fn put_file(
+    session: &client::Handle<Handler>,
+    local_path: &Path,
+    remote_path: &str,
+    job: &ui::jobs::Running,
+) -> Result<u64, String> {
+    if remote_path.trim().is_empty() {
+        return Err("the remote path is empty".into());
+    }
+    let mut file = tokio::fs::File::open(local_path)
+        .await
+        .map_err(|error| format!("could not read {}: {error}", local_path.display()))?;
+    let total = file
+        .metadata()
+        .await
+        .map_err(|error| format!("could not read {}: {error}", local_path.display()))?
+        .len();
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|error| format!("the SSH session could not open a transfer channel: {error}"))?;
+    channel
+        .exec(
+            true,
+            format!("cat > {}", shell_quote(remote_path)).into_bytes(),
+        )
+        .await
+        .map_err(|error| format!("the remote machine refused the transfer: {error}"))?;
+    let mut buffer = vec![0_u8; 32 * 1024];
+    let mut sent = 0_u64;
+    job.progress(0, total);
+    loop {
+        if job.is_stopped() {
+            let _ = channel.close().await;
+            return Err("stopped by the person".into());
+        }
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("could not read {}: {error}", local_path.display()))?;
+        if read == 0 {
+            break;
+        }
+        let filled = buffer.get(..read).ok_or_else(|| {
+            format!(
+                "the read returned {read}, past the {}-byte buffer",
+                buffer.len()
+            )
+        })?;
+        channel
+            .data(filled)
+            .await
+            .map_err(|error| format!("the remote machine closed the transfer: {error}"))?;
+        sent = sent.saturating_add(u64::try_from(read).unwrap_or(0));
+        job.progress(sent, total);
+    }
+    channel
+        .eof()
+        .await
+        .map_err(|error| format!("the remote machine closed the transfer: {error}"))?;
+    let (status, stderr) = finish_channel(&mut channel).await;
+    if status != Some(0) {
+        return Err(transfer_failure(remote_path, status, &stderr));
+    }
+    Ok(sent)
+}
+
+/// Receive `remote_path` into `local_path`, reporting the bytes seen.
+async fn fetch_file(
+    session: &client::Handle<Handler>,
+    remote_path: &str,
+    local_path: &Path,
+    job: &ui::jobs::Running,
+) -> Result<u64, String> {
+    if remote_path.trim().is_empty() {
+        return Err("the remote path is empty".into());
+    }
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|error| format!("the SSH session could not open a transfer channel: {error}"))?;
+    channel
+        .exec(
+            true,
+            format!("cat {}", shell_quote(remote_path)).into_bytes(),
+        )
+        .await
+        .map_err(|error| format!("the remote machine refused the transfer: {error}"))?;
+    let mut file = tokio::fs::File::create(local_path)
+        .await
+        .map_err(|error| format!("could not write {}: {error}", local_path.display()))?;
+    let mut received = 0_u64;
+    let mut stderr = Vec::new();
+    let mut status = None;
+    job.seen(0);
+    loop {
+        if job.is_stopped() {
+            let _ = channel.close().await;
+            drop(file);
+            let _ = tokio::fs::remove_file(local_path).await;
+            return Err("stopped by the person".into());
+        }
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => {
+                if let Err(error) = file.write_all(&data).await {
+                    let _ = tokio::fs::remove_file(local_path).await;
+                    return Err(format!("could not write {}: {error}", local_path.display()));
+                }
+                received = received.saturating_add(u64::try_from(data.len()).unwrap_or(0));
+                job.seen(received);
+            }
+            Some(ChannelMsg::ExtendedData { data, .. }) => stderr.extend_from_slice(&data),
+            Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status),
+            Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+            _ => {}
+        }
+    }
+    if let Err(error) = file.flush().await {
+        let _ = tokio::fs::remove_file(local_path).await;
+        return Err(format!("could not write {}: {error}", local_path.display()));
+    }
+    if status != Some(0) {
+        let _ = tokio::fs::remove_file(local_path).await;
+        return Err(transfer_failure(remote_path, status, &stderr));
+    }
+    Ok(received)
+}
+
+/// Read a command channel to its exit status, keeping its error text.
+async fn finish_channel<S>(channel: &mut russh::Channel<S>) -> (Option<u32>, Vec<u8>)
+where
+    S: From<(russh::ChannelId, ChannelMsg)> + Send + Sync + 'static,
+{
+    let mut stderr = Vec::new();
+    let mut status = None;
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::ExtendedData { data, .. }) => stderr.extend_from_slice(&data),
+            Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status),
+            Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+            _ => {}
+        }
+    }
+    (status, stderr)
+}
+
+/// Why a remote command did not finish a transfer, in the remote's own words
+/// when it supplied any.
+fn transfer_failure(remote_path: &str, status: Option<u32>, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr).trim().to_owned();
+    match (status, detail.is_empty()) {
+        (Some(code), false) => {
+            format!("the remote machine could not transfer {remote_path} (status {code}): {detail}")
+        }
+        (Some(code), true) => {
+            format!("the remote machine could not transfer {remote_path} (status {code})")
+        }
+        (None, false) => {
+            format!("the remote machine did not report the transfer's outcome: {detail}")
+        }
+        (None, true) => "the remote machine did not report the transfer's outcome".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     #[test]
     fn auth_resolution_reads_saved_secrets_and_default_keys() {
@@ -750,17 +1010,45 @@ mod tests {
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId};
 
+    /// The loopback server's tiny file system, and the transfers it is
+    /// receiving, by channel.
+    /// What the loopback server holds for a path: its bytes, and for a `cat >`
+    /// the channel and path they are being written to.
+    type Served = Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>;
+    type Receiving = Arc<Mutex<std::collections::HashMap<ChannelId, (String, Vec<u8>)>>>;
+
+    #[derive(Clone, Default)]
+    struct TestFiles {
+        files: Served,
+        open: Receiving,
+    }
+
+    impl TestFiles {
+        /// The bytes served for `path`, read under the lock and handed on
+        /// outside it so no guard outlives the call.
+        fn served(&self, path: &str) -> Option<Vec<u8>> {
+            let files = self.files.lock().unwrap();
+            files.get(path).cloned()
+        }
+    }
+
     #[derive(Clone)]
-    struct TestServer;
+    struct TestServer {
+        files: TestFiles,
+    }
 
     impl server::Server for TestServer {
         type Handler = TestHandler;
         fn new_client(&mut self, _addr: Option<std::net::SocketAddr>) -> TestHandler {
-            TestHandler
+            TestHandler {
+                files: self.files.clone(),
+            }
         }
     }
 
-    struct TestHandler;
+    struct TestHandler {
+        files: TestFiles,
+    }
 
     impl server::Handler for TestHandler {
         type Error = russh::Error;
@@ -793,12 +1081,68 @@ mod tests {
             Ok(())
         }
 
+        async fn exec_request(
+            &mut self,
+            channel: ChannelId,
+            data: &[u8],
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let command = String::from_utf8_lossy(data);
+            let path = command
+                .trim_start_matches("cat > ")
+                .trim_start_matches("cat ")
+                .trim_matches('\'')
+                .to_owned();
+            session.channel_success(channel)?;
+            if command.starts_with("cat > ") {
+                self.files
+                    .open
+                    .lock()
+                    .unwrap()
+                    .insert(channel, (path, Vec::new()));
+            } else if let Some(bytes) = self.files.served(&path) {
+                session.data(channel, bytes)?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            } else {
+                session.extended_data(
+                    channel,
+                    1,
+                    format!("cat: {path}: No such file or directory").into_bytes(),
+                )?;
+                session.exit_status_request(channel, 1)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            Ok(())
+        }
+
+        async fn channel_eof(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let received = self.files.open.lock().unwrap().remove(&channel);
+            if let Some((path, bytes)) = received {
+                self.files.files.lock().unwrap().insert(path, bytes);
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            Ok(())
+        }
+
         async fn data(
             &mut self,
             channel: ChannelId,
             data: &[u8],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if let Some((_, received)) = self.files.open.lock().unwrap().get_mut(&channel) {
+                received.extend_from_slice(data);
+                return Ok(());
+            }
             // Echo input back prefixed, so the client can prove the upstream
             // pipe works end-to-end.
             let mut echo = b"echo:".to_vec();
@@ -822,27 +1166,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn real_ssh_round_trip_over_loopback() {
-        // Stand up the server, bind an ephemeral port, and serve in the bg.
-        let port = ui::rt::app()
-            .block_on(async {
-                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
-                let config = Arc::new(server::Config {
-                    inactivity_timeout: Some(Duration::from_secs(30)),
-                    auth_rejection_time: Duration::from_millis(50),
-                    keys: vec![host_key],
-                    ..Default::default()
-                });
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                    .await
-                    .unwrap();
-                let port = listener.local_addr().unwrap().port();
-                tokio::spawn(async move {
-                    let mut server = TestServer;
-                    let _ = server.run_on_socket(config, &listener).await;
-                });
-                port
-            })
-            .unwrap();
+        let (port, _files) = served_files([]);
 
         let (known_hosts, known_hosts_directory) = test_known_hosts();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
@@ -867,9 +1191,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         })
         .expect("the mock ssh transport connects");
 
-        // Poll to Connected.
         let mut connected = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
@@ -882,9 +1205,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         }
         assert!(connected, "client never reached Connected");
 
-        // Drain the banner into the grid.
         let mut saw_banner = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
@@ -911,7 +1233,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
@@ -929,5 +1251,165 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         assert!(saw_echo, "server never echoed the upstream keystroke");
         drop(ssh);
         drop(known_hosts_directory);
+    }
+
+    #[test]
+    fn a_file_crosses_a_real_session_both_ways_and_a_missing_one_says_why() {
+        let (port, files) = served_files([("remote.txt", b"from the remote machine".to_vec())]);
+
+        let (ssh, known_hosts_directory) = trusted_session_on(port);
+
+        let directory = tempfile::tempdir().unwrap();
+        let local = directory.path().join("local.bin");
+        std::fs::write(&local, b"from this device").unwrap();
+        let put = ui::jobs::start(ui::jobs::Spec::new("Put a file"));
+        let done = ssh
+            .transfer(
+                TransferDirection::Put {
+                    local_path: local,
+                    remote_path: "upload.bin".into(),
+                },
+                put.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            done.recv_timeout(hang_bound()).unwrap(),
+            Ok(b"from this device".len() as u64)
+        );
+        assert_eq!(
+            files.files.lock().unwrap().get("upload.bin").cloned(),
+            Some(b"from this device".to_vec())
+        );
+        let put_row = ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.id() == put.id())
+            .expect("the put job is in the jobs surface");
+        assert!(matches!(
+            put_row.outcome(),
+            Some(ui::jobs::Outcome::Done(_))
+        ));
+        assert_eq!(
+            put_row.progress(),
+            &ui::jobs::Progress::Measured {
+                done: b"from this device".len() as u64,
+                total: b"from this device".len() as u64,
+            },
+            "the put reports the bytes it moved against the file's size"
+        );
+
+        let fetched = directory.path().join("fetched.txt");
+        let fetch = ui::jobs::start(ui::jobs::Spec::new("Fetch a file"));
+        let done = ssh
+            .transfer(
+                TransferDirection::Fetch {
+                    remote_path: "remote.txt".into(),
+                    local_path: fetched.clone(),
+                },
+                fetch.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            done.recv_timeout(hang_bound()).unwrap(),
+            Ok(b"from the remote machine".len() as u64)
+        );
+        assert_eq!(std::fs::read(&fetched).unwrap(), b"from the remote machine");
+        let fetch_row = ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.id() == fetch.id())
+            .expect("the fetch job is in the jobs surface");
+        assert_eq!(
+            fetch_row.progress(),
+            &ui::jobs::Progress::Seen {
+                seen: b"from the remote machine".len() as u64,
+            },
+            "the fetch reports the bytes it has seen"
+        );
+
+        let missing = directory.path().join("missing.txt");
+        let job = ui::jobs::start(ui::jobs::Spec::new("Fetch a missing file"));
+        let done = ssh
+            .transfer(
+                TransferDirection::Fetch {
+                    remote_path: "missing.txt".into(),
+                    local_path: missing.clone(),
+                },
+                job.clone(),
+            )
+            .unwrap();
+        let error = done.recv_timeout(hang_bound()).unwrap().unwrap_err();
+        assert!(error.contains("missing.txt"), "{error}");
+        assert!(error.contains("No such file or directory"), "{error}");
+        assert!(!missing.exists(), "a failed fetch leaves no empty file");
+        assert!(matches!(
+            ui::jobs::rows().iter().find(|row| row.id() == job.id()).map(ui::jobs::Job::outcome),
+            Some(Some(ui::jobs::Outcome::Failed(reason))) if reason.contains("missing.txt")
+        ));
+
+        drop(ssh);
+        drop(known_hosts_directory);
+    }
+
+    /// A loopback server holding `by_path`'s files, on a port of its own.
+    fn served_files(
+        by_path: impl IntoIterator<Item = (&'static str, Vec<u8>)>,
+    ) -> (u16, TestFiles) {
+        ui::rt::app()
+            .block_on(async move {
+                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
+                let config = Arc::new(server::Config {
+                    inactivity_timeout: None,
+                    auth_rejection_time: Duration::from_millis(50),
+                    keys: vec![host_key],
+                    ..Default::default()
+                });
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let files = TestFiles::default();
+                for (path, bytes) in by_path {
+                    files.files.lock().unwrap().insert(path.into(), bytes);
+                }
+                let for_the_server = files.clone();
+                tokio::spawn(async move {
+                    let mut server = TestServer {
+                        files: for_the_server,
+                    };
+                    let _ = server.run_on_socket(config, &listener).await;
+                });
+                (port, files)
+            })
+            .unwrap()
+    }
+
+    /// A connected session to the loopback server on `port`, whose host key
+    /// this device already trusts. The returned directory holds that trust.
+    fn trusted_session_on(port: u16) -> (SshSession, tempfile::TempDir) {
+        let (known_hosts, known_hosts_directory) = test_known_hosts();
+        let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
+        let identity = HostKeyIdentity {
+            algorithm: host_key.public_key().algorithm().as_str().to_string(),
+            fingerprint: host_key
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string(),
+        };
+        trust_host_key(&known_hosts, "127.0.0.1", port, &identity).unwrap();
+        let ssh = SshSession::connect(SshConfig {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            auth: SshAuth::Password("secret".into()),
+            cols: 80,
+            rows: 24,
+            known_hosts,
+        })
+        .unwrap();
+        let deadline = ui::time::now() + hang_bound();
+        while ui::time::now() < deadline && ssh.status() != SessionStatus::Connected {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(ssh.status(), SessionStatus::Connected);
+        (ssh, known_hosts_directory)
     }
 }

@@ -51,8 +51,6 @@ def run(argv: list[str], timeout: float = 120, env: dict[str, str] | None = None
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, check=False)
 
 
-# ---- libraries -------------------------------------------------------------------------------
-
 # Trees whose libraries are found another way than the system loader's search path, each
 # checked where it is assembled: the signed runtime bundles and the browser engine resolve
 # against their own directories (os/scripts/verify-runtime-bundle-closure.sh in the build),
@@ -157,8 +155,6 @@ def check_libraries() -> None:
         ok(f"all {len(files)} ELF files resolve their libraries")
 
 
-# ---- scripts ---------------------------------------------------------------------------------
-
 
 def check_interpreters() -> None:
     broken = []
@@ -195,12 +191,14 @@ def check_interpreters() -> None:
         ok(f"all {count} scripts' interpreters exist")
 
 
-# ---- rpm -------------------------------------------------------------------------------------
-
 # The rootfs stage removes these with `rpm -e --nodeps` on purpose (os/Containerfile, the
-# OpenSSL-backed plugins and Perl's HTTPS backend no Tilo path uses), so what required them
-# is knowingly left without.
-REMOVED_ON_PURPOSE = re.compile(r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay)")
+# OpenSSL-backed plugins and Perl's HTTPS backend no Tilo path uses; os/image/packages.Containerfile,
+# the build-time CMake macros and Ninja that Wine's mingw toolchain requires), so what required
+# them is knowingly left without.
+REMOVED_ON_PURPOSE = re.compile(
+    r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay"
+    r"|cmake-rpm-macros |ninja-build )"
+)
 
 
 def check_rpm_dependencies() -> None:
@@ -221,8 +219,6 @@ def check_rpm_dependencies() -> None:
     else:
         ok(f"the {count} installed packages' dependencies are installed")
 
-
-# ---- units -----------------------------------------------------------------------------------
 
 UNIT_DIRS = {
     "system": ["/etc/systemd/system", "/usr/lib/systemd/system"],
@@ -288,8 +284,6 @@ def check_units() -> None:
             ok(f"the {len(paths)} enabled {scope} units verify")
 
 
-# ---- gstreamer -------------------------------------------------------------------------------
-
 # The elements Tilo's own code builds pipelines from (crates/platform/tilo-media, the music,
 # video and voice paths, recording, screen streaming) and the software path of the miracast
 # crate tilo-projector runs on.
@@ -352,8 +346,6 @@ def check_gstreamer() -> None:
         else:
             bad(f"Miracast's video path fails with {encoder}", (result.stderr or result.stdout).splitlines()[-10:])
 
-
-# ---- programs --------------------------------------------------------------------------------
 
 # External programs the desktop starts, each with an argument that only prints and exits.
 PROGRAMS = [

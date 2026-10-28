@@ -5,7 +5,7 @@ kind = "word-processor.document"
 label = "Document"
 version = 2
 fields = [
-  { path = "body", type = "RichText", ops = "sha256:32d3007b3b137974" },
+  { path = "body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
   { path = "comments.*.anchor", type = "TextAnchor" },
   { path = "comments.*.author", type = "String", readonly = true },
@@ -16,6 +16,7 @@ fields = [
   { path = "comments.*.replies.*.date", type = "String", readonly = true },
   { path = "comments.*.replies.*.text", type = "String", label = true },
   { path = "comments.*.replies.*.body", type = "Vec<ClipBlock>", readonly = true },
+  { path = "reactions", type = "Reactions", unit = true },
 ]
 
 [[resources.verbs]]
@@ -23,6 +24,22 @@ id = "append-paragraph"
 kind = "undoable"
 params = [
   { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-body"
+kind = "undoable"
+params = [
+  { name = "markdown", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-text"
+kind = "undoable"
+params = [
+  { name = "find", required = true, schema = { type = "string" } },
+  { name = "replace", required = true, schema = { type = "string" } },
+  { name = "all", required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]

@@ -59,10 +59,13 @@ if grep -Fqx 'authselectmode require' "$chrony_config" 2>/dev/null \
 else
   warn "Chrony can select an unauthenticated or insufficiently diverse time source"
 fi
-if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null; then
-  warn "systemd-pstore persistence is enabled; kernel crash records may be copied to disk"
+pstore_storage="$(systemd-analyze cat-config systemd/pstore.conf 2>/dev/null \
+  | sed -n 's/^Storage=//p' | tail -n 1)"
+if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null \
+   && [ "${pstore_storage:-external}" = external ]; then
+  warn "systemd-pstore archives kernel crash records under /var/lib/systemd/pstore"
 else
-  ok "persistent pstore crash-record copying is disabled"
+  ok "pstore crash records go only to the journal"
 fi
 if installed systemd-coredump \
    || systemctl is-enabled --quiet systemd-coredump.socket 2>/dev/null; then
@@ -565,10 +568,16 @@ else
   note "no TPM short-PIN authority verifier is installed; installation uses an independent strong passphrase"
 fi
 
-# Root filesystem encryption. Walk from the root mount to its backing device and
+# Root filesystem encryption. Walk from the physical root (/sysroot; / is
+# composefs, which no block device backs) to its backing device by number and
 # ask whether a dm-crypt layer is under it.
-rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
-roottype="$(lsblk -nro TYPE "$rootsrc" 2>/dev/null | head -1)"
+rootsrc="$(findmnt -nro SOURCE /sysroot 2>/dev/null | sed 's/\[.*//' | head -1)"
+rootdev="$(findmnt -nro MAJ:MIN /sysroot 2>/dev/null | head -1)"
+if [ -z "$rootdev" ]; then
+  rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
+  rootdev="$(findmnt -nro MAJ:MIN / 2>/dev/null | head -1)"
+fi
+roottype="$(lsblk -nro MAJ:MIN,TYPE 2>/dev/null | awk -v d="$rootdev" '$1==d {print $2; exit}')"
 case "${roottype:-}" in
   crypt) ok "root filesystem is encrypted ($rootsrc)" ;;
   "")    note "root filesystem is not backed by a block device (${rootsrc:-unknown}); encryption state undetermined" ;;

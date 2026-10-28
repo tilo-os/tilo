@@ -15,11 +15,26 @@ use crate::apps::EndPolicy;
 use crate::collect::Collector;
 use crate::end::{PidfdSignaller, Signaller};
 use crate::probe::{KernelProbe, Probe, Want};
-use crate::protocol::{Grants, MAX_INTERVAL_MS, MIN_INTERVAL_MS, Refusal, Snapshot};
+use crate::protocol::{Grants, MAX_INTERVAL_MS, MIN_INTERVAL_MS, Refusal, Snapshot, Storage};
+use crate::storage::{MachineStorage, StorageSource};
 
 /// Where a subscription's snapshots go. Called on the hub's thread; it must
 /// not block.
 pub type Sink = Box<dyn FnMut(Snapshot) + Send>;
+
+/// Where a storage reading goes. Called on the storage thread; it must not
+/// block.
+pub type StorageAnswer = Box<dyn FnOnce(Result<Storage, Refusal>) + Send>;
+
+/// The thread that reads the machine's storage.
+pub const STORAGE_THREAD: &str = "tilo-system-stats-storage";
+
+/// Who waits for a storage reading, and whether one is being taken.
+#[derive(Default)]
+struct StorageQueue {
+    waiting: Vec<StorageAnswer>,
+    reading: bool,
+}
 
 /// What a subscription asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +86,8 @@ struct Inner {
     changed: Condvar,
     collector: Mutex<Collector>,
     signaller: Box<dyn Signaller + Sync>,
+    storage: Box<dyn StorageSource>,
+    storage_queue: Mutex<StorageQueue>,
 }
 
 /// The session's one source of system readings.
@@ -131,11 +148,24 @@ impl Hub {
         SHARED.get_or_init(Self::kernel)
     }
 
+    /// Readings from `probe`, ending through `signaller` under `policy`,
+    /// and this machine's storage.
     #[must_use]
     pub fn new(
         probe: Box<dyn Probe>,
         policy: EndPolicy,
         signaller: Box<dyn Signaller + Sync>,
+    ) -> Self {
+        Self::with_storage(probe, policy, signaller, Box::new(MachineStorage))
+    }
+
+    /// [`Self::new`], with storage described by `storage`.
+    #[must_use]
+    pub fn with_storage(
+        probe: Box<dyn Probe>,
+        policy: EndPolicy,
+        signaller: Box<dyn Signaller + Sync>,
+        storage: Box<dyn StorageSource>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -143,8 +173,67 @@ impl Hub {
                 changed: Condvar::new(),
                 collector: Mutex::new(Collector::new(probe, policy)),
                 signaller,
+                storage,
+                storage_queue: Mutex::new(StorageQueue::default()),
             }),
         }
+    }
+
+    /// Describe the machine's storage to `answer` once it is read. The
+    /// reading is taken on the hub's storage thread ([`STORAGE_THREAD`]),
+    /// never on the asker's: a slow device (a busy udisks2, a drive waking
+    /// up) answers late and holds up neither the asking connection nor the
+    /// process that serves it. Askers who come while a reading is being
+    /// taken share the next one, so each sees storage as it was after they
+    /// asked. The thread exists only while someone waits.
+    pub fn read_storage(&self, answer: StorageAnswer) {
+        let mut queue = self.storage_queue();
+        queue.waiting.push(answer);
+        if queue.reading {
+            return;
+        }
+        queue.reading = true;
+        drop(queue);
+        let hub = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name(STORAGE_THREAD.into())
+            .spawn(move || hub.serve_storage());
+        if let Err(error) = spawned {
+            let waiting = {
+                let mut queue = self.storage_queue();
+                queue.reading = false;
+                std::mem::take(&mut queue.waiting)
+            };
+            for answer in waiting {
+                answer(Err(Refusal::Failed {
+                    detail: format!("storage could not be read: {error}"),
+                }));
+            }
+        }
+    }
+
+    fn serve_storage(&self) {
+        loop {
+            let waiting = {
+                let mut queue = self.storage_queue();
+                if queue.waiting.is_empty() {
+                    queue.reading = false;
+                    return;
+                }
+                std::mem::take(&mut queue.waiting)
+            };
+            let reading = self.inner.storage.read();
+            for answer in waiting {
+                answer(reading.clone());
+            }
+        }
+    }
+
+    fn storage_queue(&self) -> MutexGuard<'_, StorageQueue> {
+        self.inner
+            .storage_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

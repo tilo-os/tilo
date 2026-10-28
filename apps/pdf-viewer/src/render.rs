@@ -218,14 +218,12 @@ struct ColumnCursor {
 pub struct TextLine {
     /// Index of the source block on the page (for de-duping / debugging).
     pub block: usize,
-    /// Left edge of the text column for this line, in page points.
     pub x: f64,
     /// Right edge of the actual glyphs on this line (text extent, not the
     /// full column), in page points.
     pub x_end: f64,
     /// Line-box top in page points.
     pub y: f64,
-    /// Line height in page points.
     pub h: f64,
     /// Each word's `[x0, x1)` extent on the line, in page points, in order.
     pub words: Vec<(f64, f64)>,
@@ -276,7 +274,7 @@ fn word_boxes(tr: &mut TextRenderer, line: &str, style: &TextStyle, x: f64) -> V
 /// page-point rectangle of every rendered text line. The text engine
 /// (`tr`) is needed because line breaking depends on real glyph advances,
 /// so this must run where a [`TextRenderer`] is available (the draw pass).
-/// It breaks lines with the same [`wrap_lines`] the painter uses, so the snap
+/// It breaks lines with the same `wrap_lines` the painter uses, so the snap
 /// geometry matches the painted glyphs.
 pub fn collect_text_lines(tr: &mut TextRenderer, page: &Page) -> Vec<TextLine> {
     let content_x = MARGIN;
@@ -379,27 +377,7 @@ fn draw_page_paper(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect) -
     card_rr
 }
 
-/// The tiles available for a zoomed page this frame, and where the page's
-/// pixels at their zoom level land on screen.
-#[derive(Clone, Debug)]
-pub struct PageTiles {
-    pub placement: crate::tiles::PagePlacement,
-    pub tiles: Vec<(tilo_pdf::PixelRect, PenikoImage)>,
-}
-
-/// Paint a zoomed page's tiles, each at its own pixel region, over whatever
-/// placeholder is already drawn.
-fn draw_page_tiles(scene: &mut Scene, base: Affine, tiles: &PageTiles) {
-    let k = tiles.placement.screen_per_px;
-    for (region, image) in &tiles.tiles {
-        let (x0, y0, _, _) = tiles.placement.screen_rect(*region);
-        scene.draw_image(
-            image,
-            base * Affine::translate((x0, y0)) * Affine::scale_non_uniform(k, k),
-        );
-    }
-}
-
+pub use tilo_page_raster::tiles::PageTiles;
 /// Paint the raster backend's page bitmap (engine output) fitted into the
 /// card and centred — a page whose rotation or size differs from the card's
 /// keeps its aspect, matching the reader's page maps
@@ -622,7 +600,7 @@ pub fn draw_page(
             draw_page_raster_image(ctx.scene, base, card, img);
         }
         if let Some(tiles) = raster.tiles {
-            draw_page_tiles(ctx.scene, base, tiles);
+            tiles.paint(ctx.scene, base);
         }
     } else {
         draw_page_blocks(ctx, page, frame, found);
@@ -1221,7 +1199,6 @@ mod tests {
         let lines = collect_text_lines(&mut tr, page);
         assert!(!lines.is_empty(), "page 1 has body text -> some lines");
         for l in &lines {
-            // Bands sit within the page's text column and below the top.
             assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
             assert!(
                 l.x_end <= PAGE_W - MARGIN + 0.5,

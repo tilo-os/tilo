@@ -43,8 +43,6 @@ impl CommittedReceipt {
             signature: Vec::new(),
         }
     }
-    /// # Errors
-    /// Returns bounded canonical bytes for the genuine daemon signer only.
     pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
         self.preparation().signing_bytes()?;
         if !id(&self.capture_id)

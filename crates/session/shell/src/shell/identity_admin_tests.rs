@@ -2,6 +2,7 @@ use super::*;
 use crate::shell::search::action_api::ArgValue;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use tilo_actions::remote::identity_admin::FleetDevice;
 
 /// An identity store provisioned the way first boot does, in files, with
 /// the identity its workspace selects.
@@ -334,7 +335,7 @@ fn home_server_removal_runs_on_the_host_with_its_own_identity_directory() {
         panic!("removal reaches the home server later");
     };
     let answer = answer
-        .wait_timeout(Duration::from_secs(10))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .expect("answered")
@@ -349,11 +350,7 @@ fn home_server_removal_runs_on_the_host_with_its_own_identity_directory() {
     };
     let (done, wait) = mpsc::channel();
     retried.then(move |answer| done.send(answer).expect("sent"));
-    assert!(
-        wait.recv_timeout(Duration::from_secs(10))
-            .expect("answered")
-            .is_some()
-    );
+    assert!(tilo_test_env::recv("the retry's answer", &wait).is_some());
 
     let recorded = commands.lock().expect("commands").clone();
     let expected = |command: &str, tail: &[&str]| HostCommand {

@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, ExecutionLocus, RiskLevel};
 
 use crate::collection::Id;
+use crate::kind::ResourceKind;
 use crate::model::{Doc, Fields};
 use crate::resource::Resource;
 
@@ -108,7 +110,7 @@ impl ActionCx {
         } else {
             hasher.update(doc.get_actor().to_bytes());
             let mut heads = automerge::transaction::Transactable::base_heads(doc);
-            heads.sort();
+            heads.compact_sort();
             for head in heads {
                 hasher.update(&head.0);
             }
@@ -144,12 +146,8 @@ impl ActionCx {
 
     /// A fresh UUID, unique to this action and stable under replay.
     pub fn uuid(&mut self) -> uuid::Uuid {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"uuid");
-        hasher.update(&self.seed);
-        hasher.update(&self.minted.to_le_bytes());
+        let uuid = minted_uuid(&self.seed, self.minted);
         self.minted = self.minted.saturating_add(1);
-        let uuid = uuid_from(hasher.finalize().as_bytes());
         note_minted(&uuid.to_string());
         uuid
     }
@@ -283,6 +281,14 @@ pub fn fresh_uuid() -> uuid::Uuid {
     })
 }
 
+fn minted_uuid(seed: &[u8; 32], counter: u64) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"uuid");
+    hasher.update(seed);
+    hasher.update(&counter.to_le_bytes());
+    uuid_from(hasher.finalize().as_bytes())
+}
+
 fn minted(seed: &[u8; 32], counter: u64) -> Id {
     let mut hasher = blake3::Hasher::new();
     hasher.update(seed);
@@ -297,17 +303,35 @@ fn minted(seed: &[u8; 32], counter: u64) -> Id {
 /// its action created (the first id of a "new snippet"). For an action
 /// that is not a group, applied with nothing else pending.
 pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item = Id> {
+    let seed = envelope_seed(envelope);
+    (0_u64..).map(move |counter| minted(&seed, counter))
+}
+
+/// What the action `envelope` committed may have minted at each count, in
+/// order: the id [`ActionCx::id`] mints there and the UUID [`ActionCx::uuid`]
+/// mints there instead, as the action minted one or the other.
+pub fn minted_keys(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item = [String; 2]> {
+    let seed = envelope_seed(envelope);
+    (0_u64..).map(move |counter| {
+        [
+            minted(&seed, counter).as_str().to_owned(),
+            minted_uuid(&seed, counter).to_string(),
+        ]
+    })
+}
+
+/// The seed the action `envelope` committed minted its ids from.
+fn envelope_seed(envelope: &tilo_actions::ActionEnvelope) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-resource/action-seed/v1");
     hasher.update(envelope.actor().to_bytes());
     let mut heads = envelope.base_heads.clone();
-    heads.sort_unstable();
+    heads.compact_sort();
     for head in &heads {
         hasher.update(head);
     }
     hasher.update(&envelope.action.payload);
-    let seed = *hasher.finalize().as_bytes();
-    (0_u64..).map(move |counter| minted(&seed, counter))
+    *hasher.finalize().as_bytes()
 }
 
 /// A deterministic seed for applying `payload` to `doc`: the document's
@@ -328,7 +352,7 @@ pub(crate) fn seed(doc: &Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
         // (a host stamping typing as one change) owns. With nothing pending
         // this is exactly the document's heads.
         let mut heads = doc.base_heads();
-        heads.sort();
+        heads.compact_sort();
         for head in heads {
             hasher.update(&head.0);
         }
@@ -453,6 +477,13 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// Whether the operation records a message someone received.
     /// `#[resource]` generates it from `#[action(incoming_message)]`.
     fn incoming_message(&self) -> bool {
+        false
+    }
+
+    /// Whether the operation loses what Undo cannot bring back, beside its
+    /// document change. `#[resource]` generates it from
+    /// `#[action(irreversible)]`.
+    fn irreversible(&self) -> bool {
         false
     }
 
@@ -807,13 +838,13 @@ fn reverted_change(
         .map(|hash| hash.parse())
         .collect::<Result<Vec<automerge::ChangeHash>, _>>()
         .map_err(|_| refused("a reverted change names invalid heads"))?;
-    deps.sort();
+    deps.compact_sort();
     doc.get_changes(&deps)
         .into_iter()
         .find(|change| {
             change.actor_id().to_hex_string() == actor && {
                 let mut of = change.deps().to_vec();
-                of.sort();
+                of.compact_sort();
                 of == deps
             }
         })
@@ -1189,7 +1220,7 @@ fn apply_operation(
 
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
     /// Read the record, run the method, write back what changed
-    /// ([`apply_operation`]).
+    /// (`apply_operation`).
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         apply_operation(
@@ -1227,6 +1258,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         self.operation.incoming_message()
     }
 
+    fn irreversible(&self) -> bool {
+        self.operation.irreversible()
+    }
+
     /// A verb that declares its undo is undone by applying that verb, and a
     /// change of a record that queues by applying the edits that restore it:
     /// either queues the compensating outside consequence.
@@ -1248,12 +1283,21 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
 /// A typed reference to one declared action of `R` taking input `A` — the
 /// thing views bind controls to and tests apply. Generated by `#[resource]`
-/// as an associated constant per action (`Note::EDIT`).
+/// and `#[derive(Effect)]` as an associated constant per action
+/// (`Note::EDIT`).
+///
+/// The key [`Self::key`] reads from it is how the framework binds a control:
+/// it names the app, the resource kind and the action, so a control cannot
+/// bind to an action another resource publishes, and an action a resource
+/// stops publishing fails where it is bound rather than greying a button.
 ///
 /// `A` is the action's argument, or a tuple of its arguments in order.
 pub struct ActionRef<R, A> {
     pub id: &'static str,
     pub params: &'static [&'static str],
+    /// The kind of resource that publishes the action, and so the app that
+    /// publishes it: what [`Self::key`] names the action by.
+    kind: ResourceKind,
     marker: PhantomData<fn(A) -> R>,
 }
 
@@ -1269,27 +1313,56 @@ impl<R, A> std::fmt::Debug for ActionRef<R, A> {
         f.debug_struct("ActionRef")
             .field("id", &self.id)
             .field("params", &self.params)
+            .field("kind", &self.kind())
             .finish_non_exhaustive()
     }
 }
 
-impl<R, A: Serialize> ActionRef<R, A> {
+impl<R, A> ActionRef<R, A> {
+    /// The action's public id.
     #[must_use]
-    pub const fn new(id: &'static str, params: &'static [&'static str]) -> Self {
+    pub const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    /// The names of the action's parameters, in order.
+    #[must_use]
+    pub const fn params(&self) -> &'static [&'static str] {
+        self.params
+    }
+
+    /// The resource kind that publishes the action.
+    #[must_use]
+    pub const fn kind(&self) -> &ResourceKind {
+        &self.kind
+    }
+
+    /// The stored form of this reference — the app, resource kind and public
+    /// id a control is bound to an action by, and the shape a Shortcut step,
+    /// an agent's plan or a palette entry keeps.
+    #[must_use]
+    pub fn key(&self) -> ActionKey {
+        ActionKey::new(self.kind.declaring_app(), self.kind.kind(), self.id)
+    }
+}
+
+impl<R, A: Serialize> ActionRef<R, A> {
+    /// The reference `#[resource]` and `#[derive(Effect)]` generate: action
+    /// `id` taking the parameters `params`, of the kind `kind` declares. The
+    /// kind is built by a `const fn` of a type's name alone, so it is the same
+    /// value at every use and costs no initialisation.
+    #[must_use]
+    pub const fn new(
+        id: &'static str,
+        params: &'static [&'static str],
+        kind: ResourceKind,
+    ) -> Self {
         Self {
             id,
             params,
+            kind,
             marker: PhantomData,
         }
-    }
-
-    /// The stored form of this reference within the app `app`.
-    #[must_use]
-    pub fn key(&self, app: &str) -> ActionKey
-    where
-        R: Resource,
-    {
-        ActionKey::new(app, R::KIND, self.id)
     }
 
     /// This action as the published resource `resource` offers it (the
@@ -1312,14 +1385,13 @@ impl<R, A: Serialize> ActionRef<R, A> {
         &self,
         input: &A,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let id = self.id;
         // Through bytes: the serializer writing recorded actions serves
         // here too, rather than one more per parameter type.
-        let value = match crate::__private::json_via_bytes(input) {
-            Ok(value) => value,
-            Err(error) => return Err(format!("`{id}`: {error}")),
-        };
-        bind_arguments(id, self.params, value)
+        bind_serialized(
+            self.id,
+            self.params,
+            crate::__private::json_via_bytes(input),
+        )
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
@@ -1351,6 +1423,20 @@ impl<R, A: Serialize> ActionRef<R, A> {
             Some(refusal) => Err(refusal),
             None => Ok(invoke),
         }
+    }
+}
+
+/// [`bind_arguments`] of an action input as it serialized, or why it did
+/// not: compiled once rather than for every input type.
+#[inline(never)]
+fn bind_serialized(
+    id: &'static str,
+    params: &'static [&'static str],
+    value: Result<serde_json::Value, serde_json::Error>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match value {
+        Ok(value) => bind_arguments(id, params, value),
+        Err(error) => Err(format!("`{id}`: {error}")),
     }
 }
 
@@ -1406,10 +1492,30 @@ pub struct Mapped<R, A, F> {
     map: F,
 }
 
+impl<R, A, F: Clone> Clone for Mapped<R, A, F> {
+    fn clone(&self) -> Self {
+        Self {
+            action: self.action,
+            map: self.map.clone(),
+        }
+    }
+}
+
 /// Something a control with input `I` can be bound to: an action and how the
 /// control's value becomes that action's arguments.
 pub trait Binds<R, I>: Send + Sync + 'static {
     fn action_id(&self) -> &'static str;
+
+    /// The key the action is published under — the app, resource kind and
+    /// action id — which a control is bound against. A reference carries its
+    /// own ([`ActionRef::key`]); anything else is bound as `R`'s own action
+    /// under [`R`'s app](Resource::APP_ID) and kind.
+    fn action_key(&self) -> ActionKey
+    where
+        R: Resource,
+    {
+        ActionKey::new(R::APP_ID, R::KIND, self.action_id())
+    }
 
     /// The arguments `input` binds to.
     ///
@@ -1423,6 +1529,9 @@ pub trait Binds<R, I>: Send + Sync + 'static {
 impl<R: 'static, A: Serialize + 'static, I: Into<A>> Binds<R, I> for ActionRef<R, A> {
     fn action_id(&self) -> &'static str {
         self.id
+    }
+    fn action_key(&self) -> ActionKey {
+        ActionRef::key(self)
     }
     fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         ActionRef::arguments(self, &input.into())
@@ -1438,6 +1547,9 @@ where
 {
     fn action_id(&self) -> &'static str {
         self.action.id
+    }
+    fn action_key(&self) -> ActionKey {
+        ActionRef::key(&self.action)
     }
     fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         self.action.arguments(&(self.map)(input).into())

@@ -62,7 +62,7 @@ secret storage. Account IDs, service types and enabled state can be reused rathe
 than creating a second account registry. `SecretVault` / `SecretStore` and the
 framework secret service keep credentials separate. Shared Dropdown, TextInput,
 Button and navigation widgets provide keyboard and accessibility behavior.
-Typed device-only effects expose operations to automation as well as controls.
+Typed effects expose operations to automation as well as controls.
 `bounded-command` provides deadlines, bounded output and cancellation of only
 processes it owns; it is not authorization for a sandboxed app to execute a
 protocol daemon or gain ambient network access.
@@ -499,7 +499,7 @@ Requests and responses retain the owner's exact shared Contacts `routing::Route`
 bounded to 128 unique messages and 256 KiB of text/identifier payload. Another
 identity component, duplicates, oversized payloads and invalid incoming delivery
 states are refused before projection. The `ReadHistory` semantic action is a
-cancellable device-only read, and automatic reads on route selection use the same
+cancellable read, and automatic reads on route selection use the same
 consumer. It changes no account/security state and reports no credential access.
 Sending stays separately unavailable; send text is declared a secret argument so
 the action host keeps it out of logs, history and confirmation text.
@@ -521,7 +521,7 @@ verified using the shared OS-themed controls. Full-history pagination, arrival
 subscriptions, native broker registration and actual linked-account acceptance
 remain unfinished; fixture-host validation is not live transport acceptance.
 
-The device-only `ListPeople` and `ListRoutes` read actions expose stable person
+The `ListPeople` and `ListRoutes` read actions expose stable person
 IDs and exact current dropdown choices to automation. Matching names remain
 separate; revoked links no longer yield recipients. These are metadata choices,
 not linked-device or sending grants. Effect debug output is redacted, including

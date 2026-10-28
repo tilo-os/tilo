@@ -6,7 +6,9 @@
 #
 # `merged` is the first mainline release (tag) that contains the patch, and
 # `commit` the mainline commit. A patch without `merged` is not in mainline;
-# `upstream` says why it is carried and where it stands.
+# `upstream` says why it is carried and where it stands. `stable` is the first
+# stable release of its series with the backport: from it on the build leaves
+# the patch out, so a buildroot refresh onto that release needs no change here.
 
 fedora_kernel = "kernel-7.2.10-200.fc44"
 
@@ -99,3 +101,32 @@ upstream = "Tilo's own, not posted; mainline v7.3 has no mssecapp client"
 [[patch]]
 file = "0017-tpm-add-a-driver-for-the-TPM-behind-Qualcomm-mssecapp.patch"
 upstream = "Tilo's own, not posted; mainline v7.3 has no driver for it"
+
+[[patch]]
+file = "0018-drm-msm-a6xx-Fix-secondary-rail-vote-in-ARC-votes.patch"
+upstream = "msm fix, in mainline for v7.4 (commit 128a0edde50780ed9eb93ab5d2e18ca24c1f1c43), no release yet"
+
+[[patch]]
+file = "0019-drm-msm-a6xx-record-a-GPU-frequency-only-once-the-GMU-has-acknowledged-it.patch"
+upstream = "Tilo's own, not posted; mainline still records a GX_BW_PERF_VOTE the GMU never acknowledged"
+
+[[patch]]
+file = "0020-drm-msm-a6xx-log-what-is-left-in-an-HFI-queue-the-GMU-stopped-servicing.patch"
+upstream = "Tilo's own, not posted; mainline still discards unserviced HFI queues silently"
+
+[[patch]]
+file = "0021-arm64-dts-qcom-x1e80100-lenovo-yoga-slim7x-reserve-a-ramoops-region.patch"
+upstream = "Tilo's own, not posted; mainline describes no ramoops region for any X1E board"
+
+[[patch]]
+file = "0022-i2c-qcom-geni-Restore-the-source-clock-selection-policy.patch"
+upstream = "Fixes the 7.2.9 stable backport of cb97bf3d4f91, which moved X1E80100 I2C from a 19.2 MHz to a 32 MHz source clock and broke the I2C HID keyboard and touchpad; not yet in 7.2 stable"
+merged = "v7.4"
+commit = "8cb5c17be3a2fadc41075d04ce1c24c831546aaf"
+
+[[patch]]
+file = "0023-Revert-wifi-ath12k-add-panic-handler.patch"
+upstream = "The 7.2.11 stable backport of the mainline revert: ath12k's panic notifier sleeps, so a panic on a machine with a WCN7850 hangs before kmsg_dump writes pstore or drm_panic draws"
+merged = "v7.3"
+stable = "v7.2.11"
+commit = "05165f7b3b9ab6817fe216c24f90755b7c5e15f3"

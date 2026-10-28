@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use agent_provider_config::{ProviderConfig, ProviderProfile, transform};
 use tilo_lock::MutexRecover as _;
+use ui::floating_surface::{HistoryChangeDescription, HistoryChangeFacts};
 use ui::{GroundedNarrative, NarrativeRequest};
 
 pub struct LocalHistoryNarrator {
@@ -40,6 +41,9 @@ const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
 const NARRATIVE_LIMIT: usize = 64 * 1024;
 const NARRATIVE_MAX_TOKENS: u32 = 400;
 const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The provider's whole answer, its envelope around the prose included: a
+/// misbehaving endpoint cannot make the shell buffer more than this.
+const NARRATIVE_RESPONSE_LIMIT: usize = 1024 * 1024;
 
 impl LocalHistoryNarrator {
     /// Deterministic narrator for fixtures and hosts without local-model
@@ -148,6 +152,13 @@ fn on_device_model(config: &ProviderConfig) -> Option<(&ProviderProfile, &str)> 
 }
 
 fn generate(prompt: &Prompt) -> Option<GroundedNarrative> {
+    let (text, generator) = ask(prompt, NARRATIVE_MAX_TOKENS)?;
+    parse_response(&text, &generator)
+}
+
+/// One answer from the model on this device, and which provider and model
+/// gave it; `None` without one or when it fails.
+fn ask(prompt: &Prompt, max_tokens: u32) -> Option<(String, String)> {
     let config = ProviderConfig::load();
     let (profile, model) = on_device_model(&config)?;
     let body = transform::body(
@@ -156,7 +167,7 @@ fn generate(prompt: &Prompt) -> Option<GroundedNarrative> {
             model,
             instructions: &prompt.instructions,
             input: &prompt.input,
-            max_tokens: NARRATIVE_MAX_TOKENS,
+            max_tokens,
             sampling: transform::Sampling::Deterministic,
         },
     );
@@ -175,7 +186,7 @@ fn generate(prompt: &Prompt) -> Option<GroundedNarrative> {
             if !response.status().is_success() {
                 return None;
             }
-            response.bytes().await.ok()
+            response.bytes_limited(NARRATIVE_RESPONSE_LIMIT).await.ok()
         })
         .ok()??;
     let text = transform::answer(
@@ -184,7 +195,163 @@ fn generate(prompt: &Prompt) -> Option<GroundedNarrative> {
         NARRATIVE_LIMIT,
     )
     .ok()?;
-    parse_response(&text, &format!("{}:{model}", profile.id))
+    Some((text, format!("{}:{model}", profile.id)))
+}
+
+/// Descriptions ready to send, each with the request it answers.
+type Answers = Arc<std::sync::Mutex<Vec<(u64, Vec<HistoryChangeDescription>)>>>;
+
+/// Descriptions of apps' changes, for their History panels: asked by an
+/// app over its shell-ui connection, answered off the UI thread by the model
+/// on this device, one request at a time. Apps hold no model; the text they
+/// get back they keep with the changes, for everyone in the workspace.
+pub struct HistoryDescriber {
+    enabled: bool,
+    queue: std::collections::VecDeque<(u64, Vec<HistoryChangeFacts>)>,
+    answers: Answers,
+    running: Arc<AtomicBool>,
+    /// Wakes the loop that sends answers, when one is ready.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Default for HistoryDescriber {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            queue: std::collections::VecDeque::new(),
+            answers: Arc::default(),
+            running: Arc::default(),
+            wake: None,
+        }
+    }
+}
+
+/// Most requests waiting for the model; an app asks again when its
+/// History is next open.
+const MAX_QUEUED_DESCRIPTIONS: usize = 16;
+const DESCRIPTION_MAX_TOKENS: u32 = 800;
+
+impl HistoryDescriber {
+    /// For fixtures and hosts without local-model authority: every request
+    /// is answered with nothing.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+
+    /// Wake the loop with `wake` when an answer is ready, so an idle desktop
+    /// sends it at once.
+    pub fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.wake = Some(wake);
+    }
+
+    /// Queue `changes`, asked by the app on `connection`.
+    pub fn request(&mut self, connection: u64, changes: Vec<HistoryChangeFacts>) {
+        if changes.is_empty() {
+            return;
+        }
+        if !self.enabled || self.queue.len() >= MAX_QUEUED_DESCRIPTIONS {
+            self.answers.lock_recover().push((connection, Vec::new()));
+            return;
+        }
+        self.queue.push_back((connection, changes));
+    }
+
+    /// An app went away: nothing it asked is answered.
+    pub fn forget(&mut self, connection: u64) {
+        self.queue.retain(|(asker, _)| *asker != connection);
+    }
+
+    /// The answers ready for their apps; starts the next request.
+    pub fn take_answers(&mut self) -> Vec<(u64, Vec<HistoryChangeDescription>)> {
+        let ready = std::mem::take(&mut *self.answers.lock_recover());
+        if !self.queue.is_empty() && !self.running.swap(true, Ordering::AcqRel) {
+            #[cfg(test)]
+            crate::shell::test_support::ambient_start("history describer worker");
+            if let Some((connection, changes)) = self.queue.pop_front() {
+                let answers = Arc::clone(&self.answers);
+                let running = Arc::clone(&self.running);
+                let wake = self.wake.clone();
+                std::thread::spawn(move || {
+                    let described = describe(&changes);
+                    answers.lock_recover().push((connection, described));
+                    running.store(false, Ordering::Release);
+                    if let Some(wake) = wake {
+                        wake();
+                    }
+                });
+            } else {
+                self.running.store(false, Ordering::Release);
+            }
+        }
+        ready
+    }
+}
+
+fn describe(changes: &[HistoryChangeFacts]) -> Vec<HistoryChangeDescription> {
+    ask(&description_prompt(changes), DESCRIPTION_MAX_TOKENS)
+        .map(|(text, generator)| parse_descriptions(&text, &generator, changes))
+        .unwrap_or_default()
+}
+
+fn description_prompt(changes: &[HistoryChangeFacts]) -> Prompt {
+    let evidence: Vec<serde_json::Value> = changes
+        .iter()
+        .map(|change| {
+            serde_json::json!({
+                "change": change.change,
+                "summary": truncate_for_prompt(&change.summary, 180),
+                "purpose": change.action.as_deref().map(|text| truncate_for_prompt(text, 120)),
+                "item": change.resource.as_deref().map(|text| truncate_for_prompt(text, 120)),
+                "wrote": truncate_for_prompt(&change.wrote, 240),
+            })
+        })
+        .collect();
+    Prompt {
+        instructions: "For each change in the user message, write one short past-tense sentence of at most 12 words saying what it did to the document, from its facts only: its summary, its stated purpose, the item it touched and what it wrote. Never name a person, never guess intent or outcome, and quote at most a few words of what it wrote. Return JSON only: {\"descriptions\":[{\"change\":\"<the change's id>\",\"text\":\"...\"}]}. Leave out a change whose facts say too little.".to_owned(),
+        input: serde_json::Value::Array(evidence).to_string(),
+    }
+}
+
+/// The model's descriptions of changes it was asked about, each one line
+/// History accepts; anything else is dropped.
+fn parse_descriptions(
+    raw: &str,
+    generator: &str,
+    asked: &[HistoryChangeFacts],
+) -> Vec<HistoryChangeDescription> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return Vec::new();
+    };
+    let Some(items) = value
+        .get("descriptions")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut described: Vec<HistoryChangeDescription> = Vec::new();
+    for item in items {
+        let (Some(change), Some(text)) = (
+            item.get("change").and_then(serde_json::Value::as_str),
+            item.get("text").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        let text = text.trim();
+        if asked.iter().any(|fact| fact.change == change)
+            && !described.iter().any(|done| done.change == change)
+            && ui::history_source::descriptions::is_acceptable(text)
+        {
+            described.push(HistoryChangeDescription {
+                change: change.to_owned(),
+                text: text.to_owned(),
+                generator: generator.to_owned(),
+            });
+        }
+    }
+    described
 }
 
 fn prompt_for(request: &NarrativeRequest) -> Prompt {
@@ -315,6 +482,53 @@ mod tests {
     }
 
     #[test]
+    fn descriptions_are_kept_only_for_changes_asked_about_and_one_line_each() {
+        let fact = |change: &str| HistoryChangeFacts {
+            change: change.into(),
+            summary: "Edited the body".into(),
+            action: None,
+            resource: None,
+            wrote: "Costs rose in March".into(),
+        };
+        let asked = [fact("aa"), fact("bb")];
+        let raw = r#"{"descriptions":[
+            {"change":"aa","text":"Noted that costs rose in March"},
+            {"change":"aa","text":"A second answer for the same change"},
+            {"change":"zz","text":"A change nobody asked about"},
+            {"change":"bb","text":"two\nlines"}
+        ]}"#;
+        let described = parse_descriptions(raw, "local:m", &asked);
+        assert_eq!(
+            described,
+            vec![HistoryChangeDescription {
+                change: "aa".into(),
+                text: "Noted that costs rose in March".into(),
+                generator: "local:m".into(),
+            }]
+        );
+        assert!(parse_descriptions("Sure! Here you go", "m", &asked).is_empty());
+        let prompt = description_prompt(&asked);
+        assert!(prompt.input.contains("Costs rose in March"));
+        assert!(prompt.instructions.contains("Never name a person"));
+    }
+
+    #[test]
+    fn a_describer_without_a_model_answers_with_nothing_at_once() {
+        let mut describer = HistoryDescriber::disabled();
+        describer.request(
+            7,
+            vec![HistoryChangeFacts {
+                change: "aa".into(),
+                summary: "Edited".into(),
+                action: None,
+                resource: None,
+                wrote: String::new(),
+            }],
+        );
+        assert_eq!(describer.take_answers(), vec![(7, Vec::new())]);
+    }
+
+    #[test]
     fn history_narration_uses_only_a_provider_on_this_device() {
         use agent_provider_config::{EndpointLocation, ProviderProtocol};
         fn profile(id: &str, location: EndpointLocation, endpoint: &str) -> ProviderProfile {
@@ -342,8 +556,9 @@ mod tests {
             "http://127.0.0.1:8000/v1",
         );
         let mut config = ProviderConfig {
-            profiles: vec![hosted.clone(), lan.clone(), local.clone()],
+            profiles: vec![hosted, lan, local.clone()],
             default_profile: Some("hosted".into()),
+            ..Default::default()
         };
         assert_eq!(
             on_device_model(&config).map(|(profile, model)| (profile.id.as_str(), model)),

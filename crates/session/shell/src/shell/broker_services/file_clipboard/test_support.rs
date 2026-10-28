@@ -62,9 +62,7 @@ pub(super) fn pause(path: &Path, phase: &str) -> io::Result<()> {
         .filter(|pause| pause.phase == phase)
     {
         pause.entered.store(true, Ordering::Release);
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .ok_or_else(|| io::Error::other("invalid native test deadline"))?;
+        let deadline = tilo_test_env::hang_deadline();
         while !pause.released.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
                 return Err(io::Error::other("native test phase was not released"));

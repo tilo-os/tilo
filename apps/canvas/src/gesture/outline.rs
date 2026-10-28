@@ -21,7 +21,6 @@ fn unit(v: ui::vello::kurbo::Vec2) -> Option<ui::vello::kurbo::Vec2> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anchor {
     pub at: Point,
-    /// The control point of the curve arriving here.
     pub before: Option<Point>,
     /// The control point of the curve leaving here.
     pub after: Option<Point>,
@@ -620,7 +619,6 @@ mod tests {
         assert_eq!(first.anchors.len(), 3);
         assert_eq!(first.anchors[0].after, Some(Point::new(20.0, 0.0)));
         assert_eq!(first.anchors[1].before, Some(Point::new(40.0, 0.0)));
-        // Redrawn, it covers the same ground.
         let again = outline.to_path();
         assert!((again.bounding_box().area() - path.bounding_box().area()).abs() < 1.0);
     }
@@ -654,7 +652,6 @@ mod tests {
             (before.x - 50.0).abs() < 1e-9 && before.y < 0.0,
             "{before:?}"
         );
-        // Moving the anchor carries both handles.
         outline.set(
             PointRef {
                 part: Part::Anchor,

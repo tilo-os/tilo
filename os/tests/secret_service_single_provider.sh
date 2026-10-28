@@ -10,6 +10,8 @@ bus_file="$repo_root/os/usr/share/dbus-1/services/org.freedesktop.secrets.servic
 unit="$repo_root/os/usr/lib/systemd/user/tilo-secret-service.service"
 container="$repo_root/os/Containerfile"
 components="$repo_root/os/components.toml"
+# The image's binaries are compiled outside the image build, by this script.
+compile="$repo_root/os/image/compile.sh"
 pam="$repo_root/os/etc/pam.d/greetd"
 
 ok() { printf 'ok - %s\n' "$1"; }
@@ -17,12 +19,12 @@ bad() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 grep -Fxq 'Name=org.freedesktop.secrets' "$bus_file" \
   && grep -Fxq 'SystemdService=tilo-secret-service.service' "$bus_file" \
-  && grep -Fq 'Exec=/usr/bin/tilo-secret-service serve' "$bus_file" \
+  && grep -Fq 'Exec=/usr/libexec/tilo/tilo-secret-service serve' "$bus_file" \
   && ok 'D-Bus activation of org.freedesktop.secrets starts tilo-secret-service' \
   || bad 'org.freedesktop.secrets is not activated by tilo-secret-service'
 
 grep -Fxq 'BusName=org.freedesktop.secrets' "$unit" \
-  && grep -Fxq 'ExecStart=/usr/bin/tilo-secret-service serve' "$unit" \
+  && grep -Fxq 'ExecStart=/usr/libexec/tilo/tilo-secret-service serve' "$unit" \
   && ok 'the user unit owns the bus name' \
   || bad 'the user unit does not own org.freedesktop.secrets'
 
@@ -48,8 +50,8 @@ else
   bad 'the image would overwrite a package-owned org.freedesktop.secrets activation file'
 fi
 
-if grep -Fq -- '-p tilo-secret-service' "$container" \
-   && grep -Fq -- '--bin tilo-secret-service' "$container" \
+if grep -Fq -- '-p tilo-secret-service' "$compile" \
+   && grep -Fq -- '--bin tilo-secret-service' "$compile" \
    && grep -Fq 'name = "secret-service"' "$components"; then
   ok 'tilo-secret-service is built and installed'
 else

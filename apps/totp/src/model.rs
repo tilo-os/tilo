@@ -540,7 +540,6 @@ mod tests {
     /// otpauth URI parsing.
     #[test]
     fn otpauth_uri_parsing_keeps_issuer_labels_and_rejects_invalid() {
-        // Case `parse_full_otpauth_uri`.
         {
             let uri = "otpauth://totp/GitHub:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=SHA256&digits=8&period=60";
             let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
@@ -552,7 +551,6 @@ mod tests {
             assert_eq!(acc.period, 60);
         }
 
-        // Case `parse_uri_issuer_from_label_prefix`.
         {
             let uri = "otpauth://totp/ACME%20Co:bob?secret=JBSWY3DPEHPK3PXP";
             let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
@@ -564,7 +562,6 @@ mod tests {
             assert_eq!(acc.period, 30);
         }
 
-        // Case `a_plus_in_a_label_or_issuer_stays_a_plus`.
         {
             // `otpauth://` is a URI, so RFC 3986 governs both the label path
             // segment and the query values: `+` is a literal plus, not a space.
@@ -589,7 +586,6 @@ mod tests {
             assert_eq!(acc.label, "ada");
         }
 
-        // Case `parse_rejects_hotp_and_missing_secret`.
         {
             assert!(parse_otpauth_uri("otpauth://hotp/x?secret=AAAA", Uuid::new_v4()).is_err());
             assert!(parse_otpauth_uri("otpauth://totp/x?issuer=y", Uuid::new_v4()).is_err());

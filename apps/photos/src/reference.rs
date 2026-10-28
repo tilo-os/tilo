@@ -129,7 +129,6 @@ mod tests {
             "the referenced photograph carries the crop action"
         );
 
-        // A photograph is referenced whole.
         assert_eq!(r.span, None);
         assert!(!r.is_partial());
 

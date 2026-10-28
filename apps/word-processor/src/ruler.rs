@@ -17,6 +17,9 @@ pub(crate) struct RulerModel {
     pub page_w: f64,
     pub margin_left: f64,
     pub margin_right: f64,
+    /// How the page shows the document's margins: below 1 on a narrow
+    /// window's editing sheet, which keeps them in proportion to its width.
+    pub margin_scale: f64,
     pub indent_left: f64,
     pub indent_first: f64,
     pub tab_stops: Vec<f64>,
@@ -32,10 +35,10 @@ impl RulerModel {
         self.anchor_x + (x - self.anchor_x) / self.zoom
     }
     fn left_text_x(&self) -> f64 {
-        self.page_x + self.margin_left
+        self.page_x + self.margin_left * self.margin_scale
     }
     fn right_text_x(&self) -> f64 {
-        self.page_x + self.page_w - self.margin_right
+        self.page_x + self.page_w - self.margin_right * self.margin_scale
     }
 }
 
@@ -169,11 +172,14 @@ impl Ruler {
         let x = model.to_content(point.x);
         let left = model.left_text_x();
         match drag.marker {
+            // Margins are the document's: back from the page's scale.
             RulerMarker::MarginLeft => Some(RulerEffect::PreviewMarginLeft(
-                (x - model.page_x).clamp(4.0, model.page_w / 2.0),
+                ((x - model.page_x) / model.margin_scale)
+                    .clamp(4.0, model.page_w / (2.0 * model.margin_scale)),
             )),
             RulerMarker::MarginRight => Some(RulerEffect::PreviewMarginRight(
-                (model.page_x + model.page_w - x).clamp(4.0, model.page_w / 2.0),
+                ((model.page_x + model.page_w - x) / model.margin_scale)
+                    .clamp(4.0, model.page_w / (2.0 * model.margin_scale)),
             )),
             RulerMarker::IndentLeft => Some(RulerEffect::PreviewIndentLeft((x - left).max(0.0))),
             RulerMarker::IndentFirst => Some(RulerEffect::PreviewIndentFirst(
@@ -228,7 +234,14 @@ impl Ruler {
         self.rect = model.band;
         let band = self.rect;
         let colors = &theme.tokens.colors;
-        ui::widget::toolbar::paint_band(scene, transform, theme, band);
+        ui::widget::paint_rule(
+            scene,
+            transform,
+            theme,
+            band,
+            ui::widget::RuleEdge::Bottom,
+            Some(theme.tokens.colors.surfaces.content),
+        );
         let inset = f64::from(theme.tokens.spacing.s1);
         let clip = |x: f64| x.clamp(band.x0, band.x1);
         let ground = colors.surfaces.content;
@@ -425,6 +438,7 @@ mod tests {
             page_w: 820.0,
             margin_left: 80.0,
             margin_right: 80.0,
+            margin_scale: 1.0,
             indent_left: 20.0,
             indent_first: 10.0,
             tab_stops: vec![150.0],

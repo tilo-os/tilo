@@ -5,8 +5,9 @@
 //! "Whole disk" chip is a [`ChipFace`], the legend is the charts' shared
 //! legend (a swatch per block, measured and wrapped), and every colour, radius
 //! and gap comes from the theme. Like any chart, each partition takes a series
-//! colour: the block is a wash of it, the part of the filesystem in use is the
-//! full colour, and the unallocated tail is an outline.
+//! colour, the same as its legend swatch: a block whose use is known is a wash
+//! of it with the part in use in the full colour, a block whose use is
+//! unknown is the full colour, and the unallocated tail is an outline.
 
 use std::collections::HashMap;
 
@@ -26,6 +27,10 @@ use ui::vello::peniko::Color;
 use ui::widget::{ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
+
+/// The legend a pending map measures: a few partitions' names and sizes,
+/// one line of it on any window wide enough for a sidebar.
+const PENDING_LEGEND: [&str; 3] = ["System 000.0 MB", "Partition 000.0 GB", "Home 000.0 GB"];
 
 /// Opacity of the outline that marks space no partition claims.
 const OUTLINE_ALPHA: u8 = 0x59;
@@ -57,6 +62,8 @@ enum Hover {
 #[derive(Clone, Debug, Default)]
 struct Geometry {
     chip: Rect,
+    /// The whole bar the blocks tile.
+    track: Rect,
     segments: Vec<Rect>,
     legend: Vec<Rect>,
     height: f64,
@@ -66,6 +73,11 @@ struct Geometry {
 /// partition") reports through `on_select`.
 pub struct PartitionMap {
     entries: Vec<MapEntry>,
+    /// The drive is still being read, since then: the map's shape stands
+    /// in, stepping through the framework's placeholder.
+    pending: Option<ui::arriving::ArrivalClock>,
+    /// The placeholder step the last frame painted.
+    drawn_step: Option<ui::arriving::Step>,
     selected: Option<usize>,
     on_select: Box<dyn FnMut(Option<usize>)>,
     theme: Theme,
@@ -83,6 +95,8 @@ impl PartitionMap {
     ) -> Self {
         Self {
             entries,
+            pending: None,
+            drawn_step: None,
             selected,
             on_select: Box::new(on_select),
             theme: Theme::dark(),
@@ -90,6 +104,20 @@ impl PartitionMap {
             cursor: Point::ZERO,
             hover: None,
             geometry: Geometry::default(),
+        }
+    }
+
+    /// The map of a drive this device began reading at `since`: its space
+    /// at the size the map will take, empty while the read is inside its
+    /// frame budget, then its chip, its bar and a line of legend in the
+    /// skeleton tone ([`ui::arriving`]).
+    pub fn pending(since: ui::time::Instant) -> Self {
+        Self {
+            pending: Some(ui::arriving::ArrivalClock::new(
+                since,
+                ui::arriving::Source::Local,
+            )),
+            ..Self::new(Vec::new(), None, |_| {})
         }
     }
 
@@ -147,10 +175,16 @@ impl PartitionMap {
             .collect();
 
         let legend_top = track.y1 + gap;
-        let legend = self.lay_out_legend(width, legend_top, text, theme);
+        let legend = if self.pending.is_some() {
+            let stand_in = legend::measure(text, theme, PENDING_LEGEND);
+            legend::wrap(&stand_in, 0.0, width, legend_top, theme)
+        } else {
+            self.lay_out_legend(width, legend_top, text, theme)
+        };
         let height = legend.iter().map(|r| r.y1).fold(track.y1, f64::max);
         Geometry {
             chip,
+            track,
             segments,
             legend,
             height,
@@ -194,16 +228,55 @@ impl PartitionMap {
             return;
         }
         let colour = Self::colour(entry, theme);
+        // A block whose use is unknown is its colour, as its legend swatch
+        // is; one whose use is known washes the free part, so the full
+        // colour is what is in use.
+        let Some(used) = entry.used else {
+            ctx.fill_round(rect, radius, colour);
+            // Hover is the theme's state veneer over the colour, as on any
+            // control: it reads on a light and on a dark block alike.
+            if hovered {
+                ctx.fill_round(rect, radius, colors.overlay_medium);
+            }
+            return;
+        };
         let wash = if hovered { 0.55 } else { 0.4 };
         ctx.fill_round(rect, radius, colour.multiply_alpha(wash));
-        let used = entry.used.unwrap_or(0.0).clamp(0.0, 1.0);
+        let used = used.clamp(0.0, 1.0);
         if used > 0.0 {
             let share = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * used, rect.y1);
             ctx.fill_round(share, radius, colour);
         }
     }
 
+    /// Paint the pending map's shapes in the skeleton tone.
+    fn paint_pending(ctx: &mut PaintCtx<'_>, geometry: &Geometry, origin: ui::vello::kurbo::Vec2) {
+        let theme = ctx.theme;
+        let tone = ui::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
+        let chip = geometry.chip + origin;
+        ctx.fill_round(chip, chip.height() / 2.0, tone);
+        ctx.fill_round(
+            geometry.track + origin,
+            f64::from(theme.tokens.radii.item),
+            tone,
+        );
+        for line in &geometry.legend {
+            // A legend line's x-height band, as a skeleton's text is.
+            let line = *line + origin;
+            let bar = (line.height() * 0.6).round();
+            let top = line.y0 + (line.height() - bar) / 2.0;
+            ctx.fill_round(
+                Rect::new(line.x0, top, line.x1, top + bar),
+                f64::from(theme.tokens.radii.detail),
+                tone,
+            );
+        }
+    }
+
     fn hit(&self, p: Point) -> Option<Hover> {
+        if self.pending.is_some() {
+            return None;
+        }
         let g = &self.geometry;
         let local = Point::new(p.x - self.rect.x0, p.y - self.rect.y0);
         if g.chip.contains(local) {
@@ -272,6 +345,26 @@ impl Widget for PartitionMap {
 
     ui::rect_geometry!();
 
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let now = ui::time::now();
+        let clock = self.pending.as_ref()?;
+        // A read inside its budget holds the frame until then; past it,
+        // the placeholder steps on at its deadlines.
+        clock
+            .holds_frame_until(now)
+            .or_else(|| clock.next_step_at(now))
+    }
+
+    fn holds_frame_until(&self, now: ui::time::Instant) -> Option<ui::time::Instant> {
+        self.pending.as_ref()?.holds_frame_until(now)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|clock| self.drawn_step != Some(clock.step(ui::motion::frame_now())))
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -286,6 +379,15 @@ impl Widget for PartitionMap {
         let at = |r: Rect| r + origin;
         let colors = &theme.tokens.colors;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        if let Some(clock) = &self.pending {
+            use ui::arriving::Step;
+            let step = clock.step(ui::motion::frame_now());
+            if matches!(step, Step::Skeleton | Step::Named) {
+                Self::paint_pending(&mut ctx, &geometry, origin);
+            }
+            self.drawn_step = Some(step);
+            return;
+        }
 
         // "Whole disk": a chip, lifted while it is what the actions target.
         ChipFace::new(at(geometry.chip), "Whole disk")
@@ -357,6 +459,9 @@ impl Widget for PartitionMap {
             .with_name("Partition map")
             .with_hashed_key("disks.partition-map")
             .with_bounds(self.rect);
+        if self.pending.is_some() {
+            return Some(group.with_description("Loading"));
+        }
         group.children.push(
             AccessNode::new(Role::Button)
                 .with_name("Select whole disk")

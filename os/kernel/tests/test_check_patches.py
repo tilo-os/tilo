@@ -45,6 +45,34 @@ class PatchRecordTests(unittest.TestCase):
         found = check.problems({'fedora_kernel': 'x', 'patch': [short]}, ['a.patch'], None)
         self.assertTrue(any('full commit id' in p for p in found))
 
+    def test_a_stable_backport_is_left_out_once_fedora_has_its_release(self):
+        backport = MERGED | {'stable': 'v7.2.11'}
+        record = {'fedora_kernel': 'kernel-7.2.10-200.fc44', 'patch': [backport, OWN]}
+        files = ['a.patch', 'b.patch']
+        for fedora in ['kernel-7.2.10-200.fc44', 'kernel-7.2.11-200.fc44', 'kernel-7.2.12-200.fc44']:
+            self.assertEqual(check.problems(record, files, fedora), [])
+        self.assertEqual(check.carried(record, 'kernel-7.2.10-200.fc44'), [])
+        self.assertEqual(check.carried(record, 'kernel-7.2.11-200.fc44'), ['a.patch'])
+        self.assertEqual(check.carried(record, 'kernel-7.2.12-100.fc43'), ['a.patch'])
+        # Another series has no such backport; its mainline release drops the patch.
+        self.assertEqual(check.carried(record, 'kernel-7.1.20-200.fc44'), [])
+        found = check.problems(record, files, 'kernel-7.3.1-200.fc44')
+        self.assertTrue(any('a.patch is in mainline v7.3' in p for p in found))
+
+    def test_a_stable_backport_comes_before_its_mainline_release(self):
+        for entry, message in ((OWN | {'stable': 'v7.2.11'}, 'names the mainline release'),
+                               (MERGED | {'stable': 'v7.3.2'}, 'is not before mainline'),
+                               (MERGED | {'stable': '7.2'}, 'not a stable kernel release')):
+            found = check.problems({'fedora_kernel': 'x', 'patch': [entry]}, [entry['file']], None)
+            self.assertTrue(any(message in p for p in found), found)
+
+    def test_the_build_leaves_out_what_the_buildroot_has(self):
+        record = tomllib.loads((KERNEL / 'patches.toml').read_text())
+        for entry in record['patch']:
+            if 'stable' in entry:
+                release = 'kernel-' + entry['stable'].removeprefix('v') + '-200.fc44'
+                self.assertIn(entry['file'], check.carried(record, release))
+
 
 if __name__ == '__main__':
     unittest.main()

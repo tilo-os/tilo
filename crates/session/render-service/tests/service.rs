@@ -127,10 +127,17 @@ fn connect(broker: &Channel, connection: u64, app_id: &str) -> App {
     app.send(&AppMessage::Hello { version: 1 }, &[ring.fd()])
         .unwrap();
     let welcome = app.recv::<ServiceMessage>().unwrap().message;
-    assert!(matches!(
-        welcome,
-        ServiceMessage::Welcome { version: 1, .. }
-    ));
+    let ServiceMessage::Welcome {
+        version: 1,
+        renderer,
+        ..
+    } = welcome
+    else {
+        panic!("the service welcomes the app: {welcome:?}");
+    };
+    // These services hold no device: the app names the CPU rasteriser as its
+    // window's adapter, which a check reads as software rendering.
+    assert_eq!(renderer.device_type, "Cpu", "{renderer:?}");
     app.send(
         &AppMessage::CreateSurface {
             surface: SurfaceId(1),

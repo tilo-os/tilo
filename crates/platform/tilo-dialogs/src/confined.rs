@@ -146,10 +146,6 @@ impl Answer {
     }
 
     /// The answer `line` encodes.
-    ///
-    /// # Errors
-    ///
-    /// `InvalidData` for a line that is not an answer.
     pub fn decode(line: &str) -> io::Result<Self> {
         let mut outcome = None;
         let mut reason = String::new();

@@ -18,7 +18,7 @@ class ModelProviderHosts(unittest.TestCase):
         self.assertEqual(set(providers["platforms"]), {"tilo-os", "linux", "macos", "web"})
         self.assertEqual(apps["so.tilo.settings"]["platforms"], ["tilo-os"])
         manifest = tomllib.loads((ROOT / "apps/model-providers/tilo-app.toml").read_text())
-        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@2"})
+        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@10"})
         self.assertEqual(manifest["sandbox"]["net"]["mode"], "off")
         self.assertTrue(providers["keywords"])
         published = json.loads((ROOT / "crates/browser/tilo-web-desktop/apps.json").read_text())
@@ -34,7 +34,7 @@ class ModelProviderHosts(unittest.TestCase):
         panel = "crates/sdk/provider-settings-ui"
         self.assertIn(panel, workspace["workspace"]["members"])
         self.assertNotIn("crates/agent/provider-settings-ui", workspace["workspace"]["members"])
-        for app in ("settings", "model-providers"):
+        for app in ("settings-core", "settings-rare", "model-providers"):
             manifest = tomllib.loads((ROOT / f"apps/{app}/Cargo.toml").read_text())
             dependency = manifest["dependencies"]["provider-settings-ui"]
             self.assertEqual((ROOT / f"apps/{app}" / dependency["path"]).resolve(), ROOT / panel)
@@ -50,11 +50,12 @@ class ModelProviderHosts(unittest.TestCase):
         base = ROOT / "crates/browser/tilo-browser-runtime/src"
         services = (base / "host_services.rs").read_text()
         helper = services.split("fn provider_admin_app(", 1)[1].split("\n}", 1)[0]
+        # The page runs Model Providers, never Settings (a Tilo OS app).
         self.assertEqual(re.findall(r'"(so\.tilo\.[^"]+)"', helper),
-                         ["so.tilo.settings", "so.tilo.model-providers"])
+                         ["so.tilo.model-providers"])
         self.assertIn("handle.is_available() && !provider_admin_app(context.app_id())", services)
         desktop = (base / "desktop.rs").read_text()
-        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id)", desktop)
+        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id())", desktop)
         self.assertIn("self.inputs.provider_admin.clone()", desktop)
         browser = (base / "browser.rs").read_text()
         self.assertIn("provide_provider_admin(&mut context, config.provider_admin()?)", browser)

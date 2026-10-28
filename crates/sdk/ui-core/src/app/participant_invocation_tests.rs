@@ -70,13 +70,18 @@ fn tree(view: &str) -> Vec<Resource> {
 impl Widget for TwoViews {
     crate::provides!(
         dyn crate::collaboration::participants::Participants,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
+}
+
+impl crate::widget::ResourceOperations for TwoViews {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -440,14 +445,15 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         .unwrap(),
     );
     let definition = crate::application::ApplicationDefinition {
-        app_id: "dev.tilo.two-views",
-        title: "Two views",
+        app_id: "dev.tilo.two-views".into(),
+        title: "Two views".into(),
         icon: crate::widget::IconDescriptor::Glyph("T"),
         record_kind: crate::record::RecordKind::new("two-views"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: bound_factory,
     };
     let target = crate::application::LaunchTarget::New;
@@ -458,9 +464,9 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
             views,
             device_id: "D".into(),
             instance_id: 1,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },

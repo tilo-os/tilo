@@ -198,10 +198,10 @@ mod tests {
 
     impl Source for Fake {
         fn start(&mut self, _wake: Option<crate::session_runtime::Wake>) {
-            self.started += 1;
+            self.started = self.started.saturating_add(1);
         }
         fn stop(&mut self) {
-            self.stopped += 1;
+            self.stopped = self.stopped.saturating_add(1);
         }
         fn latest(&mut self) -> Option<SystemStats> {
             self.queued.take()

@@ -58,6 +58,18 @@ pub enum ManifestError {
     BadScreenshot(String),
     #[error("package.screenshots lists more than {MAX_SCREENSHOTS} screenshots")]
     TooManyScreenshots,
+    #[error(
+        "package.icon {0:?} must be an SVG or PNG file in the payload, named by a relative \
+         path without `.` or `..` segments"
+    )]
+    BadIcon(String),
+    #[error(
+        "entrypoint.runtime {0:?} must also be listed in package.optional-runtimes, so the \
+         runtime is offered for install like every other one the app names"
+    )]
+    EntrypointRuntimeUndeclared(String),
+    #[error("only kind=app packages execute a runtime's binary through entrypoint.runtime")]
+    EntrypointRuntimeOnNonApp,
     #[error("capabilities.{list} has an empty or padded capability name {name:?}")]
     BadCapabilityName { list: &'static str, name: String },
     #[error("capabilities lists {0:?} more than once")]
@@ -155,6 +167,8 @@ pub enum ManifestError {
     BadImagePackage(String),
     #[error("{0}")]
     ImageTree(String),
+    #[error("a language pack {0}")]
+    LanguagePack(String),
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -196,6 +210,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
     validate_store_listing(m)?;
+    validate_icon(m)?;
 
     validate_continuity(m)?;
 
@@ -230,7 +245,9 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_service_protocol(m)?;
 
     validate_kind_entrypoint(m)?;
+    validate_entrypoint_runtime(m)?;
     validate_image(m)?;
+    validate_language_pack(m)?;
     validate_declarations(m)?;
 
     m.publisher
@@ -351,7 +368,95 @@ fn validate_kind_entrypoint(m: &Manifest) -> Result<(), ManifestError> {
                 return Err(ManifestError::FormatProviderMissingMime);
             }
         }
-        Kind::Service | Kind::Plugin | Kind::Runtime | Kind::EnvRuntime | Kind::Tool => {}
+        Kind::Service
+        | Kind::Plugin
+        | Kind::Runtime
+        | Kind::EnvRuntime
+        | Kind::Tool
+        | Kind::LanguagePack => {}
+    }
+    Ok(())
+}
+
+/// A language pack is one locale's catalogues: data, named by its locale,
+/// for every architecture, with nothing a launcher could start or a runtime
+/// to bind. Its id prefix is reserved for it.
+fn validate_language_pack(m: &Manifest) -> Result<(), ManifestError> {
+    let reserved = m.package.id.starts_with(crate::id::LANGUAGE_PACK_ID_PREFIX);
+    if m.package.kind != Kind::LanguagePack {
+        return if reserved {
+            Err(ManifestError::LanguagePack(format!(
+                "id prefix {} is for kind=language-pack only",
+                crate::id::LANGUAGE_PACK_ID_PREFIX
+            )))
+        } else {
+            Ok(())
+        };
+    }
+    if crate::id::language_pack_locale(&m.package.id).is_none() {
+        return Err(ManifestError::LanguagePack(format!(
+            "is named {}<locale>, the locale in lower case, not {:?}",
+            crate::id::LANGUAGE_PACK_ID_PREFIX,
+            m.package.id
+        )));
+    }
+    let present = [
+        ("[entrypoint]", m.entrypoint.is_some()),
+        ("[cli]", m.cli.is_some()),
+        ("[target]", m.target.is_some()),
+        ("package.runtime", m.package.runtime.is_some()),
+        (
+            "package.optional-runtimes",
+            !m.package.optional_runtimes.is_empty(),
+        ),
+        ("[package.isa]", !m.package.isa.is_empty()),
+        (
+            "[providers]",
+            !(m.providers.mime.is_empty()
+                && m.providers.ext.is_empty()
+                && m.providers.schemes.is_empty()),
+        ),
+    ];
+    if let Some((block, _)) = present.iter().find(|(_, present)| *present) {
+        return Err(ManifestError::LanguagePack(format!(
+            "is data for every architecture and is never launched; remove `{block}`"
+        )));
+    }
+    Ok(())
+}
+
+/// The payload of language pack `m`: only `<locale>/<catalogue>.ftl`, the
+/// locale directory naming the pack's locale (in any case).
+fn validate_language_pack_payload(
+    m: &Manifest,
+    payload_files: &[std::path::PathBuf],
+) -> Result<(), ManifestError> {
+    let Some(locale) = crate::id::language_pack_locale(&m.package.id) else {
+        return Ok(());
+    };
+    if payload_files.is_empty() {
+        return Err(ManifestError::LanguagePack("carries no catalogue".into()));
+    }
+    for path in payload_files {
+        let text = path.to_str().map(|path| path.replace('\\', "/"));
+        let fits = text
+            .as_deref()
+            .and_then(|path| path.split_once('/'))
+            .is_some_and(|(directory, file)| {
+                directory.eq_ignore_ascii_case(locale)
+                    && file.strip_suffix(".ftl").is_some_and(|name| {
+                        !name.is_empty()
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                    })
+            });
+        if !fits {
+            return Err(ManifestError::LanguagePack(format!(
+                "carries only `{locale}/<catalogue>.ftl`, not {}",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -519,6 +624,63 @@ fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
         }),
         _ => Ok(()),
     }
+}
+
+/// The icon is one SVG or PNG file of the payload, named by a safe relative
+/// path; [`validate_manifest_with_payload`] checks that it is there.
+fn validate_icon(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(icon) = &m.package.icon else {
+        return Ok(());
+    };
+    let image = std::path::Path::new(icon)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("png"));
+    if crate::package::is_safe_path(icon) && image && !icon.chars().any(char::is_control) {
+        Ok(())
+    } else {
+        Err(ManifestError::BadIcon(icon.clone()))
+    }
+}
+
+/// An entrypoint that executes a runtime's binary belongs to an app, names a
+/// runtime the package declares among its optional runtimes, and a safe path
+/// inside that runtime.
+fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(entrypoint) = &m.entrypoint else {
+        return Ok(());
+    };
+    let Some(runtime) = &entrypoint.runtime else {
+        return Ok(());
+    };
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::EntrypointRuntimeOnNonApp);
+    }
+    validate_runtime_string(runtime)?;
+    if !m
+        .package
+        .optional_runtimes
+        .iter()
+        .any(|declared| declared == runtime)
+    {
+        return Err(ManifestError::EntrypointRuntimeUndeclared(runtime.clone()));
+    }
+    for bin in [
+        Some(&entrypoint.bin),
+        entrypoint.gui_bin.as_ref(),
+        entrypoint.cli_bin.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|bin| !bin.as_os_str().is_empty())
+    {
+        if bin
+            .to_str()
+            .is_none_or(|path| !crate::package::is_safe_path(path))
+        {
+            return Err(ManifestError::RuntimeEntrypoint(bin.display().to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// Most screenshots a package lists; the Store shows them in one gallery.
@@ -873,6 +1035,9 @@ pub fn validate_manifest_with_payload(
             crate::image::TREE_FILE
         )));
     }
+    if m.package.kind == Kind::LanguagePack {
+        validate_language_pack_payload(m, payload_files)?;
+    }
     if let Some(target) = &m.target
         && !payload_files.iter().any(|path| {
             path.to_str()
@@ -880,6 +1045,14 @@ pub fn validate_manifest_with_payload(
         })
     {
         return Err(ManifestError::TargetModuleMissing(target.module.clone()));
+    }
+    if let Some(icon) = &m.package.icon
+        && !payload_files.iter().any(|path| {
+            path.to_str()
+                .is_some_and(|path| path.replace('\\', "/") == icon.as_str())
+        })
+    {
+        return Err(ManifestError::BadIcon(icon.clone()));
     }
     if let Some(missing) = m.package.screenshots.iter().find(|shot| {
         !payload_files.iter().any(|path| {
@@ -923,6 +1096,163 @@ mode = "off"
 "#
         );
         Manifest::from_toml_str(&src).unwrap()
+    }
+
+    fn language_pack(id: &str, extra: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+id = "{id}"
+version = "2026.10.20"
+kind = "language-pack"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+{extra}
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#
+        );
+        Manifest::from_toml_str(&src).unwrap()
+    }
+
+    /// A language pack is one locale's catalogues: named by the locale, for
+    /// every architecture, nothing in it launched; its payload is only that
+    /// locale's `.ftl` files, and its id prefix is no other kind's.
+    #[test]
+    fn a_language_pack_is_one_locales_catalogues_and_nothing_else() {
+        let pack = language_pack("so.tilo.language-pack.de-de", "");
+        assert!(validate_language_pack(&pack).is_ok());
+        assert_eq!(crate::language_pack_locale(&pack.package.id), Some("de-de"));
+        let catalogues = [
+            std::path::PathBuf::from("de-DE/settings-core.ftl"),
+            std::path::PathBuf::from("de-DE/tilo-ui.ftl"),
+        ];
+        assert!(validate_language_pack_payload(&pack, &catalogues).is_ok());
+        for wrong in [
+            "fr-FR/settings-core.ftl",
+            "de-DE/bin/tool",
+            "settings-core.ftl",
+        ] {
+            assert!(
+                validate_language_pack_payload(&pack, &[std::path::PathBuf::from(wrong)]).is_err(),
+                "{wrong}"
+            );
+        }
+        assert!(validate_language_pack_payload(&pack, &[]).is_err());
+
+        for wrong_id in [
+            "so.tilo.language-pack.",
+            "so.tilo.language-pack.de-DE",
+            "so.tilo.de-de",
+        ] {
+            assert!(
+                validate_language_pack(&language_pack(wrong_id, "")).is_err(),
+                "{wrong_id}"
+            );
+        }
+        let launched = language_pack(
+            "so.tilo.language-pack.de-de",
+            "[entrypoint]\nbin = \"bin/x\"\n",
+        );
+        assert!(validate_language_pack(&launched).is_err());
+        let arch_bound = language_pack(
+            "so.tilo.language-pack.de-de",
+            "[package.isa]\nx86_64 = \"v3\"\n",
+        );
+        assert!(validate_language_pack(&arch_bound).is_err());
+
+        let mut app = app_with_listing("");
+        app.package.id = "so.tilo.language-pack.de-de".into();
+        assert!(validate_language_pack(&app).is_err());
+    }
+
+    #[test]
+    fn the_icon_is_one_svg_or_png_of_the_payload() {
+        let fine = app_with_listing("icon = \"icon.svg\"");
+        assert_eq!(validate_manifest(&fine), Ok(()));
+        assert_eq!(
+            validate_manifest_with_payload(&fine, &["icon.svg".into()]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_manifest_with_payload(&fine, &["bin/example".into()]),
+            Err(ManifestError::BadIcon("icon.svg".into())),
+            "an icon the payload does not carry"
+        );
+        for bad in ["/icon.svg", "../icon.svg", "icon.exe", "a/./icon.png", ""] {
+            let m = app_with_listing(&format!("icon = {bad:?}"));
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::BadIcon(bad.into())),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            validate_manifest(&app_with_listing("icon = \"share/Icon.PNG\"")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_entrypoint_runs_a_runtime_binary_only_when_the_runtime_is_declared() {
+        let declared = |optional: &str| {
+            let mut m = app_with_listing(optional);
+            if let Some(entrypoint) = m.entrypoint.as_mut() {
+                entrypoint.runtime = Some("tilolang/0.1.0".into());
+                entrypoint.bin = "bin/tilolang".into();
+            }
+            m
+        };
+        assert_eq!(
+            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.1.0\"]")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_manifest(&declared("")),
+            Err(ManifestError::EntrypointRuntimeUndeclared(
+                "tilolang/0.1.0".into()
+            ))
+        );
+        assert_eq!(
+            validate_manifest(&declared("optional-runtimes = [\"tilolang/0.2.0\"]")),
+            Err(ManifestError::EntrypointRuntimeUndeclared(
+                "tilolang/0.1.0".into()
+            ))
+        );
+        let mut outside = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+        if let Some(entrypoint) = outside.entrypoint.as_mut() {
+            entrypoint.bin = "../bin/sh".into();
+        }
+        assert_eq!(
+            validate_manifest(&outside),
+            Err(ManifestError::RuntimeEntrypoint("../bin/sh".into()))
+        );
+        let mut malformed = declared("optional-runtimes = [\"tilolang/0.1.0\"]");
+        if let Some(entrypoint) = malformed.entrypoint.as_mut() {
+            entrypoint.runtime = Some("tilolang".into());
+        }
+        assert_eq!(
+            validate_manifest(&malformed),
+            Err(ManifestError::BadRuntimeForm("tilolang".into()))
+        );
+        // The schema round-trips: what a packer writes, an installer reads.
+        let m = declared("optional-runtimes = [\"tilolang/0.1.0\"]\nicon = \"icon.svg\"");
+        let text = toml::to_string(&m).unwrap();
+        let back = Manifest::from_toml_str(&text).unwrap();
+        assert_eq!(back.package.icon.as_deref(), Some("icon.svg"));
+        assert_eq!(
+            back.entrypoint
+                .and_then(|entrypoint| entrypoint.runtime)
+                .as_deref(),
+            Some("tilolang/0.1.0")
+        );
     }
 
     #[test]
@@ -1171,7 +1501,7 @@ mode = "off"
             );
             assert_eq!(
                 manifest.package.optional_runtimes,
-                ["tilo-runtime/2026.10.17-chromium"]
+                ["tilo-runtime/2026.10.23-chromium"]
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
         }
@@ -1359,6 +1689,7 @@ mode = "off"
                 cli_bin: None,
                 splash_segments: Vec::new(),
                 splash_budget_ms: 400,
+                runtime: None,
             });
             m.continuity.required.clear();
             assert_eq!(

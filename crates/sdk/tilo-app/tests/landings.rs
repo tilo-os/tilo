@@ -93,7 +93,6 @@ impl ResourceSurface<Script, ScriptEffect> for Page {
 
     fn effect(&mut self, effect: ScriptEffect, cx: &mut EffectCx<Script, Self>) -> EffectAnswer {
         let ScriptEffect::Mark { at } = effect;
-        // The place it was told is the one its context names.
         if cx.place() != at.as_ref() {
             return Err("the context names another place".into());
         }
@@ -106,7 +105,6 @@ impl ResourceSurface<Script, ScriptEffect> for Page {
     }
 
     fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &Place) {
-        // What it is told is what the framework keeps.
         assert_eq!(
             self.live.as_ref().unwrap().place_of(participant).as_ref(),
             Some(place)

@@ -250,10 +250,6 @@ impl RecipientMountSupervisor {
     }
 
     /// Stop and reap one supervised mount child.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when child status, termination, or reaping fails.
     pub fn stop(&self, key: RecordSubscriptionKey) -> Result<bool, RecipientMountError> {
         let child = self.children.lock_recover().remove(&key);
         let Some(mut child) = child else {
@@ -268,10 +264,6 @@ impl RecipientMountSupervisor {
 
     /// Wait for one known child to exit. Service code normally polls
     /// [`Self::is_running`]; deterministic harnesses use this event barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when waiting for the child fails.
     pub fn wait(
         &self,
         key: RecordSubscriptionKey,
@@ -451,7 +443,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn recipient_mount_children_get_secrets_once_and_starts_are_exclusive() {
-        // Phase `child_argv_is_secret_free_and_uri_is_delivered_only_on_stdin`.
         {
             let temp = tempfile::tempdir().unwrap();
             let args_path = temp.path().join("args");
@@ -484,7 +475,6 @@ mod tests {
             assert_eq!(stdin.trim_end(), uri);
             assert!(info.mount_point.starts_with(temp.path().join("mounts")));
         }
-        // Phase `a_live_mount_is_reused_without_redelivering_its_bearer_secret`.
         {
             let temp = tempfile::tempdir().unwrap();
             let calls_path = temp.path().join("calls");
@@ -518,7 +508,6 @@ mod tests {
             );
             assert!(supervisor.stop(subscribed.key).unwrap());
         }
-        // Phase `concurrent_start_is_rejected_before_a_duplicate_child_can_launch`.
         {
             let temp = tempfile::tempdir().unwrap();
             let release_path = temp.path().join("release");
@@ -565,7 +554,6 @@ mod tests {
             assert_eq!(info.key, subscribed.key);
             assert!(supervisor.stop(subscribed.key).unwrap());
         }
-        // Phase `readiness_timeout_releases_the_start_reservation_for_retry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let script = temp.path().join("fake-fs");

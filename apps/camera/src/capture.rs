@@ -105,7 +105,6 @@ mod tests {
 
     #[test]
     fn capture_admits_only_valid_devices_and_the_latest_frame() {
-        // Phase `list_devices_yields_valid_sorted_paths`.
         {
             // Runs with or without a camera. When nodes exist they must be real
             // /dev/video* paths in ascending numeric order.
@@ -122,7 +121,6 @@ mod tests {
                 "devices sorted numerically"
             );
         }
-        // Phase `open_first_device_or_skip`.
         {
             // Honest device test: opt-in only. This opens a real camera when one is
             // present, which is not hermetic, so a plain `cargo test` (now that

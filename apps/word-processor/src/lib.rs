@@ -30,10 +30,13 @@
 )]
 
 pub mod actions;
+#[cfg(test)]
+mod agent_tests;
 mod compact_swatch_palette;
+mod document_find;
 pub mod effects;
 pub mod file_convert;
-mod find_bar;
+mod file_menu;
 pub mod framework;
 pub mod i18n;
 pub mod model;
@@ -44,7 +47,6 @@ mod ruler;
 pub mod semantic_read;
 mod style_color_picker;
 mod style_menu;
-mod template_picker;
 mod text_offsets;
 mod zoom_control;
 pub use ui::num;
@@ -60,10 +62,6 @@ pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND
 
 /// Initialize a new record as an empty Writer document: the document
 /// resource's genesis, for hosts that reserve a record outside the app.
-///
-/// # Errors
-///
-/// Returns why the document could not be initialized.
 pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
     <framework::Document as tilo_resource::Resource>::initialize(doc)
         .map_err(|error| error.to_string())
@@ -89,8 +87,6 @@ pub use word_processor::WordProcessor;
 
 use automerge::AutoCommit;
 
-// ---- document open / save (format-aware file I/O) -------------------------
-
 use std::path::Path;
 
 /// The file formats the word processor can open and save.
@@ -115,6 +111,14 @@ pub enum WpFormat {
     Epub,
 }
 
+/// Why `name`, whose contents are `bytes`, is not imported here.
+fn not_imported(name: &str, bytes: &[u8]) -> String {
+    format!(
+        "{name} is not a document Writer imports: {}",
+        tilo_content::opened_by(bytes).unwrap_or_default()
+    )
+}
+
 impl WpFormat {
     /// Pick a format from a path extension (defaults to Markdown).
     pub fn from_path(path: &Path) -> Self {
@@ -133,6 +137,37 @@ impl WpFormat {
             Some("txt" | "text") => WpFormat::Text,
             _ => WpFormat::Markdown,
         }
+    }
+
+    /// The format to import the document `bytes`, kept as content under
+    /// `name`, as: the one the bytes hold, whatever the name says (content
+    /// travels under any name, "Sofia details" for a Word file); the name's
+    /// only for text, whose kinds only a name tells apart.
+    ///
+    /// # Errors
+    ///
+    /// Content Writer does not import (a PDF, a workbook, a picture), named
+    /// with what opens it.
+    pub fn of_content(name: &str, bytes: &[u8]) -> Result<Self, String> {
+        if let Some(format) = tilo_content::document_format(bytes) {
+            return match format.extension {
+                "docx" => Ok(WpFormat::Docx),
+                "odt" => Ok(WpFormat::Odt),
+                "rtf" => Ok(WpFormat::Rtf),
+                "html" => Ok(WpFormat::Html),
+                _ => Err(not_imported(name, bytes)),
+            };
+        }
+        if tilo_content::opened_by(bytes).is_some() {
+            return Err(not_imported(name, bytes));
+        }
+        Ok(match WpFormat::from_path(Path::new(name)) {
+            // Text that a name calls a document is imported as what it is.
+            WpFormat::Docx | WpFormat::Odt | WpFormat::Rtf | WpFormat::Pdf | WpFormat::Epub => {
+                WpFormat::Markdown
+            }
+            text => text,
+        })
     }
 
     /// The format [`actions::RichTextAction::ReplaceFormatted`] imports this
@@ -228,8 +263,6 @@ pub fn import_action(
         .map_err(|error| format!("could not keep the file's images: {error}"))?;
     Ok(action)
 }
-
-// ---- document templates (new-from-template) -------------------------------
 
 /// A bundled starter document. The content is embedded at compile time
 /// (`include_str!`) so there is no runtime file dependency — a template is just

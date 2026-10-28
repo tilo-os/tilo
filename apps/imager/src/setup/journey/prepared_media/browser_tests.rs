@@ -49,12 +49,16 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
         None,
         MediaSelections {
             sessions: None,
+            mail: None,
             home_applications: false,
             home: None,
             retained: None,
             planned_direct: None,
             applications: None,
             browser: Some(selected),
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new(password.into()),
         "browser-only-setup".into(),

@@ -2,20 +2,26 @@
 # Materialize every immutable external input before a container build. Most
 # originate on GitHub; the same cache also carries the reviewed, content-pinned
 # virtio-win RPM because its Fedora repository publishes that package unsigned.
-# Keeping downloads outside BuildKit makes interrupted transfers resumable and
-# lets Forgejo's cache survive ephemeral runners.
+# Keeping downloads outside BuildKit makes interrupted transfers resumable.
+#
+# In t, the os-assets check runs this once per manifest and its outputs fill
+# the cache of every check that needs it. Such a check sets
+# TILO_ASSET_OFFLINE=1: the requested assets are only verified, a missing one
+# fails instead of being downloaded, and the cache may be read-only.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd -- "$script_dir/../.." && pwd)"
 manifest="$repo/os/external-assets/github-assets.tsv"
 cache_dir="${TILO_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
-mkdir -p "$cache_dir"
+offline="${TILO_ASSET_OFFLINE:-}"
+[ -n "$offline" ] || mkdir -p "$cache_dir"
 # Every checkout has its own cache_dir (it is a build context inside the
 # worktree), so without a shared store each new worktree downloaded every asset
 # again. The store is per user and keyed by name; a file is only ever taken from
 # it after its pinned checksum verifies. TILO_ASSET_STORE= (empty) turns it off.
 store="${TILO_ASSET_STORE-${XDG_CACHE_HOME:-${HOME:-/nonexistent}/.cache}/tilo/external-assets}"
+[ -z "$offline" ] || store=""
 if [ -n "$store" ] && ! mkdir -p "$store" 2>/dev/null; then
   store=""
 fi
@@ -51,6 +57,14 @@ while IFS=$'\t' read -r expected name url; do
   case "$expected" in ''|'#'*) continue ;; esac
   wanted "$name" "$@" || continue
   target="$cache_dir/$name"
+  if [ -n "$offline" ]; then
+    verify "$expected" "$target" || {
+      printf '%s is not in %s with its pinned checksum (in t, the check needs os-assets)\n' \
+        "$name" "$cache_dir" >&2
+      exit 1
+    }
+    continue
+  fi
   if verify "$expected" "$target"; then
     [ ! -e "$target.part" ] || unlink -- "$target.part"
     printf '[tilo] cached %s\n' "$name"
@@ -64,35 +78,20 @@ while IFS=$'\t' read -r expected name url; do
 
   part="$target.part"
   printf '[tilo] fetching %s\n' "$name"
-  verified=0
-  for integrity_attempt in 1 2; do
-    if ! curl --location --fail --show-error \
-      --retry 12 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
-      --speed-limit 1024 --speed-time 120 --continue-at - \
-      --output "$part" "$url"; then
-      if [ "$integrity_attempt" = 1 ] && [ -f "$part" ]; then
-        printf '[tilo] resume failed for %s; retrying once from byte zero\n' "$name" >&2
-        unlink -- "$part"
-        continue
-      fi
-      exit 1
-    fi
-    if verify "$expected" "$part"; then
-      verified=1
-      break
-    fi
-    actual="$(sha256sum "$part" | cut -d ' ' -f 1)"
+  curl --location --fail --show-error \
+    --retry 12 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
+    --speed-limit 1024 --speed-time 120 --continue-at - \
+    --output "$part" "$url"
+  if ! verify "$expected" "$part"; then
     printf 'checksum mismatch for %s: expected %s, got %s\n' \
-      "$name" "$expected" "$actual" >&2
+      "$name" "$expected" "$(sha256sum "$part" | cut -d ' ' -f 1)" >&2
     unlink -- "$part"
-    if [ "$integrity_attempt" = 1 ]; then
-      printf '[tilo] retrying %s once from byte zero\n' "$name" >&2
-    fi
-  done
-  [ "$verified" = 1 ] || exit 1
+    exit 1
+  fi
   mv -f -- "$part" "$target"
   [ -z "$store" ] || share "$target" "$store/$name" || true
 done < "$manifest"
+[ -z "$offline" ] || exit 0
 
 # A prefix restore can contain entries removed by a newer manifest. Drop those
 # before exposing the directory as a container build context, then save the

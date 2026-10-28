@@ -1,5 +1,3 @@
-//! Drive-specific behaviour beyond the conformance suite, against the fake.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -611,12 +609,16 @@ fn wait_polls_until_something_changes() {
     );
     server.put_file("root", "new.txt", b"n");
     assert_eq!(
-        source.wait(Some(&cursor), Duration::from_secs(5)).unwrap(),
+        source
+            .wait(Some(&cursor), tilo_test_env::hang_bound())
+            .unwrap(),
         Wait::Changed
     );
     server.inject(FakeFault::TooManyRequests);
     assert_eq!(
-        source.wait(Some(&cursor), Duration::from_secs(5)).unwrap(),
+        source
+            .wait(Some(&cursor), tilo_test_env::hang_bound())
+            .unwrap(),
         Wait::Backoff(Duration::from_secs(1))
     );
 }

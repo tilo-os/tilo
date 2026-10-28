@@ -47,9 +47,6 @@ pub(crate) fn split(value: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// How many further parts the first part's blob says follow it.
-///
-/// # Errors
-/// The blob is not one this layout wrote.
 pub(crate) fn further_parts(first: &[u8]) -> Result<usize, String> {
     match first {
         [FORMAT, low, high, ..] => Ok(usize::from(u16::from_le_bytes([*low, *high]))),
@@ -59,9 +56,6 @@ pub(crate) fn further_parts(first: &[u8]) -> Result<usize, String> {
 
 /// The secret from the first part's blob and the further parts' blobs, in
 /// order.
-///
-/// # Errors
-/// The first part is not one this layout wrote, or parts are missing.
 pub(crate) fn join(first: &[u8], rest: &[Vec<u8>]) -> Result<Vec<u8>, String> {
     let expected = further_parts(first)?;
     if rest.len() != expected {

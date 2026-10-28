@@ -105,9 +105,52 @@ pub fn path_of(place: &str, home: Option<&Path>, dirs: &UserDirs) -> Option<Path
     path.is_absolute().then_some(path)
 }
 
+/// What a person calls `place`: Home, a standard folder by its name in
+/// their language (Documents, Dokumente), else the folder's own name
+/// (`~/Projects/tilo` is "tilo", `/srv/media` is "media"). Never the stored
+/// form: `xdg:documents` is how the document keeps it, not a name.
+pub fn name(place: &str) -> String {
+    if let Some(dir) = place.strip_prefix(STANDARD_PREFIX).and_then(standard_dir) {
+        return crate::i18n::t(match dir {
+            UserDir::Home => "files-place-home",
+            UserDir::Desktop => "files-place-desktop",
+            UserDir::Documents => "files-place-documents",
+            UserDir::Downloads => "files-place-downloads",
+            UserDir::Music => "files-place-music",
+            UserDir::Pictures => "files-place-pictures",
+            UserDir::Videos => "files-place-videos",
+        });
+    }
+    let folder = place.trim_end_matches('/');
+    if folder == HOME_PREFIX {
+        return crate::i18n::t("files-place-home");
+    }
+    folder
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| place.to_owned(), str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A place reads as the folder a person knows, never as it is stored.
+    #[test]
+    fn a_place_is_named_as_a_person_knows_it() {
+        crate::i18n::set_locale("en-US");
+        assert_eq!(name("xdg:home"), "Home");
+        assert_eq!(name("xdg:documents"), "Documents");
+        assert_eq!(name("xdg:desktop"), "Desktop");
+        assert_eq!(name("~"), "Home");
+        assert_eq!(name("~/Projects/tilo"), "tilo");
+        assert_eq!(name("/srv/media/"), "media");
+        assert_eq!(name("/"), "/");
+        crate::i18n::set_locale("de-DE");
+        assert_eq!(name("xdg:documents"), "Dokumente");
+        crate::i18n::set_locale("en-US");
+    }
 
     fn german() -> UserDirs {
         UserDirs {

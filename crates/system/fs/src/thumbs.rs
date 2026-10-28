@@ -98,7 +98,6 @@ mod tests {
 
     #[test]
     fn thumbnails_generate_cache_reopen_and_decline_junk() {
-        // Phase `generates_caches_and_reopens`.
         {
             let dir = tempfile::tempdir().unwrap();
             let src = solid_png(400, 300, [30, 120, 210]);
@@ -110,11 +109,9 @@ mod tests {
                 let png = provider
                     .generate(content_hash, FileCategory::Image, &src)
                     .expect("generates a preview");
-                // It is a real, smaller PNG at the host preview size.
                 let decoded = thumbnail::decode_png(&png).unwrap();
                 assert!(decoded.is_valid());
                 assert_eq!(decoded.max_edge(), HOST_EDGE);
-                // Small enough to ride the xattr metadata channel.
                 assert!(
                     png.len() <= MAX_XATTR_THUMB,
                     "host preview fits the xattr: {} bytes",
@@ -133,7 +130,6 @@ mod tests {
                 "thumbnail survives a reopen via the on-disk cache"
             );
         }
-        // Phase `declines_badge_types_and_junk`.
         {
             let dir = tempfile::tempdir().unwrap();
             let provider = ThumbProvider::open(dir.path()).unwrap();

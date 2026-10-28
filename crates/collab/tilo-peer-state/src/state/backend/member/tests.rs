@@ -58,7 +58,7 @@ fn bounded_current_member_matches_actual_legacy_membership_and_rechecks_removal(
     let read = restored.read();
     let member = read.member(source, now).unwrap();
     assert_eq!(member.role(), expected.role);
-    assert_eq!(member.grants(), expected.policy.grants.as_slice());
+    assert_eq!(member.room_policy().grants, expected.policy.grants);
     assert_eq!(member.person(), expected.person);
     assert_eq!(peer.durable().unwrap(), bytes);
     // A blocked member is no longer current on either path.
@@ -123,7 +123,7 @@ fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
     match (expected, actual) {
         (Ok(expected), Ok(member)) => {
             assert_eq!(member.role(), expected.role);
-            assert_eq!(member.grants(), expected.policy.grants.as_slice());
+            assert_eq!(member.room_policy().grants, expected.policy.grants);
             assert_eq!(member.person(), expected.person);
             assert_eq!(member.foreign(), expected.foreign);
         }
@@ -220,11 +220,7 @@ fn bounded_current_member_copies_all_grant_fields() {
         TreePath::room(&room).any(tilo_action_policy::Level::App),
         roles::room_resource(&room),
     ];
-    let lifetimes = [
-        Lifetime::UntilRevoked,
-        Lifetime::Until(u64::MAX),
-        Lifetime::Task(long.clone()),
-    ];
+    let lifetimes = [Lifetime::UntilRevoked, Lifetime::Until(u64::MAX)];
     for (i, node) in nodes.into_iter().enumerate() {
         let grant = Grant {
             id: GrantId::new(format!("extra{i:02}{long}")),
@@ -507,7 +503,6 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
             TreePath::room(&room_id).app("finance"),
             Answer::Deny,
         ),
-        // A more specific Allow reopens one record of the hidden app.
         read_grant(
             "finance-summary",
             collab_types::document_node(&room_id, "finance", "summary"),
@@ -634,7 +629,6 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
                 "{app}/{record}"
             );
         }
-        // Nothing is withheld that the read decision allows.
         for (channel, withheld) in &readers.withheld {
             assert!(*channel == payroll || *channel == q3 || withheld.is_empty());
         }

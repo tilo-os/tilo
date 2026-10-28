@@ -53,6 +53,9 @@ pub struct Suggestion {
     /// Optional dim secondary text shown right-aligned in the row (e.g. a type
     /// or a count).
     pub detail: Option<String>,
+    /// Optional dim line under the label (a page's address under its
+    /// title). A list with any such line gives every row two lines.
+    pub subtitle: Option<String>,
     /// Optional leading glyph.
     pub icon: Option<Icon>,
     /// A participant this row names: painted as their avatar (or, for
@@ -79,6 +82,7 @@ impl Suggestion {
             label: value.clone(),
             value,
             detail: None,
+            subtitle: None,
             icon: None,
             person: None,
         }
@@ -90,6 +94,7 @@ impl Suggestion {
             value: value.into(),
             label: label.into(),
             detail: None,
+            subtitle: None,
             icon: None,
             person: None,
         }
@@ -107,12 +112,25 @@ impl Suggestion {
         self
     }
 
+    /// Show `subtitle` as a dim line under the label.
+    #[must_use]
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
     /// Lead the row with `person`'s avatar.
     #[must_use]
     pub fn with_person(mut self, person: SuggestionPerson) -> Self {
         self.person = Some(person);
         self
     }
+}
+
+/// The width a row's trailing detail may take out of `free`: what the label
+/// (`label_w` wide) leaves, and at least half the row.
+fn detail_room(free: f64, label_w: f64, spacing: f64) -> f64 {
+    (free - label_w - 2.0 * spacing).max(free / 2.0)
 }
 
 /// How the most recent interaction ended. Returned once by
@@ -150,12 +168,19 @@ struct ListMetrics {
 }
 
 impl ListMetrics {
-    fn of(theme: &Theme, role: TextRole) -> Self {
+    /// The geometry in `theme` for labels in `role`; `two_line` rows hold
+    /// a caption line under the label.
+    fn of(theme: &Theme, role: TextRole, two_line: bool) -> Self {
         let tokens = &theme.tokens;
         let line = f64::from(theme.text(role).line_height_px());
+        let lines = if two_line {
+            line + f64::from(theme.text(TextRole::Caption).line_height_px())
+        } else {
+            line
+        };
         Self {
             row: f64::from(tokens.metrics.menu_row_height)
-                .max((line + 2.0 * f64::from(tokens.spacing.s1)).ceil()),
+                .max((lines + 2.0 * f64::from(tokens.spacing.s1)).ceil()),
             inset: crate::widget::floating_surface::menu_inset(theme),
             gap: f64::from(tokens.spacing.s1),
             pad: f64::from(tokens.spacing.s3),
@@ -193,8 +218,9 @@ impl ListMetrics {
 /// its anchor near the window's bottom and shifts to stay inside it. Rows
 /// are menu rows with the armed-row lift, an optional leading icon and an
 /// optional trailing detail column. More suggestions than fit scroll, the
-/// armed row always in view. A status line (and a spinner while busy)
-/// stands in for rows while there are none.
+/// armed row always in view. While rows are on their way, the framework's
+/// placeholder stands where the first will be ([`crate::arriving`]); a
+/// status line stands in for rows when there are none.
 pub struct SuggestionList {
     suggestions: Vec<Suggestion>,
     highlight: Option<usize>,
@@ -203,8 +229,10 @@ pub struct SuggestionList {
     first: usize,
     max_visible: usize,
     status: Option<String>,
-    busy: bool,
-    spinner: crate::widget::Spinner,
+    /// Rows on their way: the timing of their placeholder.
+    arriving: Option<crate::arriving::ArrivalClock>,
+    /// The placeholder step the last paint drew.
+    drawn_step: Option<crate::arriving::Step>,
     anchor: Rect,
     viewport: Option<Rect>,
     /// What the rows' labels are (Body; Code for code completion).
@@ -231,8 +259,8 @@ impl SuggestionList {
             first: 0,
             max_visible: DEFAULT_MAX_VISIBLE,
             status: None,
-            busy: false,
-            spinner: crate::widget::Spinner::new(),
+            arriving: None,
+            drawn_step: None,
             anchor: Rect::ZERO,
             viewport: None,
             role: TextRole::Body,
@@ -266,7 +294,7 @@ impl SuggestionList {
         self.suggestions = suggestions;
         if !self.suggestions.is_empty() {
             self.status = None;
-            self.busy = false;
+            self.arriving = None;
         }
         if self.highlight.is_some_and(|h| h >= self.suggestions.len()) {
             self.highlight = None;
@@ -324,13 +352,39 @@ impl SuggestionList {
         self.status = status;
     }
 
-    /// Results are on their way: the status line carries a spinner.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
+    /// Rows are on their way, with `clock`'s timing (asked when, from
+    /// where): the framework's placeholder stands where the first will be.
+    /// `None` once they are in, or nothing is asked.
+    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+        self.arriving = clock;
     }
 
+    /// Whether rows are on their way.
     pub fn is_busy(&self) -> bool {
-        self.busy
+        self.arriving.is_some()
+    }
+
+    /// The placeholder step the list shows at `now`, while rows are on
+    /// their way and none is here.
+    fn arriving_step(&self, now: crate::time::Instant) -> Option<crate::arriving::Step> {
+        self.suggestions
+            .is_empty()
+            .then_some(self.arriving.as_ref())
+            .flatten()
+            .map(|clock| clock.step(now))
+    }
+
+    /// When the placeholder steps on next.
+    fn next_arriving_step(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        if !self.suggestions.is_empty() {
+            return None;
+        }
+        self.arriving.as_ref()?.next_step_at(now)
+    }
+
+    /// Whether the placeholder stepped on since the last paint.
+    fn arriving_moved(&self) -> bool {
+        self.arriving_step(crate::motion::frame_now()) != self.drawn_step
     }
 
     /// The rect the list opens from (a field, or the caret's line).
@@ -343,9 +397,10 @@ impl SuggestionList {
         self.viewport = Some(viewport);
     }
 
-    /// Whether there is anything to show: rows, a status line or a spinner.
+    /// Whether there is anything to show: rows, a status line or rows on
+    /// their way.
     pub fn has_content(&self) -> bool {
-        !self.suggestions.is_empty() || self.status.is_some() || self.busy
+        !self.suggestions.is_empty() || self.status.is_some() || self.arriving.is_some()
     }
 
     /// Clear rows, status and armed row.
@@ -355,7 +410,7 @@ impl SuggestionList {
         self.hover = None;
         self.first = 0;
         self.status = None;
-        self.busy = false;
+        self.arriving = None;
     }
 
     /// Keep the armed row in view.
@@ -417,14 +472,12 @@ impl SuggestionList {
         Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
     }
 
-    /// The rect of suggestion `index`, when it is in view.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
         let panel = self.rect()?;
         let visible = index.checked_sub(self.first)?;
         (visible < self.visible_count()).then(|| self.row_in(panel, visible))
     }
 
-    /// The suggestion under `point`, if any.
     pub fn row_at(&self, point: Point) -> Option<usize> {
         let panel = self.rect()?;
         if !panel.contains(point) || self.suggestions.is_empty() {
@@ -464,6 +517,11 @@ impl SuggestionList {
             .iter()
             .map(|s| {
                 let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+                if let Some(subtitle) = &s.subtitle {
+                    w = w.max(f64::from(
+                        text.measure_style(subtitle, None, &detail_style).0,
+                    ));
+                }
                 if s.person.is_some() {
                     w += m.avatar() + m.spacing;
                 } else if s.icon.is_some() {
@@ -490,7 +548,8 @@ impl SuggestionList {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.metrics = ListMetrics::of(theme, self.role);
+        let two_line = self.suggestions.iter().any(|s| s.subtitle.is_some());
+        self.metrics = ListMetrics::of(theme, self.role, two_line);
         self.content_width = self.content_width_in(text, theme);
         let Some(panel) = self.rect() else {
             return;
@@ -505,25 +564,28 @@ impl SuggestionList {
         );
         crate::surface::panel(scene, transform, panel, radius, theme);
         let m = self.metrics;
+        self.drawn_step = self.arriving_step(crate::motion::frame_now());
         if self.suggestions.is_empty() {
             let row = self.row_in(panel, 0);
-            let mut x = row.x0 + m.pad;
-            if self.busy {
-                let edge = m.icon;
-                self.spinner.set_rect(Rect::new(
+            let x = row.x0 + m.pad;
+            if let Some(clock) = &self.arriving {
+                // Where the first row will be: the framework's placeholder,
+                // stepping on at its deadlines.
+                let mut ctx = PaintCtx::new(scene, transform, text, theme);
+                let line = ctx.line_box(self.role);
+                let slot = Rect::new(
                     x,
-                    row.center().y - edge / 2.0,
-                    x + edge,
-                    row.center().y + edge / 2.0,
-                ));
-                self.spinner.draw(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &crate::presence::PresenceCtx::empty(),
+                    row.center().y - line / 2.0,
+                    row.x1 - m.pad,
+                    row.center().y + line / 2.0,
                 );
-                x += edge + m.spacing;
+                crate::widget::ArrivalFace::new(
+                    crate::widget::SkeletonShape::Text { lines: 1 },
+                    clock,
+                    crate::motion::frame_now(),
+                )
+                .paint(&mut ctx, slot);
+                return;
             }
             if let Some(status) = &self.status {
                 let style = theme.text(self.role);
@@ -628,9 +690,13 @@ impl SuggestionList {
             );
             x += m.icon + m.spacing;
         }
-        // The detail column is trailing; the label takes what is left.
+        // The detail column is trailing; the label takes what is left. The
+        // detail may use whatever the label leaves free, and never less than
+        // half the row, so a short name keeps its whole "Region, Country".
         let label_x1 = if let Some(detail) = &s.detail {
-            let room = f32_of_f64(((row.x1 - m.pad) - x).max(0.0) / 2.0);
+            let free = ((row.x1 - m.pad) - x).max(0.0);
+            let label_w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+            let room = f32_of_f64(detail_room(free, label_w, m.spacing));
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
             let dx = row.x1 - m.pad - f64::from(dw);
@@ -646,17 +712,35 @@ impl SuggestionList {
         } else {
             row.x1 - m.pad
         };
-        let label =
-            text.elide_to_width_style(&s.label, f32_of_f64((label_x1 - x).max(0.0)), &label_style);
+        let room = f32_of_f64((label_x1 - x).max(0.0));
+        let label = text.elide_to_width_style(&s.label, room, &label_style);
         let (_, lh) = text.measure_style(&label, None, &label_style);
+        let subtitle = s.subtitle.as_ref().map(|subtitle| {
+            let shown = text.elide_to_width_style(subtitle, room, &detail_style);
+            let (_, sh) = text.measure_style(&shown, None, &detail_style);
+            (shown, f64::from(sh))
+        });
+        // The label and its subtitle stand as one block, centred in the row.
+        let block = f64::from(lh) + subtitle.as_ref().map_or(0.0, |(_, sh)| *sh);
+        let top = row.center().y - block / 2.0;
         text.draw_style(
             scene,
             &label,
             ink,
-            transform.pre_translate(Vec2::new(x, row.center().y - f64::from(lh) / 2.0)),
+            transform.pre_translate(Vec2::new(x, top)),
             None,
             &label_style,
         );
+        if let Some((shown, _)) = subtitle {
+            text.draw_style(
+                scene,
+                &shown,
+                if armed { ink } else { dim },
+                transform.pre_translate(Vec2::new(x, top + f64::from(lh))),
+                None,
+                &detail_style,
+            );
+        }
     }
 
     /// Accessibility rows for the suggestions in view, keyed by `key`.
@@ -669,15 +753,26 @@ impl SuggestionList {
             return Vec::new();
         };
         if self.suggestions.is_empty() {
-            return self
-                .status
+            let busy = self.arriving.is_some();
+            let arriving = self.arriving.as_ref().map(|clock| {
+                let now = crate::time::now();
+                crate::widget::ArrivalFace::new(
+                    crate::widget::SkeletonShape::Text { lines: 1 },
+                    clock,
+                    now,
+                )
+                .caption()
+                .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"))
+            });
+            return arriving
+                .or_else(|| self.status.clone())
                 .iter()
                 .map(|status| {
                     AccessNode::new(Role::StaticText)
                         .with_name(status)
                         .with_live(Politeness::Polite)
                         .with_bounds(panel)
-                        .with_state(AccessState::new().busy(self.busy))
+                        .with_state(AccessState::new().busy(busy))
                 })
                 .collect();
         }
@@ -694,8 +789,8 @@ impl SuggestionList {
                             .focusable(true)
                             .selected(self.highlight == Some(index)),
                     );
-                if let Some(detail) = &s.detail {
-                    row = row.with_description(detail);
+                if let Some(description) = s.subtitle.as_ref().or(s.detail.as_ref()) {
+                    row = row.with_description(description);
                 }
                 Some(row)
             })
@@ -817,10 +912,12 @@ impl Autocomplete {
         self.list.set_status(status);
     }
 
-    /// Results are on their way: the status line carries a spinner and
-    /// tells assistive technology the list is busy.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.list.set_busy(busy);
+    /// Results are on their way, with `clock`'s timing (asked when, from
+    /// where): the framework's placeholder stands where the first row will
+    /// be, and assistive technology hears the list is busy. `None` once
+    /// they are in.
+    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+        self.list.set_arriving(clock);
     }
 
     /// Opens the dropdown when the field is actively being edited (for
@@ -902,7 +999,7 @@ impl Autocomplete {
         self.open = false;
         self.list.set_highlight(None);
         self.list.set_status(None);
-        self.list.set_busy(false);
+        self.list.set_arriving(None);
     }
 
     /// Rising-edge read of how the most recent interaction ended.
@@ -1127,8 +1224,16 @@ impl Widget for Autocomplete {
         self.list.paint(scene, transform, text_renderer, theme);
     }
 
-    fn needs_animation_frame(&self) -> bool {
-        self.open && self.list.is_busy() && self.list.suggestions().is_empty()
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        // Rows on their way step their placeholder on at its deadlines;
+        // the rows' arrival wakes the window itself.
+        self.open
+            .then(|| self.list.next_arriving_step(crate::time::now()))
+            .flatten()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.open && self.list.arriving_moved()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1228,6 +1333,16 @@ impl Widget for Autocomplete {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// A host that composes the field into a larger form reaches it to
+    /// offer suggestions and read what was accepted.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -1661,7 +1776,6 @@ mod tests {
         }
 
         fn reactive_suggestions_after_open_replace_the_status_line() {
-            // Results arriving async clear the status and become selectable rows.
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
@@ -1713,6 +1827,14 @@ mod tests {
         large_text_scales_dropdown_rows_and_hit_geometry_together();
     }
     #[test]
+    fn a_short_label_leaves_its_detail_the_rest_of_the_row() {
+        // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
+        // the detail gets what the label leaves, not a fixed half.
+        assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
+        assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn the_suggestion_list_flips_scrolls_and_waits() {
         let mut list = SuggestionList::new().with_max_visible(3);
         list.set_suggestions(
@@ -1739,8 +1861,11 @@ mod tests {
         let mut busy = SuggestionList::new();
         busy.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
         assert!(busy.rect().is_none());
-        busy.set_busy(true);
-        busy.set_status(Some("Searching…".into()));
+        let asked = crate::time::now();
+        busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            asked,
+            crate::arriving::Source::host("Open-Meteo"),
+        )));
         assert!(busy.rect().is_some());
         let rows = busy.access_rows(|_| 0);
         assert_eq!(rows.len(), 1);
@@ -1755,10 +1880,21 @@ mod tests {
 
         let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
         ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
-        ac.set_status(Some("Searching…".into()));
-        ac.set_busy(true);
+        ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            asked,
+            crate::arriving::Source::host("Open-Meteo"),
+        )));
         ac.open();
         assert!(ac.list_rect().is_some());
-        assert!(Widget::needs_animation_frame(&ac));
+        assert!(
+            !Widget::needs_animation_frame(&ac),
+            "rows on their way draw no frames between their steps"
+        );
+        assert_eq!(
+            Widget::next_wake_deadline(&ac),
+            crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::host("Open-Meteo"))
+                .next_step_at(crate::time::now()),
+            "the placeholder steps on at its deadline"
+        );
     }
 }

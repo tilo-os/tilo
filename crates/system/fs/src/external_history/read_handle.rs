@@ -442,12 +442,13 @@ impl ExternalHistoryReadHandle {
                             frontier: *frontier,
                             version_id: *version_id,
                         },
+                        &[],
                     ) {
                         Ok(_) => Err(Error::NoContent),
                         Err(error) => Err(error),
                     }
                 } else {
-                    snapshot.read_query(scope, current, query)
+                    snapshot.read_query(scope, current, query, &[])
                 };
                 serde_json::to_vec(&FileHistoryReadResponseV1 {
                     schema_version: 1,

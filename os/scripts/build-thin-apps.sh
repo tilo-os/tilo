@@ -9,6 +9,16 @@ REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
+# BUILD_RUNTIME_ONLY=1 builds the shared runtime, its engines and the account probe in the
+# collection's graph and no app binary: what every app's thin build has in common
+# (tools/apps/t-release.sh thin-runtime). Apps built later in the same build directory, with
+# the same packages and features, find these units fresh.
+BUILD_RUNTIME_ONLY="${BUILD_RUNTIME_ONLY:-}"
+case "$BUILD_RUNTIME_ONLY" in ""|1) ;; *) echo "BUILD_RUNTIME_ONLY must be 1 or unset" >&2; exit 1 ;; esac
+if [ "$BUILD_RUNTIME_ONLY" = 1 ] && { [ "$BUILD_PACKAGES" != "  " ] || [ "${BUILD_ROLE:-apps}" != apps ]; }; then
+    echo "BUILD_RUNTIME_ONLY builds no app: it takes no BUILD_PACKAGES and only the apps role" >&2
+    exit 1
+fi
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
 BUILD_ROLE="${BUILD_ROLE:-apps}"
@@ -35,7 +45,12 @@ binaries=()
 build_targets=()
 selected_crates=()
 app_profiles=()
-for manifest in "$REPO"/apps/*/tilo-app.toml; do
+# A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
+# which every tilolang app's entrypoint executes) joins the graph only when
+# BUILD_PACKAGES names it (the nested session, `tilolang dev`): tilolang is
+# experimental, so the image and the app collection are built without it.
+for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; do
+    [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
     binary="$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)"
@@ -44,7 +59,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac
-    if [ "$INCLUDE_PACKAGES" != "  " ]; then
+    if [ "${manifest##*/}" = tilo-runtime.toml ] && [[ "$BUILD_PACKAGES" != *" $package "* ]]; then
+        continue
+    fi
+    if [ "$INCLUDE_PACKAGES" != "  " ] && [ "${manifest##*/}" = tilo-app.toml ]; then
         case "$INCLUDE_PACKAGES" in
             *" $package "*) ;;
             *) continue ;;
@@ -63,7 +81,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         features+=(imager/capture-worker)
     fi
     binary_crates+=("${binary//-/_}")
-    if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
+    if [ "$BUILD_RUNTIME_ONLY" != 1 ] && { [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; }; then
         binaries+=("$binary")
         selected_crates+=("${binary//-/_}")
         build_targets+=(--bin "$binary")
@@ -91,7 +109,7 @@ for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
     binary_crates+=("${engine//-/_}_check")
     build_targets+=(--bin "$engine-check")
 done
-[ "${#binaries[@]}" -gt 0 ] || { echo "no tapp binaries selected" >&2; exit 1; }
+[ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
         echo "requested app is outside the runtime graph: $requested" >&2; exit 1;
@@ -165,8 +183,11 @@ fi
 keep_symbols=()
 [ "$strip" = none ] && keep_symbols=(--config "profile.$PROFILE.strip=\"none\"")
 if [ "$BUILD_PHASE" != verify ]; then
+# Paths here stay relative to the tree's root -- this script cd's to it first --
+# because a Cargo front end may build the tree where it stages it (t builds under
+# /src), and an absolute path from this checkout does not exist there.
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
-    --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "build.rustc-workspace-wrapper=\"tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"

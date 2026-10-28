@@ -244,6 +244,14 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
 }
 
 impl DeviceCapabilities {
+    /// A device the person uses themselves on a Tilo-controlled system: it
+    /// owns workspaces and is neither a host nor foreign. The person's
+    /// devices of this kind find, dial and trust each other.
+    #[must_use]
+    pub const fn is_personal_device(&self) -> bool {
+        self.can_own_workspaces && !self.can_act_as_host && !self.foreign
+    }
+
     /// Capability set for the user's primary device (holds root
     /// private key, admits new devices, reads everything).
     pub fn primary() -> Self {
@@ -869,7 +877,6 @@ mod tests {
             foreign
         );
 
-        // Neither direction of flipping the marker survives the signature.
         let mut stripped = foreign;
         stripped.capabilities.foreign = false;
         assert_eq!(

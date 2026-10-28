@@ -13,7 +13,7 @@
 //! owner forwards to a client only the events and frames of the tabs that
 //! client created, plus the process-wide download and readiness events.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, BufReader, BufWriter};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -24,11 +24,11 @@ use serde_json::{Value, json};
 use tilo_process::rendezvous::{Connection, Joined, Listener, Ownership, Rendezvous};
 
 use super::{
-    ChromiumEngine, CommandQueue, Routes, Runtime, Shared, deliver_frame, fail_routes, protocol,
-    queue_download_event, route_native_event, spawn_named,
+    ChromiumEngine, CommandQueue, Routes, Runtime, Shared, damage, deliver_damage, deliver_frame,
+    fail_routes, protocol, queue_download_event, route_native_event, spawn_named,
 };
 use crate::time::Duration;
-use crate::webview::{Frame, WebViewEvent};
+use crate::webview::WebViewEvent;
 use tilo_lock::MutexRecover as _;
 
 /// Events a client has not read yet. Beyond this, a slow client loses its
@@ -64,7 +64,8 @@ fn superseded(value: &Value) -> bool {
 }
 
 /// What the owner still has to send one client: its events in order, and
-/// only the newest frame of each of its tabs.
+/// only the newest frame of each of its tabs (the frame whole, or what
+/// changed since the frame the client has).
 #[derive(Default)]
 pub(super) struct Outbox {
     state: Mutex<OutboxState>,
@@ -74,13 +75,41 @@ pub(super) struct Outbox {
 #[derive(Default)]
 struct OutboxState {
     events: VecDeque<Value>,
-    frames: BTreeMap<u32, Frame>,
+    frames: BTreeMap<u32, Queued>,
+    /// Tabs whose frame the host was asked for whole: what changed of them
+    /// waits for it.
+    awaiting: BTreeSet<u32>,
+    /// The tab whose frame went last.
+    last_frame_tab: u32,
     closed: bool,
+}
+
+enum Queued {
+    Whole(protocol::WireFrame),
+    Damage(damage::WireDamage),
+}
+
+impl OutboxState {
+    /// The next tab's queued frame or changes. Tabs take turns, so a tab
+    /// painting every frame cannot starve another: always serving the
+    /// lowest-numbered tab first sent a busy first tab's frames and none of
+    /// the rest.
+    fn next_frame(&mut self) -> Option<(u32, Queued)> {
+        let tab = self
+            .frames
+            .range(self.last_frame_tab.saturating_add(1)..)
+            .next()
+            .or_else(|| self.frames.iter().next())
+            .map(|(tab, _)| *tab)?;
+        self.last_frame_tab = tab;
+        self.frames.remove(&tab).map(|frame| (tab, frame))
+    }
 }
 
 enum Outgoing {
     Json(Value),
-    Frame(u32, Frame),
+    Frame(u32, protocol::WireFrame),
+    Damage(u32, damage::WireDamage),
 }
 
 impl Outbox {
@@ -117,14 +146,68 @@ impl Outbox {
         self.ready.notify_one();
     }
 
-    pub(super) fn frame(&self, tab: u32, frame: Frame) {
+    pub(super) fn frame(&self, tab: u32, frame: protocol::WireFrame) {
         let mut state = self.state.lock_recover();
         if state.closed {
             return;
         }
-        state.frames.insert(tab, frame);
+        state.awaiting.remove(&tab);
+        state.frames.insert(tab, Queued::Whole(frame));
         drop(state);
         self.ready.notify_one();
+    }
+
+    /// Queues what changed of a tab's frame, folded into what is queued for
+    /// it already. Returns `false` when the client cannot be given it (it
+    /// changes no frame the client will have): the host is to send the frame
+    /// whole.
+    pub(super) fn damage(&self, tab: u32, damage: damage::WireDamage) -> bool {
+        let mut state = self.state.lock_recover();
+        if state.closed {
+            return true;
+        }
+        if state.awaiting.contains(&tab) {
+            return false;
+        }
+        let pending = match state.frames.remove(&tab) {
+            None => Some(Queued::Damage(damage)),
+            Some(Queued::Whole(mut whole)) => {
+                ((whole.width, whole.height) == (damage.width, damage.height)).then(|| {
+                    damage.apply_to(&mut whole.bgra);
+                    Queued::Whole(whole)
+                })
+            }
+            Some(Queued::Damage(mut earlier)) => earlier
+                .absorb(damage)
+                .is_ok()
+                .then_some(Queued::Damage(earlier)),
+        };
+        let Some(pending) = pending else {
+            state.awaiting.insert(tab);
+            return false;
+        };
+        state.frames.insert(tab, pending);
+        drop(state);
+        self.ready.notify_one();
+        true
+    }
+
+    /// What is queued of a tab's frame's changes, without waiting.
+    #[cfg(test)]
+    pub(super) fn take_damage(&self) -> Option<(u32, damage::WireDamage)> {
+        match self.state.lock_recover().next_frame()? {
+            (tab, Queued::Damage(damage)) => Some((tab, damage)),
+            (_, Queued::Whole(_)) => None,
+        }
+    }
+
+    /// The next queued whole frame, without waiting.
+    #[cfg(test)]
+    pub(super) fn take_frame(&self) -> Option<(u32, protocol::WireFrame)> {
+        match self.state.lock_recover().next_frame()? {
+            (tab, Queued::Whole(frame)) => Some((tab, frame)),
+            (_, Queued::Damage(_)) => None,
+        }
     }
 
     fn close(&self) {
@@ -145,8 +228,10 @@ impl Outbox {
             if let Some(value) = state.events.pop_front() {
                 return Some(Outgoing::Json(value));
             }
-            if let Some((tab, frame)) = state.frames.pop_first() {
-                return Some(Outgoing::Frame(tab, frame));
+            match state.next_frame() {
+                Some((tab, Queued::Whole(frame))) => return Some(Outgoing::Frame(tab, frame)),
+                Some((tab, Queued::Damage(damage))) => return Some(Outgoing::Damage(tab, damage)),
+                None => {}
             }
             state = self.ready.wait(state).ok()?;
         }
@@ -228,6 +313,11 @@ const PROFILE_OPS: &[&str] = &[
     "download_cancel",
     "download_retry",
     "download_cancel_all",
+    "extension_access",
+    "extension_forget",
+    "extension_identity",
+    "extension_grants",
+    "extension_permission_decision",
 ];
 
 static SERVERS: Mutex<Vec<Weak<Server>>> = Mutex::new(Vec::new());
@@ -297,6 +387,7 @@ impl Claim {
     pub(super) fn serve(
         &self,
         runtime: Weak<Runtime>,
+        published: &OnceLock<Arc<Server>>,
         hub: &Arc<Hub>,
     ) -> Result<Arc<Server>, String> {
         let listener = self
@@ -312,9 +403,7 @@ impl Claim {
         });
         // Published before the first client is admitted: a client that has
         // connected finds its owner's server on the owner's runtime.
-        if let Some(runtime) = server.runtime.upgrade() {
-            let _ = runtime.server.set(server.clone());
-        }
+        let _ = published.set(server.clone());
         let weak = Arc::downgrade(&server);
         if let Err(error) = spawn_named("chromium-share", move || accept_loop(&weak)) {
             server.listener.close();
@@ -516,6 +605,7 @@ fn send_to_client(outbox: &Outbox, connection: &Connection) {
         let sent = match item {
             Outgoing::Json(value) => protocol::write_json(&mut writer, &value),
             Outgoing::Frame(tab, frame) => protocol::write_tab_frame(&mut writer, tab, &frame),
+            Outgoing::Damage(tab, damage) => damage::write(&mut writer, tab, &damage),
         };
         if sent.is_err() {
             break;
@@ -601,6 +691,9 @@ fn client_command(
         .get("tab")
         .and_then(Value::as_u64)
         .and_then(|tab| u32::try_from(tab).ok());
+    if let Some(tab) = tab {
+        adopt_client_popup(runtime, tab, tabs, outbox);
+    }
     let owned = tab.and_then(|tab| tabs.get_mut(&tab));
     match owned {
         _ if matches!(op.as_str(), "shutdown" | "create_tab") => {
@@ -624,6 +717,39 @@ fn client_command(
     }
     if let Err(error) = runtime.tx.push(command) {
         tracing::warn!(%error, op, "Chromium command from a Browser process was not queued");
+    }
+}
+
+/// A popup of one of the client's tabs is the client's: its events already
+/// go where the tab's go, and its commands are taken like the tab's. It
+/// closes with the client.
+fn adopt_client_popup(
+    runtime: &Runtime,
+    tab: u32,
+    tabs: &mut HashMap<u32, ClientTab>,
+    outbox: &Arc<Outbox>,
+) {
+    if tab < super::FIRST_POPUP || tabs.contains_key(&tab) {
+        return;
+    }
+    let route = runtime
+        .routes
+        .lock_recover()
+        .get(&tab)
+        .and_then(Weak::upgrade);
+    if let Some(shared) = route
+        && shared
+            .remote
+            .as_ref()
+            .is_some_and(|remote| Arc::ptr_eq(remote, outbox))
+    {
+        tabs.insert(
+            tab,
+            ClientTab {
+                shared,
+                closing: false,
+            },
+        );
     }
 }
 
@@ -752,7 +878,7 @@ pub(super) fn connect(connection: Connection) -> Result<Arc<ChromiumEngine>, Str
         routes,
         next_tab: AtomicU32::new(0),
         download_events,
-        server: OnceLock::new(),
+        server: Arc::default(),
         link: Some(link),
         service_session: None,
         exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -796,6 +922,9 @@ fn receive_events(
     loop {
         match protocol::read_packet(&mut reader) {
             Ok(Some(protocol::Packet::TabFrame(tab, frame))) => deliver_frame(routes, tab, frame),
+            Ok(Some(protocol::Packet::TabDamage(tab, damage))) => {
+                deliver_damage(routes, tab, damage, tx);
+            }
             Ok(Some(protocol::Packet::Json(value))) => {
                 if value.get("event").and_then(Value::as_str) == Some("shared_tab") {
                     answer_tab(&value, routes, pending, tx);
@@ -804,7 +933,8 @@ fn receive_events(
                     break;
                 }
             }
-            Ok(Some(protocol::Packet::Frame(_)) | None) | Err(_) => break,
+            Ok(Some(protocol::Packet::Frame(_) | protocol::Packet::SharedFrame(_)) | None)
+            | Err(_) => break,
         }
     }
     pending.lock_recover().clear();

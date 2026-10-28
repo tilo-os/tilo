@@ -163,12 +163,18 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
         scenario = scenario_from_manifest(manifest)
         if scenario:
             # package-store keeps signed metadata in <hash>.pkg and the
-            # materialised executable tree beside it in <hash>.
+            # materialised executable tree beside it in <hash>; the image's
+            # store names the tree by the payload root hash the signed root
+            # commits to (bytes 44..76), under trees/ beside pkgs/.
             payload = manifest.parent
             if payload.name.endswith(".pkg"):
                 if not re.fullmatch(r"[0-9a-f]{64}\.pkg", payload.name):
                     raise GateError(f"invalid installed package metadata directory: {payload}")
-                payload = payload.with_name(payload.name[:-4])
+                tree = payload.with_name(payload.name[:-4])
+                signed = payload / "signed-root"
+                if not tree.is_dir() and signed.is_file():
+                    tree = payload.parent.parent / "trees" / signed.read_bytes()[44:76].hex()
+                payload = tree
             binary = payload / scenario.binary
             if not binary.is_file() or not os.access(binary, os.X_OK):
                 raise GateError(f"{scenario.app_id}: certified binary is absent: {binary}")
@@ -442,8 +448,8 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         if time.monotonic() >= deadline:
             raise GateError("the app palette exposed no editable query over AT-SPI")
         time.sleep(POLL_SECONDS * 4)
-    # The palette names an app's launch row "Open <app>".
-    row_name = f"Open {app_name}"
+    # The palette names an app's launch row by the app's name.
+    row_name = app_name
     tree, _ = wait_for_shell_node(shell, row_name)
     rows = [
         path for path in AtspiClient.named(tree, row_name)

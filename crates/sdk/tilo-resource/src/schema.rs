@@ -15,6 +15,7 @@
 //! operation shows the whole shape and binding enforces it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionParam, ParamType};
@@ -68,6 +69,7 @@ primitive! {
     usize => json!({"type": "integer", "minimum": 0}),
     serde_json::Value => json!({}),
     crate::Id => json!({"type": "string"}),
+    crate::Counter => json!({"type": "integer"}),
     uuid::Uuid => json!({"type": "string", "format": "uuid"}),
 }
 
@@ -263,6 +265,41 @@ pub fn range(schema: Value, minimum: Option<Value>, maximum: Option<Value>) -> V
         }
     }
     Value::Object(object)
+}
+
+/// `schema` narrowed to the texts `choices`: `#[model(choices = ..)]` on a
+/// field. An optional field may still be absent (`null`).
+pub fn choices(schema: Value, choices: &[&str]) -> Value {
+    let Value::Object(mut object) = schema else {
+        return schema;
+    };
+    if let Some(Value::Array(alternatives)) = object.get_mut("oneOf") {
+        for alternative in alternatives.iter_mut() {
+            if alternative.get("type") != Some(&json!("null")) {
+                *alternative = self::choices(alternative.take(), choices);
+            }
+        }
+        return Value::Object(object);
+    }
+    let mut values: Vec<Value> = choices.iter().map(|choice| json!(choice)).collect();
+    if matches!(object.get("type"), Some(Value::Array(names)) if names.iter().any(|name| name == "null"))
+    {
+        values.push(Value::Null);
+    }
+    object.insert("enum".into(), Value::Array(values));
+    Value::Object(object)
+}
+
+/// `schema` saying the value a field has until someone changes it:
+/// `#[model(defaults)]` on a record.
+pub fn with_default(schema: Value, default: Option<Value>) -> Value {
+    match (schema, default) {
+        (Value::Object(mut object), Some(default)) => {
+            object.insert("default".into(), default);
+            Value::Object(object)
+        }
+        (schema, _) => schema,
+    }
 }
 
 /// `schema` with `description`, when there is one.
@@ -587,7 +624,7 @@ fn sort_required(schema: &mut Value) {
                 if key == "required"
                     && let Value::Array(names) = value
                 {
-                    names.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                    names.compact_sort_by(|a, b| a.as_str().cmp(&b.as_str()));
                 } else {
                     sort_required(value);
                 }

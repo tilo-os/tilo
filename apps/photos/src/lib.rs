@@ -19,7 +19,7 @@
 //! app is given at startup) and records an `ImportPhoto` action naming them by
 //! hash; every edit after that is a `SetEdits` action replayed onto that
 //! original. The CRDT holds the hash, small metadata and the edits in force
-//! ([`doc`]); it never holds the pixels, and a rendered edit (Copy, Save, the
+//! (`doc`); it never holds the pixels, and a rendered edit (Copy, Save, the
 //! export operation) is an output that never replaces the original. The decode
 //! and the render live in the app instance, because an automerge change big
 //! enough to carry a photograph is dropped by the sync transport and freezes
@@ -87,12 +87,6 @@ pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 /// a machine-local path.  The content is read, verified against its hash, from
 /// `store` first; missing bytes are an actionable refusal rather than a
 /// phantom library entry.
-///
-/// # Errors
-///
-/// Returns an error when the Camera identity is malformed, the verified bytes
-/// have not arrived on this device, exceed the import budget, fail integrity
-/// validation, or are not a safely decodable still image.
 pub fn camera_import_photo(
     media_id: &str,
     name: &str,
@@ -192,7 +186,6 @@ pub(crate) mod test_doc {
         doc
     }
 
-    /// The library `doc` holds.
     pub(crate) fn library(doc: &AutoCommit) -> PhotoLibrary {
         PhotoLibrary::read(doc).expect("the library reads")
     }
@@ -214,7 +207,6 @@ pub(crate) mod test_doc {
         id
     }
 
-    /// The photograph `photo` in `library`.
     pub(crate) fn photo(doc: &AutoCommit, id: &str) -> Option<LibraryPhoto> {
         library(doc).photo(id).cloned()
     }

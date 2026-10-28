@@ -1,11 +1,12 @@
 //! Workspace-switch latency: from the chord to its first frame, and from the
-//! chord to the resting frame after the switch's frame run.
+//! chord to the resting frame.
 //!
 //! A switch starts when the shell acts on it
-//! (`ShellOverlayHost::start_workspace_switch_frames`, on the keyboard chord,
-//! the touchpad gesture or the action). Every frame the compositor queues while
-//! the switch is held belongs to it; the first frame queued after the hold ends
-//! is the resting frame and closes the run. Frames are dated twice: when they
+//! (`ShellOverlayHost::start_workspace_switch`, on the keyboard chord, the
+//! touchpad gesture or the action). Every frame the compositor queues while
+//! the switch still owes its frame belongs to it; the first frame queued once
+//! nothing is owed is the resting frame and closes the run. The switch draws
+//! in one frame, so that is normally the first frame itself. Frames are dated twice: when they
 //! were queued (handed to the presenter, or drawn on a synchronous backend) and
 //! when they were shown (the page flip's vblank on direct scanout, the
 //! presenter's retirement otherwise). Each switch is one `WORKSPACE-SWITCH`
@@ -34,9 +35,7 @@ pub struct SwitchSample {
     pub first_queued_us: u128,
     /// The first frame after the chord was shown.
     pub first_shown_us: u128,
-    /// The resting frame was queued.
     pub settled_queued_us: u128,
-    /// The resting frame was shown.
     pub settled_shown_us: u128,
     /// Frames queued for the switch, the resting frame included.
     pub frames: u32,
@@ -255,8 +254,6 @@ mod tests {
             );
         }
 
-        // Phase `re_arming_before_the_first_frame_keeps_the_chord`.
-        // The keyboard chord and the content rebuild both start the frame run.
         {
             let chord = Instant::now();
             let mut tracker = SwitchLatency::default();
@@ -343,7 +340,6 @@ mod tests {
             );
         }
 
-        // Phase `a_run_that_never_settles_does_not_swallow_later_switches`.
         {
             let chord = Instant::now();
             let mut tracker = SwitchLatency::default();

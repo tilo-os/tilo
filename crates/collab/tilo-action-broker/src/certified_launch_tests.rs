@@ -9,6 +9,7 @@ impl crate::services::LauncherServices for CertifiedLaunchCatalog {
 
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: "so.tilo.word-processor".into(),
             display_name: "Word Processor".into(),
             unconfined: false,
@@ -114,22 +115,22 @@ fn certified_launch_gate(
     rig.state.launchable.replace_launcher_for_test(
         Arc::new(move |app, workspace, _, _| {
             assert_eq!(app, "so.tilo.word-processor");
-            assert!(!workspace.room.is_nil());
+            assert!(!workspace.room().is_nil());
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             started.send(()).map_err(|error| error.to_string())?;
             released
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(|error| error.to_string())
         }),
-        Duration::from_secs(5),
+        tilo_test_env::hang_bound(),
     );
     (started_rx, release, launches)
 }
 
 async fn certified_launch_wait(started: &std::sync::mpsc::Receiver<()>) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("launcher starts within the bound", async {
         loop {
             match started.try_recv() {
                 Ok(()) => break Ok(()),
@@ -139,7 +140,6 @@ async fn certified_launch_wait(started: &std::sync::mpsc::Receiver<()>) {
         }
     })
     .await
-    .expect("launcher starts within the bound")
     .expect("launcher remains open");
 }
 
@@ -206,7 +206,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                             .await
                             .is_err()
                     );
-                    no_delivery(&rig).await;
+                    no_delivery(&rig);
                     assert!(events.try_recv().is_err());
                     assert_eq!(
                         launches.load(std::sync::atomic::Ordering::SeqCst),
@@ -265,7 +265,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                     }
                     release.send(()).unwrap();
                     assert!(local_host_answer(pending).await.is_err());
-                    no_delivery(&rig).await;
+                    no_delivery(&rig);
                     assert!(
                         events.try_recv().is_err(),
                         "a refused launch wait never accepted an invocation"

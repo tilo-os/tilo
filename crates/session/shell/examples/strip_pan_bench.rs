@@ -18,11 +18,15 @@
 //! asks the renderer to rasterise: the area of its damage rects, or the whole
 //! output for a dense frame.
 //!
+//! Each frame first pumps the apps, as the session's loop does before it
+//! draws (`FrameBuilder::pump_apps`, not timed): what the in-process apps'
+//! own threads handed over and wake deadlines that came due are taken then.
+//!
 //! Every motion starts from a desktop at rest: two frames in a row that
 //! change nothing, with nothing animating, each kept rather than rendered as
-//! the DRM presenter keeps it; a pan also rests as long as the session waits
-//! before it warms the layers first, and then again two such frames, and
-//! rests and warms again until a frame after the warm changes nothing
+//! the DRM presenter keeps it; then a rest as long as the session waits
+//! before it warms the layers, and again two such frames, and a rest and a
+//! warm again until a frame after the warm changes nothing
 //! (`rest_and_warm`). Once at rest the layered presenter warms its
 //! strip layers as the session does when the desktop rests after a frame
 //! that changed it (`FrameBuilder::layers_at_rest`,
@@ -109,7 +113,6 @@ struct Args {
 #[derive(Clone, Copy)]
 struct Case {
     size_name: &'static str,
-    /// The panel, in device pixels.
     size: (u32, u32),
     windows: usize,
     /// Device pixels per layout pixel.
@@ -314,6 +317,8 @@ fn tree(windows: usize, second_strip: bool) -> WorkspaceTree {
 
 struct Fixture {
     frame: FrameBuilder,
+    /// The document the session's loop pumps the apps with.
+    doc: ui::automerge::AutoCommit,
     /// Never read: the fixture's Files directory, kept until the frame drops.
     _parent: tempfile::TempDir,
 }
@@ -355,6 +360,7 @@ impl Fixture {
         frame.set_strip_pan_presenter(false, layered);
         Ok(Self {
             frame,
+            doc: ui::automerge::AutoCommit::new(),
             _parent: parent,
         })
     }
@@ -457,6 +463,12 @@ fn frame(
     size: (u32, u32),
     samples: Option<&mut Samples>,
 ) -> Result<bool, String> {
+    // The session's loop pumps the apps before each frame: what their own
+    // threads handed over, and wake deadlines that came due, are taken
+    // then. Not timed, as the session times it apart (`apps_ms`).
+    let _ = fixture
+        .frame
+        .pump_apps(&mut fixture.doc, &ui::automerge::ROOT);
     let started = Instant::now();
     fixture.frame.relayout();
     let laid_out = Instant::now();
@@ -589,13 +601,13 @@ fn rest(
 
 /// Rest ([`rest`]) and warm the layers ([`warm`]) as a session does, until
 /// a frame drawn at rest after the warm changes nothing. The in-process apps
-/// hand over what they produce on their own threads (a listing, a prompt)
-/// when a frame polls them, and the bench has no event loop their wakeups
-/// could start: what lands while a 4K warm runs would otherwise be drawn by
-/// the motion's first frame (a whole window group of the still strip on two
-/// strips, about 2.4 M px). A session draws such a frame as it lands and
-/// warms the layers again once the desktop has rested after it. The warm's
-/// time and pixels add up over the rounds.
+/// make content on their own threads (a listing, a prompt), and the bench
+/// has no event loop their wakes could start: what lands while a 4K warm
+/// runs would otherwise be drawn by the motion's first frame (a whole window
+/// group, about 2.4 M px). A session's loop is woken as it lands (the
+/// desktop surface's wake, `shell::install_component_wake`), draws it, and
+/// warms the layers again once the desktop has rested after it. Pans and strip moves both start here. The
+/// warm's time and pixels add up over the rounds.
 fn rest_and_warm(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
@@ -711,7 +723,6 @@ fn pan(
     Ok(samples)
 }
 
-/// One frame, measured on its own.
 fn single_frame(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
@@ -727,11 +738,11 @@ fn strip_move(
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
 ) -> Result<Samples, String> {
-    // Settled, not rested: a first move after a real rest repaints about
-    // 2.6 M px at 4K, which the strip-move budgets do not measure yet.
-    settle(fixture, target, size)?;
+    // From a desktop at rest as a session reaches it, layers warmed: the
+    // first move is measured like the others.
+    let warmed = rest_and_warm(fixture, target, size)?;
     let mut samples = Samples {
-        warm: warm(fixture, target)?,
+        warm: warmed,
         ..Samples::default()
     };
     for index in 0..STRIP_MOVES {

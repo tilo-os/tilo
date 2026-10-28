@@ -9,9 +9,11 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-const NATIVE: &str = env!("CARGO_BIN_EXE_tilo-installer-prepared-setup-extract");
+fn native() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-installer-prepared-setup-extract")
+}
 fn run(args: &[&str], input: &[u8]) -> TestResult<Output> {
-    let mut child = Command::new(NATIVE)
+    let mut child = Command::new(native())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -2,11 +2,11 @@
 //! them.
 //!
 //! Every row comes from the action door itself: the broker's catalogue for
-//! the local person in the active workspace, narrowed to the shortcuts app.
-//! Invoking a row invokes that same published action through the broker, so
-//! the palette reaches exactly what an agent, a peer or the MCP bridge
-//! reaches, with the same authority checks — and a run shows up as a broker
-//! job like any other background action.
+//! the local person in the active workspace, narrowed to the shortcuts app
+//! before the broker pages it. Invoking a row invokes that same published
+//! action through the broker, so the palette reaches exactly what an agent, a
+//! peer or the MCP bridge reaches, with the same authority checks — and a run
+//! shows up as a broker job like any other background action.
 //!
 //! While the palette searches inside one resource
 //! ([`SearchResourceScope`]), it offers instead the shortcuts that run on
@@ -82,6 +82,11 @@ impl ShortcutsProvider {
             .unwrap_or_default();
         let broker = self.broker.clone();
         let caller = caller.clone();
+        let declared: Vec<String> = descriptor
+            .params
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
         let target = RemoteActionTarget {
             provider: row.provider,
             address: ActionAddress::new(
@@ -102,7 +107,18 @@ impl ShortcutsProvider {
                 if let Some(room) = workspace_provider_room(&target.provider)
                     && let Some(shortcut) = run_target(&target.address)
                 {
-                    return start_interactive_run(&broker, &caller, room, shortcut, arguments);
+                    // A request that says where to go on from continues that
+                    // run of the shortcut instead of starting it over.
+                    let declared: Vec<&str> = declared.iter().map(String::as_str).collect();
+                    let continuation = continuation_of(&mut arguments, &declared)?;
+                    return start_interactive_run(
+                        &broker,
+                        &caller,
+                        room,
+                        shortcut,
+                        arguments,
+                        continuation,
+                    );
                 }
                 invoke_through_broker(&broker, &caller, &target, arguments)
             },
@@ -130,6 +146,7 @@ impl ShortcutsProvider {
             }),
             on_invoke: Some(invoke),
             on_begin_invoke: None,
+            resource: None,
         })
     }
 }
@@ -203,16 +220,72 @@ fn invoke_through_broker(
     }
 }
 
+/// Where a run of `shortcut` should go on from, when the request says so:
+/// `continue_run` names the run that happened and `continue_from` the step of
+/// it. Neither is a parameter of the shortcut, so both are taken out of
+/// `arguments`; a request naming only one of them is refused rather than
+/// quietly starting the shortcut over.
+fn continuation_of(
+    arguments: &mut Map<String, Value>,
+    declared: &[&str],
+) -> Result<Option<tilo_automation::Continuation>, ActionError> {
+    // A shortcut that declares an input by either name is asked for it as a
+    // parameter. On such a shortcut the two names cannot also say where to go
+    // on from, so nothing is taken out: the input is what the person set.
+    if declared.iter().any(|name| reserved(name)) {
+        return Ok(None);
+    }
+    let Some(from) = arguments.remove(CONTINUE_FROM) else {
+        if arguments.remove(CONTINUE_RUN).is_some() {
+            return Err(ActionError::Refused(t_args(
+                "search-shortcut-continue-needs-step",
+                &[],
+            )));
+        }
+        return Ok(None);
+    };
+    let run = arguments
+        .remove(CONTINUE_RUN)
+        .ok_or_else(|| ActionError::Refused(t_args("search-shortcut-continue-needs-run", &[])))?;
+    let from = from
+        .as_str()
+        .ok_or_else(|| ActionError::Refused(t_args("search-shortcut-continue-needs-step", &[])))?;
+    let run: tilo_automation::RunId = serde_json::from_value(run)
+        .map_err(|_| ActionError::Refused(t_args("search-shortcut-continue-needs-run", &[])))?;
+    Ok(Some(tilo_automation::Continuation {
+        run,
+        from: tilo_automation::StepPath::parse(from),
+    }))
+}
+
+/// The step a continued run goes on from.
+const CONTINUE_FROM: &str = "continue_from";
+/// The run a continued run goes on from.
+const CONTINUE_RUN: &str = "continue_run";
+
+/// Whether `name` is one of the two names a continued run is asked for by.
+fn reserved(name: &str) -> bool {
+    name == CONTINUE_RUN || name == CONTINUE_FROM
+}
+
 /// Start a shortcut run for the person at the palette: the run asks them for
-/// its confirmations and questions in the shell's sheet.
+/// its confirmations and questions in the shell's sheet. `from` continues an
+/// earlier run instead of starting the shortcut over.
 fn start_interactive_run(
     broker: &AppActionBroker,
     caller: &Caller,
     room: &str,
     shortcut: &str,
     arguments: Map<String, Value>,
+    from: Option<tilo_automation::Continuation>,
 ) -> Result<ActionReceipt, ActionError> {
-    match broker.start_interactive_shortcut_run(caller, room, shortcut, arguments) {
+    let started = match from {
+        Some(from) => {
+            broker.continue_interactive_shortcut_run(caller, room, shortcut, arguments, from)
+        }
+        None => broker.start_interactive_shortcut_run(caller, room, shortcut, arguments),
+    };
+    match started {
         Ok(job) => Ok(ActionReceipt {
             broker_invocation_id: Some(job),
             update: broker
@@ -251,7 +324,7 @@ impl SearchProvider for ShortcutsProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return Vec::new();
         };
@@ -262,6 +335,10 @@ impl SearchProvider for ShortcutsProvider {
             &caller,
             CatalogueQuery {
                 provider: Some(provider),
+                // The host builds and pages only the shortcuts app's rows, so
+                // the governance, keyboard and other applications' descriptors
+                // a keypress would otherwise pay for are never built.
+                app_id: Some(SHORTCUTS_APP_ID.into()),
                 max_results: MAX_CATALOGUE_PAGE,
                 ..CatalogueQuery::default()
             },
@@ -269,33 +346,45 @@ impl SearchProvider for ShortcutsProvider {
         let PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
             return Vec::new();
         };
-        let needle = ctx.needle.trim().to_lowercase();
         let within = ctx.chrome.search_resource_scope.clone();
-        page.rows
+        let (rows, fields): (Vec<SearchResult>, Vec<_>) = page
+            .rows
             .into_iter()
+            // Defensive: the host already narrowed to this app, and a row of
+            // another application is never offered as a shortcut.
             .filter(|row| row.app_id == SHORTCUTS_APP_ID)
             .filter_map(|row| {
                 let descriptor = row.action.as_ref()?;
-                let haystack = format!(
-                    "{} {} {}#{}",
-                    descriptor.action_label.to_lowercase(),
-                    descriptor.resource_label.to_lowercase(),
-                    descriptor.address.resource,
-                    descriptor.address.action
-                );
-                let score = if needle.is_empty() {
-                    0
-                } else if haystack.contains(&needle) {
-                    80
-                } else {
-                    return None;
-                };
-                match &within {
-                    Some(resource) => self.quick_action(&caller, row, resource, score),
-                    None => self.result(&caller, row, score),
-                }
+                let fields = vec![
+                    (
+                        descriptor.action_label.clone(),
+                        ui::search::FieldWeight::TITLE,
+                    ),
+                    (
+                        descriptor.resource_label.clone(),
+                        ui::search::FieldWeight::SUBTITLE,
+                    ),
+                    (
+                        format!(
+                            "{}#{}",
+                            descriptor.address.resource, descriptor.address.action
+                        ),
+                        ui::search::FieldWeight::IDENTITY,
+                    ),
+                ];
+                let result = match &within {
+                    Some(resource) => self.quick_action(&caller, row, resource, 0),
+                    None => self.result(&caller, row, 0),
+                }?;
+                Some((result, fields))
             })
-            .collect()
+            .unzip();
+        crate::shell::search::rank_rows(
+            &ui::search::ListIndex::default(),
+            ctx.needle.trim(),
+            rows,
+            &fields,
+        )
     }
 }
 
@@ -316,7 +405,7 @@ mod tests {
     /// nothing.
     fn chrome_with_file_shortcut() -> Chrome {
         let mut workspace = Workspace::new(WorkspaceId(1), "Quick actions");
-        let owner = crate::shell::state::local_user_id_for_room(&workspace.room);
+        let owner = crate::shell::state::local_user_id_for_room(&workspace.room());
         let on_file = Shortcut {
             id: "archive-file".into(),
             name: "Archive a file".into(),
@@ -326,6 +415,7 @@ mod tests {
                 ActionParam::optional("note", ParamType::Text, "Why"),
             ],
             steps: Vec::new(),
+            step_timeout_secs: None,
             output: Some(Binding::Input("file".into())),
             grant: Vec::new(),
             triggers: Vec::new(),
@@ -441,6 +531,223 @@ mod tests {
             output.value,
             Some(serde_json::json!("files.entry.image:0123")),
             "the run received the resource through its first input"
+        );
+    }
+
+    /// The page the broker's action door answers `caller` with.
+    fn broker_page(
+        broker: &AppActionBroker,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> tilo_actions::remote::CataloguePage {
+        let mut pending = BrokerActionHost::new(broker.clone()).query(caller, query);
+        let PendingPoll::Ready(Ok(page)) = pending.poll_ready() else {
+            panic!("an eager catalogue answers at once");
+        };
+        page
+    }
+
+    /// The room and local person of `chrome`'s active workspace.
+    fn room_and_caller(chrome: &Chrome) -> (String, Caller) {
+        let state = chrome.borrow();
+        let room = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(Workspace::room)
+            .expect("a workspace");
+        let caller =
+            Caller::local_person(state.local_user_for_room(&room)).in_room(room.to_string());
+        (room.to_string(), caller)
+    }
+
+    #[test]
+    fn an_app_scoped_query_answers_the_same_shortcut_rows_as_a_filtered_catalogue() {
+        let chrome = chrome_with_file_shortcut();
+        let (room, caller) = room_and_caller(&chrome);
+        let broker = crate::shell::broker_services::test_broker_with_membership(
+            chrome.borrow().tree_handle(),
+        );
+        let provider = workspace_provider(&room);
+        let scoped = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                provider: Some(provider.clone()),
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        let unfiltered = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                provider: Some(provider.clone()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        assert_eq!(
+            scoped.rows,
+            unfiltered
+                .rows
+                .iter()
+                .filter(|row| row.app_id == SHORTCUTS_APP_ID)
+                .cloned()
+                .collect::<Vec<_>>(),
+            "the host narrows before paging, so the same shortcut rows come back"
+        );
+        let mut run_resources: Vec<&str> = scoped
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .filter(|action| action.address.action == "run")
+            .map(|action| action.address.resource.as_str())
+            .collect();
+        run_resources.sort_unstable();
+        assert_eq!(
+            run_resources,
+            ["shortcuts.shortcut:archive-file", "shortcuts.shortcut:tidy"],
+            "both of the workspace's shortcuts are offered"
+        );
+        assert!(
+            unfiltered.rows.len() > scoped.rows.len(),
+            "the unscoped catalogue also offers other applications' rows"
+        );
+
+        // Naming no provider still answers the aggregate catalogue, narrowed
+        // to the app: the workspace provider stays discoverable that way.
+        let aggregate = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        drop(broker);
+        assert!(
+            aggregate
+                .rows
+                .iter()
+                .all(|row| row.app_id == SHORTCUTS_APP_ID),
+            "no other application's rows are offered"
+        );
+        assert_eq!(
+            aggregate
+                .rows
+                .iter()
+                .filter(|row| row.provider == provider)
+                .cloned()
+                .collect::<Vec<_>>(),
+            scoped.rows,
+            "the workspace provider's rows are the same with no provider named"
+        );
+    }
+
+    /// A request that names a run and a step of it continues that run, and
+    /// neither name is left for the shortcut as a parameter.
+    #[test]
+    fn a_request_naming_a_run_and_a_step_continues_that_run() {
+        let run = tilo_automation::RunId::new();
+        let mut arguments: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "continue_run": run,
+            "continue_from": "2.then.0",
+        }))
+        .expect("a request object");
+        assert_eq!(
+            continuation_of(&mut arguments, &[]),
+            Ok(Some(tilo_automation::Continuation {
+                run,
+                from: tilo_automation::StepPath::parse("2.then.0"),
+            }))
+        );
+        assert!(
+            arguments.is_empty(),
+            "both names are taken out: {arguments:?}"
+        );
+    }
+
+    /// A request that names no run starts the shortcut, arguments untouched.
+    #[test]
+    fn a_request_naming_no_run_starts_the_shortcut() {
+        let mut arguments: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({"note": "because"}))
+                .expect("a request object");
+        assert_eq!(continuation_of(&mut arguments, &[]), Ok(None));
+        assert_eq!(
+            arguments.get("note").and_then(Value::as_str),
+            Some("because"),
+            "the shortcut still gets what the person set"
+        );
+    }
+
+    /// Half a continuation starts the shortcut over unless it is refused, so
+    /// it is refused: repeating the steps the person came to skip is the one
+    /// thing a continued run must not do.
+    #[test]
+    fn half_a_continuation_is_refused_rather_than_starting_over() {
+        for only in [
+            serde_json::json!({"continue_run": tilo_automation::RunId::new()}),
+            serde_json::json!({"continue_from": "1"}),
+            serde_json::json!({"continue_run": "not a run", "continue_from": "1"}),
+            serde_json::json!({"continue_run": tilo_automation::RunId::new(),
+                               "continue_from": 3}),
+        ] {
+            let mut arguments: Map<String, Value> =
+                serde_json::from_value(only.clone()).expect("a request object");
+            assert!(
+                matches!(
+                    continuation_of(&mut arguments, &[]),
+                    Err(ActionError::Refused(_))
+                ),
+                "{only} is refused"
+            );
+        }
+    }
+
+    /// A shortcut that declares an input named like one of the two is asked
+    /// for it as a parameter: the value belongs to the shortcut, not to the
+    /// request's place to go on from.
+    #[test]
+    fn a_declared_input_by_that_name_is_left_to_the_shortcut() {
+        let mut arguments: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({"continue_from": "the third one"}))
+                .expect("a request object");
+        assert_eq!(
+            continuation_of(&mut arguments, &["continue_from"]),
+            Ok(None)
+        );
+        assert_eq!(
+            arguments.get("continue_from").and_then(Value::as_str),
+            Some("the third one")
+        );
+    }
+
+    #[test]
+    fn an_app_scoped_query_still_denies_a_stranger() {
+        let chrome = chrome_with_file_shortcut();
+        let (room, _) = room_and_caller(&chrome);
+        let broker = crate::shell::broker_services::test_broker_with_membership(
+            chrome.borrow().tree_handle(),
+        );
+        let stranger = Caller::authenticated([9; 32], [8; 32]).in_room(room.clone());
+        let page = broker_page(
+            &broker,
+            &stranger,
+            CatalogueQuery {
+                provider: Some(workspace_provider(&room)),
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        drop(broker);
+        assert!(
+            page.rows.is_empty(),
+            "narrowing by app never offers a caller without a role anything"
         );
     }
 }

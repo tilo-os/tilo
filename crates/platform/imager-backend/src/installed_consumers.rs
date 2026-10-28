@@ -62,18 +62,16 @@ fn require(condition: bool, message: &str) -> io::Result<()> {
 }
 
 /// The installed command-line producers, as `tilo-prepared-setup` modes.
-pub const MODES: [&str; 4] = [
+pub const MODES: [&str; 5] = [
     "--verify-home-consumer-capability",
     "--verify-applications-consumer-capability",
     "--verify-account-consumer-capability",
     "--data-consumer-catalog-facts",
+    "--receiving-browser",
 ];
 
 /// Run one installed producer mode. Returns stdout on success, or the closed
 /// diagnostic for stderr; the caller maps these to exit status 0 and 1.
-///
-/// # Errors
-/// Returns the diagnostic line for unknown arguments and failed checks.
 pub fn run(mode: &str, args: impl IntoIterator<Item = OsString>) -> Result<Vec<u8>, String> {
     let args = args.into_iter().collect::<Vec<_>>();
     let check = match args.as_slice() {
@@ -129,6 +127,16 @@ pub fn run(mode: &str, args: impl IntoIterator<Item = OsString>) -> Result<Vec<u
             }
             let facts = data::catalog_facts(&data::Store::installed(), &mut runner);
             Ok(line(json::canonical(&facts.map_err(failed)?)))
+        }
+        "--receiving-browser" => {
+            let failed = |error: io::Error| format!("receiving Browser unavailable: {error}");
+            if !args.is_empty() {
+                return Err(failed(invalid("receiving Browser accepts no arguments")));
+            }
+            let selected = service::selected(std::path::Path::new("/")).map_err(failed)?;
+            Ok(line(json::canonical(
+                &selected.map_or(serde_json::Value::Null, |selected| selected.json()),
+            )))
         }
         _ => Err(format!("unknown installed consumer mode {mode}")),
     }

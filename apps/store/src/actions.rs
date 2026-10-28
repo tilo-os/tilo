@@ -59,8 +59,6 @@ pub fn tapp_staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-// ---- download ------------------------------------------------------
-
 /// HTTP-download a `.tapp` to `dest`. Blocking — runs on the worker
 /// thread. The bytes are *not* trusted here: app-host
 /// re-verifies the content hash + publisher signature before it
@@ -128,8 +126,6 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     Ok(bytes.len() as u64)
 }
 
-// ---- orchestration -------------------------------------------------
-
 /// Execute a card action end-to-end. `staging_dir` is where a
 /// downloaded `.tapp` is written before install; pass
 /// [`tapp_staging_dir`] in production.
@@ -161,9 +157,6 @@ pub fn execute_with_host(
         | (ActionKind::RuntimeInstall, StoreSource::Tilo { .. }) => {
             open_tilo(host, item, action, staging_dir)
         }
-        (ActionKind::Remove, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
-            host.remove(id).map(|()| "Removed app.".into())
-        }),
         (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) if item.installed.is_installed() => {
             tilo_existing(host, item, |host, id| {
                 host.pin(id, true)
@@ -226,12 +219,6 @@ pub fn execute_with_host(
                     package_root: None,
                 }),
             }
-        }
-        (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
-            host_result(host, |host| {
-                host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
-                    .map(|_| ui::i18n!("store-app-removed"))
-            })
         }
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")
@@ -478,16 +465,13 @@ mod tests {
     /// Without a Flatpak host, needs-host and open both fail without spawning anything.
     #[test]
     fn actions_without_a_flatpak_host_fail_without_spawning() {
-        // Case `needs_flatpak_host_is_a_no_op_failure`.
         {
             let item = flatpak_item("Chess", InstalledState::Not);
             let out = execute(&item, ActionKind::NeedsFlatpakHost, Path::new("/tmp"));
             assert!(!out.ok);
         }
 
-        // Case `open_without_host_capability_fails_without_spawning_anything`.
         {
-            // A Tilo item whose registry entry lost its download URL.
             let mut item = tilo_item("Notes", InstalledState::Not);
             item.versions[0].download_url = None;
             let out = execute(&item, ActionKind::Open, Path::new("/tmp"));

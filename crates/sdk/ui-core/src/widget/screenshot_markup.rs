@@ -104,6 +104,10 @@ pub struct ScreenshotMarkup {
     opened_at: Instant,
     spawn_from: Option<Rect>,
     entrance_progress_override: Option<f64>,
+    /// The toolbar control the keyboard is on (Tab moves it, Space and
+    /// Enter press it); `None` while the keyboard is on the editor itself.
+    keyboard: Option<&'static str>,
+    focused: bool,
 }
 
 /// The editor opening out of the captured shot: one thing becoming another
@@ -150,7 +154,6 @@ struct ToolbarLayout {
     /// Where the "Opaque" badge stands while the redact tool is active;
     /// `Rect::ZERO` when the toolbar has no room for it.
     redact_badge: Rect,
-    /// The tool picker pill, anchored above the tool button.
     tool_picker: Rect,
     /// The colour palette pill, anchored above the `colors` button — only
     /// present when the swatches did not fit inline and the picker is open.
@@ -204,6 +207,8 @@ impl ScreenshotMarkup {
             opened_at: crate::time::now(),
             spawn_from: None,
             entrance_progress_override: None,
+            keyboard: None,
+            focused: false,
         }
     }
 
@@ -570,6 +575,124 @@ impl ScreenshotMarkup {
         }
     }
 
+    /// Every toolbar control in reading order with its catalogue label: the
+    /// order Tab walks and the order assistive technology lists them. The
+    /// tool picker's choices follow the button that opened them, as the
+    /// colour palette's already follow theirs.
+    fn semantic_controls(&self) -> Vec<(&'static str, Rect, &'static str)> {
+        let controls = self.controls();
+        let (choices, rest): (Vec<_>, Vec<_>) = controls
+            .into_iter()
+            .partition(|(id, _)| id.starts_with("tool-"));
+        let mut ordered = Vec::with_capacity(rest.len() + choices.len());
+        for control in rest {
+            let opens_choices = control.0 == "tool";
+            ordered.push(control);
+            if opens_choices {
+                ordered.extend(choices.iter().copied());
+            }
+        }
+        ordered
+            .into_iter()
+            .filter_map(|(id, rect)| self.control_label_key(id).map(|key| (id, rect, key)))
+            .collect()
+    }
+
+    /// The catalogue key naming one toolbar control, shown as its tooltip
+    /// and announced by assistive technology.
+    fn control_label_key(&self, id: &str) -> Option<&'static str> {
+        Some(match id {
+            "cancel" => "widget-markup-close",
+            "undo" => "widget-markup-undo",
+            "redo" => "widget-markup-redo",
+            "tool" => match self.tool {
+                MarkupTool::Pen => "widget-markup-tools-pen",
+                MarkupTool::Highlighter => "widget-markup-tools-highlighter",
+                MarkupTool::Arrow => "widget-markup-tools-arrow",
+                MarkupTool::Rectangle => "widget-markup-tools-rectangle",
+                MarkupTool::Redact => "widget-markup-tools-redact",
+            },
+            "tool-pen" => "widget-markup-tool-pen",
+            "tool-highlighter" => "widget-markup-tool-highlighter",
+            "tool-arrow" => "widget-markup-tool-arrow",
+            "tool-rectangle" => "widget-markup-tool-rectangle",
+            "tool-redact" => "widget-markup-tool-redact",
+            "fit" => "widget-markup-fit",
+            "colors" => "widget-markup-colors",
+            "color-red" => "widget-markup-color-red",
+            "color-yellow" => "widget-markup-color-yellow",
+            "color-blue" => "widget-markup-color-blue",
+            "color-green" => "widget-markup-color-green",
+            "color-white" => "widget-markup-color-white",
+            "open" => "widget-markup-open",
+            "copy" => "widget-markup-copy",
+            "save" => "widget-markup-save",
+            _ => return None,
+        })
+    }
+
+    /// The control the keyboard is on, if it is still offered: a picker
+    /// choice leaves with its picker, a swatch with a narrowing toolbar.
+    fn keyboard_control(&self) -> Option<&'static str> {
+        let id = self.keyboard?;
+        self.controls()
+            .iter()
+            .any(|(candidate, _)| *candidate == id)
+            .then_some(id)
+    }
+
+    /// Press one toolbar control (pointer, keyboard or assistive
+    /// technology alike); a keyboard on a choice that closed returns to the
+    /// button that opened it.
+    fn press(&mut self, id: &str) {
+        self.activate(id);
+        if let Some(on) = self.keyboard
+            && self.keyboard_control().is_none()
+        {
+            self.keyboard = if on.starts_with("tool-") {
+                Some("tool")
+            } else if on.starts_with("color-") {
+                Some("colors")
+            } else {
+                None
+            };
+        }
+    }
+
+    /// Close the open picker through its button, so a keyboard on one of
+    /// its choices returns to that button rather than to nothing (where
+    /// Enter would save and close the editor).
+    fn close_picker(&mut self) {
+        if self.tool_picker_open {
+            self.press("tool");
+        } else if self.color_picker_open {
+            self.press("colors");
+        }
+    }
+
+    /// Tab and Shift+Tab: the next or previous toolbar control, wrapping.
+    fn move_keyboard(&mut self, back: bool) {
+        let ids: Vec<&'static str> = self
+            .semantic_controls()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        let Some(last) = ids.len().checked_sub(1) else {
+            return;
+        };
+        let current = self
+            .keyboard_control()
+            .and_then(|on| ids.iter().position(|id| *id == on));
+        let next = match (current, back) {
+            (None, false) => 0,
+            (None | Some(0), true) => last,
+            (Some(index), false) if index >= last => 0,
+            (Some(index), false) => index + 1,
+            (Some(index), true) => index - 1,
+        };
+        self.keyboard = ids.get(next).copied();
+    }
+
     fn draw_stroke(&self, scene: &mut Scene, transform: Affine, stroke: &MarkupStroke) {
         if stroke.points.is_empty() {
             return;
@@ -693,7 +816,7 @@ impl Widget for ScreenshotMarkup {
         // Header: title, its caption and the zoom hint share one measured
         // centre line. The caption follows the measured title rather than a
         // fixed offset, so a larger type scale cannot run the two together.
-        let title = "Markup";
+        let title = &markup_text("widget-markup-title");
         let title_style = theme.text(TextRole::Body);
         let caption_style = theme.text(TextRole::Caption);
         let (title_w, title_h) = tr.measure_style(
@@ -1024,6 +1147,17 @@ impl Widget for ScreenshotMarkup {
                 );
             }
         }
+        if let Some(on) = self.keyboard_control()
+            && let Some((_, rect)) = self.controls().into_iter().find(|(id, _)| *id == on)
+        {
+            crate::widget::activation::paint_focus_ring(
+                scene,
+                transform,
+                rect,
+                rect.height() / 2.0,
+                theme,
+            );
+        }
         if let Some((id, anchor)) = self
             .controls()
             .into_iter()
@@ -1032,35 +1166,13 @@ impl Widget for ScreenshotMarkup {
                 !(*id == "tool" && self.tool_picker_open
                     || *id == "colors" && self.color_picker_open)
             })
-            && let Some(label) = match id {
-                "cancel" => Some("Close"),
-                "undo" => Some("Undo"),
-                "redo" => Some("Redo"),
-                "tool" => Some(match self.tool {
-                    MarkupTool::Pen => "Pen tools",
-                    MarkupTool::Highlighter => "Highlight tools",
-                    MarkupTool::Arrow => "Arrow tools",
-                    MarkupTool::Rectangle => "Shape tools",
-                    MarkupTool::Redact => "Redact tools",
-                }),
-                "tool-pen" => Some("Pen"),
-                "tool-highlighter" => Some("Highlight"),
-                "tool-arrow" => Some("Arrow"),
-                "tool-rectangle" => Some("Rectangle"),
-                "tool-redact" => Some("Redact"),
-                "fit" => Some("Fit image"),
-                "colors" => Some("Colours"),
-                "open" => Some("Open in app"),
-                "copy" => Some("Copy"),
-                "save" => Some("Save copy"),
-                _ => None,
-            }
+            && let Some(label) = self.control_label_key(id).map(markup_text)
         {
             // Measured, not estimated from a character count: the estimate
             // both clipped wide labels and over-padded narrow ones.
             let tip_style = theme.text(TextRole::Caption);
             let (label_w, label_h) = tr.measure_style(
-                label,
+                &label,
                 None,
                 &tip_style.clone().with_weight(TextWeight::Medium),
             );
@@ -1088,7 +1200,7 @@ impl Widget for ScreenshotMarkup {
             );
             tr.draw_style(
                 scene,
-                label,
+                &label,
                 c.text_primary,
                 transform.pre_translate(
                     (
@@ -1140,11 +1252,10 @@ impl Widget for ScreenshotMarkup {
                     .into_iter()
                     .find(|(_, r)| r.contains(self.cursor))
                 {
-                    self.activate(id);
+                    self.press(id);
                     *ctx.handled = true;
                 } else if self.tool_picker_open || self.color_picker_open {
-                    self.tool_picker_open = false;
-                    self.color_picker_open = false;
+                    self.close_picker();
                     *ctx.handled = true;
                 } else if self.viewport.contains(self.cursor) && self.canvas.contains(self.cursor) {
                     let (width_px, alpha) = match self.tool {
@@ -1194,10 +1305,21 @@ impl Widget for ScreenshotMarkup {
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
                         if self.tool_picker_open || self.color_picker_open {
-                            self.tool_picker_open = false;
-                            self.color_picker_open = false;
+                            self.close_picker();
                         } else {
                             self.pending.push(ScreenshotMarkupCommand::Cancel);
+                        }
+                        *ctx.handled = true;
+                    }
+                    Key::Named(NamedKey::Tab) if !command && !ctx.modifiers.state().alt_key() => {
+                        self.move_keyboard(ctx.modifiers.state().shift_key());
+                        *ctx.handled = true;
+                    }
+                    Key::Named(NamedKey::Enter | NamedKey::Space)
+                        if self.keyboard_control().is_some() =>
+                    {
+                        if let Some(on) = self.keyboard_control() {
+                            self.press(on);
                         }
                         *ctx.handled = true;
                     }
@@ -1257,6 +1379,116 @@ impl Widget for ScreenshotMarkup {
     fn traps_focus(&self) -> bool {
         true
     }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_default_keyboard_focus(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.keyboard = None;
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    /// Tab walks the editor's own toolbar, which it paints itself.
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let keyboard = self.keyboard_control();
+        let children = self
+            .semantic_controls()
+            .into_iter()
+            .map(|(id, rect, key)| {
+                let role = if id.starts_with("tool-") || id.starts_with("color-") {
+                    Role::RadioButton
+                } else {
+                    Role::Button
+                };
+                let mut state = AccessState::new()
+                    .focusable(true)
+                    .focused(keyboard == Some(id));
+                match id {
+                    "tool" => state = state.expanded(self.tool_picker_open),
+                    "colors" => state = state.expanded(self.color_picker_open),
+                    _ => {}
+                }
+                if let Some(tool) = choice_tool(id) {
+                    state = state.checked(self.tool == tool);
+                } else if let Some(index) = SWATCH_IDS.iter().position(|swatch| *swatch == id) {
+                    state = state.checked(self.color == SWATCHES[index]);
+                }
+                AccessNode::new(role)
+                    .with_name(markup_text(key))
+                    .with_action_target(id)
+                    .with_state(state)
+                    .with_bounds(rect)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(markup_text("widget-markup-title"))
+                .with_state(
+                    AccessState::new()
+                        .modal(true)
+                        .focusable(true)
+                        .focused(self.focused),
+                )
+                .with_children(children),
+        )
+    }
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else { return None };
+        self.semantic_controls()
+            .get(*index)
+            .map(|(_, rect, _)| *rect)
+    }
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else { return false };
+        let Some((id, _, _)) = self.semantic_controls().get(*index).copied() else {
+            return false;
+        };
+        self.keyboard = Some(id);
+        true
+    }
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        use crate::a11y::Action;
+        let Some(id) = self
+            .controls()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| *id == target)
+        else {
+            return false;
+        };
+        let open = match id {
+            "tool" => Some(self.tool_picker_open),
+            "colors" => Some(self.color_picker_open),
+            _ => None,
+        };
+        let applies = match action {
+            Action::Activate => true,
+            Action::ToggleCheck => id.starts_with("tool-") || id.starts_with("color-"),
+            Action::Expand => open == Some(false),
+            Action::Collapse => open == Some(true),
+            _ => false,
+        };
+        if applies {
+            self.press(id);
+        }
+        applies
+    }
     fn needs_animation_frame(&self) -> bool {
         self.entrance_progress_override.is_none()
             && crate::time::now().saturating_duration_since(self.opened_at) < markup_entrance_time()
@@ -1267,6 +1499,23 @@ impl Widget for ScreenshotMarkup {
             .map(|(id, r)| (format!("markup.{id}"), r))
             .collect()
     }
+}
+
+/// A string from the toolkit's catalogue.
+fn markup_text(key: &str) -> String {
+    crate::i18n::widget_format(key, &[])
+}
+
+/// The tool a picker choice selects.
+fn choice_tool(id: &str) -> Option<MarkupTool> {
+    Some(match id {
+        "tool-pen" => MarkupTool::Pen,
+        "tool-highlighter" => MarkupTool::Highlighter,
+        "tool-arrow" => MarkupTool::Arrow,
+        "tool-rectangle" => MarkupTool::Rectangle,
+        "tool-redact" => MarkupTool::Redact,
+        _ => return None,
+    })
 }
 
 fn raster_stroke(rgba: &mut [u8], width: u32, height: u32, stroke: &MarkupStroke) {
@@ -1386,12 +1635,15 @@ fn rectangle_points(start: Point, end: Point) -> [Point; 4] {
 }
 
 #[cfg(test)]
+#[path = "screenshot_markup_a11y_tests.rs"]
+mod a11y_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn flattened_export_changes_only_annotated_pixels() {
-        // Case `flattening_preserves_dimensions_and_changes_only_annotated_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![20_u8; 16 * 16 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 16, 16);
@@ -1408,7 +1660,6 @@ mod tests {
             assert_eq!(&export.rgba[0..4], &original[0..4]);
         }
 
-        // Case `highlighter_alpha_blends_instead_of_destroying_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![100_u8, 100, 100, 255]);
             let mut markup = ScreenshotMarkup::new(original, 1, 1);
@@ -1424,7 +1675,6 @@ mod tests {
             assert_eq!(export.rgba[3], 255);
         }
 
-        // Case `arrow_export_adds_a_real_head_in_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
             let stroke = |tool| MarkupStroke {
@@ -1443,7 +1693,6 @@ mod tests {
             assert!(changed(&arrow.flattened().rgba) > changed(&pen.flattened().rgba));
         }
 
-        // Case `rectangle_export_closes_all_four_edges_in_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 64, 64);
@@ -1461,7 +1710,6 @@ mod tests {
             assert_eq!(export.rgba[bottom_edge + 3], 255);
         }
 
-        // Case `redact_export_is_opaque_and_does_not_touch_pixels_outside_its_box`.
         {
             let original: Arc<[u8]> = Arc::from(vec![180_u8; 32 * 32 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 32, 32);
@@ -1485,7 +1733,6 @@ mod tests {
 
     #[test]
     fn strokes_undo_redo_animate_and_extend_exactly() {
-        // Case `undo_and_redo_move_the_exact_stroke_without_rebuilding_it`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 4 * 4 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 4, 4);
@@ -1504,7 +1751,6 @@ mod tests {
             assert!(markup.redo.is_empty());
         }
 
-        // Case `deterministic_entrance_preserves_receipt_and_settled_endpoints`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 16 * 9 * 4]);
             let spawn = Rect::new(1_200.0, 18.0, 1_246.0, 42.0);
@@ -1526,7 +1772,6 @@ mod tests {
             assert!(!markup.needs_animation_frame());
         }
 
-        // Case `ordinary_cursor_motion_extends_a_stroke_without_starting_a_pan`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 100, 80);
@@ -1547,7 +1792,6 @@ mod tests {
 
     #[test]
     fn zoom_and_fit_track_source_pixels_without_changing_export() {
-        // Case `zoom_keeps_the_source_pixel_under_the_pointer_and_never_changes_export`.
         {
             let original: Arc<[u8]> = Arc::from(vec![33_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 100, 80);
@@ -1573,7 +1817,6 @@ mod tests {
             assert_eq!(markup.canvas, markup.fit_canvas);
         }
 
-        // Case `fit_never_upscales_and_percentage_tracks_real_source_scale`.
         {
             let small: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(small, 100, 80);

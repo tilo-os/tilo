@@ -1,6 +1,7 @@
 //! Items with identity: [`Id`] and the ordered, keyed [`Collection`].
 
 use std::fmt;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -157,7 +158,6 @@ pub struct Collection<T> {
 /// migration may rewrite it in place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quarantined {
-    /// The item's id.
     pub id: Id,
     /// Why it does not read, where in the item.
     pub reason: String,
@@ -452,31 +452,34 @@ impl<T> Collection<T> {
     /// document, as it deletes any item no longer in the collection.
     /// Whether it was quarantined.
     pub fn discard(&mut self, id: &Id) -> bool {
-        let before = self.quarantine.len();
-        self.quarantine.retain(|held| &held.id != id);
-        let discarded = self.quarantine.len() != before;
-        self.whole_write |= discarded;
-        discarded
+        forget_quarantined(&mut self.quarantine, &mut self.whole_write, id)
     }
 
     /// Stop holding the quarantined item `id`, as an item takes its place.
     fn repaired(&mut self, id: &Id) {
-        let before = self.quarantine.len();
-        self.quarantine.retain(|held| &held.id != id);
-        self.whole_write |= self.quarantine.len() != before;
+        forget_quarantined(&mut self.quarantine, &mut self.whole_write, id);
     }
 
     /// Append an item. Returns its id for chaining. An id already present
     /// is replaced in place; a quarantined one is repaired by it.
     pub fn push(&mut self, id: Id, item: T) -> Id {
+        self.push_shared(id, Arc::new(item))
+    }
+
+    /// [`Self::push`] of an item already shared.
+    fn push_shared(&mut self, id: Id, item: Arc<T>) -> Id {
         self.repaired(&id);
         if let Some(position) = self.position(&id)
             && let Some(existing) = self.items.get_mut(position)
         {
-            existing.item = Arc::new(item);
+            existing.item = item;
             return id;
         }
-        self.items.push(Entry::new(id.clone(), item));
+        self.items.push(Entry {
+            id: id.clone(),
+            key: None,
+            item,
+        });
         let position = self.items.len().saturating_sub(1);
         self.index.appended(&id, position);
         self.moved();
@@ -652,13 +655,36 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
     }
 }
 
-pub(crate) struct Stored {
-    pub(crate) id: Id,
-    pub(crate) key: String,
+/// One item of a collection map as stored: its id, its order key, its entry and what the
+/// entry's value slot holds. [`stored_entries`] lists them in order.
+pub struct Stored {
+    pub id: Id,
+    pub key: String,
     /// The entry's map; `None` for an item stored as its order key alone.
-    pub(crate) entry: Option<ObjId>,
+    pub entry: Option<ObjId>,
     /// What the entry's value slot holds, for reading the item.
-    pub(crate) value: crate::model::MapSlot,
+    pub value: crate::model::MapSlot,
+}
+
+/// An entry of a collection map, not read yet: see [`collection_entries`].
+pub struct StoredEntry {
+    id: Id,
+    slot: EntrySlot,
+}
+
+impl StoredEntry {
+    /// The id of the item the entry holds.
+    #[must_use]
+    pub fn id(&self) -> &Id {
+        &self.id
+    }
+}
+
+enum EntrySlot {
+    /// An item stored as its order key alone.
+    Order(String),
+    /// The entry's map, holding the order key and the value.
+    Map(ObjId),
 }
 
 /// Whether items of the type `item` are stored as their order key alone:
@@ -780,7 +806,6 @@ pub(crate) type EditAt<'a> =
 /// A new item from its JSON form, and the id it carries.
 pub(crate) type ParseItem<'a> =
     dyn Fn(&serde_json::Value) -> Result<(Option<Id>, Box<dyn Stores + 'a>), ModelError> + 'a;
-/// An edit of a value as a whole.
 pub(crate) type EditWhole<'a> =
     dyn Fn(&mut Doc, Slot<'_>, &[Segment], &EditOp) -> Result<(), ModelError> + 'a;
 /// Write the item at a position over the one it was, in an entry's slot.
@@ -822,10 +847,51 @@ pub(crate) fn edit_entries(
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
             let stored = stored_entries(doc, &map);
-            let key = key_at(&stored, *at, None);
+            let key = key_at(&stored, at, None)?;
             put_entry(doc, &map, &id, key, edits.order_only, &|doc, slot| {
                 item.store_to(doc, slot)
             })
+        }
+        (
+            None,
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+        ) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            let mut entries = Vec::new();
+            let mut candidates = Vec::new();
+            for stored in stored_entries(doc, &map) {
+                let Some(entry) = stored.entry else { continue };
+                if let Some((Value::Object(ObjType::Map), fields)) = doc.get(&entry, VALUE)? {
+                    entries.push(entry);
+                    candidates.push(crate::upsert::Candidate {
+                        id: stored.id,
+                        fields,
+                    });
+                }
+            }
+            let found = crate::upsert::matching_one(doc, &candidates, matching)?
+                .and_then(|found| candidates.iter().position(|item| item.id == found.id));
+            if let Some(index) = found
+                && let (Some(entry), Some(item)) = (entries.get(index), candidates.get(index))
+            {
+                for (key, field) in crate::upsert::changed_fields(doc, &item.fields, value)? {
+                    (edits.item)(
+                        doc,
+                        Slot::Key(entry, VALUE),
+                        &[Segment::Field(key)],
+                        &EditOp::Set { value: field },
+                        cx,
+                    )
+                    .located(item.id.as_str())?;
+                }
+                return Ok(());
+            }
+            let insert = upserted(doc, &map, matching, value, id.as_ref())?;
+            edit_entries(doc, slot, path, &insert, cx, edits)
         }
         (None, EditOp::RemoveItem { id }) => {
             let map = slot.object(doc, ObjType::Map)?;
@@ -841,7 +907,7 @@ pub(crate) fn edit_entries(
             let Some(entry) = stored.iter().find(|entry| &entry.id == id) else {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
-            let key = key_at(&stored, *at, Some(id));
+            let key = key_at(&stored, at, Some(id))?;
             match &entry.entry {
                 Some(entry) => {
                     Slot::Key(entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))
@@ -858,7 +924,6 @@ pub(crate) fn edit_entries(
 pub(crate) struct EntryWrites<'a> {
     /// Whether the item now would store as the one it was.
     pub(crate) same: &'a dyn Fn(usize, usize) -> bool,
-    /// Store the item now into a slot.
     pub(crate) store: &'a StoreAt<'a>,
     /// Write the item now over the value of the entry that held it.
     pub(crate) changed: &'a WriteChanged<'a>,
@@ -996,7 +1061,6 @@ fn touched_entry(
     Ok(Touched::Fresh { entry, order })
 }
 
-/// The JSON form's schema of a collection of items of the schema `item`.
 #[inline(never)]
 fn entries_schema(item: serde_json::Value) -> serde_json::Value {
     let mut properties = serde_json::Map::new();
@@ -1062,62 +1126,168 @@ pub(crate) fn load_entries(
 /// type.
 fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..keys.len()).collect();
-    order.sort_by(|&a, &b| keys.get(a).cmp(&keys.get(b)));
+    order.compact_sort_by(|&a, &b| keys.get(a).cmp(&keys.get(b)));
     order
+}
+
+/// The entries of the collection map `map`, in one walk of the map, without reading any:
+/// [`read_entry`] reads each and [`in_stored_order`] orders what they read, which is what
+/// [`stored_entries`] does. Each read opens its entry's map, so a reader of a large
+/// collection may spread the reads over threads.
+#[must_use]
+pub fn collection_entries(doc: &Doc, map: &ObjId) -> Vec<StoredEntry> {
+    let mut entries = Vec::new();
+    for item in doc.map_range(map, ..) {
+        let id = Id(item.key.clone().into_owned());
+        // An item stored as its order key alone.
+        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(order)) = &item.value {
+            entries.push(StoredEntry {
+                id,
+                slot: EntrySlot::Order(order.to_string()),
+            });
+        } else if item.value == automerge::ValueRef::Object(ObjType::Map) {
+            entries.push(StoredEntry {
+                id,
+                slot: EntrySlot::Map(item.id()),
+            });
+        }
+    }
+    entries
+}
+
+/// The item an entry holds: its order key and value slot, read with one walk of the entry.
+/// `None` for an entry without a readable order key: no entry anyone placed, left out, never
+/// the reason its whole collection does not read.
+#[must_use]
+pub fn read_entry(doc: &Doc, entry: StoredEntry) -> Option<Stored> {
+    match entry.slot {
+        EntrySlot::Order(key) => Some(Stored {
+            id: entry.id,
+            key,
+            entry: None,
+            value: None,
+        }),
+        EntrySlot::Map(map) => {
+            let [order, value] = crate::model::read_slots(doc, &map, [ORDER, VALUE]);
+            let order = crate::model::load_slot::<crate::Atom>(doc, order, ORDER).ok()?;
+            Some(Stored {
+                id: entry.id,
+                key: order.0,
+                entry: Some(map),
+                value,
+            })
+        }
+    }
+}
+
+/// Put read entries in stored order: by order key, ties by id.
+pub fn in_stored_order(entries: &mut [Stored]) {
+    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
+    entries.compact_sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// The stored entries of the collection map `map`, in order. One walk of
 /// the map lists the entries and one walk of each entry reads its order key
 /// and value slot: a lookup per key would open each map again.
 pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
-    let mut entries = Vec::new();
-    for item in doc.map_range(map, ..) {
-        // An item stored as its order key alone.
-        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(order)) = &item.value {
-            entries.push(Stored {
-                id: Id(item.key.clone().into_owned()),
-                key: order.to_string(),
-                entry: None,
-                value: None,
-            });
-            continue;
-        }
-        if item.value != automerge::ValueRef::Object(ObjType::Map) {
-            continue;
-        }
-        let entry = item.id();
-        let [order, value] = crate::model::read_slots(doc, &entry, [ORDER, VALUE]);
-        // An entry without a readable order key is no entry anyone placed:
-        // left out, never the reason its whole collection does not read.
-        let Ok(order) = crate::model::load_slot::<crate::Atom>(doc, order, ORDER) else {
-            continue;
-        };
-        entries.push(Stored {
-            id: Id(item.key.into_owned()),
-            key: order.0,
-            entry: Some(entry),
-            value,
-        });
-    }
-    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
-    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+    let mut entries: Vec<Stored> = collection_entries(doc, map)
+        .into_iter()
+        .filter_map(|entry| read_entry(doc, entry))
+        .collect();
+    in_stored_order(&mut entries);
     entries
+}
+
+/// The ids of the items of the collection map `map`, in stored order, without reading any
+/// item: what a reader that needs a collection's membership and order, and not its items,
+/// walks.
+#[must_use]
+pub fn stored_ids(doc: &Doc, map: &ObjId) -> Vec<Id> {
+    stored_entries(doc, map)
+        .into_iter()
+        .map(|stored| stored.id)
+        .collect()
+}
+
+/// The stored entry of the item `id` of the collection map `map`, with its order key: `None`
+/// when there is no such item or it has no readable order key. One item is read without
+/// listing the others: what a reader that keeps a collection's order applies a change by.
+#[must_use]
+pub fn stored_entry(doc: &Doc, map: &ObjId, id: &str) -> Option<Stored> {
+    let slot = match doc.get(map, id).ok()?? {
+        (Value::Scalar(scalar), _) => match scalar.as_ref() {
+            ScalarValue::Str(order) => EntrySlot::Order(order.to_string()),
+            _ => return None,
+        },
+        (Value::Object(ObjType::Map), entry) => EntrySlot::Map(entry),
+        (Value::Object(_), _) => return None,
+    };
+    read_entry(
+        doc,
+        StoredEntry {
+            id: Id(id.to_owned()),
+            slot,
+        },
+    )
+}
+
+/// The value map of the item `id` of the collection map `map`: `None` when there is no such
+/// item, `Some(None)` for an item stored as its order key alone (it reads as its type's
+/// default), so one item is reached without reading the others.
+#[must_use]
+pub fn stored_item(doc: &Doc, map: &ObjId, id: &str) -> Option<Option<ObjId>> {
+    match doc.get(map, id).ok()?? {
+        (Value::Scalar(_), _) => Some(None),
+        (Value::Object(ObjType::Map), entry) => match doc.get(&entry, VALUE).ok().flatten() {
+            Some((Value::Object(_), value)) => Some(Some(value)),
+            _ => Some(None),
+        },
+        (Value::Object(_), _) => None,
+    }
 }
 
 /// An order key placing an item at `at` among `stored` (which may hold the
 /// item itself, `moving`, which does not count).
-pub(crate) fn key_at(stored: &[Stored], at: usize, moving: Option<&Id>) -> String {
+pub(crate) fn key_at(
+    stored: &[Stored],
+    at: &crate::At,
+    moving: Option<&Id>,
+) -> Result<String, ModelError> {
     let others: Vec<&Stored> = stored
         .iter()
         .filter(|entry| Some(&entry.id) != moving)
         .collect();
-    let at = at.min(others.len());
+    let ids: Vec<&Id> = others.iter().map(|entry| &entry.id).collect();
+    let at = at.index(&ids)?;
     let low = at
         .checked_sub(1)
         .and_then(|before| others.get(before))
         .map(|entry| entry.key.as_str());
     let high = others.get(at).map(|entry| entry.key.as_str());
-    order::between(low, high)
+    Ok(order::between(low, high))
+}
+
+/// The insert an upsert that matched no item of the map `map` makes: at the
+/// end, under `id` when given, else under the id its key mints when no item
+/// holds that one yet.
+pub(crate) fn upserted(
+    doc: &Doc,
+    map: &ObjId,
+    matching: &serde_json::Map<String, serde_json::Value>,
+    value: &serde_json::Value,
+    id: Option<&Id>,
+) -> Result<EditOp, ModelError> {
+    let minted = crate::upsert::key_id(matching);
+    let id = if let Some(id) = id {
+        Some(id.clone())
+    } else {
+        doc.get(map, minted.as_str())?.is_none().then_some(minted)
+    };
+    Ok(EditOp::InsertItem {
+        id,
+        at: crate::At::End,
+        value: crate::upsert::inserted(matching, value)?,
+    })
 }
 
 /// Indices (into `keys`) of one longest strictly increasing subsequence.
@@ -1153,24 +1323,68 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
 impl<T> Collection<T> {
     /// Sort the items as stored: by order key, ties by id.
     fn reorder_by_keys(&mut self) {
-        let mut keys = Vec::with_capacity(self.items.len());
-        for entry in &self.items {
-            keys.push((entry.key.as_deref(), &entry.id));
-        }
-        let mut order = stored_order(&keys);
-        // In place, one cycle of the permutation at a time: the entry for
-        // position `at` is the one at `order[at]`.
-        for start in 0..order.len() {
-            let mut at = start;
-            while let Some(from) = order.get_mut(at).map(|from| std::mem::replace(from, at)) {
-                if from == start {
-                    break;
-                }
-                self.items.swap(at, from);
-                at = from;
+        let items = &self.items;
+        let order = stored_order_of(items.len(), &|at| {
+            items.get(at).map(|entry| (entry.key.as_deref(), &entry.id))
+        });
+        permute(order, &mut |at, from| self.items.swap(at, from));
+    }
+}
+
+/// [`stored_order`] of the `count` entries whose order key and id `key_at`
+/// gives. Compiled once for every item type.
+#[inline(never)]
+fn stored_order_of<'a>(
+    count: usize,
+    key_at: &dyn Fn(usize) -> Option<(Option<&'a str>, &'a Id)>,
+) -> Vec<usize> {
+    let keys: Vec<(Option<&str>, &Id)> = (0..count).filter_map(key_at).collect();
+    stored_order(&keys)
+}
+
+/// Move the entry at `order[at]` to each position `at`, in place, one cycle
+/// of the permutation at a time, swapping two positions with `swap`.
+/// Compiled once for every item type.
+#[inline(never)]
+fn permute(mut order: Vec<usize>, swap: &mut dyn FnMut(usize, usize)) {
+    for start in 0..order.len() {
+        let mut at = start;
+        while let Some(from) = order.get_mut(at).map(|from| std::mem::replace(from, at)) {
+            if from == start {
+                break;
             }
+            swap(at, from);
+            at = from;
         }
     }
+}
+
+/// Forget the quarantined item `id` in `quarantine`, noting in
+/// `whole_write` that only a whole write stores that; whether it was
+/// quarantined. Compiled once for every item type.
+#[inline(never)]
+fn forget_quarantined(quarantine: &mut Vec<Quarantined>, whole_write: &mut bool, id: &Id) -> bool {
+    let before = quarantine.len();
+    quarantine.retain(|held| &held.id != id);
+    let forgotten = quarantine.len() != before;
+    *whole_write |= forgotten;
+    forgotten
+}
+
+/// Hold the stored item `id` in `quarantine`, for `reason`. Compiled once
+/// for every item type.
+#[inline(never)]
+fn hold_quarantined(quarantine: &mut Vec<Quarantined>, id: Id, reason: String) {
+    match quarantine.iter_mut().find(|held| held.id == id) {
+        Some(held) => held.reason = reason,
+        None => quarantine.push(Quarantined { id, reason }),
+    }
+}
+
+/// Stop holding `id` in `quarantine`. Compiled once for every item type.
+#[inline(never)]
+fn release_quarantined(quarantine: &mut Vec<Quarantined>, id: &Id) {
+    quarantine.retain(|held| &held.id != id);
 }
 
 impl<T: Model> crate::items::ItemSource for Collection<T> {
@@ -1307,7 +1521,6 @@ impl<T: Model> Model for Collection<T> {
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every collection, over `T`'s table.
     const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
     crate::__table_functions!();
@@ -1316,7 +1529,18 @@ impl<T: Model> Model for Collection<T> {
     }
 }
 
-// --- A collection through its item type's table -----------------------------
+/// The item `fill` puts into an `Option` of its type, shared: the one copy
+/// for each item type of what [`Entries::push_filled`] and
+/// [`Entries::replace_filled`] do with the value itself, so the large moves
+/// of a big item are compiled once rather than in each of them.
+#[inline(never)]
+fn filled_shared<T: 'static>(
+    fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+) -> Result<Arc<T>, ModelError> {
+    let mut slot: Option<T> = None;
+    fill(&mut slot)?;
+    crate::table::filled(slot).map(Arc::new)
+}
 
 /// A collection's entries, whatever its item type: what the collection
 /// functions below reach into one with.
@@ -1391,16 +1615,14 @@ impl<T: 'static> Entries for Collection<T> {
         (id, order, replace): (Id, Option<String>, bool),
         fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
     ) -> Result<(), ModelError> {
-        let mut slot: Option<T> = None;
-        fill(&mut slot)?;
-        let item = crate::table::filled(slot)?;
+        let item = filled_shared::<T>(fill)?;
         if replace {
-            self.push(id, item);
+            self.push_shared(id, item);
         } else {
             self.items.push(Entry {
                 id,
                 key: order,
-                item: Arc::new(item),
+                item,
             });
             self.index.reset();
         }
@@ -1413,11 +1635,9 @@ impl<T: 'static> Entries for Collection<T> {
         order: Option<String>,
         fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
     ) -> Result<(), ModelError> {
-        let mut slot: Option<T> = None;
-        fill(&mut slot)?;
-        let item = crate::table::filled(slot)?;
+        let item = filled_shared::<T>(fill)?;
         if let Some(entry) = self.items.get_mut(at) {
-            entry.item = Arc::new(item);
+            entry.item = item;
             entry.key = order;
         }
         Ok(())
@@ -1451,14 +1671,11 @@ impl<T: 'static> Entries for Collection<T> {
     }
 
     fn quarantine(&mut self, id: Id, reason: String) {
-        match self.quarantine.iter_mut().find(|held| held.id == id) {
-            Some(held) => held.reason = reason,
-            None => self.quarantine.push(Quarantined { id, reason }),
-        }
+        hold_quarantined(&mut self.quarantine, id, reason);
     }
 
     fn release(&mut self, id: &Id) {
-        self.quarantine.retain(|held| &held.id != id);
+        release_quarantined(&mut self.quarantine, id);
     }
 
     fn needs_whole_write(&self) -> bool {
@@ -1468,7 +1685,6 @@ impl<T: 'static> Entries for Collection<T> {
 
 /// What `Collection<T>`'s table reaches into one with.
 pub struct CollectionDesc {
-    /// `T`'s table.
     item: &'static ModelTable,
     entries: for<'a> fn(&'a dyn Any) -> Option<&'a dyn Entries>,
     entries_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Entries>,
@@ -1483,7 +1699,6 @@ pub struct CollectionDesc {
     item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
 }
 
-/// The [`CollectionDesc`] of `Collection<T>`.
 pub struct CollectionOf<T>(std::marker::PhantomData<T>);
 
 impl<T: Model> CollectionOf<T> {
@@ -2008,7 +2223,7 @@ fn diff_entries(
                         path.to_vec(),
                         EditOp::MoveTo {
                             id: id.clone(),
-                            at: index,
+                            at: crate::At::Index(index),
                         },
                     ));
                 }
@@ -2017,7 +2232,7 @@ fn diff_entries(
                 path.to_vec(),
                 EditOp::InsertItem {
                     id: Some(id.clone()),
-                    at: index,
+                    at: crate::At::Index(index),
                     value: (item.ops.to_json)(item, next),
                 },
             )),
@@ -2193,8 +2408,26 @@ mod tests {
             let item: T = read_key(doc, &entry, VALUE).unwrap();
             entries.push((Id(key), Some(order.0), item));
         }
-        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        entries.compact_sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         entries
+    }
+
+    #[test]
+    fn one_entry_reads_as_the_listing_has_it() {
+        let mut doc = Doc::new();
+        let mut list: Collection<u32> = Collection::new();
+        for n in 0..20_u32 {
+            list.push(Id::from_raw(format!("i{n:02}")), n);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        for listed in stored_entries(&doc, &map) {
+            let one = stored_entry(&doc, &map, listed.id.as_str()).expect("the entry");
+            assert_eq!((one.id, one.key), (listed.id, listed.key));
+        }
+        assert!(stored_entry(&doc, &map, "nobody").is_none());
     }
 
     #[test]

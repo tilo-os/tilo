@@ -44,7 +44,7 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
 | P0 | Keyboard / accessibility | Focus escape, canonical read-only refusals and semantic duplication | Pointer command menu and browser/native assistive-technology qualification |
 | P1 | Tables as content | Shared source/grid table editor and canonical cells | Qualify cell navigation, paste and round-trip consistency |
-| P1 | Find / replace | Shared find overlay, current-match and atomic Replace all actions | Advanced matching options and broader qualification |
+| P1 | Find / replace | The window bar's search, with Match case and Whole word; the editor replaces through the rich-text surface's `SpliceText` and atomic `ReplaceMatches` | Regular expressions and broader qualification |
 | P2 | Block anchors / mentions / backlinks | Notes resources, links and backlinks | Qualify reusable block links and cross-note references |
 
 ## Implementation sequence
@@ -144,8 +144,8 @@ because the existing clipboard vocabulary cannot represent them losslessly.
   list indentation, slash conversion/list continuation (`interaction_event_path`),
   soft/hard line breaks (`soft_line_breaks`), group movement with undo/reopen and
   concurrency (`group_moves`), table editing through echo/undo/reload
-  (`table_editing`), link navigation (`click_link_navigates`) and in-note find
-  (`capture_runtime`). These tests do not establish all Notion shortcut or
+  (`table_editing`), link navigation (`click_link_navigates`) and find in the note
+  through the window bar's search (`find_replace`). These tests do not establish all Notion shortcut or
   clipboard conventions.
 - Pointer duplication menu, whole-block selection mode, batch delete/convert/move,
   rich clipboard, callout/toggle kinds and advanced formatting remain separate
@@ -307,82 +307,42 @@ committed filter text, keyboard navigation and conversion.
   `6a41395b0a98eae232a3c026b8647eb7324770f6499981ca31cfdd4963961231`.
 
 
-### Independent increment: replace the current find match
+### Find and replace through the window bar's search
 
-The shared Find overlay adds a replacement field and Replace button. Tab moves
-between the two inputs, Enter in the replacement field replaces one match, F3
-navigates matches, and Escape closes the overlay. Pointer and semantic actions
-use the same command. The shared rich-text surface validates the captured block
-and match before one existing canonical `SpliceText` action; no schema or History
-changes are involved. Empty replacement deletes the match. Replacement is
-single-line (tabs allowed); Replace all and advanced matching options remain open.
+The note draws no find field of its own: inside a window the window bar's
+search is the only find. Typing in it finds in the note in place (every
+match painted, the current one scrolled into view, the caret left where it
+is); its options panel holds Match case, Whole word and the replacement with
+Replace and Replace all. The block editor is the `Findable` the bar drives.
+Replace hands the host the current match with a snapshot of its block;
+Replace all hands it every match with a snapshot of all blocks. The shared
+rich-text surface validates the snapshot against the document and writes one
+canonical `SpliceText` or `ReplaceMatches` action, so each is one undo step
+and no block is recreated. A match found in text that has since changed is
+not replaced (the search finds again first), nothing is replaced while the
+note composes text, and a viewer's search changes nothing. Every app that
+embeds the rich-text surface (mail compose, the calendar's notes, comment
+and reply fields) gets the same find and replace.
 
-- Red: the mounted Notes caller had no find-query/replacement semantic targets.
-- Six actual Notes regressions pass: Unicode replacement, one-step undo/redo,
-  keyboard and pointer activation, marked suffix preservation, empty replacement,
-  peer text surviving undo, stale peer target refusal, viewer and IME safety,
-  and exclusive focus after navigation or replacing the final match.
-- This operation's concurrent-undo test passes independently of the unpublished
-  formatting increment's mark-inheritance failure. It edits a single existing
-  text object and does not recreate blocks.
-- Strict all-target Notes and SDK Clippy passes. Remaining SDK/browser results
-  are recorded after validation; no browser pass is inferred from compilation.
-- All 60 block-editor tests (including bounded typing work), both SearchField
-  tests and all 37 rich-text tests pass. Independent final review has no findings.
-- The standard offline WASM bundle builds. Disposable Chrome passes actual
-  Ctrl/Cmd+F entry, semantic Unicode replacement, empty replacement, atomic
-  undo/redo, and Tab/Enter replacement input. No browser errors were recorded.
-- Visual inspection found the default button footprint overlapping the input;
-  an explicit theme-scaled button size fixes it. The native pointer caller now
-  asserts the controls do not overlap; that regression and strict Clippy pass.
-- Required shell test compilation reproduces the same 22 baseline Darwin
-  compositor import errors. No compositor or History implementation was changed.
+- `apps/notes/tests/find_replace.rs` drives the bar's search through the
+  headless window bar (`search_in_window`, `replace_in_window`): Unicode
+  replacement with undo/redo, peer text surviving undo, a peer edit under the
+  search, empty replacement keeping other marks, composition and viewer
+  safety, Replace all with stable block ids, peer blocks added under the
+  search, and prefix marks surviving a deleting Replace all.
+- The shell's `notes_replace_in_place` shots show the replacement typed,
+  one match replaced, and every match replaced.
 
+### The canonical Replace all action
 
-### Independent increment: replace all find matches
-
-The shared replacement field supports a Replace all button and Shift+Enter.
-Both keyboard and semantic `notes.find:replace-all` activation use one canonical
-`ReplaceMatches` action. It validates disjoint character ranges and the aggregate
-text budget before mutation, then splices back to front without recreating blocks.
-This extends the action vocabulary without migrating stored documents or changing
-History. Matching retains the existing case-insensitive literal search behavior;
-regular expressions and whole-word options remain open.
-
-- The original real Notes caller regression failed because no Replace all target
-  existed. Twelve current Notes find/replace tests pass, including single and batch
-  replacement, Unicode, stable block IDs, one-step undo/redo, shortcut modifiers,
-  pointer activation, empty replacements, surviving link marks, IME/viewer refusal,
-  stale matches and newly inserted peer blocks, concurrent text surviving undo,
-  exclusive input focus, and replacements that themselves contain the query.
-- Two canonical tests cover shuffled Unicode character ranges, one replay envelope,
-  missing blocks, out-of-bounds/empty/reversed/overlapping/duplicate ranges, batch
-  size and aggregate insertion limits. Invalid batches leave document heads unchanged.
-- Each search captures one linear-size body snapshot. Replace all refuses if its
-  order or projected content changed; refreshing the query captures the new body.
-  Character offset conversion advances once through each source paragraph instead
-  of repeatedly scanning its prefix. The user must explicitly refresh a stale search.
-- Independent review found no remaining issues after adding keyboard activation and
-  reflecting the canonical insertion budget in button eligibility.
-- All 60 SDK block-editor tests and all 37 rich-text tests pass, including bounded
-  typing-work regressions. Strict all-target Clippy and repository checks pass.
-  Required shell test compilation reproduces the same 22 Darwin-only unresolved
-  Linux imports as the verified previous base; those compositor files are unchanged.
-- The standard offline Notes WASM bundle builds. Three disposable Chrome checks
-  pass for Unicode Replace all with stable IDs and one-step undo/redo, empty
-  replacements, and Shift+Enter when the replacement contains the query. No
-  browser errors were recorded. Final WASM SHA-256:
-  `82ab5a487728c603e2f1981a6f09bcb7d1c82f2ec5602a10260c3982f67d3962`.
-  Shift+Enter is the advertised cross-platform shortcut; the shared browser host
-  retains Ctrl/Cmd+Enter inside native text inputs, so no host routing was changed.
-- The Agent adapter maps every batch replacement span to the original block and
-  character range for its interaction anchor. A focused regression covers two
-  blocks, Unicode replacement text and unrelated focus. Strict Agent library
-  Clippy passes; independent review found no remaining issues in the adapter.
-  The focused Agent test and all-target check cannot run through their shell
-  dependency on Darwin: the same 22 unresolved Linux compositor imports stop
-  compilation before the new assertion. Linux CI must execute that regression.
-
+`ReplaceMatches` validates disjoint character ranges and the aggregate text
+budget before mutation, then splices back to front without recreating blocks.
+Two canonical tests cover shuffled Unicode character ranges, one replay
+envelope, missing blocks, out-of-bounds, empty, reversed, overlapping and
+duplicate ranges, batch size and aggregate insertion limits; an invalid batch
+leaves the document heads unchanged. Character offsets are converted in one
+pass through each paragraph. The Agent adapter maps every replaced span to its
+original block and character range for its interaction anchor.
 
 ### Browser rich clipboard transport foundation
 

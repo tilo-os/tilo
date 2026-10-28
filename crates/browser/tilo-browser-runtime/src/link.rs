@@ -46,10 +46,6 @@ fn route(json: &str) -> Result<Link, JsValue> {
 /// Parse `url` under the page's entry (`entryJson`, `{base}`) into
 /// `{mode, target}` JSON. A link carrying secrets is refused here like any
 /// other: the inline scrubber removed them before any module ran.
-///
-/// # Errors
-///
-/// The broken rule's sentence, with its stable `code` on the error.
 #[wasm_bindgen(js_name = parseLink)]
 pub fn parse_link(url: &str, entry_json: &str) -> Result<String, JsValue> {
     let entries = WebEntries::new(vec![entry(entry_json)?]);

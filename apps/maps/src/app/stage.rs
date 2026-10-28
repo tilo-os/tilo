@@ -96,9 +96,6 @@ impl MapsApp {
     /// this text only from a real worker failure.
     pub(super) fn stage_error(&mut self) {
         self.model.status = "Routing failed, so the route shown is an estimate".into();
-        let now = ui::time::now();
-        self.status_bubble.show(&self.model.status, now);
-        self.status_bubble.set_hover(true, now);
     }
 
     /// The Directions "From" field editing, with a populated geocoded

@@ -67,7 +67,6 @@ pub const TREE_PREFIX: &str = "tilo-apps-";
 /// The leaf the spawner itself lives in.
 pub const SPAWNER_LEAF: &str = "spawner";
 
-/// Name prefix of an app's cgroup.
 pub const APP_PREFIX: &str = "app-";
 
 /// The leaf of an app's cgroup its launcher is born in.
@@ -76,13 +75,11 @@ pub const MAIN_LEAF: &str = "main";
 /// Name prefix of an app's job leaves.
 pub const JOB_PREFIX: &str = "job-";
 
-/// What a leaf of an app's cgroup holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Leaf {
     /// The app itself: its launcher and everything that was not started as
     /// a job.
     Main,
-    /// One independent job of the app.
     Job,
 }
 
@@ -127,13 +124,11 @@ pub const fn oom_group(kind: AppKind, leaf: Leaf) -> bool {
     }
 }
 
-/// `job-<n>`.
 #[must_use]
 pub fn job_leaf_name(n: u64) -> String {
     format!("{JOB_PREFIX}{n}")
 }
 
-/// Whether a directory name is a job leaf's.
 #[must_use]
 pub fn is_job_leaf(name: &str) -> bool {
     name.strip_prefix(JOB_PREFIX)
@@ -518,10 +513,6 @@ pub fn set_oom_score_adj(dir: &Path, tier: Tier) -> Result<(), String> {
 
 /// End every process in the app cgroup at `dir` at once, those that left
 /// its process tree (`setsid`, a double fork) included.
-///
-/// # Errors
-///
-/// When the kernel refuses the write (an older kernel without `cgroup.kill`).
 pub fn kill(dir: &Path) -> io::Result<()> {
     std::fs::write(dir.join("cgroup.kill"), "1")
 }
@@ -557,7 +548,6 @@ pub fn remove(dir: &Path) -> io::Result<()> {
 pub struct Stats {
     /// Processes in it now.
     pub pids: Option<u64>,
-    /// Memory charged to it now, in bytes.
     pub memory_current: Option<u64>,
     /// The most it was ever charged, in bytes.
     pub memory_peak: Option<u64>,
@@ -607,7 +597,6 @@ pub fn stats(dir: &Path) -> Stats {
     }
 }
 
-/// One running app, as its cgroup shows it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct RunningApp {
     pub app_id: String,
@@ -761,7 +750,6 @@ mod tests {
             app_cgroup_of(&cgroup).as_deref(),
             Some(format!("{TREE}/app-so.tilo.notes-3").as_str())
         );
-        // A cgroup an app made below its own still counts as the app.
         let nested = format!("0::{TREE}/app-so.tilo.notes-3/inner\n");
         assert_eq!(
             app_cgroup_of(&nested).as_deref(),
@@ -819,10 +807,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". A Tilo app
-    // that runs out of memory ends whole; an independent job it started ends
-    // alone; a host app keeps one victim.
     #[test]
     fn a_tilo_app_is_one_oom_group_and_each_job_is_its_own() {
         assert!(oom_group(AppKind::Tilo, Leaf::Main));
@@ -869,7 +853,6 @@ mod tests {
         assert!(is_job_leaf("job-12"));
         assert!(!is_job_leaf("job-"));
         assert!(!is_job_leaf(MAIN_LEAF));
-        // A process in a job, or in the main leaf, is in its app.
         let in_job = format!("0::{TREE}/app-so.tilo.terminal-3/job-2\n");
         assert_eq!(
             app_cgroup_of(&in_job).as_deref(),

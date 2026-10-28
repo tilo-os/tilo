@@ -16,7 +16,6 @@ pub use tilo_app_package::tapp::TAPP_FORMAT_VERSION;
 pub struct TappMeta {
     /// Content-addressed package identity.
     pub package_id: PackageId,
-    /// The decoded manifest.
     pub manifest: Manifest,
     /// The decoded archive: metadata plus the sizes of carried blobs, each
     /// already checked against its hash.
@@ -26,11 +25,6 @@ pub struct TappMeta {
 /// Enforce the application materialization and entry-count budgets without
 /// writing the payload to disk. Needs the full form, which carries every
 /// payload size.
-///
-/// # Errors
-///
-/// Returns an error when the archive lacks payload blobs or the decoded
-/// application exceeds the materialization limits.
 pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
     let tapp = &meta.tapp;
     let missing = tapp.missing();
@@ -46,12 +40,6 @@ pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
 /// [`validate_payload_shape`] for a package that may be thin: `len_of`
 /// reports the verified length of each payload blob, carried or held
 /// elsewhere, and `None` for one that is unknown.
-///
-/// # Errors
-///
-/// Returns an error when a blob's length is unknown, the manifest does not
-/// fit the payload, or the decoded application exceeds the materialization
-/// limits.
 pub fn validate_payload_shape_with(
     meta: &TappMeta,
     len_of: impl FnMut(&tilo_app_package::BlobHash) -> Option<u64>,
@@ -73,11 +61,6 @@ pub fn validate_payload_shape_with(
 /// Decode a `.tapp`, checking the metadata hash chain and every carried
 /// payload blob. Does NOT check the signature — call [`verify_bytes`] for
 /// that.
-///
-/// # Errors
-///
-/// Returns an error if the archive is malformed, its metadata links are
-/// broken, or a carried blob does not match its hash.
 pub fn load(bytes: &[u8]) -> Result<TappMeta> {
     let tapp = tilo_app_package::tapp::read(bytes, &mut DiscardBlobs).context("decode .tapp")?;
     Ok(TappMeta {
@@ -97,12 +80,6 @@ pub fn load(bytes: &[u8]) -> Result<TappMeta> {
 /// A thin archive passes on its metadata; its payload is checked blob by
 /// blob by whoever fetches it. Any other outcome is a hard error — the
 /// bytes are never accepted.
-///
-/// # Errors
-///
-/// Returns an error if `bytes` fails to decode, the package id doesn't
-/// match `expected_id`, or verification against `expected_publisher`
-/// doesn't come back `Trusted`/`AttestedBy`.
 pub fn verify_bytes(
     bytes: &[u8],
     expected_id: PackageId,
@@ -131,8 +108,6 @@ pub fn verify_bytes(
 
 #[cfg(test)]
 pub(crate) mod test_fixture {
-    //! Shared fixture builder for a signed `.tapp`. Also used
-    //! by the crate's integration tests.
     use tilo_app_package::pack::{SigningIdentity, pack};
     use tilo_app_package::{Manifest, PackageId};
 
@@ -198,7 +173,6 @@ mod tests {
         let publisher = identity.public_key_bytes();
         let (bytes, id) = signed_tapp(&identity);
 
-        // Load reads the manifest and id.
         let meta = load(&bytes).unwrap();
         assert_eq!(meta.package_id, id);
         assert_eq!(meta.manifest.package.id, "so.tilo.editor");

@@ -429,7 +429,6 @@ mod tests {
         );
         let e = key(&keys, 'e');
         let r = key(&keys, 'r');
-        // Just inside 'r', on the shared edge.
         let touch = Point::new(r.rect.x0 + 1.0, e.rect.center().y);
         assert!(r.rect.contains(touch));
         assert_eq!(resolved_char(&keys, touch, &p, &TouchModel::new()), 'e');
@@ -474,7 +473,6 @@ mod tests {
         for k in &keys {
             let core = core_zone(k.rect, CORE_FRACTION);
             for other in keys.iter().filter(|o| o.id != k.id) {
-                // The context insists on a different letter.
                 let p = NextKeyDistribution::from_weights([(other.ch, 1.0)]);
                 for (fx, fy) in [
                     (0.01, 0.5),
@@ -500,7 +498,6 @@ mod tests {
         let uniform = NextKeyDistribution::uniform();
         let mut m = TouchModel::new();
         assert_eq!(resolved_char(&keys, touch, &uniform, &m), 'r');
-        // This user consistently hits 'e' near its right edge.
         for _ in 0..20 {
             m.learn('e', Point::new(e.rect.x1 - 2.0, e.rect.center().y), e.rect);
         }

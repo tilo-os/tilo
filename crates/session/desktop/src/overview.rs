@@ -16,6 +16,7 @@ use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{
     Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceId,
 };
+use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
 use crate::window_switcher::{WindowApp, WindowSource};
@@ -170,6 +171,8 @@ impl OverviewGroup {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverviewStrip {
     pub id: StripId,
+    /// What the strip is called, as the strip switcher names it.
+    pub name: String,
     pub is_current: bool,
     pub groups: Vec<OverviewGroup>,
 }
@@ -344,7 +347,7 @@ pub fn room_shares(
             cap.access == Access::Write,
         );
     }
-    out.sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
+    out.compact_sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
     out
 }
 
@@ -377,6 +380,7 @@ fn overview_strips(
             let active_group = tree.active_group_for(strip.id);
             OverviewStrip {
                 id: strip.id,
+                name: strip.name.clone(),
                 is_current: ws.id == tree.active && active_strip == Some(strip.id),
                 groups: strip
                     .window_groups
@@ -484,7 +488,6 @@ pub enum PressSource {
     Touch(u64),
 }
 
-/// How a press on the overview ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PressEnd {
     /// Released where it began: a click or a tap on `tab`'s preview, or on
@@ -842,6 +845,7 @@ mod room_tests {
                                 kind: AppKind::Other("Notes".to_string()),
                                 label: "Brief".to_string(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: second_tab,
@@ -850,6 +854,7 @@ mod room_tests {
                                 kind: AppKind::Browser,
                                 label: "References".to_string(),
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: second_tab,
@@ -899,6 +904,7 @@ mod room_tests {
                             kind: AppKind::Other("Notes".to_string()),
                             label: "Brief".to_string(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab_id,
                     width: WindowWidth::Normal,

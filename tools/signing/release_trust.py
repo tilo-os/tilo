@@ -69,7 +69,7 @@ SIGNED_REPOSITORIES = {
 # entries keep that explicit where tooling looks them up by name.
 REJECTED_REPOSITORIES = tuple(f'{host}/tilo/{name}'
                               for host in ('code.tilo.so', 'registry.tilo.so')
-                              for name in ('tilo-vm', 'tilo-ci', 'tilo-dev'))
+                              for name in ('tilo-vm', 'tilo-vm-ref', 'tilo-ci', 'tilo-dev'))
 # Public registries a person pulls from by choice: the Containers app, podman
 # and tinker's base images. Their publishers do not sign for Tilo, and the
 # choice of image is the person's, not the system's. A person adds another

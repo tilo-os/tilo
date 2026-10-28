@@ -14,7 +14,6 @@
 //! transport, runtime or state machine.
 
 pub mod colorimetry;
-pub mod contribution;
 pub mod hdr_metadata;
 pub mod presence_slot;
 pub mod record_sync;
@@ -40,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 6;
+pub const PEER_PROTOCOL_VERSION: u32 = 15;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -92,6 +91,31 @@ pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
+
+/// How many windows one [`NeighbourMsg::SurfaceViewRequest`] names at most.
+pub const MAX_SURFACE_VIEWS: usize = 64;
+/// How many decode limits one [`NeighbourMsg::SurfaceViewRequest`] carries
+/// at most.
+pub const MAX_SURFACE_VIEW_DECODERS: usize = 8;
+/// The largest side a viewer may ask a window be streamed at.
+pub const MAX_SURFACE_VIEW_SIDE: u32 = 8192;
+
+/// One window a viewer shows: the workspace tab holding it (the same id on
+/// every device of the room) and the tile's size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceView {
+    pub tab: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The largest picture a viewer's hardware decoder for `codec` (a codec
+/// label, `"h264"`, `"vp9"` …) takes, where it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceDecodeLimit {
+    pub codec: String,
+    pub max: Option<(u32, u32)>,
+}
 
 /// Presence channel key — namespaces presence updates (e.g. cursor, selection).
 pub type PresenceKey = String;
@@ -269,6 +293,11 @@ pub enum NeighbourMsg {
         cert: Box<tilo_user_identity::DeviceCert>,
         #[serde(default)]
         revocations: Vec<tilo_user_identity::RevocationEntry>,
+        /// The root's statements naming which device governs in place of a
+        /// revoked one, so a room its revoked governor held moves to the
+        /// successor rather than freezing.
+        #[serde(default)]
+        successions: Vec<tilo_user_identity::GovernorSuccession>,
     },
     /// One typed, signed document mutation crossing the Iroh boundary.
     /// Recipients authenticate the transport device, validate the envelope and
@@ -508,6 +537,49 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         seq: u64,
     },
+    /// One of session `peer`'s live presence frames in the room
+    /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
+    /// record it names), on the room's own topic: how the frame travels
+    /// when no workspace host's live plane reaches the room. It is the same
+    /// frame, read the same way as one the live plane delivers, so what
+    /// rides it (a wave) reaches the room's people with or without a host.
+    /// Appended to preserve every existing Postcard discriminant.
+    LivePresence { peer: PeerId, frame: Vec<u8> },
+    /// Viewer `peer`, a member of `room`, shows these of the receiving
+    /// device's windows (host and unconfined programs' windows, which cross
+    /// a room that shares its layout as hosted on that device): it streams
+    /// each to the viewer while the list keeps arriving and names it, read
+    /// only. Sent to that device alone over the authenticated direct route,
+    /// never to the room; an empty list ends every stream at once. Appended
+    /// to preserve every existing Postcard discriminant.
+    SurfaceViewRequest {
+        peer: PeerId,
+        room: String,
+        views: Vec<SurfaceView>,
+        decode: Vec<SurfaceDecodeLimit>,
+    },
+    /// `responder`'s answer to `requester`'s [`Self::RecordContentWant`]
+    /// when it keeps none of the content: the requester stops counting on
+    /// it, and once every device it is connected to that could hold the
+    /// content said so, the content is unavailable rather than on its way.
+    /// Appended to preserve every existing Postcard discriminant.
+    RecordContentLacks {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// The documents of `room` that bases replaced, each saved whole: what
+    /// a device keeps of the room's history from before an admission, for
+    /// another device of the same person alone, on that person's own lane
+    /// (`user_public_key`), never a room's. Appended to preserve every
+    /// existing Postcard discriminant.
+    RoomArchive {
+        user_public_key: [u8; 32],
+        room: String,
+        documents: Vec<Vec<u8>>,
+    },
 }
 
 impl NeighbourMsg {
@@ -568,7 +640,26 @@ impl NeighbourMsg {
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
-            | Self::SurfaceKeyframeRequest { .. } => false,
+            | Self::RecordContentLacks { .. }
+            | Self::SurfaceKeyframeRequest { .. }
+            | Self::LivePresence { .. }
+            | Self::SurfaceViewRequest { .. }
+            | Self::RoomArchive { .. } => false,
+        }
+    }
+
+    /// The person whose own lane carries this message, when it travels on
+    /// that lane rather than a room's.
+    #[must_use]
+    pub fn personal_lane(&self) -> Option<&[u8; 32]> {
+        match self {
+            Self::PersonalWorkspaces {
+                user_public_key, ..
+            }
+            | Self::RoomArchive {
+                user_public_key, ..
+            } => Some(user_public_key),
+            _ => None,
         }
     }
 
@@ -606,6 +697,10 @@ impl NeighbourMsg {
             Self::RecordContentPiece { .. } => "RecordContentPiece",
             Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
+            Self::LivePresence { .. } => "LivePresence",
+            Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
+            Self::RecordContentLacks { .. } => "RecordContentLacks",
+            Self::RoomArchive { .. } => "RoomArchive",
         }
     }
 }
@@ -666,6 +761,7 @@ mod tests {
                 protocol,
                 cert: device_cert(),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             })
             .unwrap();
             assert_eq!(bytes[0], IDENTITY_HELLO_INDEX);
@@ -681,10 +777,56 @@ mod tests {
     /// concatenation.
     fn fixtures() -> Vec<(&'static str, NeighbourMsg)> {
         let mut all = fixtures_sync_presence_and_streams();
+        all.extend(fixtures_window_views());
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
+        all.push((
+            "live presence",
+            NeighbourMsg::LivePresence {
+                peer: 3,
+                frame: vec![1, 2, 3],
+            },
+        ));
+        all.push((
+            "record content lacks",
+            NeighbourMsg::RecordContentLacks {
+                responder: 3,
+                requester: 4,
+                app_id: "so.tilo.slides".into(),
+                cluster_id: "room".into(),
+                hash: "ab".into(),
+            },
+        ));
+        all.push((
+            "room archive",
+            NeighbourMsg::RoomArchive {
+                user_public_key: [0x5E; 32],
+                room: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
+                documents: vec![vec![1, 2, 3]],
+            },
+        ));
         all
+    }
+
+    /// A member asking a host to stream it the host's windows it shows.
+    fn fixtures_window_views() -> Vec<(&'static str, NeighbourMsg)> {
+        vec![(
+            "surface view request",
+            NeighbourMsg::SurfaceViewRequest {
+                peer: 3,
+                room: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
+                views: vec![SurfaceView {
+                    tab: 0x5EED_0000_0000_0007,
+                    width: 1280,
+                    height: 720,
+                }],
+                decode: vec![SurfaceDecodeLimit {
+                    codec: "h264".into(),
+                    max: Some((1920, 1080)),
+                }],
+            },
+        )]
     }
 
     /// Channel governance, with fixed ids and signatures so the golden
@@ -904,6 +1046,7 @@ mod tests {
                     protocol: crate::PEER_PROTOCOL_VERSION,
                     cert: device_cert(),
                     revocations: Vec::new(),
+                    successions: Vec::new(),
                 },
             ),
             (
@@ -1097,7 +1240,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 30;
+    const VARIANT_COUNT: usize = 34;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1143,6 +1286,13 @@ mod tests {
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
         ("surface keyframe request", "1d0307ac02"),
+        (
+            "surface view request",
+            concat!(
+                "1f032430373834386666652d313839382d346637322d383431392d3062353463",
+                "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
+            ),
+        ),
         ("remote input", "07030704deadbeef"),
         ("permission request", "08050c73686172652d73637265656e"),
         ("permission grant", "09050c73686172652d73637265656e"),
@@ -1151,12 +1301,14 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b06",
+                "0b0f",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030300",
+                // No revocations, no successions.
+                "00",
             ),
         ),
         (
@@ -1304,6 +1456,19 @@ mod tests {
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
+            ),
+        ),
+        ("live presence", "1e0303010203"),
+        (
+            "record content lacks",
+            "2003040e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
+        (
+            "room archive",
+            concat!(
+                "215e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+                "5e2430373834386666652d313839382d346637322d383431392d306235346339",
+                "3365366461640103010203",
             ),
         ),
     ];

@@ -306,11 +306,6 @@ fn identities(
 /// verified dependency basis. A checkpoint is loaded independently even when
 /// `prior` is present; it cannot borrow missing dependencies from the old basis.
 /// `prior` additionally checks immutable governance and monotonic metadata.
-///
-/// # Errors
-///
-/// Returns a [`ProofError`] if the body does not verify against the authority or
-/// `prior`.
 pub fn verify_room(
     authority: &RetentionAuthority,
     source: [u8; 32],
@@ -350,7 +345,7 @@ pub fn verify_room(
     let before = prior.map(|prior| &prior.doc);
     let pinned = hex::encode(source);
     // The governor wrote it, so this is the room admission every receiver
-    // runs, from the governor: room, topology, receipts, coverage,
+    // runs, from the governor: room, layout, receipts, coverage,
     // durability and media.
     tilo_peer_state::room::check_candidate(
         &tilo_peer_state::room::RoomAdmission {
@@ -361,7 +356,6 @@ pub fn verify_room(
                 standing: tilo_peer_state::room::Standing::TransportAuthorized,
             },
             authority: tilo_peer_state::room::AuthorityPin::Device(&pinned),
-            contents: tilo_peer_state::room::ContentOwnership::Registry,
             caps_now: 0,
         },
         &doc,
@@ -452,11 +446,6 @@ fn signed_document(
 }
 
 /// Verify a document snapshot against a verified room.
-///
-/// # Errors
-///
-/// Returns a [`ProofError`] if the snapshot is not covered by the room or fails
-/// verification.
 pub fn verify_snapshot(
     room: &VerifiedRoom,
     source: [u8; 32],
@@ -524,10 +513,6 @@ impl VerifiedRoom {
         self.prior_heads.as_deref()
     }
     /// Current canonical route metadata, not a historical proof cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ProofError`] if the room coverage rows are malformed.
     pub fn coverages(&self) -> Result<BTreeMap<String, Coverage>, ProofError> {
         tilo_peer_state::coverage::entries(&self.doc).map_err(|_| ProofError::Unknown)
     }

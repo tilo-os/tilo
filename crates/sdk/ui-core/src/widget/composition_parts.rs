@@ -151,6 +151,14 @@ macro_rules! retained_parts {
             }
             dirty
         }
+        // No structure of its own: what its parts describe stays described.
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+            let mut change = crate::widget::StructureChange::None;
+            for child in &mut self.$($path).+.children {
+                change = change.join(child.take_structure_change());
+            }
+            change
+        }
         fn wants_pointer_capture(&self) -> bool {
             self.$($path).+
                 .children
@@ -178,6 +186,7 @@ mod tests {
         accepts: bool,
     }
     impl Widget for MutableAdmission {
+        crate::provides!(dyn crate::widget::ResourceOperations);
         fn name(&self) -> &str {
             "MutableAdmission"
         }
@@ -189,9 +198,13 @@ mod tests {
         ) -> NodeId {
             tree.leaf_node(Style::default())
         }
+    }
+
+    impl crate::widget::ResourceOperations for MutableAdmission {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["mutable.effect"]
         }
+
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,

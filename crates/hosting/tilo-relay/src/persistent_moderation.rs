@@ -104,3 +104,131 @@ pub(crate) fn follow_published(
         }
     })))
 }
+
+/// How often one person may have the room's model look over a review, and
+/// how often everyone together may: each review is one model call the
+/// operator pays for, and a report is reviewed once per change to its words.
+const REVIEWS_PER_PERSON: usize = 12;
+const REVIEWS_PER_ROOM: usize = 240;
+const REVIEW_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The room's moderation model, lent to the room's reporters to look over
+/// their reports before they send them: the reporter's page never holds the
+/// key, and it asks through its feedback admission, so only people the room
+/// admits to report may ask, and only the review contract is asked
+/// (`tilo_agent_participant::FeedbackReviewer`).
+pub(crate) struct RoomReviewer {
+    judge: std::sync::Arc<AnthropicJudge>,
+    runtime: tokio::runtime::Handle,
+    asked: std::sync::Mutex<Asked>,
+}
+
+#[derive(Default)]
+struct Asked {
+    room: std::collections::VecDeque<std::time::Instant>,
+    people: std::collections::HashMap<[u8; 32], std::collections::VecDeque<std::time::Instant>>,
+}
+
+impl Asked {
+    /// Whether `person` may ask now; counts the ask when they may.
+    fn admit(&mut self, person: [u8; 32], now: std::time::Instant) -> bool {
+        let recent = |times: &mut std::collections::VecDeque<std::time::Instant>| {
+            while times
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= REVIEW_WINDOW)
+            {
+                times.pop_front();
+            }
+        };
+        recent(&mut self.room);
+        self.people.retain(|_, times| {
+            recent(times);
+            !times.is_empty()
+        });
+        let theirs = self.people.entry(person).or_default();
+        if self.room.len() >= REVIEWS_PER_ROOM || theirs.len() >= REVIEWS_PER_PERSON {
+            return false;
+        }
+        theirs.push_back(now);
+        self.room.push_back(now);
+        true
+    }
+}
+
+impl RoomReviewer {
+    /// The reviewer asking the model whose key [`load`] kept in `store`.
+    ///
+    /// # Errors
+    /// The store holds no usable key for it.
+    pub(crate) fn from_store(
+        store: &tilo_secrets::SecretStore,
+        model: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let profile =
+            tilo_moderation::anthropic::profile(tilo_moderation::anthropic::HOST_PROFILE, model);
+        let judge = AnthropicJudge::from_profile(&profile, store)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .context("load the room's review model")?;
+        Ok(Self {
+            judge: std::sync::Arc::new(judge),
+            runtime: tokio::runtime::Handle::current(),
+            asked: std::sync::Mutex::default(),
+        })
+    }
+}
+
+impl tilo_agent_participant::FeedbackReviewer for RoomReviewer {
+    fn name(&self) -> String {
+        format!(
+            "Anthropic {}",
+            tilo_moderation::Judge::model(self.judge.as_ref())
+        )
+    }
+
+    fn review(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        prompt: String,
+        schema: serde_json::Value,
+        done: Box<dyn FnOnce(Result<String, String>) + Send>,
+    ) {
+        let Some(person) = caller.user_public_key().copied() else {
+            return done(Err("an unnamed caller".into()));
+        };
+        let admitted = self
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admit(person, std::time::Instant::now());
+        if !admitted {
+            return done(Err("reviews are asked too often".into()));
+        }
+        let judge = std::sync::Arc::clone(&self.judge);
+        self.runtime.spawn(async move {
+            let answer = judge.complete(&prompt, &schema).await;
+            if let Err(error) = &answer {
+                tracing::warn!(%error, "the room's model did not review a report");
+            }
+            done(answer.map_err(|error| error.to_string()));
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One person cannot spend the room's model on reviews faster than a
+    /// person writes reports, and a window later they may again.
+    #[test]
+    fn a_person_may_ask_only_so_often() {
+        let mut asked = Asked::default();
+        let start = std::time::Instant::now();
+        for _ in 0..REVIEWS_PER_PERSON {
+            assert!(asked.admit([1; 32], start));
+        }
+        assert!(!asked.admit([1; 32], start));
+        assert!(asked.admit([2; 32], start), "others still may");
+        assert!(asked.admit([1; 32], start + REVIEW_WINDOW));
+    }
+}

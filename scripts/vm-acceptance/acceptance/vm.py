@@ -81,6 +81,8 @@ class TiloVm:
         self.vm = vm
         self.slot = slot
         self.log = log
+        # Why the slot session could not be restarted, once that happened (`restart_session`).
+        self.restart_failed: str | None = None
 
     def run(self, *args: str, timeout: float = 120, check: bool = True,
             slot: bool = True, cwd: Path | None = None) -> str:
@@ -90,8 +92,11 @@ class TiloVm:
         cmd = [self.binary, *args]
         started = time.monotonic()
         try:
+            # Slot output may be cut at a byte count (R09 reads the session
+            # log through `cut -c1-400`), splitting a multi-byte character;
+            # one bad byte must not lose the whole check.
             proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  timeout=timeout, cwd=cwd)
+                                  errors="replace", timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
@@ -191,8 +196,9 @@ class TiloVm:
         try:
             self.run("shot", "-o", str(path), timeout=90)
         except VmError:
-            # A software-rendered session under load can miss the 15 s snapshot deadline once.
-            time.sleep(2)
+            # A software-rendered session under load can miss the 15 s snapshot deadline once:
+            # take it again once the compositor answers its control socket.
+            self.wait_answering(30)
             self.run("shot", "-o", str(path), timeout=90)
         return path
 
@@ -208,27 +214,59 @@ class TiloVm:
         """Restart the slot's session on its current generation and wait until its control
         socket answers again: a fresh compositor, unlocked, with no windows open. Counted in
         `requested_restarts`, so the session-restart guard knows this ending was asked for."""
+        if getattr(self, "restart_failed", None):
+            # A session that one restart could not bring back gets no second one: each would
+            # wait out its bounds again, and every check after it with them.
+            raise VmError(f"not restarted again: {self.restart_failed}")
         self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
-        self.run("slot", "restart", self.slot, timeout=300, slot=False)
+        try:
+            self.run("slot", "restart", self.slot, timeout=300, slot=False)
+            self.wait_answering(timeout)
+        except VmError as exc:
+            self.restart_failed = f"restarting the slot session failed: {exc.reason()}"
+            raise
 
+    def wait_answering(self, timeout: float = 60) -> dict:
+        """The state dump, once the slot's compositor answers its control socket with at
+        least one display."""
         def answering():
             try:
-                return self.state()
+                st = self.state()
             except VmError:
                 return None
+            outputs = (st.get("workspace_tree") or {}).get("outputs") or {}
+            return st if outputs.get("displays") else None
 
-        if wait_until(answering, timeout, interval=1.0) is None:
-            raise VmError(f"the restarted session's control socket did not answer within {timeout:.0f}s")
+        st = wait_until(answering, timeout, interval=0.5)
+        if st is None:
+            raise VmError(f"the session's control socket did not answer with a display within {timeout:.0f}s")
+        return st
+
+    def wait_catalogue(self, timeout: float = 60) -> None:
+        """Once the session answers, until its app catalogue lists Terminal, which every
+        image carries: a fresh session publishes the catalogue a few seconds after it
+        starts."""
+        self.wait_answering(timeout)
+
+        def listed():
+            try:
+                return any(a["provider"] == "applications" and a["id"] == "so.tilo.terminal"
+                           for a in self.actions("Terminal"))
+            except VmError:
+                return False
+
+        if wait_until(listed, timeout, interval=0.5) is None:
+            raise VmError(f"the session listed no applications within {timeout:.0f}s")
 
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as the slot's user, in its session's view."""
         return self.run("slot", "exec", "--", "sh", "-c", script,
                         timeout=timeout, check=check)
 
-    def root_exec(self, script: str, timeout: float = 120) -> str:
+    def root_exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
         (it is not dumpable, so slot exec cannot), or a check's setup of this throwaway VM."""
-        return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout)
+        return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout, check=check)
 
     def slot_uid(self) -> int:
         if not hasattr(self, "_uid"):

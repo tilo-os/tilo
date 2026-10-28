@@ -18,6 +18,7 @@ impl Fixture {
         let source = source(&rig, &lifecycle, &socket);
         let mut apps = super::super::super::super::InProcessApps::native_for_profile(
             &rig.root.path().join("apps"),
+            &rig.root.path().join("apps").join("person"),
             &rig.owner.principal,
             socket,
         )
@@ -40,20 +41,20 @@ impl Fixture {
             wakes,
         }
     }
-    fn metadata(&mut self, enabled: bool, generation: u64) {
+    fn metadata(&self, enabled: bool, generation: u64) {
         let mut metadata = accounts::person::PersonAccounts::default();
         metadata.save_account(
             "fixture-signal".into(), "signal".into(), "Synthetic Signal".into(),
             serde_json::json!({"messaging_scope":route().scope,"linking_generation":generation}),
             enabled, 0,
         ).unwrap();
-        seed_person(&mut self.apps, &metadata);
+        seed_person(&self.apps, &metadata);
     }
 }
 
 #[test]
 fn native_current_records_refuse_changed_account_generation_and_contacts_without_file_reopen() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     assert_eq!(
         SignalAuthority::authorize(fixture.authority.as_ref(), &route())
             .unwrap()
@@ -104,7 +105,7 @@ fn native_current_records_refuse_changed_account_generation_and_contacts_without
     contacts
         .remove_contact(tilo_resource::Id::from_raw(PERSON))
         .unwrap();
-    seed_person(&mut fixture.apps, &contacts);
+    seed_person(&fixture.apps, &contacts);
     assert!(
         SignalAuthority::check_account(fixture.authority.as_ref()).is_ok(),
         "transport readiness does not invent a recipient association"
@@ -129,7 +130,7 @@ fn native_worker_current_record_reads_wake_and_observe_original_owner_edits_befo
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.metadata(false, 1);
     fixture.apps.pump_messaging_records();
@@ -142,7 +143,7 @@ fn native_worker_current_record_reads_wake_and_observe_original_owner_edits_befo
     let worker = std::thread::spawn(move || SignalAuthority::incoming(authority.as_ref(), ACI));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.apps.pump_messaging_records();
     assert_eq!(worker.join().unwrap().unwrap().route, route());
@@ -158,7 +159,7 @@ fn queued_original_record_reads_refuse_revoked_session_and_credential_before_rep
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture
         .rig
@@ -179,7 +180,7 @@ fn queued_original_record_reads_refuse_revoked_session_and_credential_before_rep
         std::thread::spawn(move || SignalAuthority::authorize(authority.as_ref(), &route()));
     fixture
         .wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
+        .recv_timeout(tilo_test_env::hang_bound())
         .unwrap();
     fixture.lifecycle.lifecycle().set_locked(true);
     fixture.apps.pump_messaging_records();
@@ -206,9 +207,7 @@ fn unobserved_current_record_request_times_out_and_closed_original_owner_never_a
     let worker_authority = authority.clone();
     let worker =
         std::thread::spawn(move || SignalAuthority::authorize(worker_authority.as_ref(), &route()));
-    wakes
-        .recv_timeout(ui::time::Duration::from_secs(1))
-        .unwrap();
+    tilo_test_env::recv("the worker's request to wake the owner", &wakes);
     assert!(
         matches!(worker.join().unwrap(), Err(SendError::Unavailable)),
         "a check that cannot observe its subject must refuse"
@@ -274,7 +273,7 @@ fn buffered_verified_activation_refuses_a_closed_original_native_owner() {
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 completed.try_recv().is_ok()
             }),

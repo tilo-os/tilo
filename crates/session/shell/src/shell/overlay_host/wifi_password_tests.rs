@@ -1,8 +1,8 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::quick_settings::{QsLevel, QsSection, WifiNetwork};
 use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
+use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork};
 use ui::widget::Container;
 
 /// Records the join attempts and can be told to reject them, so the
@@ -13,7 +13,7 @@ struct JoinRecorder {
     reject: bool,
 }
 
-impl crate::shell::quick_settings::actions::QsActions for JoinRecorder {
+impl tilo_quick_settings::actions::QsActions for JoinRecorder {
     fn set_brightness(&self, _: f32) -> Result<(), String> {
         Ok(())
     }
@@ -51,7 +51,7 @@ fn host_on_wifi_pane(
     std::rc::Rc<JoinRecorder>,
 ) {
     struct Shim(std::rc::Rc<JoinRecorder>);
-    impl crate::shell::quick_settings::actions::QsActions for Shim {
+    impl tilo_quick_settings::actions::QsActions for Shim {
         fn set_brightness(&self, v: f32) -> Result<(), String> {
             self.0.set_brightness(v)
         }
@@ -116,6 +116,12 @@ fn press(h: &mut ShellOverlayHost, key: &Key) -> bool {
     })
 }
 
+/// The prompt's passphrase field.
+fn wifi_field(h: &ShellOverlayHost) -> &TextInput {
+    h.wifi_password_field()
+        .expect("the prompt has a passphrase field")
+}
+
 fn ch(s: &str) -> Key {
     Key::Character(s.into())
 }
@@ -129,7 +135,7 @@ fn finish_join(
 ) {
     host.apply_wifi_join_result(
         &mut chrome.borrow_mut(),
-        crate::shell::quick_settings::refresh::WifiJoinResult {
+        crate::shell::quick_settings_refresh::WifiJoinResult {
             ssid: "Cafe WiFi".into(),
             password: password.map(str::to_owned),
             shared_credential,
@@ -146,18 +152,18 @@ fn wifi_password_prompt_captures_typing_and_never_submits_empty() {
         let prompt = chrome.borrow().quick_settings.wifi_password.clone();
         let prompt = prompt.expect("a prompt is up");
         assert_eq!(prompt.ssid, "Cafe WiFi");
-        assert!(h.wifi_password_input.value().is_empty());
+        assert!(wifi_field(&h).value().is_empty());
         assert!(
-            h.wifi_password_input.is_secret() && !h.wifi_password_input.is_revealed(),
+            wifi_field(&h).is_secret() && !wifi_field(&h).is_revealed(),
             "the passphrase is a secret field, hidden until its own control reveals it"
         );
-        assert!(h.wifi_password_input.has_reveal_control());
+        assert!(wifi_field(&h).has_reveal_control());
         assert!(
             rec.attempts.borrow().is_empty(),
             "nothing is attempted until there is a password to attempt with"
         );
         assert!(
-            !prompt.can_submit(h.wifi_password_input.value()),
+            !prompt.can_submit(wifi_field(&h).value()),
             "Connect stays inert until something is typed"
         );
     }
@@ -168,7 +174,7 @@ fn wifi_password_prompt_captures_typing_and_never_submits_empty() {
         for c in ["h", "u", "n", "k"] {
             press(&mut h, &ch(c));
         }
-        assert_eq!(h.wifi_password_input.value(), "hunk");
+        assert_eq!(wifi_field(&h).value(), "hunk");
         assert!(
             !format!("{:?}", chrome.borrow().quick_settings).contains("hunk"),
             "the passphrase never enters chrome state"
@@ -330,12 +336,12 @@ fn wifi_password_rejection_and_cancel_keep_or_discard_state_correctly() {
         assert!(!p.connecting, "the attempt is over");
         assert!(p.error.is_some(), "and the reason is on screen");
         assert_eq!(
-            h.wifi_password_input.value(),
+            wifi_field(&h).value(),
             "bad",
             "a typo is a correction, not a retype"
         );
         assert_eq!(
-            h.wifi_password_input.selection_range_public(),
+            wifi_field(&h).selection_range_public(),
             Some((0, 3)),
             "and it is selected, so the next keystroke replaces it"
         );
@@ -377,7 +383,7 @@ fn wifi_password_rejection_and_cancel_keep_or_discard_state_correctly() {
         press(&mut h, &ch("s"));
         press(&mut h, &Key::Named(NamedKey::Escape));
         assert!(chrome.borrow().quick_settings.wifi_password.is_none());
-        assert!(h.wifi_password_input.value().is_empty());
+        assert!(wifi_field(&h).value().is_empty());
         assert!(rec.attempts.borrow().is_empty());
     }
 
@@ -391,7 +397,7 @@ fn wifi_password_rejection_and_cancel_keep_or_discard_state_correctly() {
             chrome.borrow().quick_settings.wifi_password.is_none(),
             "a password buffer must not outlive the window it was typed into"
         );
-        assert!(h.wifi_password_input.value().is_empty());
+        assert!(wifi_field(&h).value().is_empty());
     }
 
     a_rejected_password_keeps_the_prompt_up_and_says_why();
@@ -491,7 +497,7 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
         };
         let (field, connect) = (target("Password"), target("Connect"));
         assert!(act(&mut h, &field, &Action::SetValue("hunter22".into())));
-        assert_eq!(h.wifi_password_input.value(), "hunter22");
+        assert_eq!(wifi_field(&h).value(), "hunter22");
         assert!(act(&mut h, &connect, &Action::Activate));
         assert!(
             chrome

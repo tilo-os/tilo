@@ -178,10 +178,6 @@ pub struct Release {
 }
 
 /// Seal `half` to the request's ephemeral key, bound to its digest.
-///
-/// # Errors
-///
-/// When sealing fails.
 pub fn seal_release(
     ephemeral_public: &[u8; 32],
     request_digest: &[u8; 32],
@@ -200,10 +196,6 @@ pub fn seal_release(
 }
 
 /// Open a [`Release`] with the request's ephemeral secret.
-///
-/// # Errors
-///
-/// When the version, key, digest or bytes do not match.
 pub fn open_release(
     ephemeral_secret: &SecretKey,
     request_digest: &[u8; 32],
@@ -276,7 +268,6 @@ pub enum RefusalReason {
     /// challenge was already answered.
     #[error("unknown or reused challenge")]
     UnknownChallenge,
-    /// The challenge expired.
     #[error("challenge expired")]
     ChallengeExpired,
     /// The boot key signature does not verify.
@@ -293,7 +284,6 @@ pub enum RefusalReason {
     NotACustodian,
 }
 
-/// Errors of the frame codec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum FrameError {
     /// Longer than [`MAX_FRAME_BYTES`].

@@ -42,8 +42,6 @@ pub struct PortableBinding {
 impl PortableBinding {
     /// Construct a target-specific binding. Empty or oversized identities and
     /// uid zero are refused.
-    /// # Errors
-    /// Returns `InvalidConfiguration` for an invalid identity.
     pub fn new(operation: &str, target: &str, user: &str, uid: u32) -> Result<Self, PortableError> {
         if uid == 0
             || [operation, target, user]
@@ -707,7 +705,6 @@ mod tests {
         let artifact =
             seal_selected_accounts_with_password(&from, selected, PASSWORD, b"legacy-setup")
                 .unwrap();
-        // Decode independently using the original framing and literal domains.
         let wire = artifact.as_bytes();
         assert_eq!(&wire[..8], b"TILOACC1");
         let wrapped_len = u32::from_le_bytes(wire[8..12].try_into().unwrap()) as usize;

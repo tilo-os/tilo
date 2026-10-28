@@ -1,0 +1,322 @@
+{
+  "metadata": {
+    "channelMetadataRenderer": {
+      "title": "Lofi Girl",
+      "description": "Lofi House is now available! 🌇\n",
+      "externalId": "UCSJ4gkVC6NrvII8umztf0Ow",
+      "avatar": {
+        "thumbnails": [
+          {
+            "url": "https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s900-c-k-c0x00ffffff-no-rj",
+            "width": 900,
+            "height": 900
+          }
+        ]
+      }
+    }
+  },
+  "header": {
+    "pageHeaderRenderer": {
+      "content": {
+        "pageHeaderViewModel": {
+          "metadata": {
+            "contentMetadataViewModel": {
+              "metadataRows": [
+                {
+                  "metadataParts": [
+                    {
+                      "text": {
+                        "content": "@LofiGirl"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "metadataParts": [
+                    {
+                      "text": {
+                        "content": "15.8M subscribers"
+                      }
+                    },
+                    {
+                      "text": {
+                        "content": "474 videos"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "banner": {
+            "imageBannerViewModel": {
+              "image": {
+                "sources": [
+                  {
+                    "url": "https://yt3.googleusercontent.com/E1iYDsDe-zZJxT7Kbz-O3pfZumK8pninBLT_KuItcANdcEhiETURvgMFr8jah3OCdD04vkDDbA=w2560-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+                    "width": 2560,
+                    "height": 424
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "selected": true,
+            "content": {
+              "richGridRenderer": {
+                "contents": [
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "PVSOJyG5WKU",
+                          "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                          "contentImage": {
+                            "thumbnailViewModel": {
+                              "overlays": [
+                                {
+                                  "thumbnailBottomOverlayViewModel": {
+                                    "badges": [
+                                      {
+                                        "thumbnailBadgeViewModel": {
+                                          "text": "0:39",
+                                          "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": {
+                                "content": "LOFI PRO Headphones - Yours Now (Launch trailer)"
+                              },
+                              "image": {
+                                "decoratedAvatarViewModel": {
+                                  "avatar": {
+                                    "avatarViewModel": {
+                                      "image": {
+                                        "sources": [
+                                          null
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "rendererContext": {
+                                    "commandContext": {
+                                      "onTap": {
+                                        "innertubeCommand": {
+                                          "browseEndpoint": {
+                                            "browseId": null
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        {
+                                          "text": {
+                                            "content": "140K views"
+                                          }
+                                        },
+                                        {
+                                          "text": {
+                                            "content": "1 day ago"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "vadHXNBy4jQ",
+                          "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                          "contentImage": {
+                            "thumbnailViewModel": {
+                              "overlays": [
+                                {
+                                  "thumbnailBottomOverlayViewModel": {
+                                    "badges": [
+                                      {
+                                        "thumbnailBadgeViewModel": {
+                                          "text": "8:00:00",
+                                          "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": {
+                                "content": "8h of halloween lofi 🎃 spooky ambience to get chills to"
+                              },
+                              "image": {
+                                "decoratedAvatarViewModel": {
+                                  "avatar": {
+                                    "avatarViewModel": {
+                                      "image": {
+                                        "sources": [
+                                          null
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "rendererContext": {
+                                    "commandContext": {
+                                      "onTap": {
+                                        "innertubeCommand": {
+                                          "browseEndpoint": {
+                                            "browseId": null
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        {
+                                          "text": {
+                                            "content": "343K views"
+                                          }
+                                        },
+                                        {
+                                          "text": {
+                                            "content": "6 days ago"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "_jH2oTNRe7g",
+                          "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                          "contentImage": {
+                            "thumbnailViewModel": {
+                              "overlays": [
+                                {
+                                  "thumbnailBottomOverlayViewModel": {
+                                    "badges": [
+                                      {
+                                        "thumbnailBadgeViewModel": {
+                                          "text": "1:04:42",
+                                          "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": {
+                                "content": "cozy autumn music 🍂 lofi beats to study / relax to"
+                              },
+                              "image": {
+                                "decoratedAvatarViewModel": {
+                                  "avatar": {
+                                    "avatarViewModel": {
+                                      "image": {
+                                        "sources": [
+                                          null
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "rendererContext": {
+                                    "commandContext": {
+                                      "onTap": {
+                                        "innertubeCommand": {
+                                          "browseEndpoint": {
+                                            "browseId": null
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        {
+                                          "text": {
+                                            "content": "1.1M views"
+                                          }
+                                        },
+                                        {
+                                          "text": {
+                                            "content": "2 weeks ago"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -3,7 +3,7 @@ name = "settings-store"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The shared Tilo desktop settings file: one resolver, one forgiving read, one atomic write."
@@ -36,6 +36,8 @@ model = ["dep:tilo-resource"]
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Thread-scoped wall-clock scopes for the tests that place a row in time.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

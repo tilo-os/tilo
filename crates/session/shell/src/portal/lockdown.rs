@@ -134,7 +134,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     #[test]
     fn lockdown_policy_is_trusted_persistent_and_not_dbus_settable() {
-        // Phase `trusted_policy_persists`.
         {
             let dir = tempfile::tempdir().unwrap();
             let p = dir.path().join("policy.json");
@@ -154,7 +153,6 @@ mod tests {
                 0o600
             );
         }
-        // Phase `dbus_setter_is_denied`.
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(

@@ -88,7 +88,7 @@ impl AccountService for WorkspaceAccount {
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == caller.workspace_id)
-                .map(|workspace| workspace.room.to_string())
+                .map(|workspace| workspace.room().to_string())
         };
         let Some(room) = room else {
             return PortalResult::Failed("application workspace is no longer active".into());
@@ -449,10 +449,10 @@ impl EmailService for ShellEmailService {
                     .iter()
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
-                    workspace.room,
+                    workspace.room(),
                     workspace.launch_grants(tilo_clock::unix_now()),
                     workspace.default_apps.clone(),
-                    crate::shell::state::local_user_id_for_room(&workspace.room),
+                    crate::shell::state::local_user_id_for_room(&workspace.room()),
                 ))
             })
         else {
@@ -788,6 +788,24 @@ pub fn place_wallpaper(
     targets: &[&str],
     cache_file: &str,
 ) {
+    place_picture(
+        records,
+        workspace_id,
+        scope,
+        targets,
+        &WallpaperPicture::Cached(cache_file.to_owned()),
+    );
+}
+
+/// Record `picture` as the wallpaper for `targets`, on `workspace_id` alone
+/// or on every workspace.
+fn place_picture(
+    records: &mut Vec<WallpaperRecord>,
+    workspace_id: &str,
+    scope: WallpaperScope,
+    targets: &[&str],
+    picture: &WallpaperPicture,
+) {
     let owner = match scope {
         WallpaperScope::Workspace => workspace_id,
         WallpaperScope::All => EVERY_WORKSPACE,
@@ -799,11 +817,96 @@ pub fn place_wallpaper(
         };
         !(replaced && targets.iter().any(|target| old.target == *target))
     });
+    let (cache_file, shipped) = match picture {
+        WallpaperPicture::Cached(file) => (file.clone(), None),
+        WallpaperPicture::Shipped(id) => (String::new(), Some(id.clone())),
+    };
     records.extend(targets.iter().map(|target| WallpaperRecord {
         workspace_id: owner.to_string(),
-        cache_file: cache_file.to_string(),
+        cache_file: cache_file.clone(),
         target: (*target).into(),
+        shipped: shipped.clone(),
     }));
+}
+
+pub const WALLPAPER_SURFACES: [&str; 2] = ["background", "lockscreen"];
+
+/// Show `picture` on `targets`, on `workspace_id` alone or on every
+/// workspace, and take it off the other surfaces it showed on within that
+/// reach: the person's "Show on" and "Use for" applied to the wallpaper they
+/// have, not only to the next one.
+pub fn show_wallpaper(
+    records: &mut Vec<WallpaperRecord>,
+    workspace_id: &str,
+    scope: WallpaperScope,
+    targets: &[&str],
+    picture: &WallpaperPicture,
+) {
+    records.retain(|old| {
+        let in_reach = match scope {
+            WallpaperScope::Workspace => old.workspace_id == workspace_id,
+            WallpaperScope::All => true,
+        };
+        !(in_reach && !targets.contains(&old.target.as_str()) && old.picture() == *picture)
+    });
+    place_picture(records, workspace_id, scope, targets, picture);
+}
+
+/// The surfaces `set_on` names (`background`, `lockscreen` or `both`).
+pub fn wallpaper_targets(set_on: &str) -> Option<&'static [&'static str]> {
+    match set_on {
+        "background" => Some(&WALLPAPER_SURFACES[..1]),
+        "lockscreen" => Some(&WALLPAPER_SURFACES[1..]),
+        "both" => Some(&WALLPAPER_SURFACES),
+        _ => None,
+    }
+}
+
+/// Apply the wallpaper the person has, `choice` (`appearance.wallpaper`),
+/// to the surfaces `set_on` names and the workspaces `scope` reaches from
+/// `workspace_id` (the one they are on), in the registry at `path`. Their own
+/// picture is the one `workspace_id` shows. Returns whether the registry
+/// changed.
+///
+/// # Errors
+///
+/// Why the registry could not be written.
+pub fn apply_wallpaper_choice(
+    path: &Path,
+    workspace_id: &str,
+    choice: Option<&str>,
+    set_on: &str,
+    scope: WallpaperScope,
+) -> Result<bool, String> {
+    let Some(targets) = wallpaper_targets(set_on) else {
+        return Ok(false);
+    };
+    let mut records: Vec<WallpaperRecord> = tilo_files::native::atomic::json::load_or_default(path);
+    let picture = match tilo_wallpapers::choice(choice) {
+        _ if choice.is_none() => return Ok(false),
+        Some(tilo_wallpapers::Choice::Bundled(wallpaper)) => {
+            WallpaperPicture::Shipped(wallpaper.id.to_string())
+        }
+        Some(tilo_wallpapers::Choice::Custom) => {
+            let Some(own) = WALLPAPER_SURFACES.iter().find_map(|surface| {
+                wallpaper_record_for(&records, workspace_id, surface)
+                    .map(WallpaperRecord::picture)
+                    .filter(|picture| matches!(picture, WallpaperPicture::Cached(_)))
+            }) else {
+                return Ok(false);
+            };
+            own
+        }
+        None => return Ok(false),
+    };
+    let before = records.clone();
+    show_wallpaper(&mut records, workspace_id, scope, targets, &picture);
+    if records == before {
+        return Ok(false);
+    }
+    write_private_json(path, &records)?;
+    cleanup_wallpaper_cache(&wallpaper_cache_dir(path), &records);
+    Ok(true)
 }
 
 /// The record a workspace shows for `target`: its own, else the one for every
@@ -827,13 +930,38 @@ pub fn wallpaper_record_for<'a>(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WallpaperRecord {
     pub workspace_id: String,
-    /// Basename of a normalised PNG inside Tilo's private wallpaper cache.
-    /// Never persist the caller's document URI: it may contain identifying
-    /// document names and is valid only for the original portal grant.
+    /// Basename of a normalised PNG inside Tilo's private wallpaper cache;
+    /// empty for a shipped picture. Never persist the caller's document URI:
+    /// it may contain identifying document names and is valid only for the
+    /// original portal grant.
     pub cache_file: String,
     /// One of `background` or `lockscreen`. `set-on=both` creates two
     /// records referencing the same cached image.
     pub target: String,
+    /// A picture the image ships, by its id, instead of a cached file. A
+    /// registry written before shipped pictures had records has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shipped: Option<String>,
+}
+
+/// What a wallpaper record shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WallpaperPicture {
+    /// The person's own picture, by its cache file name.
+    Cached(String),
+    /// A picture the image ships, by its id.
+    Shipped(String),
+}
+
+impl WallpaperRecord {
+    /// The picture this record shows.
+    #[must_use]
+    pub fn picture(&self) -> WallpaperPicture {
+        match &self.shipped {
+            Some(id) => WallpaperPicture::Shipped(id.clone()),
+            None => WallpaperPicture::Cached(self.cache_file.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -930,6 +1058,9 @@ impl WallpaperService for ShellWallpaperService {
             self.discard_staged_wallpaper(request, staged);
             return PortalResult::Unavailable("Tilo wallpaper registry is unavailable".into());
         };
+        // The session also writes the registry when the person changes where
+        // their wallpaper shows: start from what it holds now.
+        *records = tilo_files::native::atomic::json::load_or_default(self.path.as_ref());
         let before = records.clone();
         place_wallpaper(
             &mut records,
@@ -1251,7 +1382,6 @@ mod tests {
 
     #[test]
     fn mail_handoff_encodes_fields_and_grants_attachments_once() {
-        // Phase `mailto_encoding_cannot_create_an_extra_field`.
         {
             let uri = mailto_uri(&EmailRequest {
                 addresses: vec!["a@example.test".into()],
@@ -1264,7 +1394,6 @@ mod tests {
                 "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
             );
         }
-        // Phase `mail_attachment_is_one_opaque_uri_query_value`.
         {
             let uri = mailto_uri(&EmailRequest {
                 attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
@@ -1276,7 +1405,6 @@ mod tests {
             );
             assert!(!uri.contains("&b.pdf"));
         }
-        // Phase `mail_attachments_become_one_shot_read_grants_for_the_handler_only`.
         {
             let mut capabilities = Vec::new();
             add_mail_attachment_grants(
@@ -1337,7 +1465,6 @@ mod tests {
 
     #[test]
     fn launcher_and_document_data_is_durable_and_confined() {
-        // Phase `dynamic_library_is_non_executable_and_durable`.
         {
             let dir = tempfile::tempdir().expect("temporary state directory");
             let path = dir.path().join("launchers.json");
@@ -1367,7 +1494,6 @@ mod tests {
                 0
             );
         }
-        // Phase `supplied_launcher_icon_is_durable_data_not_a_path`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("launchers.json");
@@ -1395,7 +1521,6 @@ mod tests {
                     .contains("/home/")
             );
         }
-        // Phase `document_uri_is_confined_to_the_document_portal_mount`.
         {
             let root = tempfile::tempdir().unwrap();
             let exported = root.path().join("grant/a b.png");
@@ -1413,7 +1538,6 @@ mod tests {
 
     #[test]
     fn wallpaper_imports_are_normalised_private_and_scoped() {
-        // Phase `imported_wallpaper_is_normalised_and_private`.
         {
             use image::ImageEncoder as _;
             let mut original = Vec::new();
@@ -1437,7 +1561,6 @@ mod tests {
             write_private_bytes(&file, b"private").unwrap();
             assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
         }
-        // Phase `wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri`.
         {
             let file = format!("{}.png", "a".repeat(64));
             set_wallpaper_preview("preview-workspace", &file);
@@ -1446,7 +1569,6 @@ mod tests {
             clear_wallpaper_preview("preview-workspace", &file);
             assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
         }
-        // Phase `wallpaper_normaliser_accepts_common_desktop_formats`.
         {
             let source = image::DynamicImage::ImageRgba8(
                 image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
@@ -1508,6 +1630,83 @@ mod tests {
         );
         assert_eq!(WallpaperScope::parse(Some("all")), WallpaperScope::All);
         assert_eq!(WallpaperScope::parse(None), WallpaperScope::Workspace);
+    }
+
+    #[test]
+    fn show_on_and_use_for_apply_to_the_wallpaper_the_person_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("wallpapers.json");
+        let shipped = tilo_wallpapers::default_wallpaper().expect("a shipped picture");
+        let id = shipped.id.to_string();
+        let read = || -> Vec<WallpaperRecord> {
+            tilo_files::native::atomic::json::load_or_default(&registry)
+        };
+        let shows = |workspace: &str, target: &str| {
+            wallpaper_record_for(&read(), workspace, target).map(WallpaperRecord::picture)
+        };
+        let apply = |set_on: &str, scope: WallpaperScope| {
+            apply_wallpaper_choice(&registry, "a", Some(&id), set_on, scope).unwrap()
+        };
+        let picture = WallpaperPicture::Shipped(id.clone());
+
+        assert!(apply("background", WallpaperScope::Workspace));
+        assert_eq!(shows("a", "background"), Some(picture.clone()));
+        assert_eq!(shows("a", "lockscreen"), None);
+        assert_eq!(shows("b", "background"), None, "only this workspace");
+
+        // "Show on: Desktop and lock screen": the lock screen shows it now.
+        assert!(apply("both", WallpaperScope::Workspace));
+        assert_eq!(shows("a", "lockscreen"), Some(picture.clone()));
+        // "Show on: Lock screen": the desktop no longer does.
+        assert!(apply("lockscreen", WallpaperScope::Workspace));
+        assert_eq!(shows("a", "background"), None);
+        assert_eq!(shows("a", "lockscreen"), Some(picture.clone()));
+
+        // "Use for: Every workspace": every workspace shows it now.
+        assert!(apply("both", WallpaperScope::All));
+        for workspace in ["a", "b"] {
+            for target in WALLPAPER_SURFACES {
+                assert_eq!(
+                    shows(workspace, target),
+                    Some(picture.clone()),
+                    "{workspace} {target}"
+                );
+            }
+        }
+        assert!(
+            !apply("both", WallpaperScope::All),
+            "nothing left to change"
+        );
+
+        let own = format!("{}.png", "e".repeat(64));
+        let mut records = read();
+        place_wallpaper(
+            &mut records,
+            "a",
+            WallpaperScope::Workspace,
+            &["background"],
+            &own,
+        );
+        tilo_files::native::atomic::json::write_private(&registry, &records).unwrap();
+        assert!(
+            apply_wallpaper_choice(
+                &registry,
+                "a",
+                Some(tilo_wallpapers::CUSTOM),
+                "both",
+                WallpaperScope::Workspace
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            shows("a", "lockscreen"),
+            Some(WallpaperPicture::Cached(own))
+        );
+        assert_eq!(
+            shows("b", "lockscreen"),
+            Some(picture),
+            "the others keep theirs"
+        );
     }
 }
 

@@ -4,6 +4,46 @@
 kind = "tilo.messages"
 label = "Messages"
 version = 1
+fields = [
+  { path = "conversations", type = "Collection<Conversation>", readonly = true, stored = "collection" },
+  { path = "conversations.*.with", type = "String" },
+  { path = "conversations.*.messages", type = "Collection<Message>", stored = "collection" },
+  { path = "conversations.*.messages.*.from", type = "String" },
+  { path = "conversations.*.messages.*.to", type = "String" },
+  { path = "conversations.*.messages.*.body", type = "String" },
+  { path = "conversations.*.messages.*.date", type = "String" },
+  { path = "conversations.*.messages.*.at_ms", type = "i64" },
+  { path = "conversations.*.messages.*.outgoing", type = "bool" },
+  { path = "conversations.*.messages.*.queued", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "deliver-message"
+kind = "undoable"
+params = [
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "to", required = false, schema = { type = ["string", "null"] } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "date", required = false, schema = { type = ["string", "null"] } },
+  { name = "conversation", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "send-message"
+kind = "undoable"
+params = [
+  { name = "to", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "conversation", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "reply"
+kind = "undoable"
+params = [
+  { name = "conversation", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+]
 
 [[resources]]
 kind = "tilo.contacts.identities"
@@ -211,5 +251,29 @@ id = "set-active-account"
 kind = "undoable"
 params = [
   { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "messages.drafts"
+label = "Message drafts"
+version = 1
+person = true
+fields = [
+  { path = "drafts", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "keep-draft"
+kind = "undoable"
+params = [
+  { name = "conversation", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "drop-draft"
+kind = "undoable"
+params = [
+  { name = "conversation", required = true, schema = { type = "string" } },
 ]
 

@@ -1,7 +1,7 @@
 //! What Weather does with its saved places beyond the document.
 //!
 //! Saved places, their order and the default place are the document
-//! ([`Weather`](crate::model::Weather)), changed by its verbs and field edits.
+//! ([`Weather`]), changed by its verbs and field edits.
 //! Opening a forecast and fetching one change no document, so they are
 //! [`WeatherEffect`]s answered by the window, offered on each place as a live
 //! row joining that place's published item.
@@ -51,9 +51,9 @@ pub(crate) fn location_row(location: &SavedLocation) -> LiveRow {
         location: id.clone(),
     }
     .bound();
-    open.id = "open".into();
+    open.type_mut().id = "open".into();
     let mut refresh = WeatherEffect::RefreshLocation { location: id }.bound();
-    refresh.id = "refresh".into();
+    refresh.type_mut().id = "refresh".into();
     LiveRow::new(
         location_resource_id(location.id),
         "weather.location",

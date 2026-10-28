@@ -39,7 +39,6 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// The lines of one buffer.
     pub fn lines(&self, alternate: bool) -> &Vec<Rc<Line>> {
         if alternate { &self.alt } else { &self.main }
     }

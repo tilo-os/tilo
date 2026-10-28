@@ -476,7 +476,6 @@ mod tests {
     fn content_extent_and_visible_events_respect_hidden_and_selected_calendars() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        // Case `content_extent_grows_with_headings_and_rows`.
         {
             let anchor = date(1);
             let one = Calendar {
@@ -503,7 +502,6 @@ mod tests {
             assert!(h1 > 0.0);
             assert!(h2 > h1, "a second row grows the list");
         }
-        // Case `hidden_remote_calendars_do_not_expand_the_scroll_extent`.
         {
             let anchor = date(1);
             let model = Calendar {
@@ -519,7 +517,6 @@ mod tests {
                 content_height(&source(&model, anchor, &HashSet::new()), &mut text, &theme) > 0.0
             );
         }
-        // Case `selected_calendar_filters_events_without_overriding_visibility`.
         {
             let anchor = date(1);
             let model = Calendar {

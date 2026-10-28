@@ -1,13 +1,12 @@
-# Imager: writing an image, through the sources' actions (no drives in a
-# screenshot run).
+# Imager: writing an image, from the app's own scenarios (never the drives
+# of the machine the shots run on).
 
 [[situation]]
 name = "start"
 title = "Choosing what to write"
+scenario = "source"
 
 [[situation]]
-name = "choose-image"
-title = "Choosing an image"
-
-[[situation.steps]]
-invoke = { resource = "imager.sources", action = "choose-image" }
+name = "drive"
+title = "Choosing a drive"
+scenario = "drive"

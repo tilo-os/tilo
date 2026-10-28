@@ -10,6 +10,7 @@ use std::time::Duration;
 use accounts::{Account, AccountCredentials, AccountId, HandoffCredential, HandoffStore, Secret};
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
+use tilo_oauth::device::DeviceAuthorization;
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -580,7 +581,6 @@ impl Custodian {
         }
     }
 
-    /// Use `auth` for `iCloud` Drive.
     #[must_use]
     pub fn with_icloud(mut self, auth: Arc<dyn ICloudAuth>) -> Self {
         self.icloud = auth;
@@ -598,6 +598,21 @@ impl Custodian {
     ) -> Self {
         self.overrides
             .insert(cloud.oauth_use(), (provider, registration.into()));
+        self
+    }
+
+    /// Sign in for `oauth_use` with `provider` and `registration` (a fake
+    /// authorization server's) instead of the client table's; see
+    /// [`Self::with_provider`].
+    #[must_use]
+    pub fn with_use(
+        mut self,
+        oauth_use: OAuthUse,
+        provider: Provider,
+        registration: impl Into<Registration>,
+    ) -> Self {
+        self.overrides
+            .insert(oauth_use, (provider, registration.into()));
         self
     }
 
@@ -1258,6 +1273,41 @@ impl Custodian {
     pub fn finish_sign_in(authorization: Authorization) -> Result<TokenSet, CustodyError> {
         let client = OAuthClient::new()?;
         let tokens = authorization.complete(&client, SIGN_IN_TIMEOUT)?;
+        if tokens.refresh_token.is_empty() {
+            return Err(CustodyError::SignIn(
+                "the provider did not grant offline access; try again".into(),
+            ));
+        }
+        Ok(tokens)
+    }
+
+    /// Start a device sign-in for `oauth_use` (GitHub's): show the person
+    /// [`DeviceAuthorization::user_code`] and its page, then pass the value
+    /// to [`Self::finish_device_sign_in`] on a worker. Blocking: one request
+    /// to the issuer.
+    ///
+    /// # Errors
+    /// [`CustodyError::NotConfigured`], or the issuer's refusal.
+    pub fn begin_device_sign_in(
+        &self,
+        oauth_use: OAuthUse,
+    ) -> Result<DeviceAuthorization, CustodyError> {
+        let (provider, registration) = self.use_config(oauth_use)?;
+        Ok(DeviceAuthorization::begin(
+            &OAuthClient::new()?,
+            &provider,
+            &registration,
+        )?)
+    }
+
+    /// Wait until the person entered the code. Blocking.
+    ///
+    /// # Errors
+    /// See [`OAuthError`], mapped into [`CustodyError`].
+    pub fn finish_device_sign_in(
+        authorization: DeviceAuthorization,
+    ) -> Result<TokenSet, CustodyError> {
+        let tokens = authorization.complete(&OAuthClient::new()?)?;
         if tokens.refresh_token.is_empty() {
             return Err(CustodyError::SignIn(
                 "the provider did not grant offline access; try again".into(),

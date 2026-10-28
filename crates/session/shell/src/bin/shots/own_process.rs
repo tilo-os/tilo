@@ -17,7 +17,6 @@ use ui::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
 };
 
-/// One app in a window of its own.
 pub struct OwnProcessApp {
     /// The app id the launcher vouched for on its connection.
     pub app_id: &'static str,
@@ -98,6 +97,24 @@ impl OwnProcessApp {
         self.present();
     }
 
+    /// The size the app lays out at, in its window's own pixels.
+    pub fn window_size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The rects the app's own widgets answer to, by name, in the window's
+    /// own pixels.
+    pub fn targets(&mut self) -> std::collections::HashMap<String, vello::kurbo::Rect> {
+        self.frame.embedded_targets()
+    }
+
+    /// Hand the app one window event, as its own window would, then lay it
+    /// out again.
+    pub fn send(&mut self, event: &winit::event::WindowEvent) {
+        self.frame.dispatch_to_root(event);
+        self.frame.relayout();
+    }
+
     /// Lay the app out at its window's size and publish its frame as the
     /// surface's.
     fn present(&mut self) {
@@ -116,7 +133,10 @@ impl OwnProcessApp {
         // The frame renders at the capture's device scale, as a client
         // draws its buffer at its output's scale.
         let scale = ui::offscreen::capture_device_scale().max(1);
-        let (w, h) = (self.size.0 * scale, self.size.1 * scale);
+        let (w, h) = (
+            self.size.0.saturating_mul(scale),
+            self.size.1.saturating_mul(scale),
+        );
         let renderer = self
             .renderer
             .get_or_insert_with(|| ui::offscreen::OffscreenRenderer::new(w, h));
@@ -130,7 +150,9 @@ impl OwnProcessApp {
         loop {
             match self.socket.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(n) => self.pending.extend_from_slice(&chunk[..n]),
+                Ok(n) => self
+                    .pending
+                    .extend_from_slice(chunk.get(..n).unwrap_or_default()),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(error) => {
                     eprintln!("shots: the app's connection broke: {error}");
@@ -150,7 +172,7 @@ impl OwnProcessApp {
             match serde_json::from_slice(body) {
                 Ok(message) => messages.push(message),
                 Err(error) => {
-                    eprintln!("shots: the app sent a frame the shell cannot read: {error}")
+                    eprintln!("shots: the app sent a frame the shell cannot read: {error}");
                 }
             }
         }

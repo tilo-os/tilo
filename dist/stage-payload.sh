@@ -47,7 +47,7 @@ install -pm 0755 "$bin_dir/tilo-flight-recorder" "$stage/libexec/tilo-flight-rec
 install -pm 0755 "$bin_dir/tilo-session-report" "$stage/libexec/tilo-session-report"
 install -pm 0644 "$repo_root/dist/session/tilo.desktop"     "$stage/wayland-sessions/tilo.desktop"
 install -pm 0644 "$repo_root/dist/session/tilo-app.desktop" "$stage/wayland-sessions/tilo-app.desktop"
-install -pm 0644 "$repo_root/os/etc/pam.d/tilo-unlock"      "$stage/pam/tilo-unlock"
+install -pm 0644 "$repo_root/dist/session/tilo-unlock.pam"   "$stage/pam/tilo-unlock"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
                  "$stage/systemd-user/tilo-graphical-session.target"
 install -pm 0755 "$bin_dir/imager" "$stage/bin/tilo-import-folders"

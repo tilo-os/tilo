@@ -26,10 +26,12 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{admitted, enrol, ready, route, start_host, start_peer, wait_for, workspace};
 
-/// Holds `/events` polls while paused and counts sessions.
+/// Holds `/events` polls while paused, and counts the polls it held and the
+/// sessions.
 struct Gated {
     inner: Arc<support::https::DevHttps>,
     paused: Arc<AtomicBool>,
+    held: Arc<AtomicUsize>,
     sessions: Arc<AtomicUsize>,
 }
 
@@ -42,6 +44,9 @@ impl HttpClient for Gated {
         let path = path.to_owned();
         let session = session.map(str::to_owned);
         Box::pin(async move {
+            if events && self.paused.load(Ordering::Relaxed) {
+                self.held.fetch_add(1, Ordering::Relaxed);
+            }
             while events && self.paused.load(Ordering::Relaxed) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -102,11 +107,13 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         author.key,
     );
     let paused = Arc::new(AtomicBool::new(false));
+    let held = Arc::new(AtomicUsize::new(0));
     let sessions = Arc::new(AtomicUsize::new(0));
     let observer = start_peer(
         Host::Https(Arc::new(Gated {
             inner: host.https(),
             paused: paused.clone(),
+            held: held.clone(),
             sessions: sessions.clone(),
         })),
         observer.cert,
@@ -123,8 +130,13 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     admitted(&author).await;
     admitted(&observer).await;
 
+    // The observer stops reading once one of its polls is held.
     paused.store(true, Ordering::Relaxed);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for("the observer's poll to be held", || {
+        let holding = held.load(Ordering::Relaxed) > 0;
+        async move { holding.then_some(()) }
+    })
+    .await;
     let tail: Vec<DocumentMutation> = (0..COMMITS)
         .map(|index| {
             let mut body = vec![u8::try_from(index % 251).unwrap(); CHANGE];
@@ -132,6 +144,7 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
             DocumentMutation::Incremental(body)
         })
         .collect();
+    let fsyncs = tilo_relay::store::fsyncs();
     for mutation in &tail {
         author.publish(route(), mutation).unwrap();
     }
@@ -146,31 +159,43 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     });
     // Every commit is fsynced into the retained log and each lagging
     // subscriber's pending queue, which outlasts `wait_for` on some disks.
-    tokio::task::spawn_blocking(move || receipt.recv_timeout(Duration::from_secs(90)))
+    tokio::task::spawn_blocking(move || tilo_test_env::recv("the commits to be durable", &receipt))
         .await
         .unwrap()
-        .expect("the commits to be durable")
         .unwrap();
-    eprintln!("{COMMITS} x 64 KiB durable in {:?}", published.elapsed());
+    eprintln!(
+        "{COMMITS} x 64 KiB durable in {:?}, {} host fsyncs",
+        published.elapsed(),
+        tilo_relay::store::fsyncs() - fsyncs
+    );
 
     let resumed = Instant::now();
     paused.store(false, Ordering::Relaxed);
     let mut received = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while changes(&received).len() < COMMITS {
+    wait_for("the observer to catch up", || {
         documents(&observer, &mut received);
-        assert!(
-            Instant::now() < deadline,
-            "{} of {COMMITS} changes, {} sessions",
-            changes(&received).len(),
-            sessions.load(Ordering::Relaxed)
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        let done = changes(&received).len() >= COMMITS;
+        async move { done.then_some(()) }
+    })
+    .await;
     let caught_up = resumed.elapsed();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    documents(&observer, &mut received);
-    let received = changes(&received);
+    // The room delivers in commit order: a change sent twice would arrive
+    // before the next live one.
+    author
+        .publish(route(), &DocumentMutation::Incremental(b"live".to_vec()))
+        .unwrap();
+    wait_for("a live delta", || {
+        documents(&observer, &mut received);
+        let done = changes(&received).iter().any(|body| body == b"live");
+        async move { done.then_some(()) }
+    })
+    .await;
+    let mut received = changes(&received);
+    assert_eq!(
+        received.pop().as_deref(),
+        Some(&b"live"[..]),
+        "the live delta arrives last"
+    );
     assert_eq!(received.len(), COMMITS, "none repeated");
     let indices: BTreeSet<usize> = received
         .iter()
@@ -190,16 +215,4 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         "the observer kept its session"
     );
     eprintln!("lagging observer: {COMMITS} x 64 KiB caught up in {caught_up:?} on one session");
-
-    author
-        .publish(route(), &DocumentMutation::Incremental(b"live".to_vec()))
-        .unwrap();
-    let mut live = Vec::new();
-    wait_for("a live delta", || {
-        documents(&observer, &mut live);
-        let done = !live.is_empty();
-        async move { done.then_some(()) }
-    })
-    .await;
-    assert_eq!(live, vec![DocumentMutation::Incremental(b"live".to_vec())]);
 }

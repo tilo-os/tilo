@@ -297,11 +297,25 @@ Error:
   {"err":{"code":"unknown_target","message":"no addressable widget named ..."}}
 
 Error codes:
-  parse_error      — malformed JSON or unknown command
-  unknown_target   — click_named / drag with a name not in the registry
-  invalid_path     — snapshot path is empty
-  not_implemented  — command parsed but execution deferred to a later phase
+  parse_error            — malformed JSON or unknown command
+  unknown_target         — click_named / drag with a name not in the registry
+  target_not_laid_out    — the named widget has no area yet
+  target_unpresented     — the named widget, or one it sits in, still shows a
+                           stand-in for content that has not drawn
+  no_frame_since         — no frame has been drawn since the one the press
+                           counts from
+  target_moved           — the target is no longer where it was read
+  desktop_in_transition  — the desktop is between two arrangements
+  invalid_path           — snapshot path is empty
+  not_implemented        — command parsed but execution deferred to a later phase
 ```
+
+A press is proven ready for the target it names and the widgets that target sits
+in, never for the desktop at large: a widget elsewhere asking for frames for its
+own reasons does not hold an unrelated target back. The desktop as a whole must
+still be settled — setup closed, no workspace, strip or window-group switch
+underway — because a rectangle read then is one the caller never saw.
+(`crates/session/shell/src/shell/pointer_readiness.rs`)
 
 ### Widget registry — how `click_named` finds things
 
@@ -339,11 +353,13 @@ concurrent clients and the same no-op through the MCP server. Give it
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
 exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
 release build serves the socket only with `--features dev-overrides`.
-`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
-streamed fake model creates a note in Notes, writes its body and finds it by
-search, and the record splits the time between Tilo, the model and the
-agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
-example of `shell`.
+`scripts/perf/agent_task.py` times a whole task the way an agent in the
+login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
+--connect` through the session's agent door, creates a note in Notes,
+writes its body, finds it by its title and reads it back, and the record
+splits the time between Tilo, the model and the agent loop. Its `--spawn`
+desktop is seeded by the `agent_task_desktop` example of `shell` and
+serves the door (`TILO_AGENT_DOOR`) in its profile.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
@@ -377,6 +393,55 @@ Missing predecessors, unversioned scene edits, viewer detach/reattach and materi
 or HDR frames redraw. A replacement backend starts uncached at its new size.
 Presentation remains synchronous; snapshots cannot race queued renderer work.
 This reduces watched headless work, not physical display input-to-photon latency.
+
+## One harness for app tests: `TestEnv`, `HeadlessApp` and `drive`
+
+An app's test has one shape whether it is a unit test in `ui-core`, a scenario
+the shell runs, or a script an agent sends: build an environment, mount the
+app, drive it, read the resources it wrote. The three pieces name that shape;
+none of them invents a second vocabulary for what a step is.
+
+**`TestEnv`** (`tilo_test_env`) is the machine around the app: a home in a
+temporary directory, a clock that starts at a fixed instant
+(`CAPTURE_LOCAL_TIME`) so a relative date renders the same every run, a network
+that is closed to external hosts until `allow_external` opens it, and
+`with_files` to put fixtures where the app looks for them. It reuses
+`TestHome`, so the record store, view store and local state a test already had
+keep working.
+
+**`HeadlessApp`** (`ui::headless::HeadlessApp`, behind `test-support`) mounts a
+component in one `FrameHarness` and exposes the door every collaborator,
+script and agent uses:
+
+```rust
+let mut app = HeadlessApp::mount(component)?;
+let outcome = app.drive(&[invokes("view"), invokes("edit")]);
+assert!(outcome.is_pass(), "{:?}", outcome.failure());
+assert_eq!(body(&host.records, &checkout), "edited");
+```
+
+`call`/`call_on` run one action and return its answer; `*_confirmed` answer a
+question the contract asks first. `resources()`/`publishes()` say what a caller
+may address. `drive` runs a list of steps. `MOUNT_VIEWPORT` is the window the
+mounted app lays out in.
+
+**`Step`** and **`Outcome`** are `ui::headless::driver`'s, re-exported — not a
+copy. The test harness, the `--headless-drive` spec and the shipped scenario
+format all speak one language, and `HeadlessApp::drive` *is*
+`driver::drive`, on the same `FrameHarness::perform_bound` the CLI uses: a
+scenario the compositor can replay is also one a test can write inline.
+
+`Outcome` is the state the app is in once the steps ran — the document, the
+inspection tree, the named targets and the published resources — plus one
+`StepRecord` per step that ran and `failure()`, the first step that did not
+pass. A step is `Action(Action)`, `Document(json)` or `Resource { id, action }`;
+an expected refusal is a pass, because `expect_error` on the invocation names
+the code the step asked the door for.
+
+Assert on the record, not the widget: the body the store holds, the history
+entry's author, the undo that reaches the starting state. A test that reads
+internal fields of the widget proves nothing a user, a script or an agent can
+observe.
 
 ## End-to-end recipe — "click, snapshot, look"
 
@@ -772,6 +837,45 @@ frame as a PNG through the offscreen renderer `--shots` uses:
              {"path": "out/week-light-compact.png", "theme": "light", "viewport": [420, 800]}]}
 ```
 
+With `"window_bar": true` the capture shows the app under the desktop's
+window bar, and `perform` on a `window-search-*` target drives the bar's
+search as an agent drives it on the desktop, so a capture can show it open:
+`window-search-open` (`activate`), `window-search-query` and
+`window-search-replacement` (`set_value`), `window-search-next` and
+`-previous`, `window-search-options` (`expand`), the options
+(`window-search-match-case`, `-whole-word`, `-regex`, `-text`, `-hex`),
+`window-search-replace`, `-replace-all` and `-close`. A part the search does
+not offer now (hex mode on plain text, the desktop's search) fails the step.
+
+```json
+{"window_bar": true,
+ "actions": [{"perform": {"target": "window-search-open", "action": "activate"}},
+             {"perform": {"target": "window-search-options", "action": "expand"}},
+             {"perform": {"target": "window-search-hex", "action": "activate"}},
+             {"perform": {"target": "window-search-query", "action": "set_value", "value": "89 50"}},
+             {"perform": {"target": "window-search-replacement", "action": "set_value", "value": "FF D8"}}],
+ "capture": [{"path": "out/search-hex-dark.png", "theme": "dark"}]}
+```
+
+`scenario` names one of the app's capture scenarios (what `--shots
+--scenario <name>` takes; `--scenario <name>` beside `--headless-drive` is the
+same). The app is then built as that capture is: from the scenario's fixtures
+(its sample processes, forecast or library) instead of the device's live
+sources, with the scenario's edits applied and its scene staged, and only then
+do the actions run. Every action the app publishes can be invoked there, as in a
+drive of the app someone uses, and the work an invoked action starts runs; the
+window starts nothing on its own (no fetch, no projection drain), so what it
+shows stays the scenario's. `TestApp::drive(scenario)` is the same window in a
+Rust test, and `testing::unreachable_actions` invokes every action it publishes
+with sample arguments from each parameter's schema and names any the door could
+not address. With `window_bar` it is how a review shows the app's real
+content under the bar, from the one set of sample data the app's shots use:
+
+```json
+{"scenario": "detail", "window_bar": true,
+ "capture": [{"path": "out/detail-dark-wide.png", "theme": "dark", "viewport": [1280, 800]}]}
+```
+
 `resources` writes the published resource tree after the actions ran: each
 resource's id, kind and label, its actions with their parameters (and why one
 is unavailable), and its children. It is what a scenario can `invoke`:
@@ -954,10 +1058,8 @@ memory pressure. Both take seconds once the shell tests are built.
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
 ```
 
-It is part of the shell test target, so it runs in the required
-`CI / affected packages` check. `tools/ci/affected_packages.py`
-(`DESKTOP_GATE`) also runs it, as just that filter, when a change reaches the
-shell without scheduling the shell's tests.
+It is part of the shell test target, so t's `test-x86_64/shell` check runs it
+whenever a change reaches the shell.
 
 **Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
 compositor also binds `<control socket>.live`

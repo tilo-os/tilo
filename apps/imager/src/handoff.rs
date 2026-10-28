@@ -45,11 +45,6 @@ impl StagedHandoff {
 ///
 /// Signing happens here, on the setup machine. The returned tree is secret
 /// material for the target and must only be readable by the elevated writer.
-///
-/// # Errors
-///
-/// Returns a string when the network, account, or device label is unusable,
-/// or when writing the staged files fails.
 pub fn stage_setup_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
@@ -131,7 +126,7 @@ pub fn stage_access_handoff(
 /// image, as key-only owner login for the account it creates. A production
 /// install refuses it instead of opening SSH. A disk that already carries
 /// its account gets the same login from the write
-/// ([`crate::installed_root`]).
+/// ([`block_devices::installed_root`]).
 pub const BRINGUP_SSH_KEY: &str = "etc/tilo/bringup-ssh.pub";
 
 /// The hostname the operator chose, or `None` while the profile still has
@@ -223,10 +218,6 @@ const REFUSED_SSH_KEY: &str =
 
 /// Accept nothing, or OpenSSH public keys of a type the installer admits,
 /// one per line, with no `authorized_keys` options.
-///
-/// # Errors
-///
-/// Returns a string describing why the text is not such keys.
 pub fn validate_bringup_ssh_key(ssh_public_keys: &str) -> Result<(), String> {
     bringup_ssh_key_lines(ssh_public_keys).map(|_| ())
 }
@@ -305,11 +296,6 @@ fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
 
 /// Place the profile's Wi-Fi connection and, when requested, this machine's
 /// person onto `root` as a new device.
-///
-/// # Errors
-///
-/// Returns a string when the network, account, or device label is unusable,
-/// or when writing the target files fails.
 pub fn apply_setup_handoff(
     root: &Path,
     profile: &InstallProfile,
@@ -366,11 +352,6 @@ fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), St
 ///
 /// Looks for the deployment's `/etc` and the stateroot's `/var` the same way
 /// the disk image builder does.
-///
-/// # Errors
-///
-/// Returns an I/O error when the mount is not an installed Tilo system or the
-/// copy fails.
 pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result<()> {
     let etc = first_existing(&[
         glob_one(mnt, "state/deploy/*/etc")?,

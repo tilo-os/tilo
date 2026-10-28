@@ -289,12 +289,10 @@ impl<S: StewardStore> ChannelSteward<S> {
         self.append(frame, &context)
     }
 
-    /// The channel.
     pub fn channel_id(&self) -> ChannelId {
         self.channel
     }
 
-    /// The steward's device key.
     pub fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.signer.device_public_key())
     }
@@ -539,11 +537,6 @@ impl<S: StewardStore> ChannelSteward<S> {
     /// Record a device's cumulative acknowledgement. Returns how many
     /// deliveries it completed. An acknowledgement for a frame this journal
     /// does not hold (from before a state reset) completes nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a bad signature or another channel, or a failed
-    /// write.
     pub fn acknowledge(&mut self, ack: &MlsGovernanceAckV1) -> Result<usize> {
         if ack.channel != self.channel {
             return Err(Error::Governance(
@@ -587,10 +580,6 @@ impl<S: StewardStore> ChannelSteward<S> {
     /// all of them for every change. One that is not this channel's or not
     /// validly signed is skipped. Returns how many deliveries they
     /// completed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a durable write fails.
     pub fn acknowledge_all(&mut self, acks: &[MlsGovernanceAckV1]) -> Result<usize> {
         let valid: Vec<(Ed25519PublicKey, [u8; 32])> = acks
             .iter()

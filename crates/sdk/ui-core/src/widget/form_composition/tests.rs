@@ -249,6 +249,22 @@ fn long_form() -> Form {
             .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel")))
 }
+/// A field's visible label is its text input's accessible name, though the
+/// input was given none of its own.
+#[test]
+fn a_labelled_text_input_is_named_by_its_label() {
+    let harness =
+        FrameHarness::new_with_theme(crate::State::new(), fixture(), (900, 700), Theme::dark());
+    let root = harness.inspection().root;
+    let name = |id: &str| {
+        named(&root, id)
+            .semantics
+            .as_ref()
+            .and_then(|node| node.name.clone())
+    };
+    assert_eq!(name("name").as_deref(), Some("Name"));
+    assert_eq!(name("email").as_deref(), Some("Email address"));
+}
 /// A field with a validation error marks its control invalid: the control
 /// reports it to assistive technology (and edges itself in danger ink),
 /// while a field without one stays valid.
@@ -287,7 +303,6 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             collect(&snapshot.root, "FormSection", &mut sections);
             let theme = Theme::dark();
             assert!(forms[0].rect[2] <= f64::from(theme.tokens.metrics.readable_width));
-            // On the page's leading edge, one gutter in, whatever the width.
             let gutter = f64::from(theme.tokens.spacing.rhythm.group);
             assert!(
                 (forms[0].rect[0] - gutter).abs() < 0.5,

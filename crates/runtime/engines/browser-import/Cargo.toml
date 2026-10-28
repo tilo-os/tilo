@@ -36,6 +36,9 @@ thin = [
     "dep:rusqlite",
     "dep:tempfile",
     "dep:workspace-hack",
+    "dep:browser-parts",
+    "dep:tilo-browser-sessions",
+    "tilo-accounts-engine/thin",
 ]
 
 [dependencies]
@@ -48,6 +51,14 @@ browser-continuity = { workspace = true, features = ["native"], optional = true 
 # it, to write the database it reads back.
 rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 tempfile = { workspace = true, optional = true }
+# The parts of Browser people rarely use (extensions, site controls, site
+# capabilities) and the website-session codec check: the app's package
+# carries the browsing itself.
+browser-parts = { path = "../../../../apps/browser-parts", optional = true }
+tilo-browser-sessions = { path = "../../../platform/tilo-browser-sessions", optional = true }
+# Account custody, which the session codecs use, comes from its own engine
+# library: one copy in the app's process.
+tilo-accounts-engine = { path = "../accounts", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }

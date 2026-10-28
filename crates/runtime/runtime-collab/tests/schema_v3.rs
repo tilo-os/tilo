@@ -177,6 +177,8 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 resource_kind: "document".into(),
                                 resource_label: "Plan".into(),
                                 action_label: "Save".into(),
+                                keywords: Vec::new(),
+                                icon: None,
                                 description: None,
                                 operation_kind: tilo_actions::OperationKind::Effect,
                                 params: Vec::new(),
@@ -191,6 +193,8 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 resource_kind: "document".into(),
                                 resource_label: "Plan".into(),
                                 action_label: "Insert image".into(),
+                                keywords: Vec::new(),
+                                icon: None,
                                 description: Some("Place an image at the caret".into()),
                                 operation_kind: tilo_actions::OperationKind::Document,
                                 params: Vec::new(),
@@ -355,7 +359,6 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
                 assert_eq!(
                     c.completions,
                     vec![
-                        // Empty code is the "it ran" answer.
                         (1, String::new(), String::new()),
                         (
                             2,

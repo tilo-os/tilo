@@ -94,7 +94,6 @@ impl Gate {
 
 #[derive(Default)]
 struct Node {
-    /// Readers of the value at this node.
     here: Vec<u64>,
     /// Readers of the membership of the collection at this node.
     members: Vec<u64>,
@@ -185,7 +184,6 @@ impl Node {
     }
 }
 
-/// The object in slot `key` of `parent`.
 fn object(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key) {
         Ok(Some((Value::Object(_), id))) => Some(id),
@@ -217,6 +215,21 @@ struct Index {
     root: Node,
 }
 
+impl Index {
+    /// No readers yet, shared: made here once rather than in every app's
+    /// [`Updaters`].
+    #[inline(never)]
+    fn shared() -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
+            next: 0,
+            since_sweep: 0,
+            entries: BTreeMap::new(),
+            always: Vec::new(),
+            root: Node::default(),
+        }))
+    }
+}
+
 /// The readers bound controls registered, each tied to the lifetime of the
 /// view scope that created it (a row of an [`Each`](super::Each)).
 pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Index>>, std::marker::PhantomData<fn() -> R>);
@@ -229,16 +242,7 @@ impl<R: Resource> Clone for Updaters<R> {
 
 impl<R: Resource> Updaters<R> {
     pub(crate) fn new() -> Self {
-        Self(
-            Rc::new(RefCell::new(Index {
-                next: 0,
-                since_sweep: 0,
-                entries: BTreeMap::new(),
-                always: Vec::new(),
-                root: Node::default(),
-            })),
-            std::marker::PhantomData,
-        )
+        Self(Index::shared(), std::marker::PhantomData)
     }
 
     pub(crate) fn push(

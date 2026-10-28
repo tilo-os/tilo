@@ -17,9 +17,7 @@ pub fn ensure() {
 pub(crate) const KEYS: &[&str] = &[
     "greeter-title",
     "greeter-username",
-    "greeter-username-placeholder",
     "greeter-passcode",
-    "greeter-passcode-placeholder",
     "greeter-sign-in",
     "greeter-signing-in",
     "greeter-starting",

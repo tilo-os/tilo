@@ -39,6 +39,79 @@ const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
 /// How long a started session may take to bind its control socket.
 const CONTROL_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a person's onboarding may take, identity creation included.
+const ONBOARDING_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long `fs` may take to start once the device key is certified.
+const FS_START_TIMEOUT: Duration = Duration::from_secs(60);
+const FS_UNIT: &str = "fs.service";
+
+/// Which identity `slot create` gives the slot's user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityRequest {
+    None,
+    /// A throwaway in a private root (`--identity`).
+    Throwaway,
+    /// This VM's person, through onboarding (`--identity device`).
+    Device,
+}
+
+impl IdentityRequest {
+    fn of(create: &tilo_vm_protocol::SlotCreate) -> Result<Self, DaemonError> {
+        match (create.identity, create.device_identity) {
+            (true, true) => Err(DaemonError::InvalidParams(
+                "a slot's user gets one identity: a throwaway or the VM's person".into(),
+            )),
+            (true, false) => Ok(Self::Throwaway),
+            (false, true) => Ok(Self::Device),
+            (false, false) => Ok(Self::None),
+        }
+    }
+}
+
+/// Onboarding's controls in the order a person goes through them: begin,
+/// accept that the identity is theirs to protect, create it, skip the
+/// backup (acknowledged), skip the optional codecs and the tour, enter.
+/// A checkbox is pressed once; a press toggles it.
+const ONBOARDING_PRESSES: [(&str, bool); 9] = [
+    ("onboarding.begin.button", false),
+    ("onboarding.understood.box", true),
+    ("onboarding.create.button", false),
+    ("onboarding.backup.skip-acknowledged.box", true),
+    ("onboarding.backup.continue.button", false),
+    ("onboarding.codecs.skip.button", false),
+    ("onboarding.tour.skip.button", false),
+    ("onboarding.tour.next.button", false),
+    ("onboarding.finish.button", false),
+];
+
+/// The next control to press among those `shown`, given those `pressed`.
+fn next_onboarding_press(shown: &[String], pressed: &[String]) -> Option<&'static str> {
+    ONBOARDING_PRESSES
+        .iter()
+        .filter(|(name, _)| shown.iter().any(|target| target == name))
+        .find(|(name, once)| !*once || !pressed.iter().any(|done| done == name))
+        .map(|(name, _)| *name)
+}
+
+/// The `onboarding.*` names in a `list_targets` answer.
+fn onboarding_target_names(reply: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
+        return Vec::new();
+    };
+    let targets = value
+        .get("answer")
+        .unwrap_or(&value)
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    targets
+        .iter()
+        .filter_map(|target| target.get("name")?.as_str())
+        .filter(|name| name.starts_with("onboarding."))
+        .map(str::to_owned)
+        .collect()
+}
 
 /// In-VM build dirs `gc` keeps by default, most recently used first.
 pub const DEFAULT_KEEP_TARGETS: u32 = 2;
@@ -56,6 +129,9 @@ pub struct Daemon {
     client_protocol: Option<u32>,
     pub(crate) root: PathBuf,
     expected_domain: String,
+    /// The wall clock the keep-awake lease is read against: the process's,
+    /// unless a test hands the daemon a clock of its own to hold still.
+    clock: fn() -> u64,
     /// Problems found re-creating vkms seats when this process started.
     seat_issues: Option<Vec<Issue>>,
 }
@@ -435,6 +511,15 @@ fn short(hash: &str) -> &str {
 }
 
 impl Daemon {
+    /// Where a verified apps+runtime cohort writes the archives it derives:
+    /// beside the layer store's staging, which garbage collection clears of
+    /// anything a dropped swap left.
+    fn cohort_staging(&self) -> Result<PathBuf, DaemonError> {
+        let staging = self.root.join("staging");
+        fs::create_dir_all(&staging).map_err(DaemonError::io("create the cohort staging"))?;
+        Ok(staging)
+    }
+
     pub fn new(
         root: &Path,
         apply: Box<dyn Apply>,
@@ -455,7 +540,16 @@ impl Daemon {
             client_protocol: None,
             root: root.to_owned(),
             expected_domain: DEFAULT_DOMAIN.into(),
+            clock: tilo_clock::unix_now,
         }
+    }
+
+    /// Read the keep-awake lease against `clock` instead of the process's
+    /// wall clock, so a test can hold it still.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: fn() -> u64) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The `SELinux` domain a greetd session runs in on this image.
@@ -526,7 +620,6 @@ impl Daemon {
         Ok(())
     }
 
-    /// The sessions of every slot that has one.
     fn sessions(&mut self) -> Result<Vec<Session>, DaemonError> {
         Ok(self
             .stored_slots()?
@@ -700,7 +793,7 @@ impl Daemon {
         if !matches!(request, Request::Awake(_))
             && awake::renewal(
                 awake::read(&self.lease_path()),
-                tilo_clock::unix_now(),
+                (self.clock)(),
                 awake::Change::Request,
             )
             .1
@@ -721,7 +814,8 @@ impl Daemon {
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
-                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, p.identity)?)
+                let identity = IdentityRequest::of(&p)?;
+                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, identity)?)
             }
             Request::SlotList(_) => {
                 let records = self.listed_slots()?;
@@ -946,7 +1040,7 @@ impl Daemon {
     /// a machine that cannot be held awake can still be driven.
     fn renew_awake(&mut self, change: awake::Change) -> AwakeLease {
         let path = self.lease_path();
-        let now = tilo_clock::unix_now();
+        let now = (self.clock)();
         let (lease, write) = awake::renewal(awake::read(&path), now, change);
         let mut problem = if write
             && let Err(error) = serde_json::to_vec(&lease)
@@ -973,7 +1067,7 @@ impl Daemon {
 
     /// The keep-awake lease as it stands.
     fn awake_lease(&mut self) -> AwakeLease {
-        let now = tilo_clock::unix_now();
+        let now = (self.clock)();
         let lease = awake::read(&self.lease_path()).filter(|lease| lease.active(now));
         let held = self.apply.unit_state(awake::AWAKE_UNIT) == "active";
         AwakeLease {
@@ -1290,9 +1384,22 @@ impl Daemon {
         kind: SlotKind,
         owner: Owner,
         outputs: &[OutputSpec],
-        identity: bool,
+        identity: IdentityRequest,
     ) -> Result<SlotCreateResult, DaemonError> {
+        if identity == IdentityRequest::Device {
+            self.admit_device_identity(name)?;
+        }
         let (mut record, created) = self.slots.create(name, kind, owner, outputs)?;
+        if identity == IdentityRequest::Device && !record.device_identity {
+            if !created {
+                return Err(DaemonError::DeviceIdentity {
+                    slot: name.to_owned(),
+                    detail: "the slot already exists with an identity root of its own; remove it and create it again".into(),
+                });
+            }
+            record.device_identity = true;
+            self.slots.save(&record)?;
+        }
         let session = record
             .session()
             .ok_or_else(|| DaemonError::NoSession(name.to_owned()))?;
@@ -1315,12 +1422,18 @@ impl Daemon {
         } else {
             Vec::new()
         };
-        let identity = if identity {
-            let (identity, steps) = self.provision_test_identity(&record)?;
-            actions.extend(steps);
-            Some(identity)
-        } else {
-            None
+        let identity = match identity {
+            IdentityRequest::Throwaway => {
+                let (identity, steps) = self.provision_test_identity(&record)?;
+                actions.extend(steps);
+                Some(identity)
+            }
+            IdentityRequest::Device => {
+                let (identity, steps) = self.complete_onboarding(&record)?;
+                actions.extend(steps);
+                Some(identity)
+            }
+            IdentityRequest::None => None,
         };
         // Every create applies the layout again, so a create that failed
         // here is repaired by running it once more.
@@ -1345,6 +1458,146 @@ impl Daemon {
             actions,
             identity,
         })
+    }
+
+    /// Only one slot can be this VM's person, and only while the machine's
+    /// identity tree holds nobody else's identity: never replace or adopt one.
+    fn admit_device_identity(&mut self, name: &str) -> Result<(), DaemonError> {
+        let refuse = |detail: String| DaemonError::DeviceIdentity {
+            slot: name.to_owned(),
+            detail,
+        };
+        let records = self.slots.list()?;
+        if let Some(other) = records
+            .iter()
+            .find(|record| record.device_identity && record.name != name)
+        {
+            return Err(refuse(format!(
+                "slot '{}' is this VM's person already",
+                other.name
+            )));
+        }
+        let ours = records
+            .iter()
+            .any(|record| record.device_identity && record.name == name);
+        if !ours && self.apply.machine_identity().person {
+            return Err(refuse(
+                "this VM already holds an identity (/var/lib/tilo/user-identity), which a slot never replaces or adopts".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Make the slot's user this VM's person the way a device's first login
+    /// does: its session shows onboarding (it has no identity and no private
+    /// root), and onboarding's own controls create the identity, which
+    /// certifies the machine's device key; that certificate starts `fs`.
+    /// The controls are pressed by name through the control socket, the way
+    /// a person's clicks reach them; nothing here mints or writes identity
+    /// files.
+    fn complete_onboarding(
+        &mut self,
+        record: &SlotRecord,
+    ) -> Result<(TestIdentity, Vec<Action>), DaemonError> {
+        let name = record.name.as_str();
+        let fail = |detail: String| DaemonError::DeviceIdentity {
+            slot: name.to_owned(),
+            detail,
+        };
+        let session = record
+            .session()
+            .ok_or_else(|| fail("the slot has no user".into()))?;
+        let user = session.user.clone();
+        self.apply.wait_session_ready(&session).map_err(fail)?;
+        let created = !self.apply.machine_identity().certified;
+        let mut actions = Vec::new();
+        if created {
+            let mut pressed = Vec::new();
+            let started = Instant::now();
+            loop {
+                let targets = self.onboarding_targets(&session)?;
+                if targets.is_empty() && self.apply.machine_identity().certified {
+                    break;
+                }
+                if started.elapsed() >= ONBOARDING_TIMEOUT {
+                    return Err(fail(format!(
+                        "onboarding did not finish within {}s; it still shows {targets:?} after pressing {pressed:?}",
+                        ONBOARDING_TIMEOUT.as_secs()
+                    )));
+                }
+                if let Some(target) = next_onboarding_press(&targets, &pressed) {
+                    let request = serde_json::json!({ "op": "click_named", "name": target });
+                    let reply = self
+                        .apply
+                        .control(&session, &["raw".to_owned(), request.to_string()])?;
+                    if reply.exit_code != 0 {
+                        return Err(fail(format!("pressing {target}: {}", reply.stderr.trim())));
+                    }
+                    pressed.push(target.to_owned());
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            actions.push(Action::CompleteOnboarding { created: true });
+            // As after a throwaway: a layout made before the identity
+            // belongs to the Unix user and hides every app launch.
+            self.apply.stop_unit(&session.unit)?;
+            actions.push(Action::StopUnit {
+                unit: session.unit.clone(),
+            });
+            self.apply.reset_desktop_state(&user)?;
+            actions.push(Action::ResetDesktopState);
+            let uid = apply::session_uid(self.apply.as_mut(), &session)?;
+            actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
+            self.apply.wait_session_ready(&session).map_err(fail)?;
+            self.verify_parity([session])?;
+        } else {
+            actions.push(Action::CompleteOnboarding { created: false });
+        }
+        // fs-identity.path starts fs once the certificate exists.
+        let started = Instant::now();
+        loop {
+            let state = self.apply.unit_state(FS_UNIT);
+            if state == "active" {
+                break;
+            }
+            if started.elapsed() >= FS_START_TIMEOUT {
+                return Err(fail(format!(
+                    "the machine's device key is certified, but {FS_UNIT} is {state} after {}s",
+                    FS_START_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Ok((
+            TestIdentity {
+                created,
+                display_name: String::new(),
+                throwaway: false,
+            },
+            actions,
+        ))
+    }
+
+    /// The onboarding controls the session shows, by name; empty once
+    /// onboarding is gone. Waits for a control socket a starting session
+    /// has not bound yet.
+    fn onboarding_targets(&mut self, session: &apply::Session) -> Result<Vec<String>, DaemonError> {
+        let args = ["raw".to_owned(), r#"{"op":"list_targets"}"#.to_owned()];
+        let asked = Instant::now();
+        let reply = loop {
+            let reply = self.apply.control(session, &args)?;
+            if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
+                break reply;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        if reply.exit_code != 0 {
+            return Err(DaemonError::DeviceIdentity {
+                slot: session.slot.clone(),
+                detail: format!("listing the session's controls: {}", reply.stderr.trim()),
+            });
+        }
+        Ok(onboarding_target_names(reply.stdout.trim()))
     }
 
     /// Have the slot's running session give its user a throwaway test
@@ -1532,6 +1785,7 @@ impl Daemon {
                 &layer_path,
                 Path::new("/usr/share/tilo-apps"),
                 std::env::consts::ARCH,
+                &self.cohort_staging()?,
             )?)
         } else {
             None
@@ -1552,6 +1806,7 @@ impl Daemon {
                     .map(|cohort| cohort.ids().collect())
                     .unwrap_or_default();
                 self.check_cohort_users(&record, &from, &to, &reselected)?;
+                self.check_interfaces(&record, &to)?;
                 self.transition(&mut record, &from, &to)?
             }
             None => unchanged(record),
@@ -1594,6 +1849,89 @@ impl Daemon {
         }
         self.check_cohort_users(&record, &from, &to, &BTreeSet::new())?;
         self.transition(&mut record, &from, &to)
+    }
+
+    /// Refuse generation `to` of slot `record` when a component of the
+    /// matched session set, its own layer's or the image's, was built for
+    /// another system-interface declaration than the one `to` leaves the slot
+    /// reading, or a VM-wide runtime service (fs) serves another runtime
+    /// version. For the `vm` slot, refuse when its runtime services would
+    /// leave any slot reading another runtime version
+    /// ([`crate::interfaces`]). Checked before anything is activated.
+    ///
+    /// # Errors
+    /// [`DaemonError::InvalidParams`] naming what to swap together; a
+    /// missing layer.
+    pub(crate) fn check_interfaces(
+        &self,
+        record: &SlotRecord,
+        to: &Generation,
+    ) -> Result<(), DaemonError> {
+        let image = image::recorded_declaration(&self.root);
+        let conflict = if record.name == VM_SLOT {
+            // Only a change of a runtime service is judged against the
+            // slots: a vmd or greeter swap never waits on fs.
+            let current = (record.current != 0)
+                .then(|| self.slots.generation(VM_SLOT, record.current))
+                .transpose()?;
+            let changed = crate::interfaces::VM_RUNTIME_SERVICES
+                .iter()
+                .any(|service| {
+                    to.components.get(*service)
+                        != current.as_ref().and_then(|c| c.components.get(*service))
+                });
+            if !changed {
+                return Ok(());
+            }
+            let vm_services = self.interface_members(to)?;
+            let mut slots = Vec::new();
+            for slot in self.slots.list()? {
+                if slot.name == VM_SLOT || slot.current == 0 {
+                    continue;
+                }
+                let current = self.slots.generation(&slot.name, slot.current)?;
+                slots.push((slot.name.clone(), self.interface_members(&current)?));
+            }
+            crate::interfaces::vm_conflict(image.as_ref(), &slots, &vm_services)
+        } else {
+            let vm_services = match self.slots.load(VM_SLOT) {
+                Ok(vm) if vm.current != 0 => {
+                    self.interface_members(&self.slots.generation(VM_SLOT, vm.current)?)?
+                }
+                _ => Vec::new(),
+            };
+            crate::interfaces::conflict(image.as_ref(), &self.interface_members(to)?, &vm_services)
+        };
+        match conflict {
+            None => Ok(()),
+            Some(conflict) => Err(DaemonError::InvalidParams(format!(
+                "generation {} is not activated: {conflict}",
+                to.number
+            ))),
+        }
+    }
+
+    /// Each component of `generation` as the interface check sees it.
+    fn interface_members(
+        &self,
+        generation: &Generation,
+    ) -> Result<Vec<crate::interfaces::Member>, DaemonError> {
+        let relative = tilo_vm_protocol::SYSTEM_INTERFACES
+            .strip_prefix('/')
+            .unwrap_or(tilo_vm_protocol::SYSTEM_INTERFACES);
+        let mut members = Vec::new();
+        for (component, entry) in &generation.components {
+            let declaration = self.layers.require(&entry.layer)?.join(relative);
+            members.push(crate::interfaces::Member {
+                component: component.clone(),
+                layer: entry.layer.clone(),
+                provenance: self.layers.provenance(&entry.layer),
+                ships: declaration
+                    .exists()
+                    .then(|| tilo_vm_protocol::Declaration::read(&declaration)),
+            });
+        }
+        Ok(members)
     }
 
     /// Refuse a transition that takes away a native toolkit the slot user's
@@ -2052,1220 +2390,4 @@ impl Daemon {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::apply::session_unit;
-
-    #[test]
-    fn network_wake_requires_the_normal_protocol_handshake() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::default()),
-            None,
-            BaseInfo::default(),
-        );
-        let request = Request::NetworkWake(tilo_vm_protocol::NetworkWake {
-            profile: "--invalid".into(),
-            enabled: Some(true),
-        });
-        assert!(matches!(
-            daemon.handle(request.clone()),
-            Err(DaemonError::HelloRequired)
-        ));
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let error = daemon.handle(request).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("invalid NetworkManager profile UUID")
-        );
-    }
-
-    #[test]
-    fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
-        let root = tempfile::tempdir().unwrap();
-        let payload = tempfile::tempdir().unwrap();
-        fs::create_dir_all(payload.path().join("usr/bin")).unwrap();
-        let binary = payload.path().join("usr/bin/shell");
-        fs::write(&binary, "baseline").unwrap();
-        let mut original = Provenance::local("shell");
-        original.source_commit = Some("ab".repeat(20));
-        original.target = Some("x86_64-unknown-linux-gnu".into());
-        original.cargo_lock_hash = Some("cd".repeat(32));
-        let store = LayerStore::new(root.path());
-        let (baseline, _) = store
-            .import_path(payload.path(), &original, &mut |_| Ok(()))
-            .unwrap();
-        fs::write(&binary, "candidate").unwrap();
-        let mut candidate = original.clone();
-        candidate.source_commit = Some("ef".repeat(20));
-        let (next, _) = store
-            .import_path(payload.path(), &candidate, &mut |_| Ok(()))
-            .unwrap();
-        let mut apply = RecordingApply::default();
-        apply.readiness_replies.extend([
-            Ok(()), // fresh slot
-            Ok(()), // baseline
-            Err("candidate failed readiness".into()),
-            Ok(()), // recovered baseline
-        ]);
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        daemon
-            .create("proof", SlotKind::Headless, Owner::default(), &[], false)
-            .unwrap();
-        assert!(daemon.show("proof").unwrap().provenance.is_empty());
-        let info = Some(ComponentInfo::new(Scope::Session, vec![]));
-        daemon
-            .swap("proof", "shell", &baseline, info.clone())
-            .unwrap();
-        let before = daemon.show("proof").unwrap();
-        assert_eq!(before.provenance["shell"], original);
-        assert!(
-            before
-                .files
-                .iter()
-                .any(|file| file.path == "/usr/bin/shell")
-        );
-        let error = daemon.swap("proof", "shell", &next, info).unwrap_err();
-        assert!(error.to_string().contains("restored generation 1"));
-        let recovered = daemon.show("proof").unwrap();
-        assert_eq!(recovered.slot.components["shell"], baseline);
-        assert_eq!(recovered.provenance, before.provenance);
-        // Old imports without metadata remain observable as unknown, rather
-        // than inventing provenance from the component name or swap request.
-        fs::remove_file(
-            root.path()
-                .join("layers")
-                .join(&baseline)
-                .join("provenance.json"),
-        )
-        .unwrap();
-        let unknown = daemon.show("proof").unwrap();
-        assert!(unknown.provenance.is_empty());
-        assert_eq!(unknown.slot.components["shell"], baseline);
-        assert!(!unknown.files.is_empty());
-        let mut legacy = serde_json::to_value(&unknown).unwrap();
-        legacy.as_object_mut().unwrap().remove("provenance");
-        let legacy: SlotShowResult = serde_json::from_value(legacy).unwrap();
-        assert!(legacy.provenance.is_empty());
-    }
-
-    #[test]
-    fn failed_swap_restores_generation_and_reports_failed_recovery() {
-        for (slot, recovery) in [
-            (DEVICE_SLOT, Ok(())),
-            (DEVICE_SLOT, Err("old desktop also failed".to_owned())),
-            ("review", Ok(())),
-            ("review", Err("old desktop also failed".to_owned())),
-        ] {
-            let root = tempfile::tempdir().unwrap();
-            let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let mut apply = RecordingApply::with_login("owner");
-            apply.mirror = Some(mirror.clone());
-            if slot != DEVICE_SLOT {
-                apply.readiness_replies.push_back(Ok(()));
-            }
-            apply.readiness_replies.extend([
-                Ok(()),
-                Err("new desktop failed".to_owned()),
-                recovery.clone(),
-            ]);
-            let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-            if slot != DEVICE_SLOT {
-                daemon
-                    .create(slot, SlotKind::Headless, Owner::default(), &[], false)
-                    .unwrap();
-            }
-            // Start with a real prior generation, then exercise the production
-            // swap path: preparation, activation, readiness and recovery.
-            let hash = "ab".repeat(32);
-            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
-            let info = Some(ComponentInfo::new(Scope::Session, vec![]));
-            assert_eq!(
-                daemon
-                    .swap(slot, "shell", &hash, info.clone())
-                    .unwrap()
-                    .generation,
-                1
-            );
-            mirror.lock().unwrap().clear();
-            let next = "cd".repeat(32);
-            fs::create_dir_all(root.path().join("layers").join(&next).join("usr/bin")).unwrap();
-            let error = daemon.swap(slot, "shell", &next, info).unwrap_err();
-            let detail = error.to_string();
-            assert!(detail.contains("new desktop failed"), "{detail}");
-            let record = daemon.load_slot(slot).unwrap();
-            assert_eq!(
-                record.current, 1,
-                "a failed candidate never becomes current"
-            );
-            if slot == DEVICE_SLOT {
-                assert_eq!(record.device.as_ref().unwrap().account, "owner");
-            } else {
-                assert_eq!(record.kind, SlotKind::Headless);
-            }
-            let calls = mirror.lock().unwrap().clone();
-            assert_eq!(
-                calls
-                    .iter()
-                    .filter(|c| c.starts_with("wait_session_ready "))
-                    .count(),
-                2
-            );
-            assert!(
-                !calls
-                    .iter()
-                    .any(|c| c.contains("reset_desktop") || c.contains("remove_user"))
-            );
-            if recovery.is_ok() {
-                assert!(detail.contains("restored generation 1"), "{detail}");
-                assert_eq!(daemon.slots.pending(slot), None);
-            } else {
-                assert!(
-                    detail.contains("recovery to generation 1 also failed"),
-                    "{detail}"
-                );
-                assert!(detail.contains("old desktop also failed"), "{detail}");
-                assert_eq!(daemon.slots.pending(slot), Some(1));
-            }
-        }
-    }
-
-    const TOOLKIT: &str = "2026.07+native.0123456789abcdef0123456789abcdef";
-
-    fn user_package(id: &str, runtime: &str) -> package_store::registry::InstalledPackage {
-        serde_json::from_value(serde_json::json!({
-            "id": id,
-            "payload_root": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}"),
-            "manifest_path": format!("/home/tester/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
-            "runtime": runtime,
-        }))
-        .unwrap()
-    }
-
-    /// Roll the owner's laptop back to the bare image after it took an
-    /// apps+runtime cohort shipping `TOOLKIT` and then a shell. Returns the
-    /// rollback's outcome, the calls the refusal check left behind, and
-    /// the generation current afterwards.
-    fn roll_cohort_back_to_image(
-        packages: Vec<package_store::registry::InstalledPackage>,
-        image_runtimes: &[&str],
-    ) -> (Result<ApplyResult, DaemonError>, usize, usize, u64) {
-        let root = tempfile::tempdir().unwrap();
-        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut apply = RecordingApply::with_login("tester");
-        apply.mirror = Some(mirror.clone());
-        apply.user_packages = packages;
-        apply.image_runtimes = image_runtimes.iter().map(|v| (*v).to_owned()).collect();
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let first = "01".repeat(32);
-        let next = "02".repeat(32);
-        let layers = root.path().join("layers");
-        fs::create_dir_all(
-            layers
-                .join(&first)
-                .join("usr/lib/tilo-runtime")
-                .join(TOOLKIT),
-        )
-        .unwrap();
-        fs::create_dir_all(layers.join(&next).join("usr/bin")).unwrap();
-        let session = Some(ComponentInfo::new(Scope::Session, Vec::new()));
-        let cohort = daemon
-            .swap(DEVICE_SLOT, COHORT_COMPONENT, &first, session.clone())
-            .unwrap();
-        daemon.swap(DEVICE_SLOT, "shell", &next, session).unwrap();
-        // Rolling back a component the cohort does not carry is never checked.
-        daemon
-            .rollback(DEVICE_SLOT, Some(cohort.generation))
-            .unwrap();
-        let before = mirror.lock().unwrap().len();
-        let result = daemon.rollback(DEVICE_SLOT, Some(0));
-        let after = mirror.lock().unwrap().len();
-        let current = daemon.load_slot(DEVICE_SLOT).unwrap().current;
-        (result, before, after, current)
-    }
-
-    #[test]
-    fn cohort_rollback_without_user_packages_is_allowed() {
-        let (result, _, _, current) = roll_cohort_back_to_image(Vec::new(), &[]);
-        assert_eq!(result.unwrap().generation, 0);
-        assert_eq!(current, 0);
-    }
-
-    #[test]
-    fn cohort_rollback_ignores_packages_that_need_no_app_toolkit() {
-        // A runtime package (it may not declare a runtime) and an app that
-        // names none, as `tilo-install` records them.
-        let (result, _, _, current) = roll_cohort_back_to_image(
-            vec![
-                user_package("so.tilo.runtime.chromium", ""),
-                user_package("org.example.static", ""),
-            ],
-            &[],
-        );
-        assert_eq!(result.unwrap().generation, 0);
-        assert_eq!(current, 0);
-    }
-
-    #[test]
-    fn cohort_rollback_refuses_to_strand_a_package_on_the_removed_toolkit() {
-        let runtime = format!("tilo-runtime/{TOOLKIT}");
-        let (result, before, after, current) = roll_cohort_back_to_image(
-            vec![
-                user_package("so.tilo.runtime.chromium", ""),
-                user_package("org.example.thin", &runtime),
-                user_package("org.example.elsewhere", "tilo-runtime/2025.01+native.ffff"),
-            ],
-            &[],
-        );
-        let error = result.unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("org.example.thin needs {runtime}")),
-            "{error}"
-        );
-        assert!(
-            error.contains("tilo app remove org.example.thin"),
-            "{error}"
-        );
-        assert!(!error.contains("chromium"), "{error}");
-        assert!(!error.contains("org.example.elsewhere"), "{error}");
-        assert_eq!(after, before, "refusal must precede any layer side effect");
-        assert_ne!(current, 0);
-    }
-
-    #[test]
-    fn cohort_rollback_allows_a_package_whose_toolkit_the_image_ships() {
-        let (result, _, _, current) = roll_cohort_back_to_image(
-            vec![user_package(
-                "org.example.thin",
-                &format!("tilo-runtime/{TOOLKIT}"),
-            )],
-            &[TOOLKIT],
-        );
-        assert_eq!(result.unwrap().generation, 0);
-        assert_eq!(current, 0);
-    }
-
-    #[test]
-    fn only_a_single_tilo_runtime_directory_names_a_native_toolkit() {
-        assert_eq!(
-            native_toolkit(&format!("tilo-runtime/{TOOLKIT}")),
-            Some(TOOLKIT)
-        );
-        for runtime in [
-            "",
-            "tilo-runtime/",
-            "tilo-runtime/..",
-            "tilo-runtime/a/b",
-            "other/1.0",
-        ] {
-            assert_eq!(native_toolkit(runtime), None, "{runtime}");
-        }
-    }
-
-    /// Every connection's hello takes the keep-awake lease; `awake` holds it
-    /// longer, reports it, and releases it, and the next hello takes it again.
-    #[test]
-    fn every_connection_keeps_the_machine_awake_until_released() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::default()),
-            None,
-            BaseInfo::default(),
-        );
-        let hello = |daemon: &mut Daemon| -> HelloResult {
-            serde_json::from_value(
-                daemon
-                    .handle(Request::Hello(tilo_vm_protocol::Hello {
-                        protocol: PROTOCOL_VERSION,
-                        client_version: String::new(),
-                    }))
-                    .unwrap(),
-            )
-            .unwrap()
-        };
-        let awake = |daemon: &mut Daemon, seconds, off| -> AwakeLease {
-            serde_json::from_value(
-                daemon
-                    .handle(Request::Awake(tilo_vm_protocol::Awake { seconds, off }))
-                    .unwrap(),
-            )
-            .unwrap()
-        };
-        let now = tilo_clock::unix_now();
-        let lease = hello(&mut daemon).awake.unwrap();
-        assert!(lease.held, "{lease:?}");
-        assert_eq!(lease.problem, None);
-        let until = lease.until.unwrap();
-        assert!((now + 1800..now + 1810).contains(&until), "{until}");
-        assert!(root.path().join(awake::LEASE_FILE).is_file());
-
-        let held = awake(&mut daemon, Some(7200), false);
-        assert!(held.held);
-        assert!(held.until.unwrap() >= now + 7200);
-        assert_eq!(held.hold_until, held.until);
-        // Reporting changes nothing; a new connection keeps the hold.
-        assert_eq!(awake(&mut daemon, None, false).until, held.until);
-        assert_eq!(hello(&mut daemon).awake.unwrap().until, held.until);
-
-        let off = awake(&mut daemon, None, true);
-        assert_eq!(off, AwakeLease::default());
-        assert!(hello(&mut daemon).awake.unwrap().held);
-    }
-
-    /// Requests on a connection renew the lease as its hello did, but never
-    /// shorten an explicit hold.
-    #[test]
-    fn requests_renew_an_expired_lease_and_keep_a_hold() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::default()),
-            None,
-            BaseInfo::default(),
-        );
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let now = tilo_clock::unix_now();
-        let expired = awake::Lease {
-            idle_until: now.saturating_sub(1),
-            hold_until: None,
-        };
-        fs::write(daemon.lease_path(), serde_json::to_vec(&expired).unwrap()).unwrap();
-        daemon
-            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
-            .unwrap();
-        let renewed = awake::read(&daemon.lease_path()).unwrap();
-        assert!(renewed.active(now), "{renewed:?}");
-
-        daemon
-            .handle(Request::Awake(tilo_vm_protocol::Awake {
-                seconds: Some(7200),
-                off: false,
-            }))
-            .unwrap();
-        let held = fs::read(daemon.lease_path()).unwrap();
-        daemon
-            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
-            .unwrap();
-        assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
-    }
-
-    #[test]
-    fn vm_component_refresh_restarts_declared_live_owner_user_services() {
-        let root = tempfile::tempdir().unwrap();
-        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut apply = RecordingApply::with_login("tester");
-        apply.mirror = Some(mirror.clone());
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-        daemon.slots.save(&device).unwrap();
-        let hash = "cd".repeat(32);
-        fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
-        let mut info = ComponentInfo::new(Scope::Vm, vec!["fs.service".into()]);
-        info.user_units = vec!["tilo-fs-cloud.service".into()];
-        let result: ApplyResult = serde_json::from_value(
-            daemon
-                .handle(Request::Swap(tilo_vm_protocol::Swap {
-                    slot: VM_SLOT.into(),
-                    component: "fs".into(),
-                    layer: hash,
-                    info: Some(info),
-                }))
-                .unwrap(),
-        )
-        .unwrap();
-        let user_service = Action::RestartUserUnit {
-            user: "tester".into(),
-            unit: "tilo-fs-cloud.service".into(),
-        };
-        let desktop = Action::RestartDesktop {
-            user: "tester".into(),
-        };
-        let user_ix = result
-            .actions
-            .iter()
-            .position(|action| action == &user_service)
-            .unwrap();
-        let desktop_ix = result
-            .actions
-            .iter()
-            .position(|action| action == &desktop)
-            .unwrap();
-        assert!(
-            user_ix < desktop_ix,
-            "owner services must observe the new binary before the desktop restarts"
-        );
-        let calls = mirror.lock().unwrap().clone();
-        assert!(calls.iter().any(|call| call == "try-restart fs.service"));
-        assert!(
-            calls
-                .iter()
-                .any(|call| call == "restart_user_unit tester tilo-fs-cloud.service")
-        );
-        assert!(
-            !calls.iter().any(|call| call == "restart user@1000.service"),
-            "the owner login remains intact"
-        );
-    }
-
-    #[test]
-    fn a_vm_component_outside_sessions_leaves_desktops_running() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::with_login("tester")),
-            None,
-            BaseInfo::default(),
-        );
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-        daemon.slots.save(&device).unwrap();
-        let mut swap = |component: &str, n: u8, outside_sessions: bool| -> ApplyResult {
-            let hash = format!("{n:02x}").repeat(32);
-            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
-            let info = ComponentInfo {
-                outside_sessions,
-                ..ComponentInfo::new(Scope::Vm, Vec::new())
-            };
-            serde_json::from_value(
-                daemon
-                    .handle(Request::Swap(tilo_vm_protocol::Swap {
-                        slot: VM_SLOT.into(),
-                        component: component.into(),
-                        layer: hash,
-                        info: Some(info),
-                    }))
-                    .unwrap(),
-            )
-            .unwrap()
-        };
-        let restarted = Action::RestartDesktop {
-            user: "tester".into(),
-        };
-        let vmd = swap("vmd", 1, true);
-        assert_eq!(vmd.policy, Policy::VmRefresh);
-        assert!(
-            vmd.actions.contains(&Action::SysextRefresh),
-            "{:?}",
-            vmd.actions
-        );
-        assert!(!vmd.actions.contains(&restarted), "{:?}", vmd.actions);
-        let fs = swap("fs", 2, false);
-        assert!(fs.actions.contains(&restarted), "{:?}", fs.actions);
-    }
-
-    /// A laptop's `device` slot (the owner's greetd login) and the `vm` slot
-    /// merge one system-wide layer set: neither drops the other's layers, and
-    /// every change restarts the owner's desktop in place.
-    #[test]
-    fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
-        let root = tempfile::tempdir().unwrap();
-        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut apply = RecordingApply::with_login("tester");
-        apply.mirror = Some(mirror.clone());
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let layer = |n: u8| {
-            let hash = format!("{n:02x}").repeat(32);
-            fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
-            hash
-        };
-        let mut apply = |request: Request| -> ApplyResult {
-            serde_json::from_value(daemon.handle(request).unwrap()).unwrap()
-        };
-        let swap = |slot: &str, component: &str, layer: &str, scope: Scope| {
-            Request::Swap(tilo_vm_protocol::Swap {
-                slot: slot.into(),
-                component: component.into(),
-                layer: layer.into(),
-                info: Some(ComponentInfo::new(scope, Vec::new())),
-            })
-        };
-        let restarted = Action::RestartDesktop {
-            user: "tester".into(),
-        };
-
-        let shell = apply(swap(DEVICE_SLOT, "shell", &layer(1), Scope::Session));
-        assert_eq!(shell.policy, Policy::SessionRestart);
-        assert!(
-            shell.actions.contains(&Action::SysextRefresh),
-            "{:?}",
-            shell.actions
-        );
-        assert_eq!(shell.actions.last(), Some(&restarted));
-        let fs = apply(swap(VM_SLOT, "fs", &layer(2), Scope::Vm));
-        assert!(fs.actions.contains(&restarted), "{:?}", fs.actions);
-        let back = apply(Request::Rollback(tilo_vm_protocol::Rollback {
-            slot: DEVICE_SLOT.into(),
-            to: Some(0),
-        }));
-        assert_eq!(back.generation, 0);
-
-        let calls = mirror.lock().unwrap().clone();
-        let linked: Vec<&str> = calls
-            .iter()
-            .filter(|c| c.starts_with("link_sysext"))
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            linked,
-            ["link_sysext 1", "link_sysext 2", "link_sysext 1"],
-            "{calls:?}"
-        );
-        assert!(
-            !calls
-                .iter()
-                .any(|c| c.starts_with("write_dropin") || c.starts_with("stop ")),
-            "the owner's login is never stopped: {calls:?}"
-        );
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|c| c.starts_with("restart_desktop"))
-                .count(),
-            3
-        );
-    }
-
-    #[test]
-    fn creating_with_outputs_applies_the_layout_every_time() {
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(
-            root.path(),
-            Box::new(RecordingApply::default()),
-            None,
-            BaseInfo::default(),
-        );
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let create = || {
-            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
-                name: "a".into(),
-                kind: SlotKind::Headful,
-                owner: Owner::default(),
-                outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
-                identity: false,
-            })
-        };
-        for _ in 0..2 {
-            let result: SlotCreateResult =
-                serde_json::from_value(daemon.handle(create()).unwrap()).unwrap();
-            assert_eq!(result.slot.outputs.len(), 2);
-            assert!(
-                result.actions.contains(&Action::SetOutputs {
-                    outputs: "2560x1600@2,1920x1080@1".into()
-                }),
-                "{:?}",
-                result.actions
-            );
-        }
-    }
-
-    use crate::apply::RecordingApply;
-
-    #[test]
-    fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
-        use tilo_vm_protocol::ControlResult;
-        let reply = |exit_code, stdout: &str, stderr: &str| ControlResult {
-            exit_code,
-            stdout: stdout.into(),
-            stderr: stderr.into(),
-        };
-        let mut apply = RecordingApply::default();
-        apply.control_replies.extend([
-            reply(2, "", "tilo-control: connect: No such file or directory"),
-            reply(
-                0,
-                r#"{"answer":{"created":true,"display_name":"Throwaway test identity","throwaway":true}}"#,
-                "",
-            ),
-            reply(
-                0,
-                r#"{"answer":{"created":false,"display_name":"Throwaway test identity","throwaway":true}}"#,
-                "",
-            ),
-            reply(1, "", "error [identity_exists]: this user already has an identity"),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        daemon
-            .handle(Request::Hello(tilo_vm_protocol::Hello {
-                protocol: PROTOCOL_VERSION,
-                client_version: String::new(),
-            }))
-            .unwrap();
-        let create = |identity| {
-            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
-                name: "a".into(),
-                kind: SlotKind::Headless,
-                owner: Owner::default(),
-                outputs: Vec::new(),
-                identity,
-            })
-        };
-        let session = session_unit("a");
-        // Phase `a_new_throwaway_restarts_the_session_with_fresh_desktop_state`.
-        {
-            let result: SlotCreateResult =
-                serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
-            let identity = result.identity.expect("the identity answer");
-            assert!(identity.created && identity.throwaway);
-            let minted = result
-                .actions
-                .iter()
-                .position(|action| action == &Action::ProvisionTestIdentity { created: true })
-                .expect("the identity is minted");
-            // After minting: the session stops, loses its layout, starts.
-            let after: Vec<&Action> = result.actions[minted..]
-                .iter()
-                .filter(|action| {
-                    matches!(action, Action::StopUnit { unit } | Action::StartUnit { unit } if *unit == session)
-                        || **action == Action::ResetDesktopState
-                })
-                .collect();
-            assert_eq!(
-                after.first(),
-                Some(&&Action::StopUnit {
-                    unit: session.clone()
-                }),
-                "{:?}",
-                result.actions
-            );
-            assert_eq!(after.get(1), Some(&&Action::ResetDesktopState));
-            assert_eq!(
-                after.last(),
-                Some(&&Action::StartUnit {
-                    unit: session.clone()
-                })
-            );
-        }
-        // Phase `a_kept_throwaway_keeps_the_running_session`.
-        {
-            let result: SlotCreateResult =
-                serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
-            assert_eq!(
-                result.identity.map(|identity| identity.created),
-                Some(false)
-            );
-            assert!(!result.actions.contains(&Action::ResetDesktopState));
-            assert!(!result.actions.contains(&Action::StopUnit { unit: session }));
-        }
-        // Phase `a_refused_identity_fails_the_create`.
-        {
-            let error = daemon.handle(create(true)).unwrap_err();
-            assert!(matches!(error, DaemonError::TestIdentity { .. }), "{error}");
-            assert!(error.to_string().contains("identity_exists"), "{error}");
-        }
-        // Phase `a_plain_create_leaves_identity_alone`.
-        {
-            let result: SlotCreateResult =
-                serde_json::from_value(daemon.handle(create(false)).unwrap()).unwrap();
-            assert_eq!(result.identity, None);
-            assert!(result.actions.is_empty(), "{:?}", result.actions);
-        }
-    }
-
-    #[test]
-    fn candidate_slot_view_preserves_identity_before_generation_commit() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let mut apply = RecordingApply::default();
-        let (mut proof, _) = slots
-            .create("proof", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        let own_hash = "03".repeat(32);
-        let own = layers.path(&own_hash);
-        fs::create_dir_all(own.join("usr")).unwrap();
-        let (_, generation) = slots
-            .prepare_swap(
-                &proof,
-                "shell",
-                &own_hash,
-                ComponentInfo::new(Scope::Session, vec![]),
-            )
-            .unwrap()
-            .unwrap();
-        slots.set_current(&mut proof, generation.number).unwrap();
-        let candidate = layers.path(&"04".repeat(32));
-        fs::create_dir_all(candidate.join("usr")).unwrap();
-        let before = slots.load(VM_SLOT).unwrap().current;
-        prepare_slot_session(
-            &slots,
-            &layers,
-            &mut apply,
-            &proof,
-            Some(std::slice::from_ref(&candidate)),
-        )
-        .unwrap();
-        assert_eq!(
-            apply.prepared_session_layers,
-            [("proof".into(), vec![candidate, own])]
-        );
-        assert_eq!(
-            slots.load(VM_SLOT).unwrap().current,
-            before,
-            "candidate view preparation must not commit a generation before readiness"
-        );
-        for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
-            assert!(apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())].contains("Environment=\"TILO_IDENTITY_ROOT=/home/tds-proof/.local/share/tilo/test-identity\"\n"));
-        }
-    }
-
-    #[test]
-    fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let locks = Locks::new(root.path());
-        let mut apply = RecordingApply::with_login("owner");
-        let mut expected = Vec::new();
-        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2), ("proof", 3)] {
-            let mut record = if slot == VM_SLOT {
-                slots.load(slot).unwrap()
-            } else if slot == DEVICE_SLOT {
-                slots.load_with(slot, apply.device.clone()).unwrap()
-            } else {
-                slots
-                    .create(slot, SlotKind::Headless, Owner::default(), &[])
-                    .unwrap()
-                    .0
-            };
-            slots.save(&record).unwrap();
-            let hash = format!("{n:02x}").repeat(32);
-            let path = layers.path(&hash);
-            fs::create_dir_all(path.join("usr")).unwrap();
-            expected.push(path);
-            let (_, generation) = slots
-                .prepare_swap(
-                    &record,
-                    "component",
-                    &hash,
-                    ComponentInfo::new(Scope::Session, Vec::new()),
-                )
-                .unwrap()
-                .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
-        }
-        assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
-        assert_eq!(
-            apply.prepared_session_layers,
-            [("proof".into(), expected.clone())]
-        );
-        for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
-            assert!(apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())].contains(
-                "Environment=\"TILO_IDENTITY_ROOT=/home/tds-proof/.local/share/tilo/test-identity\"\n"
-            ));
-        }
-        let reload = apply
-            .calls
-            .iter()
-            .position(|call| call == "reload")
-            .unwrap();
-        let start = apply
-            .calls
-            .iter()
-            .position(|call| call == &format!("start {}", session_unit("proof")))
-            .unwrap();
-        assert!(reload < start);
-        let held = locks.slot("proof").unwrap();
-        let mut busy = RecordingApply::with_login("owner");
-        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, "proof");
-        assert!(busy.prepared_session_layers.is_empty());
-        assert!(!busy.calls.iter().any(|call| call.starts_with("start ")));
-        drop(held);
-        let held = locks.vm_exclusive().unwrap();
-        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, VM_SLOT);
-        assert!(busy.prepared_session_layers.is_empty());
-        drop(held);
-        fs::remove_dir_all(&expected[2]).unwrap();
-        let mut missing = RecordingApply::with_login("owner");
-        let issues = restore_slots(&slots, &layers, &locks, &mut missing);
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, "proof");
-        assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
-    }
-
-    #[test]
-    fn a_board_session_running_before_restore_restarts_onto_its_view() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let locks = Locks::new(root.path());
-        let mut apply = RecordingApply::with_device("tester");
-        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
-        slots.save(&record).unwrap();
-        let hash = "07".repeat(32);
-        fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
-        let (_, generation) = slots
-            .prepare_swap(
-                &record,
-                "shell",
-                &hash,
-                ComponentInfo::new(Scope::Session, Vec::new()),
-            )
-            .unwrap()
-            .unwrap();
-        slots.set_current(&mut record, generation.number).unwrap();
-        let unit = "tilo-board-headless-session@tester.service";
-        // Enabled at boot, it started before the restore.
-        apply.start_unit(unit).unwrap();
-        let issues = restore_slots(&slots, &layers, &locks, &mut apply);
-        assert!(issues.is_empty(), "{issues:?}");
-        let after_reload = |call: &str| {
-            let reload = apply.calls.iter().position(|c| c == "reload").unwrap();
-            apply.calls.iter().skip(reload).any(|c| c == call)
-        };
-        assert!(after_reload(&format!("stop {unit}")));
-        assert!(after_reload("restart user@1000.service"));
-        assert!(after_reload(&format!("start {unit}")));
-    }
-
-    /// gc deletes only what nobody holds: it never touches the device
-    /// slot's current generation or a generation with a held layer, nor the
-    /// held layer itself, however few generations it is asked to keep.
-    #[test]
-    fn gc_never_touches_the_device_slots_current_or_held_generation() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let apply = RecordingApply::with_login("owner");
-        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
-        slots.save(&record).unwrap();
-        let mut hashes = Vec::new();
-        for n in 1..=4u8 {
-            let hash = format!("{n:02x}").repeat(32);
-            fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
-            let (_, generation) = slots
-                .prepare_swap(
-                    &record,
-                    &format!("component-{n}"),
-                    &hash,
-                    ComponentInfo::new(Scope::Session, Vec::new()),
-                )
-                .unwrap()
-                .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
-            hashes.push(hash);
-        }
-        // Back on generation 1 (component-1 only); generation 2 added the
-        // held layer, generations 3 and 4 build on it.
-        slots.set_current(&mut record, 1).unwrap();
-        let held = serde_json::json!([{
-            "layer": hashes[1], "component": "component-2", "reason": "speaks shell-ui 9"
-        }]);
-        fs::write(root.path().join("held-layers.json"), held.to_string()).unwrap();
-        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-        let result = daemon
-            .gc(&tilo_vm_protocol::Gc {
-                keep: 0,
-                dry_run: false,
-                keep_targets: None,
-                free_goal_bytes: None,
-                min_age_seconds: Some(0),
-            })
-            .unwrap();
-        // Every generation from 2 on names the held layer: all are kept.
-        assert_eq!(slots.generations(DEVICE_SLOT), vec![1, 2, 3, 4]);
-        assert!(result.removed_generations.is_empty(), "{result:?}");
-        for hash in &hashes {
-            assert!(layers.require(hash).is_ok(), "{hash} kept");
-        }
-    }
-
-    /// The device slot comes up on its current generation at every boot:
-    /// the restore links the `vm` and `device` slots' layers and refreshes
-    /// `/usr` when the links `systemd-sysext` merged at boot were not that
-    /// set, and leaves a set that already was merged alone.
-    #[test]
-    fn the_device_slot_re_merges_its_layers_at_boot() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let mut apply = RecordingApply::with_login("owner");
-        let mut expected = Vec::new();
-        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2)] {
-            let mut record = if slot == VM_SLOT {
-                slots.load(slot).unwrap()
-            } else {
-                slots.load_with(slot, apply.device.clone()).unwrap()
-            };
-            slots.save(&record).unwrap();
-            let hash = format!("{n:02x}").repeat(32);
-            let path = layers.path(&hash);
-            fs::create_dir_all(path.join("usr")).unwrap();
-            expected.push(path);
-            let (_, generation) = slots
-                .prepare_swap(
-                    &record,
-                    "component",
-                    &hash,
-                    ComponentInfo::new(Scope::Session, Vec::new()),
-                )
-                .unwrap()
-                .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
-        }
-
-        // The boot merged no links: they are put back and /usr refreshed.
-        merge_system_layers(&slots, &layers, &mut apply).unwrap();
-        assert_eq!(apply.sysext, expected);
-        assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
-
-        // Already merged: nothing is refreshed.
-        apply.calls.clear();
-        merge_system_layers(&slots, &layers, &mut apply).unwrap();
-        assert_eq!(apply.calls, ["link_sysext 2"]);
-
-        // The daemon's boot restore does the same.
-        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut watched = RecordingApply::with_login("owner");
-        watched.mirror = Some(mirror.clone());
-        let mut daemon = Daemon::new(root.path(), Box::new(watched), None, BaseInfo::default());
-        assert!(daemon.restore(Some("composefs:one")).is_empty());
-        let calls = mirror.lock().unwrap().clone();
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|c| c.starts_with("link_sysext") || c.as_str() == "sysext_refresh")
-                .collect::<Vec<_>>(),
-            ["link_sysext 2", "sysext_refresh"],
-            "a fresh boot's links are relinked and merged"
-        );
-
-        // A layer the device's generation names is gone: reported, links
-        // left as they were.
-        fs::remove_dir_all(&expected[1]).unwrap();
-        apply.calls.clear();
-        assert!(merge_system_layers(&slots, &layers, &mut apply).is_err());
-        assert!(apply.calls.is_empty(), "{:?}", apply.calls);
-    }
-
-    #[test]
-    fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
-        // Phase `exec_needs_a_user_slot_with_a_running_session`.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let mut daemon = Daemon::new(
-                root.path(),
-                Box::new(RecordingApply::default()),
-                None,
-                BaseInfo::default(),
-            );
-            SlotStore::new(root.path())
-                .create("a", SlotKind::Headless, Owner::default(), &[])
-                .unwrap();
-            let run = |daemon: &mut Daemon, slot: &str| {
-                daemon
-                    .exec(slot, &["true".into()], Duration::from_secs(5), 1024)
-                    .unwrap_err()
-            };
-            // The recording backend has no session process.
-            let stopped = run(&mut daemon, "a");
-            assert!(
-                matches!(stopped, DaemonError::SessionStopped(_)),
-                "{stopped}"
-            );
-            assert!(stopped.hint().contains("tilo-vm slot restart --slot a"));
-            let vm = run(&mut daemon, VM_SLOT);
-            assert!(vm.hint().contains("tilo-vm vm ssh"), "{}", vm.hint());
-            assert!(matches!(
-                run(&mut daemon, "nope"),
-                DaemonError::SlotNotFound(_)
-            ));
-        }
-        // Phase `headful_seats_are_recreated_at_start`.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let slots = SlotStore::new(root.path());
-            let locks = Locks::new(root.path());
-            for (name, kind) in [
-                ("a", SlotKind::Headful),
-                ("b", SlotKind::Headless),
-                ("c", SlotKind::Headful),
-            ] {
-                let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
-                if kind == SlotKind::Headful {
-                    record.seat = Some(format!("seat-{name}"));
-                    slots.save(&record).unwrap();
-                }
-            }
-            let mut apply = RecordingApply::default();
-            // A slot another command is changing is left to that command.
-            let busy = locks.slot("c").unwrap();
-            assert!(reconcile_seats(&slots, &locks, &mut apply).is_empty());
-            assert_eq!(apply.calls, ["allocate_seat a"]);
-            drop(busy);
-        }
-        // Phase `restore_brings_back_seats_then_sessions`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let slots = SlotStore::new(tmp.path());
-            let locks = Locks::new(tmp.path());
-            for (name, kind) in [("a", SlotKind::Headful), ("b", SlotKind::Headless)] {
-                let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
-                if kind == SlotKind::Headful {
-                    record.seat = Some(format!("seat-{name}"));
-                    slots.save(&record).unwrap();
-                }
-            }
-            let mut apply = RecordingApply::default();
-            assert!(
-                restore_slots(&slots, &LayerStore::new(tmp.path()), &locks, &mut apply).is_empty()
-            );
-            let calls = &apply.calls;
-            let seat = calls.iter().position(|c| c == "allocate_seat a").unwrap();
-            let session = calls
-                .iter()
-                .position(|c| c == &format!("start {}", session_unit("a")))
-                .unwrap();
-            assert!(seat < session, "{calls:?}");
-            assert!(
-                calls.contains(&format!("start {}", session_unit("b"))),
-                "{calls:?}"
-            );
-        }
-        // Phase `installed_line_names_the_app`.
-        {
-            assert_eq!(
-                parse_installed("tilo-install: WARN self-signed\ninstalled: so.tilo.notes 0.1.0\n"),
-                (Some("so.tilo.notes".into()), Some("0.1.0".into()))
-            );
-            assert_eq!(parse_installed("nothing"), (None, None));
-        }
-    }
-
-    #[test]
-    fn abi_checks_refuse_foreign_builds_and_compare_targets_and_locks() {
-        // Phase `abi_refuses_foreign_arch_and_builder`.
-        {
-            let base = BaseInfo {
-                image_digest: Some("sha256:base".into()),
-                builder_image_digest: Some("sha256:builder".into()),
-                toolchain: Some("1.97.1".into()),
-                ..BaseInfo::default()
-            };
-            let mut layer = Provenance::local("shell");
-            layer.target = Some("aarch64-unknown-linux-gnu".into());
-            assert!(matches!(
-                abi_check(&layer, &base, "x86_64"),
-                Err(DaemonError::AbiMismatch { .. })
-            ));
-            layer.target = Some("x86_64-unknown-linux-gnu".into());
-            assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
-            layer.builder_image_digest = Some("sha256:other".into());
-            assert!(matches!(
-                abi_check(&layer, &base, "x86_64"),
-                Err(DaemonError::AbiMismatch { .. })
-            ));
-            layer.builder_image_digest = None;
-            layer.base_image_digest = Some("sha256:older".into());
-            layer.toolchain = Some("1.96.0".into());
-            assert_eq!(abi_check(&layer, &base, "x86_64").unwrap().len(), 2);
-            // Nothing known about the VM: nothing to compare.
-            assert!(
-                abi_check(&layer, &BaseInfo::default(), "x86_64")
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        // Phase `abi_compares_the_dev_images_target_and_cargo_lock`.
-        {
-            let base = dev_base();
-            let mut layer = Provenance::local("shell");
-            layer.target = Some("x86_64-unknown-linux-gnu".into());
-            layer.cargo_lock_hash = base.cargo_lock_hash.clone();
-            layer.toolchain = base.toolchain.clone();
-            // A layer from some builder image, onto an image that is its own
-            // builder: nothing to compare, so neither a refusal nor a warning.
-            layer.builder_image_digest = Some("sha256:ci-builder".into());
-            assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
-            layer.builder = Some("host".into());
-            assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
-
-            // The same architecture, another triple.
-            layer.target = Some("x86_64-unknown-linux-musl".into());
-            let error = abi_check(&layer, &base, "x86_64").unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "layer target is x86_64-unknown-linux-musl but the VM expects x86_64-unknown-linux-gnu"
-            );
-            layer.target = Some("x86_64-unknown-linux-gnu".into());
-
-            layer.cargo_lock_hash = Some("fedcba9876543210fedc".into());
-            // A statically linked component only warns.
-            let warnings = abi_check(&layer, &base, "x86_64").unwrap();
-            assert_eq!(warnings.len(), 1, "{warnings:?}");
-            assert!(warnings[0].contains("Cargo.lock"), "{warnings:?}");
-            // Thin apps share libruntime_dylib.so with the image: refused.
-            layer.cargo_profile = Some("thin-app".into());
-            let error = abi_check(&layer, &base, "x86_64").unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "layer Cargo.lock is fedcba987654 but the VM expects 0123456789ab"
-            );
-            let rpc = error.to_rpc();
-            assert!(rpc.hint.contains("Cargo.lock"), "{}", rpc.hint);
-            assert!(rpc.hint.contains("tilo-vm vm upgrade"), "{}", rpc.hint);
-            assert_eq!(rpc.see.as_deref(), Some("tilo-vm guide swapping"));
-
-            // A CI layer records no Cargo.lock: nothing to compare.
-            layer.cargo_lock_hash = None;
-            assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
-        }
-    }
-
-    /// base.json as a dev image writes it: no builder image, but a target
-    /// triple and a Cargo.lock hash.
-    fn dev_base() -> BaseInfo {
-        BaseInfo {
-            image_digest: Some("sha256:base".into()),
-            builder_image_digest: None,
-            toolchain: Some("rustc 1.97.1".into()),
-            target: Some("x86_64-unknown-linux-gnu".into()),
-            cargo_lock_hash: Some("0123456789abcdef0123".into()),
-        }
-    }
-}
+mod tests;

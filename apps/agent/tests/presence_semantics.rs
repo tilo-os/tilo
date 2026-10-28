@@ -1,5 +1,3 @@
-//! Presence semantics through the production Cap'n Proto broker.
-
 #![allow(
     clippy::expect_used,
     clippy::panic,

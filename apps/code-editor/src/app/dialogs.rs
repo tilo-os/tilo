@@ -1,8 +1,8 @@
-//! The editor's two questions: "this file changed on disk" and "save changes
-//! before closing?". Both are decisions the user makes — silently choosing for
-//! them loses somebody's work — and both have three answers, so they are the
-//! toolkit's immediate modal sheet ([`ModalSheet`]): it paints, hit-tests and
-//! answers, the editor says what is asked.
+//! The editor's questions: "this file changed on disk", "save changes before
+//! closing?", and why code help is unavailable. The first two are decisions
+//! the user makes — silently choosing for them loses somebody's work. They are
+//! the toolkit's immediate modal sheet ([`ModalSheet`]): it paints, hit-tests
+//! and answers, the editor says what is asked.
 //!
 //! The sheet is painted in the window's top layer ([`Widget::draw_overlay`]),
 //! over the whole window, so its scrim covers the sidebar and the tabs too.
@@ -25,18 +25,63 @@ use super::{CloseChoice, CodeApp, ConflictChoice};
 pub(super) enum Question {
     Conflict,
     ClosePrompt,
+    CodeHelp,
 }
 
 /// What one question says, in the order its answers are indexed: the safe
-/// default, the answer that discards something, Cancel.
-struct Wording {
-    title: String,
-    body: &'static str,
-    actions: [ModalAction<'static>; 3],
+/// default first, the answer that changes nothing last.
+pub(super) struct Wording {
+    pub(super) title: String,
+    pub(super) body: String,
+    pub(super) actions: Vec<Answer>,
+    /// Whether a press beside the sheet or its close button may answer it
+    /// with the last answer: only when nothing is at stake.
+    pub(super) dismissable: bool,
 }
 
-/// The index of Cancel in every question's answers.
-const CANCEL: usize = 2;
+/// One answer of a question, as its button says it.
+pub(super) struct Answer {
+    label: String,
+    weight: Weight,
+}
+
+#[derive(Clone, Copy)]
+enum Weight {
+    Primary,
+    Secondary,
+    Discards,
+}
+
+impl Answer {
+    pub(super) fn primary(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            weight: Weight::Primary,
+        }
+    }
+
+    pub(super) fn secondary(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            weight: Weight::Secondary,
+        }
+    }
+
+    fn discards(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            weight: Weight::Discards,
+        }
+    }
+
+    fn action(&self) -> ModalAction<'_> {
+        match self.weight {
+            Weight::Primary => ModalAction::primary(&self.label),
+            Weight::Secondary => ModalAction::secondary(&self.label),
+            Weight::Discards => ModalAction::alternate_danger(&self.label),
+        }
+    }
+}
 
 impl CodeApp {
     /// The question waiting for an answer, if any.
@@ -45,12 +90,14 @@ impl CodeApp {
             Some(Question::Conflict)
         } else if self.close_prompt.is_some() {
             Some(Question::ClosePrompt)
+        } else if self.code_help_asked() {
+            Some(Question::CodeHelp)
         } else {
             None
         }
     }
 
-    fn wording(&self, question: Question) -> Wording {
+    pub(super) fn wording(&self, question: Question) -> Wording {
         match question {
             Question::Conflict => Wording {
                 title: format!(
@@ -58,12 +105,14 @@ impl CodeApp {
                     self.conflict.as_ref().map_or("", |c| c.name.as_str())
                 ),
                 body: "Something else wrote this file after you opened it. Overwriting \
-                       discards their change; reloading discards yours.",
-                actions: [
-                    ModalAction::primary("Reload"),
-                    ModalAction::alternate_danger("Overwrite"),
-                    ModalAction::secondary("Cancel"),
+                       discards their change; reloading discards yours."
+                    .to_owned(),
+                actions: vec![
+                    Answer::primary("Reload"),
+                    Answer::discards("Overwrite"),
+                    Answer::secondary("Cancel"),
                 ],
+                dismissable: false,
             },
             Question::ClosePrompt => Wording {
                 title: format!(
@@ -71,13 +120,16 @@ impl CodeApp {
                     self.close_prompt.as_ref().map_or("", |p| p.name.as_str())
                 ),
                 body: "This file has unsaved changes. If you don't save them, they will \
-                       be lost.",
-                actions: [
-                    ModalAction::primary("Save"),
-                    ModalAction::alternate_danger("Don't save"),
-                    ModalAction::secondary("Cancel"),
+                       be lost."
+                    .to_owned(),
+                actions: vec![
+                    Answer::primary("Save"),
+                    Answer::discards("Don't save"),
+                    Answer::secondary("Cancel"),
                 ],
+                dismissable: false,
             },
+            Question::CodeHelp => self.code_help_wording(),
         }
     }
 
@@ -95,10 +147,11 @@ impl CodeApp {
             return;
         };
         let wording = self.wording(question);
+        let actions: Vec<ModalAction<'_>> = wording.actions.iter().map(Answer::action).collect();
         let spec = ModalSpec::new(&wording.title)
-            .actions(&wording.actions)
-            .closable(false)
-            .dismiss_on_scrim(false);
+            .actions(&actions)
+            .closable(wording.dismissable)
+            .dismiss_on_scrim(wording.dismissable);
         self.question_sheet.paint_message(
             scene,
             transform,
@@ -106,7 +159,7 @@ impl CodeApp {
             theme,
             window,
             &spec,
-            wording.body,
+            &wording.body,
         );
     }
 
@@ -123,7 +176,10 @@ impl CodeApp {
     ) {
         match self.question_sheet.handle(event, scale_factor) {
             Some(SheetResponse::Action(index)) => self.answer(question, index, doc),
-            Some(SheetResponse::Dismiss) => self.answer(question, CANCEL, doc),
+            Some(SheetResponse::Dismiss) => {
+                let last = self.wording(question).actions.len().saturating_sub(1);
+                self.answer(question, last, doc);
+            }
             None => {}
         }
         *handled = true;
@@ -157,6 +213,7 @@ impl CodeApp {
                     self.resolve_close_prompt(doc, choice);
                 }
             }
+            Question::CodeHelp => self.answer_code_help(index),
         }
     }
 }

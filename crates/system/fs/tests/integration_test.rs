@@ -237,7 +237,6 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
         let other_child = ns
             .create_file(other, "private.md", Some(&hash), body.len() as u64, 1)
             .unwrap();
-        // Same string prefix as "/w/docs", different directory.
         let look_alike = ns.create_dir(w, "docsSECRET", 1).unwrap();
         let look_alike_child = ns
             .create_file(look_alike, "leak.md", Some(&hash), body.len() as u64, 1)
@@ -739,7 +738,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 .await
                 .expect("bind endpoint");
 
-            // Ingest real content into the local store and seed the namespace with it.
             let store = Arc::new(ContentStore::memory());
             let body = b"hello from the collaborative filesystem";
             let hash = store
@@ -954,7 +952,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "unlink of a directory must fail"
             );
 
-            // Empty it, then rmdir succeeds.
             std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
             std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
             assert!(!path.join("dir").exists(), "empty dir removed");
@@ -1658,7 +1655,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             );
         }
 
-        // None of that probing may have touched the namespace.
         let before = f.heads();
         let _ = std::fs::write(p.join("vault/keys.txt"), b"x");
         let _ = std::fs::remove_file(p.join("vault/keys.txt"));
@@ -1993,4 +1989,373 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
         dir,
         namespace,
     }
+}
+
+/// A mount holding an empty `/docs`, with a change signal not yet started.
+struct SignalledMount {
+    session: fuser::BackgroundSession,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
+    dir: tempfile::TempDir,
+    namespace: Arc<Mutex<Namespace>>,
+    signal: Arc<fs::change_signal::ChangeSignal>,
+    availability: Arc<Mutex<fs::AvailabilityRegistry>>,
+    hydrator: Arc<Hydrator>,
+    _registry_dir: tempfile::TempDir,
+}
+
+async fn signalled_mount() -> SignalledMount {
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("signalled").unwrap()));
+    namespace
+        .lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "docs", 1)
+        .unwrap();
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    let signal = Arc::new(fs::change_signal::ChangeSignal::new().unwrap());
+    let registry_dir = tempdir().unwrap();
+    let availability = Arc::new(Mutex::new(
+        fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
+    ));
+    let quick_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics)
+        .with_change_signal(signal.clone())
+        .with_availability(availability.clone());
+    let dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName("quickfs_change_signal".to_string())];
+    let session = fuser::spawn_mount(quick_fs, dir.path(), &config).expect("spawn FUSE session");
+    wait_for_mount(dir.path()).await;
+    SignalledMount {
+        session,
+        endpoint,
+        store,
+        dir,
+        namespace,
+        signal,
+        availability,
+        hydrator,
+        _registry_dir: registry_dir,
+    }
+}
+
+/// Start `signal` on `mount`, as the daemon does once the session runs.
+async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignalTask {
+    let (signal, namespace, availability, path, notifier) = (
+        mount.signal.clone(),
+        mount.namespace.clone(),
+        mount.availability.clone(),
+        mount.dir.path().to_path_buf(),
+        mount.session.notifier(),
+    );
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        signal.start(namespace, Some(availability), &path, notifier, &runtime)
+    })
+    .await
+    .unwrap()
+    .expect("the first signal goes through")
+}
+
+/// Opening and reading a folder is reported too; those are the watcher's
+/// own, not a change.
+fn is_change(event: &notify::Event) -> bool {
+    !matches!(event.kind, notify::EventKind::Access(_))
+}
+
+/// The next event from `events` that reports a change, waiting no longer
+/// than a hang.
+fn next_change(
+    events: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+) -> Result<notify::Result<notify::Event>, std::sync::mpsc::RecvTimeoutError> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match events.recv_timeout(left) {
+            Ok(Ok(event)) if !is_change(&event) => {}
+            other => return other,
+        }
+    }
+}
+
+/// A change the kernel did not make, here a peer's edit merged into the
+/// namespace, still reaches inotify on the directory it changed, and the
+/// mount says it does, so a folder's watcher need not poll for it. Nobody
+/// but the daemon can raise the signal, and an idle mount raises none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_change_reaches_inotify_on_its_directory() {
+    use notify::Watcher as _;
+    use tilo_files::native::CHANGE_SIGNAL_XATTR;
+
+    require_fuse!();
+    let mount = signalled_mount().await;
+    let docs = mount.dir.path().join("docs");
+    let read_signal = |path: &std::path::Path| {
+        let mut value = [0_u8; 8];
+        rustix::fs::getxattr(path, CHANGE_SIGNAL_XATTR, &mut value[..])
+            .map(|len| value[..len].to_vec())
+    };
+    assert_eq!(
+        read_signal(&docs),
+        Err(rustix::io::Errno::NODATA),
+        "no folder claims to signal before a signal went through"
+    );
+
+    let task = start_signal(&mount).await;
+    assert_eq!(
+        read_signal(&docs),
+        Ok(b"1".to_vec()),
+        "the mount says it signals"
+    );
+    assert_eq!(
+        rustix::fs::setxattr(
+            &docs,
+            CHANGE_SIGNAL_XATTR,
+            b"guessed",
+            rustix::fs::XattrFlags::empty()
+        ),
+        Err(rustix::io::Errno::PERM),
+        "nobody else raises the signal"
+    );
+
+    // The watcher lists the folder, then watches it, as Files does.
+    assert!(list(&docs).unwrap().is_empty());
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    let mut peer = Namespace::from_bytes("peer", &mount.namespace.lock().unwrap().save()).unwrap();
+    let peer_docs = peer.resolve_path_ino("/docs").unwrap();
+    peer.create_file(peer_docs, "from-peer.md", None, 0, 2)
+        .unwrap();
+    mount
+        .namespace
+        .lock()
+        .unwrap()
+        .merge_doc(&mut peer)
+        .unwrap();
+
+    let (event, events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event.expect("inotify reports the peer's change").unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the changed folder: {event:?}"
+    );
+    assert_eq!(list(&docs), Ok(vec!["from-peer.md".to_string()]));
+
+    // Reading the folder changes nothing, so nothing is signalled again.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let late: Vec<_> = events
+        .try_iter()
+        .filter(|event| event.as_ref().map_or(true, is_change))
+        .collect();
+    assert!(late.is_empty(), "an idle mount raises no signal: {late:?}");
+
+    drop(watcher);
+    drop(task);
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
+    shutdown_fuse_fixture(session, endpoint, store).await;
+}
+
+/// A file's availability is no change to the namespace, yet Files shows
+/// it: when a read no peer answered marks the file unavailable, its folder's
+/// watcher hears of it like of any change, and reads the file as
+/// unavailable without polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_availability_change_reaches_inotify_on_its_directory() {
+    use fs::availability::{RecordAvailability, RecordKind, TransferError};
+    use notify::Watcher as _;
+
+    require_fuse!();
+    let mount = signalled_mount().await;
+    let docs = mount.dir.path().join("docs");
+    let record = {
+        let mut ns = mount.namespace.lock().unwrap();
+        let docs_ino = ns.resolve_path_ino("/docs").unwrap();
+        let missing = iroh_blobs::Hash::from([9; 32]);
+        let ino = ns
+            .create_file(docs_ino, "report.pdf", Some(&missing), 4, 1)
+            .unwrap();
+        ns.record_id_for(ino).unwrap()
+    };
+    let task = start_signal(&mount).await;
+
+    assert_eq!(list(&docs), Ok(vec!["report.pdf".to_string()]));
+    let report = docs.join("report.pdf");
+    let availability = || {
+        let mut value = vec![0_u8; usize::from(u16::MAX)];
+        let len = rustix::fs::getxattr(&report, fs_protocol::AVAILABILITY_XATTR, &mut value[..])
+            .expect("the mount projects the file's availability");
+        fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
+    };
+    assert!(!availability().unavailable());
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    // What a read that waited its bound for a quiet peer writes.
+    let mut unavailable = RecordAvailability::new(record, RecordKind::File);
+    unavailable.transfer.last_error = Some(TransferError {
+        message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
+        occurred_at_ms: 12,
+    });
+    mount.availability.lock().unwrap().put(unavailable).unwrap();
+
+    let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event
+        .expect("inotify reports the file's changed availability")
+        .unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the file's folder: {event:?}"
+    );
+    assert!(
+        availability().unavailable(),
+        "the folder's watcher reads the file as unavailable"
+    );
+
+    drop(watcher);
+    drop(task);
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
+    shutdown_fuse_fixture(session, endpoint, store).await;
+}
+
+/// A file read whole through the mount is stored here: the read that
+/// brings its last bytes says so on its record, as a pin's download does,
+/// and its folder's watcher hears of it without polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
+    use fs_protocol::Residency;
+    use notify::Watcher as _;
+
+    require_fuse!();
+    let mount = signalled_mount().await;
+    // A device that keeps the file: larger than one read, so several reads
+    // fetch it and only the last one completes it.
+    let data: Vec<u8> = (0..3 * 1024 * 1024_u32)
+        .map(|i| u8::try_from(i.wrapping_mul(2_654_435_761) >> 24).unwrap())
+        .collect();
+    let len = data.len() as u64;
+    let keeper_store = Arc::new(ContentStore::memory());
+    let hash = keeper_store.write_content(&data).await.unwrap().unwrap();
+    let keeper = Endpoint::bind(presets::N0).await.unwrap();
+    let router = iroh::protocol::Router::builder(keeper.clone())
+        .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
+        .spawn();
+    mount.hydrator.add_peer(keeper.addr());
+    let (record, version) = {
+        let mut ns = mount.namespace.lock().unwrap();
+        let docs_ino = ns.resolve_path_ino("/docs").unwrap();
+        let ino = ns
+            .create_file(docs_ino, "film.mkv", Some(&hash), len, 1)
+            .unwrap();
+        let record = ns.record_id_for(ino).unwrap();
+        let revision = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+            record_id: record,
+            version_id: fs_protocol::FileVersionId::new(),
+            content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
+            byte_len: len,
+            metadata_hash: fs_protocol::ContentHash([7; 32]),
+        };
+        assert!(ns.set_content_revision(ino, &revision, 1));
+        drop(ns);
+        (record, revision.version_id)
+    };
+    let task = start_signal(&mount).await;
+
+    let docs = mount.dir.path().join("docs");
+    let film = docs.join("film.mkv");
+    let availability = |path: &std::path::Path| {
+        let mut value = vec![0_u8; usize::from(u16::MAX)];
+        let len = rustix::fs::getxattr(path, fs_protocol::AVAILABILITY_XATTR, &mut value[..])
+            .expect("the mount projects the file's availability");
+        fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
+    };
+    // Files lists the folder it shows, and the mount signals listed folders.
+    assert_eq!(list(&docs), Ok(vec!["film.mkv".to_string()]));
+    assert_eq!(availability(&film).residency, Residency::NotResident);
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    // Read the whole file, as a player or a copy does.
+    let read = {
+        let film = film.clone();
+        tokio::task::spawn_blocking(move || std::fs::read(film))
+            .await
+            .unwrap()
+            .expect("the keeper serves the file")
+    };
+    assert!(read == data, "the file's bytes");
+
+    // Written a moment after the read, with any other file found whole.
+    let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event
+        .expect("inotify reports that the file is stored")
+        .unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the file's folder: {event:?}"
+    );
+    let stored = mount
+        .availability
+        .lock()
+        .unwrap()
+        .get(record)
+        .cloned()
+        .expect("the read that completed the file wrote its record");
+    assert_eq!(stored.residency, Residency::Resident { bytes: len });
+    assert_eq!(stored.current_version, Some(version));
+    assert_eq!(
+        availability(&film).residency,
+        Residency::Resident { bytes: len },
+        "the folder's watcher reads the file as stored"
+    );
+
+    drop(watcher);
+    drop(task);
+    router.shutdown().await.unwrap();
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
+    shutdown_fuse_fixture(session, endpoint, store).await;
 }

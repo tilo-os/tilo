@@ -185,11 +185,6 @@ impl Format {
 /// The test every [`Format`] past its first version carries: the step from
 /// the previous version, applied to a file that version wrote (`previous`),
 /// gives bytes `reads` accepts as the current version.
-///
-/// # Panics
-///
-/// When the format is not whole, has no step from the previous version, or
-/// the step or `reads` refuses.
 #[allow(
     clippy::panic,
     reason = "an assertion other crates' tests call; failing is its whole answer"
@@ -235,7 +230,6 @@ mod tests {
         steps: &[add_tail, add_tail],
     };
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_older_file_comes_up_to_date_and_the_old_one_is_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -253,7 +247,6 @@ mod tests {
             "rollback loses nothing"
         );
 
-        // A current file is read as it is, and nothing is written.
         assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
         assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
     }

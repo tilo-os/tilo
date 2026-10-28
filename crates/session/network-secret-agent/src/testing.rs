@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use zbus::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -23,9 +22,6 @@ use tilo_lock::MutexRecover as _;
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 /// The connection path every stand-in request names.
 pub const WIFI_PATH: &str = "/org/freedesktop/NetworkManager/Settings/7";
-
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-pub const HANG_BOUND: Duration = Duration::from_secs(30);
 
 /// Remembered secrets in memory, and every change made to them.
 #[derive(Default)]
@@ -69,6 +65,26 @@ impl SecretStore for MemoryStore {
         self.entries
             .lock_recover()
             .retain(|(entry, _), _| entry != uuid);
+        Ok(())
+    }
+
+    fn rejected(&self, key: &StoreKey) -> Option<SettingSecrets> {
+        self.get(&key.uuid, &format!("rejected:{}", key.setting))
+    }
+
+    fn reject(&self, key: &StoreKey, secrets: &SettingSecrets) -> Result<(), String> {
+        self.put(
+            &key.uuid,
+            &format!("rejected:{}", key.setting),
+            secrets.clone(),
+        );
+        Ok(())
+    }
+
+    fn clear_rejected(&self, key: &StoreKey) -> Result<(), String> {
+        self.entries
+            .lock_recover()
+            .remove(&(key.uuid.clone(), format!("rejected:{}", key.setting)));
         Ok(())
     }
 }

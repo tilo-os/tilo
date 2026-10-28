@@ -284,8 +284,7 @@ fn import_request(imports: &Imports, account: &str, request: ImportRequest) -> I
     ));
     let (reply, incoming) = mpsc::channel();
     imports.request(account.into(), request, credentials, reply);
-    let CloudResponse::Import(answer) = incoming.recv_timeout(Duration::from_secs(5)).unwrap()
-    else {
+    let CloudResponse::Import(answer) = tilo_test_env::recv("the import reply", &incoming) else {
         panic!("expected import reply")
     };
     answer

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock|auth|quick-settings}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-ready|oobe-finish-focused|oobe-finished|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock|auth|quick-settings}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|copy-image|desktop|established|lock|auth|quick-settings) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-ready|oobe-finish-focused|oobe-finished|post-identity|copy-image|desktop|established|lock|auth|quick-settings) ;;
   oobe-text) (($# > 1)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
@@ -108,8 +108,9 @@ collect_tree() {
     seen[$path]=1
     # A tree can be replaced between GetChildren and Get. Treat that as an
     # in-flight transaction and retry the whole bounded walk; never turn it
-    # into an empty successful tree.
-    name=$(property "$path" Name) || return 1
+    # into an empty successful tree. The provider's refusal of a node that
+    # just went away is that transaction, not an error worth printing.
+    name=$(property "$path" Name 2>/dev/null) || return 1
     node_names["$path"]=$name
     names+="$name"$'\n'
     while IFS= read -r child; do
@@ -323,6 +324,23 @@ wait_for_text() {
   return 1
 }
 
+# The node of the current tree that holds keyboard focus (AT-SPI State 12,
+# see wait_for_focused), if any.
+focused_node() {
+  local path state
+  for path in "${!node_names[@]}"; do
+    state=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.Accessible.GetState 2>/dev/null) || continue
+    if [[ $state =~ uint32[[:space:]]+([0-9]+) ]] && (( (BASH_REMATCH[1] & (1 << 12)) != 0 )); then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
 wait_for_absent() {
   local expected=$1
   for _ in $(seq 1 400); do
@@ -386,6 +404,9 @@ oobe_to_connect_field() {
 # through org.a11y.atspi.Action, then observed back through the live AT-SPI
 # tree. It catches a provider that advertises controls but drops
 # ActionRequest messages before the compositor's widget dispatcher.
+# The backup step's acknowledgement, as the shell says it
+# (onboarding-backup-skip-acknowledgement in crates/session/shell/locales/en-US.ftl).
+skip_backup_acknowledgement="I understand that without a recovery key or backup, losing this device means losing this identity."
 oobe_to_backup() {
   if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
     click_named "Back"
@@ -401,7 +422,7 @@ oobe_to_backup() {
   wait_for_names "Create local identity"
   click_named "Create local identity"
   wait_for_names \
-    "I understand that without an encrypted backup, losing this device means losing this identity." \
+    "$skip_backup_acknowledgement" \
     "Continue without backup"
 }
 
@@ -468,22 +489,23 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       # No backup in a disposable release VM; say so explicitly, as a person
       # skipping it would.
       wait_for_names \
-        "I understand that without an encrypted backup, losing this device means losing this identity." \
+        "$skip_backup_acknowledgement" \
         "Continue without backup"
-      click_named "I understand that without an encrypted backup, losing this device means losing this identity."
+      click_named "$skip_backup_acknowledgement"
       wait_for_names "Continue without backup"
       click_named "Continue without backup"
-      # The media codecs step appears only where the codec pack is offered.
+      # The media codecs step appears only where the codec pack is offered. A new
+      # identity ends on the welcome (a joined device's on "Your identity is ready").
       for _ in $(seq 1 400); do
         collect_tree || { sleep 0.05; continue; }
-        node_named "Your identity is ready" >/dev/null && break
+        node_named "Welcome to Tilo" >/dev/null && break
         if node_named "Not now" >/dev/null; then
           click_named "Not now"
           break
         fi
         sleep 0.05
       done
-      wait_for_names "Your identity is ready"
+      wait_for_names "Welcome to Tilo"
     fi
     ;;
   oobe-nearby)
@@ -498,6 +520,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       fi
       if node_named "Restore from a backup" >/dev/null; then
         click_named "Connect a nearby device"
+        # Pairing starts once the nearby screen is up.
+        wait_for_fragments "waiting for your other device to approve it"
         exit 0
       fi
       if node_named "Use my existing Tilo identity" >/dev/null; then
@@ -553,6 +577,38 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       printf '%s\n' "$names" >&2
       exit 1
     }
+    ;;
+  oobe-ready)
+    # The ready screen takes keyboard focus once it is on screen: before
+    # that, keys still go to the step it replaced.
+    wait_for_names "Continue to desktop"
+    for _ in $(seq 1 400); do
+      collect_tree && node_named "Continue to desktop" >/dev/null && focused_node >/dev/null && break
+      sleep 0.05
+    done
+    focused_node >/dev/null || {
+      echo "AT-SPI $mode tree: nothing on the ready screen holds keyboard focus" >&2
+      printf '%s\n' "$names" >&2
+      exit 1
+    }
+    ;;
+  oobe-finish-focused)
+    # Tab from where the ready screen put focus reaches its primary action.
+    focused_name=""
+    for _ in $(seq 1 400); do
+      if collect_tree && focused=$(focused_node); then
+        focused_name=${node_names[$focused]}
+        [[ $focused_name == *"'Continue to desktop'"* ]] && break
+      fi
+      sleep 0.05
+    done
+    [[ $focused_name == *"'Continue to desktop'"* ]] || {
+      echo "AT-SPI $mode: keyboard focus is on ${focused_name:-nothing}, not 'Continue to desktop'" >&2
+      exit 1
+    }
+    ;;
+  oobe-finished)
+    wait_for_absent "Continue to desktop"
     ;;
   desktop)
     wait_for_names "Tilo workspace"

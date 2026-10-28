@@ -1,0 +1,23 @@
+# NetworkManager keeps its global DNS across a reboot, while the tunnel it
+# pointed at is gone with everything else the helper set up. Put it back
+# before anyone needs a name.
+[Unit]
+Description=Undo the device VPN's DNS left from before this boot
+ConditionPathExists=/var/lib/tilo/device-vpn/global-dns
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-device-vpn reset
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+ProtectSystem=strict
+ReadWritePaths=/run/tilo-device-vpn /var/lib/tilo/device-vpn
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

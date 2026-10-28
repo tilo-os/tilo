@@ -171,10 +171,6 @@ fn holds_a_font(dir: &Path, depth: usize) -> bool {
 
 /// Fails when this machine has no font at all, as a bare container has none:
 /// every test that lays out text would stop in the text shaper instead.
-///
-/// # Errors
-///
-/// Returns an error naming a font package to install.
 pub fn require_fonts() -> Result<()> {
     if font_dirs().iter().any(|dir| holds_a_font(dir, 4)) {
         return Ok(());

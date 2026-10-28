@@ -224,7 +224,6 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                     chat: None,
                     reaction: None,
                 },
-                // Above the top edge.
                 PeerCursor {
                     pos: (300.0, -300.0),
                     label: "Bob".into(),
@@ -268,7 +267,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
         }
     }
 
-    // Case `capture_studio_renders_selector_and_docked_recording_pill`.
+    // Case `capture_studio_renders_selector_and_recording_bar`.
     {
         let theme = Theme::dark().with_reduce_motion(true);
 
@@ -282,9 +281,9 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
         );
         harness_evidence(&harness, "capture-studio-selector", (1400, 900));
 
-        // The docked recording pill is painted by the shell on top of the
-        // frame, not by the widget's own `draw`; paint it the way the shell
-        // does, at 1× and at 2× type.
+        // The recording bar is painted by the shell on top of the frame,
+        // not by the widget's own `draw`; paint it the way the shell does,
+        // at 1× and at 2× type.
         for scale in [1.0_f32, 2.0] {
             let mut s = CaptureStudio::default();
             let mut taffy = taffy::TaffyTree::new();
@@ -303,15 +302,14 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
             s.open();
             s.set_mode(CaptureMode::Recording);
             s.set_recording_active(true);
-            s.set_recording_transition_progress(1000);
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
             let mut scene = Scene::new();
-            s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            s.draw_status(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             let rgba = OffscreenRenderer::new(1400, 200)
                 .render_resilient(&scene, theme.tokens.colors.surfaces.content);
             evidence(
-                &format!("capture-studio-recording-pill-{scale}x"),
+                &format!("capture-studio-recording-bar-{scale}x"),
                 1400,
                 200,
                 &rgba,

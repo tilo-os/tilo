@@ -112,7 +112,6 @@ impl PlaneCaps {
                 .is_some_and(|(min, _)| min < primary)
     }
 
-    /// Whether the plane can be put above `primary`.
     #[cfg(unix)]
     fn can_go_above(&self, primary: u64) -> bool {
         self.zpos_value() > primary
@@ -361,7 +360,6 @@ pub fn clip(
     if cx1 <= cx0 || cy1 <= cy0 {
         return None;
     }
-    // Map a clipped destination edge back into picture pixels.
     let map = |edge: i64, origin: i64, extent: u32, size: u32| -> i64 {
         let offset = edge.saturating_sub(origin);
         offset
@@ -542,7 +540,6 @@ mod tests {
         assert!(!p.colour_exact);
         assert_eq!(p.color_encoding, None);
 
-        // An unstated modifier is linear.
         let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_INVALID);
         let req = VideoSurfaceRequest {
             frame: &frame,
@@ -601,7 +598,6 @@ mod tests {
             place(&windowed, (1920, 1080), primary, &planes, &[]),
             Placement::Composite(CompositeReason::NeedsUnderlay)
         );
-        // With a settable zpos the same request goes underneath.
         let mut movable = planes.clone();
         movable[0].zpos = Some(Zpos {
             value: 3,
@@ -695,7 +691,6 @@ mod tests {
         assert_eq!(src[0] % 2, 0, "even x for subsampled chroma");
         assert_eq!(src[0], 2);
 
-        // Entirely off screen.
         assert!(
             clip(
                 (1920, 1080),

@@ -140,7 +140,7 @@ impl Registry {
     }
 
     fn run(&self, args: &[&str]) -> String {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(args)

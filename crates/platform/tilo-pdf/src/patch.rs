@@ -26,7 +26,6 @@ use crate::model::ReplyType;
 pub(crate) struct AnnotPatch {
     /// Its index in [`crate::edits::Edits::annotations`].
     pub key: usize,
-    /// Output page it is on.
     pub page: usize,
     /// Its position among the annotations created on that page.
     pub ordinal: usize,
@@ -250,7 +249,6 @@ fn append_update(
     result
 }
 
-/// The offset in the last `startxref`.
 fn last_startxref(bytes: &[u8]) -> Option<usize> {
     let tail_from = bytes.len().saturating_sub(2048);
     let tail = bytes.get(tail_from..)?;
@@ -457,7 +455,6 @@ mod tests {
 
     #[test]
     fn incremental_updates_rewrite_entries_after_the_last_startxref() {
-        // Phase `rewrites_keep_entries_drop_replaced_keys_and_append`.
         {
             let dict =
                 b"<</Type/Annot/Subtype/Text/Rect[1 2 3 4]/AP 9 0 R/T(Ada \\(A\\))/C[1 0 0]/P 5 0 R>>";
@@ -473,7 +470,6 @@ mod tests {
                 .unwrap();
             assert_eq!(author.as_bytes(), b"Ada (A)");
         }
-        // Phase `finds_the_last_startxref`.
         {
             let bytes = b"%PDF-1.7\nstartxref\n5\n%%EOF\nmore\nstartxref\n12\n%%EOF\n";
             assert_eq!(last_startxref(bytes), Some(12));

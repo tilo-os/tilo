@@ -73,9 +73,9 @@ impl MediaLane {
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
-            if binding.app_id != "so.tilo.chat" {
-                return None;
-            }
+            // Every app may ask the room's host to run an action; only
+            // Chat holds a call, so only it reaches the media lane.
+            let media = binding.app_id == "so.tilo.chat";
             let route = binding.broker_route()?;
             for request in crate::widget::take_collab_requests(widget) {
                 took = true;
@@ -96,8 +96,9 @@ impl MediaLane {
                         command.command,
                         crate::native_media::Command::Leave
                             | crate::native_media::Command::SetMuted { muted: true }
+                            | crate::native_media::Command::SetDeafened { deafened: true }
                     );
-                    if (!stop && self.pending.len() >= 16) || !command.valid() {
+                    if !media || (!stop && self.pending.len() >= 16) || !command.valid() {
                         crate::widget::handle_collab_event(
                             widget,
                             &CollabEvent::NativeMediaCommandResult {
@@ -173,9 +174,26 @@ impl MediaLane {
     }
 }
 
-/// The provider of a room's own governance resource
-/// (`workspace.permissions:<room>`).
-const GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+/// Whether the room's host runs `provider`'s actions: a room record's
+/// (`record:<app>:<record>`), the room's own (`workspace:<room>`) and its
+/// governance resource's (`workspace.permissions:<room>`).
+fn host_runs(provider: &str) -> bool {
+    provider.starts_with("record:")
+        || tilo_actions::remote::workspace_provider_room(provider).is_some()
+        || provider == tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER
+}
+
+/// Why the lane refuses an invocation of `provider` with `queued` already
+/// waiting for the host, if it does.
+fn refusal(provider: &str, queued: usize) -> Option<&'static str> {
+    if !host_runs(provider) {
+        Some("Only the room's host runs another app's actions here")
+    } else if queued >= 16 {
+        Some("The room's host is busy; try again")
+    } else {
+        None
+    }
+}
 
 fn queue_catalogue(
     catalogues: &mut Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
@@ -183,18 +201,29 @@ fn queue_catalogue(
     widget: &mut dyn crate::widget::AppWidget,
     message: tilo_actions::remote::RemoteActionMessage,
 ) {
-    use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
-    // The room's membership actions (removing, banning, unbanning someone)
-    // travel this lane too: the host turns them into its governed room
-    // requests and the room's policy decides them there. So does a record
-    // resource's `share-link`, which reads where it is shown and grants
-    // nothing: the page asks the room's host for it as the person.
-    if let RemoteActionMessage::Invoke(request) = &message
-        && (request.target.provider == GOVERNANCE_PROVIDER
-            || (request.target.address.action == tilo_resource::share::SHARE_LINK
-                && request.target.provider.starts_with("record:")))
-    {
-        if catalogues.len() < 16 {
+    use tilo_actions::remote::{
+        ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
+    };
+    // An action the room's host runs travels this lane to it, and the host
+    // admits it by the person's own standing in the room: a page cannot
+    // grant itself anything. The room's membership actions become the
+    // host's governed room requests, decided by the room's policy there.
+    if let RemoteActionMessage::Invoke(request) = &message {
+        if let Some(reason) = refusal(&request.target.provider, catalogues.len()) {
+            crate::widget::handle_collab_event(
+                widget,
+                &CollabEvent::RemoteAction {
+                    message: RemoteActionMessage::Receipt(InvocationReceipt {
+                        invocation: request.invocation,
+                        status: ReceiptStatus::Rejected {
+                            error: ActionHostError::Unavailable {
+                                reason: reason.into(),
+                            },
+                        },
+                    }),
+                },
+            );
+        } else {
             catalogues.push((binding.clone(), message));
         }
         return;
@@ -216,5 +245,33 @@ fn queue_catalogue(
                 },
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refusal;
+
+    #[test]
+    fn only_actions_the_rooms_host_runs_travel_to_it() {
+        for provider in [
+            "record:so.tilo.notes:n1",
+            "record:so.tilo.notes:",
+            "workspace:r",
+            "tilo.workspace",
+        ] {
+            assert_eq!(refusal(provider, 0), None, "{provider}");
+        }
+        assert_eq!(
+            refusal("record:so.tilo.notes:n1", 16),
+            Some("The room's host is busy; try again")
+        );
+        for provider in ["so.tilo.chat", "tilo.own-device", "workspaces", ""] {
+            assert_eq!(
+                refusal(provider, 0),
+                Some("Only the room's host runs another app's actions here"),
+                "{provider}"
+            );
+        }
     }
 }

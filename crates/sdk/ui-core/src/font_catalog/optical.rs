@@ -28,17 +28,13 @@ pub(crate) struct Optical {
     pub(crate) ground: TextGround,
 }
 
-/// One cut of an optical family.
 struct Cut {
-    /// The family the catalog sets the cut under.
     family: &'static str,
     /// The smallest size, in logical pixels, the cut sets on a light ground.
     from_px: f32,
-    /// The same on a dark ground.
     dark_from_px: f32,
     /// Whether the cut has italics; text it lacks takes the next smaller cut.
     italic: bool,
-    /// Whether the cut has bold weights.
     bold: bool,
 }
 

@@ -3,9 +3,9 @@
 //! A host may offer many actions, some behind applications that publish a
 //! live, revision-bound directory rather than a flat list. A caller never
 //! pulls the whole corpus: it asks for one bounded [`CataloguePage`] at a
-//! time — everything, one provider, the children of one resource, rows
-//! matching a needle, or exactly one target re-materialized at the revision
-//! it was chosen from — and follows the opaque `next_cursor`.
+//! time — everything, one provider, one application's rows, the children of
+//! one resource, rows matching a needle, or exactly one target re-materialized
+//! at the revision it was chosen from — and follows the opaque `next_cursor`.
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,11 @@ pub struct CatalogueQuery {
     /// Only rows from this provider (a token a previous page issued).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Only rows published by this application. It narrows the rows a host
+    /// builds and pages — before the page bound — while the providers the
+    /// caller may browse are listed either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
     /// Read-only view discovery, separate from the document action catalogue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_resource: Option<ViewResourceQuery>,
@@ -85,9 +90,12 @@ pub struct CatalogueQuery {
     /// (case-insensitive).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub needle: String,
-    /// Only top-level resources this names: their kind, or their label
-    /// ignoring ASCII case. A host answers it whole, wherever the resource
-    /// would fall in a paged listing; it takes no cursor, needle or parent.
+    /// Only resources this names: their kind, or their label ignoring ASCII
+    /// case, at the top level or, with [`Self::parent_resource`], among that
+    /// resource's direct children. A host answers it whole, wherever the
+    /// resource would fall in a paged listing; it takes no cursor or needle.
+    /// A host from before parents were named answers with top-level rows,
+    /// whose parent says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_name: Option<String>,
     /// Only this exact action, re-resolved against the provider now: the
@@ -115,6 +123,7 @@ impl Default for CatalogueQuery {
         Self {
             canonical_route: None,
             provider: None,
+            app_id: None,
             view_resource: None,
             parent_resource: None,
             needle: String::new(),
@@ -247,6 +256,7 @@ impl CatalogueRow {
         ];
         if let Some(action) = &self.action {
             fields.extend([action.action_label.as_str(), action.address.action.as_str()]);
+            fields.extend(action.keywords.iter().map(String::as_str));
             for param in &action.params {
                 fields.extend([param.name.as_ref(), param.description.as_ref()]);
             }
@@ -283,7 +293,6 @@ pub struct CatalogueProvider {
     pub browsable: bool,
 }
 
-/// One page of catalogue rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.
@@ -310,8 +319,10 @@ pub struct CataloguePage {
 }
 
 impl CataloguePage {
-    /// Filter and page rows a host holds in memory: parent, needle, exact
-    /// target and the offset cursor, all against `revision`.
+    /// Filter and page rows a host holds in memory: the publishing
+    /// application, parent, needle, exact target and the offset cursor, all
+    /// against `revision`. Every filter narrows before the page bound, so a
+    /// wanted row is never left out because another row came first.
     #[must_use]
     pub fn from_rows(revision: String, rows: Vec<CatalogueRow>, query: &CatalogueQuery) -> Self {
         if !query.cursor.is_empty() && query.revision.as_deref() != Some(revision.as_str()) {
@@ -324,6 +335,7 @@ impl CataloguePage {
         let parent = query.parent_resource.as_deref().unwrap_or("");
         let mut matching = rows.into_iter().filter(|row| {
             row.parent_resource == parent
+                && query.app_id.as_deref().is_none_or(|app| row.app_id == app)
                 && query.view_resource.as_ref().is_none_or(|wanted| {
                     row.resource.id == wanted.id
                         && row.resource.kind == wanted.kind
@@ -396,6 +408,8 @@ mod tests {
                 resource_kind: "notes.note".into(),
                 resource_label: resource.into(),
                 action_label: action.into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: OperationKind::Document,
@@ -501,6 +515,67 @@ mod tests {
         assert_eq!(
             exact.rows[0].target().map(|target| target.address),
             Some(ActionAddress::new("note:2", "archive"))
+        );
+    }
+
+    /// The row `resource` of application `app`, with a `run` action.
+    fn app_row(app: &str, resource: &str) -> CatalogueRow {
+        let mut row = row(resource, Some("run"), "");
+        row.app_id = app.into();
+        row
+    }
+
+    #[test]
+    fn an_app_filter_narrows_before_the_page_bound() {
+        let wanted = app_row("so.tilo.shortcuts", "shortcuts.shortcut:tidy");
+        let rows = (0..MAX_CATALOGUE_PAGE)
+            .map(|index| app_row("so.tilo.notes", &format!("note:{index}")))
+            .chain([wanted.clone()])
+            .collect::<Vec<_>>();
+        let query = |app_id: Option<&str>| CatalogueQuery {
+            app_id: app_id.map(str::to_owned),
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        };
+        let scoped =
+            CataloguePage::from_rows("r1".into(), rows.clone(), &query(Some("so.tilo.shortcuts")));
+        assert_eq!(scoped.rows, [wanted], "the one row of the app asked for");
+        assert!(scoped.exhausted && scoped.next_cursor.is_empty());
+
+        let unfiltered = CataloguePage::from_rows("r1".into(), rows, &query(None));
+        assert_eq!(
+            unfiltered.rows.len(),
+            usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
+        );
+        assert!(
+            unfiltered
+                .rows
+                .iter()
+                .all(|row| row.app_id == "so.tilo.notes"),
+            "the wanted row sits past the first page when nothing narrows it"
+        );
+        assert!(!unfiltered.exhausted);
+    }
+
+    #[test]
+    fn an_app_filter_is_optional_on_the_wire() {
+        let legacy: CatalogueQuery =
+            serde_json::from_value(serde_json::json!({ "max_results": 4 })).unwrap();
+        assert_eq!(legacy.app_id, None);
+        let scoped = CatalogueQuery {
+            app_id: Some("so.tilo.shortcuts".into()),
+            ..CatalogueQuery::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&scoped).unwrap()["app_id"],
+            "so.tilo.shortcuts"
+        );
+        assert!(
+            serde_json::to_value(CatalogueQuery::default())
+                .unwrap()
+                .get("app_id")
+                .is_none(),
+            "a query with no app filter says nothing about one"
         );
     }
 

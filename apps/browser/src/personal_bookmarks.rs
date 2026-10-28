@@ -400,8 +400,13 @@ fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError
         } else if let Some(source) = key.strip_prefix(legacy::TREE) {
             let text = scalar(doc, &ROOT, &key)
                 .ok_or_else(|| ModelError::invalid("an imported tree is no text").at(&key))?;
+            // Read the way the record reads a kept tree (`json_model!`): as
+            // JSON first, then the tree, so the app compiles one reader of it.
             let tree: ImportedTree = serde_json::from_str(&text)
-                .map_err(|error| ModelError::invalid(error.to_string()).at(&key))?;
+                .and_then(serde_json::from_value)
+                .map_err(|error: serde_json::Error| {
+                    ModelError::invalid(error.to_string()).at(&key)
+                })?;
             trees.insert(source, tree);
         } else if let Some(node) = key.strip_prefix(legacy::REMOVED_NODE) {
             hidden.insert(node.to_owned());
@@ -431,14 +436,17 @@ pub fn node_id(source: &[u8; 32], id: &str) -> String {
         blake3::hash(id.as_bytes()).to_hex()
     )
 }
-pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> tilo_actions::Resource {
+pub(crate) fn node_resource(
+    tree: &ImportedTree,
+    node: &ImportedNode,
+) -> ui::tilo_actions::Resource {
     let kind = match node.kind {
         NodeKind::Folder => "browser.personal-bookmark-folder",
         NodeKind::Bookmark { .. } => "browser.personal-bookmark-placement",
         NodeKind::Separator => "browser.personal-bookmark-separator",
     };
     let mut resource =
-        tilo_actions::Resource::new(node_id(&tree.source, &node.id), kind, &node.title);
+        ui::tilo_actions::Resource::new(node_id(&tree.source, &node.id), kind, &node.title);
     resource = resource.with_action(
         crate::effects::BrowserEffect::RemovePersonalImportedNode {
             source: blake3::Hash::from(tree.source).to_hex().to_string(),
@@ -465,8 +473,10 @@ pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> tilo_ac
     }
     resource
 }
-pub(crate) fn flat_resource(entry: &crate::continuity_library::Bookmark) -> tilo_actions::Resource {
-    tilo_actions::Resource::new(
+pub(crate) fn flat_resource(
+    entry: &crate::continuity_library::Bookmark,
+) -> ui::tilo_actions::Resource {
+    ui::tilo_actions::Resource::new(
         flat_id(&entry.url),
         "browser.personal-bookmark",
         &entry.title,
@@ -519,7 +529,10 @@ pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::Se
     }
     entries
 }
-pub(crate) fn resolve(state: &PersonalBookmarkState, id: &str) -> Option<tilo_actions::Resource> {
+pub(crate) fn resolve(
+    state: &PersonalBookmarkState,
+    id: &str,
+) -> Option<ui::tilo_actions::Resource> {
     for entry in state.bookmarks.entries() {
         if flat_id(&entry.url) == id {
             return Some(flat_resource(entry));

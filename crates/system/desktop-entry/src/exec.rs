@@ -88,11 +88,9 @@ pub struct ExpandContext<'a> {
     pub files: &'a [String],
     /// URLs the app is being asked to open. Feeds `%u`/`%U`; falls back to `files` when empty.
     pub urls: &'a [String],
-    /// The entry's `Icon=`, for `%i`.
     pub icon: Option<&'a str>,
     /// The entry's locale-resolved `Name=`, for `%c`.
     pub name: Option<&'a str>,
-    /// The entry's own path, for `%k`.
     pub path: Option<&'a Path>,
 }
 
@@ -220,13 +218,11 @@ mod tests {
 
     #[test]
     fn exec_lines_split_on_quotes_without_a_shell() {
-        // Phase `quoting_groups_without_invoking_a_shell`.
         {
             assert_eq!(
                 split(r#"/usr/bin/foo "a b" c"#),
                 vec!["/usr/bin/foo", "a b", "c"]
             );
-            // Escapes valid inside quotes.
             assert_eq!(split(r#"foo "a\"b""#), vec!["foo", r#"a"b"#]);
             assert_eq!(split(r#"foo "a\\b""#), vec!["foo", r"a\b"]);
             // Shell metacharacters are ordinary text, not operators.
@@ -236,17 +232,14 @@ mod tests {
                 "Exec is not shell syntax and must never be treated as such"
             );
         }
-        // Phase `an_unterminated_quote_is_an_error_not_a_guess`.
         {
             assert_eq!(split_exec(r#"foo "bar"#), Err(ExecError::UnterminatedQuote));
             assert_eq!(split_exec("   "), Err(ExecError::Empty));
         }
-        // Phase `percent_percent_is_a_literal_percent`.
         {
             let ctx = ExpandContext::default();
             assert_eq!(expand(&split("app 100%%"), &ctx), vec!["app", "100%"]);
         }
-        // Phase `deprecated_codes_are_removed`.
         {
             let ctx = ExpandContext::default();
             assert_eq!(expand(&split("app %d %D %n %N %v %m"), &ctx), vec!["app"]);
@@ -255,7 +248,6 @@ mod tests {
 
     #[test]
     fn field_codes_expand_documents_icons_names_and_paths() {
-        // Phase `file_codes_expand_to_the_documents_being_opened`.
         {
             let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
             let ctx = ExpandContext {
@@ -289,7 +281,6 @@ mod tests {
             // A genuinely empty quoted argument is not a field code and survives.
             assert_eq!(expand(&split(r#"app "" x"#), &ctx), vec!["app", "", "x"]);
         }
-        // Phase `codes_expand_inside_a_larger_argument`.
         {
             let files = vec!["/tmp/a.txt".to_string()];
             let ctx = ExpandContext {
@@ -301,7 +292,6 @@ mod tests {
                 vec!["app", "--file=/tmp/a.txt"]
             );
         }
-        // Phase `icon_and_name_and_path_codes`.
         {
             let path = Path::new("/usr/share/applications/x.desktop");
             let ctx = ExpandContext {
@@ -324,7 +314,6 @@ mod tests {
             let no_icon = ExpandContext::default();
             assert_eq!(expand(&split("app %i"), &no_icon), vec!["app"]);
         }
-        // Phase `url_encoding_covers_spaces_and_reserved_bytes`.
         {
             assert_eq!(path_to_url("/tmp/a b.txt"), "file:///tmp/a%20b.txt");
             assert_eq!(path_to_url("/tmp/a#b"), "file:///tmp/a%23b");
@@ -338,8 +327,6 @@ mod tests {
 
     #[test]
     fn flatpak_exports_expand_to_runnable_argv_with_document_markers() {
-        // Phase `a_flatpak_export_expands_to_a_runnable_argv`.
-        // The exact `Exec=` of the Spotify Flatpak on a real Fedora host.
         {
             let raw = "/usr/bin/flatpak run --branch=stable --arch=x86_64 \
                        --command=spotify --file-forwarding com.spotify.Client @@u %U @@";
@@ -359,7 +346,6 @@ mod tests {
                  nothing and are dropped"
             );
         }
-        // Phase `a_flatpak_export_keeps_the_markers_when_there_is_a_document`.
         {
             let raw = "/usr/bin/flatpak run --file-forwarding com.spotify.Client @@u %U @@";
             let files = vec!["/tmp/a.txt".to_string()];

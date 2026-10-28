@@ -30,6 +30,7 @@ pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
 /// the catalogue: it parses the XKB rules file and checks each layout's
 /// symbols, so it is never repeated for the error alone.
 pub(crate) fn read_installed() -> (Vec<CatalogEntry>, Option<String>) {
+    crate::device_read::off_ui_thread();
     let (mut entries, error) = match read_installed_layouts() {
         Ok(entries) => (entries, None),
         Err(error) => {

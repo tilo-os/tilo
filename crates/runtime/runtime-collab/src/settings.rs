@@ -58,10 +58,6 @@ impl From<app_settings::Client> for AppSettingsHandle {
 
 impl AppSettingsHandle {
     /// The view once its revision differs from `after`; at once for 0.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the broker refuses or disconnects.
     pub async fn read(&self, after: u64) -> Result<SettingsView, NotAvailable> {
         let mut request = self.inner.read_request();
         request.get().set_after(after);
@@ -108,17 +104,13 @@ impl AppSettingsHandle {
     }
 
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
-    /// `section`, answering the view after the write.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the write is too large, the broker
-    /// refuses it (another app's entry, a section the app may only read) or
-    /// the broker disconnects.
+    /// `section`, answering the view after the write. `action` names the
+    /// action that made the change, for the session's history.
     pub async fn update(
         &self,
         section: &str,
         values_json: &[u8],
+        action: Option<&str>,
     ) -> Result<SettingsView, NotAvailable> {
         if values_json.len() > MAX_SETTINGS_WIRE_BYTES {
             return Err(NotAvailable::Capnp(capnp::Error::failed(
@@ -128,6 +120,7 @@ impl AppSettingsHandle {
         let mut request = self.inner.update_request();
         request.get().set_section(section);
         request.get().set_values_json(values_json);
+        request.get().set_action(action.unwrap_or_default());
         let reply = request.send().promise.await?;
         let reply = reply.get()?;
         SettingsView::from_reply(reply.get_revision(), reply.get_document_json()?)
@@ -144,7 +137,7 @@ pub mod host {
     use capnp::capability::Promise;
     use serde_json::{Map, Value};
     use settings_store::SettingsSource;
-    use settings_store::app_scope::{app_view, update_for_app};
+    use settings_store::app_scope::{Reach, update_at, view_at};
 
     use super::MAX_SETTINGS_WIRE_BYTES;
     use crate::collab_capnp::app_settings;
@@ -161,6 +154,8 @@ pub mod host {
     /// One app's `AppSettings` capability over `source`.
     pub struct AppSettingsServer {
         app_id: String,
+        /// What the app reaches of the document.
+        reach: Reach,
         display: Option<DisplayControl>,
         dictionary_owner: Option<[u8; 32]>,
         source: Arc<dyn SettingsSource>,
@@ -187,6 +182,7 @@ pub mod host {
             source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
+                reach: Reach::App,
                 display: None,
                 dictionary_owner: None,
                 source,
@@ -195,6 +191,14 @@ pub mod host {
                 changed,
                 _listener: listener,
             }
+        }
+
+        /// Let the app reach `reach` of the document: [`Reach::System`] for
+        /// the device's settings app the host granted it to.
+        #[must_use]
+        pub fn with_reach(mut self, reach: Reach) -> Self {
+            self.reach = reach;
+            self
         }
 
         /// Attach the broker's independent display authority, without extending
@@ -216,7 +220,7 @@ pub mod host {
         /// The current view, with a revision that changes exactly when the
         /// view does.
         fn current(&self) -> (u64, Map<String, Value>) {
-            let mut view = app_view(&self.source.load(), &self.app_id);
+            let mut view = view_at(&self.source.load(), &self.app_id, self.reach);
             settings_store::personal_dictionary::host::project(
                 self.source.as_ref(),
                 &self.app_id,
@@ -351,6 +355,15 @@ pub mod host {
                         "a settings write is a JSON object".into(),
                     ));
                 };
+                // The action the app says made the change, for the history;
+                // who invoked it is not the app's to say.
+                let origin = settings_store::ChangeOrigin {
+                    action: Some(params.get_action()?.to_str()?)
+                        .filter(|action| !action.is_empty())
+                        .map(str::to_owned),
+                    principal: None,
+                    invoked_by: None,
+                };
                 if !settings_store::personal_dictionary::host::command(
                     self.source.as_ref(),
                     &self.app_id,
@@ -360,8 +373,15 @@ pub mod host {
                 )
                 .map_err(|e| capnp::Error::failed(e.to_string()))?
                 {
-                    update_for_app(self.source.as_ref(), &self.app_id, section, values)
-                        .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                    update_at(
+                        self.source.as_ref(),
+                        &self.app_id,
+                        self.reach,
+                        section,
+                        values,
+                        &origin,
+                    )
+                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
                 }
                 let (revision, view) = self.current();
                 let mut reply = results.get();

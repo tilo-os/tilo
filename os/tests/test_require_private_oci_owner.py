@@ -8,24 +8,12 @@ from unittest.mock import call, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev" / "require-private-oci-owner.py"
-WORKFLOW = Path(__file__).resolve().parents[2] / ".forgejo" / "workflows" / "build-image.yml"
 spec = importlib.util.spec_from_file_location("require_private_oci_owner", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
 class OwnerVisibilityTests(unittest.TestCase):
-    def test_workflow_checks_before_firmware_import_and_candidate_promotion(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        import_step = workflow.index("- name: Import independently pinned Lenovo firmware data")
-        candidate_push = workflow.index('podman push --digestfile "$digest_file" "$candidate"')
-        promote_step = workflow.index("  promote-board:")
-        immutable_copy = workflow.index('skopeo copy --preserve-digests "docker://$image" "docker://$target"')
-        guard = "python3 os/dev/require-private-oci-owner.py"
-        self.assertIn(guard, workflow[import_step:candidate_push])
-        self.assertIn(guard, workflow[workflow.index("if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then", import_step):candidate_push])
-        self.assertIn(guard, workflow[promote_step:immutable_copy])
-
     def test_only_exact_private_tilo_owner_passes(self):
         self.assertTrue(module.owner_is_private({"username": "tilo", "visibility": "private"}))
         for owner in (

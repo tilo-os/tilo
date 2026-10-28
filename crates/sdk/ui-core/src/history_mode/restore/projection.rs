@@ -2,6 +2,7 @@
 use super::{RestoreError, RestoreValueType, ScalarType};
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value, marks::Mark};
 use std::collections::BTreeMap;
+use tilo_sort::CompactSort as _;
 
 pub(super) type NodeId = usize;
 pub(super) type Alternatives = Vec<NodeId>;
@@ -478,6 +479,6 @@ fn marks(doc: &AutoCommit, id: &ObjId, path: &str) -> Result<Vec<SemanticMark>, 
             value: ExactScalar(mark.value().clone()),
         })
         .collect();
-    marks.sort_by(|a, b| (&a.name, a.start, a.end).cmp(&(&b.name, b.start, b.end)));
+    marks.compact_sort_by(|a, b| (&a.name, a.start, a.end).cmp(&(&b.name, b.start, b.end)));
     Ok(marks)
 }

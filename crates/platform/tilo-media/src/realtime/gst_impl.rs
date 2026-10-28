@@ -61,7 +61,6 @@ const DECODE_WAIT: Duration = Duration::from_millis(150);
 /// starts.
 type SharedWake = Arc<Mutex<Option<PictureWake>>>;
 
-/// Run the wake in `slot`, if one is set.
 fn ring(slot: Option<&SharedWake>) {
     let wake = slot.and_then(|slot| slot.lock().ok().and_then(|wake| wake.clone()));
     if let Some(wake) = wake {
@@ -1318,6 +1317,10 @@ pub struct RealtimeDecoder {
     picture_wake: SharedWake,
     tried: Vec<String>,
     pts: Duration,
+    /// The longest a call has waited for a picture: what a decoder that
+    /// must not wait is held to.
+    #[cfg(test)]
+    longest_wait: Duration,
 }
 
 impl std::fmt::Debug for RealtimeDecoder {
@@ -1391,6 +1394,8 @@ impl RealtimeDecoder {
             picture_wake: Arc::new(Mutex::new(None)),
             tried: Vec::new(),
             pts: Duration::ZERO,
+            #[cfg(test)]
+            longest_wait: Duration::ZERO,
         })
     }
 
@@ -1887,7 +1892,6 @@ impl RealtimeDecoder {
         self.units_in_flight = self.units_in_flight.saturating_sub(pictures);
     }
 
-    /// `unit` as the next buffer of the stream.
     fn next_buffer(&mut self, unit: &[u8], keyframe: bool) -> gst::Buffer {
         // A monotonically increasing timestamp keeps every element's
         // bookkeeping happy; the caller's own timing travels separately.
@@ -1919,6 +1923,10 @@ impl RealtimeDecoder {
         // Anything that arrived late from the previous unit first.
         let mut late = running.drain()?;
         running.push(buffer)?;
+        #[cfg(test)]
+        {
+            self.longest_wait = self.longest_wait.max(timeout);
+        }
         let waited = running.next_sample(timeout)?;
         self.startup_waited = true;
         if self.never_waits() && !self.first_output_seen && self.startup_began.is_none() {
@@ -2146,23 +2154,18 @@ mod late_picture_tests {
         );
 
         decoder.set_picture_wait(Duration::ZERO);
-        let mut slowest = Duration::ZERO;
+        decoder.longest_wait = Duration::ZERO;
         for (n, unit) in (2_u8..).zip(rest) {
-            let started = Instant::now();
             let picture = decoder
                 .decode(&unit.data, Some(unit.keyframe))
                 .expect("a slow decoder is not a failed one");
-            slowest = slowest.max(started.elapsed());
             assert!(picture.is_none(), "unit {n}: nothing leaves a held decoder");
             assert!(decoder.picture_pending(), "unit {n} is still decoding");
         }
-        eprintln!(
-            "decode call with a held picture: {waited:?} with the default wait, \
-             slowest {slowest:?} without one"
-        );
-        assert!(
-            slowest < DECODE_WAIT,
-            "a decoder without a wait never waits for a picture: {slowest:?}"
+        assert_eq!(
+            decoder.longest_wait,
+            Duration::ZERO,
+            "a decoder without a wait never waits for a picture"
         );
 
         let woken = wakes.load(Ordering::SeqCst);
@@ -2271,30 +2274,23 @@ mod late_picture_tests {
         let (src, hold) = hold_output(&decoder);
 
         let (keyframe, _) = units.split_first().expect("a keyframe");
-        let started = Instant::now();
         let picture = decoder
             .decode(&keyframe.data, Some(true))
             .expect("a slow element is not a failed one");
-        let first = started.elapsed();
         assert!(picture.is_none(), "nothing leaves a held decoder");
         assert!(decoder.picture_pending(), "the keyframe is still decoding");
-        let mut slowest = first;
         for (n, unit) in (1_u8..).zip(units.iter().skip(1)) {
-            let started = Instant::now();
             let picture = decoder
                 .decode(&unit.data, Some(unit.keyframe))
                 .expect("a slow element is not a failed one");
-            slowest = slowest.max(started.elapsed());
             assert!(picture.is_none(), "unit {n}: nothing leaves a held decoder");
             assert!(decoder.picture_pending(), "unit {n} is still decoding");
         }
-        eprintln!(
-            "decoder without a wait: built in {construction:?}; first keyframe's decode \
-             call with start-up held {first:?}, slowest of all {slowest:?}"
-        );
-        assert!(
-            slowest < DECODE_WAIT,
-            "no unit waits for start-up: {slowest:?}"
+        eprintln!("decoder without a wait: built in {construction:?}");
+        assert_eq!(
+            decoder.longest_wait,
+            Duration::ZERO,
+            "no unit waits for start-up"
         );
 
         let before = wakes.load(Ordering::SeqCst);
@@ -2325,7 +2321,6 @@ mod late_picture_tests {
         let units = vp9_units();
         let (mut decoder, _wakes) = decoder_without_waiting();
         let spec = realtime_vp9_spec();
-        // The worker's own result is dropped with its receiver.
         let (start, built) = mpsc::channel();
         decoder.starting = Some(Starting { spec, built });
 
@@ -2373,17 +2368,16 @@ mod late_picture_tests {
 
         let (keyframe, rest) = units.split_first().expect("a keyframe");
         assert!(keyframe.keyframe);
-        let started = Instant::now();
         assert!(
             decoder
                 .decode(&keyframe.data, Some(true))
                 .expect("the refusal is not the caller's to wait for")
                 .is_none()
         );
-        let first_call = started.elapsed();
-        assert!(
-            first_call < DECODE_WAIT,
-            "the refused keyframe did not hold the caller: {first_call:?}"
+        assert_eq!(
+            decoder.longest_wait,
+            Duration::ZERO,
+            "the refused keyframe did not hold the caller"
         );
         let deadline = tilo_test_env::hang_deadline();
         while wakes.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
@@ -2454,7 +2448,6 @@ mod late_picture_tests {
             "the silent element was passed over: {:?}",
             decoder.tried
         );
-        // The replacement has the full start-up on a loaded runner.
         decoder.startup_limit = startup_timeout();
         let newest = collect_newest(&mut decoder).expect("the next candidate decoded");
         assert_shows(

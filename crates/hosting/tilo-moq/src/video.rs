@@ -11,6 +11,13 @@
 //! relay forwards only the tracks someone asked for. A publisher encodes a
 //! layer only while someone asks for it.
 //!
+//! A room's window carrier carries one more kind of track: a single window
+//! of a host program the publisher runs (a terminal, any Wayland or X
+//! client), one track per window, named by the window's tab
+//! ([`window_track`], `window/<tab as 16 hex digits>`). Its pictures are the
+//! window's own size in the [`Layer::High`] layer, and their payload is
+//! sealed for the room's members, so the relay forwards what it cannot read.
+//!
 //! # Groups and objects
 //!
 //! A group is one picture sequence that starts with a keyframe: a subscriber
@@ -44,7 +51,6 @@ pub const MAX_SIDE: u16 = 4096;
 /// What a picture shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Source {
-    /// The participant's camera.
     Camera,
     /// A screen or window the participant shares.
     Screen,
@@ -196,6 +202,66 @@ pub fn parse_track(name: &str) -> Option<(Source, Layer)> {
         .then_some((source, layer))
 }
 
+/// Window tracks one publisher may have forwarded at once: every window of
+/// it that someone views.
+pub const MAX_WINDOW_TRACKS: usize = 32;
+
+/// The track window `tab` is published on: `window/` and the tab as 16
+/// lowercase hex digits.
+#[must_use]
+pub fn window_track(tab: u64) -> String {
+    format!("window/{tab:016x}")
+}
+
+/// The tab of a window track name, or `None` for any other name.
+#[must_use]
+pub fn parse_window_track(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix("window/")?;
+    if digits.len() != 16
+        || !digits
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    u64::from_str_radix(digits, 16).ok()
+}
+
+/// A track a relay forwards as video: a call's picture layer or one
+/// window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Track {
+    Picture(Source, Layer),
+    /// The window shown in tab `0`, in [`Layer::High`] only.
+    Window(u64),
+}
+
+impl Track {
+    #[must_use]
+    pub fn name(self) -> String {
+        match self {
+            Self::Picture(source, layer) => track(source, layer),
+            Self::Window(tab) => window_track(tab),
+        }
+    }
+
+    /// The video track `name` names, or `None` for any other name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        parse_track(name)
+            .map(|(source, layer)| Self::Picture(source, layer))
+            .or_else(|| parse_window_track(name).map(Self::Window))
+    }
+
+    #[must_use]
+    pub const fn layer(self) -> Layer {
+        match self {
+            Self::Picture(_, layer) => layer,
+            Self::Window(_) => Layer::High,
+        }
+    }
+}
+
 /// One encoded picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VideoObject {
@@ -229,11 +295,6 @@ fn byte(bytes: &[u8], at: usize) -> Result<u8, InvalidVideoObject> {
 
 impl VideoObject {
     /// Encode this object in the tilo-video/1 wire layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVideoObject`] for an empty or oversized payload or a
-    /// picture size of zero or past [`MAX_SIDE`].
     pub fn encode(&self) -> Result<Vec<u8>, InvalidVideoObject> {
         if self.payload.is_empty()
             || self.payload.len() > MAX_OBJECT_BYTES.saturating_sub(HEADER_BYTES)
@@ -264,10 +325,6 @@ impl VideoObject {
     }
 
     /// Decode one complete, valid tilo-video/1 object.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVideoObject`] when [`validate`] rejects `bytes`.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidVideoObject> {
         let header = validate(bytes)?;
         Ok(Self {
@@ -298,12 +355,6 @@ pub struct Header {
 }
 
 /// Check one object's header and length.
-///
-/// # Errors
-///
-/// Returns [`InvalidVideoObject`] for another version, flags or reserved
-/// bytes set, an unknown codec or layer, a picture size of zero or past
-/// [`MAX_SIDE`], or a length that does not match the payload.
 pub fn validate(bytes: &[u8]) -> Result<Header, InvalidVideoObject> {
     if bytes.len() <= HEADER_BYTES || bytes.len() > MAX_OBJECT_BYTES {
         return Err(InvalidVideoObject);
@@ -410,6 +461,29 @@ mod tests {
             "",
         ] {
             assert_eq!(parse_track(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_window_track_names_its_tab_and_nothing_else_parses_as_one() {
+        let tab = 0x5EED_0000_0000_0007;
+        assert_eq!(window_track(tab), "window/5eed000000000007");
+        assert_eq!(Track::parse(&window_track(tab)), Some(Track::Window(tab)));
+        assert_eq!(Track::Window(tab).layer(), Layer::High);
+        assert_eq!(
+            Track::parse("camera/mid"),
+            Some(Track::Picture(Source::Camera, Layer::Mid))
+        );
+        for name in [
+            "window/",
+            "window/5EED000000000007",
+            "window/5eed00000000007",
+            "window/5eed0000000000070",
+            "window/+eed000000000007",
+            "windows/5eed000000000007",
+            "audio",
+        ] {
+            assert_eq!(Track::parse(name), None, "{name}");
         }
     }
 }

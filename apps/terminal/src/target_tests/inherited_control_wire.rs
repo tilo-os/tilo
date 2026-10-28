@@ -1,9 +1,8 @@
 //! Native standalone sessions over one real inherited connection, never scripted opens.
-use super::{App, OpenState, Requester, SessionTarget, Sessions, TerminalWidget, on_tab, recorded};
+use super::{App, OpenState, Requester, SessionTarget, Sessions, on_tab, recorded};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
 
 struct ServiceChild {
     lease: UnixStream,
@@ -11,10 +10,17 @@ struct ServiceChild {
 }
 
 impl ServiceChild {
-    fn assert_cancelled(&mut self) {
-        self.lease
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+    /// The terminal ended this session: its lease reads end-of-file. When
+    /// the terminal has already moved on (`already`), the end must be there
+    /// at once; otherwise wait for it within the hang bound.
+    fn assert_cancelled(&mut self, already: bool) {
+        if already {
+            self.lease.set_nonblocking(true).unwrap();
+        } else {
+            self.lease
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+        }
         let mut byte = [0u8; 1];
         assert_eq!(
             self.lease.read(&mut byte).unwrap(),
@@ -41,7 +47,7 @@ fn read_json(reader: &mut impl BufRead) -> serde_json::Value {
 
 fn serve_native_sessions(mut control: UnixStream) {
     control
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(control.try_clone().unwrap());
     let mut previous: Option<ServiceChild> = None;
@@ -51,10 +57,14 @@ fn serve_native_sessions(mut control: UnixStream) {
         } else {
             "host"
         };
-        if let Some(mut previous) = previous.take() {
-            previous.assert_cancelled();
-        }
+        // The terminal ends its old session before it says hello for the
+        // next one, so once the hello is here the old lease has ended. Waiting
+        // for the hello first keeps the check free of how long the terminal
+        // took between switches.
         let hello = read_json(&mut reader);
+        if let Some(mut previous) = previous.take() {
+            previous.assert_cancelled(true);
+        }
         assert_eq!(hello["op"], "hello");
         assert_eq!(hello["protocol"], 2);
         control
@@ -101,7 +111,7 @@ fn serve_native_sessions(mut control: UnixStream) {
             child,
         });
     }
-    previous.as_mut().unwrap().assert_cancelled();
+    previous.as_mut().unwrap().assert_cancelled(false);
 }
 
 #[test]
@@ -116,8 +126,10 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
         terminal.into_raw_fd().to_string(),
     );
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(Sessions::standalone()))
-        .unwrap();
+    app.with_surface(|terminal: &mut crate::TerminalView| {
+        terminal.set_sessions(Sessions::standalone());
+    })
+    .unwrap();
     app.settle();
     assert_eq!(
         on_tab(&mut app, |terminal| terminal.session_state().clone()),
@@ -170,7 +182,7 @@ fn an_old_supervisor_is_refused_before_any_session_open_or_local_fallback() {
     let (client, mut server) = UnixStream::pair().unwrap();
     let peer = std::thread::spawn(move || {
         server
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         assert_eq!(read_json(&mut reader)["op"], "hello");
@@ -208,6 +220,12 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         assert_eq!(read_json(&mut reader)["op"], "open-session");
         let (mut master_peer, master) = UnixStream::pair().unwrap();
         let (mut lease_peer, lease) = UnixStream::pair().unwrap();
+        // Before the rights leave: macOS refuses to set a timeout on a
+        // socket whose peer has already closed.
+        for peer in [&master_peer, &lease_peer] {
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+        }
         runtime_portal::fd_transport::send_with_fds(
             &server,
             b"{\"result\":\"session\",\"protocol\":1}\n",
@@ -217,7 +235,6 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         drop(master);
         drop(lease);
         for peer in [&mut master_peer, &mut lease_peer] {
-            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
         }
     });

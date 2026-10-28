@@ -109,6 +109,7 @@ async fn main() {
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .expect("serve browsers");

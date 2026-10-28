@@ -1,9 +1,9 @@
 //! Bounded private snapshots and one outstanding change stream per subscription.
-use super::{BoundedReply, check_snapshot_bound};
+use super::BoundedReply;
 use crate::shell::network::PrivateChatRoute;
 use std::time::Duration;
 use tilo_action_broker::services::person_chat::PersonChatCommand;
-use tilo_relay_session::rooms::private::{PrivateConversation, PrivateOperation, PrivateReply};
+use tilo_relay_protocol::rooms::private::{PrivateOperation, PrivateReply, read_whole};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 static WATCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
@@ -52,7 +52,8 @@ async fn execute(route: &PrivateChatRoute, command: PersonChatCommand) -> Result
                 return Err("private contacts exceed bound".into());
             }
             serde_json::json!(contacts.into_iter().map(|contact| serde_json::json!({
-                "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default()
+                "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default(),
+                    "conversation": contact.conversation
             })).collect::<Vec<_>>())
         }
         PersonChatCommand::Open { public_key } => {
@@ -102,62 +103,7 @@ async fn execute(route: &PrivateChatRoute, command: PersonChatCommand) -> Result
 }
 
 async fn snapshot(route: &PrivateChatRoute, peer: &str) -> Result<serde_json::Value, String> {
-    let mut result: Option<PrivateConversation> = None;
-    let mut bytes = 0usize;
-    loop {
-        let after_sequence = result.as_ref().map_or(0, |page| page.next_sequence);
-        let PrivateReply::Conversation(page) = route
-            .send(PrivateOperation::Read {
-                peer: peer.to_owned(),
-                after_sequence,
-                limit: 100,
-            })
-            .await?
-        else {
-            return Err("unexpected private read reply".into());
-        };
-        if page.peer != peer
-            || page.messages.len() > 100
-            || page.next_sequence < after_sequence
-            || (page.has_more && page.next_sequence <= after_sequence)
-            || result
-                .as_ref()
-                .is_some_and(|previous| previous.id != page.id)
-        {
-            return Err("private conversation page binding changed".into());
-        }
-        let mut sequence = after_sequence;
-        for message in &page.messages {
-            if message.sequence <= sequence || message.sequence > page.next_sequence {
-                return Err("private conversation sequence invalid".into());
-            }
-            sequence = message.sequence;
-            bytes = bytes
-                .checked_add(message.text.len())
-                .ok_or("private snapshot exceeds bound")?;
-        }
-        check_snapshot_bound(
-            result
-                .as_ref()
-                .map_or(0, |page| page.messages.len())
-                .checked_add(page.messages.len())
-                .ok_or("private snapshot exceeds bound")?,
-            bytes,
-        )?;
-        let more = page.has_more;
-        match &mut result {
-            Some(previous) => {
-                previous.next_sequence = page.next_sequence;
-                previous.has_more = page.has_more;
-                previous.messages.extend(page.messages);
-            }
-            None => result = Some(page),
-        }
-        if !more {
-            break;
-        }
-    }
-    let result = result.ok_or("private snapshot missing")?;
+    let result = read_whole(|operation| route.send(operation), peer).await?;
     Ok(
         serde_json::json!({"peer":result.peer,"messages":result.messages.into_iter().map(|message|
         serde_json::json!({"id":message.id,"author":message.sender,"text":message.text})

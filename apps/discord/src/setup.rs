@@ -19,7 +19,7 @@ use ui::i18n::ArgValue;
 use ui::prelude::*;
 use ui::tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use ui::tilo_actions::{InvocationId, InvocationUpdate};
-use ui::{InvocationCall, LocalState, RemoteCall};
+use ui::{Arrival, InvocationCall, LocalState};
 
 use crate::effects::DiscordEffect;
 use crate::locales::CATALOG;
@@ -50,7 +50,6 @@ pub enum Step {
     /// Not shown.
     #[default]
     Closed,
-    /// Asking for the token.
     Token,
     /// Asking Discord which servers the bot is in.
     Finding,
@@ -94,7 +93,6 @@ pub enum FindError {
     Refused,
     /// Discord could not be reached.
     Unreachable,
-    /// Discord answered with an error.
     Discord,
     /// Discord's answer could not be read.
     Unreadable,
@@ -115,10 +113,6 @@ impl FindError {
 }
 
 /// Ask Discord which servers the bot with `token` is in.
-///
-/// # Errors
-/// The token is not one, Discord refused it, or Discord could not be
-/// reached or read.
 pub async fn find_servers(token: String) -> Result<Vec<Server>, FindError> {
     let token = token.trim().to_owned();
     if !crate::token::valid_token_shape(&token) {
@@ -188,7 +182,7 @@ pub struct Setup {
     /// The id of the server chosen.
     pub chosen: LocalState<String>,
     remote: ui::RemoteActions,
-    asked: Rc<RefCell<Vec<LocalState<InvocationCall>>>>,
+    asked: Rc<RefCell<Vec<InvocationCall>>>,
 }
 
 impl Setup {
@@ -255,8 +249,12 @@ impl Setup {
         let Step::Asking(server) = self.step.get() else {
             return false;
         };
-        let answers: Vec<InvocationCall> =
-            self.asked.borrow().iter().map(LocalState::get).collect();
+        let answers: Vec<Answer> = self
+            .asked
+            .borrow()
+            .iter()
+            .map(InvocationCall::get)
+            .collect();
         if let Some(failure) = answers.iter().find_map(failure) {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Failed(failure));
@@ -264,7 +262,7 @@ impl Setup {
         }
         let done = answers
             .iter()
-            .all(|answer| matches!(answer, RemoteCall::Done(InvocationUpdate::Succeeded { .. })));
+            .all(|answer| matches!(answer, Arrival::Ready(InvocationUpdate::Succeeded { .. })));
         if done {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Asked(server));
@@ -279,22 +277,25 @@ impl Default for Setup {
     }
 }
 
+/// Where one of the host's answers stands.
+type Answer = Arrival<InvocationUpdate, ui::tilo_actions::remote::ActionHostError>;
+
 /// What to tell the person when the host refused or the request failed.
-fn failure(answer: &InvocationCall) -> Option<String> {
+fn failure(answer: &Answer) -> Option<String> {
     use ui::tilo_actions::remote::ActionHostError;
     match answer {
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
-        RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => {
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
+        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
             Some(CATALOG.t("discord-setup-cancelled"))
         }
-        RemoteCall::Pending | RemoteCall::Done(_) => None,
-        RemoteCall::Refused(ActionHostError::Unavailable { .. }) => {
+        Arrival::Pending { .. } | Arrival::Ready(_) => None,
+        Arrival::Failed(ActionHostError::Unavailable { .. }) => {
             Some(CATALOG.t("discord-setup-host-unreachable"))
         }
-        RemoteCall::Refused(ActionHostError::UnknownAction | ActionHostError::NotPermitted) => {
+        Arrival::Failed(ActionHostError::UnknownAction | ActionHostError::NotPermitted) => {
             Some(CATALOG.t("discord-setup-not-allowed"))
         }
-        RemoteCall::Refused(error) => Some(CATALOG.t_args(
+        Arrival::Failed(error) => Some(CATALOG.t_args(
             "discord-setup-host-refused",
             &[("reason", ArgValue::Text(error.to_string()))],
         )),
@@ -350,7 +351,6 @@ pub fn answer(
     }
 }
 
-/// The sheet's body for `step`.
 fn body(setup: &Setup, step: &Step) -> Element {
     let text = |key: &str| -> Element { Box::new(Text::new(&CATALOG.t(key))) };
     let named = |key: &str, server: &Server| -> Element {
@@ -403,7 +403,6 @@ fn body(setup: &Setup, step: &Step) -> Element {
     }
 }
 
-/// The primary action's label at `step`.
 fn primary_label(step: &Step) -> String {
     CATALOG.t(match step {
         Step::Closed | Step::Token | Step::Finding => "discord-setup-find",
@@ -527,7 +526,6 @@ pub struct SetupDoor {
 }
 
 impl SetupDoor {
-    /// `page` with the setup's sheet over it.
     #[must_use]
     pub fn new(page: Element, sheet: Element, setup: &Setup) -> Self {
         Self {

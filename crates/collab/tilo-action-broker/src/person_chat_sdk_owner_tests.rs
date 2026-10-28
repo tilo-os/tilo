@@ -13,7 +13,7 @@ impl crate::services::person_chat::PersonChatServices for SdkPersonOwner {
     ) -> Result<Vec<u8>, String> {
         use crate::services::person_chat::PersonChatCommand;
         let room = tilo_desktop_model::RoomId::parse(room).ok_or("invalid room")?;
-        let authority = tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+        let authority = tilo_peer_state::caller_authority::CallerAuthority::Person {
             caller: caller.clone(),
         };
         let now = std::time::SystemTime::now();
@@ -78,7 +78,7 @@ impl crate::services::person_chat::PersonChatServices for SdkPersonOwner {
         self.0.subscribe_direct_conversation(
             tilo_desktop_model::RoomId::parse(room).ok_or("invalid room")?,
             peer,
-            &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+            &tilo_peer_state::caller_authority::CallerAuthority::Person {
                 caller: caller.clone(),
             },
             std::time::SystemTime::now(),
@@ -145,7 +145,7 @@ fn enroll_contact(
         owner
             .direct_contacts(
                 room,
-                &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                &tilo_peer_state::caller_authority::CallerAuthority::Person {
                     caller: governor.governor().clone(),
                 },
                 now
@@ -169,7 +169,7 @@ fn chat_seed(room: &str) -> Vec<tilo_peer_state::SeedDocument> {
         Some(room)
     ));
     vec![tilo_peer_state::SeedDocument {
-        app_id: definition.app_id.into(),
+        app_id: definition.app_id().into(),
         record_id: record.as_str().into(),
         kind: definition.record_kind.as_str().into(),
         bytes: document.save(),
@@ -198,7 +198,7 @@ fn mount_chat(
     cache
         .hydrate(
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: route.cluster_id.clone(),
                 record: record.as_str().into(),
             },
@@ -207,7 +207,7 @@ fn mount_chat(
         )
         .unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
-    let records = owners.open(definition.app_id, &route.cluster_id).unwrap();
+    let records = owners.open(definition.app_id(), &route.cluster_id).unwrap();
     let views = Rc::new(
         ui::application_view::InstanceViewStore::portable(cache, &route.cluster_id).unwrap(),
     );
@@ -222,9 +222,9 @@ fn mount_chat(
             views,
             device_id: "device".into(),
             instance_id: 1,
-            permissions: Rc::new(RefCell::new(
+            permissions: ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: ui::permissions::UserId(principal_id_for_root(certificate.user_public_key)),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -276,14 +276,14 @@ struct SdkContext {
     owner: tilo_joined_room::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     path: std::path::PathBuf,
-    authority: tilo_peer_state::workspace_task::WorkspaceTaskAuthority,
+    authority: tilo_peer_state::caller_authority::CallerAuthority,
     peer: String,
     public_before: Vec<Vec<u8>>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
 }
 fn sdk_context() -> SdkContext {
-    use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
+    use tilo_peer_state::caller_authority::CallerAuthority;
     let mut env = Environment::with_owner_initializer(|path| {
         crate::test_owner::SessionOwner::initialize_in_room(
             path,
@@ -306,8 +306,13 @@ fn sdk_context() -> SdkContext {
     );
     {
         let mut tree = env.membership.write();
+        let before = tree.workspaces.first().expect("initial workspace").clone();
+        let mut replaced = tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+        replaced.strips = before.strips;
+        replaced.policy = before.policy;
+        replaced.policy.rehome(room.to_string());
         let workspace = tree.workspaces.first_mut().expect("initial workspace");
-        workspace.set_room(room);
+        *workspace = replaced;
         let principal =
             tilo_action_policy::Subject::Person(principal_id_for_root(env.cert.user_public_key));
         workspace.grant(tilo_action_policy::Grant::new(
@@ -320,7 +325,7 @@ fn sdk_context() -> SdkContext {
         ));
     }
     env.authority = CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
-    let authority = WorkspaceTaskAuthority::Person {
+    let authority = CallerAuthority::Person {
         caller: env.cert.clone(),
     };
     let contacts = owner.direct_contacts(room, &authority, now).unwrap();

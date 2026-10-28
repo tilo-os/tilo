@@ -82,6 +82,10 @@ hex.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The staging handoff's JSON, with a repeated field refused.
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+# The native prepared-setup preflight, so the extractor verifies the same
+# sidecar binding the Imager backend seals without linking the backend or its
+# peer transport.
+tilo-handoff = { path = "../../platform/tilo-handoff", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

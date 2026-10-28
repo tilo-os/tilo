@@ -84,6 +84,33 @@ pub(crate) fn surface_tree_update(
     }
 }
 
+/// Publish `part`, a part of the window its host draws rather than any
+/// widget (a window of its own's row of slots), in the window's `update`:
+/// first among the window's children, in logical pixels times `scale`. A
+/// node of it that holds the keyboard holds the window's focus. Its nodes'
+/// ids are the ones [`surface_action_target`] resolves against `part`; give
+/// `part` a [`key`](AccessNode::key) no other part of the window uses.
+pub(crate) fn publish_host_part(update: &mut TreeUpdate, part: &AccessNode, scale: f64) {
+    let mut walk = SurfaceWalk {
+        nodes: Vec::new(),
+        focus: None,
+        origin: Point::ZERO,
+        scale,
+    };
+    let id = walk.visit(part, ROOT_ID, 0);
+    let Some((_, window)) = update.nodes.iter_mut().find(|(node, _)| *node == ROOT_ID) else {
+        return;
+    };
+    let mut children = Vec::with_capacity(window.children().len() + 1);
+    children.push(id);
+    children.extend_from_slice(window.children());
+    window.set_children(children);
+    update.nodes.extend(walk.nodes);
+    if let Some(focus) = walk.focus {
+        update.focus = focus;
+    }
+}
+
 pub(crate) fn surface_action_target(access: &AccessNode, requested: AkNodeId) -> Option<&str> {
     fn find(
         access: &AccessNode,

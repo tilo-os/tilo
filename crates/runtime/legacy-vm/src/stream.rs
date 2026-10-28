@@ -154,6 +154,9 @@ pub fn ensure_headless_shell(
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err);
+    if let Some(config) = real_config_home(std::env::var_os("XDG_CONFIG_HOME").as_deref()) {
+        command.env("XDG_CONFIG_HOME", config);
+    }
     // SAFETY: `setsid` is async-signal-safe; the shell outlives this launch.
     unsafe {
         command.pre_exec(|| {
@@ -172,6 +175,16 @@ pub fn ensure_headless_shell(
     wait_for(Duration::from_secs(60), || display.exists().then_some(()))
         .ok_or("the headless shell published no Wayland display")?;
     Ok(control)
+}
+
+/// `config` with its links resolved. A relay worker hands `tilo-legacy` a
+/// short link to the member's config directory (libvirt keeps its monitor
+/// sockets below it, and socket paths are short), but the shell opens its
+/// session settings through no symbolic link, so a linked config directory
+/// stops it before it answers ("Not a directory"). The shell gets the
+/// directory itself; libvirt keeps the short link.
+fn real_config_home(config: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    Path::new(config?).canonicalize().ok()
 }
 
 /// A fresh profile opens on the first-run screens; walk through them the
@@ -342,6 +355,43 @@ fn encode_window(
     Ok(())
 }
 
+/// The agent-control commands for one batch of a member's input, in order.
+///
+/// A key pressed and released within the batch is one `key` command, which
+/// the shell delivers to the app as a press and its release in the same
+/// turn. Sent as `key_down` then `key_up`, each its own command, the two
+/// would reach the app a shell turn or more apart, and a turn can take
+/// longer than the keyboard's repeat delay (the window screenshots this
+/// stream takes run on the same loop): the app would see the key held and
+/// type it again. A press whose release comes in a later batch is a key the
+/// member holds, and stays a `key_down`.
+#[must_use]
+pub fn input_commands(events: &[InputEvent]) -> Vec<Value> {
+    let mut commands = Vec::with_capacity(events.len());
+    let mut events = events.iter().peekable();
+    while let Some(event) = events.next() {
+        if let InputEvent::Key {
+            keysym,
+            pressed: true,
+            ..
+        } = event
+            && let Some(InputEvent::Key {
+                keysym: released,
+                pressed: false,
+                ..
+            }) = events.peek()
+            && released == keysym
+            && let Some(key) = evdev_key_name(*keysym)
+        {
+            events.next();
+            commands.push(json!({"op": "key", "key": key}));
+            continue;
+        }
+        commands.extend(input_command(event));
+    }
+    commands
+}
+
 /// The agent-control command for one input event, aimed at the window.
 #[must_use]
 pub fn input_command(event: &InputEvent) -> Option<Value> {
@@ -501,7 +551,7 @@ pub fn relay_stream(
         std::thread::spawn(move || {
             while let Ok(Some(event)) = FRAMING.read_value::<_, WindowInput>(&mut input) {
                 let window = target.lock_recover().clone();
-                for command in event.events.iter().filter_map(input_command) {
+                for command in input_commands(&event.events) {
                     let _ = control.send(command, window.as_deref());
                 }
             }
@@ -560,6 +610,47 @@ fn start_app(args: &StreamArgs) -> Result<Child, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shell_gets_a_linked_config_directory_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("member-config");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("c");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(
+            real_config_home(Some(link.as_os_str())),
+            Some(real.canonicalize().unwrap())
+        );
+        assert_eq!(real_config_home(None), None);
+    }
+
+    #[test]
+    fn a_key_tapped_within_a_batch_reaches_the_shell_as_one_keystroke() {
+        let key = |keysym, pressed| InputEvent::Key {
+            keysym,
+            pressed,
+            modifiers: 0,
+        };
+        assert_eq!(
+            input_commands(&[
+                key(35, true),
+                key(35, false),
+                key(42, true),
+                key(30, true),
+                key(30, false),
+                key(42, false),
+                key(28, true),
+            ]),
+            vec![
+                json!({"op": "key", "key": "h"}),
+                json!({"op": "key_down", "key": "Shift"}),
+                json!({"op": "key", "key": "a"}),
+                json!({"op": "key_up", "key": "Shift"}),
+                json!({"op": "key_down", "key": "Enter"}),
+            ]
+        );
+    }
 
     #[test]
     fn member_input_becomes_agent_input_aimed_at_the_window() {

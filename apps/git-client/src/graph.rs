@@ -18,7 +18,6 @@ use crate::model::Commit;
 pub struct GraphEdge {
     /// Row index (into the commit list) the edge starts at (the child / newer).
     pub from_row: usize,
-    /// Lane the edge leaves from at `from_row`.
     pub from_lane: usize,
     /// Row index the edge ends at (the parent / older).
     pub to_row: usize,
@@ -59,7 +58,6 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
     for (row, commit) in commits.iter_mut().enumerate() {
         let id = commit.id.clone();
 
-        // Find the lane reserved for this commit, if any.
         let mut my_lane = lanes.iter().position(|l| l.as_deref() == Some(id.as_str()));
         if my_lane.is_none() {
             // Not reserved (a tip / branch head) — take the first free lane.

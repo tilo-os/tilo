@@ -1,4 +1,3 @@
-//! Actual existing-owner startup under private readonly identity projections.
 use super::Session;
 use std::{
     io,

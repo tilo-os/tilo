@@ -490,7 +490,6 @@ mod tests {
     use super::*;
     #[test]
     fn permission_store_persists_bounded_entries_and_rejects_path_keys() {
-        // Phase `store_survives_reopen`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("permissions.json");
@@ -520,9 +519,7 @@ mod tests {
                     .contains_key("documents")
             );
         }
-        // Phase `rejects_path_like_keys`.
         assert!(PermissionStoreData::entry("table", "../escape").is_err());
-        // Phase `arbitrary_bounded_variant_round_trips`.
         {
             let input = OwnedValue::try_from(zbus::zvariant::Value::new((
                 7_u32,

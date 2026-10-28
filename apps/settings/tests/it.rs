@@ -55,9 +55,56 @@ mod support {
         out
     }
 
-    /// The row labelled `label`, if the list shows one.
-    pub fn nav_row(root: &dyn Widget, label: &str) -> Option<NavRow> {
-        nav_rows(root).into_iter().find(|row| row.label == label)
+    /// Settings as a host opens it, on a fresh private profile, laid out at
+    /// `viewport`: its sidebar rows run the published open action, so a
+    /// click navigates only where a host dispatches it.
+    pub type Window = ui::framework::testing::TestApp<settings::SettingsShell>;
+
+    pub fn window(viewport: (u32, u32)) -> Window {
+        let mut app = Window::new().expect("settings opens headlessly");
+        app.harness()
+            .resize(viewport)
+            .expect("settings lays out at the fixture size");
+        app.settle();
+        app
+    }
+
+    /// The navigation rows the window's accessibility tree exports.
+    pub fn window_rows(app: &mut Window) -> Vec<NavRow> {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::TreeItem)
+            .filter_map(|(_, node)| {
+                let label = node.label()?.to_owned();
+                let bounds = node.bounds()?;
+                Some(NavRow {
+                    label,
+                    rect: Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+                    selected: node.is_selected() == Some(true),
+                })
+            })
+            .collect()
+    }
+
+    /// The window's row labelled `label`, if its list shows one.
+    pub fn window_row(app: &mut Window, label: &str) -> Option<NavRow> {
+        window_rows(app).into_iter().find(|row| row.label == label)
+    }
+
+    /// Click `category`'s sidebar row with the pointer, as a person does.
+    pub fn click_category(app: &mut Window, category: settings::categories::Category) {
+        let row = window_row(app, &category.label())
+            .unwrap_or_else(|| panic!("no sidebar row for {category:?}"));
+        let center = row.rect.center();
+        app.harness().click_at(center.x, center.y);
+        app.settle();
+    }
+
+    /// The pane the window shows.
+    pub fn selected(app: &mut Window) -> settings::categories::Category {
+        app.surface::<SettingsApp, _>(|settings| settings.selected())
+            .expect("settings hosts its surface")
     }
 
     pub struct ScratchConfig {
@@ -75,6 +122,8 @@ mod support {
         }
 
         pub fn app(&self) -> SettingsApp {
+            // The panes register before a window over them is made.
+            settings::install();
             SettingsApp::with_config_root(self.dir.path().join("tilo"))
         }
     }
@@ -92,8 +141,6 @@ mod narrow_navigation;
 mod no_app_title_header;
 #[path = "scroll.rs"]
 mod scroll;
-#[path = "search_focus.rs"]
-mod search_focus;
 
 #[path = "composition_balance.rs"]
 mod composition_balance;
@@ -121,3 +168,6 @@ mod a11y_bus;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;
+
+#[path = "action_keywords_tests.rs"]
+mod action_keywords_tests;

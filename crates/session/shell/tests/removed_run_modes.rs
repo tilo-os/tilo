@@ -15,7 +15,7 @@ use tempfile::TempDir;
 fn portal_server_only_is_refused_before_any_setup() {
     let root = TempDir::new().expect("test root");
     let startup_metrics = root.path().join("startup.json");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_shell"))
+    let mut child = Command::new(tilo_test_env::package_binary!("shell"))
         .arg("--portal-server-only")
         .env("HOME", root.path().join("home"))
         .env("XDG_CONFIG_HOME", root.path().join("config"))
@@ -35,7 +35,7 @@ fn portal_server_only_is_refused_before_any_setup() {
         .spawn()
         .expect("run production shell binary");
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     while child.try_wait().expect("poll shell").is_none() {
         if Instant::now() >= deadline {
             let _ = child.kill();

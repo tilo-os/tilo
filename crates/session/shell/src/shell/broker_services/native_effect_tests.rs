@@ -1,4 +1,3 @@
-//! Real native clock, certified local action, and durable terminal owner barrier.
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
 use crate::shell::{
@@ -70,6 +69,87 @@ fn native_member_terminal_audit_uses_installed_governor_and_original_retry_recei
     drop(fixture);
 }
 
+/// The broker awaits owner commits on its one-threaded loop, the loop that
+/// also answers every peer action before its deadline. A commit waiting for
+/// its state-file write, as on a loaded disk whose syncs take seconds, must
+/// leave that loop answering everything else.
+#[test]
+fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let service = super::NativeOwnerCommitService::new(tree.clone(), None);
+    let invocation = tilo_actions::InvocationId::new();
+    let effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        invocation,
+        &hex::encode(fixture.certificate.user_public_key),
+        tilo_actions::ActionContext::default(),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
+    );
+    let request = OwnerCommitRequest {
+        room: fixture.room.to_string(),
+        operation: CommitOperation::EffectReceipt {
+            invocation: invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let before = std::fs::read(&fixture.path).unwrap();
+    // The disk: each write waits until the test lets it go.
+    let (writing, at_write) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    let writer = tree.read().native_runtime.clone();
+    let held = native_workspace_owner::store::test_seam::hold_writes(&writer, move || {
+        let _ = writing.send(());
+        let _ = released
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound());
+    });
+    // The broker's own loop: one thread, its tasks local to it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let receipt = tokio::task::LocalSet::new().block_on(&runtime, async {
+        let commit = tokio::task::spawn_local(
+            service.commit_member_effect_receipt(request, fixture.certificate.clone()),
+        );
+        tilo_test_env::within("the commit to reach its state-file write", async {
+            while at_write.try_recv().is_err() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        // Another request the loop answers, as it answers a peer action.
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_local(async move {
+            let _ = reply.send(());
+        });
+        tilo_test_env::within("the loop to answer while the commit writes", answer)
+            .await
+            .unwrap();
+        assert!(
+            !commit.is_finished(),
+            "the answer came only once the commit had written"
+        );
+        release.send(()).unwrap();
+        tilo_test_env::within("the commit to finish once its write goes", commit)
+            .await
+            .unwrap()
+    });
+    drop(held);
+    receipt.unwrap();
+    assert_ne!(
+        std::fs::read(&fixture.path).unwrap(),
+        before,
+        "the commit reached the state file"
+    );
+    drop(service);
+    drop(fixture);
+}
+
 #[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
     let fixture = fixture();
@@ -110,7 +190,10 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             &fixture.certificate,
         )
         .unwrap();
-    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    let completed = job
+        .completion
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(completed.code.is_empty(), "{}", completed.message);
     assert!(matches!(
         actions.status(job.id),
@@ -145,7 +228,7 @@ fn wait_for_membership_surface(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,
 ) -> tilo_action_broker::collab_broker_capnp::PublishedSurface {
-    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(surface) = actions
             .state()
@@ -168,6 +251,7 @@ fn wait_for_membership_surface(
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn desktop_action_session_retains_the_selected_certified_person_and_original_custody() {
     use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
     use tilo_actions::remote::PendingPoll;
@@ -209,7 +293,7 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
             .unwrap()
             .clone(),
     );
-    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     let job = loop {
         match pending.poll_ready() {
             PendingPoll::Ready(Ok((job, receipt))) => {
@@ -248,6 +332,11 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     use tilo_actions::remote::{
         ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -269,7 +358,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
                 ..Default::default()
             },
         )
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .expect("catalogue resolves")
@@ -281,7 +370,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     let seat = Caller::local_person(&person).in_room(fixture.room.to_string());
     assert!(
         host.query(&seat, CatalogueQuery::default())
-            .wait_timeout(Duration::from_secs(3))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("a native seat without a transport lease resolves")
@@ -308,7 +397,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     };
     let (job, receipt) = host
         .invoke_job(&caller, request.clone())
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .expect("admission resolves")
@@ -316,7 +405,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     let cloned = host.clone();
     let retry = cloned
         .invoke_job(&caller, request.clone())
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .expect("retry resolves")
@@ -349,7 +438,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     assert!(
         cloned
             .invoke(&caller, request)
-            .wait_timeout(Duration::from_secs(3))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("retired execution refusal resolves")
@@ -363,7 +452,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
         Caller::local_person("display-label-is-not-authority").in_room(fixture.room.to_string());
     assert!(
         host.invoke(&forged, forged_request)
-            .wait_timeout(Duration::from_secs(3))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("forged person refusal resolves")
@@ -372,7 +461,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     let unscoped = Caller::local_person(&person);
     assert!(
         host.invoke(&unscoped, unscoped_request)
-            .wait_timeout(Duration::from_secs(3))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("unscoped person refusal resolves")
@@ -381,6 +470,10 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn native_facade_admits_workspace_actions_under_certified_ownership() {
     use tilo_actions::remote::{
         ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -406,7 +499,7 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
     let legacy_page = broker
         .state()
         .action_query(&caller, &workspace_query)
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .unwrap()
@@ -418,7 +511,7 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
     }));
     let projected_page = host
         .query(&caller, workspace_query)
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .unwrap()
@@ -446,7 +539,7 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
     };
     let (job, _) = host
         .invoke_job(&caller, request.clone())
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
         .unwrap()
@@ -495,7 +588,8 @@ fn fixture() -> NativeFixture {
         tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
     assert!(!certificate.capabilities.can_act_as_host);
     let mut initial = WorkspaceTree::bootstrap_default();
-    assert!(initial.set_room(initial.desktop.active, room));
+    let active = initial.desktop.active;
+    assert!(initial.stand_in_room(active, room));
     let path = home.config().join("state.json");
     initial.persist_path = Some(path.clone());
     let tree = initial.shared();
@@ -537,7 +631,7 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
     } = fixture();
     let discovery = broker.app_action_broker().unwrap().downgrade();
     let actions = discovery.upgrade().unwrap();
-    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while !actions.state().published_surfaces().iter().any(|surface| {
         surface.live
             && surface.app_id == "so.tilo.desktop"
@@ -565,7 +659,7 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
                 .unwrap();
             let terminal = job
                 .completion
-                .recv_timeout(Duration::from_secs(3))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native effect must settle after its owner receipt");
             assert!(
                 terminal.code.is_empty(),
@@ -718,7 +812,7 @@ fn await_membership_source(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,
 ) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while !actions.state().published_surfaces().iter().any(|surface| {
         surface.live
             && surface.app_id == "so.tilo.desktop"
@@ -790,7 +884,7 @@ fn failed_effect(
         appearance: None,
     };
     let mut pending = host.invoke(&caller, request);
-    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         match pending.poll_ready() {
             PendingPoll::Ready(receipt) => {
@@ -899,7 +993,10 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
                 &fixture.certificate,
             )
             .unwrap();
-        let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        let completed = job
+            .completion
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
         assert!(completed.code.is_empty(), "{}", completed.message);
         assert!(matches!(
             actions.status(job.id),
@@ -981,7 +1078,10 @@ fn a_document_opened_in_its_app_keeps_its_read_across_the_rooms_projection() {
             &fixture.certificate,
         )
         .unwrap();
-    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    let completed = job
+        .completion
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(completed.code.is_empty(), "{}", completed.message);
     drop(actions);
 
@@ -1037,7 +1137,10 @@ fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
             &fixture.certificate,
         )
         .unwrap();
-    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    let completed = job
+        .completion
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(completed.code.is_empty(), "{}", completed.message);
     let resource = ResourceRef::FsPath(fixture.home.home().to_string_lossy().into_owned());
     let caller = PortalCaller::new(workspace, FILES);

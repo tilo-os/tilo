@@ -22,6 +22,7 @@
 
 use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
+use tilo_sort::CompactSort as _;
 
 use crate::widget::EntryKind;
 use automerge::transaction::Transactable;
@@ -33,6 +34,7 @@ use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
 pub mod compare;
+pub mod descriptions;
 pub mod detail;
 pub mod digest;
 pub mod facets;
@@ -46,6 +48,7 @@ pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
 pub mod steps;
+pub mod typing;
 pub(crate) use authors::room_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
@@ -67,6 +70,7 @@ pub use narrative::{
 };
 pub use revert::{
     ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
+    revert_step,
 };
 pub use run_undo::{
     RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
@@ -438,8 +442,8 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     }
     let mut sa = a.clone();
     let mut sb = b.clone();
-    sa.sort_unstable();
-    sb.sort_unstable();
+    sa.compact_sort();
+    sb.compact_sort();
     sa == sb && a != b
 }
 
@@ -481,6 +485,19 @@ fn patch_summary(
     summarize_patches(doc, &patches, paths)
 }
 
+/// Whether a change only wrote history's own metadata about other changes:
+/// names of runs ([`groups`]), cross-app runs ([`runs`]) and descriptions
+/// ([`descriptions`]). Such a change is neither a row nor an undo step.
+pub fn is_history_metadata(patches: &[automerge::Patch]) -> bool {
+    !patches.is_empty()
+        && patches.iter().all(|patch| {
+            let one = std::slice::from_ref(patch);
+            groups::is_group_marker(one)
+                || runs::is_run_marker(one)
+                || descriptions::is_description_marker(one)
+        })
+}
+
 /// [`patch_summary`] of patches already read; `doc` is a replica holding
 /// the objects they touch.
 fn summarize_patches(
@@ -490,7 +507,7 @@ fn summarize_patches(
 ) -> (String, EntryKind, Option<(usize, usize)>) {
     // A change that only named a version or recorded a run reports as
     // nothing visible, so the caller drops the row.
-    if groups::is_group_marker(patches) || runs::is_run_marker(patches) {
+    if is_history_metadata(patches) {
         return (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, None);
     }
     let mut inserted = 0usize;

@@ -116,13 +116,19 @@ fn steam_external_library_is_only_a_suggestion_and_requires_its_own_grant() {
         Category::PotentiallyUnique
     );
     assert_eq!(granted.roots[1].decision, Decision::RetainOriginal);
-    assert!(
-        Inventory::discover(&[
-            source(&root, RootRole::Steam),
-            source(&root.join("userdata"), RootRole::Other),
-        ])
-        .is_err()
+    // A nested grant is covered by the containing root rather than walked or
+    // copied twice; the nested root keeps its own identity for review.
+    let nested = Inventory::discover(&[
+        source(&root, RootRole::Steam),
+        source(&root.join("userdata"), RootRole::Other),
+    ])
+    .unwrap();
+    assert_eq!(nested.roots.len(), 2);
+    assert_eq!(
+        nested.roots[1].covered_by.as_deref(),
+        Some(nested.roots[0].source_id.as_str())
     );
+    assert!(nested.roots[1].entries.is_empty());
 }
 
 #[cfg(unix)]

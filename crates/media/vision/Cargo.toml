@@ -8,7 +8,7 @@ description = "Bounded, capability-gated local visual analysis for Tilo media ap
 
 [dependencies]
 agent-provider-config = { path = "../../agent/provider-config" }
-tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false }
+tilo-model-client = { path = "../../agent/model-client", default-features = false }
 base64.workspace = true
 hex.workspace = true
 image = { workspace = true, features = ["jpeg"] }

@@ -247,3 +247,31 @@ fn a_replacement_the_layout_already_took_in_does_not_drop_an_action() {
         "the action reached the control"
     );
 }
+
+/// A widget that replaces a child without reporting it breaks the widget
+/// contract, but no layout node keeps pointing at the replaced child: the
+/// map is checked against the live tree, forgotten, and the next frame lays
+/// the new child out.
+#[test]
+fn a_replacement_nobody_reports_leaves_no_node_pointing_at_it() {
+    use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
+    let (root, armed) = Replacing::unreported(ReplaceAt::Sync);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    app.init_layout();
+    armed.set(true);
+    let _ = app.sync_model(true);
+    assert!(!armed.get(), "the sync replaced the control");
+    let mut alive = HashSet::new();
+    live(app.root_widget.as_ref(), &mut alive);
+    assert!(
+        app.layout
+            .node_map
+            .values()
+            .all(|pointer| alive.contains(&pointer.cast::<()>().addr())),
+        "a layout node still points at the replaced control"
+    );
+    assert!(app.layout.structure_dirty, "the next frame rebuilds");
+    assert!(app.tooltip_target_at(Point::new(10.0, 10.0)).is_none());
+    app.rebuild_structure();
+    assert_eq!(app.focusable_order.len(), 1, "the new control is laid out");
+}

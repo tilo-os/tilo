@@ -192,7 +192,6 @@ impl ChunkList {
         Ok(())
     }
 
-    /// The distinct chunks, each once.
     pub fn distinct_chunks(&self) -> BTreeSet<BlobHash> {
         self.chunks.iter().map(|chunk| chunk.hash).collect()
     }
@@ -362,9 +361,7 @@ where
 pub struct Split {
     /// The package's metadata; its thin form is what the objects complete.
     pub meta: PackageMeta,
-    /// Payload blobs written whole as `<blob>.blob`.
     pub whole_blobs: usize,
-    /// Payload blobs written as `<blob>.chunks`.
     pub chunked_blobs: usize,
     /// Distinct chunk objects written for the chunked blobs.
     pub chunks: usize,

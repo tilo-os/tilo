@@ -6,6 +6,13 @@
 //! image ships, decoded once and kept, or their own picture, read from
 //! Tilo's own 0600 registry and cache (the portal's preview file first).
 //! A custom wallpaper is per device.
+//!
+//! Where a picture shows (desktop, lock screen) and on which workspaces is
+//! the private registry's: a picture of the person's own and a shipped one
+//! alike. When the person changes the wallpaper, "Show on" or "Use for" in
+//! Settings, [`follow_wallpaper_choice`] applies the wallpaper they have to
+//! what they chose, on the workspace they are on, so the change shows at
+//! once rather than with the next picture.
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, RwLock};
 pub use tilo_desktop::backdrop::DesktopBackdrop;
@@ -27,15 +34,77 @@ pub fn shipped_backdrop(backdrop: DesktopBackdrop) -> DesktopBackdrop {
 /// Unset until settings are followed: offscreen renders show the default.
 static CHOICE: RwLock<Option<String>> = RwLock::new(None);
 
+/// The wallpaper the person has and where they want it, as last applied:
+/// `appearance.wallpaper`, `wallpaper_target` and `wallpaper_scope`.
+type WallpaperIntent = (Option<String>, String, String);
+
+/// The intent last seen; `None` before the first settings read, which only
+/// notes it (a session start applies nothing).
+static INTENT: Mutex<Option<WallpaperIntent>> = Mutex::new(None);
+
 /// Take the `appearance.wallpaper` value from the settings `document`.
 /// Called whenever the followed settings change; cheap when the value did
-/// not, and the picture it names is decoded only when it is drawn.
-pub fn follow_wallpaper_choice(document: &serde_json::Map<String, serde_json::Value>) {
+/// not, and the picture it names is decoded only when it is drawn. When the
+/// wallpaper, where it shows or which workspaces it covers changed, the
+/// wallpaper the person has is applied to their choice on `active`, the
+/// workspace they are on, off this thread.
+pub fn follow_wallpaper_choice(
+    document: &serde_json::Map<String, serde_json::Value>,
+    active: Option<&str>,
+) {
     let value = settings_store::appearance::WALLPAPER.from_document(document);
     if let Ok(mut choice) = CHOICE.write()
         && *choice != value
     {
-        *choice = value;
+        choice.clone_from(&value);
+    }
+    let appearance = document
+        .get("appearance")
+        .and_then(serde_json::Value::as_object);
+    let leaf = |name: &str, default: &str| {
+        appearance
+            .and_then(|section| section.get(name))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(default)
+            .to_owned()
+    };
+    let intent = (
+        value,
+        leaf("wallpaper_target", "background"),
+        leaf("wallpaper_scope", "workspace"),
+    );
+    let changed = {
+        let Ok(mut last) = INTENT.lock() else {
+            return;
+        };
+        let changed = last.as_ref().is_some_and(|last| *last != intent);
+        *last = Some(intent.clone());
+        changed
+    };
+    if let (true, Some(workspace)) = (changed, active) {
+        apply_aside(workspace.to_owned(), intent);
+    }
+}
+
+/// Apply `intent` to the registry on a worker: it reads and writes a file.
+/// The registry's watch then shows the result.
+fn apply_aside(workspace: String, (choice, set_on, scope): WallpaperIntent) {
+    let spawned = std::thread::Builder::new()
+        .name("wallpaper-apply".into())
+        .spawn(move || {
+            let applied = crate::portal::desktop_services::apply_wallpaper_choice(
+                &crate::portal::desktop_services::wallpaper_state_path(),
+                &workspace,
+                choice.as_deref(),
+                &set_on,
+                crate::portal::desktop_services::WallpaperScope::parse(Some(&scope)),
+            );
+            if let Err(error) = applied {
+                tracing::warn!(%error, "could not apply where the wallpaper shows");
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "could not start applying where the wallpaper shows");
     }
 }
 
@@ -59,7 +128,11 @@ pub fn native_wallpaper(workspace_id: &str) -> Option<ImageData> {
     }
     let value = current_choice();
     match tilo_wallpapers::choice(value.as_deref()) {
-        Some(tilo_wallpapers::Choice::Bundled(wallpaper)) if value.is_some() => {
+        // A registry from before shipped pictures had records: the shipped
+        // picture chosen then shows everywhere, as it did.
+        Some(tilo_wallpapers::Choice::Bundled(wallpaper))
+            if value.is_some() && !custom_wallpapers().places_shipped() =>
+        {
             shipped_picture(wallpaper)
         }
         _ => wallpaper_image_for_workspace(workspace_id, "background").or_else(shipped_default),
@@ -383,19 +456,36 @@ impl CustomWallpapers {
         }
     }
 
+    /// Whether the registry places shipped pictures too: written since
+    /// "Show on" and "Use for" apply to the wallpaper the person has.
+    fn places_shipped(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.records.iter().any(|record| record.shipped.is_some()))
+    }
+
     /// The picture `workspace_id` shows as `target`, from memory.
     fn image_for(&'static self, workspace_id: &str, target: &str) -> Option<ImageData> {
-        let file = {
+        let picture = {
             let state = self.state.lock().ok()?;
             crate::portal::desktop_services::wallpaper_record_for(
                 &state.records,
                 workspace_id,
                 target,
             )?
-            .cache_file
-            .clone()
+            .picture()
         };
-        self.picture(&file, Some((workspace_id, target)))
+        match picture {
+            crate::portal::desktop_services::WallpaperPicture::Cached(file) => {
+                self.picture(&file, Some((workspace_id, target)))
+            }
+            crate::portal::desktop_services::WallpaperPicture::Shipped(id) => {
+                match tilo_wallpapers::choice(Some(&id))? {
+                    tilo_wallpapers::Choice::Bundled(wallpaper) => shipped_picture(wallpaper),
+                    tilo_wallpapers::Choice::Custom => None,
+                }
+            }
+        }
     }
 
     /// The decoded picture in cache file `file`. One not decoded yet is
@@ -435,16 +525,20 @@ impl CustomWallpapers {
                     state.unreadable.insert(file.to_owned());
                 }
             }
+            drop(state);
             return image;
         }
         if state.decoding.insert(file.to_owned()) {
             self.decode_aside(file.to_owned());
         }
-        slot.and_then(|(workspace, target)| {
-            state.shown.get(&(workspace.to_owned(), target.to_owned()))
-        })
-        .and_then(|shown| state.images.get(shown))
-        .cloned()
+        let shown = slot
+            .and_then(|(workspace, target)| {
+                state.shown.get(&(workspace.to_owned(), target.to_owned()))
+            })
+            .and_then(|shown| state.images.get(shown))
+            .cloned();
+        drop(state);
+        shown
     }
 
     fn decode_aside(&'static self, file: String) {
@@ -481,7 +575,7 @@ impl CustomWallpapers {
 /// Return a normalised, private wallpaper image for the named local workspace.
 /// The cache only reads Tilo's 0600 registry and cache directory; it never
 /// dereferences the original document URI. Paint reads memory only
-/// ([`CustomWallpapers`]).
+/// (`CustomWallpapers`).
 pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option<ImageData> {
     custom_wallpapers().image_for(workspace_id, target)
 }
@@ -720,6 +814,7 @@ mod tests {
             workspace_id: "w".into(),
             cache_file: file.into(),
             target: "background".into(),
+            shipped: None,
         }];
         let staged = registry.with_extension("partial");
         std::fs::write(&staged, serde_json::to_vec(&records).expect("json")).expect("registry");
@@ -757,15 +852,12 @@ mod tests {
         custom.watch();
         let before = custom.generation();
         write_registry(&registry, &names[1]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut seen = None;
-        while std::time::Instant::now() < deadline {
+        tilo_test_env::wait_until("the watch to deliver the new wallpaper", || {
             if custom.generation() != before
                 && let Some(image) = custom.image_for("w", "background")
                 && first_pixel(&image) == [0, 0, 200]
             {
-                seen = Some(image);
-                break;
+                return true;
             }
             // The picture shown meanwhile is the old one, never nothing.
             if let Some(image) = custom.image_for("w", "background") {
@@ -774,8 +866,7 @@ mod tests {
                     "only the old or the new picture is ever shown"
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(seen.is_some(), "the watch delivered the new wallpaper");
+            false
+        });
     }
 }

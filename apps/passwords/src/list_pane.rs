@@ -17,6 +17,8 @@ struct Row {
     title: String,
     summary: String,
     favorite: bool,
+    /// The item's published row, which its controls are bound to.
+    published: ui::tilo_actions::Resource,
 }
 
 impl Row {
@@ -26,6 +28,7 @@ impl Row {
             title: item.title.clone(),
             summary: summary(item),
             favorite: is_favorite(item),
+            published: crate::actions::item_row(item).into_resource(),
         }
     }
 }
@@ -64,34 +67,26 @@ impl ListPane {
     }
 
     fn list(&self, rows: Rows, filter: VaultFilter) -> VirtualList<Rows> {
-        let requests = Rc::clone(&self.requests);
-        let activate = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _, _| {
+        let open = Rc::clone(&self.requests);
+        VirtualList::with_selection_delegate(rows, 64.0, |rows, index, id, _| {
             let Some(row) = rows.item(index) else {
                 return Box::new(ListRow::new(format!("passwords.item:{id}"), ""));
             };
-            let (open, toggle) = (Rc::clone(&requests), Rc::clone(&requests));
-            let (open_id, toggle_id) = (secret(id), secret(id));
             let mut list_row = ListRow::new(format!("passwords.item:{id}"), &row.title)
                 .avatar(&row.title, id)
                 .square()
-                .secondary(&row.summary)
-                // A plain callback, not a published control: the vault window
-                // keeps item titles out of what it publishes.
-                .on_activate(move || open.borrow_mut().push(Request::Open(open_id.clone())))
-                .action(
-                    Icon::Star,
-                    if row.favorite {
-                        "Remove from favorites"
-                    } else {
-                        "Add to favorites"
-                    },
-                    move || {
-                        toggle
-                            .borrow_mut()
-                            .push(Request::ToggleFavorite(toggle_id.clone()));
-                    },
-                );
+                .secondary(&row.summary);
+            // The star is the item's published `favorite`, addressed by the
+            // item's opaque id: the vault window keeps item titles out of
+            // what it publishes.
+            if let Some(favorite) = crate::actions::item_binding(&row.published, "favorite") {
+                let label = if row.favorite {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                };
+                list_row = list_row.action_binding(Icon::Star, label, favorite);
+            }
             if row.favorite {
                 list_row = list_row.mark(Icon::Star);
             }
@@ -101,10 +96,19 @@ impl ListPane {
         .with_id("passwords.items")
         .with_accessible_name(filter.label())
         .with_semantic_key(ToString::to_string)
-        .on_activate(move |id| activate.borrow_mut().push(Request::Open(secret(&id))))
+        // Choosing a row opens its item: the list publishes the choice by
+        // the items' opaque ids alone.
+        .on_view("passwords.items", move |id| {
+            open.borrow_mut().push(Request::Open(secret(&id)));
+        })
     }
 
     fn empty(&self, core: &Core) -> EmptyState {
+        if core.opening {
+            return EmptyState::new("Opening your vault")
+                .with_icon(Icon::Shield)
+                .busy();
+        }
         let vault_empty = core.items.is_empty();
         let title = if vault_empty {
             "Your vault is empty"
@@ -121,11 +125,7 @@ impl ListPane {
         if !vault_empty {
             return empty;
         }
-        let requests = Rc::clone(&self.requests);
-        empty
-            .with_action("New item")
-            .with_action_id("passwords.empty.new")
-            .on_effect(move || requests.borrow_mut().push(Request::NewItem))
+        vault_empty_state(&self.requests)
     }
 
     /// Rebuild what the core changed: the rows of a new revision, a fresh
@@ -222,4 +222,20 @@ impl ui::widget::Decorator for ListPane {
     fn name(&self) -> &'static str {
         "PasswordsList"
     }
+}
+
+/// What an empty vault shows, across the whole window
+/// ([`ui::widget::NavShell::nothing_listed`]) or in the list: what the vault
+/// keeps, and New item.
+pub(crate) fn vault_empty_state(requests: &Requests) -> EmptyState {
+    let requests = Rc::clone(requests);
+    EmptyState::new("Your vault is empty")
+        .with_icon(Icon::Shield)
+        .with_message(
+            "Logins, secure notes, Wi-Fi passwords and API keys you save are encrypted and \
+             kept here.",
+        )
+        .with_action("New item")
+        .with_action_id("passwords.empty.new")
+        .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
 }

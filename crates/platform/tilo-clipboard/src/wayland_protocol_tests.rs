@@ -42,6 +42,14 @@ impl raw_window_handle::HasDisplayHandle for OwnedTestDisplay {
 
 const PLAIN: &str = "text/plain;charset=utf-8";
 
+/// A copy deadline no test outlives, for tests about the order of the
+/// compositor's answers rather than the copy's budget.
+fn outlasting_deadline() -> tilo_clock::Instant {
+    tilo_clock::now()
+        .checked_add(tilo_test_env::hang_bound().saturating_mul(2))
+        .expect("publication deadline beyond this test")
+}
+
 /// A copy queued directly, with its own deadline, as `publish` queues one.
 fn publish(
     payload: PublicationPayload,
@@ -1052,9 +1060,7 @@ fn image_copy_acknowledgement_follows_server_selection() {
 
     let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
     let (reply, result) = mpsc::channel();
-    let deadline = tilo_clock::now()
-        .checked_add(tilo_clock::Duration::from_secs(5))
-        .expect("bounded publication");
+    let deadline = outlasting_deadline();
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Image(png),
         reply,
@@ -1094,7 +1100,7 @@ fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Text(b"caption".to_vec()),
         result_tx,
-        super::publication_deadline()
+        outlasting_deadline()
     )));
     // Observe FIFO processing of the actual production copy command. This
     // neither dispatches nor changes the worker's focus; a protocol fence
@@ -1139,7 +1145,7 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
     assert!(harness.backend().send_publication(publish(
         PublicationPayload::Text(b"unfocused".to_vec()),
         reply,
-        super::publication_deadline(),
+        outlasting_deadline(),
     )));
     let (processed, observed) = mpsc::channel();
     harness
@@ -1177,15 +1183,11 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
         harness.enter(0, 0);
         harness.fence();
         harness.query(move |state| {
-            // Hold either the focus-check reply or the publication's
-            // confirmation, without disconnecting the shared display.
             state.hold_flush = !published;
             state.hold_flush_after_selection = published;
         });
         let (reply, result) = mpsc::channel();
-        let deadline = tilo_clock::now()
-            .checked_add(tilo_test_env::hang_bound() * 2)
-            .expect("publication deadline beyond this test");
+        let deadline = outlasting_deadline();
         assert!(harness.backend().send_publication(publish(
             PublicationPayload::Text(b"pending at shutdown".to_vec()),
             reply,
@@ -1319,10 +1321,8 @@ fn explicit_plain_paste_survives_a_delayed_transfer_without_blocking_the_worker(
         || h.query(|state| state.held.len() >= 3),
         "explicit plain receive",
     );
-    assert!(matches!(
-        result.recv_timeout(Duration::from_millis(60)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
+    // The fixture holds every pipe until it is written below.
+    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
     h.fence(); // A pending clipboard transfer must not stall protocol dispatch.
     h.query(|state| {
         let (_, fd) = state.held.pop().expect("explicit paste pipe");
@@ -1407,6 +1407,45 @@ fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
     assert_eq!(harness.selection_mimes(), ["image/png"]);
 }
 
+/// An app's image copy (a photo, a region of a PDF page) replaces what the
+/// app copied before. Text left beside the image would be what every app
+/// that prefers text pastes, so the person would get the old text instead.
+#[test]
+fn an_image_copy_replaces_the_text_copied_before_it() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "copied before")
+    );
+    assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
+    assert_eq!(
+        harness.selection_mimes(),
+        ["image/png"],
+        "the image copy offers the image and nothing copied before it"
+    );
+    let png = harness.selection_bytes("image/png");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+    // And a text copy after it replaces the image in turn.
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "copied after")
+    );
+    assert!(
+        !harness
+            .selection_mimes()
+            .iter()
+            .any(|mime| mime == "image/png"),
+        "the text copy replaced the image"
+    );
+    assert_eq!(harness.selection_bytes("text/plain"), b"copied after");
+}
+
 /// Tilo's compositor answers a new selection with work of its own (it mirrors
 /// the selection, takes it over, repaints) in the iteration that confirms it.
 /// A copy whose confirmation comes back after the copy's budget was still
@@ -1432,7 +1471,6 @@ fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
             || entered.load(Ordering::Acquire),
             "server receiving the image selection",
         );
-        // Hold the confirmation past every budget the copy waits.
         let taken = Instant::now();
         harness.wait(
             || taken.elapsed() > super::PUBLICATION_BUDGET * 3,
@@ -1525,5 +1563,36 @@ fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
     assert!(
         harness.query(|state| state.publications.is_empty()),
         "a copy settled as failed became the selection"
+    );
+}
+
+#[test]
+fn a_rich_copy_offers_its_html_and_its_words() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    let html = "<p>plain <b>bold</b></p>";
+    assert!(harness.backend().set_rich_text(html, "plain bold"));
+    let mimes = harness.selection_mimes();
+    for mime in ["text/html", PLAIN, "text/plain"] {
+        assert!(
+            mimes.iter().any(|offered| offered == mime),
+            "a rich copy must offer {mime}: {mimes:?}"
+        );
+    }
+    assert_eq!(harness.selection_bytes("text/html"), html.as_bytes());
+    assert_eq!(harness.selection_bytes("text/plain"), b"plain bold");
+
+    // The next plain copy offers no stale formatting.
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "next")
+    );
+    let mimes = harness.selection_mimes();
+    assert!(
+        !mimes.iter().any(|mime| mime.starts_with("text/html")),
+        "a plain copy must not keep the formatting of the one before: {mimes:?}"
     );
 }

@@ -41,6 +41,8 @@ chrono = { workspace = true, features = ["clock", "std"] }
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
+# A person's face, as the boot sign-in screen draws it too (`boot_look`).
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }

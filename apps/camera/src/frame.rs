@@ -327,7 +327,6 @@ fn paint_grain_and_vignette(buf: &mut FrameBuf, seed: u8, w: i32, h: i32) {
     }
 }
 
-/// Paint a deterministic scene into `buf` using seed `seed`.
 fn paint_scene(buf: &mut FrameBuf, seed: u8) {
     let w = buf.w as i32;
     let h = buf.h as i32;
@@ -489,28 +488,24 @@ mod tests {
 
     #[test]
     fn synthetic_frames_are_opaque_sized_and_scannable() {
-        // Phase `viewfinder_is_opaque_and_sized`.
         {
             let f = viewfinder(0, 320, 200);
             assert_eq!(f.rgba.len(), 320 * 200 * 4);
             // Every alpha byte is 255 (fully painted, no holes).
             assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255));
         }
-        // Phase `all_scene_styles_paint`.
         {
             for seed in 0..6u8 {
                 let f = viewfinder(seed, 160, 100);
                 assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255));
             }
         }
-        // Phase `scanner_frame_decodes_its_own_qr`.
         {
             let payload = "WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;";
             let (frame, scanned) = scanner_frame(2, 900, 560, payload);
             assert_eq!(frame.rgba.len(), 900 * 560 * 4);
             let scanned = scanned.expect("the composited QR must decode");
             assert_eq!(scanned.raw, payload);
-            // Corners land within the frame.
             for (x, y) in scanned.corners {
                 assert!((0.0..=900.0).contains(&x), "corner x in range: {x}");
                 assert!((0.0..=560.0).contains(&y), "corner y in range: {y}");

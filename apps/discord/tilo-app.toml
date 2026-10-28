@@ -2,8 +2,8 @@
 #
 # Installed on a room's host. The app itself only shows and plans the
 # bridged server; its outside worker (`bin/discord-worker`) talks to
-# Discord, so egress is pinned to Discord's API, gateway and CDN and
-# nothing else. The bot token lives in the host's secret store
+# Discord, so egress is pinned to Discord's API, gateway, CDN and voice
+# servers and nothing else. The bot token lives in the host's secret store
 # (`set-bot-token`), never in the record.
 
 [package]
@@ -53,16 +53,20 @@ landlock   = "strict"
 
 [sandbox.net]
 mode = "allowlist"
+# `*.discord.media` are the voice servers a bridged call joins: WebSocket
+# on 443, and UDP media to the address and port that socket names (one of
+# Discord's public voice addresses, never a private one).
 hosts = [
     "discord.com",
     "gateway.discord.gg",
     "cdn.discordapp.com",
+    "*.discord.media",
 ]
 
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
+collab = "optional@10"
 
 [entrypoint]
 bin             = "bin/discord"

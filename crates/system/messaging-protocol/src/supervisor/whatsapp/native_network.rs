@@ -366,15 +366,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let next = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        let next = tilo_test_env::within("the transport's disconnect", events.recv())
             .await
-            .unwrap()
             .unwrap();
         assert!(matches!(next, TransportEvent::Disconnected(_)));
         assert!(events.recv().await.is_err());
-        let closing = tokio::time::timeout(Duration::from_secs(3), server.next())
-            .await
-            .unwrap();
+        let closing = tilo_test_env::within("the server side to close", server.next()).await;
         assert!(matches!(closing, Some(Ok(Message::Close(_))) | None));
         transport.disconnect().await;
     }

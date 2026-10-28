@@ -1,6 +1,3 @@
-//! Optional-runtime review and consent through the production Cap'n Proto service.
-//! Signed HTTP fixtures mirror the native runtime release format.
-
 #![allow(
     clippy::future_not_send,
     reason = "Cap'n Proto clients and RPC drivers are confined to the test's single-threaded LocalSet"
@@ -86,7 +83,7 @@ fn serve(mut stream: TcpStream, served: &Served) {
         if let Some(gate) = gate {
             let _ = gate.entered.send(());
             gate.release
-                .recv_timeout(std::time::Duration::from_secs(15))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
         }
     }
@@ -627,7 +624,6 @@ fn signed_runtime_transaction_over_real_rpc() {
         assert!(error.contains("hash"), "{error}");
         assert!(!app_cli::runtime_installed(&device.optional_ref));
 
-        // The bundle signer is independent of the registry package publisher.
         std::fs::write(
             &device.trust,
             format!(
@@ -772,12 +768,14 @@ async fn runtime_gate_rejects_overlap(device: &Device, client: &rpc::Client) {
     tokio::pin!(first);
     tokio::select! {
         _result = &mut first => panic!("inspection completed before the held metadata response"),
-        result = tokio::time::timeout(std::time::Duration::from_secs(10), observed) => {
+        result = tokio::time::timeout(tilo_test_env::hang_bound(), observed) => {
             result.expect("metadata RPC entered within hang bound").unwrap();
         }
     }
     let second = inspect(client, device.root, &device.optional_ref).promise;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(2), second).await;
+    // The first stays held until released below, so a second that waited
+    // for it would never finish.
+    let result = tokio::time::timeout(tilo_test_env::hang_bound(), second).await;
     // Always release the real HTTP operation before asserting so failure cannot
     // strand the server thread or the service's blocking worker.
     release.send(()).unwrap();

@@ -245,8 +245,6 @@ pub trait AppWidget: Widget {
     }
 
     /// Capture app-owned local presentation alongside the ordinary View.
-    /// # Errors
-    /// Rejects an invalid application contribution before either contribution is saved.
     fn capture_application_view(
         &self,
     ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {
@@ -292,6 +290,17 @@ pub trait AppWidget: Widget {
     /// ends.
     fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
 
+    /// What the app said it did since last asked ("Added Buy milk"), for
+    /// the record to hold until the room keeps it
+    /// ([`crate::record::RecordStore::hold_notice`]).
+    fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The room kept what `text` says the app did: say it now. Delivered,
+    /// like [`Self::record_refused`], after the record loan ends.
+    fn record_said(&mut self, _text: &str) {}
+
     /// Answer a device-owner operation from the authenticated hosting shell.
     /// This is not an app action and never grants access to a host shell.
     ///
@@ -319,6 +328,14 @@ pub trait AppWidget: Widget {
 
     /// Drain a one-shot request for shell-owned chrome.
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+        None
+    }
+
+    /// The component to show in this one's place, built now: what a root shown before its
+    /// record ([`crate::application::HostContext::record_opening`]) answers once the record
+    /// is had. Asked, as a component's own request to show another is, before the window
+    /// syncs, so the window shows this root until it shows the new one.
+    fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
 
@@ -374,6 +391,34 @@ pub trait AppWidget: Widget {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         Err(tilo_actions::DoorError::Unknown(address.clone()))
     }
+
+    /// What an app keeping its own document publishes for the search of its
+    /// window: its resources and its search providers, which its host cannot
+    /// read through its widgets. `None` for an app whose host reads them
+    /// directly ([`crate::widget::published_resources`]).
+    fn window_search(&self) -> Option<WindowPublication> {
+        None
+    }
+
+    /// Run `invocation`, chosen in the search of this window, as the app's
+    /// own control would, for an app keeping its own document. Gives it back
+    /// when the app takes no controls this way.
+    ///
+    /// # Errors
+    /// The invocation itself, when the app did not take it.
+    fn run_window_control(
+        &mut self,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        Err(invocation)
+    }
+}
+
+/// What a window publishes for its own search: the resources it holds and
+/// can act on, and the search providers that find what it keeps.
+pub struct WindowPublication {
+    pub resources: Vec<tilo_actions::Resource>,
+    pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
 // The sole internal owner adapter; raw descendants inherit its layout boundary.
@@ -394,6 +439,19 @@ mod component_adapter {
         /// A complete-content capture laid the root out in a tree of its own:
         /// the host rebuilds its layout before the next frame.
         relayout: bool,
+        /// The record's durability changed and the root synced with it
+        /// ([`AppComponent::take_save_status_changed`]): what shows it is
+        /// measured and drawn by the next frame, as an `App` presents it.
+        /// Nothing about the tree changed, so it is not rebuilt (which
+        /// repaints the whole window for a save label after every key).
+        save_status_shown: SaveStatusShown,
+    }
+
+    /// What of a frame a save status change still asks for.
+    #[derive(Default)]
+    struct SaveStatusShown {
+        measure: bool,
+        draw: bool,
     }
 
     impl BoundAppWidget {
@@ -401,6 +459,7 @@ mod component_adapter {
             Self {
                 component,
                 relayout: false,
+                save_status_shown: SaveStatusShown::default(),
             }
         }
 
@@ -437,7 +496,7 @@ mod component_adapter {
         /// Whether the record's last sampled save is still unconfirmed.
         fn saving(&self) -> bool {
             let binding = self.component.callback_binding();
-            binding.enter().is_ok() && self.component.save_status_wake_deadline().is_some()
+            binding.enter().is_ok() && self.component.record_saving()
         }
 
         /// [`Self::in_root`] with the root lent mutably.
@@ -788,7 +847,8 @@ mod component_adapter {
             dyn crate::view::capability::ViewState,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::component_lifecycle::WindowActivation,
-            dyn crate::undo::UndoPoints
+            dyn crate::undo::UndoPoints,
+            dyn crate::widget::ResourceOperations
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
@@ -908,6 +968,14 @@ mod component_adapter {
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
+            if binding.records.is_opening(&binding.checkout.id) {
+                // The record is still opening off the frame: the root shows before it
+                // (`HostContext::record_opening`) and reads nothing of it.
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.sync(state, &automerge::ROOT);
+                }
+                return;
+            }
             let sync_root = |component: &mut AppComponent| {
                 binding
                     .read_document(state, |document, record_root| {
@@ -950,14 +1018,31 @@ mod component_adapter {
         ) -> bool {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    self.component
+            // The frame's presence, under the component's own authority, as
+            // its draw sees it.
+            let permissions = binding.permissions.borrow().clone();
+            let update = |component: &mut AppComponent| {
+                if binding.records.is_opening(&binding.checkout.id) {
+                    // Shown before its record, as `sync` does.
+                    return component
                         .root
                         .as_deref_mut()
-                        .is_some_and(|root| root.update(document, record_root))
-                })
-                .unwrap_or(false)
+                        .is_some_and(|root| root.update(state, &automerge::ROOT));
+                }
+                binding
+                    .read_document(state, |document, record_root| {
+                        component
+                            .root
+                            .as_deref_mut()
+                            .is_some_and(|root| root.update(document, record_root))
+                    })
+                    .unwrap_or(false)
+            };
+            let component = &mut self.component;
+            crate::presence::frame::frame(|presence| {
+                presence.with_permissions(permissions.clone(), || update(component))
+            })
+            .unwrap_or_else(|| update(component))
         }
         fn build_layout(
             &mut self,
@@ -990,6 +1075,7 @@ mod component_adapter {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
+            self.save_status_shown.measure = false;
             self.in_root_mut(|root| {
                 if let Ok(children) = taffy.children(node)
                     && let Some(child) = children.first()
@@ -1070,14 +1156,6 @@ mod component_adapter {
                 .as_deref_mut()
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
         }
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            self.in_root(|root| root.local_resource_operation_handlers())
-                .unwrap_or(&[])
-        }
-        fn resource_operation_handlers(&self) -> HashSet<String> {
-            self.in_root(|root| root.resource_operation_handlers())
-                .unwrap_or_default()
-        }
         fn name(&self) -> &'static str {
             "BoundComponent"
         }
@@ -1129,6 +1207,14 @@ mod component_adapter {
             self.in_root(|root| root.accessibility_represents_child(child_index))
                 .unwrap_or_default()
         }
+        fn lays_out_child(&self, child_index: usize) -> bool {
+            self.in_root(|root| root.lays_out_child(child_index))
+                .unwrap_or_default()
+        }
+        fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
+            self.in_root(|root| root.accessibility_child_description(child_index))
+                .flatten()
+        }
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
@@ -1159,6 +1245,11 @@ mod component_adapter {
                 .unwrap_or(true)
         }
 
+        fn ime_refuses_ordinary_commits(&self) -> bool {
+            self.in_root(|root| root.ime_refuses_ordinary_commits())
+                .unwrap_or(true)
+        }
+
         fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
             self.in_root_mut(|root| root.start_deferred_text())
                 .flatten()
@@ -1186,8 +1277,16 @@ mod component_adapter {
         fn presented(&self) -> bool {
             self.in_root(|root| root.presented()).unwrap_or_default()
         }
-        fn opening(&self) -> bool {
-            self.in_root(|root| root.opening()).unwrap_or_default()
+        fn arrives_from(&self) -> crate::arriving::Source {
+            self.in_root(|root| root.arrives_from())
+                .unwrap_or(crate::arriving::Source::Local)
+        }
+        fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+            self.in_root(|root| root.arrival_progress()).flatten()
+        }
+        fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+            self.in_root(|root| root.arrival_shape())
+                .unwrap_or(crate::widget::SkeletonShape::Ground)
         }
         fn text_review(&self) -> Option<(usize, String)> {
             self.in_root(|root| root.text_review()).flatten()
@@ -1247,60 +1346,6 @@ mod component_adapter {
                 root.apply_room_action(edits, type_id, payload)
             })
         }
-        fn start_operation(
-            &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            // A required operation arrives inside its owner's checked record
-            // frame; it is routed without taking this component's document loan.
-            if op.is_scoped() {
-                return crate::widget::start_in_children(self, op, doc, path);
-            }
-            let binding = self.component.callback_binding();
-            let result = binding
-                .with_document(doc.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.start_operation(op, &mut crate::widget::Edits::lend(document), record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()));
-            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&op.invocation())
-            {
-                self.component.invocations.push(op.invocation());
-            }
-            result
-        }
-        fn poll_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            cancellation_requested: bool,
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Option<tilo_actions::InvocationUpdate> {
-            let binding = self.component.callback_binding();
-            let update = binding
-                .read_document(doc, |document, record_root| {
-                    let root = self.component.root.as_deref_mut()?;
-                    root.poll_resource_operation(
-                        invocation,
-                        cancellation_requested,
-                        document,
-                        record_root,
-                    )
-                })
-                .unwrap_or(None);
-            if update
-                .as_ref()
-                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
-            {
-                self.component.invocations.retain(|id| *id != invocation);
-            }
-            update
-        }
         fn wants_pointer_capture(&self) -> bool {
             self.in_root(|root| root.wants_pointer_capture())
                 .unwrap_or_default()
@@ -1321,23 +1366,16 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return false;
             };
-            self.component.save_status_wake_deadline().is_some()
+            self.component.record_saving()
                 || self
                     .component
                     .root
                     .as_deref()
                     .is_some_and(Widget::has_transient_feedback)
         }
-        // The save status's deadline is the sync's; the component's root
-        // serves its own, inside the component's scope.
+        // The component's root serves its own deadlines, inside the
+        // component's scope.
         fn serve_deadline(&mut self, now: Instant) -> bool {
-            if self
-                .component
-                .save_status_wake_deadline()
-                .is_some_and(|due| due <= now)
-            {
-                return true;
-            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return true;
@@ -1352,12 +1390,7 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return None;
             };
-            let root = self.component.root.as_deref()?;
-            let saving = self.component.save_status_wake_deadline();
-            match (root.next_wake_deadline(), saving) {
-                (Some(own), Some(saving)) => Some(own.min(saving)),
-                (own, saving) => own.or(saving),
-            }
+            self.component.root.as_deref()?.next_wake_deadline()
         }
         fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
             self.in_root(|root| root.modal_capture()).flatten()
@@ -1365,8 +1398,9 @@ mod component_adapter {
         fn take_structure_dirty(&mut self) -> bool {
             self.take_structure_change().rebuilds()
         }
-        /// The root's change as it says it; the component's own reasons (a
-        /// relayout it asked for, a save status no `App` presented) rebuild.
+        /// The root's change as it says it, and a relayout the component
+        /// asked for, which rebuilds. A save status no `App` presented is
+        /// measured and drawn by the next frame ([`SaveStatusShown`]).
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             use crate::widget::StructureChange;
             let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
@@ -1374,34 +1408,42 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed =
-                StructureChange::of(self.component.take_save_status_changed());
+            if self.component.take_save_status_changed() {
+                self.save_status_shown = SaveStatusShown {
+                    measure: true,
+                    draw: true,
+                };
+            }
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_change()
-                .join(save_status_changed)
-                .join(relayout)
+            root.take_structure_change().join(relayout)
         }
         fn needs_redraw(&self) -> bool {
-            self.in_root(|root| root.needs_redraw()).unwrap_or_default()
+            self.save_status_shown.draw
+                || self.in_root(|root| root.needs_redraw()).unwrap_or_default()
         }
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
             self.in_root(|root| root.collect_damage(regions));
         }
         fn mark_drawn(&mut self) {
+            self.save_status_shown.draw = false;
             self.in_root_mut(|root| root.mark_drawn());
         }
         fn release_scene_cache(&mut self) {
             self.in_root_mut(|root| root.release_scene_cache());
         }
         fn is_layout_dirty(&self) -> bool {
-            self.in_root(|root| root.is_layout_dirty())
-                .unwrap_or_default()
+            self.save_status_shown.measure
+                || self
+                    .in_root(|root| root.is_layout_dirty())
+                    .unwrap_or_default()
         }
         fn layout_needs_measure(&self) -> bool {
-            self.in_root(|root| root.layout_needs_measure())
-                .unwrap_or_default()
+            self.save_status_shown.measure
+                || self
+                    .in_root(|root| root.layout_needs_measure())
+                    .unwrap_or_default()
         }
         fn draw_overlay(
             &mut self,
@@ -1417,6 +1459,80 @@ mod component_adapter {
             self.in_root_mut(|root| {
                 root.draw_overlay(scene, transform, text_renderer, theme, presence)
             });
+        }
+    }
+
+    impl crate::widget::ResourceOperations for BoundAppWidget {
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            self.in_root(|root| crate::widget::local_resource_operation_handlers(root))
+                .unwrap_or(&[])
+        }
+
+        fn resource_operation_handlers(&self) -> HashSet<String> {
+            self.in_root(|root| crate::widget::resource_operation_handlers(root))
+                .unwrap_or_default()
+        }
+
+        fn start_operation(
+            &mut self,
+            op: &crate::widget::ResourceOperation<'_>,
+            doc: &mut crate::widget::Edits<'_>,
+            path: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            // A required operation arrives inside its owner's checked record
+            // frame; it is routed without taking this component's document loan.
+            if op.is_scoped() {
+                return crate::widget::start_in_children(self, op, doc, path);
+            }
+            let binding = self.component.callback_binding();
+            let result = binding
+                .with_document(doc.document_mut(), |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return Err("component callback refused".into());
+                    };
+                    crate::widget::start_operation(
+                        &mut *root,
+                        op,
+                        &mut crate::widget::Edits::lend(document),
+                        record_root,
+                    )
+                })
+                .unwrap_or_else(|_| Err("component callback refused".into()));
+            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
+                && !self.component.invocations.contains(&op.invocation())
+            {
+                self.component.invocations.push(op.invocation());
+            }
+            result
+        }
+
+        fn poll_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            cancellation_requested: bool,
+            doc: &AutoCommit,
+            _path: &ObjId,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            let binding = self.component.callback_binding();
+            let update = binding
+                .read_document(doc, |document, record_root| {
+                    let root = self.component.root.as_deref_mut()?;
+                    crate::widget::poll_resource_operation(
+                        &mut *root,
+                        invocation,
+                        cancellation_requested,
+                        document,
+                        record_root,
+                    )
+                })
+                .unwrap_or(None);
+            if update
+                .as_ref()
+                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                self.component.invocations.retain(|id| *id != invocation);
+            }
+            update
         }
     }
 

@@ -1,5 +1,6 @@
 //! The document scanner: scan settings on the leading side (or on top in a
-//! narrow window), the selected page with its tools beside them.
+//! narrow window), the selected page beside them. Which page it is and what
+//! can be done with it are the window bar's ([`super::window_bar`]).
 
 use std::rc::Rc;
 
@@ -191,13 +192,11 @@ impl CameraApp {
             .caption(caption(CHOICES[0]))
             .outer_height(theme);
         let control = ControlSize::Regular.height(theme);
-        // Under the top band that holds the corner cluster, above the mode
-        // switcher.
         let content = Rect::new(
             full.x0 + gutter,
-            full.y0 + m.edge + m.bar() + m.gap,
+            full.y0 + m.edge,
             full.x1 - gutter,
-            full.y1 - m.edge - m.bar() - gutter,
+            full.y1 - m.edge,
         );
         let column = f64::from(metrics.panel_width_utility);
         let wide = content.width() >= column + gutter + f64::from(metrics.detail_min_width);
@@ -256,7 +255,7 @@ impl CameraApp {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
         full: Rect,
-    ) -> Rect {
+    ) {
         let layout = Self::document_layout(full, theme);
         for (field, rect) in self.document_controls.fields.iter_mut().zip(layout.fields) {
             field.apply_layout_external(rect);
@@ -294,12 +293,10 @@ impl CameraApp {
         } else {
             self.draw_document_page(scene, t, tr, theme, layout.page);
         }
-        self.draw_mode_switcher(scene, t, tr, theme, full);
-        self.draw_corner_actions(scene, t, tr, theme, full)
     }
 
-    /// The selected page: which page it is and its text status, the reorder
-    /// and crop tools, the page itself and the page actions under it.
+    /// The selected page: its text status, the page itself, and while a
+    /// crop is in progress the crop's Cancel and Apply under it.
     fn draw_document_page(
         &mut self,
         scene: &mut Scene,
@@ -308,188 +305,34 @@ impl CameraApp {
         theme: &Theme,
         area: Rect,
     ) {
-        let header = self.draw_page_header(scene, t, tr, theme, area);
-        let footer_y = self.draw_page_actions(scene, t, tr, theme, area);
-        let spacing = &theme.tokens.spacing;
+        let status = self.draw_page_status(scene, t, tr, theme, area);
+        let footer_y = if self.document_crop_editor.is_some() {
+            self.draw_crop_actions(scene, t, tr, theme, area) - f64::from(theme.tokens.spacing.s4)
+        } else {
+            area.y1
+        };
         let room = Rect::new(
             area.x0,
-            header.y1 + f64::from(spacing.s4),
+            status.y1 + f64::from(theme.tokens.spacing.s4),
             area.x1,
-            footer_y - f64::from(spacing.s4),
+            footer_y,
         );
         self.draw_page_image(scene, t, theme, room);
     }
 
-    /// Which page this is and its text status, then the reorder and crop
-    /// tools. Returns the header band.
-    fn draw_page_header(
-        &mut self,
+    /// Whether the page's text is recognized, at the top of `area`. Returns
+    /// the band it takes.
+    fn draw_page_status(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
     ) -> Rect {
-        let spacing = &theme.tokens.spacing;
-        let control = ControlSize::Regular.height(theme);
-        let gap = f64::from(spacing.s2);
-        let busy = self.document_job.is_some();
-        let cropping = self.document_crop_editor.is_some();
-        // Header: position and text status, then the page tools.
-        let label_h = f64::from(theme.text(TextRole::Label).line_height_px());
-        let caption_h = f64::from(theme.text(TextRole::Caption).line_height_px());
-        let header_h = (label_h + caption_h).max(control);
-        let header = Rect::new(area.x0, area.y0, area.x1, area.y0 + header_h);
-        let mut tools: Vec<(ButtonFace<'_>, Action, bool, &str)> = Vec::new();
-        let earlier = !busy && self.document_scan.selected > 0;
-        let later = !busy && self.document_scan.selected + 1 < self.document_scan.pages.len();
-        let mut x = header.x1;
-        let tool_y = header.center().y - control / 2.0;
-        if !cropping && !busy {
-            let crop = |rect| {
-                ButtonFace::new(rect, "Crop")
-                    .icon(Icon::Scissors)
-                    .role(ButtonRole::Plain)
-            };
-            let w = crop(Rect::ZERO).intrinsic_width(tr, theme);
-            let rect = Rect::new(x - w, tool_y, x, tool_y + control);
-            x = rect.x0 - gap;
-            tools.push((crop(rect), Action::BeginDocumentCrop, true, ""));
-        }
-        for (icon, name, action, enabled) in [
-            (
-                Icon::ChevronRight,
-                "Move page later",
-                Action::MoveDocumentPageLater,
-                later,
-            ),
-            (
-                Icon::ChevronLeft,
-                "Move page earlier",
-                Action::MoveDocumentPageEarlier,
-                earlier,
-            ),
-        ] {
-            let rect = Rect::new(x - control, tool_y, x, tool_y + control);
-            x = rect.x0;
-            tools.push((
-                ButtonFace::icon_only(rect, icon, name),
-                action,
-                enabled,
-                name,
-            ));
-        }
-        self.draw_page_position(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(header.x0, header.y0, x - gap, header.y1),
-        );
-        for (face, action, enabled, name) in tools {
-            let rect = face.hit_rect(theme);
-            let hovered = rect.contains(self.last_mouse);
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &face.hovered(hovered).disabled(!enabled),
-            );
-            if !name.is_empty() {
-                self.tooltip_targets.push((rect, name.to_owned()));
-            }
-            if enabled {
-                self.push_region(rect, action);
-            }
-        }
-        header
-    }
-
-    /// The actions for the selected page, or for the crop in progress.
-    fn page_actions(&self) -> Vec<(&'static str, Icon, Action, ButtonRole)> {
-        if self.document_crop_editor.is_some() {
-            return vec![
-                (
-                    "Cancel",
-                    Icon::X,
-                    Action::CancelDocumentCrop,
-                    ButtonRole::Secondary,
-                ),
-                (
-                    "Apply crop",
-                    Icon::Check,
-                    Action::ApplyDocumentCrop,
-                    ButtonRole::Primary,
-                ),
-            ];
-        }
-        let has_text = self
-            .document_scan
-            .pages
-            .get(self.document_scan.selected)
-            .and_then(|page| page.ocr.as_ref())
-            .is_some();
-        let reading = self.document_job_kind == Some(DocumentJobKind::Recognize);
-        let mut actions = vec![
-            (
-                "Rotate",
-                Icon::RotateCw,
-                Action::RotateDocument,
-                ButtonRole::Secondary,
-            ),
-            (
-                if reading {
-                    "Reading text…"
-                } else {
-                    "Recognize text"
-                },
-                Icon::FileText,
-                Action::RecognizeDocument,
-                ButtonRole::Secondary,
-            ),
-        ];
-        if has_text {
-            actions.push((
-                "Copy text",
-                Icon::Copy,
-                Action::CopyDocumentText,
-                ButtonRole::Secondary,
-            ));
-        }
-        actions.push((
-            "Save as PDF",
-            Icon::Download,
-            Action::ExportDocument,
-            ButtonRole::Secondary,
-        ));
-        actions.push((
-            "Remove page",
-            Icon::Trash2,
-            Action::RemoveDocumentPage,
-            ButtonRole::Destructive,
-        ));
-        actions
-    }
-
-    /// "Page 2 of 3" and whether the page's text is recognized, in `band`.
-    fn draw_page_position(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        band: Rect,
-    ) {
         let colors = &theme.tokens.colors;
-        let label_h = f64::from(theme.text(TextRole::Label).line_height_px());
         let caption_h = f64::from(theme.text(TextRole::Caption).line_height_px());
-        let position = format!(
-            "Page {} of {}",
-            self.document_scan.selected + 1,
-            self.document_scan.pages.len()
-        );
-        let status = self.document_text_status();
+        let band = Rect::new(area.x0, area.y0, area.x1, area.y0 + caption_h);
         let stale = self
             .document_scan
             .pages
@@ -498,37 +341,30 @@ impl CameraApp {
             .is_some_and(|document| {
                 document.language != self.document_settings.ocr_language.code()
             });
-        {
-            let mut ctx = PaintCtx::new(scene, t, tr, theme);
-            let room = ui::num::f32_of_f64(band.width().max(1.0));
-            let top = band.center().y - f64::midpoint(label_h, caption_h);
-            ctx.text(
-                &position,
-                &theme.text(TextRole::Label).numeric(),
-                colors.text_primary,
-                Point::new(band.x0, top),
-                Some(room),
-            );
-            let status =
-                ctx.text
-                    .elide_to_width_style(&status, room, &theme.text(TextRole::Caption));
-            ctx.text_role(
-                &status,
-                TextRole::Caption,
-                if stale {
-                    colors.semantic.warning
-                } else {
-                    colors.text_dim
-                },
-                Point::new(band.x0, top + label_h),
-                None,
-            );
-        }
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        let room = ui::num::f32_of_f64(band.width().max(1.0));
+        let status = ctx.text.elide_to_width_style(
+            &self.document_text_status(),
+            room,
+            &theme.text(TextRole::Caption),
+        );
+        ctx.text_role(
+            &status,
+            TextRole::Caption,
+            if stale {
+                colors.semantic.warning
+            } else {
+                colors.text_dim
+            },
+            Point::new(band.x0, band.y0),
+            None,
+        );
+        band
     }
 
-    /// What can be done with the page, centred under it on as many rows as
-    /// it needs. Returns the top of the first row.
-    fn draw_page_actions(
+    /// The crop's Cancel and Apply, centred under the page. Returns the top
+    /// of their row.
+    fn draw_crop_actions(
         &mut self,
         scene: &mut Scene,
         t: Affine,
@@ -536,12 +372,22 @@ impl CameraApp {
         theme: &Theme,
         area: Rect,
     ) -> f64 {
-        let spacing = &theme.tokens.spacing;
         let control = ControlSize::Regular.height(theme);
-        let gap = f64::from(spacing.s2);
-        let busy = self.document_job.is_some();
-        let cropping = self.document_crop_editor.is_some();
-        let actions = self.page_actions();
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let actions = [
+            (
+                "Cancel",
+                Icon::X,
+                Action::CancelDocumentCrop,
+                ButtonRole::Secondary,
+            ),
+            (
+                "Apply crop",
+                Icon::Check,
+                Action::ApplyDocumentCrop,
+                ButtonRole::Primary,
+            ),
+        ];
         let widths: Vec<f64> = actions
             .iter()
             .map(|(label, icon, _, role)| {
@@ -551,43 +397,16 @@ impl CameraApp {
                     .intrinsic_width(tr, theme)
             })
             .collect();
-        // The labelled buttons wrap onto as many centred rows as they need,
-        // so no action loses its name on a narrow window.
-        // Each row's total width, and the row every action lands on.
-        let mut totals: Vec<f64> = Vec::new();
-        let mut row_of = Vec::with_capacity(widths.len());
-        for w in &widths {
-            match totals.last_mut() {
-                Some(total) if *total + gap + w <= area.width() => *total += gap + w,
-                _ => totals.push(*w),
-            }
-            row_of.push(totals.len() - 1);
-        }
-        let top = area.y1 - (control + gap) * totals.len() as f64 + gap;
-        let enabled = !busy || cropping;
-        let mut row = usize::MAX;
-        let mut x = 0.0;
-        for (((label, icon, action, role), w), r) in actions.into_iter().zip(widths).zip(row_of) {
-            if r != row {
-                row = r;
-                let total = totals.get(r).copied().unwrap_or(w);
-                x = area.center().x - total / 2.0;
-            }
-            let y = top + (control + gap) * r as f64;
-            let rect = Rect::new(x, y, x + w, y + control);
+        let total = widths.iter().sum::<f64>() + gap * (widths.len() as f64 - 1.0);
+        let top = area.y1 - control;
+        let mut x = area.center().x - total / 2.0;
+        for ((label, icon, action, role), w) in actions.into_iter().zip(widths) {
+            let rect = Rect::new(x, top, x + w, top + control);
             let face = ButtonFace::new(rect, label).icon(icon).role(role);
             let hit = face.hit_rect(theme);
             let hovered = face.contains(theme, self.last_mouse);
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &face.hovered(hovered).disabled(!enabled),
-            );
-            if enabled {
-                self.push_region(hit, action);
-            }
+            Button::paint(scene, t, tr, theme, &face.hovered(hovered));
+            self.push_region(hit, action);
             x = rect.x1 + gap;
         }
         top
@@ -641,5 +460,19 @@ impl CameraApp {
                 f64::from(theme.tokens.metrics.chrome_rule_px),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A staged page was scanned with the sample's scanner, and the
+    /// settings name that scanner.
+    #[test]
+    fn a_staged_page_names_the_scanner_it_came_from() {
+        let mut app = CameraApp::sample();
+        app.stage_scene(Some("document-page"));
+        assert_eq!(app.document_controls.scanners, ["Document scanner"]);
     }
 }

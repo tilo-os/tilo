@@ -2,8 +2,11 @@
 //! exposed outside this module; receipt metadata cannot manufacture custody.
 use super::{
     AtomicBool, CiphertextInfo, DeliveryProgress, MAX_PLAINTEXT, Observer, PreparedMediaHandle,
-    Purpose, check_cancel, codec, io,
+    check_cancel, io,
 };
+// The prepared medium carries the portable migration framing; its purpose is
+// authenticated, not inferred from the filename.
+use crate::setup::portable_transfer::{Purpose, codec};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,

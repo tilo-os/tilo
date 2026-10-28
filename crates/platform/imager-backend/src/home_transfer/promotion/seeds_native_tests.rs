@@ -1,4 +1,3 @@
-//! Real firstboot seed authority + original-user adoption, in a private mount namespace.
 use super::*;
 #[path = "native_test_artifact.rs"]
 mod native_test_artifact;
@@ -164,7 +163,7 @@ fn actual_firstboot_seeds_are_retained_only_while_unchanged() {
     .unwrap();
     std::fs::write(
         etc.join("tilo/install-user.conf"),
-        format!("tiloseedfixture:$6$fixture${}\n", "A".repeat(86)),
+        format!("alice:$6$fixture${}\n", "A".repeat(86)),
     )
     .unwrap();
     std::fs::set_permissions(
@@ -271,7 +270,7 @@ if result == 0:
             String::from_utf8_lossy(&firstboot.stderr)
         );
     }
-    let home = Path::new("/var/home/tiloseedfixture");
+    let home = Path::new("/var/home/alice");
     assert_eq!(std::fs::metadata(home).unwrap().uid(), 99);
     let proof = Path::new("/var/lib/tilo/firstboot-home-seeds/99.json");
     let proof_info = std::fs::symlink_metadata(proof).unwrap();

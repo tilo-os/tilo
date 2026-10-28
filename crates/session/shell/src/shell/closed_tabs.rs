@@ -81,6 +81,7 @@ fn relaunchable(tab: &Tab) -> Tab {
         id: tab.id,
         title: tab.title.clone(),
         tile,
+        app_title: None,
     }
 }
 
@@ -337,6 +338,7 @@ mod tests {
                 app_id: "org.example.Editor".into(),
                 surface_id: id.saturating_add(900),
             },
+            app_title: None,
         }
     }
 

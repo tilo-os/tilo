@@ -207,17 +207,11 @@ and need no login (`tilo-vm guide troubleshooting`).
 
 `tilo-vm doctor` says whether one is. If none is:
 
-- wait for the main "Release / OS" run (`.forgejo/workflows/build-image.yml`):
-  each native lane publishes its own architecture's disk as soon as it
-  passes, without waiting for the other. An integration run builds on an
-  unsigned `tilo-ci` image and its disk tag ends in `-ci`; a publication
-  requests the disk from its signed image;
-- or dispatch "Release / Dev VM disk" (`.forgejo/workflows/dev-disk.yml`)
-  yourself for an existing same-commit base. Set `architectures=aarch64` for
-  an ARM host; the workflow's manual default is `x86_64`. Use
-  `fgj actions workflow run dev-disk.yml -R tilo/tilo -r main` with
-  `-f source_revision=<full SHA> -f base_image=<same-commit OCI ref>
-  -f tag=<disk tag> -f architectures=aarch64 -f formats=qcow2`;
+- `t dispatch publish-os-dev-disk-x86_64 --ref main` (`publish-os-dev-disk-aarch64`
+  for an ARM host), or ask someone who may dispatch t: it builds main's dev
+  image, installs it in `os-dev-disk-<arch>`, checks it in `os-acceptance-<arch>`
+  and publishes the disk, each architecture on its own. Its tag ends in `-ci`: it is built on the
+  unsigned `tilo-ci` image;
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
   locally and pass it as `--image`. The error says whether it exists here.

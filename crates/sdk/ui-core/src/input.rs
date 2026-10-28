@@ -6,6 +6,7 @@
 //! a textual gesture description into its UI.
 
 use std::collections::BTreeMap;
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -132,7 +133,7 @@ pub struct KeyboardBinding {
 impl KeyboardBinding {
     pub fn new(modifiers: impl IntoIterator<Item = KeyboardModifier>, key: KeyLegend) -> Self {
         let mut modifiers: Vec<_> = modifiers.into_iter().collect();
-        modifiers.sort_unstable();
+        modifiers.compact_sort();
         modifiers.dedup();
         Self { modifiers, key }
     }
@@ -169,7 +170,7 @@ impl KeyboardBinding {
         family: KeyboardFamily,
     ) -> Vec<String> {
         let mut display_modifiers = self.modifiers.clone();
-        display_modifiers.sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
+        display_modifiers.compact_sort_by_key(|modifier| crate::keycaps::display_rank(*modifier));
         display_modifiers
             .into_iter()
             .map(|modifier| modifier_label(modifier, platform, family).to_owned())
@@ -305,7 +306,7 @@ pub struct ControllerBinding {
 impl ControllerBinding {
     pub fn new(buttons: impl IntoIterator<Item = ControllerButton>) -> Self {
         let mut buttons: Vec<_> = buttons.into_iter().collect();
-        buttons.sort_unstable();
+        buttons.compact_sort();
         buttons.dedup();
         Self { buttons }
     }
@@ -402,11 +403,6 @@ impl BindingSet {
     /// Replace one binding after checking the whole application for a
     /// collision. Passing `allow_conflict` is an explicit UX choice; silent
     /// shadowing is never the default.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BindingConflict`] when another action already uses `binding`
-    /// and `allow_conflict` is false.
     pub fn rebind(
         &mut self,
         action_id: &str,
@@ -441,7 +437,6 @@ mod tests {
 
     #[test]
     fn input_legends_follow_the_device_and_rebinding_reports_conflicts() {
-        // Case `mac_legends_use_the_symbols_printed_on_apple_keyboards`.
         {
             let binding = KeyboardBinding::new(
                 [
@@ -468,7 +463,6 @@ mod tests {
             );
         }
 
-        // Case `face_button_labels_follow_the_connected_controller`.
         {
             assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
             assert_eq!(
@@ -485,7 +479,6 @@ mod tests {
             );
         }
 
-        // Case `rebinding_reports_the_action_that_already_owns_a_chord`.
         {
             let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
             let mut set = BindingSet::default();

@@ -201,7 +201,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         ));
         app.refresh_control_action_availability();
         assert!(app.actions.last_control_availability.is_none());
-        // Discovery still sees the complete surface on demand.
         assert!(
             app.collect_resources()
                 .iter()
@@ -737,10 +736,17 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
 
         assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
         assert!(app.state.peek_last_undo().is_none());
+        // An app's actions rank after what it holds: narrowed to the
+        // action, its row is the top one.
+        app.actions
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .set_query("Flip it");
         app.needs_sync = false;
         app.layout.layout_dirty = false;
 
-        // Enter selects the top row (the action) and dispatches it.
+        // Enter dispatches the selected action.
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 
@@ -909,7 +915,9 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
+    // Case `ctrl_k_lists_no_projected_control_verb_for_people`: a control's
+    // own verbs (focus it, press it) are how agents and scripts drive what
+    // a person presses directly, never a row of their own.
     {
         let button = Button::new("drive-me", "Drive me");
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
@@ -922,12 +930,12 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .as_mut()
             .unwrap()
             .set_query("focus");
-
-        assert!(app.action_palette_handle_key(&synth_enter()));
+        let labels = app.action_palette().unwrap().result_labels();
         assert!(
-            app.root_widget.is_focused(),
-            "Ctrl+K reaches the real retained control"
+            labels.iter().all(|label| !label.contains("Focus")),
+            "no control verb is a person's row: {labels:?}"
         );
+        assert!(!app.root_widget.is_focused());
     }
 }
 
@@ -1058,8 +1066,15 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         }
     }
     impl Widget for Native {
-        crate::provides!(dyn LocalUndo);
+        crate::provides!(dyn LocalUndo, dyn crate::widget::ResourceOperations);
         fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+        fn name(&self) -> &str {
+            "Native history fixture"
+        }
+        crate::testing::inert_widget_methods!(leaf_layout);
+    }
+
+    impl crate::widget::ResourceOperations for Native {
         fn start_operation(
             &mut self,
             operation: &crate::widget::ResourceOperation<'_>,
@@ -1077,10 +1092,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
                 .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
         }
-        fn name(&self) -> &str {
-            "Native history fixture"
-        }
-        crate::testing::inert_widget_methods!(leaf_layout);
     }
     let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
         UndoStatus {
@@ -1198,5 +1209,50 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         calls.borrow().len(),
         3,
         "an unmounted native history must not gain a broker route"
+    );
+}
+
+/// The control holding keyboard focus must say so in the node it publishes.
+/// A screen reader, an agent and `tilo-control` read focus from that node, so
+/// a control that answers false while the keyboard is on it leaves all three
+/// telling the person nothing is focused.
+#[test]
+fn a_control_that_holds_focus_publishes_that_it_is_focused() {
+    fn published_focus(app: &App, node: NodeId) -> Option<bool> {
+        app.inspect_node(node, |widget| {
+            widget
+                .is_focusable()
+                .then(|| widget.accessibility())
+                .flatten()
+                .map(|access| access.state.focused)
+        })
+        .ok()
+        .flatten()
+    }
+
+    // The palette traps focus on its own root as it appears. That is a focus
+    // move that never passes through a Tab or a click.
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+    app.init_layout();
+    app.open_action_palette();
+    app.init_layout();
+
+    let owner = app
+        .focused_node
+        .expect("a presented palette owns the keyboard");
+    assert_eq!(
+        published_focus(&app, owner),
+        Some(true),
+        "the node of the control holding focus must report focused: true"
+    );
+
+    // And only while it is the owner: closing the palette takes the keyboard,
+    // so its node must stop claiming focus.
+    app.close_action_palette();
+    app.init_layout();
+    assert_ne!(
+        published_focus(&app, owner),
+        Some(true),
+        "a control that no longer holds the keyboard must not publish focus"
     );
 }

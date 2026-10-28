@@ -86,7 +86,6 @@ mod tests {
 
     #[test]
     fn transport_projects_and_drifts() {
-        // Phase `projection_freezes_while_paused_and_advances_while_playing`.
         {
             let paused = TransportState {
                 playing: false,
@@ -109,7 +108,6 @@ mod tests {
             // 2.5s of wall-clock since epoch → +2500ms.
             assert_eq!(playing.projected_position(12_500), 6_500);
         }
-        // Phase `projection_honours_rate`.
         {
             let fast = TransportState {
                 playing: true,
@@ -123,7 +121,6 @@ mod tests {
                 "2x rate doubles the advance"
             );
         }
-        // Phase `small_drift_stays_in_sync_large_drift_seeks`.
         {
             // 400ms gap < 500ms threshold → ride it.
             assert_eq!(correction(10_000, 10_400), Correction::InSync);

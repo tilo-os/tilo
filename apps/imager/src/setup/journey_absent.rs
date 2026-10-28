@@ -3,11 +3,11 @@
 //!
 //! Only the installer journey prepares a medium that carries a person's
 //! identity, belongings and original files, and only it hands the writer a
-//! [`prepared_media::PreparedMedia`] or a [`portable_source::OriginalSource`].
+//! [`prepared_media::PreparedMedia`](crate::setup::journey::prepared_media::PreparedMedia) or a [`portable_source::OriginalSource`](crate::setup::journey::portable_source::OriginalSource).
 //! Without it neither can exist: both are uninhabited, so every path of the
 //! writer that would deliver, refresh or complete a prepared medium is
 //! statically unreachable, and none of the native preparation, capture or
-//! delivery code is linked. [`prepared_media::Delivery`] answers what the
+//! delivery code is linked. [`prepared_media::Delivery`](crate::setup::journey::prepared_media::Delivery) answers what the
 //! journey's own delivery answers when no native preparation is available
 //! (`journey/prepared_media/presentation.rs`): nothing is pending, and a
 //! request to deliver is refused.
@@ -42,6 +42,9 @@ pub mod prepared_media {
     pub struct PreparedMedia(pub(crate) std::convert::Infallible);
 
     impl PreparedMedia {
+        pub fn is_other_device(&self) -> bool {
+            false
+        }
         pub fn expectation(&self) -> &PreparedSetupExpectation {
             match self.0 {}
         }
@@ -95,9 +98,11 @@ pub mod prepared_media {
         false
     }
 
-    /// Retiring a prepared medium needs the native preparation.
+    /// Nothing to retire: without native preparation no drive carries a
+    /// prepared medium ([`pending_target`] is always false), and closing the
+    /// window retires each target it touched, which must not fail here.
     pub fn finish_target(_stable_id: &str) -> io::Result<()> {
-        Err(imager_backend::journey_media::Unsupported.into())
+        Ok(())
     }
 
     /// The journey's navigation back to a prepared medium.
@@ -122,6 +127,9 @@ pub mod prepared_media {
     }
 
     impl Delivery {
+        pub fn is_other_device(&self) -> bool {
+            false
+        }
         pub fn with_artifact(artifact: Arc<PreparedMedia>) -> Self {
             match artifact.0 {}
         }

@@ -1,5 +1,3 @@
-//! A derived record describes its stored layout.
-
 use tilo_resource::{Collection, FieldShape, Model, Resource, Shape, resource};
 
 #[derive(Model, Default)]
@@ -53,6 +51,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label: false,
             label_part: 0,
             quiet_remove: false,
+            trust: tilo_resource::Trust::Ordinary,
             schema: <String as tilo_resource::Model>::value_schema,
             text: tilo_resource::stored_text::<String>,
             absent: tilo_resource::absent_scalar::<String>,
@@ -71,6 +70,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label: false,
             label_part: 0,
             quiet_remove: false,
+            trust: tilo_resource::Trust::Ordinary,
             schema: <String as tilo_resource::Model>::value_schema,
             text: tilo_resource::stored_text::<String>,
             absent: tilo_resource::absent_scalar::<String>,
@@ -90,6 +90,7 @@ fn a_derived_record_lists_its_stored_fields() {
         label: false,
         label_part: 0,
         quiet_remove: false,
+        trust: tilo_resource::Trust::Ordinary,
         schema: <String as tilo_resource::Model>::value_schema,
         text: tilo_resource::stored_text::<String>,
         absent: tilo_resource::absent_scalar::<String>,
@@ -111,6 +112,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                trust: tilo_resource::Trust::Ordinary,
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
@@ -129,6 +131,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                trust: tilo_resource::Trust::Ordinary,
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
@@ -147,6 +150,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                trust: tilo_resource::Trust::Ordinary,
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
@@ -165,6 +169,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                trust: tilo_resource::Trust::Ordinary,
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,

@@ -27,11 +27,6 @@ impl CapturedResourcePlan {
     pub const MAX_WALL_TIME: Duration = Duration::from_secs(10 * 60);
 
     /// Reject absent or excessively broad limits before a process exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidCapturePlan`] when any limit is zero,
-    /// below the safe memory floor, or above the launcher's hard ceiling.
     pub fn validate(self) -> Result<Self, InvalidCapturePlan> {
         if self.cpu_seconds == 0
             || self.cpu_seconds > Self::MAX_CPU_SECONDS

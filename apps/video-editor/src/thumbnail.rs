@@ -191,8 +191,6 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     Thumb::new(w, h, Arc::new(rgba), false)
 }
 
-// ---- the cache ------------------------------------------------------------
-
 /// What we know about one (source, time-bucket) frame.
 #[derive(Clone)]
 enum Slot {
@@ -208,7 +206,6 @@ enum Slot {
 }
 
 impl Slot {
-    /// The key a decode is pending under, if one is.
     fn pending_key(&self) -> Option<&ThumbKey> {
         match self {
             #[cfg(any(feature = "decode", test))]
@@ -673,7 +670,6 @@ mod tests {
 
     #[test]
     fn representative_thumbnails_are_generated_sized_and_stable() {
-        // Case `representative_is_a_sized_opaque_frame_in_the_palette_family`.
         {
             let t = representative(0, 32, 18); // a bluish palette slot
             assert_eq!(t.rgba.len(), 32 * 18 * 4);
@@ -711,7 +707,6 @@ mod tests {
                 "nothing was decodable, so nothing is in flight"
             );
         }
-        // Case `a_thumbnails_render_handle_is_built_once_and_is_stable`.
         {
             // The renderer clones this per cell per frame. Every clone must carry
             // the *same* blob id, or the GPU atlas re-uploads the pixels each time.
@@ -740,7 +735,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn thumbnail_decode_failures_settle_without_condemning_sources() {
-        // Case `a_failed_decode_is_terminal_and_stops_the_wake_loop`.
         {
             // The reported bug: `ensure` asks for the bin swatch, the decode
             // yields nothing, and the old code both dropped the result and left
@@ -778,11 +772,9 @@ mod tests {
                 "a written-off source is never re-requested"
             );
 
-            // And the bin still shows the representative frame, permanently.
             let t = cache.get(id).expect("the representative frame survives");
             assert!(!t.real);
         }
-        // Case `a_source_that_answers_nothing_anywhere_is_given_up_on`.
         {
             // Repeated per-bucket failures also have to terminate, or a clip whose
             // every cell fails would keep the app awake one bucket at a time.
@@ -799,7 +791,6 @@ mod tests {
             );
             assert!(!cache.has_pending());
         }
-        // Case `one_bad_seek_does_not_condemn_a_source`.
         {
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
@@ -813,7 +804,6 @@ mod tests {
             assert!(matches!(cache.frames[&id].slots[&3], Slot::Failed));
             assert!(!cache.has_pending());
         }
-        // Case `a_request_the_pipeline_dropped_is_not_left_pending`.
         {
             // A request the shared queue dropped (it was off screen when the queue
             // filled) is unknown to the pipeline. It must not stay pending here —
@@ -843,7 +833,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn thumbnail_strip_samples_real_times_within_bounded_caches() {
-        // Case `the_strip_shows_successive_source_times_not_one_repeated_frame`.
         {
             // Feed real frames for three different source times, as the pipeline
             // would, and check the strip lookup returns a *different* picture per
@@ -865,7 +854,6 @@ mod tests {
             // Distinct handles too, so the atlas keys them separately.
             assert_ne!(a.image().data.id(), b.image().data.id());
         }
-        // Case `strip_cells_sample_across_the_trimmed_window`.
         {
             // A clip trimmed to [4, 8] must ask for buckets inside that window and
             // nowhere else — the strip shows the part of the source in use.
@@ -885,7 +873,6 @@ mod tests {
                 );
             }
         }
-        // Case `a_time_with_no_frame_yet_falls_back_without_inventing_one`.
         {
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
@@ -916,14 +903,12 @@ mod tests {
                 "a distant cell must not borrow an unrelated frame"
             );
         }
-        // Case `strip_buckets_are_distinct_and_in_order`.
         {
             assert_eq!(strip_buckets(0.0, 0.1, 6), vec![0], "one bucket, once");
             let buckets = strip_buckets(0.0, 10.0, 8);
             assert_eq!(buckets.len(), 8);
             assert!(buckets.windows(2).all(|w| w[0] < w[1]));
         }
-        // Case `lru_stamps_do_not_grow_without_bound`.
         {
             // Scrubbing visits far more buckets than are ever decoded; the
             // bookkeeping for them must be pruned too, not just the pixels.
@@ -955,7 +940,6 @@ mod tests {
                 ready <= MAX_FRAMES_PER_SOURCE,
                 "a scrolled timeline must not grow without bound ({ready} kept)"
             );
-            // The most recent buckets are the ones kept.
             assert!(
                 cache
                     .frame_at(id, bucket_time(MAX_FRAMES_PER_SOURCE as u32 + 19))

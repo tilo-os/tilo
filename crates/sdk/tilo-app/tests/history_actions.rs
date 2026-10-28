@@ -39,7 +39,13 @@ fn read_board(board: &Board, item: Option<&Id>) -> Result<Value, String> {
 #[path = "history_review.rs"]
 mod reviewed;
 
-#[resource(kind = "test.board", label = "Board", read_content = read_board)]
+#[resource(
+    kind = "test.board",
+    label = "Board",
+    read_content = read_board,
+    history_text,
+    app = "so.tilo.test-board"
+)]
 impl Board {
     /// Rename the board.
     #[action]
@@ -61,7 +67,7 @@ impl Board {
     }
 }
 
-struct BoardApp;
+pub(super) struct BoardApp;
 
 impl ResourceApp for BoardApp {
     type Resource = Board;

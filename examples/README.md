@@ -14,7 +14,7 @@ with `tilo-app run examples/apps/NAME`, or start your own app from it with
 [docs/examples.md](../docs/examples.md) explains how they differ from the
 templates `tilo-app new --template` offers.
 
-- [`counter`](apps/counter/): a model, its verbs and a field edited at its path: validation, undo, a confirmed reset, a viewer role.
+- [`counter`](apps/counter/): a model, its verbs and a field edited at its path: validation, undo, a reset Undo takes back, a viewer role.
 - [`bound-controls`](apps/bound-controls/): text, checkbox, number, slider and dropdown, each bound to a field by its path.
 - [`virtual-list`](apps/virtual-list/): a hundred-million-row list that loads only the rows in view.
 - [`data-table`](apps/data-table/): text and widget columns over a sparse table model.

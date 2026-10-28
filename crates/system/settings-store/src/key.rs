@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn get_returns_default_for_absent_and_mistyped() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         assert!(
             TOUCHPAD_ENABLED.get_at(&path),
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn set_writes_one_leaf_in_the_shape_untyped_readers_expect() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         std::fs::write(
             &path,
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn update_is_atomic_under_concurrency() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         // No directory yet: the first flips race to create it, under the lock.
         let path = Arc::new(dir.path().join("fresh/tilo/settings.json"));
         let threads: Vec<_> = (0..2)

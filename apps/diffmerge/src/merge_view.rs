@@ -310,6 +310,7 @@ impl MergeView {
         if self.model.hunks.len() == model.hunks.len() {
             for (shown, stored) in self.model.hunks.iter_mut().zip(&model.hunks) {
                 shown.resolution = stored.resolution;
+                shown.written.clone_from(&stored.written);
             }
         } else {
             self.model = model;
@@ -544,6 +545,11 @@ impl MergeView {
         self.dirty = true;
     }
 
+    /// The change under review, if any: what taking a side acts on.
+    pub(crate) fn active_hunk(&self) -> Option<usize> {
+        self.active_hunk
+    }
+
     /// Navigate the active hunk among the real-change hunks.
     pub fn navigate(&mut self, forward: bool) -> bool {
         let changes = self.model.change_indices();
@@ -716,7 +722,7 @@ impl MergeView {
                 ctx.text,
                 theme,
                 &SegmentedFace::new(&rects, &labels, selected)
-                    .style(SegmentedStyle::Segmented)
+                    .style(SegmentedStyle::Tabs)
                     .control_size(ControlSize::Small)
                     .hovered(rects.iter().position(|rect| rect.contains(self.cursor))),
             );
@@ -763,7 +769,8 @@ impl MergeView {
     ) -> (Option<Color>, Option<Color>) {
         let washed = |tone| pane::washed(theme, tone, active);
         match resolution {
-            Resolution::Unchanged => (None, None),
+            // Nothing changed, or neither side was taken.
+            Resolution::Unchanged | Resolution::Written => (None, None),
             Resolution::Conflict => (
                 Some(washed(ui::widget::Tone::Danger)),
                 Some(washed(ui::widget::Tone::Danger)),
@@ -1136,10 +1143,18 @@ impl Widget for MergeView {
         );
         self.draw_hunks(&mut ctx);
         if self.inputs.is_none() {
+            // A merge has three inputs, not the comparison's two: say what
+            // it needs and the way in that exists here.
+            let title = t("merge-empty-title");
+            let message = t("merge-empty-message");
             EmptyState::paint(
                 &mut ctx,
                 band_clip,
-                &EmptyStateContent::new(&t("empty-title")),
+                &EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Columns2),
+                    message: Some(&message),
+                    ..EmptyStateContent::new(&title)
+                },
                 Point::new(-1.0, -1.0),
             );
         }
@@ -1413,6 +1428,7 @@ fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
         Resolution::TookOurs => ("hunk-took-ours", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookTheirs => ("hunk-took-theirs", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookBoth => ("hunk-took-both", ChipStyle::Tinted(Tone::Success)),
+        Resolution::Written => ("hunk-written", ChipStyle::Tinted(Tone::Success)),
         Resolution::Unchanged => return None,
     };
     Some((t(key), style))

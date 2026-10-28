@@ -8,7 +8,6 @@ access="$repo/os/dev/validation-access.sh"
 disk="$repo/os/dev/disk-image.sh"
 vm="$repo/os/dev/vm.sh"
 build="$repo/os/dev/build-image.sh"
-workflow="$repo/.forgejo/workflows/build-image.yml"
 image="$repo/os/Containerfile"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
@@ -122,18 +121,14 @@ else
   bad 'signed validation DDI can fail extension-release lookup on a virtio block device'
 fi
 
-# Only a generic publication's gate prepares it; build-image.sh passes it only
-# when asked; the image still carries no SSH server.
-if grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then' "$workflow" \
-   && grep -Fq './os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"' "$workflow" \
-   && grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic && '\''${{ matrix.arch }}'\'' == aarch64 ]]; then' "$workflow" \
-   && grep -Fq './os/tests/validation_drive_qemu.sh' "$workflow" \
-   && grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
+# build-image.sh passes the validation overlay only when asked; the image still
+# carries no SSH server.
+if grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
    && grep -Fq 'openssh-server' "$repo/os/scripts/verify-runtime-crypto-packages.sh" \
    && ! grep -Eq 'dnf install[^&]*openssh-server' "$image"; then
-  ok 'validation access is prepared for publication gates only; the image stays sshd-free'
+  ok 'validation access reaches only a disk built with it; the image stays sshd-free'
 else
-  bad 'validation access leaks beyond the publication gate, or the image gained sshd'
+  bad 'validation access leaks beyond the gate disk, or the image gained sshd'
 fi
 
 exit "$fail"

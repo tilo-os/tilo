@@ -111,7 +111,6 @@ fn ghost_cursor_paints_only_remote_presence() {
 
         let mut offscreen = OffscreenRenderer::new(32, 32);
         let rgba = offscreen.render(&scene, Color::BLACK);
-        // Four corners + center as a cheap proxy for "the scene was empty".
         for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31), (16, 16)] {
             let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, 32, x, y);
             assert_eq!(

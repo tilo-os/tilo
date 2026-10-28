@@ -797,6 +797,28 @@ class AppResourceActionContractTests(unittest.TestCase):
                 self.assertIn("tilo-app", reasons)
                 self.assertIn("Widget::resources", reasons)
 
+    def test_a_part_crate_publishes_through_the_one_app_that_links_it(self):
+        facade = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+
+        def part_reasons(linked: bool) -> list[str]:
+            root = self.fixture("pub fn pane() {}\n", app_name="sample-parts")
+            owner = root / "apps" / "sample"
+            (owner / "src").mkdir(parents=True)
+            (owner / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (owner / "tilo-app.toml").write_text('[package]\nid="so.tilo.sample"\n', encoding="utf-8")
+            link = 'sample-parts={path="../sample-parts"}\n' if linked else ""
+            (owner / "Cargo.toml").write_text(
+                '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n' + facade + link,
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            return [item.reason for item in violations if "sample-parts" in str(item.path)]
+
+        with self.subTest(phase="linked by a launched app, the app's contract covers it"):
+            self.assertEqual(part_reasons(True), [])
+        with self.subTest(phase="linked by no app, it must publish its own surface"):
+            self.assertIn("app does not implement Widget::resources", part_reasons(False))
+
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
             root = self.fixture(
@@ -1035,7 +1057,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
             violations, _ = contract.audit(root)
-            self.assertTrue(any("raw on_click closure" in item.reason for item in violations))
+            self.assertTrue(any("closure-activated control" in item.reason for item in violations))
         with self.subTest(phase='audited callback ceiling is reduce only'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
@@ -1047,7 +1069,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
@@ -1071,11 +1093,11 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
-            self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+            self.assertTrue(any("stale closure_control ceiling" in item.reason for item in violations))
         with self.subTest(phase="each ceiling lives in its app's baseline file"):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
@@ -1087,11 +1109,131 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "other.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("belongs in" in item.reason for item in violations))
+
+    def test_closure_controls_count_any_argument_but_an_action_binding(self):
+        header = (
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        root = self.fixture(
+            header
+            + "fn view(ui: &Ui) {\n"
+            " Button::new().on_click(ui.push(Action::Open));\n"
+            " List::new().on_activate(open);\n"
+            " Input::new()\n   .on_change(move |text| set(text))\n   .on_submit(submit_handler);\n"
+            " Tree::new().on_select({ let c = c.clone(); move |node| c.set(node) });\n"
+            " Button::new().on_action(binding);\n"
+            " Button::new().on_effect(effect);\n"
+            " Row::new().on_context_menu(menu);\n"
+            "}\n"
+            "impl Pager { fn key(&mut self) { self.on_back(); self.on_select(1); } }\n"
+            "#[cfg(test)]\nmod tests { fn t() { Button::new().on_click(|| ()); } }\n"
+        )
+        (root / "apps/sample/src/tests.rs").write_text(
+            "fn t() { Button::new().on_click(|| ()); }\n", encoding="utf-8"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        violations, _ = contract.audit(root, counts)
+        self.assertEqual(counts[("closure_control", "apps/sample/src/lib.rs")], 5)
+        self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
+        self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
+
+    def test_closure_run_buttons_of_composites_count_by_builder_and_arity(self):
+        header = (
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        root = self.fixture(
+            header
+            + "fn view() {\n"
+            " Dialog::new().primary_action(\"Save\", save).secondary_action(\"Cancel\", || ());\n"
+            " let items = vec![MenuItem::action(\"Copy\", copy), MenuItem::separator()];\n"
+            " ListRow::new().action(Icon::X, \"Remove\", remove);\n"
+            " row.action(icon, label, intents.sender(intent));\n"
+            " row.action(icon_for(kind), \"Pin\", move |a, b| pin(a, b),);\n"
+            " card.hover_action(icon, \"Play\", || play());\n"
+            " spec.action(\"go\");\n"
+            " toolbar.action(ToolbarAction { menu: true, ..action(UP, \"up\", t, true, false) });\n"
+            " tree.action(&id, \"activate\");\n"
+            "}\n"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        contract.audit(root, counts)
+        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 4)
+
+    def test_a_counted_builder_whose_arity_changes_fails(self):
+        root = self.fixture("")
+        widget = root / "crates/sdk/ui-core/src/widget/row.rs"
+        widget.parent.mkdir(parents=True)
+        widget.write_text(
+            "impl Row {\n"
+            " pub fn action(mut self, icon: Icon, on: impl FnMut() + 'static) -> Self { self }\n"
+            " pub fn hover_action(mut self, icon: Icon, label: String, on: impl Fn(&str, u8)) -> Self { self }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        violations = contract.unclassified_control_callbacks(root)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("`action` takes 2 arguments", violations[0].reason)
+
+    def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
+        root = self.fixture("")
+        baseline = root / contract.BASELINE
+        baseline.mkdir(parents=True)
+        (baseline / "sample.toml").write_text(
+            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 3\n"apps/sample/src/gone.rs" = 2\n'
+            '"apps/sample/src/up.rs" = 1\n',
+            encoding="utf-8",
+        )
+        (baseline / "other.toml").write_text(
+            '[ratchets.closure_control]\n"apps/other/src/lib.rs" = 1\n', encoding="utf-8"
+        )
+        counts = {
+            ("closure_control", "apps/sample/src/lib.rs"): 2,
+            ("closure_control", "apps/sample/src/gone.rs"): 0,
+            ("closure_control", "apps/sample/src/up.rs"): 4,
+            ("closure_control", "apps/sample/src/new.rs"): 5,
+            ("closure_control", "apps/other/src/lib.rs"): 0,
+            ("bespoke_command_entry", "apps/sample/src/lib.rs"): 2,
+        }
+        current = contract.load_ratchet_baseline(root)
+        contract.write_baseline(root, counts, current, set())
+        self.assertFalse((baseline / "other.toml").exists())
+        self.assertEqual(
+            (baseline / "sample.toml").read_text(encoding="utf-8"),
+            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 2\n"apps/sample/src/up.rs" = 1\n',
+        )
+        contract.write_baseline(root, counts, {}, {"bespoke_command_entry"})
+        self.assertEqual(
+            (baseline / "sample.toml").read_text(encoding="utf-8"),
+            '[ratchets.bespoke_command_entry]\n"apps/sample/src/lib.rs" = 2\n',
+        )
+
+    def test_every_closure_taking_toolkit_callback_is_classified(self):
+        root = self.fixture("")
+        widget = root / "crates/sdk/ui-core/src/widget/knob.rs"
+        widget.parent.mkdir(parents=True)
+        widget.write_text(
+            "impl Knob {\n"
+            " pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self { self }\n"
+            " pub fn on_motion(&mut self, p: Point) {}\n"
+            " pub fn on_twist<F>(mut self, f: F) -> Self\n where F: FnMut(f64) + 'static { self }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        violations = contract.unclassified_control_callbacks(root)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("`on_twist` is unclassified", violations[0].reason)
+        self.assertEqual(violations[0].line, 4)
 
     def test_bespoke_automation_palette_and_search_activation_paths_fail(self):
         with self.subTest(phase='new bespoke automation entry point fails'):
@@ -1404,6 +1546,51 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "// a field that was `Json<T>` moves with `evolution::retype_json`\n"
             )
             self.assertEqual(banned(new), [])
+
+
+class PublicSurfaceTests(unittest.TestCase):
+    def fixture(self, *, main: str, manifest: str = "", surface: bool = False) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        app = root / "apps" / "sample"
+        (app / "src").mkdir(parents=True)
+        (app / "src" / "main.rs").write_text(main, encoding="utf-8")
+        (app / "tilo-app.toml").write_text(
+            '[package]\nid = "so.example.sample"\n' + manifest, encoding="utf-8"
+        )
+        if surface:
+            (app / "surface.toml").write_text("", encoding="utf-8")
+        return root
+
+    def reported(self, root: Path) -> list[str]:
+        return [v.reason for v in contract.audit_public_surfaces(root)]
+
+    def test_a_windowed_app_without_its_surface_is_reported(self):
+        root = self.fixture(main="ui::main!(sample::App);\n", manifest='[entrypoint]\ntype = "gui"\n')
+        self.assertEqual(len(self.reported(root)), 1)
+        self.assertIn("commits its public surface", self.reported(root)[0])
+
+    def test_a_windowed_app_committing_its_surface_passes(self):
+        root = self.fixture(
+            main="ui::main!(sample::App);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+            surface=True,
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_a_shared_definition_is_no_surface_of_its_own(self):
+        # `ui::main!(definition = ..)` registers a definition the browser
+        # draws: the windowed host that runs it commits the surface.
+        root = self.fixture(
+            main="ui::main!(definition = sample::definition);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_an_app_without_a_window_publishes_nothing(self):
+        root = self.fixture(main="fn main() { run_batch(); }\n", manifest='[entrypoint]\ntype = "cli"\n')
+        self.assertEqual(self.reported(root), [])
 
 
 if __name__ == "__main__":

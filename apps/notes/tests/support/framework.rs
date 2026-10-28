@@ -29,7 +29,6 @@ pub fn add_note(app: &mut TestApp<NotesShell>, title: &str, body: &str) -> PageI
     page
 }
 
-/// Notes with one note, `title`, open.
 pub fn with_note(title: &str, body: &str) -> (TestApp<NotesShell>, PageId) {
     let mut app = notes();
     let page = add_note(&mut app, title, body);

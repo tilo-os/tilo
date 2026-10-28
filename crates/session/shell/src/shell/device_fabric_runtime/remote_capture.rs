@@ -4,16 +4,19 @@
 //! compositor-facing concerns around it: transient lock contention, route
 //! freshness, peer presence, policy teardown, and locally verified app focus.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
+
+use tokio::sync::oneshot;
 
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric::PersonalFabricAction;
 use crate::shell::network::{ReceivedPersonalFabricAction, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
+use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS;
-use crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime;
+use crate::shell::remote_capture::runtime::{RemoteCaptureConsentView, SharedRemoteCaptureRuntime};
 
 #[derive(Default)]
 pub(super) struct RemoteCaptureIntegration {
@@ -22,6 +25,107 @@ pub(super) struct RemoteCaptureIntegration {
     pending_actions: VecDeque<ReceivedPersonalFabricAction>,
     stale_focus: BTreeSet<(String, String)>,
     teardown_all_pending: bool,
+    consent_sheets: CaptureConsentSheets,
+}
+
+/// Requests from another of the person's devices to use this one's camera,
+/// microphone or scanner, asked on the session's consent sheet (the trusted
+/// sheet every permission uses), one sheet per request. A request that
+/// expires or is withdrawn takes its sheet with it; an answer is carried to
+/// the capture runtime as the person gave it.
+#[derive(Default)]
+pub(super) struct CaptureConsentSheets {
+    /// The session's sheet queue, taken when the first request arrives.
+    queue: Option<PortalDialogQueue>,
+    /// Each request asked about: its sheet's handle and the answer to come.
+    asked: BTreeMap<[u8; 16], (String, oneshot::Receiver<ReviewDecision>)>,
+}
+
+impl CaptureConsentSheets {
+    #[cfg(test)]
+    fn with_queue(queue: PortalDialogQueue) -> Self {
+        Self {
+            queue: Some(queue),
+            asked: BTreeMap::new(),
+        }
+    }
+
+    /// Bring the sheets in line with `consents`, the requests waiting now:
+    /// withdraw the sheets of requests that are gone, ask about new ones
+    /// (`source_label` names the device asking), and return the answers
+    /// given since, as `(request, approved)`.
+    pub(super) fn sync(
+        &mut self,
+        consents: &[RemoteCaptureConsentView],
+        source_label: impl Fn(&DeviceId) -> String,
+    ) -> Vec<([u8; 16], bool)> {
+        if consents.is_empty() && self.asked.is_empty() {
+            return Vec::new();
+        }
+        let queue = self.queue.get_or_insert_with(PortalDialogQueue::global);
+        self.asked.retain(|request, (handle, _)| {
+            let live = consents
+                .iter()
+                .any(|consent| consent.request_id == *request);
+            if !live {
+                queue.cancel(handle);
+            }
+            live
+        });
+        for consent in consents {
+            if self.asked.contains_key(&consent.request_id) {
+                continue;
+            }
+            let handle = consent_handle(consent.request_id);
+            let input = crate::shell::i18n::t(crate::shell::overlay_host::remote_capture_kind_key(
+                consent.profile.kind(),
+            ));
+            let request = ReviewRequest {
+                handle: handle.clone(),
+                app_id: consent.app_label.clone(),
+                title: crate::shell::i18n::t_args(
+                    "remote-capture-consent-title",
+                    &[("input", input.into())],
+                ),
+                reason: crate::shell::i18n::t_args(
+                    "remote-capture-consent-detail",
+                    &[
+                        ("source", source_label(&consent.peer).into()),
+                        ("app", consent.app_label.as_str().into()),
+                    ],
+                ),
+                resource: String::new(),
+                confirm_label: crate::shell::i18n::t("remote-capture-consent-allow"),
+            };
+            match queue.enqueue_review(request) {
+                Ok(answer) => {
+                    self.asked.insert(consent.request_id, (handle, answer));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a remote capture request could not be asked on the consent sheet");
+                }
+            }
+        }
+        let mut answers = Vec::new();
+        self.asked
+            .retain(|request, (_, answer)| match answer.try_recv() {
+                Ok(decision) => {
+                    answers.push((*request, decision == ReviewDecision::Confirmed));
+                    false
+                }
+                // A sheet that went without an answer declines.
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    answers.push((*request, false));
+                    false
+                }
+                Err(oneshot::error::TryRecvError::Empty) => true,
+            });
+        answers
+    }
+}
+
+fn consent_handle(request: [u8; 16]) -> String {
+    format!("remote-capture/{}", hex::encode(request))
 }
 
 impl RemoteCaptureIntegration {
@@ -105,6 +209,7 @@ impl RemoteCaptureIntegration {
         self.online_peers = online;
         runtime.pump(Instant::now());
         let outgoing = runtime.drain_outgoing();
+        let consents = runtime.consents();
         drop(runtime);
         for (peer, action) in outgoing {
             if network
@@ -114,6 +219,19 @@ impl RemoteCaptureIntegration {
                 && let Ok(mut runtime) = runtime.try_lock()
             {
                 runtime.outgoing_failed(&peer, &action);
+            }
+        }
+        let answers = self.consent_sheets.sync(&consents, |peer| {
+            network.device_fabric().snapshots().get(peer).map_or_else(
+                || crate::shell::i18n::t("qs-devices-another-certified"),
+                |snapshot| snapshot.presence.label.clone(),
+            )
+        });
+        for (request, approved) in answers {
+            if let Err(error) = crate::shell::remote_capture::runtime::decide_remote_capture(
+                network, request, approved,
+            ) {
+                tracing::warn!(%error, approved, "a remote capture answer could not be delivered");
             }
         }
     }
@@ -214,5 +332,48 @@ mod tests {
 
         owner_changes_only_across_app_or_workspace_focus();
         policy_teardown_survives_runtime_lock_contention();
+    }
+
+    fn camera_request(id: u8) -> RemoteCaptureConsentView {
+        RemoteCaptureConsentView {
+            request_id: [id; 16],
+            peer: DeviceId::new("phone").unwrap(),
+            app_label: "Camera".into(),
+            profile: RemoteCaptureProfile::Camera {
+                format: RemoteVideoFormat::Nv12,
+                width: 1280,
+                height: 720,
+                frames_per_second: 30,
+            },
+        }
+    }
+
+    #[test]
+    fn a_camera_request_is_asked_on_the_consent_sheet_and_answered_from_it() {
+        use crate::shell::portal_dialog::{DialogView, PortalDialogController};
+        let queue = PortalDialogQueue::default();
+        let mut sheets = CaptureConsentSheets::with_queue(queue.clone());
+        let mut controller = PortalDialogController::new(queue);
+        let label = |_: &DeviceId| "Phone".to_string();
+
+        assert!(sheets.sync(&[camera_request(1)], label).is_empty());
+        controller.pump();
+        let view = controller.view().expect("the consent sheet is up");
+        assert!(matches!(view, DialogView::Review { .. }));
+        assert_eq!(view.title(), "Share this device's camera?");
+        assert!(view.detail().contains("Phone"), "{}", view.detail());
+        // Asked once, however often the runtime is read.
+        assert!(sheets.sync(&[camera_request(1)], label).is_empty());
+
+        assert!(controller.confirm());
+        assert_eq!(sheets.sync(&[camera_request(1)], label), [([1; 16], true)]);
+
+        // A request that goes away before an answer takes its sheet along.
+        assert!(sheets.sync(&[camera_request(2)], label).is_empty());
+        controller.pump();
+        assert!(controller.view().is_some());
+        assert!(sheets.sync(&[], label).is_empty());
+        controller.pump();
+        assert!(controller.view().is_none(), "the withdrawn sheet is gone");
     }
 }

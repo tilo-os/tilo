@@ -107,7 +107,6 @@ mod availability_control_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn delayed_pinned_hydration_is_cancelled_only_by_unpin() {
-        // Phase `unrelated_wakes_do_not_cancel_a_delayed_pinned_hydration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
@@ -138,7 +137,6 @@ mod availability_control_tests {
             noisy_writer.await.unwrap();
             assert!(completed.is_some(), "unrelated wakes must not starve a pin");
         }
-        // Phase `unpin_wake_cancels_a_delayed_pinned_hydration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
@@ -173,7 +171,6 @@ mod availability_control_tests {
             unpin.await.unwrap();
             assert!(cancelled.is_none(), "unpin must cancel an active transfer");
         }
-        // Phase `pinned_hydration_is_bounded_and_unpin_cancels_queued_retries`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -261,7 +258,6 @@ mod availability_control_tests {
 
     #[tokio::test]
     async fn pin_policy_persists_and_read_only_collaborators_manage_offline_policy() {
-        // Phase `pin_policy_persists_and_a_directory_covers_future_descendants`.
         {
             let dir = tempfile::tempdir().unwrap();
             let registry_path = dir.path().join("availability.json");
@@ -303,7 +299,6 @@ mod availability_control_tests {
                 Some(AvailabilityPolicy::Pinned)
             );
         }
-        // Phase `a_read_only_collaborator_can_manage_device_local_offline_policy`.
         {
             const READER: [u8; 32] = [0x51; 32];
             let dir = tempfile::tempdir().unwrap();
@@ -502,6 +497,199 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
+    /// "Keep offline" holds a file's bytes against the cache budget exactly
+    /// while a pin covers it: a file already read in full is kept from the
+    /// pass that sees the pin, its bytes go back to the cache once no pin
+    /// covers it, and a file only this device holds is never made
+    /// evictable by either.
+    #[tokio::test]
+    async fn keep_offline_holds_bytes_against_the_cache_budget_only_while_pinned() {
+        use crate::store::area::Retention;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
+        let read = store.write_content(&bytes(1)).await.unwrap().unwrap();
+        let authored = store.write_content(&bytes(2)).await.unwrap().unwrap();
+        // `read` came from a peer and was read in full: a cached copy.
+        store
+            .files()
+            .set_retention(read.as_bytes(), Retention::Cached)
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let namespace = Arc::new(Mutex::new(Namespace::new("keep-offline").unwrap()));
+        let (read_ino, authored_ino) = {
+            let mut namespace = namespace.lock().unwrap();
+            (
+                namespace
+                    .create_file(ROOT_INO, "read.bin", Some(&read), size, 1)
+                    .unwrap(),
+                namespace
+                    .create_file(ROOT_INO, "authored.bin", Some(&authored), size, 1)
+                    .unwrap(),
+            )
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let pass = || {
+            reconcile_pinned_hydration(
+                &namespace,
+                Arc::clone(&hydrator),
+                Arc::clone(&registry),
+                None,
+                wakes.clone(),
+            )
+        };
+        let files = store.files();
+        let retention = |hash: Hash| files.entry(hash.as_bytes()).map(|entry| entry.retention);
+        files.set_budget(0);
+
+        for ino in [read_ino, authored_ino] {
+            fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
+        }
+        let _ = pass().await;
+        assert_eq!(
+            retention(read),
+            Some(Retention::Pinned),
+            "a file already here is kept once it is pinned"
+        );
+        assert_eq!(retention(authored), Some(Retention::LocalOnly));
+        files.evict_to_budget(&[]);
+        assert!(
+            files.entry(read.as_bytes()).is_some(),
+            "the cache budget never takes a file kept offline"
+        );
+
+        for ino in [read_ino, authored_ino] {
+            fs.set_pin_policy(ino, AvailabilityPolicy::Automatic)
+                .unwrap();
+        }
+        let _ = pass().await;
+        assert_eq!(
+            retention(read),
+            Some(Retention::Cached),
+            "a file no pin covers is cache again"
+        );
+        assert_eq!(
+            retention(authored),
+            Some(Retention::LocalOnly),
+            "a file only this device holds stays unevictable after its pin goes"
+        );
+        files.evict_to_budget(&[]);
+        assert!(files.entry(read.as_bytes()).is_none());
+        assert!(files.entry(authored.as_bytes()).is_some());
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    /// A file already here when it is pinned is held before the pass that
+    /// sees the pin fetches anything: what that pass downloads counts
+    /// against a full cache budget when it lands, and must not push out a
+    /// file the same pin covers.
+    #[tokio::test]
+    async fn a_pinned_download_never_evicts_a_file_the_same_pin_already_holds() {
+        use crate::store::area::Retention;
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
+        let source_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let source_store = ContentStore::memory();
+        let remote = source_store
+            .write_content(&bytes(2))
+            .await
+            .unwrap()
+            .unwrap();
+        let source_router = Router::builder(source_endpoint.clone())
+            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+            .spawn();
+
+        let dir = tempfile::tempdir().unwrap();
+        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let here = store.write_content(&bytes(1)).await.unwrap().unwrap();
+        // `here` came from a peer and was read in full: a cached copy.
+        store
+            .files()
+            .set_retention(here.as_bytes(), Retention::Cached)
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), Arc::clone(&store)));
+        hydrator.add_peer(source_endpoint.addr());
+        let namespace = Arc::new(Mutex::new(Namespace::new("pinned-download").unwrap()));
+        let folder = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "trip", 1).unwrap();
+            namespace
+                .create_file(folder, "here.bin", Some(&here), size, 1)
+                .unwrap();
+            namespace
+                .create_file(folder, "remote.bin", Some(&remote), size, 1)
+                .unwrap();
+            folder
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let files = store.files();
+        // The cache is full: whatever lands next makes room by eviction.
+        files.set_budget(0);
+
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        let _ = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes,
+        )
+        .await;
+        assert!(
+            files
+                .entry(remote.as_bytes())
+                .is_some_and(|entry| entry.complete()),
+            "the pass downloads the file that is not here yet"
+        );
+        assert_eq!(
+            files.entry(here.as_bytes()).map(|entry| entry.retention),
+            Some(Retention::Pinned),
+            "the download never pushes out a file the same pin holds"
+        );
+
+        drop(fs);
+        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
+    }
+
+    /// How many times the mount's pin worker has come back to wait.
+    fn worker_turns(fs: &QuickFS) -> u64 {
+        fs.pinned_hydration
+            .as_ref()
+            .unwrap()
+            .turns
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits for `turns` more turns of the mount's pin worker, looking every
+    /// `every`.
+    async fn after_turns(fs: &QuickFS, turns: u64, every: Duration) {
+        let from = worker_turns(fs);
+        tilo_test_env::within(format!("{turns} turns of the pin worker"), async {
+            while worker_turns(fs) < from.saturating_add(turns) {
+                tokio::time::sleep(every).await;
+            }
+        })
+        .await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pin_worker_idle_tick_does_not_walk_namespace() {
         let dir = tempfile::tempdir().unwrap();
@@ -536,12 +724,19 @@ mod availability_control_tests {
             record.residency == Residency::Resident { bytes: 0 }
         })
         .await;
-        // Let the pass that observes the worker's own registry writes run.
-        tokio::time::sleep(repair.saturating_mul(10)).await;
-
         let walks = || namespace.lock().unwrap().node_entry_read_count();
-        let settled = walks();
-        tokio::time::sleep(repair.saturating_mul(25)).await;
+        // Counted in the worker's own turns, not in time: however slowly
+        // its ticks come, each one is a chance to walk. The pass that
+        // observes the worker's own registry writes runs first: settled once
+        // two ticks in a row walk nothing.
+        let settled = loop {
+            let before = walks();
+            after_turns(&fs, 2, repair).await;
+            if walks() == before {
+                break before;
+            }
+        };
+        after_turns(&fs, 25, repair).await;
         assert_eq!(
             walks(),
             settled,
@@ -600,7 +795,6 @@ mod availability_control_tests {
         })
         .await;
 
-        // A file arrives in the pinned folder outside every FUSE callback.
         let remote = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -631,7 +825,13 @@ mod availability_control_tests {
         };
         // Let the pass those namespace changes start finish first, so only
         // the registry's announcement can bring the pin.
-        tokio::time::sleep(PINNED_CHANGE_SETTLE.saturating_mul(4)).await;
+        let turns = worker_turns(&fs);
+        tilo_test_env::within("the pass the namespace changes start", async {
+            while worker_turns(&fs) == turns {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
         assert!(
             registry
                 .lock()
@@ -751,7 +951,6 @@ mod availability_control_tests {
 
     #[tokio::test]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
-        // Phase `retry_transfer_runs_off_thread_and_persists_completion`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -791,7 +990,6 @@ mod availability_control_tests {
             })
             .await;
         }
-        // Phase `retrying_an_empty_file_completes_without_a_blob_fetch`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -1042,7 +1240,6 @@ mod thumb_tests {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-            // An image file whose content is local to the host.
             let png = solid_png(600, 400, [40, 130, 220]);
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
@@ -1054,7 +1251,6 @@ mod thumb_tests {
             // No thumbnail recorded yet.
             assert!(namespace.lock_recover().thumb_hash(ino).is_none());
 
-            // The metadata path returns a sized PNG preview.
             let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
             let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
             assert!(decoded.is_valid());
@@ -1086,7 +1282,6 @@ mod thumb_tests {
                 "second request is a cache hit, identical bytes"
             );
         }
-        // Phase `signed_mount_publishes_and_installs_verified_thumbnail_metadata`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -1285,7 +1480,6 @@ mod predictive_tests {
         reason = "each fixture keeps one (ACL-filtered) namespace snapshot while asserting ordered predictive candidates"
     )]
     async fn prediction_selects_visible_siblings_of_the_same_type() {
-        // Phase `opening_an_image_selects_the_next_two_images_not_other_types`.
         {
             let (namespace, fs) = fixture().await;
             let (first, second_hash, third_hash) = {
@@ -1311,7 +1505,6 @@ mod predictive_tests {
                 vec![(second_hash, 30), (third_hash, 40)]
             );
         }
-        // Phase `prediction_never_includes_a_sibling_hidden_by_the_acl`.
         {
             const ME: [u8; 32] = [0xA1; 32];
             let (namespace, fs) = fixture().await;
@@ -1351,7 +1544,6 @@ mod predictive_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn record_catalogs_hide_acl_denied_records_and_refuse_stale_v2_pages() {
-        // Phase `record_catalog_contains_nested_records_but_not_acl_hidden_siblings`.
         {
             const ME: [u8; 32] = [0xA2; 32];
             let (namespace, fs) = fixture().await;
@@ -1761,7 +1953,6 @@ mod predictive_tests {
         assert_eq!(incremental.acl_evaluations, 2);
         assert!(incremental.by_id.contains_key(&revealed));
 
-        // Judging every row from scratch agrees row for row.
         *fs.acl_visible_record_index.lock_recover() = None;
         fs.refresh_acl_visible_record_index();
         let full = fs.acl_visible_record_index().unwrap();
@@ -1770,7 +1961,6 @@ mod predictive_tests {
         assert_eq!(full.hidden, incremental.hidden);
         assert_eq!(full.revision, incremental.revision);
 
-        // A new ACL revision judges every row again.
         let mut widened = WorkspaceAcl::new();
         widened.grant_read(ME, "/");
         handle.replace(widened);
@@ -3554,7 +3744,6 @@ mod write_stage_tests {
             "reading a {size}-byte document in {CHUNK}-byte chunks allocated {allocated} bytes"
         );
 
-        // An edit of the document itself is a new export.
         assert_eq!(fs.write_buffer(doc, 0, b"# Title\n\n"), Ok(9));
         assert_eq!(fs.flush_inode(doc), Ok(()));
         fs.settle_last_close(doc, true);

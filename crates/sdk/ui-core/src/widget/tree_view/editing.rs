@@ -6,7 +6,7 @@
 
 use super::{
     DropPlacement, DropTarget, ElementState, Key, KeyEvent, LABEL_ROLE, MouseButton, NamedKey,
-    NodeId, Point, Rect, ReorderDrop, TreeModel, TreeRowKey, TreeView, WindowEvent,
+    NodeId, Point, Rect, ReorderDrop, TreeImpl, TreeModel, TreeRowKey, WindowEvent,
 };
 use crate::widget::{TextInput, Widget};
 
@@ -18,7 +18,7 @@ pub(super) struct RenameField {
 
 /// A structural move of one row — what a drag does, as a single step for the
 /// keyboard (`Alt` + arrows, or `Tab` / `Shift+Tab` with
-/// [`TreeView::tab_indents`]) and for assistive technology, which sees one
+/// `TreeView::tab_indents`) and for assistive technology, which sees one
 /// button per move on every row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeMove {
@@ -61,7 +61,7 @@ impl TreeMove {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Enable inline rename. `F2`, [`Self::begin_rename`] and (with
     /// [`Self::rename_on_double_click`]) a double click open a plain text
     /// field over the row's label; `Enter`, a click elsewhere or the tree

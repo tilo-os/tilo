@@ -236,7 +236,9 @@ become the same `WindowEvent::Ime` and key events as on every other platform
 (`app/android_text_input.rs`), so text fields need nothing Android-specific.
 The keyboard is given the focused field's text around the caret (up to 2048
 bytes each side, nothing for a password field) for suggestions and
-auto-capitalisation.
+auto-capitalisation. A field typed from its own on-screen keys (the
+calculator's keypad) sets `InputHints::own_keys`, which keeps the soft keyboard
+down while hardware keys still type.
 
 **Accessibility.** The AccessKit tree reaches TalkBack through
 `accesskit_android`'s injecting adapter on the window's decor view
@@ -305,7 +307,7 @@ Useful probes:
 - An AVD configured with a hardware keyboard never shows the soft keyboard,
   but `adb shell input text` still types into the focused field.
 
-Nothing in CI runs on a device. The `android` job in `check.yml` runs
-`cargo clippy -D warnings` on every affected app's `<app>-android` example for
-`aarch64-linux-android` and `x86_64-linux-android`; it is a type check, not an
-APK build ([CI performance](ci-performance.md)).
+Nothing in CI runs on a device. t's `android` check runs
+`cargo clippy -D warnings` on every app's `<app>-android` example for
+`aarch64-linux-android` and `x86_64-linux-android` (tools/ci/clippy-android.sh);
+it is a type check, not an APK build.

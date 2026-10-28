@@ -252,7 +252,6 @@ pub fn placeholders_in(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i + 1 < bytes.len() {
-        // Find the closing brace.
         if bytes.get(i).copied() == Some(b'$')
             && bytes.get(i + 1).copied() == Some(b'{')
             && let Some(rest) = body.get(i + 2..)

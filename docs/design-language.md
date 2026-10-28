@@ -38,18 +38,21 @@ no appearance to get wrong.
 | Role | Colour | Used for | Never used for |
 |---|---|---|---|
 | On state | green `intent.on_state` (OKLCH 0.62/0.15/150 dark, 0.58/0.15/150 light), white knob or mark | a switch's track, a checked checkbox or radio, an active Quick Settings tile, a "connected" dot | sliders, selection, buttons |
-| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint | hover, resize grips, window edges, icons at rest, borders |
+| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint, a value's fill (`intent.value_fill`: a slider's filled track, a progress bar, a gauge) | hover, resize grips, window edges, icons at rest, borders |
 | Presence | the twelve presence hues | other people: avatars, cursors, their selection, what they are doing | anything that is not a person |
 | Status | muted danger, warning, success, info (C ≤ 0.13) | status text, badges, a destructive button's label | decoration |
-| Neutral | everything else | surfaces, ink, icons, hairlines, sliders and progress (`intent.neutral_fill`) | — |
+| Neutral | everything else | surfaces, ink, icons, hairlines | — |
 
 - **Focus ring:** keyboard focus only (`ui::focus_visible`), on every
   focusable control. A pointer press never shows it. A text field's focus is
   its caret.
-- **Window edge resize grip:** neutral ink at rest, primary ink while
-  dragging; never the accent.
-- **Slider:** strong neutral ink on a raised track. A value is not an on
-  state.
+- **Window edge resize:** the resize cursor first; resting on an edge for
+  a moment lights the window's outline along that whole edge in secondary
+  ink, primary ink while dragging, with the window's size in a chip beside
+  it that fades once let go. Nothing marks an edge at rest; never the accent.
+- **Slider and progress:** the value is the accent as a mark
+  (`intent.value_fill`) on a lift of the ground, never the text colour. A
+  value is not an on state.
 - **Buttons:** primary is the accent fill with a white label; secondary the
   raised level; quiet (`ButtonRole::Plain`) has no fill and lifts on hover;
   destructive is secondary with a danger label, filled only inside the
@@ -144,6 +147,15 @@ floating thing casts two (a tight contact layer and a wide one) and draws a
   unblurred translucency.
 - Chrome over media (video controls, photo info) uses the same material on the
   media itself.
+- The one exception is chrome over pixels the person is choosing: the capture
+  bar and its selection controls use the **see-through material**: the
+  blurred backdrop under `surfaces.overlay` at `surfaces.see_through_opacity`
+  (50 %), so the screen under it stays visible
+  (`floating_surface::Material::SeeThrough`). Where there is no backdrop pass
+  it is the half-transparent ground alone. It keeps the floating hairline and
+  casts its shadow only outside itself. The bar moves away from what is
+  chosen, so the blur never hides it. Reduced transparency, forced colours
+  and high contrast make it opaque.
 - The window group's docked tab strip is a floating-material surface too: one
   frosted body behind the whole strip (the desktop behind it, blurred and
   tinted), with the active tab an opaque lift on it, lighter than the strip
@@ -210,6 +222,40 @@ system-wide shortcut toggles it in every app. History, where an app has it,
 is one glyph at the row's trailing edge that reads as on while History
 shows; no app draws a History button of its own. Narrow windows collapse the
 sidebar into a floating drawer instead of squeezing content.
+
+**Rail or list.** A navigation sidebar reads by its width. Narrow, it is a
+rail: each destination a tile, its icon over a short caption. Wider, it is
+a list: the icon beside the label. The person drags the sidebar's edge
+(pointer, finger, or the arrow keys on its separator) and the width follows
+one to one, from the rail's width to the sidebar's maximum; the rows change
+form where every label stands whole beside its icon, never past the
+sidebar's minimum, so nothing jumps under the pointer. Dragged past the
+rail it hides, as the sidebar toggle hides it. The width is remembered per
+app on this device. Rail tiles never stand in a wide sidebar, and list rows
+never in a rail.
+
+Which form a sidebar starts in follows the destinations it can hold, not
+the app and not what has loaded so far: a sidebar whose places come under
+headings (a contact book's groups, a mail account's folders) declares so
+and starts as a list even before any heading arrives. The rule runs once,
+when a window first shows its sidebar; places that load afterwards never
+change its form or width in that window's life. Only the person's drag
+does.
+
+| Starts as | When |
+|---|---|
+| Rail | One flat set of at most seven destinations, each with an icon and a label that stands whole in a tile (two caption lines, broken only at spaces), with no headings, folding, "New" action or filter, no actions in the sidebar's header, and no row that says more than its label (a second line, a figure, a check, a status, a colour, people) or nests or renames |
+| List | Anything else: headings, many or growing sets of places, nesting, long labels, rows with more to say |
+
+Today that makes these sidebars rails: Tube (six places), Clocks (four
+screens), and Containers (four places; their counts show once widened); and these
+lists: Settings, Mail, Files, Contacts (its groups), Feeds (its header adds a subscription), Passwords,
+Snippets, Shortcuts, Backups, Themes, Database client, Disks (sizes and
+health), Firewall (no icons, the active zone's label). Remote's rail is
+always a rail (`NavMode::Docked`). A sidebar that is not a navigation list
+alone (API tester's environment picker over its lists, Notes' notebook
+column) keeps its list width. Apps that paint their own sidebar (Photos,
+Music, Chat, Calendar) do not have the rail yet.
 
 ## Space and density
 
@@ -284,7 +330,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Chip` | people, tags and filters only |
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
-| `Slider` | neutral fill on a raised track |
+| `Slider` | the value fill on a lifted track |
 | `ListRow` | leading icon 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
 | `DisclosureRow` | a row whose chevron turns and whose body opens in place on `motion::Disclose`; one open at a time in a `DisclosureGroup` |
 | `Section` | an optional heading and rows, separated from the next by space, never boxed |
@@ -312,6 +358,20 @@ literals.
   stand still. Progress, status and new content keep updating. Read it
   through `Theme::motion()` (`tokens::EffectiveMotion`); the same rule is in
   HIG §9.7.
+
+## Emoji and mentions
+
+A text field offers both by default, from the toolkit: `:name:` becomes the
+emoji the catalogue names, `@name` becomes a person or an agent in the room.
+The catalogue belongs to `ui`, so an app never links one to have emoji; a
+workspace with custom emoji adds to the toolkit's catalogue rather than
+replacing it.
+
+Opting out is a property of the field, not of the app: a search field, a
+password, a code editor, a terminal, a hex view and a URL are plain (UTF-8
+only), because `:` and `@` are syntax there. Say which and why at the call
+site — a field with completion switched off for no stated reason is
+indistinguishable from one where it was forgotten.
 
 ## Words and structure
 

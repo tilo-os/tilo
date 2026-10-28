@@ -4,7 +4,13 @@
 // Modes:
 //   * default — build an `InstallerApp`, hand it to `ui::App`, run the
 //     live winit event loop. Launched off the live media under `cage`:
-//         cage -s -- /usr/bin/tilo-installer
+//         cage -s -- /usr/libexec/tilo/tilo-installer
+//   * `--unattended-file PATH` or `--unattended-fd N` — explicit unattended
+//     installation from a private recipe through the same published actions.
+//     The one-time recovery key goes to `--unattended-recovery-fd N`,
+//     `--unattended-recovery-file PATH`, or a real terminal. On any refusal
+//     the ordinary wizard keeps answering the console socket so a person can
+//     continue interactively.
 //   * `--shots <PATH> [--scenario <name>]` plus the standard capture options
 //     (`--viewport`, `--text-scale`, `--theme`, …, see
 //     `ui::launch::LaunchArgs`) — render one screen into a PNG at `<PATH>`
@@ -27,7 +33,6 @@ use installer::InstallerApp;
 use installer::installer_app::{ProxySlot, Step};
 use ui::widget::Widget;
 
-/// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// # Errors
@@ -37,6 +42,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
+
+    if let Some(invocation) =
+        installer::unattended::Invocation::from_args(std::env::args_os().skip(1))?
+    {
+        return invocation.run();
+    }
 
     let args = ui::launch::LaunchArgs::from_env(&[])?;
     if let Some(out) = &args.shots {
@@ -183,7 +194,6 @@ mod tests {
 
     #[test]
     fn recovery_and_profile_repair_shot_states_are_renderable() {
-        // Phase `recovery_visual_states_are_renderable`.
         {
             for scenario in [
                 "finish-recovery",
@@ -193,7 +203,6 @@ mod tests {
                 assert!(build_shot(scenario).is_some(), "missing {scenario}");
             }
         }
-        // Phase `transported_profile_repair_state_is_renderable`.
         {
             assert!(build_shot("profile-locale-repair").is_some());
         }

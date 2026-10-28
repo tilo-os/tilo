@@ -51,7 +51,7 @@ From the source checkout, in PowerShell:
 ```powershell
 $env:TILO_INSTALLER_CODE_FROM = (Get-Location).Path
 $env:TILO_INSTALLER_CODE_PAUSE = '1'
-tilo-vm scenario install --medium C:\VMs\ci-dev-installer.qcow2 --graphics software --keep --out C:\VMs\installer-code-test
+tilo device scenario install --medium C:\VMs\ci-dev-installer.qcow2 --graphics software --keep --out C:\VMs\installer-code-test
 ```
 
 The maintained Windows backend boots a throwaway WHPX overlay and sends the

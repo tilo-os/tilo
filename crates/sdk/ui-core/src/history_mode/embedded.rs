@@ -100,20 +100,48 @@ pub(crate) fn needs_refresh(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
-    status: Option<&str>,
+    status: Option<&crate::widget::WindowStatus>,
 ) -> bool {
-    let mut needed = false;
+    surfaces_need_refresh(root, doc, fallback_width, status).needed
+}
+
+/// What one walk for the History surfaces in a tree found.
+#[derive(Default)]
+pub(crate) struct SurfacesWalk {
+    /// A surface needs a refresh ([`needs_refresh`]).
+    pub(crate) needed: bool,
+    /// The tree holds any History surface.
+    pub(crate) found: bool,
+    /// The earliest moment a surface asks for a refresh on its own
+    /// (`HistoryHost::next_refresh`).
+    pub(crate) due: Option<(crate::background::Background, crate::time::Instant)>,
+}
+
+/// [`needs_refresh`], and what else the walk found ([`SurfacesWalk`]).
+pub(crate) fn surfaces_need_refresh(
+    root: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    fallback_width: f64,
+    status: Option<&crate::widget::WindowStatus>,
+) -> SurfacesWalk {
+    let mut walk = SurfacesWalk::default();
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
+        walk.found = true;
+        if let Some((background, at)) = history.next_refresh()
+            && walk.due.as_ref().is_none_or(|(_, due)| at < *due)
+        {
+            walk.due = Some((background, at));
+        }
         let width = if history.get_rect().width() > 0.0 {
             history.get_rect().width()
         } else {
             fallback_width
         };
-        needed |= history.validate_root(live).is_err()
+        walk.needed |= history.validate_root(live).is_err()
             || !history.sync_status_matches(status)
             || history.needs_refresh(doc, width);
     });
-    needed
+    walk
 }
 /// One walk for a frame that changes nothing History reads: `None` when any
 /// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a
@@ -284,7 +312,10 @@ pub(crate) fn finish_pending_command(
 /// Hand `status` to every History surface under `root` that can take it
 /// where it already shows ([`super::host::HistoryHost::set_sync_status_in_place`]),
 /// so a status-only change repaints that text instead of rebuilding.
-pub(crate) fn set_sync_status_in_place(root: &mut dyn Widget, status: Option<&str>) {
+pub(crate) fn set_sync_status_in_place(
+    root: &mut dyn Widget,
+    status: Option<&crate::widget::WindowStatus>,
+) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if !history.sync_status_matches(status) {
             history.set_sync_status_in_place(status, live);
@@ -296,7 +327,7 @@ pub(crate) fn refresh(
     root: &mut dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
-    status: Option<&str>,
+    status: Option<&crate::widget::WindowStatus>,
 ) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.validate_root(live).is_err() {
@@ -309,10 +340,11 @@ pub(crate) fn refresh(
             fallback_width
         };
         if !history.sync_status_matches(status) {
-            history.set_sync_status(status.map(str::to_owned));
+            history.set_sync_status(status.cloned());
         }
         let was_history = history.captures_input();
         history.set_width(width);
+        history.present_entries_of(live);
         history.refresh(doc);
         let returning_live = history.returning_live();
         if was_history || returning_live || history.captures_input() {
@@ -323,6 +355,7 @@ pub(crate) fn refresh(
         if returning_live {
             history.finish_return_to_live();
             history.flush_pending_toolbar();
+            let _ = history.deliver_opened_entry(live);
         }
     });
 }
@@ -347,7 +380,7 @@ pub(crate) fn invoke_door(
 /// Run one History door control on `history` exactly as its own History
 /// control does: resolved against the door this History serves now.
 pub(crate) fn run_door_control(
-    history: &mut host::HistoryHost,
+    history: &mut dyn host::HistoryChromeApi,
     intent: &tilo_actions::ControlInvocation,
 ) -> Result<(), tilo_actions::DoorError> {
     let resources = [history.door_resource()];

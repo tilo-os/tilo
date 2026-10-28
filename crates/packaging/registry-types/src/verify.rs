@@ -216,7 +216,6 @@ mod tests {
         {
             let (key, mut entry) = key_and_entry();
             sign_entry(&mut entry, &key);
-            // Swap in a different publisher pubkey.
             entry.publisher_pubkey_hex = "ee".repeat(32);
             assert!(!verify_entry_signature(&entry));
         }
@@ -258,7 +257,6 @@ mod tests {
             let (key, entry) = key_and_entry();
             let allow = [key.verifying_key().to_bytes()];
             let mut req = sign_change_request(EntryAction::Add, entry, &key);
-            // Flip a sig byte.
             let mut bytes = hex::decode(&req.publisher_signature_hex).unwrap();
             bytes[0] ^= 1;
             req.publisher_signature_hex = hex::encode(bytes);

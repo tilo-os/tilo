@@ -14,7 +14,7 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 #[test]
 fn terminal_shots_flag_writes_png() {
-    let bin = env!("CARGO_BIN_EXE_terminal");
+    let bin = tilo_test_env::package_binary!("terminal");
     let out = std::env::temp_dir().join(format!("terminal-shots-smoke-{}.png", std::process::id()));
     // Idempotent: clear any leftover from a previous run.
     let _ = fs::remove_file(&out);
@@ -41,7 +41,7 @@ fn terminal_shots_flag_writes_png() {
 
 #[test]
 fn empty_terminal_context_menu_shot_writes_png_at_narrow_high_text_scale() {
-    let bin = env!("CARGO_BIN_EXE_terminal");
+    let bin = tilo_test_env::package_binary!("terminal");
     let out = std::env::temp_dir().join(format!(
         "terminal-empty-menu-shot-{}.png",
         std::process::id()

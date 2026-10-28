@@ -143,9 +143,6 @@ pub fn add_slot(device: &Path, authorise: Option<&Path>, passphrase: &str) -> Re
 }
 
 /// Removes `keyslot` (and with it any token bound only to it).
-///
-/// # Errors
-/// When cryptsetup refuses.
 pub fn kill_slot(device: &Path, keyslot: u32, authorise: Option<&Path>) -> Result<()> {
     let mut args: Vec<std::ffi::OsString> = vec!["luksKillSlot".into(), "--batch-mode".into()];
     if let Some(key) = authorise {
@@ -158,9 +155,6 @@ pub fn kill_slot(device: &Path, keyslot: u32, authorise: Option<&Path>) -> Resul
 }
 
 /// Removes the sibling-unlock token, if there is one.
-///
-/// # Errors
-/// When cryptsetup refuses.
 pub fn remove_token(device: &Path) -> Result<()> {
     if let Some(existing) = token_id(&metadata(device)?)? {
         exec::check(
@@ -179,9 +173,6 @@ pub fn remove_token(device: &Path) -> Result<()> {
 }
 
 /// Writes `token` into the header, replacing an earlier sibling-unlock token.
-///
-/// # Errors
-/// When cryptsetup refuses the token.
 pub fn import_token(device: &Path, token: &Token) -> Result<()> {
     let json = zeroize::Zeroizing::new(serde_json::to_vec(token)?);
     // An earlier token is replaced in one header write, so a failure leaves

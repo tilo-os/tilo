@@ -69,7 +69,6 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     c1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     c2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
 
-    // Drain the Ready acks.
     for cli in [&c1, &c2] {
         let env = tilo_test_env::within("Ready timeout", cli.recv())
             .await

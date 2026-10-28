@@ -139,11 +139,9 @@ mod tests {
             .chain(["0.9.0/aarch64".to_owned()])
             .collect();
         assert_eq!(names(&kept), expected);
-        // Every dropped version has enough newer ones left to be dropped.
         for dropped in versions.iter().filter(|v| !kept.contains(v)) {
             assert!(may_drop(dropped, &kept));
         }
-        // Applying the policy again changes nothing.
         assert_eq!(policy.retain(&kept), kept);
     }
 

@@ -231,7 +231,6 @@ mod tests {
             Some(b"JBSWY3DPEHPK3PXP".to_vec())
         );
 
-        // Another view of the same store finds it by the account's id alone.
         let mut other = Seeds::new(store.clone(), true);
         other.follow(&[id(1), id(2)]);
         assert_eq!(other.get(id(1)), Some("JBSWY3DPEHPK3PXP"));

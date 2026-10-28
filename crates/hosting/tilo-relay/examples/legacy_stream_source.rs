@@ -218,7 +218,7 @@ fn code_check(index: u16) -> u8 {
 #[must_use]
 fn code_geometry(width: u32) -> (u32, u32, u32) {
     let pitch = width / (CODE_BITS + 1);
-    (pitch, pitch * 4 / 5, pitch / 4)
+    (pitch, pitch.saturating_mul(4) / 5, pitch / 4)
 }
 
 /// The picture of the window without its caret and number: grey text lines
@@ -244,11 +244,14 @@ fn background(width: u32, height: u32) -> Vec<u8> {
 
 fn fill(rgba: &mut [u8], width: u32, rect: (u32, u32, u32, u32), shade: u8) {
     let (x0, y0, w, h) = rect;
-    let stride = usize::try_from(width).unwrap_or(0) * 4;
+    let pixels = |n: u32| usize::try_from(n).unwrap_or(usize::MAX).saturating_mul(4);
+    let stride = pixels(width);
     for y in y0..y0.saturating_add(h) {
-        let row = usize::try_from(y).unwrap_or(0) * stride;
-        let start = row + usize::try_from(x0).unwrap_or(0) * 4;
-        let end = start + usize::try_from(w).unwrap_or(0) * 4;
+        let row = usize::try_from(y)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(stride);
+        let start = row.saturating_add(pixels(x0));
+        let end = start.saturating_add(pixels(w));
         if let Some(pixels) = rgba.get_mut(start..end) {
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel.copy_from_slice(&[shade, shade, shade, 255]);
@@ -263,8 +266,13 @@ fn draw_code(rgba: &mut [u8], width: u32, index: u16) {
     let (pitch, side, offset) = code_geometry(width);
     let bits = (u32::from(index) << 4) | u32::from(code_check(index));
     for bit in 0..CODE_BITS {
-        let set = (bits >> (CODE_BITS - 1 - bit)) & 1 == 1;
-        let rect = (offset + bit * pitch, offset, side, side);
+        let set = (bits >> (CODE_BITS - 1).saturating_sub(bit)) & 1 == 1;
+        let rect = (
+            offset.saturating_add(bit.saturating_mul(pitch)),
+            offset,
+            side,
+            side,
+        );
         fill(rgba, width, rect, if set { 235 } else { 16 });
     }
 }
@@ -275,7 +283,10 @@ fn frame(base: &[u8], width: u32, height: u32, index: u16) -> Vec<u8> {
     let mut rgba = base.to_vec();
     let (pitch, _, offset) = code_geometry(width);
     let top = offset.saturating_mul(2).saturating_add(pitch);
-    let caret = u32::from(index).saturating_mul(7) % width.saturating_sub(3);
+    let caret = u32::from(index)
+        .saturating_mul(7)
+        .checked_rem(width.saturating_sub(3))
+        .unwrap_or(0);
     fill(
         &mut rgba,
         width,
@@ -294,7 +305,7 @@ fn identity(state: &std::path::Path) -> anyhow::Result<(SigningKey, DeviceCert, 
     let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let seed = |at: usize| -> anyhow::Result<[u8; 32]> {
         bytes
-            .get(at * 32..(at + 1) * 32)
+            .get(at.saturating_mul(32)..at.saturating_add(1).saturating_mul(32))
             .and_then(|seed| <[u8; 32]>::try_from(seed).ok())
             .with_context(|| format!("{} is not a dev identity", path.display()))
     };
@@ -319,7 +330,6 @@ struct Room {
     client: Arc<RelayClient>,
     workspace_id: u64,
     author: [u8; 32],
-    /// The codec the window is streamed in.
     codec: StreamCodec,
 }
 
@@ -452,7 +462,9 @@ fn stream(
     let (mut width, mut height) = (args.width, args.height);
     let mut base = background(width, height);
     let mut resize = args.resize_at.zip(args.resize_to);
-    let interval = Duration::from_secs(1) / fps;
+    let interval = Duration::from_secs(1)
+        .checked_div(fps)
+        .context("--fps must be above zero")?;
     let start = Instant::now();
     let total = Duration::from_secs_f64(args.seconds);
     // Each submitted frame's number and capture time, by its timestamp: the
@@ -461,7 +473,7 @@ fn stream(
     let mut seq = 0_u64;
     let (mut tick, mut frames, mut last_index) = (0u32, 0u32, 0u16);
     while start.elapsed() < total {
-        let due = interval * tick;
+        let due = interval.saturating_mul(tick);
         if let Some(wait) = due.checked_sub(start.elapsed()) {
             std::thread::sleep(wait);
         }
@@ -512,7 +524,7 @@ fn stream(
         frames = frames.saturating_add(1);
         // The next tick not yet due: a slow encode skips the ones it missed.
         let elapsed = start.elapsed().as_nanos();
-        tick = u32::try_from(elapsed / interval.as_nanos().max(1))
+        tick = u32::try_from(elapsed.checked_div(interval.as_nanos()).unwrap_or(0))
             .unwrap_or(u32::MAX)
             .saturating_add(1);
     }
@@ -661,10 +673,12 @@ async fn run(args: Args) -> anyhow::Result<()> {
     subscribe(&client, workspace_id).await?;
     let encoder = encoder(args.codec, args.width, args.height)?;
     let element = encoder.element();
-    let fps = args.fps.unwrap_or(if element.is_hardware() {
-        HARDWARE_FPS
-    } else {
-        SOFTWARE_FPS
+    let fps = args.fps.unwrap_or_else(|| {
+        if element.is_hardware() {
+            HARDWARE_FPS
+        } else {
+            SOFTWARE_FPS
+        }
     });
     let room = Room {
         client: Arc::clone(&client),
@@ -762,8 +776,13 @@ mod tests {
             let picture = frame(&base, width, height, index);
             let mut bits = 0u32;
             for bit in 0..CODE_BITS {
-                let (x, y) = (offset + bit * pitch + side / 2, offset + side / 2);
-                let at = usize::try_from((y * width + x) * 4).unwrap();
+                let x = offset
+                    .saturating_add(bit.saturating_mul(pitch))
+                    .saturating_add(side / 2);
+                let y = offset.saturating_add(side / 2);
+                let at =
+                    usize::try_from(y.saturating_mul(width).saturating_add(x).saturating_mul(4))
+                        .unwrap();
                 bits = (bits << 1) | u32::from(picture[at] > 128);
             }
             assert_eq!(bits >> 4, u32::from(index));

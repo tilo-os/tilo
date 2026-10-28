@@ -106,7 +106,6 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 let bounds = app.inspect_node(save, |widget| widget.get_rect()).unwrap();
                 assert_eq!(bounds.width(), 120.5);
                 assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
-                // Return keyboard focus to the same entry for the next resize.
                 app.set_focused_node(Some(app.focusable_order[0]));
             }
             assert!(crate::testing::clicks("saved") > 0);

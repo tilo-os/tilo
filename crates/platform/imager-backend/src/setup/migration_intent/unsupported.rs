@@ -90,6 +90,13 @@ impl MigrationIntent {
         match self.unsupported {}
     }
 
+    pub fn attach_deferred_handoff(
+        &self,
+        _handoff: super::super::migration_handoff::DeferredHandoff,
+    ) -> io::Result<Self> {
+        match self.unsupported {}
+    }
+
     pub fn for_media(&self) -> io::Result<Plan> {
         match self.unsupported {}
     }

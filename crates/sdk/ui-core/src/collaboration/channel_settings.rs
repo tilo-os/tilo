@@ -46,10 +46,16 @@ struct State {
     /// changes can arrive out of order, and an older one never replaces it.
     confirmed_revision: u64,
     /// Writes not yet handed to the broker worker, oldest first.
-    outbox: Vec<(String, Map<String, Value>)>,
+    outbox: Vec<Outgoing>,
     /// Writes the worker sent and the shell has not answered.
     in_flight: usize,
+    /// Writes the shell refused, for the app to say so.
+    failures: Vec<settings_store::DeferredFailure>,
 }
+
+/// One write for the shell: the section, the values, and the action that
+/// made the change, which the shell keeps with it in the session's history.
+pub(crate) type Outgoing = (String, Map<String, Value>, Option<String>);
 
 static INSTALLED: RwLock<Option<Arc<ChannelSettings>>> = RwLock::new(None);
 
@@ -108,6 +114,20 @@ impl ChannelSettings {
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.changes.ring();
         true
+    }
+
+    /// What this process shows itself able to write before the shell
+    /// answers: everything for the image's settings app, whose manifest asks
+    /// for it; its own entries for every other. The shell decides
+    /// (`settings_store::app_scope::Reach::of` on the signed manifest) and a
+    /// write it refuses is reported ([`Self::answered`]).
+    fn reach(&self) -> settings_store::app_scope::Reach {
+        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_APPS};
+        if SYSTEM_SETTINGS_APPS.contains(&self.app_id.as_str()) {
+            Reach::System
+        } else {
+            Reach::App
+        }
     }
 
     /// A new link to the shell: its revisions start again.
@@ -246,6 +266,7 @@ impl ChannelSettings {
             state.outbox.push((
                 settings_store::continuity::APP_DEVICE_LOCAL_SECTION.to_owned(),
                 values,
+                None,
             ));
             self.revision.fetch_add(1, Ordering::AcqRel);
         }
@@ -273,7 +294,7 @@ impl ChannelSettings {
 
     /// Writes for the worker to send, in order; each is answered with
     /// [`Self::answered`].
-    pub(crate) fn take_outbox(&self) -> Vec<(String, Map<String, Value>)> {
+    pub(crate) fn take_outbox(&self) -> Vec<Outgoing> {
         let mut state = self.lock();
         let outbox = std::mem::take(&mut state.outbox);
         state.in_flight += outbox.len();
@@ -289,6 +310,13 @@ impl ChannelSettings {
             Ok((revision, view)) => Self::confirm(&mut state, revision, view),
             Err(error) => {
                 tracing::warn!(app = %self.app_id, %error, "settings: the shell refused a write");
+                // What was shown goes back to what the shell holds; the app
+                // says so ([`settings_store::take_deferred_failures`]).
+                state.failures.push(settings_store::DeferredFailure {
+                    sections: Vec::new(),
+                    error,
+                });
+                settings_store::note_deferred_failure();
             }
         }
         let shown = state.confirmed.clone();
@@ -343,14 +371,34 @@ impl SettingsSource for ChannelSettings {
         settings_document(&self.lock().view)
     }
 
+    fn take_deferred_failures(&self) -> Vec<settings_store::DeferredFailure> {
+        std::mem::take(&mut self.lock().failures)
+    }
+
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        self.update_section_by(name, values, &settings_store::ChangeOrigin::default())
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> std::io::Result<()> {
         {
             let mut state = self.lock();
             // The shell's own rules, applied to what this process shows: a
             // write it would refuse is refused here, and one it takes shows
             // as it will be stored.
             let shown = HostDocument::new(settings_document(&state.view), |_| Ok(()));
-            settings_store::app_scope::update_for_app(&shown, &self.app_id, name, values.clone())?;
+            settings_store::app_scope::update_at(
+                &shown,
+                &self.app_id,
+                self.reach(),
+                name,
+                values.clone(),
+                origin,
+            )?;
             let delivery = state
                 .view
                 .get(settings_store::continuity::APP_DEVICE_LOCAL_SECTION)
@@ -375,7 +423,9 @@ impl SettingsSource for ChannelSettings {
                     }
                 }
             }
-            state.outbox.push((name.to_owned(), values));
+            state
+                .outbox
+                .push((name.to_owned(), values, origin.action.clone()));
             self.revision.fetch_add(1, Ordering::AcqRel);
         }
         self.changes.ring();
@@ -514,7 +564,6 @@ mod tests {
             channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
             false
         );
-        // The answer to the write is the view that follows.
         let after = object(json!({
             "app_personal": {"so.tilo.monitor": {"confirm_kill": false}},
             "locale": {"region": "AT"}
@@ -562,6 +611,27 @@ mod tests {
         let _ = channel.take_outbox();
         assert!(channel.answered(Err("disk full".into())));
         assert_eq!(channel.load(), shell);
+    }
+
+    #[test]
+    fn a_write_goes_to_the_shell_with_the_action_that_made_it() {
+        let channel = ChannelSettings::new("so.tilo.monitor");
+        channel
+            .update_section_by(
+                "app_personal",
+                object(json!({"so.tilo.monitor": {"x": 1}})),
+                &settings_store::ChangeOrigin::local("monitor/confirm"),
+            )
+            .unwrap();
+        channel
+            .update_section("app_personal", object(json!({"so.tilo.monitor": {"y": 2}})))
+            .unwrap();
+        let sent: Vec<Option<String>> = channel
+            .take_outbox()
+            .into_iter()
+            .map(|(_, _, action)| action)
+            .collect();
+        assert_eq!(sent, vec![Some("monitor/confirm".to_owned()), None]);
     }
 
     #[test]

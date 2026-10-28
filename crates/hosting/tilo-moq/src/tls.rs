@@ -70,10 +70,6 @@ fn certified(
 }
 
 /// A certificate loaded once and presented for as long as the listener runs.
-///
-/// # Errors
-///
-/// The key does not match the chain or is of an unsupported kind.
 pub fn fixed_certificate(
     chain: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -204,23 +200,33 @@ mod tests {
     fn a_renewed_pair_on_disk_is_presented_without_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (chain, key) = (dir.path().join("tls.crt"), dir.path().join("tls.key"));
-        let write = |name: &str| {
+        // Each write stamps its own modification time, so a change never
+        // hides inside the filesystem's timestamp granularity.
+        let stamp = |path: &Path, second: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(second))
+                .unwrap();
+        };
+        let write = |name: &str, second: u64| {
             let generated = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
             std::fs::write(&chain, generated.cert.pem()).unwrap();
             std::fs::write(&key, generated.signing_key.serialize_pem()).unwrap();
+            stamp(&chain, second);
+            stamp(&key, second);
             generated.cert.der().clone()
         };
-        let first = write("live.example");
+        let first = write("live.example", 1);
         let files = FileCertificate::with_recheck(&chain, &key, Duration::ZERO).unwrap();
         assert_eq!(files.current().cert[0], first);
 
-        // A half-written renewal keeps the certificate that works.
-        std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&key, "").unwrap();
+        stamp(&key, 2);
         assert_eq!(files.current().cert[0], first);
 
-        std::thread::sleep(Duration::from_millis(20));
-        let renewed = write("live.example");
+        let renewed = write("live.example", 3);
         assert_ne!(renewed, first);
         assert_eq!(files.current().cert[0], renewed);
     }

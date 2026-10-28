@@ -1,0 +1,10 @@
+{"manifest_version": 3, "name": "Commander", "version": "1.0", "default_locale": "en",
+ "action": {"default_title": "Command the page"},
+ "permissions": ["activeTab", "scripting"],
+ "background": {"service_worker": "worker.js"},
+ "commands": {
+   "_execute_action": {"suggested_key": {"default": "Ctrl+Shift+Y"}},
+   "mark": {"suggested_key": {"default": "Alt+Shift+K", "mac": "Alt+Shift+K"}, "description": "__MSG_markName__"},
+   "find": {"suggested_key": "Ctrl+Shift+F", "description": "Find on the page"},
+   "quiet": {"description": "No key of its own"}
+ }}

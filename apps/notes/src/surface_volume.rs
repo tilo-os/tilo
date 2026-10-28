@@ -39,9 +39,6 @@ fn wire_bytes(delta: &SurfaceDelta) -> usize {
 
 /// The wire bytes of the catalogue the note bodies' template alone uses:
 /// its id and the shapes no other template holds.
-///
-/// # Panics
-/// When the bodies do not share exactly one template.
 fn rich_text_catalogue(delta: &SurfaceDelta) -> usize {
     let mut bodies: Vec<_> = delta
         .resources

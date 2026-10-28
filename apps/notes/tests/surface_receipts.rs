@@ -33,8 +33,8 @@ fn receipt_of_newest(app: &TestApp<NotesShell>) -> (String, Receipt) {
     let before = doc.fork_at(change.deps()).expect("the record before it");
     let hash = change.hash().0;
     let units = collab_types::units::units_by_change(before, std::slice::from_ref(&change))
-        .remove(&hash)
-        .unwrap_or_else(|| vec![Vec::new()]);
+        .and_then(|mut by| by.written.remove(&hash))
+        .map_or_else(|| vec![Vec::new()], |written| written.units);
     let claim =
         ChangeClaim::of_change(hash, change.message(), units).expect("the change names its action");
     // The harness runs the app under its own id; the record is that app's.
@@ -120,8 +120,8 @@ fn receipts_since(
             let before = doc.fork_at(change.deps()).expect("the record before it");
             let hash = change.hash().0;
             let units = collab_types::units::units_by_change(before, std::slice::from_ref(change))
-                .remove(&hash)
-                .unwrap_or_else(|| vec![Vec::new()]);
+                .and_then(|mut by| by.written.remove(&hash))
+                .map_or_else(|| vec![Vec::new()], |written| written.units);
             let claim = match ChangeClaim::of_change(hash, change.message(), units) {
                 Ok(claim) => claim,
                 Err(error) => return (String::new(), Err(format!("unnamed: {error}"))),

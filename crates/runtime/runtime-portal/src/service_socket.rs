@@ -123,17 +123,6 @@ impl InheritedServiceSocket {
         Ok(UnixStream::from(fd))
     }
 
-    /// Retain the same connection after a refusal that handed out no session.
-    /// Callers must never return a connection which now carries a live session.
-    ///
-    /// # Errors
-    /// Returns `InUse` if a retry is already retained, or `Poisoned` if the
-    /// ownership lock cannot be acquired safely.
-    #[cfg(unix)]
-    pub fn retry_after_refusal(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
-        self.retain_connection(stream)
-    }
-
     #[cfg(unix)]
     fn retain_connection(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
         let mut retry = self
@@ -146,45 +135,5 @@ impl InheritedServiceSocket {
         *retry = Some(stream);
         drop(retry);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-mod tests {
-    use super::*;
-    use std::io::{Read, Write};
-
-    #[test]
-    fn refusal_reuses_the_connection_without_reclaiming_a_consumed_descriptor() {
-        let connection = InheritedServiceSocket::new("test-refused-service");
-        let (stream, mut peer) = UnixStream::pair().expect("service pair");
-        connection.claimed.store(true, Ordering::Release);
-        connection
-            .retry_after_refusal(stream)
-            .expect("retain refusal");
-        // SAFETY: this fixture owns the connection; the already-claimed path
-        // must never try to acquire an inherited descriptor.
-        let mut stream = unsafe { connection.take() }.expect("retry");
-        stream.write_all(b"open").expect("request");
-        let mut request = [0; 4];
-        peer.read_exact(&mut request).expect("same peer");
-        assert_eq!(&request, b"open");
-        assert!(connection.was_taken());
-        // SAFETY: same exclusive fixture ownership as above.
-        assert!(matches!(
-            unsafe { connection.take() },
-            Err(ServiceSocketError::InUse)
-        ));
-        connection
-            .retry_after_refusal(stream)
-            .expect("another refusal");
-        // SAFETY: same exclusive fixture ownership as above.
-        let mut stream = unsafe { connection.take() }.expect("second retry");
-        peer.write_all(b"live").expect("reply");
-        stream
-            .read_exact(&mut request)
-            .expect("same connection reply");
-        assert_eq!(&request, b"live");
     }
 }

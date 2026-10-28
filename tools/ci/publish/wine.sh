@@ -22,7 +22,8 @@ work=/var/tmp/tilo-wine
 registry=registry.tilo.so/tilo
 
 [[ $(uname -m) == x86_64 ]] || die 'Wine is built natively on x86_64'
-[[ $(id -u) == 0 ]] || die 'runs as root in a micro-VM step (isolation = "vm")'
+# Fetching the source needs no root; Mock and podman do.
+[[ ${1:-} == source || $(id -u) == 0 ]] || die 'runs as root in a micro-VM step (isolation = "vm")'
 
 # The wine-tools image this step runs in, by the digest it is published as.
 runtime() {

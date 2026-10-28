@@ -1,0 +1,16 @@
+{
+  "endpoints": [
+    {
+      "label": "local",
+      "url": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen3:8b",
+      "price": { "input": 0, "output": 0 }
+    },
+    {
+      "label": "hosted-small",
+      "url": "https://api.example.invalid/v1/chat/completions",
+      "model": "small-2025-01",
+      "price": { "input": 150000, "output": 600000 }
+    }
+  ]
+}

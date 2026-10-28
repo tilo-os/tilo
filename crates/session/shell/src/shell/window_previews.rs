@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use vello::kurbo::Rect;
+use vello::kurbo::{Rect, Vec2};
 
 use ui::theme::Theme;
 use ui::widget::{Image, ImageFit};
@@ -110,8 +110,7 @@ impl WindowSource for ShellWindows {
             TileContent::LocalApp { .. }
             | TileContent::HostedWindow { .. }
             | TileContent::AppPlaceholder { .. }
-            | TileContent::Stub { .. }
-            | TileContent::WorkspaceActivity => {
+            | TileContent::Stub { .. } => {
                 if shown {
                     PreviewSource::Painted {
                         capture_id: format!("group:{group}:tab:{tab}"),
@@ -367,8 +366,8 @@ pub fn paint_client_frame(
     scene.fill(
         Fill::NonZero,
         transform
-            * Affine::translate((fitted.x0, fitted.y0))
-            * Affine::scale_non_uniform(
+            .pre_translate(Vec2::new(fitted.x0, fitted.y0))
+            .pre_scale_non_uniform(
                 fitted.width() / f64::from(width),
                 fitted.height() / f64::from(height),
             ),
@@ -422,12 +421,13 @@ impl WindowThumbnails for LiveThumbnails {
                     return None;
                 }
                 let fitted = fit_extent(rect, source.width(), source.height());
-                let place = Affine::translate((fitted.x0, fitted.y0))
-                    * Affine::scale_non_uniform(
+                let placed = transform
+                    .pre_translate(Vec2::new(fitted.x0, fitted.y0))
+                    .pre_scale_non_uniform(
                         fitted.width() / source.width(),
                         fitted.height() / source.height(),
                     )
-                    * Affine::translate((-source.x0, -source.y0));
+                    .pre_translate(Vec2::new(-source.x0, -source.y0));
                 let mut clipped = Scene::new();
                 clipped.push_layer(
                     Fill::NonZero,
@@ -438,7 +438,7 @@ impl WindowThumbnails for LiveThumbnails {
                 );
                 clipped.append(&painted.scene, None);
                 clipped.pop_layer();
-                scene.append(&clipped, Some(transform * place));
+                scene.append(&clipped, Some(placed));
                 Some(fitted)
             }
             PreviewSource::Withheld | PreviewSource::Unavailable => None,
@@ -545,7 +545,6 @@ mod tests {
             .unwrap_or(0)
             .saturating_mul(MAX_PREVIEWS);
         assert_eq!(previews.memory_bytes(), bound);
-        // Oversized or mis-sized pixels are refused outright.
         previews.clear();
         previews.store(1, pixels(400, 10), 400, 10, None);
         previews.store(2, pixels(2, 2), 3, 3, None);

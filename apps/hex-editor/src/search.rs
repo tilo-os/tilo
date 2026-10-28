@@ -70,7 +70,7 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Like [`find_all_bounded`], under `rules`.
+/// Like `find_all_bounded`, under `rules`.
 pub fn find_matches(
     haystack: &[u8],
     needle: &[u8],
@@ -154,7 +154,6 @@ mod tests {
             needle("PNG", SearchKind::Text),
             Some(vec![0x50, 0x4E, 0x47])
         );
-        // The PNG magic bytes.
         assert_eq!(
             needle("50 4e 47", SearchKind::Hex),
             Some(vec![0x50, 0x4E, 0x47])

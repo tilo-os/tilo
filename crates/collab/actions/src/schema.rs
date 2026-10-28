@@ -121,7 +121,7 @@ impl ActionSpec {
     /// schema; the invoker's tree refuses it when the precondition fails.
     #[must_use]
     pub fn requires(mut self, requirement: ContextRequirement) -> Self {
-        self.contract.add_tag(requirement.tag());
+        self.type_mut().contract.add_tag(requirement.tag());
         self
     }
 
@@ -129,7 +129,7 @@ impl ActionSpec {
     /// participant's own view, so a remote participant may invoke it.
     #[must_use]
     pub fn participant_view(mut self) -> Self {
-        self.contract.add_tag(PARTICIPANT_VIEW_TAG);
+        self.type_mut().contract.add_tag(PARTICIPANT_VIEW_TAG);
         self
     }
 }
@@ -259,7 +259,6 @@ mod tests {
     /// The participant-independent schema every view publishes.
     fn schema_tree() -> Vec<Resource> {
         let mut schema = tree("", false, true);
-        // The schema's go-to lives on the caret resource kind.
         schema.push(
             Resource::new("doc.caret", "fixture.caret", "Caret").with_action(
                 ActionSpec::immediate_encoded(

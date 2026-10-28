@@ -1,6 +1,6 @@
 //! Opening a document in the application that owns it.
 //!
-//! Two registries answer half of "who owns this file" each: [`qdoc`] knows
+//! Two registries answer half of "who owns this file" each: `qdoc` knows
 //! which extensions are editable documents, while app manifests declare
 //! normalized MIME and extension claims. [`resolve`] reports
 //! both, since they fail differently — no app at all vs. no editor.
@@ -49,6 +49,10 @@ pub enum DocumentTarget {
     Unclaimed,
     /// A directory — the caller navigates into it.
     Directory,
+    /// A compiled program, such as a downloaded `AppImage` or executable:
+    /// opening it runs it, unconfined like any host application. A script
+    /// is never one; it opens as the text it is.
+    Program,
 }
 
 /// Two outcomes, because reporting "opened" for both would be lying
@@ -70,6 +74,11 @@ pub enum Opened {
     HostLaunched {
         app: crate::shell::host_apps::HostApp,
     },
+    /// The file is a program and was started, unconfined like a host
+    /// application; `name` is the file's.
+    ProgramStarted {
+        name: String,
+    },
 }
 
 impl Opened {
@@ -77,12 +86,15 @@ impl Opened {
     pub fn app(&self) -> Option<&InstalledApp> {
         match self {
             Opened::Launched { app } | Opened::Focused { app, .. } => Some(app),
-            Opened::HostLaunched { .. } => None,
+            Opened::HostLaunched { .. } | Opened::ProgramStarted { .. } => None,
         }
     }
 
     pub fn launched(&self) -> bool {
-        matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
+        matches!(
+            self,
+            Opened::Launched { .. } | Opened::HostLaunched { .. } | Opened::ProgramStarted { .. }
+        )
     }
 
     /// The typed result an open action answers with: what happened and
@@ -105,6 +117,11 @@ impl Opened {
                 "opened": "host-launched",
                 "path": path,
                 "app": app.desktop_id,
+            }),
+            Opened::ProgramStarted { name } => serde_json::json!({
+                "opened": "program-started",
+                "path": path,
+                "app": name,
             }),
         }
     }
@@ -174,6 +191,9 @@ pub fn resolve_for(
         return DocumentTarget::Directory;
     }
     let ext = extension_of(path);
+    if ext.as_deref() == Some("appimage") && desktop_entry::downloaded::is_program(path) {
+        return DocumentTarget::Program;
+    }
     let editable_document = ext
         .as_deref()
         .is_some_and(tilo_doc_codecs::is_supported_ext);
@@ -223,6 +243,7 @@ pub fn resolve_for(
         None if editable_document => DocumentTarget::NoAppForDocument {
             ext: ext.unwrap_or_default(),
         },
+        None if desktop_entry::downloaded::is_program(path) => DocumentTarget::Program,
         None => DocumentTarget::Unclaimed,
     }
 }
@@ -242,9 +263,9 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
 }
 
 /// Open a document at an explicit shell placement. Drag-and-drop callers use
-/// this rather than smuggling a group id through [`open_in_group`], because a
-/// drop can name an exact tab gap or an exact inter-window seam. The placement
-/// is recorded before launch and consumed when the app's toplevel arrives.
+/// this, because a drop can name an exact tab gap or an exact inter-window
+/// seam. The placement is recorded before launch and consumed when the app's
+/// toplevel arrives.
 ///
 /// # Errors
 ///
@@ -253,15 +274,21 @@ pub fn open_at(path: &Path, chrome: &Chrome, placement: Placement) -> Result<Ope
     open(path, chrome, Some(placement))
 }
 
-/// [`open_in_workspace`] for a caller that already knows the target
-/// group — a drop target is the user's own instruction rather than a
-/// placement rule. Every other open asks `placement_for_document_open`.
+/// Open `path` for an app that asked for it (a file opened from Files, a
+/// document another app hands on). When the person's own input is behind
+/// the request (`person`, [`crate::compositor::activation::person_initiated`])
+/// they are taken to it, as when they open it themselves; otherwise it
+/// opens beside the window they are in and they stay where they are, and a
+/// window already showing it is left where it is.
 ///
 /// # Errors
 ///
 /// Same conditions as [`open_in_workspace`].
-pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
-    open_at(path, chrome, Placement::TabIn(group))
+pub fn open_for_app(path: &Path, chrome: &Chrome, person: bool) -> Result<Opened, OpenError> {
+    let aside = (!person)
+        .then(|| crate::shell::placement::aside(&chrome.borrow().tree()))
+        .flatten();
+    open(path, chrome, aside)
 }
 
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
@@ -298,6 +325,7 @@ fn open_resolved(
     let app = match target {
         DocumentTarget::App { app, .. } => *app,
         DocumentTarget::HostApp { app } => return open_with_host(&app, path, chrome, placement),
+        DocumentTarget::Program => return open_program(path, chrome),
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {
                 path: path.to_path_buf(),
@@ -343,6 +371,14 @@ fn open_package(
     // of an open document must change nothing but which window is in front.
     let record = RecordId::for_file(path);
     match existing_window_for(&record, chrome) {
+        // Opened for someone else: the window showing it stays where it is
+        // and the person where they are.
+        Some(Existing::Window(tab)) if matches!(placement, Some(Placement::Beside(_))) => {
+            return Ok(Opened::Focused {
+                app,
+                tab: Some(tab.tab),
+            });
+        }
         Some(Existing::Window(tab)) => {
             if let Some(placement) = placement {
                 let moved = {
@@ -448,7 +484,7 @@ fn open_with_host(
         let tree = state.tree();
         tree.desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
     };
     crate::shell::host_apps::launch_resolved_with_activation(
         app,
@@ -458,6 +494,74 @@ fn open_with_host(
     )
     .map(|app| Opened::HostLaunched { app })
     .map_err(OpenError::Launch)
+}
+
+/// Run the program at `path`, as a host application with no entry. Its
+/// window is noticed like any downloaded program's, which is when the
+/// person is asked whether to add it to their apps.
+fn open_program(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
+    let portal_workspace_id = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string())
+    };
+    crate::shell::host_apps::launch_program(path, portal_workspace_id)
+        .map(|name| Opened::ProgramStarted { name })
+        .map_err(OpenError::Launch)
+}
+
+/// Show `path` in Files, in the active workspace: a folder opens there, and
+/// any other path opens its folder with it selected. Files is given that
+/// folder for this session, through the workspace's grants, and nothing
+/// more; the launch is queued like a document's, so the compositor never
+/// waits on it.
+///
+/// # Errors
+///
+/// [`OpenError::Launch`] with [`LaunchError::NotInstalled`] when Files is not
+/// installed, [`OpenError::NoWorkspace`] with no active workspace, or
+/// [`OpenError::Launch`] when the launch could not be queued.
+pub fn show_in_files(path: &Path, chrome: &Chrome) -> Result<(), OpenError> {
+    use crate::shell::search::providers::applications::{
+        SYSTEM_FILE_MANAGER, grant_file_manager_path,
+    };
+
+    let folder = if path.is_dir() {
+        path
+    } else {
+        path.parent().ok_or_else(|| OpenError::NoHandler {
+            path: path.to_path_buf(),
+            ext: None,
+        })?
+    };
+    let app = launcher::installed_apps()
+        .map_err(OpenError::Launch)?
+        .into_iter()
+        .find(|app| app.package_id == SYSTEM_FILE_MANAGER)
+        .ok_or_else(|| {
+            OpenError::Launch(LaunchError::NotInstalled {
+                package_id: SYSTEM_FILE_MANAGER.to_owned(),
+            })
+        })?;
+    let workspace = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let active = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id)
+            .ok_or(OpenError::NoWorkspace)?;
+        grant_file_manager_path(&mut tree, active, folder.to_path_buf());
+        let workspace = tree.workspace_after_opening_app(SYSTEM_FILE_MANAGER);
+        tree.queue_save();
+        workspace
+    };
+    let workspace = workspace.ok_or(OpenError::NoWorkspace)?;
+    chrome.borrow_mut().bump();
+    launcher::queue_document_in_workspace(app, &workspace, path.to_path_buf(), || {})
+        .map_err(OpenError::Launch)
 }
 
 /// One application offered under "Open With" for a file.
@@ -566,11 +670,6 @@ pub fn open_with_app(path: &Path, chrome: &Chrome, app_id: &str) -> Result<Opene
 
 /// Make `app_id` the person's default for `path`'s type: by MIME type when
 /// the app claims it, else by extension.
-///
-/// # Errors
-///
-/// A message naming the app when it claims neither, or the choice could not
-/// be saved.
 pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
     let candidates = launcher::resource_candidates();
     let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
@@ -804,6 +903,27 @@ pub fn continuity_file_reference_label(
     .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
 }
 
+/// The desktop's names for continuation placeholder tabs: installed apps as
+/// the launcher last enumerated them, and files by their name in the
+/// workspace's record roots ([`continuity_file_reference_label`]).
+pub(crate) struct DesktopContinuationLabels;
+
+impl crate::shell::state::ContinuationLabels for DesktopContinuationLabels {
+    fn app_name(&self, app_id: &str) -> Option<String> {
+        crate::shell::launcher::installed_apps_without_waiting()
+            .into_iter()
+            .find(|installed| installed.package_id == app_id)
+            .map(|installed| installed.display_name)
+    }
+
+    fn file_reference_label(
+        &self,
+        reference: &crate::shell::personal_continuity::LaunchIntent,
+    ) -> String {
+        continuity_file_reference_label(reference)
+    }
+}
+
 /// Production activation for a synchronized file-reference tab.  Resolution
 /// stays record-id based, then the ordinary document launcher grants the
 /// projected path and chooses the registered app exactly as for a local open.
@@ -912,7 +1032,7 @@ fn tab_showing_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabAddre
 fn focus(chrome: &Chrome, at: TabAddress) {
     chrome
         .borrow_mut()
-        .focus_tab(at.workspace, at.strip, at.group, at.tab);
+        .select_tab(at.workspace, at.strip, at.group, at.tab);
 }
 
 /// Read-only, session-scoped, the same shape a file drop records.
@@ -982,7 +1102,7 @@ fn grant_document_read(
     let remembered = tree
         .native_runtime
         .remember_document_read(ws, &ids, package_id);
-    if !remembered && tree.native_authority.requires(ws.room) {
+    if !remembered && tree.native_authority.requires(ws.room()) {
         ws.sandbox
             .retain(|capability| !ids.contains(&capability.id));
         return Some(false);
@@ -1000,9 +1120,6 @@ fn grant_document_read(
 
 #[cfg(test)]
 mod tests {
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -1049,7 +1166,7 @@ mod tests {
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
         // Match session startup: launch gates wait for the tree's accepted
         // policy revision before judging a document's newly granted read.
-        launcher::action_authority::follow_tree(&handle);
+        crate::shell::action_authority::follow_tree(&handle);
         ChromeState::new_with_handle(handle)
     }
 
@@ -1082,9 +1199,7 @@ mod tests {
     /// Waits for at least `want` — a launch runs on its own thread, not
     /// observable the instant `open` returns.
     fn launched_commands(log: &Path, want: usize) -> Vec<String> {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             if let Ok(s) = std::fs::read_to_string(log) {
                 let lines: Vec<String> = s.lines().map(str::to_string).collect();
@@ -1329,7 +1444,7 @@ mod tests {
             // A child can write its recording log before the launch thread
             // publishes Started. Observe the production event queue separately;
             // seeing argv is not evidence that every event has arrived.
-            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let mut started = Vec::new();
             loop {
                 started.extend(
@@ -1759,9 +1874,12 @@ mod tests {
         profile: &std::path::Path,
         files: &std::path::Path,
     ) -> ui::headless::FrameHarness {
-        let mut apps =
-            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
-                .unwrap();
+        let mut apps = crate::shell::in_process::InProcessApps::at(
+            &profile.join("profile"),
+            &profile.join("profile").join("person"),
+            "fixture-person",
+        )
+        .unwrap();
         let startup = file_explorer::StartupInputs {
             initial_dir: files.to_path_buf(),
             workspace_roots: Vec::new(),
@@ -2229,7 +2347,7 @@ mod tests {
 
         assert!(open_in_workspace(&doc, &chrome).unwrap().launched());
         launched_commands(&log, 1);
-        let deadline = std::time::Instant::now() + HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while !launcher::drain_events().iter().any(|event| {
             event.package_id == "so.tilo.word-processor"
                 && matches!(event.kind, launcher::LaunchEventKind::Failed { .. })
@@ -2247,6 +2365,77 @@ mod tests {
             "the document is not open anywhere, so it launches again: {again:?}"
         );
         assert_eq!(launched_commands(&log, 2).len(), 2);
+        clear_launch_env();
+    }
+
+    /// "Show in Files" launches Files on the file itself, through the same
+    /// document launch every open takes, with its folder granted to Files
+    /// and nothing wider; without Files installed it says so.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn show_in_files_launches_files_on_the_file_with_only_its_folder_granted() {
+        use crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+        use crate::shell::state::{Effect, Scope, Subject};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        let folder = tmp.path().join("Pictures").join("Screenshots");
+        std::fs::create_dir_all(&folder).unwrap();
+        let shot = folder.join("Tilo Screenshot 2026-10-27 at 02.21.06.png");
+        std::fs::write(&shot, b"png").unwrap();
+
+        reset_session_state();
+        let chrome = chrome_with_workspace();
+        assert_eq!(
+            show_in_files(&shot, &chrome),
+            Err(OpenError::Launch(LaunchError::NotInstalled {
+                package_id: SYSTEM_FILE_MANAGER.to_owned()
+            })),
+            "without Files there is nothing to show it in"
+        );
+
+        let files_scopes = || -> Vec<Scope> {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("a workspace")
+                .sandbox
+                .iter()
+                .filter(|c| c.subject == Subject::app(SYSTEM_FILE_MANAGER))
+                .filter(|c| c.effect == Effect::Grant)
+                .map(|c| c.scope.clone())
+                .collect()
+        };
+        let before = files_scopes();
+
+        install(tmp.path(), SYSTEM_FILE_MANAGER, "Files", &[]);
+        reset_session_state();
+        show_in_files(&shot, &chrome).expect("Files is installed");
+        let commands = launched_commands(&log, 1);
+        assert_eq!(commands.len(), 1, "one launch: {commands:#?}");
+        assert!(
+            commands[0].contains(&format!("--app-id {SYSTEM_FILE_MANAGER}")),
+            "Files is what opens: {}",
+            commands[0]
+        );
+        assert!(
+            commands[0].contains(&format!("--open {}", shot.display())),
+            "on the file, which Files shows selected in its folder: {}",
+            commands[0]
+        );
+        let added: Vec<Scope> = files_scopes()
+            .into_iter()
+            .filter(|scope| !before.contains(scope))
+            .collect();
+        assert_eq!(
+            added,
+            vec![Scope::FsPath(folder.display().to_string())],
+            "Files is given the screenshot's folder, nothing wider"
+        );
         clear_launch_env();
     }
 }

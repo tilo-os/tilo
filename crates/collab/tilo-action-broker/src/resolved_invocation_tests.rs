@@ -550,7 +550,7 @@ async fn admit_directory_invoke(
         .in_room(fixture.cluster_id.clone())
         .in_new_execution();
     let mut pending = fixture.state.action_invoke(&caller, None, None, request);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tilo_test_env::within("bounded directory admission", async {
         loop {
             drain_directory_bridge(fixture).await;
             if let PendingPoll::Ready(result) = pending.poll_ready() {
@@ -560,7 +560,6 @@ async fn admit_directory_invoke(
         }
     })
     .await
-    .expect("bounded directory admission")
 }
 
 /// An invoke naming no revision asks the directory's owner to resolve the
@@ -650,7 +649,6 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
                 fixture.take_invocation_identity().is_none(),
                 "an unbound admission never reaches the owner"
             );
-            // The same owner admits the action at a revision the caller names.
             let named = directory_request(&fixture, Some("directory-r1"), None);
             admit_directory_invoke(&fixture, &named)
                 .await

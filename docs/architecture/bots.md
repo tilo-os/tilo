@@ -126,7 +126,6 @@ pub struct Installation {
     pub connector_cursors_from_ms: i64,  // connector events before this are never delivered (§9)
     pub paused: bool,
 }
-
 pub enum AppearancePolicy { Own, Personas }
 
 // The program bytes are kept in the room's content store, so every member can
@@ -384,12 +383,15 @@ with `Binding::StepOutput`-style pointers.
 
 The matching core is pure and lives in a new module, `tilo_automation::dispatch`:
 
-1. **No self-triggering.** A change whose actor is `bot:<id>` never fires
-   installation `id`. For a person's Shortcut, a change committed as one of
-   that Shortcut's runs never fires the same Shortcut.
-   `tilo_automation::check` already refuses a Shortcut that could invoke
-   itself. This rule covers the indirect case of a run whose output matches its
-   own trigger.
+1. **No self-triggering, and no loop between two programs.** A change whose
+   actor is `bot:<id>` never fires installation `id`. For a person's Shortcut,
+   a change made by any run — that Shortcut's or another one's — fires none of
+   that person's Shortcuts (`Skipped::Loop`). `tilo_automation::check` refuses
+   a Shortcut that could invoke itself, and a run refuses a step that would
+   call a Shortcut already running above it (`StepFailure::Recursion`), so two
+   Shortcuts that call each other spin once and stop. These rules cover the
+   indirect case of a run whose output matches a trigger, without having to
+   know in advance which Shortcut the change will fire.
 2. **Bounded chains.** A run started by a change that itself came from a run
    records `Cause { depth: parent + 1 }` on every change it commits (a new
    optional `ActionContext::caused_by`). The dispatcher fires nothing at depth
@@ -540,7 +542,7 @@ the reviewed bot decides when it is used.
   and the one the AI settings hub uses for provider keys (a non-secret
   reference in the profile, resolved by the process that owns the store). A
   headless host keeps that store in `TILO_SECRETS_DIR` on an encrypted volume.
-  The host's administrator sets a credential through a device-only effect the
+  The host's administrator sets a credential through an effect the
   connector publishes, such as `set-bot-token(token: Secret)`, invoked on the
   host. A `ParamType::Secret` argument is redacted wherever an invocation is
   shown or recorded, and an effect writes no change, so the secret never
@@ -782,7 +784,7 @@ pub struct BotRequirements {
   The program file is the Shortcut's canonical
   JSON. Its BLAKE3 is signed in the entry, and the registry stores the bytes as
   a content-addressed blob like a thin package's payload. Publishers build
-  the entry with `tilo-app-package bot-entry` and upload the program to
+  the entry with `tilo package bot-entry` and upload the program to
   `PUT /uploads/<blake3>.program` before submitting it.
 - **Validation.** The registry checks `requires` against the program on
   submission: every app and connector the steps invoke or the triggers watch is
@@ -800,6 +802,12 @@ pub struct BotRequirements {
   `tilo_bot_directory` does the fetch, verification, grant derivation and
   connector check for the Store and the room service alike;
   `registry_types::DirectoryRef` names the listing an installation came from.
+- **Installed from a program file.** A host's own operator can run a bot the
+  image ships without publishing it to a directory: `--bot` takes a path to a
+  program file as readily as a directory entry, and the installation records
+  that path as where it came from. It is not `source` — a path names no
+  listing, no version and no publisher — and the bot's name is the program's
+  own name, never the path.
 - **Updates.** A newer version is offered like an app update. Applying it
   follows §3: automatic when the grant fits inside the old one, reviewed when it
   is wider.

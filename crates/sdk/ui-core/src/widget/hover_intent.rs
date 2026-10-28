@@ -76,7 +76,6 @@ impl Item {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Sample<'a> {
     pub(crate) p: Point,
-    /// The item under the pointer.
     pub(crate) under: Option<Item>,
     /// The item that is open now, if any ([`HoverIntent::open`]).
     pub(crate) open: Option<Item>,
@@ -98,7 +97,6 @@ enum Hold {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Last {
     at: Instant,
-    /// The pointer was already settling at that sample.
     settling: bool,
     /// The sample was inside a control, whose hover wash waits on whether
     /// the pointer settles there.
@@ -111,7 +109,6 @@ struct Last {
 /// Menu-aim and dwell state for one row of hover-opening items.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HoverIntent {
-    /// The item opened by the pointer.
     open: Option<usize>,
     /// The item that opens at the given instant, unless the pointer is
     /// aiming at a control the opening would move by then.
@@ -263,7 +260,7 @@ impl HoverIntent {
 }
 
 /// Reaching for something that waits at a display's edge (a desk widget's
-/// quiet form): the same transit-versus-aim reading as [`HoverIntent`],
+/// quiet form): the same transit-versus-aim reading as `HoverIntent`,
 /// for targets that are not under the pointer yet.
 ///
 /// A sample aims at a target when both hold:
@@ -505,7 +502,6 @@ mod tests {
             assert_eq!(h.open(), None, "opened with the pointer on the × at {t} ms");
             t += 10;
         }
-        // Out of the bottom of the ×, onto the body below it.
         h.on_motion(
             &sample(Point::new(85.0, 21.0), Some(0), None, &[]),
             ms(t0, t),
@@ -633,7 +629,6 @@ mod tests {
 
     #[test]
     fn crossing_the_screen_past_a_corner_zone_is_transit() {
-        // Diagonally across, fast and steady, ending far from both zones.
         let path: Vec<(f64, f64)> = (0..12)
             .map(|k| (1500.0 - 30.0 * f64::from(k), 860.0 - 10.0 * f64::from(k)))
             .collect();
@@ -727,7 +722,6 @@ mod tests {
     #[test]
     fn heading_away_from_a_widget_while_slowing_is_not_aim() {
         let mut aim = EdgeAim::default();
-        // Out of the corner zone toward the centre, decelerating.
         let path = [
             (1500.0, 860.0),
             (1300.0, 740.0),

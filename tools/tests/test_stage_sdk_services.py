@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise fresh-build identity declarations on the real packaging stamp path."""
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,7 +12,9 @@ RUNTIME = "tilo-runtime/2026.07+native." + "a" * 32
 
 
 class SdkServiceStagingTests(unittest.TestCase):
-    def stamp(self, source):
+    def stamped(self, source):
+        """The stamp script run over `source` in a manifest of its own: the manifest and how the
+        script ended."""
         temp = tempfile.TemporaryDirectory(prefix="tilo-sdk-services-")
         self.addCleanup(temp.cleanup)
         manifest = Path(temp.name) / "manifest.toml"
@@ -20,6 +23,10 @@ class SdkServiceStagingTests(unittest.TestCase):
             ["bash", str(ROOT / "os/scripts/stamp-runtime.sh"), str(manifest), RUNTIME],
             capture_output=True, text=True,
         )
+        return manifest, result
+
+    def stamp(self, source):
+        manifest, result = self.stamped(source)
         self.assertEqual(result.returncode, 0, result.stderr)
         return manifest
 
@@ -34,7 +41,7 @@ class SdkServiceStagingTests(unittest.TestCase):
         original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
-        expected["sandbox"]["services"]["identity"] = "optional@2"
+        expected["sandbox"]["services"]["identity"] = "optional@10"
         manifest = self.stamp(original)
         self.assertEqual(tomllib.loads(manifest.read_text()), expected)
         # Already-staged output is idempotent and retains publisher/trust inputs.
@@ -48,14 +55,17 @@ class SdkServiceStagingTests(unittest.TestCase):
     def test_every_current_sdk_app_manifest_can_declare_presentation(self):
         manifests = sorted((ROOT / "apps").glob("*/tilo-app.toml"))
         self.assertGreaterEqual(len(manifests), 40, "the shipped app fleet is missing")
-        for authored in manifests:
+        # Each app's stamp is a few processes that mostly wait; the apps' run side by side.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            stamps = list(pool.map(lambda authored: self.stamped(authored.read_text()), manifests))
+        for authored, (manifest, result) in zip(manifests, stamps):
             with self.subTest(app=authored.parent.name):
+                self.assertEqual(result.returncode, 0, result.stderr)
                 original = tomllib.loads(authored.read_text())
-                manifest = self.stamp(authored.read_text())
                 staged = tomllib.loads(manifest.read_text())
                 self.assertEqual(
                     staged["sandbox"]["services"]["identity"],
-                    original.get("sandbox", {}).get("services", {}).get("identity", "optional@2"),
+                    original.get("sandbox", {}).get("services", {}).get("identity", "optional@10"),
                 )
 
     def test_authored_legacy_identity_contract_remains_legacy(self):
@@ -70,7 +80,7 @@ class SdkServiceStagingTests(unittest.TestCase):
         source = '[package]\nkind="app"\nruntime="tilo-runtime/2026.07"\n[sandbox]\nseccomp="tilo-default"\n'
         manifest = self.stamp(source)
         self.assertEqual(tomllib.loads(manifest.read_text())["sandbox"], {
-            "seccomp": "tilo-default", "services": {"identity": "optional@2"},
+            "seccomp": "tilo-default", "services": {"identity": "optional@10"},
         })
 
     def test_unbound_runtime_and_non_app_are_refused_without_mutation(self):

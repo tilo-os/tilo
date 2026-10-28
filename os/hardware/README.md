@@ -48,6 +48,18 @@ drop-ins, so they are sealed into the UKI command line and a console named
 there is the last `console=`, which the kernel makes `/dev/console`.
 The optional `internal_keyboards` (version 2) names built-in I2C or SPI
 keyboards libinput must treat as internal; see the Lenovo keyboard section.
+The optional `dmi` (version 2) names a firmware-described board's DMI system
+identity, `{"sys_vendor": ..., "product_name": ...}`, as `/sys/class/dmi/id`
+reports it. It is only for a board with `"devicetree": null` and is refused
+beside a device tree, which already names the model; see the handheld
+section.
+The optional `hardening_defaults` (version 2) lists the hardening actions a
+board accepts by default, as `{"action": ..., "driver": ...}` pairs. It is
+only for a board whose kernel cannot deliver the feature an action removes,
+which is why the driver that would have to be built in is named beside it:
+a board relaxing hardening without the feature behind it would be a hole
+opened for nothing. The accepted actions and the options each may name are in
+`HARDENING_ACTIONS` (`os/dev/hardware_profile.py`); see the handset section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -79,6 +91,63 @@ device before systemd starts. The profile still sets `systemd.tpm2_wait=0`, so
 a firmware whose mssecapp refuses the TPM costs nothing at boot. Boards whose
 TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
 everywhere else.
+
+### Every board says what it keeps
+
+A hang leaves nothing behind unless the board was set up to record it, so each
+schema-2 definition carries a `crash_record` naming three things:
+
+- `storage` - where the kernel's record of a panic goes. `ramoops` is a region
+  the board's device tree reserves, `block` a reserved region on a block
+  device (pstore/blk), `efi-variable` firmware variables (which wear, and are
+  the last resort), and `none` a board that keeps no record. Only a
+  device-tree board can claim `ramoops` or `block`, because it is the device
+  tree that reserves the memory.
+- `watchdog` - what resets a machine that stops responding: `hardware` for a
+  watchdog built into the SoC, `module` for a driver the board installs (which
+  must then be in `boot_modules`, so it reaches the initramfs), and `none`.
+- `lockup` - what panics first when a CPU stops: `buddy` for ARM64's detector,
+  `nmi` for the perf detector x86 uses, and `none` for a board whose stuck CPU
+  only logs.
+
+The declaration is held to the board's own kernel arguments: a board may name
+a watchdog or a detector only when its command line sets one, and a board that
+says it resets nothing or panics from nothing may not carry the arguments that
+would. `hardware_profile.py` and its Rust mirror enforce this at image build,
+so a board cannot claim a watchdog it never feeds or a detector it never
+enables. A board that keeps no record says so rather than leaving it out.
+Schema-1 definitions predate the field and are still accepted unchanged.
+
+### Lenovo 83ED crash evidence
+
+The 83ED has reset itself with nothing in the journal: journald writes to disk
+every few minutes, so a reset loses the last of the log. The kernel keeps its
+console log, and any oops or panic dump, in a 2 MiB ramoops region at
+`0xc00000000` that its device tree reserves (`os/kernel/patches/0021`). The
+region survives a warm reset. On the next boot `systemd-pstore` moves the
+records into the journal of that boot; read them with
+`journalctl -b 0 -u systemd-pstore -o verbose`.
+`tilo-pstore-console.service` raises the console log level once userspace runs,
+because `loglevel=3` would otherwise keep everything below critical out of the
+record.
+
+A hang has to become a panic to leave stacks there. The profile's kernel
+arguments do that:
+
+- `systemd.watchdog_sec=30` makes systemd feed the SoC's SBSA watchdog.
+  Without it the watchdog is never started, and a hard hang freezes the machine
+  for good.
+- `sbsa_gwdt.action=1` panics at the watchdog's first stage, 30 s without a
+  feed. The second stage resets the machine 30 s after that.
+- `softlockup_panic=1` and `nmi_watchdog=panic` (the buddy detector, see
+  `aarch64.config`) panic on a stuck CPU, which freezes the machine anyway.
+
+A task stuck in uninterruptible sleep for two minutes is only reported, with
+its stack, in the journal and the console record. On a working machine that is
+usually slow disk or network I/O, and rebooting would lose the work.
+
+A reset that the firmware, hypervisor or PMIC triggers runs no kernel code. It
+leaves only the console log, which now has every message up to the reset.
 
 ## Local firmware input
 
@@ -140,30 +209,26 @@ Generic images retain the official `latest` default and trusted overrides.
 
 ### CI-built Lenovo install image
 
-`build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
-`main`-branch dispatch with `publish=true`. Supply an independently
-reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256`. The
-artifact is a native Linux OCI image containing only `/firmware/`: the manifest
-and exactly the files named by the selected hardware definition, packaged with
-a `FROM scratch` / `COPY` image. CI imports those inert files on the native ARM64 runner,
-builds and independently rebuilds the image, closes the composefs/UKI seal by
-installing it to a disposable disk, signs its target prediction, and publishes
-the signed ARM64 image at
-`code.tilo.so/tilo/tilo:lenovo-83ed-<full-main-commit>`.
-The image binds that exact immutable tag as its update reference. The workflow
-attests the firmware artifact and manifest digest in SLSA provenance and retains
-the import receipt. Obtain the final `repo@sha256:...` child digest from the CI
-release-child artifact or registry tag and verify its Cosign signature and
-provenance before a physical install.
+The Lenovo board's release is on t (`publish-os-release-lenovo-83ed`, dispatched on stable or a
+release tag; `os-board-lenovo-83ed` builds the unsigned dev board image). Its firmware is the
+reviewed OCI artifact `TILO_LENOVO_FIRMWARE_REF` with its independently pinned
+`TILO_LENOVO_FIRMWARE_MANIFEST_SHA256` (`os/publication.env`): a native Linux OCI image
+containing only `/firmware/`, the manifest and exactly the files named by the selected hardware
+definition, packaged with a `FROM scratch` / `COPY` image. The release image's layers that read
+the hardware profile are built again with it on a native ARM64 node, with those inert files
+imported; it is independently rebuilt, its composefs/UKI seal is closed by installing it to a
+disposable disk, its target prediction is signed, and the signed ARM64 image is published at
+`code.tilo.so/tilo/tilo:lenovo-83ed-<full-main-commit>` and `lenovo-83ed-gen<N>`, with
+`lenovo-83ed-latest` moved to it. The image binds that exact immutable tag as its update
+reference; installed boards find their successor through `lenovo-83ed-latest`
+(docs/security/board-successor-updates.md). Its SLSA provenance binds the board, its hardware
+definition, the firmware artifact and manifest digest. Obtain the final `repo@sha256:...` digest
+from the registry tag and verify its Cosign signature and provenance before a physical install.
 
-This is an initial, generation-1 board image with an immutable update
-reference. It does not join or advance the generic multiarch `latest`/`genN`
-release series, and automatic board upgrades are not available until a
-separate dense Lenovo generation series is implemented. QEMU's `virt` machine
-cannot boot the Lenovo device tree, so CI's board path validates the disk
-install and signed image without claiming a physical boot; the generic ARM64
-image continues to run the full VM desktop gate. The first laptop boot and
-device drivers still require on-device acceptance.
+It does not join the generic multiarch `latest`/`genN` release series. QEMU's `virt` machine
+cannot boot the Lenovo device tree its UKI carries, so the release validates the disk install
+and the signed image without claiming a physical boot; the generic ARM64 image runs the full VM
+desktop gate. The first laptop boot and device drivers still require on-device acceptance.
 
 Local driver invocations may instead use `--hardware-profile` with already
 staged, verified firmware. Firmware transfer and hash checks establish build
@@ -390,10 +455,191 @@ uppercase vendor and product ids, exact evdev name and the board's first
 device-tree `compatible` string. The preparer writes them, ANDed, into
 `/usr/share/libinput/50-tilo-<profile>.quirks` as
 `AttrKeyboardIntegration=internal`. Values are literal: no glob characters,
-so the section can match only that keyboard on that board. Entries require a
-device-tree profile; a firmware-described board would need a DMI match first.
+so the section can match only that keyboard on that board. On a board with a
+device tree the entry carries that board's `compatible`; on a
+firmware-described board it carries `"devicetree_compatible": null` and the
+section matches the definition's `dmi` identity instead, through
+`MatchDMIModalias=dmi:<sys_vendor>:<product_name>:`. Something must confine
+the quirk either way, so an entry on a board with neither is refused.
 `/etc/libinput/local-overrides.quirks` stays the administrator's.
 
 On the laptop, `libinput quirks list /dev/input/event<N>` (libinput-utils)
 names the attribute for the keyboard node; with stock quirks alone it
 prints nothing.
+
+## Handheld PCs
+
+A handheld PC is a firmware-described x86-64 board: it has no device tree,
+its panel is mounted in portrait, and its built-in controls are not a
+laptop's. Six profiles describe the boards this image targets —
+`steamdeck-jupiter` (Steam Deck LCD, Aerith), `steamdeck-galileo` (Steam Deck
+OLED, Sephiroth), `rog-ally-rc71l`, `rog-ally-x-rc72l`, `legion-go-8apu1` and
+`legion-go-s-8aps1`. Each carries `"devicetree": null`, the DMI identity the
+firmware reports, and the panel orientation below.
+
+These are the board's *firmware* description, not a device tree: the kernel's
+ACPI tables describe the same devices, so nothing here needs a DTB and the
+UKI embeds none. A profile on these boards is what names the model to
+model-bound settings — the panel orientation and, for a keyboard whose
+`internal_keyboards` entry carries `"devicetree_compatible": null`, the
+libinput quirk that pairs it with the touchpad.
+
+### The panel is mounted in portrait
+
+The built-in panel is a portrait panel turned on its side. The kernel has to
+be told, because it is the kernel that draws the first console frame and
+sets up the scanout before the compositor runs: without it, the splash and
+the disk-unlock prompt are drawn sideways and the modesetting driver
+advertises the wrong orientation to the compositor, which then turns the
+picture a second time. The profile names the connector in `kernel_args`:
+
+```json
+"kernel_args": ["video=eDP-1:panel_orientation=right_side_up"]
+```
+
+The connector is `eDP-1` because it is the built-in panel, and the value is
+the orientation the panel is physically mounted at (its own long edge along
+the machine's left). This rides the same sealed-command-line path as every
+other profile argument, so it is measured into PCR 11 rather than patched in
+at runtime.
+
+The compositor takes the kernel's orientation at face value — a native-portrait
+panel therefore needs no second rotation and no copy pass. It only turns the
+panel further when the accelerometer reports the device was rotated
+(`crates/session/shell/src/compositor/device_rotation.rs`), and that path
+already refuses to touch an external monitor.
+
+### Controls
+
+The built-in keyboard and touchscreen are ordinary evdev devices and follow
+the same path as a laptop's: libinput, then the compositor, then the focused
+surface, with the on-screen keyboard driven by text focus rather than by any
+handheld-specific code. The DMI-bound quirk above is what makes the built-in
+keyboard pair with the touchpad for disable-while-typing.
+
+The face and shoulder buttons and the sticks are a different matter. The
+shell already decodes a physical controller through
+`crates/session/shell/src/shell/physical_gamepad.rs`, but that path forwards
+the controller to a focused application over the personal-device fabric — it
+is for play, not for moving focus around the desktop or dismissing a dialog.
+Driving Tilo's own UI from an XI2 gamepad is **not implemented**, and neither
+is a handheld-specific power or suspend policy (TDP limits and battery
+charge thresholds are firmware- and vendor-specific). Those need a design
+decision about which chords the shell owns, so this change does not invent
+one.
+
+### Verifying one of these boards
+
+`configure`-time checking is not booting. Before claiming a handheld works,
+build its profile image on an x86-64 builder with matching kernel, install
+it, and on the device check that the panel is upright from the firmware
+handle-off, that the greeter accepts the touchscreen and the built-in
+keyboard, and that the on-screen keyboard appears when a text field takes
+focus. A board whose DMI strings differ from those in its profile silently
+gets none of its model-bound settings, so read `/sys/class/dmi/id/product_name`
+on the machine and correct the definition rather than widening it.
+
+## Handsets
+
+A handset is the other kind of reduced personal computer: it has a device tree
+rather than firmware-described devices, it is panel-first (there is no external
+monitor), and it is a personal computer rather than a host, so it suspends.
+`pinephone-pro` describes the PinePhone Pro (Rockchip RK3399S); its kernel must
+supply `dtb/rockchip/rk3399-pinephone-pro.dtb`.
+
+The profile is data only. The shared aarch64 kernel already builds in the MMC
+host, the display controller (`rockchipdrm`, `dw-mipi-dsi`, `analogix-dp`), the
+panel backlight and the I2C-HID keyboard path this board needs; the profile's
+`boot_modules` names the drivers dracut has to reach before the encrypted root
+is open, and the parts of the audio card and camera the kernel has not built in
+are what `hardening_defaults` is for.
+
+Both a camera and a microphone are inside this board's one audio/camera card,
+and both are kernel options (`CONFIG_MEDIA_SUPPORT`, `CONFIG_SND`) that the
+shared image builds in for other boards. So instead of every release step
+carrying a list of handset names, the definition says which hardening actions
+`tilo harden` may accept by default here and which option each of those relaxes:
+
+```json
+"hardening_defaults": [
+  {"action": "camera", "driver": "CONFIG_MEDIA_SUPPORT"},
+  {"action": "microphone", "driver": "CONFIG_SND"}
+]
+```
+
+`hardware_profile.py` refuses an action it does not know, a driver that is not
+a kernel option, a driver its action does not cover (so a board cannot relax the
+camera hardening because of a sound card), and the same action twice. The
+declaration is data, not a branch: nothing in the image builder names a board
+here.
+
+### What a handset image cannot prove
+
+Everything above is checked at build time, and a correct profile is not a boot.
+Installing on the phone itself needs a boot chain the image does not own:
+PinePhone Pro wakes its mask ROM with a U-Boot built for that board and written
+to the SD card (or the eMMC) in front of the ESP — the Orange Pi's
+`idbloader`/`u-boot.itb` path above is the same idea for a different SoC and is
+not reusable here. Until such a second-stage loader is built and sealed by the
+same release step, the profile is declarative: it describes the board, it does
+not make this image flashable onto one.
+
+What a device run has to establish, once a loader exists: the panel upright from
+the firmware handle-off, the greeter accepting the touchscreen, the on-screen
+keyboard appearing for a text field, suspend and resume from the power button,
+and the modem and audio paths (which need `pd-mapper`, `rmtfs`,
+`ModemManager` and `callaudiod`, none of which the image installs today).
+
+## Raspberry Pi 4 and 5
+
+Two profiles register the two Broadcom boards this image's kernel describes:
+`raspberry-pi-4b` for the Raspberry Pi 4 Model B, 400 and CM4 (BCM2711,
+VideoCore VI) and `raspberry-pi-5` for the Raspberry Pi 5, 500 and CM5
+(BCM2712, VideoCore VII). They embed `broadcom/bcm2711-rpi-4-b.dtb` and
+`broadcom/bcm2712-rpi-5-b.dtb`: the self-contained device trees, not the
+`-ovl-rp1` variants, because the RP1 nodes are already resolved in the image
+rather than loaded as an overlay at runtime.
+
+What is built in rather than modular is what a root cannot wait for. The SD
+card and eMMC sit on the Arasan SDHCI-compatible host the iProc driver binds,
+and on a Pi 5 they sit on the RP1 south bridge — a PCIe multifunction device
+carrying the Ethernet, USB, GPIO and clock generators the rest of the board
+needs. So `MMC_SDHCI_IPROC`, `BLK_DEV_NVME`, `PCIE_BRCMSTB`, `MISC_RP1`,
+`PINCTRL_RP1` and `COMMON_CLK_RP1` are pinned `=y` in
+`os/kernel/config-fragments/aarch64.config`: a board whose storage controller
+arrives as a module would have to load it from an initramfs generated on a
+machine that had the module, and the ARM64 UKI is shared. The display and
+network drivers stay modular, because the VideoCore firmware keeps the monitor
+lit until `vc4` binds and nothing at boot reads a network. The profile still
+names `vc4`, `v3d`, `brcmfmac` and `cfg80211` in `boot_modules` so the radio on
+the SDIO host is enumerated before the root is open.
+
+`v3d` is the render node Mesa's V3DV Vulkan driver talks to. The profile
+declares it, but whether its compute shaders run against this board's
+workgroup limits and buffer bindings is a device fact — `tilo-ui`'s Vello
+compute suite has to be run on a Pi 4 and a Pi 5 to establish it, and the
+profile alone proves nothing about it.
+
+Fedora's `brcmfmac-firmware` already ships the BCM43455 files this radio wants,
+including the per-board NVRAM for `raspberrypi,4-model-b`,
+`raspberrypi,5-model-b` and `500`, so the profiles carry no local firmware and
+`system_firmware` stays empty. Boards under 4 GiB are out of scope: the desktop
+session does not fit, and the profile is written for the models that hold a
+session.
+
+The crash record is honest about what a Pi leaves behind. Its device tree
+reserves no memory for `ramoops`, so `storage` is `none`. The PM block's
+watchdog is a real one and its driver is a module, so `watchdog` is `module`
+with `bcm2835_wdt` in `boot_modules` and `systemd.watchdog_sec=30` on the
+command line to feed it; `lockup` is `none` because nothing on that command
+line makes a stuck CPU panic.
+
+The profiles are declarative, for the same reason the PinePhone's are. A Pi
+does not boot an EFI payload from its ESP on its own: `config.txt` on the boot
+partition tells the VideoCore firmware which kernel and device tree to load,
+and neither a U-Boot built for `rpi_arm64` nor an `edk2-rpi` firmware is in
+this image or installed by the disk step, which special-cases only the Orange
+Pi's Rockchip loader. Until that second-stage firmware exists and is sealed by
+the same release step, `TILO_HARDWARE_PROFILE=raspberry-pi-5 ./os/build.sh`
+describes the board and embeds its device tree; it does not make the result
+flashable onto one.

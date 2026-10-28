@@ -25,7 +25,7 @@ use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt,
 /// column), flex growth (a `Scrollable` under a fixed bar) and its basis,
 /// so the child sizes exactly as if the boundary were not there. A child
 /// out of the flow takes the boundary out too.
-fn boundary_style(child: Option<&Style>) -> Style {
+pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
     let mut style = Style {
         display: taffy::Display::Flex,
         flex_direction: taffy::FlexDirection::Column,
@@ -140,6 +140,36 @@ where
     pub fn autofocus_on_change(mut self, autofocus: bool) -> Self {
         self.autofocus = autofocus;
         self
+    }
+
+    /// The subtree showing now.
+    pub(crate) fn child(&self) -> &dyn Widget {
+        self.child.as_ref()
+    }
+
+    /// The subtree showing now, mutably.
+    pub(crate) fn child_mut(&mut self) -> &mut dyn Widget {
+        self.child.as_mut()
+    }
+
+    /// Take the subtree showing now out of the view, `with` standing in it.
+    /// The subtree's controls keep working where it goes: they were in this
+    /// view's control scope, which closes with the view, so they move to the
+    /// domain the view stands in, as a host renews custody it closed.
+    pub(crate) fn replace_child(&mut self, with: Element) -> Element {
+        self.structure_dirty = true;
+        let mut taken = std::mem::replace(&mut self.child, with);
+        if let (Some(outer), Some(scope)) = (self.control_domain.clone(), self.scope_domain.take())
+        {
+            self.child_domain = None;
+            scope.close();
+            crate::widget::controls::install_control_custody(
+                taken.as_mut(),
+                &outer,
+                outer.renewal_from(&scope),
+            );
+        }
+        taken
     }
 
     /// Reconcile a time-sensitive projection through the host's existing wake

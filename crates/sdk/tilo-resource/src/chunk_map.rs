@@ -5,6 +5,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
+use tilo_sort::CompactSort as _;
 
 use crate::cow::Shared;
 use crate::model::ModelError;
@@ -114,7 +115,6 @@ impl<V> ChunkMap<V> {
         })
     }
 
-    /// The chunk and the place in it of `key`.
     fn locate(&self, key: &str) -> Option<(usize, usize)> {
         let index = self.chunk_of(key);
         let at = self
@@ -263,7 +263,7 @@ impl<V> ChunkMap<V> {
                 keys.extend(chunk.get().iter().map(|(key, _)| key.as_str()));
             }
         }
-        keys.sort_unstable();
+        keys.compact_sort();
         keys.dedup();
         keys
     }
@@ -282,7 +282,6 @@ impl<V> ChunkMap<V> {
     }
 }
 
-/// The last key of `chunk`, the one its keys end with.
 fn last_key<V>(chunk: &Shared<Chunk<V>>) -> Option<&str> {
     chunk.get().last().map(|(key, _)| key.as_str())
 }

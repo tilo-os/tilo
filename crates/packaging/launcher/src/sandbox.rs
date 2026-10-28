@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use crate::capabilities::CapabilityPlan;
 use crate::manifest::ManifestView;
 
-/// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
     PathBuf::from("/var/tilo-apps").join(package_id)
 }
@@ -64,6 +63,9 @@ pub struct DBusBindPlan {
 pub struct AtspiBindPlan {
     pub host_socket: PathBuf,
     pub sandbox_path: PathBuf,
+    /// Whether the app serves its tree read-only to other clients
+    /// ([`crate::dbus_proxy::ATSPI_READ_ONLY_ENV`]).
+    pub read_only: bool,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -73,7 +75,6 @@ pub struct AtspiBindPlan {
 pub struct WaylandBind {
     pub host_socket: PathBuf,
     pub sandbox_socket: PathBuf,
-    /// In-sandbox `XDG_RUNTIME_DIR`.
     pub sandbox_runtime_dir: PathBuf,
     /// Value of `WAYLAND_DISPLAY` inside the sandbox.
     pub display_name: String,
@@ -550,6 +551,26 @@ fn is_plain_absolute_path(value: &str) -> bool {
         })
 }
 
+/// The variable that tells a runtime's binary where the package it runs is
+/// mounted (see [`ManifestView::entrypoint`]'s `runtime`).
+pub const APP_MODULE_ENV: &str = "TILO_APP_MODULE";
+
+/// The sandbox directory the entrypoint's binary paths are relative to: the
+/// mount of the runtime bundle `[entrypoint].runtime` names, else the
+/// package's own payload.
+#[must_use]
+pub fn entry_root_for(manifest: &ManifestView) -> PathBuf {
+    match manifest
+        .entrypoint
+        .runtime
+        .as_deref()
+        .and_then(|runtime| runtime.split_once('/'))
+    {
+        Some((_, version)) => runtime_mount_for(version),
+        None => payload_mount_for(&manifest.package_id),
+    }
+}
+
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mount: &Path) {
     if let Some(name) = manifest
         .name
@@ -688,6 +709,16 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
     push_surface(&mut argv, payload_root, &payload_mount);
+    // An entrypoint that executes its runtime's binary is told where the
+    // package it runs is: the payload is then the app (a tilolang app's
+    // compiled module and metadata), and the binary is the runtime's.
+    if manifest.entrypoint.runtime.is_some() {
+        argv.extend([
+            "--setenv".to_string(),
+            APP_MODULE_ENV.to_string(),
+            payload_mount.display().to_string(),
+        ]);
+    }
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -760,6 +791,11 @@ pub fn build_bwrap_argv_for_entry(
             argv.push("--setenv".to_string());
             argv.push("AT_SPI_BUS_ADDRESS".to_string());
             argv.push(format!("unix:path={}", atspi.sandbox_path.display()));
+            if atspi.read_only {
+                argv.push("--setenv".to_string());
+                argv.push(crate::dbus_proxy::ATSPI_READ_ONLY_ENV.to_string());
+                argv.push("1".to_string());
+            }
         }
     }
 
@@ -801,7 +837,7 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(sb.child_fd.to_string());
     }
 
-    let entry_abs = payload_mount.join(entry_bin);
+    let entry_abs = entry_root_for(manifest).join(entry_bin);
     argv.push(entry_abs.display().to_string());
 
     argv
@@ -1043,7 +1079,6 @@ mod tests {
             let plan = CapabilityPlan::default();
             assert_eq!(granted_workspace_roots("/var/workspace", &plan), None);
         }
-        // Phase `a_granted_workspace_root_reaches_the_app`.
         {
             let plan = CapabilityPlan {
                 ro_paths: vec![PathBuf::from("/var/workspace")],
@@ -1136,6 +1171,7 @@ mod tests {
                 r#type: crate::manifest::EntrypointType::Gui,
                 gui_bin: None,
                 cli_bin: None,
+                runtime: None,
             },
             sandbox: crate::manifest::Sandbox {
                 net: crate::manifest::Net {
@@ -1273,9 +1309,7 @@ mod tests {
 
     #[test]
     fn hardening_policy_decides_allocator_and_shadow_stacks() {
-        // Phase `a_listed_package_gets_the_allocator_bound_as_well_as_preloaded`.
         {
-            // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let argv = argv_with_hardening_policy("com.example.notes\n");
 
@@ -1312,9 +1346,7 @@ mod tests {
                 "shadow stacks were not requested for a listed package: {argv:?}"
             );
         }
-        // Phase `an_unlisted_package_pays_for_neither_protection`.
         {
-            // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let argv = argv_with_hardening_policy("so.tilo.browser\n");
             assert!(
@@ -1340,7 +1372,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn argv_layout_covers_namespaces_payload_runtime_profile_and_entrypoint() {
-        // Phase `argv_includes_namespace_and_lifetime_flags`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1359,7 +1390,6 @@ mod tests {
             assert!(argv.windows(2).any(|w| w[0] == "--proc" && w[1] == "/proc"));
             assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
         }
-        // Phase `argv_shares_net_when_mode_is_host`.
         {
             let m = mk_manifest("host");
             let argv = build_bwrap_argv(
@@ -1373,7 +1403,6 @@ mod tests {
             );
             assert!(argv.iter().any(|a| a == "--share-net"));
         }
-        // Phase `argv_binds_payload_root_to_tilo_apps_path`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1392,7 +1421,6 @@ mod tests {
             assert_eq!(argv[pos - 1], "--ro-bind");
             assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
         }
-        // Phase `argv_names_the_surface_the_package_ships`.
         {
             let m = mk_manifest("off");
             let payload = tempfile::tempdir().unwrap();
@@ -1439,7 +1467,6 @@ mod tests {
         // The reads a launch gets are the system profile's; a manifest naming
         // a path never reaches this builder.
         {
-            // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1490,7 +1517,6 @@ mod tests {
                 "the manifest layer must produce no writable bind: {argv:?}"
             );
         }
-        // Phase `argv_includes_runtime_bind_and_ld_library_path`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1530,7 +1556,6 @@ mod tests {
                 .expect("LD_LIBRARY_PATH setenv");
             let _ = ld_pos;
         }
-        // Phase `argv_ends_with_entrypoint_path`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1547,7 +1572,6 @@ mod tests {
                 Some("/var/tilo-apps/com.example.notes/bin/notes")
             );
         }
-        // Phase `build_bwrap_argv_for_entry_uses_provided_bin`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv_for_entry(
@@ -1565,7 +1589,6 @@ mod tests {
                 Some("/var/tilo-apps/com.example.notes/bin/notes-cli")
             );
         }
-        // Phase `workspace_id_is_setenv_before_the_entrypoint`.
         {
             // bwrap reads everything after the entrypoint token as the child's
             // argv — a `--setenv` spliced after it silently becomes a
@@ -1599,7 +1622,6 @@ mod tests {
 
     #[test]
     fn wayland_bind_exposes_only_the_normalised_public_socket() {
-        // Phase `wayland_bind_normalises_the_in_sandbox_display_name`.
         {
             // Host is on wayland-4; the app must still see wayland-0.
             let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
@@ -1638,7 +1660,6 @@ mod tests {
                 "the privileged socket's env var must be cleared inside the sandbox: {argv:?}"
             );
         }
-        // Phase `wayland_bind_argv_carries_socket_and_env`.
         {
             let mut argv = Vec::new();
             let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
@@ -1723,7 +1744,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn argv_exports_only_validated_launch_metadata() {
-        // Phase `argv_forwards_only_a_plain_save_directory`.
         {
             for (value, forwarded) in [
                 ("/data/out", true),
@@ -1743,7 +1763,6 @@ mod tests {
                 );
             }
         }
-        // Phase `argv_forwards_the_complete_validated_continuation_envelope`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_CONTINUITY_INSTANCE", "42")
@@ -1769,7 +1788,6 @@ mod tests {
                 Some("7b7d")
             );
         }
-        // Phase `argv_forwards_only_shell_owned_startup_metrics_paths`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(
@@ -1819,9 +1837,7 @@ mod tests {
             drop(env);
             assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
         }
-        // Phase `argv_exports_the_app_name_from_the_manifest`.
         {
-            // TILO_APP_NAME exported alongside TILO_PACKAGE_ID for the window title.
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
                 &m,
@@ -1834,7 +1850,6 @@ mod tests {
             );
             assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
         }
-        // Phase `argv_omits_the_app_name_when_the_manifest_has_none`.
         {
             // A manifest with no `[package].name` exports nothing.
             let mut m = mk_manifest("off");
@@ -1850,7 +1865,6 @@ mod tests {
             );
             assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), None);
         }
-        // Phase `argv_exports_the_icon_path_under_the_payload_mount`.
         {
             // Icon art named payload-relative; builder resolves it to the
             // in-sandbox payload mount.
@@ -1870,7 +1884,6 @@ mod tests {
                 Some("/var/tilo-apps/com.example.notes/assets/icon.png"),
             );
         }
-        // Phase `argv_omits_the_icon_when_the_manifest_has_none`.
         {
             // No icon art: no TILO_APP_ICON, so the toolkit draws its default.
             let m = mk_manifest("off");
@@ -1888,7 +1901,52 @@ mod tests {
     }
 
     #[test]
-    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+    fn an_entrypoint_runtime_execs_the_runtime_binary_over_the_payload() {
+        // A tilolang app: its payload is the compiled module; the binary is
+        // the tilolang runtime bundle's, told where the module is.
+        let mut m = mk_manifest("off");
+        m.optional_runtimes = vec!["tilolang/0.1.0".to_string()];
+        m.entrypoint.bin = "bin/tilolang".to_string();
+        m.entrypoint.runtime = Some("tilolang/0.1.0".to_string());
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/run/tilo-runtime/0.1.0/bin/tilolang")
+        );
+        assert_eq!(
+            setenv_value(&argv, APP_MODULE_ENV),
+            Some("/var/tilo-apps/com.example.notes")
+        );
+        assert_eq!(
+            setenv_value(&argv, "TILO_PACKAGE_ID"),
+            Some("com.example.notes")
+        );
+        // An ordinary app runs its own binary and hears of no module.
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/var/tilo-apps/com.example.notes/bin/notes")
+        );
+        assert_eq!(setenv_value(&argv, APP_MODULE_ENV), None);
+    }
+
+    fn atspi_argv(read_only: bool) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = DBusBindPlan {
             host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
@@ -1896,9 +1954,10 @@ mod tests {
             atspi: Some(AtspiBindPlan {
                 host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"),
                 sandbox_path: PathBuf::from("/run/user/1234/at-spi/bus"),
+                read_only,
             }),
         };
-        let argv = build_bwrap_argv(
+        build_bwrap_argv(
             &m,
             Path::new("/host/pkg"),
             None,
@@ -1906,7 +1965,30 @@ mod tests {
             Some(&plan),
             None,
             &CapabilityPlan::empty(),
+        )
+    }
+
+    #[test]
+    fn a_graphical_app_serves_its_accessible_tree_read_only() {
+        assert_eq!(
+            setenv_value(&atspi_argv(true), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
+            Some("1"),
+            "a release launch tells the app's bridge to refuse acting calls"
         );
+        assert_eq!(
+            setenv_value(&atspi_argv(false), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
+            None,
+            "only the dev image leaves the acting calls open"
+        );
+        assert!(crate::dbus_proxy::atspi_read_only_on(None));
+        assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"release\n")));
+        assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"developer\n")));
+        assert!(!crate::dbus_proxy::atspi_read_only_on(Some(b"dev\n")));
+    }
+
+    #[test]
+    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+        let argv = atspi_argv(true);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
                 && w[1] == "/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"
@@ -1923,7 +2005,6 @@ mod tests {
 
     #[test]
     fn session_bus_reaches_the_sandbox_only_through_a_proxy_plan() {
-        // Phase `argv_binds_dbus_proxy_socket_when_plan_is_supplied`.
         {
             let mut m = mk_manifest("off");
             m.sandbox
@@ -1963,7 +2044,6 @@ mod tests {
                 "no accessibility bus without its proxy: {argv:?}"
             );
         }
-        // Phase `argv_does_not_bind_dbus_without_plan`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1980,7 +2060,6 @@ mod tests {
                 "bus must not leak into sandbox without a plan: {argv:?}"
             );
         }
-        // Phase `argv_does_not_bind_dbus_when_only_deny_portals`.
         {
             // With the plan-based API, `Deny`-only portals means the caller passes
             // `None` — same as no portals at all.
@@ -2010,7 +2089,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn identity_handoff_follows_participation() {
-        // Phase `identity_handoff_sets_broker_fd_without_mounting_a_key`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -2033,7 +2111,6 @@ mod tests {
                 "private identity path reached the sandbox argv: {argv:?}"
             );
         }
-        // Phase `trusted_identity_projection_is_one_live_read_only_directory`.
         {
             let mut argv = Vec::new();
             push_trusted_identities_bind(
@@ -2141,7 +2218,6 @@ mod tests {
                 "and no participation is claimed on its behalf: {argv:?}"
             );
         }
-        // Phase `identity_bind_absent_when_host_path_is_none`.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -2175,6 +2251,7 @@ mod tests {
             vulkan_icd_json: None,
             vulkan_device: None,
             pipeline_seed: Some(PathBuf::from("/run/user/1000/tilo/pipeline-seed")),
+            site_integration: None,
             notes: Vec::new(),
         };
         let mut argv = Vec::new();
@@ -2219,6 +2296,7 @@ mod tests {
                 )),
                 vulkan_device: None,
                 pipeline_seed: None,
+                site_integration: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
@@ -2284,6 +2362,7 @@ mod tests {
                 vulkan_icd_json: None,
                 vulkan_device: None,
                 pipeline_seed: None,
+                site_integration: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
@@ -2352,7 +2431,6 @@ mod tests {
 
     #[test]
     fn service_sockets_bind_as_child_fds_only() {
-        // Phase `service_binds_name_their_child_fd`.
         {
             let m = mk_manifest("off");
             let binds = vec![ServiceBind {
@@ -2567,9 +2645,7 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn workspace_capabilities_decide_filesystem_and_camera_binds() {
-        // Phase `no_capabilities_adds_no_binds_beyond_the_system_profile`.
         {
-            // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let baseline = argv_with_caps("com.example.notes", &[], 1_000);
             let m = mk_manifest("off");
@@ -2593,7 +2669,6 @@ mod tests {
                  and nothing else: {baseline:?}"
             );
         }
-        // Phase `read_capability_binds_the_path_read_only_and_never_writable`.
         {
             let caps = vec![fs_grant(
                 "so.tilo.books",
@@ -2622,7 +2697,6 @@ mod tests {
                 "a grant on /var/workspace/books must not bind its parent: {argv:?}"
             );
         }
-        // Phase `write_capability_binds_the_path_read_write`.
         {
             let caps = vec![fs_grant(
                 "so.tilo.books",
@@ -2647,7 +2721,6 @@ mod tests {
                 }
             }
         }
-        // Phase `camera_bind_appears_only_with_a_camera_capability`.
         {
             let without = argv_with_caps("so.tilo.meet", &[], 1_000);
             assert!(
@@ -2668,7 +2741,6 @@ mod tests {
                 "a camera capability must bind the device node: {with:?}"
             );
         }
-        // Phase `a_capability_for_another_app_never_reaches_this_apps_argv`.
         {
             let caps = vec![
                 fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
@@ -2702,9 +2774,7 @@ mod tests {
             assert!(theirs.iter().any(|a| a == "/var/workspace/secrets"));
             assert!(theirs.iter().any(|a| a == "--share-net"));
         }
-        // Phase `an_expired_capability_produces_no_bind`.
         {
-            // The argv builder reads the session environment.
             let _env = tilo_test_env::lock();
             let caps = vec![
                 fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
@@ -2734,7 +2804,6 @@ mod tests {
 
     #[test]
     fn network_capabilities_decide_namespace_and_egress_gate() {
-        // Phase `network_capability_is_what_shares_the_namespace`.
         {
             // The manifest says net.mode = "off": without a capability the sandbox
             // keeps the empty network namespace, and no packet can leave.
@@ -2788,7 +2857,6 @@ mod tests {
                 "the allowlist must exclude what it does not name: {policy:?}"
             );
         }
-        // Phase `the_gate_bind_is_writable_and_points_the_app_at_the_relay`.
         {
             let bind = NetGateBind {
                 host_socket: PathBuf::from("/run/user/1000/tilo/net/7.sock"),

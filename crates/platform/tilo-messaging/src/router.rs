@@ -109,7 +109,12 @@ impl MessagingHost for MessagingRouter {
     }
 }
 impl HistoryHost for MessagingRouter {
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        route: Route,
+        cursor: Option<crate::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
         let client = self.services.get(&ServiceAccount::route(&route)).cloned();
         Box::pin(async move {
             if limit != crate::MAX_HISTORY_MESSAGES {
@@ -118,7 +123,7 @@ impl HistoryHost for MessagingRouter {
             client
                 .ok_or(crate::HistoryError::Unavailable)?
                 .history()
-                .read(route)
+                .read(route, cursor)
                 .await
         })
     }
@@ -170,7 +175,7 @@ mod tests {
         }
     }
     impl HistoryHost for Host {
-        fn read(&self, route: Route, _: usize) -> HistoryFuture {
+        fn read(&self, route: Route, _: Option<crate::HistoryCursor>, _: usize) -> HistoryFuture {
             self.calls
                 .lock()
                 .expect("fixture value")
@@ -228,7 +233,7 @@ mod tests {
         for id in &services {
             let route = route(&id.service, &id.account);
             assert!(router.supports(&route));
-            let mut read = Box::pin(history.read(route.clone()));
+            let mut read = Box::pin(history.read(route.clone(), None));
             assert!(matches!(
                 read.as_mut().poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Ready(Ok(_))
@@ -255,7 +260,7 @@ mod tests {
                 send.as_mut().poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Ready(Err(SendError::Unavailable))
             ));
-            let mut read = Box::pin(history.read(missing));
+            let mut read = Box::pin(history.read(missing, None));
             assert!(matches!(
                 read.as_mut().poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Ready(Err(crate::HistoryError::Unavailable))

@@ -49,6 +49,17 @@ available separately from the ordinary message. The `triage` report action
 requires Write and records attributed status changes, duplicate targets or an
 address of an existing task. A task reference grants no access and creates no
 external task automatically.
+The report's message is read out of the stored submission for each reader
+(`chat::feedback::message`), never stored as sentences: the summary, then
+each pick as its place, app, what it was and its role, the reporter's note on
+it and the texts it showed, with hidden spans as their kind's placeholder
+(`‹name›`), then the last actions and, when it was slow, the frame timings.
+Its masked picture is the message's image (`report.png`). The report holds
+its own reactions field, so members react to it, or +1 it, as to any message;
+the timeline shows one message per report. Chat's `read-room` answers the
+report as that message, so the Discord bridge mirrors a filed report
+(`submit-feedback`) as a post with the picture uploaded beside it, and the
+reactions on it as the bot's.
 Opening a report reveals its exact message rather than just its channel.
 System search indexes the reviewed report text with its typed `chat.feedback`
 anchor and the same reveal action, so the result exposes the report’s existing
@@ -95,7 +106,18 @@ open composer rather than a second. Only the app's id and its own display name
 are used: tile labels can be window titles and are never read. The composer
 shows what the report is about and offers "Include which app this is about"
 only while it has a subject; consent adds that one public context field to the
-review, and changing the subject discards an earlier review. Hosts that cannot
+review, and changing the subject discards an earlier review.
+
+A report can also be about one control. `feedback.point` arms the next click
+(the desktop says so; Escape lets it go): the click focuses the window under it
+without reaching the app, and the shell asks that app over its shell-ui
+connection what is at that point (`PointAt`). The app answers from its semantic
+tree, the one assistive technology reads, with the deepest control a person
+could name (a durable identity or an accessible name): its id, role and
+accessible name, never what a field holds (`Pointed`). The subject then names the control too; with consent
+its id and role are context and its name is reviewed as the person's own words,
+since a row can be named after what they wrote. An app that cannot answer, or
+does not in time, leaves the report about its window. Hosts that cannot
 take a screenshot (`FeedbackHost::offers_screenshots`) do not show the
 screenshot choice; a screenshot requested anyway is refused, not dropped.
 
@@ -130,11 +152,93 @@ worker; only the purpose-specific receipt digest reaches the existing owner
 signer. `read-feedback-destination` confirms an existing text channel and
 `read-feedback-receipt` can require the exact attributed reporter root. A
 signed acknowledgment binds the owner, reporter, destination, submission
-identity and approved digest. Screenshot receipts remain refused
-until an actual owner content store supplies a durable content witness.
+identity and approved digest. A report with a screenshot is acknowledged
+only once the owner's own content store keeps bytes that hash to the
+screenshot's address, checked before and after signing
+(`CanonicalReceiptSource::keeps_content`); the relay answers from the room's
+blob store (`RoomRecordsLink::content_blob`).
+
+### Report a problem: picking parts of the screen
+
+"Report a problem…" (the avatar menu, and the Report problem shortcut,
+Super+R; Alt+Shift+R in a browser) dims the screen and lets the person point
+at what is wrong. `tilo_desktop::feedback_picker::FeedbackPicker` is the one
+overlay for native and browser hosts: the part under the pointer is outlined
+with a spring-animated highlight, a click picks it, Shift-click or a dragged
+rectangle picks several (up to `report::MAX_PICKS`), the wheel widens to the
+enclosing part, Enter or Continue finishes and Escape leaves. Picks come from
+the retained widget tree, never from pixels: `ui::pick` walks the same
+accessibility nodes the screen reader uses and resolves each to its widget
+path (`Name[i]/Child[j]`), role, label, app and, where the window has one, its
+record.
+
+`ui::pick::capture` collects each pick's texts and classifies them. A text a
+widget took from the app's localization (`AccessNode::interface_name`) is
+interface copy and travels as it is; every other text is content, and content
+is Personal: the review hides it whole until the person reveals a span. The
+report also carries the last 20 actions the person invoked
+(`ui::pick::recent_invocations`, structured addresses and outcomes, not
+sentences) and, when they tick "This was slow", recent frame timings.
+
+`tilo_feedback::report::ReportDraft::review` runs the deterministic floor
+first (credentials, addresses, numbers and the names of the people present
+become typed placeholders such as `‹name›`), then, where the page has a model,
+one pass through `model_view` that may only propose more spans to hide;
+Personal values never reach a model that is not local. The composer shows the
+exact outgoing report, each hidden span as a placeholder the person can show
+or hide again (credentials stay hidden), a note per pick, an overall note and
+"This was slow". Nothing leaves before Send, which queues the reviewed
+submission in the same outbox as any other report.
+
+The model is the one the host lends the composer, and the review names it
+("Checked by rules and Anthropic claude-haiku-5-5, which found nothing
+more"); with none, it says the rules alone checked it. A native desktop asks
+the model its AI settings choose for `so.tilo.feedback-composer`, else the
+default model, through the model gateway, which lets the composer ask a
+completion without tools and nothing else. A page asks the model it was
+given, else the one the destination's owner lends: a room host with a model
+key (the moderation key) names its model in the feedback admission, and the
+page sends the review prompt in a `FeedbackRequest` over the connection that
+admits it. The owner asks its model only a prompt that is exactly the review
+contract (`tilo_feedback::model_review`), at a bounded rate per person, and
+answers only quotes from the texts it was asked about; the page never holds
+the key.
+
+In the browser the picture of each pick is copied from the frame presented
+right after the picker closes, its content areas painted over on the device
+(`ui::pick::sensitive_areas`; images are masked too), and the crops are stacked
+into the one masked screenshot the report carries. Send keeps that PNG in the
+page's content store, where a file posted in Chat is kept. The room's host
+reads the pictures of the reports filed in its Chat record as it reads
+message attachments, asks the room for the ones it lacks (the reporter's page
+answers) and keeps them in its blob store, within its attachment quotas; the
+report's receipt waits until it does.
+
+On the native desktop the shell walks its own tree for its own parts (the
+bar, its menus, the windows it draws itself) and asks each window another
+process draws over that app's shell-ui connection: `Pick` carries a
+`ui::pick_wire::PickQuery` (the parts at a point, the parts inside a dragged
+rectangle, or the picks to read again), and the app answers `PickAnswered`
+from its own tree with `ui::pick_wire::answer`, the same `ui::pick` calls the
+browser makes, plus its recent invocations. Only an app that announced
+`SelectionCapable` is asked, and an answer counts only for the launcher's app
+id and the request it was asked. The picker shows a window's last answer
+while the next one is out, holds a dragged rectangle's release until the
+windows under it answered, and builds the report once every picked window
+read its picks again or had `ANSWER_WAIT`; a pick of a window that did not
+answer keeps its role and place without texts. Native reports carry no
+picture yet.
+
+A persistent room keeps the channel reports go to with the room service's
+`TILO_ROOMS_FEEDBACK_CHANNEL` (the relay's `--feedback-channel`): the relay
+adds it after the room's channels on every start. The web entry names it for
+its home workspace with `TILO_WEB_HOME_FEEDBACK` (the channel id, `c_<name>`),
+and the page configures that destination after admission without holding up
+the desktop; a desktop that mounted first takes the startup up on its next
+frame.
 
 The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
-selects a destination before desktop mounting. `WasmPeer` requests admission from
+selects a destination, before or after the desktop mounts. `WasmPeer` requests admission from
 its connected host, matches both roots/devices against retained certificates,
 requires the reporter's actual current standing and the room's sandbox, and installs the trusted Rust startup
 custody. The helper waits for this acknowledgment and never joins another room.
@@ -171,7 +275,7 @@ presentation remains ephemeral inside the original checked namespace, so model
 service teardown cannot replace the user's saved Chat window view. Startup cannot
 create a missing Chat record. Cold restart requires fresh owner admission and
 current selected custody again.
-`NoCapture` remains mandatory until a durable screenshot content witness exists.
+Native hosts install `NoCapture` and offer no screenshot.
 Source qualification does not establish deployed native or browser acceptance.
 Tests use isolated certified sessions, the real native broker and retained storage,
 including cold application and owner restarts.
@@ -222,7 +326,8 @@ that an unpublished local-only report
 cannot return a receipt. A second fixture admits a separate person as Commenter:
 they file through the owner, get the signed receipt at once, file again without a
 second report, and are refused triage, which needs Write. Raw document frames
-still need Write (`OpClass::Splice`); filing never publishes one as the reporter.
+still need a grant for the change they claim; filing never publishes one as
+the reporter.
 
 Private component paints propagate declared capture protection through the
 existing `SecretPaint` boundary. The browser binds protection to the scene only
@@ -284,10 +389,11 @@ host hook `register_feedback_startup(peer, startup)` requires an existing
 certified peer, rejects replacement and is consumed by actual desktop mounting.
 Peer close retires unused custody. URL/JSON launch options have no authority
 fields. `NoCapture` reads nothing from any surface: a review carries the description
-and, with consent, the subject's app identity; it offers no screenshot.
-The canonical service refuses screenshot-bearing acknowledgments until a durable
-content witness is integrated; Saved report metadata alone cannot confirm an
-attachment.
+and, with consent, the subject's app identity; it offers no screenshot. The
+browser's adapter captures nothing either, but keeps the picker's masked
+picture in the page's content store. Saved report metadata alone cannot confirm
+an attachment: `CanonicalRecord` witnesses one only with the owner's content
+store, and refuses it without one.
 
 These are source hooks, not an enabled public guest endpoint. The current
 `RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified

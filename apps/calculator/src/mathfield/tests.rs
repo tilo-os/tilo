@@ -16,8 +16,6 @@ fn caret(e: &Editor) -> (Vec<(usize, Slot)>, usize) {
     (e.caret.steps.clone(), e.caret.offset)
 }
 
-// -- caret movement ---------------------------------------------------------
-
 /// Plain, Home/End and word-wise caret motion, including stepping into and out
 /// of fraction boxes and exponents. Each phase starts from a fresh editor.
 #[test]
@@ -99,8 +97,6 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
     }
 }
 
-// -- selection --------------------------------------------------------------
-
 /// Every selecting gesture yields the exact `[lo, hi)` range; a plain arrow
 /// collapses a selection to its edge.
 #[test]
@@ -169,8 +165,6 @@ fn selection_ranges_for_each_selecting_gesture() {
     assert_eq!(e.caret.offset, 2, "collapse: caret at left edge");
 }
 
-// -- delete / backspace incl. structure unwrap ------------------------------
-
 /// Backspace/Delete remove the adjacent atom or the selection, and at the front
 /// of a structure box unwrap the structure.
 #[test]
@@ -228,8 +222,6 @@ fn delete_and_backspace_including_structure_unwrap() {
         assert_eq!(e.to_linear(), "x2", "unwrap_power");
     }
 }
-
-// -- structured input building ---------------------------------------------
 
 /// Typing builds structured nodes: `/` fractions, `^` superscripts, `sqrt(` and
 /// `√` radicals, function calls, `pi` → π, `*` → `·`, auto-paired parens.
@@ -373,8 +365,6 @@ fn typed_characters_build_structured_nodes() {
     }
 }
 
-// -- clipboard round-trip ---------------------------------------------------
-
 /// Copy/cut serialize the selection to linear form and paste parses linear
 /// text back into the tree — the editor core behind Ctrl+C / Ctrl+X / Ctrl+V,
 /// deterministic and independent of the (headless-unavailable) system clipboard.
@@ -481,8 +471,6 @@ fn linear_serialization_round_trips_and_compiles() {
 fn engine_linear(s: &str) -> String {
     s.replace('·', "*")
 }
-
-// -- real field key / pointer paths -----------------------------------------
 
 /// The real `MathField` input paths edit content: a `√` Character event builds
 /// a radical, press → drag → Delete removes exactly the dragged span, and
@@ -768,7 +756,6 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
             );
             cum += ui::math::measure_atom(&mut tr, ch, size);
         }
-        // Clicking past the last glyph lands at the row end.
         f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);
         assert_eq!(
             f.editor.caret.offset,
@@ -836,7 +823,6 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
         f.set_rect(rect, &mut tr);
 
         let peer = Color::from_rgba8(0xec, 0x48, 0x99, 0xff); // pink "alice"
-        // A cursor near the middle of the formula.
         let mid = Point::new(rect.center().x, rect.center().y);
         let bars = f.remote_caret_bars(&[(mid, peer)]);
         assert_eq!(
@@ -940,9 +926,8 @@ fn bounded_field_scrolls_instead_of_resizing() {
     // phase tall_formula_is_bounded_not_resized
     {
         // A formula taller than the field (a fraction) stays bounded to the field
-        // rect and scrolls vertically instead of resizing the row — the exact bug the
-        // user reported ("formulas resizing vertically with the height of the
-        // formula").
+        // rect and scrolls vertically instead of resizing the row with the height of
+        // the formula.
         let mut f = MathField::new("(x^2+1)/(x-3)").with_size(20.0);
         let rect = Rect::new(0.0, 0.0, 240.0, 30.0); // deliberately shorter than a fraction
         f.set_rect(rect, &mut tr);
@@ -960,7 +945,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
         // The field rect the caller gave is never mutated by content.
         assert_eq!(f.rect.height(), 30.0, "the field height must stay fixed");
 
-        // The caret band is kept within the field vertically.
         let steps = f.editor.caret.steps.clone();
         let off = f.editor.caret.offset;
         if let Some(g) = super::render::caret_gap(f.layout.as_ref().unwrap(), &steps, off) {
@@ -986,7 +970,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
         assert!(!f.overflows(), "a short formula must not overflow");
         assert_eq!(f.scroll.x, 0.0, "short: no horizontal scroll");
         assert_eq!(f.scroll.y, 0.0, "short: no vertical scroll");
-        // Left-padded origin, unchanged from the original centered behaviour.
         assert!(
             (f.content_origin().x - (rect.x0 + 4.0)).abs() < 1e-9,
             "short: left-padded origin"
@@ -995,7 +978,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
 
     // phase wheel_scrolls_within_bounds
     {
-        // The wheel scrolls a long field, and scrolling is clamped to the content.
         let mut f = MathField::new("1234567890123456789012345678901234567890").with_size(20.0);
         let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
         f.set_rect(rect, &mut tr);
@@ -1061,8 +1043,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
         );
     }
 }
-
-// -- field scrolling -------------------------------------------------------
 
 /// Only the focused field follows its caret. An inactive row (a neighbouring
 /// surface in the Graph 3D list) shows its formula from the start, instead of

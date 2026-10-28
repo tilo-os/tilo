@@ -169,7 +169,7 @@ impl Default for RowShape {
 }
 
 impl RowShape {
-    /// A row whose body wraps to `body_lines` (at most [`BODY_LINES`]).
+    /// A row whose body wraps to `body_lines` (at most `BODY_LINES`).
     #[must_use]
     pub fn new(body_lines: usize) -> Self {
         Self {
@@ -188,7 +188,6 @@ impl RowShape {
         };
         self
     }
-    /// Lines of body the row shows.
     pub fn body_lines(&self) -> usize {
         self.body_lines
     }
@@ -275,13 +274,26 @@ impl CenterLayout {
                 y0 + self.label_lh,
             )
         } else {
+            let x0 = if self.drill_in {
+                self.back().x1 + qs::RELATED_GAP
+            } else {
+                self.panel.x0 + qs::PANEL_PAD
+            };
             Rect::new(
-                self.back().x1 + qs::RELATED_GAP,
+                x0,
                 self.panel.y0,
                 self.clear().x0 - qs::RELATED_GAP,
                 self.panel.y0 + self.controls_height(),
             )
         }
+    }
+
+    /// Whether the title starts at its band's leading edge: a standalone
+    /// centre reads "Notifications" then its controls, as every panel with
+    /// a trailing close does; a drill-in level centres it between Back and
+    /// Clear all.
+    fn title_leads(&self) -> bool {
+        !self.drill_in
     }
 
     /// Resolve the same widths and height the shared button painter needs.
@@ -382,16 +394,22 @@ impl CenterLayout {
     pub fn panel(&self) -> Rect {
         self.panel
     }
-    /// The leading header control, on the panel padding and centred in the
-    /// title band: "‹ Back" in a drill-in panel (a textual Back survives
-    /// enlarged text where a small icon would not), a square close button
-    /// where the centre stands alone and there is nowhere to go back to.
+    /// The header's way out, centred in the title band: "‹ Back" on the
+    /// leading padding in a drill-in panel (a textual Back survives
+    /// enlarged text where a small icon would not), and a square close
+    /// button on the trailing padding where the centre stands alone, where
+    /// every other panel's close is.
     pub fn back(&self) -> Rect {
         let p = self.panel;
+        let x0 = if self.drill_in {
+            p.x0 + qs::PANEL_PAD
+        } else {
+            p.x1 - qs::PANEL_PAD - self.leading_width()
+        };
         Rect::new(
-            p.x0 + qs::PANEL_PAD,
+            x0,
             p.y0 + qs::RELATED_GAP,
-            p.x0 + qs::PANEL_PAD + self.leading_width(),
+            x0 + self.leading_width(),
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
@@ -411,13 +429,20 @@ impl CenterLayout {
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
-    /// The "Clear all" chip, mirroring [`Self::back`] on the trailing padding.
+    /// The "Clear all" chip: on the trailing padding, mirroring Back in a
+    /// drill-in panel, and just before the close button where the centre
+    /// stands alone.
     pub fn clear(&self) -> Rect {
         let p = self.panel;
+        let x1 = if self.drill_in {
+            p.x1 - qs::PANEL_PAD
+        } else {
+            self.back().x0 - qs::RELATED_GAP
+        };
         Rect::new(
-            p.x1 - qs::PANEL_PAD - self.actions.clear_width,
+            x1 - self.actions.clear_width,
             p.y0 + qs::RELATED_GAP,
-            p.x1 - qs::PANEL_PAD,
+            x1,
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
@@ -468,7 +493,7 @@ impl CenterLayout {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
     /// One row with the full preview: source/time, title and
-    /// [`BODY_LINES`] lines of body on the control padding.
+    /// `BODY_LINES` lines of body on the control padding.
     pub fn row_h(&self) -> f64 {
         self.text_extent(&RowShape::default())
     }
@@ -506,7 +531,7 @@ impl CenterLayout {
             |text| f(theme, text),
         ))
     }
-    /// The lines `body` wraps to in a row, at most [`BODY_LINES`]. Before
+    /// The lines `body` wraps to in a row, at most `BODY_LINES`. Before
     /// the panel has a width, or without a theme, the full preview.
     pub fn body_lines(&self, body: &str, grouped: bool) -> usize {
         let line = body.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -782,7 +807,6 @@ pub enum CenterOutcome {
 enum ActionFocus {
     Clear,
     Undo,
-    /// The pager's way to newer rows.
     Newer,
     /// The pager's way to older rows.
     Older,
@@ -835,6 +859,20 @@ impl NotificationCenter {
         self.reader
             .as_mut()
             .is_some_and(|reader| reader.event(event, ctx))
+    }
+
+    /// Whether the reading page needs frames: its bar fading, a glide.
+    pub fn reading_needs_frame(&self) -> bool {
+        self.reader
+            .as_ref()
+            .is_some_and(NotificationReader::needs_animation_frame)
+    }
+
+    /// Step the reading page's glide; returns whether it moved.
+    pub fn advance_reading(&mut self) -> bool {
+        self.reader
+            .as_mut()
+            .is_some_and(NotificationReader::advance)
     }
 
     pub fn reading_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -1153,7 +1191,6 @@ impl NotificationCenter {
         }
     }
 
-    /// The notification's own actions behind `row`.
     fn row_actions(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<(String, String)> {
         match row {
             HistoryRow::Item { index, .. } => {
@@ -1179,6 +1216,26 @@ impl NotificationCenter {
             .visible_rows_in(&shapes, start)
             .min(rows.len().saturating_sub(start));
         (rows, shapes, start, shown)
+    }
+
+    /// The notification whose row is drawn at `p` (a group header names
+    /// none).
+    pub fn notification_at(
+        &self,
+        host: &dyn NotificationHost,
+        layout: &CenterLayout,
+        p: Point,
+    ) -> Option<u64> {
+        if self.is_reading() {
+            return None;
+        }
+        let (index, _) = self.row_hit(host, layout, p)?;
+        let (rows, ..) = self.window(host, layout);
+        let log = host.log();
+        match rows.get(index)?.identity(log.history())? {
+            super::history::RowIdentity::Item(id) => Some(id),
+            super::history::RowIdentity::Group(_) => None,
+        }
     }
 
     /// The row (and control) under `p` among the visible rows. A row's icon
@@ -2198,17 +2255,17 @@ impl NotificationCenter {
             &title_style,
         );
         let (title_w, title_h) = text_renderer.measure_style(&title, None, &title_style);
+        let title_x = if layout.title_leads() {
+            title_rect.x0
+        } else {
+            title_rect.center().x - f64::from(title_w) / 2.0
+        };
         text_renderer.draw_style(
             scene,
             &title,
             colors.text_primary,
-            transform.pre_translate(
-                (
-                    title_rect.center().x - f64::from(title_w) / 2.0,
-                    title_rect.center().y - f64::from(title_h) / 2.0,
-                )
-                    .into(),
-            ),
+            transform
+                .pre_translate((title_x, title_rect.center().y - f64::from(title_h) / 2.0).into()),
             Some(title_width),
             &title_style,
         );
@@ -2875,7 +2932,6 @@ mod tests {
         // Left folds the expanded group; its members leave the rows.
         center.key(&host, &layout, &Key::Named(NamedKey::ArrowLeft));
         assert_eq!(center.rows(&host).len(), 2);
-        // Delete on the header dismisses the whole group.
         center.key(&host, &layout, &Key::Named(NamedKey::Delete));
         assert_eq!(host.log().history().len(), 1);
         assert_eq!(host.log().history()[0].title, "sys");
@@ -3099,7 +3155,6 @@ mod tests {
         );
         assert_eq!(center.start, visible);
 
-        // At the oldest page the roles swap.
         center.key(&host, &layout, &Key::Named(NamedKey::End));
         let last = center.start;
         assert!(last > visible);
@@ -3320,7 +3375,7 @@ mod tests {
         );
         assert_eq!(host.log().history().len(), 1);
         assert_eq!(
-            center.click(&host, &layout, layout.back().center()),
+            center.click(&host, &layout, layout.reader_back().center()),
             CenterOutcome::Handled
         );
         assert!(!center.is_reading());

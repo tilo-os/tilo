@@ -407,6 +407,63 @@ fn unchanged_focused_editor_caret_and_ime_survive_fresh_input_readmission_withou
     assert_eq!(selection.focus, 6);
     assert_eq!(focus.value.as_deref(), Some("retained draft"));
 }
+/// A service that replaced nothing (a save landing) retires the maps while
+/// its callbacks run, and its readmission takes them back after checking
+/// them against the live tree: the frame lays out the tree it had, with the
+/// caret where it was, instead of building it again.
+#[test]
+fn unchanged_owner_service_readmits_its_tree_without_building_it_again() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, _) = prepared(&host, &queue, 9110);
+    let mut frame = frame(&queue, vec![owner]);
+    frame
+        .perform_named("owned-editor", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame.try_relayout().unwrap();
+    let nodes = frame.layout_node_ids();
+    let ime = frame.ime_window();
+    assert!(ime.is_some());
+    seen.wake.borrow().as_ref().unwrap().wake();
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    assert!(
+        frame.node_map.is_empty() && !frame.layout_built,
+        "retired while the service ran"
+    );
+    assert!(frame.ime_window().is_none());
+    frame.try_relayout().unwrap();
+    let rebuilt = frame.last_relayout.rebuilt;
+    let after = (frame.layout_node_ids(), frame.ime_window());
+    close(&mut frame, 1);
+    assert!(!rebuilt, "the unchanged tree was built again");
+    assert_eq!(after, (nodes, ime));
+}
+
+/// A replacement the owner does not report is found by the readmission's
+/// walk of the live tree: the tree it set aside is never called through.
+#[test]
+fn an_unreported_replacement_during_service_rebuilds_on_readmission() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, _) = prepared(&host, &queue, 9111);
+    let mut frame = frame(&queue, vec![owner]);
+    frame.try_relayout().unwrap();
+    // The fresh editor is allocated while the old one still lives, so it
+    // cannot take its address.
+    seen.replace.set(true);
+    seen.wake.borrow().as_ref().unwrap().wake();
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    // The owner said it replaced its editor; forget that it did.
+    let _ = frame.root.take_structure_change();
+    frame.composition_replaced = false;
+    frame.try_relayout().unwrap();
+    let rebuilt = frame.last_relayout.rebuilt;
+    let fresh = frame.named_target_nodes();
+    close(&mut frame, 1);
+    assert!(rebuilt, "a replaced editor needs a fresh tree");
+    assert!(fresh.contains_key("owned-editor"));
+}
+
 #[test]
 fn empty_owner_queue_preserves_existing_physical_map_and_text_ime() {
     let host = ProbeHost::new();
@@ -433,8 +490,17 @@ fn readmission_second_sync_drop_then_panic_retires_the_newly_built_map_before_re
     let (owner, seen, _) = prepared(&host, &queue, 9106);
     let mut frame = frame(&queue, vec![owner]);
     let drops = seen.drops.get();
+    // The service replaces the editor, so its readmission builds a fresh
+    // map: one that changed nothing keeps the map it set aside.
+    seen.replace.set(true);
     seen.wake.borrow().as_ref().unwrap().wake();
     frame.service_pending_owner_models().unwrap();
+    assert_eq!(
+        seen.drops.get(),
+        drops + 1,
+        "the service replaced the editor"
+    );
+    let drops = seen.drops.get();
     // Do not execute readmission against a known dangling RED map.
     let retired = frame.node_map.is_empty();
     if !retired {

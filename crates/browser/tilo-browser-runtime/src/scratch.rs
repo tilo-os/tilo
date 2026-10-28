@@ -53,14 +53,15 @@ fn page_resource() -> tilo_actions::Resource {
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "so.tilo.browser-scratch",
-        title: "Scratch",
+        app_id: "so.tilo.browser-scratch".into(),
+        title: "Scratch".into(),
         icon: IconDescriptor::Named("notes".into()),
         record_kind: RecordKind::new("browser-scratch.page"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: |context, target, _restore: RestoreInput| create(context, &target),
     });
 

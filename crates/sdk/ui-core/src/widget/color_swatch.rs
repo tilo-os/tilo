@@ -68,6 +68,8 @@ pub struct ColorSwatchFace {
     color: Color,
     name: String,
     marker: Option<String>,
+    /// "No colour": an empty swatch crossed by a diagonal.
+    none: bool,
     selected: bool,
     hovered: bool,
     focused: bool,
@@ -81,13 +83,29 @@ impl ColorSwatchFace {
             color,
             name: name.into(),
             marker: None,
+            none: false,
             selected: false,
             hovered: false,
             focused: false,
         }
     }
 
-    /// The face of a [`ColorSwatch`].
+    /// The choice of no colour: an empty swatch on the panel's ground,
+    /// crossed corner to corner, so it reads as "none" next to any colour,
+    /// whatever it stands for (a slide, a page, a shape's fill).
+    pub fn none(rect: Rect, name: impl Into<String>) -> Self {
+        Self {
+            none: true,
+            ..Self::new(rect, Color::TRANSPARENT, name)
+        }
+    }
+
+    /// Whether this is the choice of no colour ([`Self::none`]).
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.none
+    }
+
     pub fn of(rect: Rect, swatch: &ColorSwatch) -> Self {
         Self::new(rect, swatch.color, swatch.spoken_name())
     }
@@ -151,6 +169,11 @@ impl ColorSwatchFace {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
         let ground = colors.surfaces.content;
+        if self.none {
+            self.paint_none(scene, transform, theme);
+            self.paint_mark(scene, transform, theme);
+            return;
+        }
         // The chosen swatch keeps its full fill; its mark is a ring outside
         // it (see `paint_mark`), so choosing never shrinks the colour.
         let fill_rect = self.rect;
@@ -184,6 +207,38 @@ impl ColorSwatchFace {
                 &style,
             );
         }
+    }
+
+    /// "No colour": no fill, the swatch's edge on the ground, and a
+    /// diagonal from its lower left to its upper right corner, kept inside
+    /// the rounded edge.
+    fn paint_none(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.item);
+        let ground = colors.surfaces.content;
+        let ink = colors.ink_on_any(
+            &[ground],
+            colors.text_dim,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ink,
+            None,
+            &crate::surface::edge_outline(self.rect, radius),
+        );
+        // Where the corner's arc meets the diagonal: the radius less its
+        // projection on the diagonal.
+        let inset = radius * (1.0 - std::f64::consts::FRAC_1_SQRT_2);
+        let r = self.rect.inset(-inset);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5).with_caps(vello::kurbo::Cap::Round),
+            transform,
+            ink,
+            None,
+            &vello::kurbo::Line::new((r.x0, r.y1), (r.x1, r.y0)),
+        );
     }
 
     /// The swatch's edge and mark over a sample the host painted in its
@@ -275,6 +330,8 @@ pub struct ColorSwatchPicker {
     focus_index: usize,
     /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
+    /// The action a chosen index invokes ([`ColorSwatchPicker::on_action`]).
+    action: Option<crate::widget::ActionEmitter<usize>>,
     /// The cell's width (and height, unless `cell_height`), when it is not
     /// a pointer target.
     cell_width: Option<f64>,
@@ -302,6 +359,7 @@ impl ColorSwatchPicker {
             focused: false,
             focus_index: 0,
             on_change: None,
+            action: None,
             cell_width: None,
             cell_height: None,
             painter: None,
@@ -312,6 +370,15 @@ impl ColorSwatchPicker {
     #[must_use]
     pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
         self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Invoke `binding` with each index the person chooses, through the
+    /// host like any action-bound control: the picker shows the choice until
+    /// the state it changes answers.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<usize>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -409,13 +476,35 @@ impl ColorSwatchPicker {
     fn choose(&mut self, index: usize) {
         self.selected = Some(index);
         self.choice = Some(index);
+        if let Some(action) = self.action.as_mut()
+            && let Err(error) = action.emit(index)
+        {
+            tracing::warn!(%error, "swatch action refused its index");
+        }
         if let Some(on_change) = self.on_change.as_mut() {
             on_change(index);
         }
     }
 }
 
+impl crate::widget::controls::ActionControls for ColorSwatchPicker {
+    crate::widget::controls::optional_emitter_controls!();
+
+    /// Each swatch is the control its semantic target names, bound to the
+    /// picker's action.
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return crate::widget::controls::default_bindings(self);
+        };
+        (0..self.swatches.len())
+            .map(|index| action.metadata(format!("swatch:{index}")))
+            .collect()
+    }
+}
+
 impl Widget for ColorSwatchPicker {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -722,6 +811,40 @@ mod tests {
             &PresenceCtx::default(),
         );
         assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
+    }
+
+    /// The "no colour" swatch paints its edge and its diagonal, both
+    /// strokes, and no fill; a colour swatch paints a fill.
+    #[test]
+    fn a_none_swatch_paints_its_diagonal_and_no_fill() {
+        let rect = Rect::new(10.0, 10.0, 40.0, 30.0);
+        let painted = |face: &ColorSwatchFace| {
+            let mut scene = Scene::new();
+            face.paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+            );
+            let encoding = scene.encoding();
+            let fills = encoding
+                .styles
+                .iter()
+                .filter(|style| {
+                    style.flags_and_miter_limit & vello_encoding::Style::FLAGS_STYLE_BIT == 0
+                })
+                .count();
+            (encoding.draw_tags.len(), encoding.n_paths, fills)
+        };
+        let none = ColorSwatchFace::none(rect, "No colour");
+        assert_eq!(painted(&none), (2, 2, 0), "the edge and the diagonal");
+        let ink = ColorSwatchFace::new(rect, rgb(0x11, 0x22, 0x33), "Ink");
+        let (_, _, fills) = painted(&ink);
+        assert_eq!(fills, 1, "a colour swatch is filled");
+        assert_eq!(
+            none.accessibility("none").name.as_deref(),
+            Some("No colour")
+        );
     }
 
     #[test]

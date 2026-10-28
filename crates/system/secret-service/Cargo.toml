@@ -6,7 +6,7 @@ publish = false
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "The per-user freedesktop Secret Service (org.freedesktop.secrets), sealed under the device identity"
+description = "The per-user freedesktop Secret Service (org.freedesktop.secrets), sealed under the person's own key"
 
 [lib]
 name = "tilo_secret_service"
@@ -21,7 +21,8 @@ tilo-paths.workspace = true
 # The vault's at-rest envelope, the store key derivation and the Secret
 # Service session encryption all live in tilo-seal.
 tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
-# The device identity whose key the store key derives from.
+# The person's key pair and this machine's device identity, one of which
+# seals the vault and the other of which proves who a caller is.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # Owner-only files, written atomically.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -32,6 +33,10 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
+# The person's key pair, whose public half the store's key is derived with.
+ed25519-dalek.workspace = true
+# Minting the development identity root's person from the OS's randomness.
+getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 clap.workspace = true
@@ -48,7 +53,6 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 tilo-secret-vault = { path = "../secret-vault" }
 # The client half of the device-identity proof a non-dumpable caller makes.
 tilo-secrets = { path = "../../platform/tilo-secrets" }
-ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

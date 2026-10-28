@@ -70,7 +70,7 @@ pub fn wake_when_acl_admits_others(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Principal, Scope, Subject};
     use iroh::endpoint::presets;
@@ -104,14 +104,15 @@ mod tests {
     }
 
     async fn until_relays(relays: &RelayMap, count: usize) {
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-        while relays.len() != count {
-            assert!(
-                Instant::now() < deadline,
-                "the endpoint's relay map never reached {count} relays"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tilo_test_env::within(
+            format!("the endpoint's relay map to reach {count} relays"),
+            async {
+                while relays.len() != count {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            },
+        )
+        .await;
     }
 
     fn grant(subject: Subject) -> CapOverride {
@@ -152,9 +153,9 @@ mod tests {
             std::slice::from_ref(&local),
             None,
         ));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The watcher wakes the relays only for an ACL that names others.
         assert!(
-            reachability.is_dormant(),
+            !acl.snapshot().names_others() && reachability.is_dormant(),
             "a change that still names only this mount must not wake them"
         );
         let mut shared = own.clone();
@@ -167,9 +168,8 @@ mod tests {
         ));
         until_relays(&relays, 2).await;
         assert!(!reachability.is_dormant());
-        tokio::time::timeout(Duration::from_secs(5), watcher)
+        tilo_test_env::within("the watcher to end once the relays are up", watcher)
             .await
-            .expect("the watcher ends once the relays are up")
             .unwrap();
         endpoint.close().await;
     }

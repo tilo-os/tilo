@@ -197,7 +197,7 @@ mod tests {
     use super::*;
 
     fn account(uid: u32) -> Option<(String, PathBuf)> {
-        (uid == 1000).then(|| ("bob".to_owned(), PathBuf::from("/var/home/user")))
+        (uid == 1000).then(|| ("alice".to_owned(), PathBuf::from("/var/home/alice")))
     }
 
     /// A VM's build root is root's: builds run as the daemon. A laptop's
@@ -211,8 +211,8 @@ mod tests {
             Some(BuildUser {
                 uid: 1000,
                 gid: 1000,
-                name: "bob".into(),
-                home: "/var/home/user".into(),
+                name: "alice".into(),
+                home: "/var/home/alice".into(),
             })
         );
         assert_eq!(BuildUser::choose(1000, 1000, 1000, account).unwrap(), None);
@@ -224,14 +224,14 @@ mod tests {
         let user = BuildUser {
             uid: 1000,
             gid: 1000,
-            name: "bob".into(),
-            home: "/var/home/user".into(),
+            name: "alice".into(),
+            home: "/var/home/alice".into(),
         };
         let mut command = Command::new("cargo");
         command.env("CARGO_HOME", "/root/.cargo");
         user.apply(&mut command);
         let envs: Vec<_> = command.get_envs().collect();
-        assert!(envs.contains(&("HOME".as_ref(), Some("/var/home/user".as_ref()))));
+        assert!(envs.contains(&("HOME".as_ref(), Some("/var/home/alice".as_ref()))));
         assert!(envs.contains(&("CARGO_HOME".as_ref(), None)));
     }
 

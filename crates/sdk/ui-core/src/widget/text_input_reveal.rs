@@ -225,6 +225,13 @@ impl Widget for RevealToggle {
                 // A hover change is a repaint, never consumed input.
                 self.hovered = self.rect.contains(ctx.logical(position));
             }
+            // The click the window's touch emulation makes of a tap comes
+            // while that finger is still down, before its lift: the lift
+            // toggles, so the click must not toggle it back.
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                ..
+            } if self.touch.is_some() => *ctx.handled = true,
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,

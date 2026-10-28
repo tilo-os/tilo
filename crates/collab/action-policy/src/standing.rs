@@ -103,7 +103,6 @@ impl Standing {
         self.bounds.iter().any(|bound| &bound.subject == subject)
     }
 
-    /// The room this standing is in.
     #[must_use]
     pub fn room(&self) -> &str {
         &self.policy.room
@@ -125,13 +124,11 @@ impl Standing {
         authority
     }
 
-    /// The verdict for an action of `kind` at `node`.
     #[must_use]
     pub fn verdict(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Verdict<'_> {
         self.authority().decide(node, kind, cx)
     }
 
-    /// The answer for an action of `kind` at `node`.
     #[must_use]
     pub fn answer(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Answer {
         self.verdict(node, kind, cx).answer

@@ -2,7 +2,7 @@
 //! resources.
 //!
 //! Apps do not depend on this crate. The public write path is
-//! [`tilo_document::RichTextAction`](tilo_document). [`DocMut`] exists only so
+//! `tilo_document::RichTextAction`. [`DocMut`] exists only so
 //! that resource's `Action::apply` can mutate storage; it is not an app API.
 //!
 //! A rich-text document and a workbook are versioned resources: every edit is a
@@ -20,6 +20,7 @@ pub mod diff;
 pub mod document;
 pub mod export;
 pub mod model;
+pub mod reconcile;
 pub mod restore;
 pub mod schema;
 pub mod semantic_read;
@@ -37,6 +38,9 @@ pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRu
 #[doc(hidden)]
 pub use model::DocMut;
 pub use model::{Containers, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
+pub use reconcile::{
+    ReconcileStats, reads_as, reconcile_document, reconcile_into, reconcile_under,
+};
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{
     AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView,

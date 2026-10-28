@@ -17,17 +17,20 @@
 )]
 
 pub mod activity;
+pub mod crashed_app;
 pub mod drill_in;
 pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
 pub mod person_cursor;
+pub mod session;
 mod shared_tree;
 pub mod surface;
 
 pub use surface::{
-    ActivityPane, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
+    ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, NotificationOutcome, OpenActivity,
-    TileSource, is_host_offer, open_activity, published_selection, seed_tree,
+    PersonalAsk, TileSource, is_host_offer, open_activity, published_selection, search_chord_keys,
+    seed_tree, tile_app_kind,
 };

@@ -35,7 +35,16 @@ fn current_admin(chrome: &ChromeState, first_use: &dyn Fn() -> bool) -> bool {
     let Some(directory) = store.path().parent() else {
         return false;
     };
-    crate::compositor::admin_control::control_session_decision(directory, first_use()).is_ok()
+    #[cfg(target_os = "linux")]
+    {
+        crate::compositor::admin_control::control_session_decision(directory, first_use()).is_ok()
+    }
+    // Administering the device is the Linux system's; elsewhere nobody here is its admin.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (directory, first_use);
+        false
+    }
 }
 fn answer_params(ticket: &AuthenticationTicket) -> Vec<ActionParam> {
     vec![
@@ -152,6 +161,7 @@ impl SearchProvider for AuthenticationPromptsProvider {
                 }),
                 on_invoke: Some(invoke),
                 on_begin_invoke: None,
+                resource: None,
             });
         }
         let fields: Vec<_> = rows

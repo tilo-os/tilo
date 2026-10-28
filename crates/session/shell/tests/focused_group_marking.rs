@@ -45,6 +45,7 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
     let mk_group = |id: GroupId, tab: u64, label: &str| WindowGroup {
         id,
@@ -65,9 +66,10 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
         name: "StripB".into(),
         window_groups: vec![mk_group(G_B1, 21, "B1")],
     };
-    let ws = Workspace {
-        strips: vec![strip_a, strip_b],
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip_a, strip_b];
+        workspace
     };
 
     let mut active_strip = HashMap::new();
@@ -198,7 +200,6 @@ fn the_focus_light_follows_the_pointer_and_only_shows_with_two_windows() {
 
     // Phase `a_workspace_with_one_window_lights_nothing`.
     {
-        // Same builder, trimmed to a single group on a single strip.
         let (mut t, s_a, s_b) = tree();
         {
             let ws = &mut t.desktop.workspaces[0];

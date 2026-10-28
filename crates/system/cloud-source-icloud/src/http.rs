@@ -148,7 +148,6 @@ impl Cookies {
         }
     }
 
-    /// Everything from `other` over `self`.
     pub fn merge(&mut self, other: &Self) {
         for (name, value) in &other.0 {
             self.set(name, value);

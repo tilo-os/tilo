@@ -151,7 +151,6 @@ fn an_insert_after_an_unknown_element_is_refused() {
     refused(&base, &hex(INSERT_AFTER_UNKNOWN));
     let (mut doc, list) = list_doc();
     let insert_after = |parent| op(list.clone(), parent, OpType::Put(5.into()), vec![], true);
-    // The list object itself, an op the change makes after it, and itself.
     for parent in [elem(id(1)), elem(OpId(4, ActorId::from(&[0xf0, 1][..])))] {
         refused(&base, &change(&mut doc, 1, 3, vec![insert_after(parent)]));
     }
@@ -194,7 +193,6 @@ fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-/// Apply the text patches on `obj` to `text`.
 fn replay(text: &mut Vec<u16>, patches: &[Patch], obj: &ObjId) {
     for patch in patches.iter().filter(|p| &p.obj == obj) {
         match &patch.action {
@@ -650,7 +648,6 @@ fn a_mutated_change_never_panics_or_corrupts_the_document() {
     );
 }
 
-/// The reproducers' bytes are the changes the tests above build.
 #[test]
 fn the_reproducer_bytes_are_well_formed() {
     let base = hex(LIST_BASE);

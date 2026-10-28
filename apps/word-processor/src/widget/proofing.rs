@@ -95,6 +95,30 @@ mod tests {
     }
 
     #[test]
+    fn a_cover_letter_is_spelled_right_with_the_personal_words_on_top() {
+        let mut personal = PersonalDictionary::default();
+        personal.add("Northwindly");
+        let dictionary = personal.over(&spellcheck::Dictionary::default());
+        let letter = "I am writing to apply for the position at Northwind Studio, which I \
+            saw advertised on your website last week. Your studio\u{2019}s work is \
+            the reason; the office is a ten-minute walk away. northwindly yours,";
+        assert!(
+            misspelled_spans(&dictionary, "en-US", letter).is_empty(),
+            "{:?}",
+            misspelled_spans(&dictionary, "en-US", letter)
+                .iter()
+                .map(|&(start, end)| &letter[start..end])
+                .collect::<Vec<_>>()
+        );
+        assert!(misspelled_spans(&dictionary, "en-US", "Lena Hoffmann").is_empty());
+        assert_eq!(
+            misspelled_spans(&dictionary, "en-US", "a ten-minutte walk"),
+            vec![(6, 13)],
+            "a compound's misspelled part is marked by itself"
+        );
+    }
+
+    #[test]
     fn user_dictionary_words_are_removed_without_losing_byte_offsets() {
         let dictionary = spellcheck::Dictionary::from_words(["qwordz"]);
         assert_eq!(

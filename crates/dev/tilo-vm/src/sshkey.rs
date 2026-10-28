@@ -48,10 +48,6 @@ pub fn keygen_command(key: &Path, name: &str) -> CommandLine {
         .arg(key.display().to_string())
 }
 
-/// The public key line of `key`.
-///
-/// # Errors
-/// The `.pub` file is missing or empty.
 pub fn read_public(key: &Path) -> Result<String, CliError> {
     let path = public_path(key);
     let text =
@@ -212,7 +208,6 @@ mod tests {
             let mut runner = Record(Vec::new());
             assert_eq!(ensure(&mut runner, &key, "dev").unwrap(), PUBLIC);
             assert!(runner.0.is_empty(), "{:?}", runner.0);
-            // A new VM's key is made with ssh-keygen.
             let other = dir.path().join("keys/other_ed25519");
             assert!(ensure(&mut runner, &other, "other").is_err());
             assert_eq!(runner.0, [keygen_command(&other, "other").display()]);

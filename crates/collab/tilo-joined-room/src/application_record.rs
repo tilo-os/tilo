@@ -16,9 +16,6 @@ pub struct ApplicationRecord {
 
 impl ApplicationRecord {
     /// Bind the SDK's exact kind to a host-verified installed declaration.
-    ///
-    /// # Errors
-    /// The route is malformed or the installed package does not declare the kind.
     pub fn declared(
         app: &str,
         record: &str,
@@ -36,6 +33,28 @@ impl ApplicationRecord {
             || !declared.iter().any(|value| value == kind)
         {
             return Err("application record has no valid installed resource declaration".into());
+        }
+        Ok(Self {
+            app: app.into(),
+            record: record.into(),
+        })
+    }
+
+    /// A record the host keeps itself, which no installed package declares:
+    /// a workspace's shared desktop. Only host code names one; nothing an
+    /// app sends reaches this.
+    ///
+    /// # Errors
+    /// The route is not a valid record route.
+    pub fn host(app: &str, record: &str) -> Result<Self, String> {
+        if app.is_empty()
+            || app.len() > 256
+            || record.len() > 4096
+            || [app, record]
+                .iter()
+                .any(|value| value.chars().any(char::is_control))
+        {
+            return Err("host record has no valid route".into());
         }
         Ok(Self {
             app: app.into(),
@@ -91,7 +110,7 @@ impl NativeWorkspaceOwner {
             .map_err(|error| error.to_string())?;
         // StatePeer's normal admitted snapshot merge preserves the original
         // graph, including fields this SDK does not know; never replace it.
-        let message = candidate.peer.publish_document(
+        let message = candidate.peer.publication_mut().publish_document(
             &route.app,
             &route.record,
             document.save(),
@@ -155,7 +174,7 @@ impl NativeWorkspaceOwner {
                 |view| {
                     let changes = member_bootstrap(view, creator, key, initialization, now)?
                         .ok_or("application initialization revision changed")?;
-                    let message = view.peer().clone().publish_incremental(
+                    let message = view.peer().clone().publication_mut().publish_incremental(
                         &route.app,
                         &route.record,
                         changes,
@@ -218,7 +237,7 @@ impl NativeWorkspaceOwner {
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
         }
-        let message = candidate.peer.publish_document(
+        let message = candidate.peer.publication_mut().publish_document(
             &route.app,
             &route.record,
             automerge::AutoCommit::new().save(),

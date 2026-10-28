@@ -4,13 +4,12 @@
 //! Sections stand on the window ground, separated by space; on a wide window
 //! they flow into two columns. Every row is a toolkit [`ListRowFace`]; what
 //! can be done to a row (check out, delete, apply) is its hover action. The
-//! remote commands (fetch, pull, push) live in the window's header row.
+//! remote commands (fetch, pull, push) are actions in the window's bar.
 
 use vello::kurbo::{Point, Rect};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ControlSize, Interaction, ListRowFace, RowAction,
@@ -20,7 +19,7 @@ use crate::history::short_id;
 use crate::i18n::{t, t_args};
 use crate::model::{Branch, RepoModel, Stash};
 
-/// A remote command from the header row.
+/// A remote command, an action in the window's bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteAction {
     Fetch,
@@ -31,15 +30,15 @@ pub enum RemoteAction {
 impl RemoteAction {
     pub const ALL: [Self; 3] = [Self::Fetch, Self::Pull, Self::Push];
 
-    pub fn label(self) -> String {
+    /// The outcome the command names.
+    pub fn name(self) -> String {
         t(match self {
-            Self::Fetch => "git-fetch",
-            Self::Pull => "git-pull",
-            Self::Push => "git-push",
+            Self::Fetch => "git-fetch-name",
+            Self::Pull => "git-pull-name",
+            Self::Push => "git-push-name",
         })
     }
 
-    /// The command's icon, for a header too narrow for its label.
     pub fn icon(self) -> Icon {
         match self {
             Self::Fetch => Icon::CloudDownload,
@@ -56,7 +55,6 @@ pub enum BranchAction {
     Checkout(String),
     /// Delete the named local branch.
     Delete(String),
-    /// Apply the stash at the given index.
     StashApply(usize),
 }
 
@@ -64,7 +62,6 @@ pub enum BranchAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelHit {
     Branch(BranchAction),
-    /// The new branch name field.
     BranchName,
     /// The "Create branch" button.
     CreateBranch,
@@ -86,6 +83,8 @@ pub struct PanelsInput<'a> {
     /// The new branch name typed so far.
     pub worktree_fields: [&'a str; 3],
     pub branch_name: &'a str,
+    /// The local branch under the keyboard, if the keyboard is on this page.
+    pub selected: Option<usize>,
 }
 
 /// What one paint produced.
@@ -102,15 +101,26 @@ pub struct PanelsDraw {
     pub content_height: f64,
 }
 
-/// One section of the page.
 struct SectionRows<'a> {
     title: String,
     rows: Vec<RowSpec<'a>>,
-    /// Holds the new branch form.
-    form: bool,
+    /// The form standing under the rows, if one does.
+    form: SectionForm,
+    /// Rows the keyboard can choose (the local branches).
+    selectable: bool,
     /// Stands in the leading column of a two-column page.
     leading: bool,
-    worktree_form: bool,
+}
+
+/// What a section asks for under its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionForm {
+    /// Nothing: the section is its rows.
+    None,
+    /// The new-branch name, so a branch can be made where branches are read.
+    NewBranch,
+    /// The linked worktree's path, branch and start point.
+    Worktree,
 }
 
 /// One row: what it shows and what can be done to it.
@@ -214,9 +224,72 @@ fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
         .collect()
 }
 
+/// Every section the page shows, in reading order: the branches and
+/// worktrees first, then the tags, stashes and remotes they are compared
+/// against.
 fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
+    let mut listed = branch_sections(model, can_create);
+    listed.extend(reference_sections(model));
+    listed
+}
+
+/// The two branch lists and the worktrees: the branches a person switches
+/// between, and the copies of the repository already on disk.
+fn branch_sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
     let local = branch_rows(model, false);
     let remote = branch_rows(model, true);
+    vec![
+        SectionRows {
+            title: t("git-section-branches"),
+            rows: local,
+            form: if can_create {
+                SectionForm::NewBranch
+            } else {
+                SectionForm::None
+            },
+            selectable: true,
+            leading: true,
+        },
+        SectionRows {
+            title: t("git-section-remote-branches"),
+            rows: remote,
+            form: SectionForm::None,
+            selectable: false,
+            leading: true,
+        },
+        SectionRows {
+            title: t("git-section-worktrees"),
+            rows: model
+                .worktrees
+                .iter()
+                .map(|worktree| RowSpec {
+                    title: &worktree.head,
+                    secondary: Some(worktree.path.clone()),
+                    meta: None,
+                    current: worktree.current,
+                    actions: Vec::new(),
+                })
+                .chain(model.worktree_error.iter().map(|error| RowSpec {
+                    title: error,
+                    secondary: Some(t("git-worktree-read-failed")),
+                    meta: None,
+                    current: false,
+                    actions: Vec::new(),
+                }))
+                .collect(),
+            form: if can_create {
+                SectionForm::Worktree
+            } else {
+                SectionForm::None
+            },
+            selectable: false,
+            leading: false,
+        },
+    ]
+}
+
+/// The tags, stashes and remotes the branch lists are read against.
+fn reference_sections(model: &RepoModel) -> Vec<SectionRows<'_>> {
     let tags = model
         .tags
         .iter()
@@ -252,63 +325,25 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
         .collect();
     vec![
         SectionRows {
-            title: t("git-section-branches"),
-            rows: local,
-            form: can_create,
-            leading: true,
-            worktree_form: false,
-        },
-        SectionRows {
-            title: t("git-section-remote-branches"),
-            rows: remote,
-            form: false,
-            leading: true,
-            worktree_form: false,
-        },
-        SectionRows {
-            title: t("git-section-worktrees"),
-            rows: model
-                .worktrees
-                .iter()
-                .map(|worktree| RowSpec {
-                    title: &worktree.head,
-                    secondary: Some(worktree.path.clone()),
-                    meta: None,
-                    current: worktree.current,
-                    actions: Vec::new(),
-                })
-                .chain(model.worktree_error.iter().map(|error| RowSpec {
-                    title: error,
-                    secondary: Some(t("git-worktree-read-failed")),
-                    meta: None,
-                    current: false,
-                    actions: Vec::new(),
-                }))
-                .collect(),
-            form: can_create,
-            leading: false,
-            worktree_form: true,
-        },
-        SectionRows {
             title: t("git-section-tags"),
             rows: tags,
-            form: false,
+            form: SectionForm::None,
+            selectable: false,
             leading: false,
-            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-stashes"),
             rows: stashes,
-            form: false,
+            form: SectionForm::None,
+            selectable: false,
             leading: false,
-            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-remotes"),
             rows: remotes,
-            form: false,
+            form: SectionForm::None,
+            selectable: false,
             leading: false,
-            worktree_form: false,
         },
     ]
 }
@@ -344,7 +379,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         let w = (lane.width() - column_gap) / 2.0;
         let (left, right): (Vec<_>, Vec<_>) = all
             .iter()
-            .filter(|section| !section.rows.is_empty() || section.form)
+            .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
             .partition(|section| section.leading);
         vec![
             (Rect::new(lane.x0, top, lane.x0 + w, area.y1), left),
@@ -354,7 +389,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         vec![(
             Rect::new(lane.x0, top, lane.x1, area.y1),
             all.iter()
-                .filter(|section| !section.rows.is_empty() || section.form)
+                .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
                 .collect(),
         )]
     };
@@ -431,15 +466,15 @@ fn paint_section(
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
 
-    if section.form {
-        y = if section.worktree_form {
-            paint_worktree_form(ctx, column, input, y, out)
-        } else {
-            paint_branch_form(ctx, column, input, y, out)
-        } + f64::from(s.s2);
-    }
+    y = match section.form {
+        SectionForm::NewBranch => paint_branch_form(ctx, column, input, y, out) + f64::from(s.s2),
+        SectionForm::Worktree => paint_worktree_form(ctx, column, input, y, out) + f64::from(s.s2),
+        SectionForm::None => y,
+    };
 
-    let pad = f64::from(s.s3);
+    // Rows bleed past the content edge, so their text stands on it with
+    // the section heading.
+    let pad = ui::chrome::row_bleed(theme);
     let pointer = input.pointer.filter(|p| clip.contains(*p));
     for (i, row) in section.rows.iter().enumerate() {
         let actions: Vec<RowAction<'_>> = row
@@ -469,6 +504,18 @@ fn paint_section(
             continue;
         }
         let hovered = pointer.is_some_and(|p| rect.contains(p));
+        let chosen = section.selectable && input.selected == Some(i);
+        if chosen {
+            ui::chrome::paint_row_selection(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                ui::chrome::SelectionState::new(true, hovered, false),
+                theme.tokens.colors.surfaces.content,
+                theme,
+            );
+            face = face.selected(true);
+        }
         let interaction = Interaction {
             hovered,
             ..Interaction::default()
@@ -481,7 +528,7 @@ fn paint_section(
         face.interaction(interaction)
             .hovered_action(hovered_action)
             .paint(ctx, rect);
-        if section.worktree_form {
+        if section.form == SectionForm::Worktree {
             out.semantic.push((
                 rect.intersect(clip),
                 if i < input.model.worktrees.len() {
@@ -541,58 +588,6 @@ fn paint_branch_form(
     button.y1
 }
 
-/// The header's remote commands, laid out from `right` leftwards in `band`:
-/// labelled where they fit right of `min_x`, icons where only those do.
-pub fn remote_buttons(
-    ctx: &mut PaintCtx<'_>,
-    band: Rect,
-    right: f64,
-    min_x: f64,
-    pointer: Option<Point>,
-) -> Vec<(Rect, RemoteAction)> {
-    let theme = ctx.theme;
-    let gap = f64::from(theme.tokens.spacing.s2);
-    let h = ButtonFace::height(ControlSize::Regular, theme);
-    let y = band.center().y - h / 2.0;
-    let labelled = right - remote_buttons_width(ctx.text, theme) >= min_x;
-    let mut x1 = right;
-    let mut placed = Vec::new();
-    for action in RemoteAction::ALL.iter().rev() {
-        let label = action.label();
-        let w = if labelled {
-            ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme)
-        } else {
-            h
-        };
-        let rect = Rect::new(x1 - w, y, x1, y + h);
-        if rect.x0 < min_x {
-            break;
-        }
-        let face = if labelled {
-            ButtonFace::new(rect, &label)
-        } else {
-            ButtonFace::icon_only(rect, action.icon(), &label)
-        };
-        let hovered = pointer.is_some_and(|p| face.contains(theme, p));
-        let face = face.hovered(hovered);
-        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        placed.push((rect, *action));
-        x1 = rect.x0 - gap;
-    }
-    placed.reverse();
-    placed
-}
-
-/// Width the remote commands need, gaps included.
-pub fn remote_buttons_width(text: &mut ui::text_render::TextRenderer, theme: &Theme) -> f64 {
-    let gap = f64::from(theme.tokens.spacing.s2);
-    RemoteAction::ALL
-        .iter()
-        .map(|a| ButtonFace::new(Rect::ZERO, &a.label()).intrinsic_width(text, theme))
-        .sum::<f64>()
-        + gap * (RemoteAction::ALL.len() - 1) as f64
-}
-
 /// Lay out shared toolkit inputs; all submission routes invoke `CreateWorktree`.
 fn paint_worktree_form(
     ctx: &mut PaintCtx<'_>,
@@ -639,6 +634,7 @@ fn paint_worktree_form(
 mod tests {
     use super::*;
     use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -657,6 +653,7 @@ mod tests {
                 pointer: None,
                 can_create: true,
                 branch_name: "",
+                selected: None,
                 worktree_fields: ["", "", "HEAD"],
             },
         );

@@ -1,5 +1,3 @@
-//! Test fixtures shared across the integration suite.
-
 #![allow(
     dead_code,
     reason = "each integration module uses a different subset of these fixtures"

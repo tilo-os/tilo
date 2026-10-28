@@ -19,7 +19,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, mpsc};
-use std::time::Duration;
 use tilo_files::native::atomic::lease::{AcquireError, FileLease, LeaseMode};
 use tilo_lock::MutexRecover as _;
 
@@ -27,7 +26,6 @@ const CHILD_MARKER: &str = "TILO_ATOMIC_FILE_LEASE_CHILD";
 const CHILD_PATH: &str = "TILO_ATOMIC_FILE_LEASE_PATH";
 const CHILD_READY: &str = "TILO_ATOMIC_FILE_LEASE_READY";
 const CHILD_TEST: &str = "child_holds_exclusive_lease";
-const BLOCKED_OBSERVATION: Duration = Duration::from_millis(250);
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 fn serialize_native_lock_tests() -> MutexGuard<'static, ()> {
@@ -226,15 +224,23 @@ fn blocking_acquisition_completes_after_another_process_releases() {
     let waiter_path = path;
     let waiter = std::thread::spawn(move || {
         let waiter_file = open(&waiter_path);
-        attempting_tx.send(()).unwrap();
+        // The kernel's id for this thread, where the platform has one.
+        let tid = tilo_test_env::idle::current_thread_id().ok();
+        attempting_tx.send(tid).unwrap();
         acquired_tx
             .send(FileLease::acquire(waiter_file, LeaseMode::Exclusive))
             .unwrap();
     });
-    tilo_test_env::recv("the waiter to start acquiring", &attempting_rx);
+    let waiter_tid = tilo_test_env::recv("the waiter to start acquiring", &attempting_rx);
+    // Blocked in the kernel on the child's lease, not granted.
+    if let Some(tid) = waiter_tid.map(|tid| tid.to_string()) {
+        tilo_test_env::wait_until("the waiter to block on the held lease", || {
+            tilo_test_env::idle::blocked(&tid)
+        });
+    }
     assert!(matches!(
-        acquired_rx.recv_timeout(BLOCKED_OBSERVATION),
-        Err(mpsc::RecvTimeoutError::Timeout)
+        acquired_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
     ));
 
     child.release_and_wait();

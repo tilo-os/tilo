@@ -18,7 +18,11 @@ pub struct Item {
     pub done: bool,
 }
 
-#[resource(kind = "test.checklist", label = "Checklist")]
+#[resource(
+    kind = "test.checklist",
+    label = "Checklist",
+    app = "so.tilo.test-checklist"
+)]
 impl Checklist {
     /// Rename the checklist.
     #[action]
@@ -180,7 +184,6 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         let inspection = app.harness().inspection_json().unwrap();
         assert!(inspection.contains("2 open"), "{inspection}");
 
-        // The row's checkbox is bound to set-done for its own item.
         let checkbox = app
             .harness()
             .targets()
@@ -194,13 +197,15 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
             1
         );
 
-        // A destructive action asks for confirmation: the unconfirmed click is
-        // refused and changes nothing; the confirmed invocation applies.
+        // A destructive action of the record is undoable: the click applies
+        // it at once, nobody is asked, and Undo takes it back.
         app.harness().click_named("clear-done").unwrap();
+        app.settle();
+        assert_eq!(app.asking(), None);
+        assert_eq!(app.state().items.len(), 1);
+        assert!(app.undo());
         assert_eq!(app.state().items.len(), 2);
-        assert!(app.invoke(Checklist::CLEAR_DONE.invoke()).is_err());
-        app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
-            .unwrap();
+        app.invoke(Checklist::CLEAR_DONE.invoke()).unwrap();
         assert_eq!(app.state().items.len(), 1);
     }
     // phase: typing_in_a_bound_field_is_an_action
@@ -288,22 +293,18 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
             .expect("apply is published for agents and scripts");
-        assert!(apply.is_programmatic(), "never a palette row");
+        assert!(!apply.reaches_people(), "never a palette row");
         assert!(apply.contract.confirmation_depends_on_arguments());
         let named = resources
             .iter()
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == "rename")
             .unwrap();
-        assert!(
-            !named.is_programmatic(),
-            "named actions stay in the palette"
-        );
+        assert!(named.reaches_people(), "named actions stay in the palette");
     }
-    // phase: a_destructive_typed_value_is_confirmed_like_its_named_action
+    // phase: a_destructive_typed_value_is_treated_like_its_named_action
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        // An ordinary typed edit applies directly.
         app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
             title: "Weekly".into(),
         })))
@@ -318,18 +319,9 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
         })))
         .unwrap();
 
-        // `clear_done` is `#[action(destructive)]`: reached through `apply` it
-        // needs the same confirmation its named declaration does.
-        assert!(matches!(
-            app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {}))),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(
-            app.state().items.len(),
-            1,
-            "the refused edit changed nothing"
-        );
-        app.invoke_confirmed(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
+        // `clear_done` is `#[action(destructive)]` and undoable: reached
+        // through `apply` it applies at once, as its named declaration does.
+        app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
             .unwrap();
         assert!(app.state().items.is_empty());
     }
@@ -542,4 +534,73 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
         Err(tilo_actions::DoorError::ConfirmationRequired)
     ));
     assert_eq!(app.state().title, "Once", "the second call changed nothing");
+}
+
+thread_local! {
+    /// Whether the fragile view fails every frame from now on.
+    static FRAGILE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A view that fails every frame once told to, as a view with a bug does.
+#[derive(Default)]
+struct Fragile {
+    rect: Rect,
+}
+
+impl Widget for Fragile {
+    fn sync(&mut self, _: &tilo_app::widget::AppModel, _: &tilo_app::widget::ModelPath) {
+        assert!(!FRAGILE_FAILS.get(), "the fragile view failed");
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut tilo_app::advanced::TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<tilo_app::advanced::NodeId, *mut dyn Widget>,
+    ) -> tilo_app::advanced::NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        _: &tilo_app::advanced::TaffyTree<()>,
+        _: tilo_app::advanced::NodeId,
+        origin: Point,
+    ) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "Fragile"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+struct FragileApp;
+
+impl ResourceApp for FragileApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-fragile";
+    const TITLE: &'static str = "Fragile";
+
+    fn view(_: &mut ViewCx<Checklist>) -> Element {
+        Box::new(Fragile::default())
+    }
+}
+
+/// A test that fails while its app is open fails alone: closing the app as
+/// the failure unwinds runs none of its frames again, so the failure is not
+/// repeated in a destructor, which would abort every test in the binary.
+#[test]
+fn an_app_open_when_a_test_fails_closes_without_failing_again() {
+    let mut app = TestApp::<FragileApp>::new().unwrap();
+    FRAGILE_FAILS.set(true);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        app.settle();
+    }));
+    FRAGILE_FAILS.set(false);
+    assert!(failed.is_err(), "the view's failure fails the test");
 }

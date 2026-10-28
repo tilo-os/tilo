@@ -9,6 +9,7 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 
 use crate::model::{Doc, LocatedAt as _, ModelError};
 use crate::resource::Resource;
@@ -93,7 +94,7 @@ fn migrate_with(
         return Ok(false);
     }
     let mut heads = doc.get_heads();
-    heads.sort();
+    heads.compact_sort();
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-resource/migration/v1");
     hasher.update(kind.as_bytes());

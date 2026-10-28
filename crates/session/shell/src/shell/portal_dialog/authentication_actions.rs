@@ -77,7 +77,7 @@ impl PortalDialogQueue {
         answer: Option<(&str, String)>,
     ) -> bool {
         let answer = answer.map(|(identity, secret)| (identity, zeroize::Zeroizing::new(secret)));
-        if ticket.owner_uid != unsafe { libc::geteuid() } {
+        if ticket.owner_uid != rustix::process::geteuid().as_raw() {
             return false;
         }
         let Ok(mut inner) = self.inner.lock() else {

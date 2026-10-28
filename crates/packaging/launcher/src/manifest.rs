@@ -211,7 +211,6 @@ bin = "bin/app"
 
     #[test]
     fn shipped_manifests_declare_what_they_need_to_open() {
-        // Phase `shipped_browser_requires_semantic_continuity`.
         {
             let manifest = read_manifest(&repo().join("apps/browser/tilo-app.toml"))
                 .expect("shipped browser manifest parses through installed-app schema");
@@ -236,7 +235,8 @@ bin = "bin/app"
                     .get(service)
                     .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
                 assert!(
-                    !requirement.is_required() && requirement.version == 2,
+                    !requirement.is_required()
+                        && requirement.version == runtime_portal::RUNTIME_INTERFACE_VERSION,
                     "Settings must open when {service} is not running"
                 );
             }

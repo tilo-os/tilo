@@ -161,10 +161,6 @@ pub struct HeadlessCompositor {
 impl HeadlessCompositor {
     /// Borrow the shared device. Fails (rather than panicking) on a box
     /// with no usable adapter, so callers can report it honestly.
-    ///
-    /// # Errors
-    ///
-    /// The adapter's own message when no usable GPU is available.
     pub fn new() -> Result<Self, String> {
         let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -340,7 +336,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn layer_transforms_scale_move_rotate_and_crop() {
-        // Case `the_identity_transform_still_fills_the_frame`.
         {
             // The whole geometry feature has to be free at rest: an untouched
             // clip must composite exactly as it did before there was a
@@ -356,7 +351,6 @@ mod tests {
                 );
             }
         }
-        // Case `scaling_down_shrinks_the_picture_and_leaves_black_around_it`.
         {
             let (mut p, cid) = square_clip();
             p.clip_mut(cid).unwrap().transform = Transform {
@@ -377,7 +371,6 @@ mod tests {
             assert!(is_black(px(&buf, 64, 32, 4)), "and above it");
             assert!(is_black(px(&buf, 64, 60, 60)), "and the corner");
         }
-        // Case `position_moves_the_picture_by_frame_widths`.
         {
             let (mut p, cid) = square_clip();
             // A quarter-size clip pushed a quarter of the frame to the right
@@ -404,10 +397,8 @@ mod tests {
             );
             assert!(is_black(px(&buf, 64, 16, 48)), "nor opposite it");
         }
-        // Case `a_corner_pip_lands_in_that_corner_and_only_there`.
         {
             let (mut p, cid) = square_clip();
-            // Bottom-left, a fifth of the frame, with a small margin.
             p.clip_mut(cid).unwrap().transform = Transform::pip(0.2, (-1.0, 1.0), 0.03);
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut green());
@@ -426,7 +417,6 @@ mod tests {
                 );
             }
         }
-        // Case `rotating_a_quarter_turn_moves_the_source_left_half_to_the_top`.
         {
             // Half red, half blue, split down the middle. A clockwise quarter
             // turn must put the left (red) half on top.
@@ -462,7 +452,6 @@ mod tests {
                 "and its right half at the bottom: {bottom:?}",
             );
         }
-        // Case `cropping_cuts_the_edge_off_without_moving_what_remains`.
         {
             let (mut p, cid) = square_clip();
             let mut c = compositor();
@@ -472,7 +461,6 @@ mod tests {
                 "uncropped, the left edge has picture"
             );
 
-            // Cut the left third away.
             p.clip_mut(cid).unwrap().transform = Transform {
                 crop_left: 1.0 / 3.0,
                 ..Transform::default()
@@ -492,7 +480,6 @@ mod tests {
                 "including its right edge"
             );
         }
-        // Case `a_transformed_layer_lets_the_one_beneath_it_show_through`.
         {
             // The point of geometry on a layer stack: an inset clip must reveal
             // what is under it, not letterbox it away.
@@ -530,7 +517,6 @@ mod tests {
             let inset = px(&buf, 64, 51, 13);
             let lower_pal = palette_rgb(0);
             let upper_pal = palette_rgb(3);
-            // Compare which palette each region is nearer to.
             let near = |c: Rgb, a: Rgb, b: Rgb| {
                 let d = |x: Rgb, y: Rgb| (x.r - y.r).abs() + (x.g - y.g).abs() + (x.b - y.b).abs();
                 d(c, a) < d(c, b)
@@ -544,7 +530,6 @@ mod tests {
                 "the inset corner shows the upper clip: {inset:?}",
             );
         }
-        // Case `a_source_with_alpha_is_cut_by_it_and_video_never_is`.
         {
             // An image's transparent margin must let the layer beneath through;
             // a decoded video frame that happens to carry zero alpha must not
@@ -568,7 +553,6 @@ mod tests {
             let cid = p.add_clip(t, mid, 0.0).unwrap();
             p.clip_mut(cid).unwrap().out_point = 5.0;
 
-            // Opaque green in the left half, fully transparent in the right.
             let mut src = painted(32, 32, |u, _v| {
                 if u < 0.5 {
                     [40, 200, 90, 255]
@@ -626,7 +610,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn titles_composite_as_placed_glyph_layers() {
-        // Case `a_title_draws_its_glyphs_over_the_clip_beneath_it`.
         {
             let mut p = Project::new("t");
             // A video bed on V1 …
@@ -673,7 +656,6 @@ mod tests {
                 "the clip beneath shows through the title's transparent field, got {bed_px}",
             );
         }
-        // Case `a_title_needs_no_frame_source_at_all`.
         {
             // The hermetic path: with `NoSources` every other layer falls back
             // to a stand-in fill, but a title's picture comes from the document
@@ -710,7 +692,6 @@ mod tests {
                 "the field around the glyphs stays black, got {black}"
             );
         }
-        // Case `a_title_can_be_placed_and_scaled_like_any_other_layer`.
         {
             // Geometry composes with titles: this is how a lower third is made.
             let mut p = Project::new("t");
@@ -738,7 +719,6 @@ mod tests {
             let (t0, b0) = rows_lit(&centred);
             assert!(t0 + b0 > 20, "the centred title is on screen: {t0}/{b0}");
 
-            // Push it into the lower third.
             p.clip_mut(cid).unwrap().transform = Transform {
                 scale_x: 0.5,
                 scale_y: 0.5,
@@ -764,7 +744,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn grade_and_curves_match_the_cpu_and_reach_the_frame() {
-        // Case `empty_timeline_composites_to_black`.
         {
             let p = Project::new("t");
             let mut c = compositor();
@@ -776,7 +755,6 @@ mod tests {
                 "no clips means an opaque black frame",
             );
         }
-        // Case `a_clip_composites_its_palette_and_the_grade_moves_it`.
         {
             let mut p = Project::new("t");
             let m = media(&mut p, 3); // a warm amber slot
@@ -815,7 +793,6 @@ mod tests {
                 "full desaturation collapses the channels, got {flat:?}",
             );
         }
-        // Case `the_shader_grade_matches_the_cpu_grade`.
         {
             // The shader is the production path; this pins its arithmetic to
             // `Rgb::graded`, which the inspector and every CPU test rely on.
@@ -846,7 +823,6 @@ mod tests {
                 "shader grade {got:?} should match the CPU grade {want:?}",
             );
         }
-        // Case `the_shader_curve_matches_the_cpu_curve`.
         {
             use crate::curve::Curve;
             // The shader is the production path for both preview and export;
@@ -873,7 +849,6 @@ mod tests {
                 );
             }
         }
-        // Case `a_per_channel_curve_reaches_the_composited_frame`.
         {
             use crate::curve::Curve;
             // Per-channel comes free in the RGBA table, so it is exactly the
@@ -890,7 +865,6 @@ mod tests {
             assert!((got.g - 0.502).abs() < 0.02, "green untouched: {got:?}");
             assert!((got.b - 0.502).abs() < 0.02, "blue untouched: {got:?}");
         }
-        // Case `each_layer_looks_up_its_own_row_of_the_table`.
         {
             use crate::curve::Curve;
             // One table serves the whole composite, one row per layer. Get the
@@ -950,7 +924,6 @@ mod tests {
                 "the lower layer's own curve lifted it: {corner:?}"
             );
         }
-        // Case `an_animated_curve_amount_ramps_the_grade_across_the_clip`.
         {
             use crate::curve::Curve;
             use crate::param::{Interp, Param};
@@ -989,7 +962,6 @@ mod tests {
                 "at full strength the midtone reaches the point drawn: {end}"
             );
         }
-        // Case `a_curve_mixed_all_the_way_out_composites_exactly_as_no_curve_at_all`.
         {
             use crate::curve::Curve;
             // The bypass has to be a real bypass, not "a table that is nearly
@@ -1032,7 +1004,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn tracks_effects_and_envelopes_shape_the_composite() {
-        // Case `every_video_track_contributes_a_layer`.
         {
             // The old single-clip path threw away everything below the top
             // track. A half-transparent upper layer must now let the lower one
@@ -1062,7 +1033,6 @@ mod tests {
                 "a half-transparent top layer lets the lower track show through: {blended:?} vs {opaque:?}",
             );
         }
-        // Case `a_muted_video_track_is_not_drawn`.
         {
             let mut p = Project::new("t");
             let m = media(&mut p, 3);
@@ -1087,7 +1057,6 @@ mod tests {
                 "a locked track still renders",
             );
         }
-        // Case `the_vignette_darkens_the_corners_and_spares_the_centre`.
         {
             // The CPU stand-in could only dim the whole frame flat; the shader
             // has real spatial falloff, so corner and centre must diverge.
@@ -1120,7 +1089,6 @@ mod tests {
                 "the centre is left alone: {centre_before} → {centre_after}",
             );
         }
-        // Case `effects_apply_in_stack_order`.
         {
             let mut p = Project::new("t");
             let m = media(&mut p, 5);
@@ -1162,7 +1130,6 @@ mod tests {
                 "swapping the stack changes the composited result",
             );
         }
-        // Case `the_fade_envelope_dims_the_composite`.
         {
             let mut p = Project::new("t");
             let m = media(&mut p, 3);
@@ -1181,7 +1148,6 @@ mod tests {
                 "the head of a fade-in is near black: {head} vs {mid}"
             );
         }
-        // Case `the_same_input_always_composites_the_same_frame`.
         {
             // `--shots` determinism, asserted on the production path.
             let mut p = Project::new("t");
@@ -1221,7 +1187,6 @@ mod tests {
         let cb = p.add_clip(v1, b, 5.0).unwrap();
         p.clip_mut(cb).unwrap().out_point = 5.0;
         p.clip_mut(cb).unwrap().transition = kind;
-        // Halfway through the incoming clip's transition.
         (p, 5.0 + crate::preview::TRANSITION_SECS * 0.5)
     }
 
@@ -1231,7 +1196,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn gpu_transitions_render_distinct_frames() {
-        // Case `each_transition_renders_a_different_frame`.
         {
             let mut c = compositor();
             let mut shots = Vec::new();
@@ -1265,7 +1229,6 @@ mod tests {
                 }
             }
         }
-        // Case `a_dissolve_samples_both_clips`.
         {
             // The whole point: mid-dissolve the frame carries the outgoing
             // clip's colour AND the incoming one's, which a single-clip
@@ -1302,7 +1265,6 @@ mod tests {
                 "the middle is a real blend: {mid:?}"
             );
         }
-        // Case `a_fade_in_rises_out_of_black_without_the_previous_clip`.
         {
             let (p, _) = two_clip_project(Transition::FadeIn);
             let mut c = compositor();
@@ -1329,7 +1291,6 @@ mod tests {
             );
             assert!(late.r > late.g, "what rises is the incoming clip: {late:?}");
         }
-        // Case `a_dip_passes_through_black`.
         {
             let (p, _) = two_clip_project(Transition::DipToBlack);
             let mut c = compositor();
@@ -1365,7 +1326,6 @@ mod tests {
                 "and returns on the incoming one: {three_q:?}"
             );
         }
-        // Case `a_wipe_is_geometry_not_a_flash`.
         {
             let (p, t) = two_clip_project(Transition::Wipe);
             let mut c = compositor();
@@ -1393,7 +1353,6 @@ mod tests {
 
     #[test]
     fn frame_sources_replace_or_fall_back_to_the_representative_fill() {
-        // Case `a_resolved_source_texture_replaces_the_representative_fill`.
         {
             // Proof the injected source is what gets composited: a source that
             // hands back a flat magenta picture must show up as magenta, not
@@ -1421,7 +1380,6 @@ mod tests {
                 "the injected picture is what got composited, got {got:?}",
             );
         }
-        // Case `a_source_that_yields_nothing_falls_back_to_the_representative_fill`.
         {
             let mut p = Project::new("t");
             let m = media(&mut p, 3);
@@ -1437,7 +1395,6 @@ mod tests {
                 "an un-hydrated source renders exactly the hermetic frame",
             );
         }
-        // Case `clip_layer_reads_the_clip_at_its_own_source_time`.
         {
             // Two clips of the same media at different in-points must ask the
             // source for different instants — otherwise trimming would be
@@ -1567,7 +1524,6 @@ mod tests {
              fall back to the representative fill and show a coloured rectangle",
             );
 
-            // Hand that frame to the compositor exactly as the canvas does.
             let frame = decoder.frame().expect("decoded frame").clone();
             let decoded_media = decoder.frame_media();
             assert_eq!(
@@ -1657,13 +1613,20 @@ mod tests {
 
             let (w, h) = (192u32, 108u32);
             let mut c = compositor();
-            let mut sources = MediaFrameSource::new(&p, Fetch::Exact);
-            let live = c.frame(&p, 2.0, w, h, &mut sources);
-
-            assert!(
-                sources.served_real_picture(),
-                "the frame source reported no decoded picture — the canvas is a stand-in",
-            );
+            // Strict, so a cold pipeline slower than one fetch is asked again
+            // rather than written off: render until the decoded picture lands.
+            let mut sources = MediaFrameSource::new(&p, Fetch::Exact).strict();
+            let deadline = tilo_test_env::hang_deadline();
+            let live = loop {
+                let live = c.frame(&p, 2.0, w, h, &mut sources);
+                if sources.served_real_picture() {
+                    break live;
+                }
+                assert!(
+                    ui::time::now() < deadline,
+                    "the frame source reported no decoded picture — the canvas is a stand-in",
+                );
+            };
             let detail = horizontal_detail(&live, w, h);
             println!("app-path canvas horizontal detail = {detail:.3}");
             assert!(
@@ -1723,11 +1686,10 @@ mod tests {
         // document persisted before it existed, or one replicated from a peer,
         // carries its items straight past it. Such an item reached the decoder on
         // every frame, each attempt paying the full frame timeout, so an editor
-        // holding one stalled on a fixed cadence indefinitely — which is exactly
-        // what a user reported as a "pseudo video" sitting in the clips.
+        // holding one stalled on a fixed cadence indefinitely, showing a frozen
+        // clip.
         //
-        // The fixture is an HTML page named `.mp4`, the real shape of the report:
-        // a saved web page whose extension says video. It is deliberately *not*
+        // The fixture is an HTML page named `.mp4`: a saved web page whose extension says video. It is deliberately *not*
         // checked through `probe`, because probing is the guard that already
         // works — this asserts the decode path gives up on its own.
         #[cfg(feature = "decode")]
@@ -1779,10 +1741,11 @@ mod tests {
             let mut sources = MediaFrameSource::new(&p, Fetch::Responsive)
                 .with_timeout(std::time::Duration::from_millis(50));
 
-            // Ask past the threshold, then keep asking.
-            let rounds = crate::thumbnail::FAILURES_BEFORE_GIVING_UP + 3;
-            for i in 0..rounds {
-                let _ = c.frame(&p, f64::from(i) * 0.5, w, h, &mut sources);
+            // Responsive misses are timed decode windows, not repaints.
+            // Keep polling a paused target until the real give-up deadline.
+            let deadline = tilo_test_env::hang_deadline();
+            while !sources.is_undecodable(mid) && ui::time::now() < deadline {
+                let _ = c.frame(&p, 0.5, w, h, &mut sources);
             }
 
             assert!(
@@ -2137,7 +2100,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn gpu_keys_and_masks_composite_the_layer_beneath() {
-        // Case `without_a_key_the_upper_layer_hides_the_one_beneath`.
         {
             // The control the two keyed tests below are read against: with no
             // key, the plate covers everything and nothing red survives.
@@ -2156,7 +2118,6 @@ mod tests {
                 "the plate is what is on screen"
             );
         }
-        // Case `keying_the_plate_reveals_the_layer_beneath_and_keeps_the_subject`.
         {
             let (mut p, over, mut src) = plate_over_red();
             p.clip_mut(over).unwrap().key = crate::model::ChromaKey {
@@ -2204,7 +2165,6 @@ mod tests {
                 if media == under_m {
                     return BENEATH;
                 }
-                // Full exposure at the top down to a fifth of it at the bottom.
                 let gain = 1.0 - 0.8 * v;
                 [
                     (f64::from(PLATE[0]) * gain) as u8,
@@ -2236,10 +2196,8 @@ mod tests {
                 );
             }
         }
-        // Case `spill_removal_takes_the_key_hue_off_the_subject`.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
-            // A subject washed with green light, over red.
             let tinted: [u8; 4] = [160, 150, 95, 255];
             let mut src = per_media(
                 32,
@@ -2271,7 +2229,6 @@ mod tests {
                 !is_reddish(plain) && !is_reddish(clean),
                 "the subject is kept either way — spill removal is not a matte",
             );
-            // Green comes down relative to the other two channels.
             let cast = |c: Rgb| c.g - c.r.midpoint(c.b);
             assert!(
                 cast(clean) < cast(plain) - 0.02,
@@ -2286,7 +2243,6 @@ mod tests {
                 clean.luma(),
             );
         }
-        // Case `an_ellipse_mask_cuts_the_upper_layer_to_a_disc`.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, _v| {
@@ -2318,7 +2274,6 @@ mod tests {
                 );
             }
         }
-        // Case `inverting_the_mask_swaps_which_layer_is_where`.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, _v| {
@@ -2384,7 +2339,6 @@ mod tests {
             assert!(is_green(rect), "the rect reaches its own corner: {rect:?}");
             assert!(is_reddish(ellipse), "the ellipse does not: {ellipse:?}");
         }
-        // Case `feathering_a_mask_puts_a_real_ramp_at_its_edge`.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, _v| {
@@ -2473,7 +2427,6 @@ mod tests {
             let mut c = compositor();
             let early = c.frame(&p, 0.0, 64, 64, &mut src);
             let late = c.frame(&p, 4.0, 64, 64, &mut src);
-            // Left of centre early, right of centre late.
             assert!(
                 is_green(px(&early, 64, 13, 32)),
                 "the disc starts on the left"

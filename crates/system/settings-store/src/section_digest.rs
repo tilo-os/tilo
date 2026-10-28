@@ -116,7 +116,6 @@ mod tests {
         })));
         assert_eq!(dnd.changed_since(&before), names(&["notifications"]));
 
-        // A section added and another removed are both changes.
         let reshaped = SectionDigest::of(&doc(&json!({
             "notifications": {"do_not_disturb": false},
             "input": {"tap_to_click": true, "mouse_natural_scroll": false},

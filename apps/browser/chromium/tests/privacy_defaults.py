@@ -10,6 +10,7 @@ embedded site has no storage access and its cookie is refused.
 import argparse
 import http.server
 import json
+import os
 from pathlib import Path
 import queue
 import struct
@@ -17,6 +18,10 @@ import subprocess
 import tempfile
 import threading
 import time
+
+# How long a wait on the host may take before it counts as hung: the
+# shared hang bound (tools/tests/hang.py), so a loaded runner is not a failure.
+HANG_BOUND = float(os.environ.get('TILO_TEST_HANG_BOUND_SECS', '120'))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('host', type=Path)
@@ -100,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-privacy-') as profile:
         return event
 
     try:
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + HANG_BOUND
         answer = None
         while time.monotonic() < deadline and answer is None:
             try:
@@ -121,9 +126,9 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-privacy-') as profile:
         assert 'access=false' in answer, f'the embedded site has no storage access: {answer}'
         assert 'third=false' in answer, f'the embedded site cannot set a cookie: {answer}'
         send({'op': 'shutdown'})
-        while next_event(time.monotonic() + 10)['event'] != 'closed':
+        while next_event(time.monotonic() + HANG_BOUND)['event'] != 'closed':
             pass
-        assert host.wait(timeout=10) == 0
+        assert host.wait(timeout=HANG_BOUND) == 0
         print(f'PASS: {answer}')
     finally:
         server.shutdown()

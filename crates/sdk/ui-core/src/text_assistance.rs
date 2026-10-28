@@ -14,8 +14,11 @@ pub const SETTINGS_SECTION: &str = "text_assistance";
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
 )]
+#[model(defaults)]
 pub struct TextAssistancePrefs {
+    /// Underline words the spelling dictionary does not know.
     pub check_spelling: bool,
+    /// Correct a misspelt word as the next one starts.
     pub auto_correct: bool,
     /// The language words are checked in (`en_US`, `de_DE`); empty for the
     /// session's own language.
@@ -57,9 +60,9 @@ pub fn preferences() -> TextAssistancePrefs {
         return TextAssistancePrefs::default();
     };
     if cache.loaded
-        && cache
-            .checked_at
-            .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
+        && cache.checked_at.is_some_and(|checked| {
+            crate::time::now().saturating_duration_since(checked) < Duration::from_secs(2)
+        })
     {
         return cache.prefs.clone();
     }

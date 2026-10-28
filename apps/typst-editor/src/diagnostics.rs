@@ -103,6 +103,26 @@ impl DiagnosticsPanel {
         Self::default()
     }
 
+    /// A fingerprint of what the panel paints.
+    pub fn look(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (self.rect.x0.to_bits(), self.scroll_y.to_bits(), self.hover).hash(&mut hasher);
+        for diagnostic in &self.diags {
+            (
+                &diagnostic.message,
+                &diagnostic.hints,
+                diagnostic.line,
+                diagnostic.col,
+                diagnostic.end_line,
+                diagnostic.end_col,
+                matches!(diagnostic.kind, DiagKind::Error),
+            )
+                .hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.clamp_scroll();

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 RELEASE = Path(__file__).resolve().parents[1] / 'release'
 sys.path.insert(0, str(RELEASE))
@@ -19,7 +20,7 @@ class WhistleScopeTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(RELEASE / 'qualify_whistle_cli_scope.py'),
              '--runtime-dir', '/nonexistent', '--manifest', '/nonexistent', '--case', 'fr_fr-0'],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertRegex(result.stderr, 'unprivileged public review only|unverified scope controls')
         self.assertNotIn('WHISTLE_CLI_SCOPE_RESULT', result.stdout)
@@ -28,7 +29,7 @@ class WhistleScopeTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(RELEASE / 'qualify_whistle_cli_scope.py'),
              '--runtime-dir', '/nonexistent', '--manifest', '/nonexistent', '--case', 'ar_eg-0'],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('invalid choice', result.stderr)
         self.assertNotIn('WHISTLE_CLI_SCOPE_RESULT', result.stdout)

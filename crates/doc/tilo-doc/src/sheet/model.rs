@@ -17,6 +17,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 use tilo_automerge::read::{map_at, str_at, str_entries};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -96,9 +97,6 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> SheetContainers {
     }
 }
 
-/// # Errors
-/// Returns [`DocError`] if a required container key (`sheets`/`meta`/`preserved`) is missing
-/// under `root` or does not resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<SheetContainers, DocError> {
     Ok(SheetContainers {
         root: root.clone(),
@@ -124,7 +122,7 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
         .keys(&c.sheets)
         .filter_map(|id| sheet_order(doc, c, &id).map(|ord| (ord, id)))
         .collect();
-    v.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    v.compact_sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
     v.into_iter().map(|(_, id)| id).collect()
 }
 
@@ -185,11 +183,12 @@ pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> She
             }
         }
     }
-    cells.sort_by_key(|a| (a.row, a.col));
+    cells.compact_sort_by_key(|a| (a.row, a.col));
     SheetView {
         id: id.to_string(),
         name,
         cells,
+        hidden: false,
     }
 }
 
@@ -275,9 +274,6 @@ impl Workbook {
         Self { doc, c, ids }
     }
 
-    /// # Errors
-    /// Returns [`DocError`] if `bytes` isn't a valid automerge document, or doesn't carry the
-    /// workbook schema's container keys.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = open(&doc, &ROOT)?;
@@ -445,10 +441,6 @@ impl Workbook {
     }
 
     /// Reconstruct the workbook as of `version` (time-travel).
-    ///
-    /// # Errors
-    /// Returns [`DocError`] if replaying the changes up to `version` doesn't reproduce a
-    /// document carrying the workbook schema's container keys.
     pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
         let rebuilt = tilo_resource::history::replay_prefix(&mut self.doc, version)
             .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;

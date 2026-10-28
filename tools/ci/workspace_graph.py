@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Shared Cargo dependency graph and Git change reader for checks and releases.
 
-Keep runner scheduling and test policy in affected_packages.py. Changes here
-invalidate release selection and coordinator fingerprints.
+Changes here invalidate release selection and coordinator fingerprints.
 """
 from __future__ import annotations
 

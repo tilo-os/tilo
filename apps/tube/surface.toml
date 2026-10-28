@@ -36,6 +36,7 @@ version = 1
 person = true
 fields = [
   { path = "watched", type = "BTreeMap<String, u64>" },
+  { path = "positions", type = "BTreeMap<String, u64>" },
 ]
 
 [[resources.verbs]]
@@ -51,6 +52,15 @@ id = "import"
 kind = "undoable"
 params = [
   { name = "watched", required = true, schema = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } },
+]
+
+[[resources.verbs]]
+id = "progress"
+kind = "undoable"
+params = [
+  { name = "video", required = true, schema = { type = "string" } },
+  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "duration_ms", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]

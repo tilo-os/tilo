@@ -1,0 +1,35 @@
+[package]
+name = "activity"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "What changed in a workspace: what is new since you were last here, its history, and a replay of its layout"
+
+[lib]
+name = "activity"
+path = "src/lib.rs"
+
+[[bin]]
+name = "activity"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

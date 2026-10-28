@@ -465,7 +465,7 @@ fn segmented_plan_actual_process_crashes_preserve_source_and_recover_committed_r
             .env("TILO_JOURNAL_BOUNDARY_COUNT", "1")
             .spawn()
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;

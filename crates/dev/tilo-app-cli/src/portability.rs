@@ -128,10 +128,6 @@ impl RuleSpec {
 }
 
 /// The parsed rules table.
-///
-/// # Errors
-///
-/// Returns an error when the embedded table does not parse.
 pub(crate) fn rules() -> Result<&'static RulesTable> {
     static RULES: OnceLock<Result<RulesTable, String>> = OnceLock::new();
     RULES
@@ -187,7 +183,6 @@ pub enum FindingKind {
     NativeSdkFeature,
     /// An OS thread.
     Thread,
-    /// The `std` clock.
     Clock,
     /// The `std` filesystem or sockets.
     RawIo,
@@ -242,11 +237,9 @@ pub struct PortabilityFinding {
 #[derive(Debug)]
 pub struct PortabilityReport {
     pub app_dir: PathBuf,
-    /// The targets from `package.platforms`.
     pub platforms: Vec<Platform>,
     /// The `package.platform-reason`, when the app narrows its platforms.
     pub platform_reason: Option<String>,
-    /// Sites of the rules that apply to the app's platforms.
     pub findings: Vec<PortabilityFinding>,
     /// Sites skipped because their rule does not apply to the app's platforms.
     pub exempt: usize,
@@ -520,10 +513,6 @@ pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStrea
 }
 
 /// Every Tilo app that is a member of the workspace containing `start`.
-///
-/// # Errors
-///
-/// Returns an error when no workspace manifest is found above `start`.
 pub fn workspace_apps(start: &Path) -> Result<Vec<PathBuf>> {
     let start =
         std::fs::canonicalize(start).with_context(|| format!("resolve {}", start.display()))?;

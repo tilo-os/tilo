@@ -1,12 +1,14 @@
 // Tests of the native stream qualification's reading and judging
 // (scripts/perf/native_stream_qualification.mjs); the run itself needs a
 // host, the session example, a built bundle and Chrome, which
-// Perf / scheduled's `stream` job has.
+// t's perf-stream check has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {CODE_BITS, analyse, codeCheck, codeGeometry, judgeGoals, parseArgs, readCode} from './native_stream_qualification.mjs';
+import {CODE_BITS, MAX_DESKTOP_FPS, PLATFORMS, acceptHostCertificate, analyse, askForUrl, codeCheck, codeGeometry,
+  desktopFailures, desktopFramesPerSecond, hostSocketUrl, judgeGoals, parseArgs, readCode}
+  from './native_stream_qualification.mjs';
 import {stats} from './browser_qualification.mjs';
-import {focusDiscipline, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
+import {focusDiscipline, inputText, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
 
 /** Three RGBA rows through the number blocks of frame `index`, as the session draws them. */
 function rows(index, width, {flip} = {}) {
@@ -55,6 +57,44 @@ test('arguments: required pieces, carrier, codec, window and defaults', () => {
   assert.equal(parseArgs([...base, '--codec', 'vp9']).codec, 'vp9');
   assert.throws(() => parseArgs([...base, '--codec', 'hevc-main10']), /--codec/);
   assert.throws(() => parseArgs([...base, '--window', '641x360']), /even/);
+  assert.equal(options.reopen, false, 'the measured window is the page\'s first by default');
+  assert.equal(parseArgs([...base, '--reopen']).reopen, true);
+  assert.equal(options.platform, 'chrome', 'Chrome by default');
+  assert.deepEqual(PLATFORMS, ['chrome', 'safari']);
+  assert.equal(parseArgs([...base, '--platform', 'safari']).platform, 'safari');
+  assert.throws(() => parseArgs([...base, '--platform', 'firefox']), /--platform/);
+});
+
+test('the host\'s socket is the WebSocket at the origin\'s own path', () => {
+  assert.equal(hostSocketUrl('https://127.0.0.1:4443'), 'wss://127.0.0.1:4443/peer/v1/ws');
+  assert.equal(hostSocketUrl('https://relay.example:8443/'), 'wss://relay.example:8443/peer/v1/ws');
+});
+
+test('a Safari run waits for the person who accepts the host\'s certificate', async () => {
+  let asked = 0;
+  const waits = [];
+  const refused = () => { throw Error('this must not be reached'); };
+  // A browser that trusts the host answers at once, and no one waits.
+  assert.equal(await acceptHostCertificate({ask: async () => 'trusted', socket: 'wss://h/peer/v1/ws', log: refused}), 'trusted');
+  // One that does not is asked again until it does.
+  assert.equal(await acceptHostCertificate({ask: async () => (++asked < 3 ? 'TypeError: Load failed' : 'trusted'),
+    socket: 'wss://h/peer/v1/ws', waitMs: 60_000, sleep: async ms => waits.push(ms), log: () => {}}), 'trusted');
+  assert.equal(asked, 3);
+  assert.deepEqual(waits, [2000, 2000], 'the run asks every two seconds, and stops when the certificate is trusted');
+  // Never accepted: the run is invalid, and says who accepts it.
+  await assert.rejects(acceptHostCertificate({ask: async () => 'Error: cancelled', socket: 'wss://h/peer/v1/ws', waitMs: 0,
+    sleep: async () => {}, log: () => {}}), /not given the host's certificate/);
+  // The fetch is the page's, with no credentials: a certificate question, nothing else.
+  const sent = [];
+  await askForUrl(async expression => { sent.push(expression); return 'trusted'; }, 'wss://h/peer/v1/ws')();
+  assert.match(sent[0], /fetch\("wss:\/\/h\/peer\/v1\/ws", \{mode: 'no-cors'\}\)/);
+});
+
+test('a browser that can type no input method still commits its text', () => {
+  const input = text => ({value: {Text: {text}}});
+  assert.equal(inputText([input('にほん'), input('🎉')], '🎉', 1), true);
+  assert.match(inputText([input('にほん')], '🎉', 1), /got undefined, not "🎉"/);
+  assert.match(inputText([input('にほん')], 'に', 1), /the window got undefined/);
 });
 
 /** A run: `n` frames 33 ms apart from t0, each drawn `lag` µs after capture. */
@@ -106,6 +146,22 @@ test('startup counts the first picture shown on the desktop, not one drawn while
   const result = analyse(run(30, {mutate: draws => draws.map((draw, i) => ({...draw, visible: i >= 4}))}));
   assert.deepEqual(result.samples.startup_ms, [(4 * 33_333 + 40_000 + 300_000) / 1000]);
   assert.equal(result.counts.firstPictureMs, 340);
+});
+
+test('a desktop that presents a frame for every picture of the window under it fails the run', () => {
+  // 10 s of stream: the window's opening is a frame or two; one frame per picture is 30 a second.
+  assert.equal(desktopFramesPerSecond({before: 100, after: 108, seconds: 10}), 0.8);
+  assert.deepEqual(analyse({...run(300), desktop: {before: 100, after: 108, seconds: 10}}).correctness.failures, []);
+  assert.deepEqual(analyse({...run(300), desktop: {before: 100, after: 100 + MAX_DESKTOP_FPS * 10, seconds: 10}}).correctness.failures, []);
+  assert.match(analyse({...run(300), desktop: {before: 100, after: 400, seconds: 10}}).correctness.failures.join(),
+    /desktop under the window presented 30 frames\/s while it streamed \(at most 2\)/);
+  // A page that does not say what its desktop presented cannot pass this.
+  assert.match(analyse({...run(300), desktop: {before: null, after: 400, seconds: 10}}).correctness.failures.join(),
+    /did not say how many frames/);
+  // A reopened run judges the window before the measured one the same way.
+  assert.deepEqual(desktopFailures({before: 50, after: 52, seconds: 3}, 'the window before it'), []);
+  assert.deepEqual(desktopFailures({before: 50, after: 140, seconds: 3}, 'the window before it'),
+    ['the desktop under the window before it presented 30 frames/s while it streamed (at most 2)']);
 });
 
 test('the warm-up is judged but not timed', () => {

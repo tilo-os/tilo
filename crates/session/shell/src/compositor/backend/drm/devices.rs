@@ -238,11 +238,9 @@ mod tests {
         assert!(is_kms_node(Path::new("/dev/dri/card0")));
         // Phase `renderd128_is_not_kms_node`.
         assert!(!is_kms_node(Path::new("/dev/dri/renderD128")));
-        // Phase `random_path_is_not_kms_node`.
         assert!(!is_kms_node(Path::new("/tmp/cardN")));
         assert!(!is_kms_node(Path::new("/dev/dri/card")));
         assert!(!is_kms_node(Path::new("/dev/dri/cardX")));
-        // Phase `filter_drops_render_nodes`.
         {
             let paths: Vec<PathBuf> = vec![
                 "/dev/dri/card0".into(),
@@ -262,7 +260,6 @@ mod tests {
 
     #[test]
     fn gpu_ranking_prefers_connected_outputs_then_the_internal_panel() {
-        // Phase `connectorless_discrete_gpu_does_not_win_by_card_number`.
         {
             let sysfs = tempfile::tempdir().expect("temporary sysfs");
             std::fs::create_dir(sysfs.path().join("card0-DP-1")).expect("card0 connector");
@@ -287,7 +284,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `more_connected_outputs_win_before_the_internal_panel_tiebreaker`.
         {
             let sysfs = tempfile::tempdir().expect("temporary sysfs");
             for connector in ["card0-DP-1", "card0-HDMI-A-1", "card1-eDP-1"] {
@@ -305,7 +301,6 @@ mod tests {
             );
             assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card0")));
         }
-        // Phase `internal_panel_breaks_a_connected_output_count_tie`.
         {
             let sysfs = tempfile::tempdir().expect("temporary sysfs");
             for connector in ["card0-DP-1", "card1-eDP-1"] {
@@ -323,7 +318,6 @@ mod tests {
             );
             assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card1")));
         }
-        // Phase `missing_sysfs_preserves_udev_order`.
         {
             let original = [
                 PathBuf::from("/dev/dri/card2"),
@@ -337,9 +331,7 @@ mod tests {
 
     #[test]
     fn preferred_mode_ranks_preferred_flag_then_resolution_then_refresh() {
-        // Phase `preferred_mode_returns_none_for_empty_list`.
         assert!(preferred_mode(&[]).is_none());
-        // Phase `preferred_mode_picks_only_mode`.
         {
             let m = ModeInfo {
                 width: 1920,
@@ -350,7 +342,6 @@ mod tests {
             };
             assert_eq!(preferred_mode(&[m]), Some(m));
         }
-        // Phase `preferred_mode_prefers_higher_resolution`.
         {
             let small = ModeInfo {
                 width: 800,
@@ -370,7 +361,6 @@ mod tests {
             // Order should not matter.
             assert_eq!(preferred_mode(&[big, small]), Some(big));
         }
-        // Phase `preferred_mode_prefers_higher_refresh_at_same_resolution`.
         {
             let sixty = ModeInfo {
                 width: 1920,
@@ -388,7 +378,6 @@ mod tests {
             };
             assert_eq!(preferred_mode(&[sixty, one_twenty]), Some(one_twenty));
         }
-        // Phase `preferred_flag_wins_over_higher_resolution`.
         {
             // 1080p is preferred even though 4K exists — honor the connector's hint.
             let four_k = ModeInfo {
@@ -410,7 +399,6 @@ mod tests {
                 Some(preferred_1080p)
             );
         }
-        // Phase `preferred_mode_among_preferred_picks_highest_resolution`.
         {
             // Two preferred modes: pick the higher-resolution one (rare, but allowed by spec).
             let a = ModeInfo {
@@ -591,7 +579,6 @@ mod refresh_selection_tests {
             refresh_mhz: 60_000,
         };
         assert_eq!(select_mode(&modes, Some(sixty)), Some(0));
-        // A resolution without a rate means that size at its fastest rate.
         let any_rate = OutputMode {
             width: 1920,
             height: 1200,

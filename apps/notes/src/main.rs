@@ -10,6 +10,9 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// The emoji catalogue comes from its engine library, not the tapp.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_emoji_engine;
 
 ui::android_main!();
 

@@ -2,6 +2,27 @@ use super::*;
 use cosmic_text::fontdb::{Query, Style, Weight};
 use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
 
+/// The probe a capture asks before it draws: it must answer about the roots it
+/// says it searched, and a run that cannot find a catalog must learn how to
+/// point one at itself.
+#[test]
+#[cfg(feature = "native")]
+fn the_catalog_probe_answers_about_the_roots_it_searched() {
+    let roots = catalog_roots();
+    assert!(!roots.is_empty(), "a run always has somewhere to look");
+    if let Some(root) = catalog_root() {
+        assert!(
+            roots.contains(&root),
+            "the catalog came from outside the searched roots: {}",
+            root.display()
+        );
+    }
+    assert!(
+        catalog_missing_message().contains(tilo_font_catalog::OVERRIDE_ENV),
+        "a run with no catalog must be told how to name one"
+    );
+}
+
 fn fixture() -> FontCatalog {
     FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }
@@ -251,28 +272,51 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut requested = Vec::new();
+    let mut read = super::test_font_files(&root);
     let fonts = catalog
         .load_browser_startup_bytes(|name| {
             requested.push(name.to_owned());
-            std::fs::read(root.join(name)).ok()
+            read(name)
         })
         .unwrap();
     assert_eq!(
         requested,
-        [
-            "TiloSans[wdth,wght].ttf",
-            "Onest-Cyrillic[wght].ttf",
-            "NotoSans[wght].ttf",
-        ]
+        ["TiloSans[wdth,wght].ttf", "Onest-Cyrillic[wght].ttf"]
     );
     assert_eq!(
         requested
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        1_118_556
+        406_096
     );
-    assert_eq!(fonts.db().len(), 3);
+    assert_eq!(fonts.db().len(), 2);
+}
+
+#[test]
+fn a_startup_font_whose_page_digest_or_size_differs_from_the_build_is_refused() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let mut read = super::test_font_files(&root);
+    let Err(error) = catalog.load_browser_startup_bytes(|name| {
+        let (bytes, mut digest) = read(name)?;
+        digest.replace_range(..1, if digest.starts_with('0') { "1" } else { "0" });
+        Some((bytes, digest))
+    }) else {
+        panic!("a wrong digest is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
+    let Err(error) = catalog.load_browser_startup_bytes(|name| {
+        let mut bytes = std::fs::read(root.join(name)).ok()?;
+        bytes.pop();
+        let digest = super::test_sha256(&bytes);
+        Some((bytes, digest))
+    }) else {
+        panic!("a wrong size is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
 }
 
 #[test]
@@ -280,30 +324,41 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut fonts = catalog
-        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .load_browser_startup_bytes(super::test_font_files(&root))
         .unwrap();
     let name = "NotoSansArabic[wght].ttf";
     let bytes = std::fs::read(root.join(name)).unwrap();
+    let digest = super::test_sha256(&bytes);
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
     );
     assert!(
         !catalog
-            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
     );
     let mut corrupt = bytes;
     *corrupt.last_mut().unwrap() ^= 1;
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, "NotoSansThai[wght].ttf", corrupt)
+            .install_browser_asset(
+                &mut fonts,
+                "NotoSansThai[wght].ttf",
+                corrupt.clone(),
+                &super::test_sha256(&corrupt)
+            )
             .is_err()
     );
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, "../font.ttf", vec![1])
+            .install_browser_asset(
+                &mut fonts,
+                "../font.ttf",
+                vec![1],
+                &super::test_sha256(&[1])
+            )
             .is_err()
     );
 }
@@ -520,7 +575,7 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let fonts = catalog
-        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .load_browser_startup_bytes(super::test_font_files(&root))
         .unwrap();
     let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
     let reading = crate::tokens::Typography::default().style(crate::tokens::TextRole::Reading);
@@ -537,6 +592,35 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
     let body = crate::tokens::Typography::default().style(crate::tokens::TextRole::Body);
     renderer.measure_style("Settings", None, &body.strong());
     assert!(renderer.take_browser_font_demands().is_empty());
+}
+
+#[test]
+fn a_browser_fetches_the_monospace_a_rich_layout_asks_for() {
+    // An editor's code line is a rich layout: its glyphs shape in the
+    // startup face until the monospace arrives, so the layout itself must
+    // say which family it wanted.
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let fonts = catalog
+        .load_browser_startup_bytes(super::test_font_files(&root))
+        .unwrap();
+    let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
+    let code = crate::tokens::Typography::default().style(crate::tokens::TextRole::Code);
+    let layout = crate::richtext::RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[crate::richtext::RichSpan::new("ls -la")],
+        &code,
+        None,
+        crate::richtext::TextAlign::Left,
+        Vec::new(),
+        Vec::new(),
+    );
+    renderer.note_browser_rich_layout(&layout);
+    let demands = renderer.take_browser_font_demands();
+    assert!(
+        demands.iter().any(|file| file.starts_with("NotoSansMono")),
+        "{demands:?}"
+    );
 }
 
 /// A catalog's build records the faces of its files
@@ -592,4 +676,66 @@ fn a_recorded_catalog_on_writable_storage_is_parsed() {
     let root = tilo_font_catalog::checkout_root().canonicalize().unwrap();
     assert_eq!(Trust::of_root(&root), Trust::Verify);
     assert!(tilo_font_catalog::faces::FaceIndex::read_trusted(&root, Trust::Verify).is_none());
+}
+
+/// Shaping on the compositor's main loop must never open a font by path: a
+/// path lookup there waits on the disk with the desktop frozen. A mapped
+/// database holds every face's bytes, so it still shapes and reads its faces
+/// with the files gone, in the order and generic families it had.
+#[test]
+fn a_mapped_database_reads_and_shapes_without_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = fixture().root().canonicalize().unwrap();
+    let mut db = fontdb::Database::new();
+    for name in ["NotoSans[wght].ttf", "NotoSansMono[wght].ttf"] {
+        let copy = tmp.path().join(name);
+        std::fs::copy(source.join(name), &copy).unwrap();
+        db.load_font_file(&copy).unwrap();
+    }
+    db.set_monospace_family("Noto Sans Mono");
+    let held = mapped(&db);
+    for entry in std::fs::read_dir(tmp.path()).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+
+    let describe = |db: &fontdb::Database| {
+        db.faces()
+            .map(|face| (face.post_script_name.clone(), face.index, face.weight))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(describe(&held), describe(&db));
+    assert_eq!(
+        held.family_name(&fontdb::Family::Monospace),
+        "Noto Sans Mono"
+    );
+    for face in held.faces() {
+        assert!(
+            matches!(face.source, fontdb::Source::SharedFile(..)),
+            "{} is held mapped",
+            face.post_script_name
+        );
+        let bytes = held.with_face_data(face.id, |data, _| data.len());
+        assert!(bytes.unwrap_or(0) > 0, "{} reads", face.post_script_name);
+    }
+
+    let mut system = system_over("en-US".into(), held);
+    let mut buffer = Buffer::new(&mut system, Metrics::new(14.0, 18.0));
+    buffer.set_text(
+        "Shaped without a file",
+        &Attrs::new()
+            .family(Family::Name("Noto Sans"))
+            .weight(Weight(600)),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut system, false);
+    let glyphs: usize = buffer.layout_runs().map(|run| run.glyphs.len()).sum();
+    assert!(glyphs > 0, "the text shaped");
+    assert!(
+        buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .all(|glyph| glyph.glyph_id != 0),
+        "every glyph found in a mapped face"
+    );
 }

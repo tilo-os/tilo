@@ -6,6 +6,11 @@
 //! [`PageRequest::Outline`] printed. A ref names one element of one document,
 //! so a ref from a page the tab has since left is refused rather than
 //! resolved against whatever now sits at the same position.
+//!
+//! A page inside a frame is addressed by the frame id its parent's outline
+//! printed (`[frame=1]`, `[frame=1.2]` for a frame of a frame): a request with
+//! that id runs in the frame's own document, and its refs and outline describe
+//! that document alone.
 
 use super::KeyModifiers;
 
@@ -13,28 +18,89 @@ use super::KeyModifiers;
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
 /// Upper bound on structured reply data (`PageReply::data`), serialised.
 pub const MAX_DATA_BYTES: usize = 256 * 1024;
+/// The widest picture a capture paints; a wider request is scaled down to
+/// it, so a picture is never larger than a person could look at.
+pub const MAX_CAPTURE_WIDTH: u16 = 1600;
+/// Upper bound on the pixels one capture may carry, as a PNG. What the engine
+/// paints is bounded the same way before it ever reaches this boundary.
+pub const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
-/// Largest viewport coordinate an `At` names, CSS pixels.
+/// Largest viewport coordinate a point may name, CSS pixels.
 const MAX_COORDINATE: f64 = 100_000.0;
+/// Upper bound on the points of one pointer path, and the steps of one
+/// drag, so a gesture is always a bounded amount of work for the engine.
+pub const MAX_PATH_POINTS: usize = 1024;
+pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
 /// Upper bound on the options one select may choose.
 pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
 pub const MAX_SELECT_VALUE_BYTES: usize = 1024;
+/// Upper bound on the files one fill of a file input may choose.
+pub const MAX_FILE_PATHS: usize = 16;
+/// Upper bound on one chosen file's path.
+pub const MAX_FILE_PATH_BYTES: usize = 4096;
+/// Upper bound on the steps of one pointer gesture.
+pub const MAX_POINTER_STEPS: usize = 256;
+/// Upper bound on the button names a gesture may name.
+const POINTER_BUTTONS: &[&str] = &["left", "right"];
+/// How far one scroll may ask to travel in one go, CSS pixels: a wheel notch
+/// moves about 100, and a bounded distance keeps one request a bounded amount
+/// of work for the page.
+pub const MAX_SCROLL_BY: u32 = 10_000;
 const MAX_REF_BYTES: usize = 40;
+/// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
+const MAX_FRAME_BYTES: usize = 16;
+const MAX_FRAME_DEPTH: usize = 8;
+/// Upper bound on the accessible name a
+/// [`PageRequest::Find`] matches, as the outline prints it.
+pub const MAX_FIND_NAME_BYTES: usize = 512;
+/// Upper bound on the role words a [`PageRequest::Find`] matches: a few
+/// words of the outline's own vocabulary, never a selector.
+pub const MAX_FIND_ROLE_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageRequest {
     /// A compact accessibility outline of the document. Interactive elements
-    /// carry the refs every other request addresses.
-    Outline,
+    /// carry the refs every other request addresses, and a frame carries the
+    /// id that addresses its own document.
+    Outline { frame: Option<FrameId> },
     /// A trusted pointer click at the element's visible centre.
-    Click { element: String },
+    Click {
+        element: String,
+        frame: Option<FrameId>,
+    },
+    /// A trusted pointer move to the element's visible centre, or to the
+    /// viewport point (`x`, `y`) when no element is named: moving the pointer
+    /// alone, with no button, so the page's hover styles apply.
+    Hover {
+        element: Option<String>,
+        point: Option<(f64, f64)>,
+    },
+    /// A trusted press, move and release on the element's visible centre, or
+    /// on the viewport point when no element is named: the drag and drop
+    /// gesture of a person holding the pointer down and moving it.
+    Drag {
+        from: Option<String>,
+        from_point: Option<(f64, f64)>,
+        to: Option<String>,
+        to_point: Option<(f64, f64)>,
+        steps: u8,
+    },
+    /// A trusted contact path: press at the first point, move through the
+    /// rest and release at the last, for drawing on canvases and other
+    /// surfaces that read pointer contact. Points are viewport CSS pixels
+    /// when the element is named and are measured from its padding box,
+    /// otherwise from the viewport's top left.
+    Path {
+        element: Option<String>,
+        points: Vec<(f64, f64)>,
+    },
     /// Replace an editable element's contents with `text`. A password or
     /// card field is refused unless `secret` says the caller means it, and
     /// then the text is a secret the caller keeps out of logs.
@@ -42,31 +108,58 @@ pub enum PageRequest {
         element: String,
         text: String,
         secret: bool,
+        frame: Option<FrameId>,
     },
     /// Choose `<select>` options by value or visible label.
     Select {
         element: String,
         values: Vec<String>,
+        frame: Option<FrameId>,
+    },
+    /// Choose the files of an `<input type=file>`, by absolute path.
+    ///
+    /// The caller has already checked each path is a regular file it may
+    /// read; the engine hands those files to the page as a person's own
+    /// picker would, dispatching `input` and `change`. A path that names no
+    /// readable regular file, or one the element's `accept` refuses, is
+    /// refused rather than silently dropped.
+    FillFiles {
+        element: String,
+        paths: Vec<String>,
+        frame: Option<FrameId>,
     },
     /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
         key: PageKey,
+        frame: Option<FrameId>,
     },
     /// Submit the element's form through the page's own validation. A form
     /// that sends its data to another site than the page's is refused unless
     /// `cross_origin` says the caller means it.
-    Submit { element: String, cross_origin: bool },
+    Submit {
+        element: String,
+        cross_origin: bool,
+        frame: Option<FrameId>,
+    },
     /// What changed in the outline since this tab's last read or changes:
     /// lines added (`+`) and removed (`-`), or the whole outline when the
     /// document is new.
-    Changes,
+    Changes { frame: Option<FrameId> },
     /// The element a click at viewport point (`x`, `y`) in CSS pixels would
     /// hit, and the nearest interactive element holding it.
-    At { x: f64, y: f64 },
+    At {
+        x: f64,
+        y: f64,
+        frame: Option<FrameId>,
+    },
     /// Wait until the document has stopped changing for `quiet_ms` and has
     /// loaded, or `timeout_ms` passed.
-    Settle { quiet_ms: u32, timeout_ms: u32 },
+    Settle {
+        quiet_ms: u32,
+        timeout_ms: u32,
+        frame: Option<FrameId>,
+    },
     /// Console messages and uncaught errors after sequence number `since`.
     Console { since: u64 },
     /// Network requests after sequence number `since`: method, URL, type,
@@ -75,56 +168,484 @@ pub enum PageRequest {
     /// Show the document's article alone in a reading layout (`enabled`), or
     /// put the page back as it was. A page without an article is refused.
     Reader { enabled: bool },
+    /// A picture of the page as it is shown: the box of `element` when one is
+    /// named, the viewport otherwise, at most `max_width` pixels wide. A page
+    /// can say things no outline reaches, and this is how they are seen.
+    /// Captured by the engine itself, so the page cannot see or answer it.
+    /// What the picture shows is page content: never trusted as instructions.
+    Capture {
+        element: Option<String>,
+        max_width: Option<u32>,
+        frame: Option<FrameId>,
+    },
+    /// The element a stable description names: the same role and name a
+    /// person reads on it, wherever the document sits in its history.
+    ///
+    /// Every other request addresses an element by the ref one outline
+    /// printed, and a ref belongs to one document. This one reads the page
+    /// it is asked of, so a description recorded once is answered with the
+    /// ref of the page as it is now: what a step replaying a person's work
+    /// needs.
+    Find {
+        role: Option<String>,
+        name: Option<String>,
+        nth: Option<u32>,
+        frame: Option<FrameId>,
+    },
+    /// Move the pointer over the page as a hand does: `steps` in order, a
+    /// press and release of `button` where the page asks for one. A step
+    /// naming `element` is placed in that element's box, every other step is
+    /// a viewport position in CSS pixels. All of it is real input to the
+    /// page, so hover, drag and drop and drawing see what a person's hand
+    /// would have done, and the reply reports what changed.
+    Pointer {
+        steps: Vec<PointerStep>,
+        button: PointerButton,
+    },
+    /// Turn the page's wheel as a hand does: `by` CSS pixels down (or up,
+    /// when negative) at the element's visible centre, or at the viewport's
+    /// when no element is named. `to` names an end of the page instead, and
+    /// `into_view` an element to bring into view. The wheel is real input,
+    /// so the page's scroll listeners, lazy loading and intersection
+    /// observers run as they do for a person, and the reply reports what
+    /// changed.
+    Scroll {
+        element: Option<String>,
+        to: Option<ScrollTarget>,
+        by: Option<i32>,
+        into_view: Option<String>,
+        frame: Option<FrameId>,
+    },
+}
+
+/// Where a [`PageRequest::Scroll`] goes instead of a distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
+    Top,
+    Bottom,
+}
+
+impl ScrollTarget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+}
+
+/// One step of a [`PageRequest::Pointer`] gesture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointerStep {
+    pub kind: PointerStepKind,
+    /// Where the step happens, relative to `element`'s box when it names one.
+    pub at: PointerPoint,
+    /// The element the step is placed against. A gesture that keeps naming
+    /// the same element keeps stepping inside the same box.
+    pub element: Option<String>,
+    /// The frame the step names, when its element lives in one: the step's
+    /// point is then moved by the frame's place, as a click is.
+    pub frame: Option<FrameId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerStepKind {
+    Move,
+    Down,
+    Up,
+}
+
+impl PointerStepKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Down => "down",
+            Self::Up => "up",
+        }
+    }
+}
+
+/// Where a step happens: inside an element's box or at a viewport point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PointerPoint {
+    InElement { x: f64, y: f64 },
+    Viewport { x: f64, y: f64 },
+}
+
+impl PointerPoint {
+    pub const fn coordinates(self) -> (f64, f64) {
+        match self {
+            Self::InElement { x, y } | Self::Viewport { x, y } => (x, y),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerButton {
+    Left,
+    Right,
+}
+
+impl PointerButton {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// The button a gesture names, left when the name is not one we know.
+    pub const fn parse(name: &str) -> Self {
+        match name.as_bytes() {
+            b"right" => Self::Right,
+            _ => Self::Left,
+        }
+    }
 }
 
 impl PageRequest {
     pub const fn action(&self) -> &'static str {
         match self {
-            Self::Outline => "outline",
+            Self::Outline { .. } => "outline",
             Self::Click { .. } => "click",
+            Self::Hover { .. } => "hover",
+            Self::Drag { .. } => "drag",
+            Self::Path { .. } => "path",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
+            Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
-            Self::Changes => "changes",
+            Self::Changes { .. } => "changes",
             Self::At { .. } => "at",
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
             Self::Reader { .. } => "reader",
+            Self::Capture { .. } => "capture",
+            Self::Find { .. } => "find",
+            Self::Pointer { .. } => "pointer",
+            Self::Scroll { .. } => "scroll",
+        }
+    }
+
+    /// What the request does, in the words an answer that a dialog it opened
+    /// cut short repeats: `Clicked element d1e5`, `Submitted form d1e7`.
+    pub fn described(&self) -> String {
+        match self {
+            Self::Outline { .. } => "Read the page".to_string(),
+            Self::Click { element, .. } => format!("Clicked element {element}"),
+            Self::Hover {
+                element: Some(element),
+                ..
+            } => format!("Moved the pointer over element {element}"),
+            Self::Hover { element: None, .. } => "Moved the pointer".to_string(),
+            Self::Drag { .. } => "Dragged on the page".to_string(),
+            Self::Path { .. } => "Drew on the page".to_string(),
+            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Select {
+                element, values, ..
+            } => {
+                format!("Chose {} on element {element}", values.join(", "))
+            }
+            Self::FillFiles { element, paths, .. } => {
+                format!("Chose {} file(s) for element {element}", paths.len())
+            }
+            Self::Press {
+                element: None, key, ..
+            } => format!("Pressed {}", key.chord()),
+            Self::Press {
+                element: Some(element),
+                key,
+                ..
+            } => format!("Pressed {} on element {element}", key.chord()),
+            Self::Submit { element, .. } => format!("Submitted form {element}"),
+            Self::Changes { .. } => "Read what changed".to_string(),
+            Self::At { x, y, .. } => format!("Read the element at {x}, {y}"),
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                ..
+            } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
+            Self::Console { .. } => "Read the console".to_string(),
+            Self::Network { .. } => "Read the network".to_string(),
+            Self::Capture { element, .. } => match element {
+                Some(element) => format!("Pictured element {element}"),
+                None => "Pictured the page".to_string(),
+            },
+            Self::Reader { enabled: true } => "Showed the article alone".to_string(),
+            Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
+            Self::Find {
+                role, name, nth, ..
+            } => {
+                let what = match (role.as_deref(), name.as_deref()) {
+                    (Some(role), Some(name)) => format!("{role} {name:?}"),
+                    (Some(role), None) => role.to_string(),
+                    (None, Some(name)) => format!("{name:?}"),
+                    (None, None) => "the page's own element".to_string(),
+                };
+                match nth {
+                    Some(nth) => format!("Found {what} ({nth})"),
+                    None => format!("Found {what}"),
+                }
+            }
+            Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
+            Self::Scroll { to: Some(to), .. } => format!("Scrolled to the {}", to.as_str()),
+            Self::Scroll {
+                into_view: Some(element),
+                ..
+            } => format!("Scrolled element {element} into view"),
+            Self::Scroll { by: Some(by), .. } => format!("Scrolled by {by} pixels"),
+            Self::Scroll { .. } => "Scrolled the page".to_string(),
         }
     }
 
     pub fn element(&self) -> Option<&str> {
         match self {
-            Self::Outline
+            Self::Outline { .. }
+            | Self::Find { .. }
             | Self::Press { element: None, .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::At { .. }
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Reader { .. } => None,
-            Self::Click { element }
+            | Self::Reader { .. }
+            | Self::Pointer { .. }
+            | Self::Scroll {
+                element: None,
+                into_view: None,
+                ..
+            }
+            | Self::Capture { element: None, .. }
+            | Self::Hover { element: None, .. }
+            | Self::Drag {
+                from: None,
+                to: None,
+                ..
+            }
+            | Self::Path { element: None, .. } => None,
+            Self::Click { element, .. }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
+            | Self::FillFiles { element, .. }
             | Self::Press {
                 element: Some(element),
                 ..
             }
-            | Self::Submit { element, .. } => Some(element),
+            | Self::Submit { element, .. }
+            | Self::Hover {
+                element: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: None,
+                to: Some(element),
+                ..
+            }
+            | Self::Path {
+                element: Some(element),
+                ..
+            }
+            | Self::Scroll {
+                element: Some(element),
+                ..
+            }
+            | Self::Scroll {
+                into_view: Some(element),
+                ..
+            }
+            | Self::Capture {
+                element: Some(element),
+                ..
+            } => Some(element),
         }
     }
 
+    /// The frame's document this request runs in, or the main document's.
+    pub fn frame(&self) -> Option<&FrameId> {
+        match self {
+            Self::Outline { frame }
+            | Self::Click { frame, .. }
+            | Self::Fill { frame, .. }
+            | Self::Select { frame, .. }
+            | Self::FillFiles { frame, .. }
+            | Self::Press { frame, .. }
+            | Self::Submit { frame, .. }
+            | Self::Changes { frame }
+            | Self::At { frame, .. }
+            | Self::Settle { frame, .. }
+            | Self::Scroll { frame, .. }
+            | Self::Capture { frame, .. }
+            | Self::Find { frame, .. } => frame.as_ref(),
+            Self::Console { .. }
+            | Self::Network { .. }
+            | Self::Reader { .. }
+            | Self::Hover { .. }
+            | Self::Drag { .. }
+            | Self::Path { .. }
+            | Self::Pointer { .. } => None,
+        }
+    }
+
+    /// The same request run in the main document again.
+    #[must_use]
+    pub fn main_frame(self) -> Self {
+        match self {
+            Self::Outline { .. } => Self::Outline { frame: None },
+            Self::Click { element, .. } => Self::Click {
+                element,
+                frame: None,
+            },
+            Self::Fill {
+                element,
+                text,
+                secret,
+                ..
+            } => Self::Fill {
+                element,
+                text,
+                secret,
+                frame: None,
+            },
+            Self::Select {
+                element, values, ..
+            } => Self::Select {
+                element,
+                values,
+                frame: None,
+            },
+            Self::FillFiles { element, paths, .. } => Self::FillFiles {
+                element,
+                paths,
+                frame: None,
+            },
+            Self::Press { element, key, .. } => Self::Press {
+                element,
+                key,
+                frame: None,
+            },
+            Self::Submit {
+                element,
+                cross_origin,
+                ..
+            } => Self::Submit {
+                element,
+                cross_origin,
+                frame: None,
+            },
+            Self::Find {
+                role, name, nth, ..
+            } => Self::Find {
+                role,
+                name,
+                nth,
+                frame: None,
+            },
+            Self::Changes { .. } => Self::Changes { frame: None },
+            Self::At { x, y, .. } => Self::At { x, y, frame: None },
+            Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                ..
+            } => Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                frame: None,
+            },
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                ..
+            } => Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                frame: None,
+            },
+            other => other,
+        }
+    }
+
+    /// Whether this request names a frame the page outline could have
+    /// printed. A caller that makes one up is refused, never silently run
+    /// against the main document instead.
+    pub fn frame_valid(&self) -> bool {
+        self.frame()
+            .is_none_or(|frame| FrameId::parse(frame.as_str()) == Some(frame.clone()))
+    }
+
     /// Whether every field is within the bounds an engine accepts.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match names every request's bounds, so none can be forgotten"
+    )]
     pub fn valid(&self) -> bool {
+        let refs: Vec<&str> = match self {
+            Self::Pointer { steps, .. } => {
+                steps.iter().filter_map(|s| s.element.as_deref()).collect()
+            }
+            _ => self.element().into_iter().collect(),
+        };
+        if refs.iter().any(|element| !is_element_ref(element)) {
+            return false;
+        }
+        // Structured so that `FrameId::malformed` fails here rather than
+        // running the request in the main document instead.
         if self
-            .element()
-            .is_some_and(|element| !is_element_ref(element))
+            .frame()
+            .is_some_and(|frame| FrameId::parse(frame.as_str()) != Some(frame.clone()))
         {
             return false;
         }
         match self {
+            Self::Hover { element, point } => {
+                matches!((element, point), (Some(_), None) | (None, Some(_)))
+            }
+            Self::Drag {
+                from,
+                from_point,
+                to,
+                to_point,
+                steps,
+            } => {
+                let known = |element: &Option<String>, point: &Option<(f64, f64)>| {
+                    matches!((element, point), (Some(_), None) | (None, Some(_)))
+                };
+                known(from, from_point)
+                    && known(to, to_point)
+                    && from_point
+                        .iter()
+                        .chain(to_point)
+                        .all(|point| point_is_viewport(*point))
+                    && (1..=MAX_DRAG_STEPS).contains(&usize::from(*steps))
+            }
+            Self::Path { element, points } => {
+                let relative = element.is_some();
+                (2..=MAX_PATH_POINTS).contains(&points.len())
+                    && points.iter().all(|&point| {
+                        if relative {
+                            point.0.is_finite() && point.1.is_finite()
+                        } else {
+                            point_is_viewport(point)
+                        }
+                    })
+            }
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
             Self::Select { values, .. } => {
                 !values.is_empty()
@@ -133,25 +654,147 @@ impl PageRequest {
                         .iter()
                         .all(|value| value.len() <= MAX_SELECT_VALUE_BYTES)
             }
+            Self::FillFiles { paths, .. } => {
+                !paths.is_empty()
+                    && paths.len() <= MAX_FILE_PATHS
+                    && paths
+                        .iter()
+                        .all(|path| path.len() <= MAX_FILE_PATH_BYTES && path.starts_with('/'))
+            }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
-            Self::At { x, y } => [x, y]
+            Self::At { x, y, .. } => [x, y]
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(*v)),
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                ..
             } => {
                 (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
                     && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
             }
-            Self::Outline
+            Self::Pointer { steps, button } => {
+                !steps.is_empty()
+                    && steps.len() <= MAX_POINTER_STEPS
+                    && POINTER_BUTTONS.contains(&button.as_str())
+                    && steps.iter().all(|step| {
+                        let (x, y) = step.at.coordinates();
+                        [x, y]
+                            .iter()
+                            .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
+                            && step.frame.as_ref().is_none_or(|frame| {
+                                FrameId::parse(frame.as_str()) == Some(frame.clone())
+                            })
+                    })
+            }
+            Self::Capture { max_width, .. } => {
+                max_width.is_none_or(|width| (1..=u32::from(MAX_CAPTURE_WIDTH)).contains(&width))
+            }
+            Self::Find {
+                role, name, nth, ..
+            } => {
+                role.as_ref()
+                    .is_none_or(|role| !role.is_empty() && role.len() <= MAX_FIND_ROLE_BYTES)
+                    && name
+                        .as_ref()
+                        .is_none_or(|name| !name.is_empty() && name.len() <= MAX_FIND_NAME_BYTES)
+                    && (role.is_some() || name.is_some())
+                    && nth.is_none_or(|nth| nth >= 1)
+            }
+            Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. } => true,
+            Self::Scroll {
+                element,
+                to,
+                by,
+                into_view,
+                ..
+            } => {
+                // The wheel turns over the viewport's centre unless the
+                // caller names what it turns over.
+                // Bringing an element into view is the place itself, and may
+                // name the box the wheel turns over; otherwise the wheel goes
+                // to an end of the page or by a distance, never both.
+                let aimed = usize::from(to.is_some()) + usize::from(by.is_some());
+                (to.is_some() || by.is_some() || into_view.is_some())
+                    && if into_view.is_some() {
+                        aimed == 0
+                    } else {
+                        aimed == 1
+                    }
+                    && by.is_none_or(|by| by.unsigned_abs() <= MAX_SCROLL_BY)
+                    && into_view.as_ref().is_none_or(|r| r.len() <= MAX_REF_BYTES)
+                    && element.as_ref().is_none_or(|r| r.len() <= MAX_REF_BYTES)
+            }
         }
+    }
+}
+
+/// A finite point inside the viewport coordinate bounds.
+fn point_is_viewport((x, y): (f64, f64)) -> bool {
+    [x, y]
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
+}
+
+/// A frame's place in the page: the id its parent's outline printed, a dot
+/// between the numbers of nested frames (`2`, then `2.1`), at most eight deep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameId(String);
+
+impl FrameId {
+    /// Reads a frame id the outline printed, refusing anything else so an id
+    /// can never smuggle selector or script syntax to the engine. A frame is a
+    /// number, so the number alone, the number as text and the outline's own
+    /// `[frame=1]` all name the same frame: a caller that copies what it read
+    /// is understood.
+    pub fn parse(value: &str) -> Option<Self> {
+        let written = value.trim();
+        // What the outline brackets is the id, and what marks it is not part
+        // of it: `frame=1`, `[frame=1.2]` and `1.2` are one id.
+        let written = written
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(written);
+        let written = written
+            .strip_prefix("frame=")
+            .or_else(|| written.strip_prefix("Frame="))
+            .unwrap_or(written)
+            .trim();
+        let parts: Vec<&str> = written.split('.').collect();
+        let digit = |part: &str| {
+            !part.is_empty()
+                && part.len() <= 3
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && !part.starts_with('0')
+        };
+        (written.len() <= MAX_FRAME_BYTES
+            && !parts.is_empty()
+            && parts.len() <= MAX_FRAME_DEPTH
+            && parts.iter().all(|part| digit(part)))
+        .then(|| Self(written.to_string()))
+    }
+
+    /// A frame id no outline printed, standing in for one the caller wrote
+    /// wrongly: it fails the request rather than being read as the main
+    /// document.
+    pub fn malformed() -> Self {
+        Self(String::new())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FrameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -195,35 +838,101 @@ const NAMED_KEYS: &[&str] = &[
     "PageDown",
 ];
 
+/// How a key's name is read: without regard to case, so `END`, `End` and
+/// `end` name the same key, as do `CTRL` and `Ctrl` as a modifier.
+fn named_key(name: &str) -> Option<&'static str> {
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .find(|named| named.eq_ignore_ascii_case(name))
+}
+
+/// The named keys `name` could have been misspelled for, as the closest ones
+/// first: the keys sharing its first letter, so an error can offer them.
+fn near_keys(name: &str) -> Vec<&'static str> {
+    let wanted = name.trim().to_ascii_lowercase();
+    let Some(first) = wanted.chars().next() else {
+        return Vec::new();
+    };
+    NAMED_KEYS
+        .iter()
+        .copied()
+        .filter(|named| named.to_ascii_lowercase().starts_with(first))
+        .collect()
+}
+
 impl PageKey {
     pub fn parse(chord: &str) -> Option<Self> {
-        let mut parts: Vec<&str> = chord.split('+').collect();
+        Self::parse_detailed(chord).ok()
+    }
+
+    /// [`Self::parse`], saying why the chord names no key: a caller needs to
+    /// know what to write instead, and that is never the same for a missing
+    /// modifier as for a key that does not exist.
+    ///
+    /// # Errors
+    /// The chord's own problem, phrased for the person who wrote it.
+    pub fn parse_detailed(chord: &str) -> Result<Self, String> {
+        let written = chord.trim();
+        if written.is_empty() {
+            return Err(
+                "press-page needs a key: name one, such as Enter, Tab, Escape, ArrowDown, End or Control+a"
+                    .into(),
+            );
+        }
+        let mut parts: Vec<&str> = written.split('+').collect();
         // `Control++` names the plus key itself.
-        if chord.ends_with("++") {
+        if written.ends_with("++") {
             parts.truncate(parts.len().saturating_sub(2));
             parts.push("+");
         }
-        let key = parts.pop()?;
+        let Some(key) = parts.pop().filter(|key| !key.is_empty()) else {
+            return Err(format!(
+                "press-page was given {written:?}, which ends before it names a key; write a key after the last +, such as Control+a"
+            ));
+        };
         let mut modifiers = KeyModifiers::default();
         for part in parts {
-            let flag = match part {
-                "Control" | "Ctrl" => &mut modifiers.ctrl,
-                "Shift" => &mut modifiers.shift,
-                "Alt" => &mut modifiers.alt,
-                "Meta" => &mut modifiers.meta,
-                _ => return None,
+            let flag = if part.eq_ignore_ascii_case("control") || part.eq_ignore_ascii_case("ctrl")
+            {
+                &mut modifiers.ctrl
+            } else if part.eq_ignore_ascii_case("shift") {
+                &mut modifiers.shift
+            } else if part.eq_ignore_ascii_case("alt") {
+                &mut modifiers.alt
+            } else if part.eq_ignore_ascii_case("meta") || part.eq_ignore_ascii_case("cmd") {
+                &mut modifiers.meta
+            } else {
+                return Err(format!(
+                    "{part:?} is not a key modifier; hold one of Control (or Ctrl), Shift, Alt or Meta before the key, as in Control+{key}"
+                ));
             };
             if std::mem::replace(flag, true) {
-                return None;
+                return Err(format!(
+                    "{part:?} is held twice in {written:?}; name each modifier once"
+                ));
             }
         }
-        let key = match key {
-            "Space" => " ",
-            named if NAMED_KEYS.contains(&named) => named,
-            character if character.chars().count() == 1 => character,
-            _ => return None,
+        let key: &str = if key.eq_ignore_ascii_case("space") {
+            " "
+        } else if let Some(named) = named_key(key) {
+            named
+        } else if key.chars().count() == 1 {
+            key
+        } else {
+            let near = near_keys(key);
+            let did_you_mean = if near.is_empty() {
+                String::new()
+            } else {
+                format!("; did you mean {}?", near.join(" or "))
+            };
+            return Err(format!(
+                "{key:?} is not a key name. Name a key as one of {} (in any letter case), or a single character such as a{main_did_you_mean}",
+                NAMED_KEYS.join(", "),
+                main_did_you_mean = did_you_mean
+            ));
         };
-        Some(Self {
+        Ok(Self {
             key: key.to_string(),
             modifiers,
         })
@@ -259,10 +968,38 @@ pub struct PageReply {
     /// Structured findings: the element at a point, how a settle went, log
     /// entries. Always page content, so never trusted as instructions.
     pub data: Option<serde_json::Value>,
-    /// The request started a main-frame navigation.
-    pub navigated: bool,
-    /// That navigation had not finished loading when the engine answered.
+    /// The picture a [`PageRequest::Capture`] painted, a PNG. What it shows
+    /// came from the page: a reader of it trusts none of the words in it.
+    pub image: Option<Vec<u8>>,
+    /// Whether the request led the page away from its document.
+    pub navigation: PageNavigation,
+    /// The navigation it started had not finished loading when the engine
+    /// answered.
     pub loading: bool,
+}
+
+/// Whether a page request led the page to another document, as far as the
+/// engine can tell when it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageNavigation {
+    /// The request ran none of the page's code, so it cannot have.
+    None,
+    /// The page began a main-frame navigation while it handled the request.
+    Started,
+    /// It had not by the time it handled the request, and may still: a
+    /// navigation the page starts later arrives as its own document request in
+    /// the network log.
+    Possible,
+}
+
+impl PageNavigation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Started => "started",
+            Self::Possible => "possible",
+        }
+    }
 }
 
 /// Why a page request did nothing. `code` is stable, such as
@@ -299,12 +1036,22 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
     if let Some(element) = request.element() {
         command["element"] = element.into();
     }
+    if let PageRequest::Drag {
+        to: Some(target), ..
+    } = request
+    {
+        command["to"] = target.as_str().into();
+    }
+    if let Some(frame) = request.frame() {
+        command["frame"] = frame.as_str().into();
+    }
     match request {
         PageRequest::Fill { text, secret, .. } => {
             command["text"] = text.as_str().into();
             command["secret"] = (*secret).into();
         }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
+        PageRequest::FillFiles { paths, .. } => command["paths"] = paths.clone().into(),
         PageRequest::Press { key, .. } => {
             command["key"] = key.key.as_str().into();
             command["ctrl"] = key.modifiers.ctrl.into();
@@ -315,13 +1062,14 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         PageRequest::Submit { cross_origin, .. } => {
             command["cross_origin"] = (*cross_origin).into()
         }
-        PageRequest::At { x, y } => {
+        PageRequest::At { x, y, .. } => {
             command["x"] = (*x).into();
             command["y"] = (*y).into();
         }
         PageRequest::Settle {
             quiet_ms,
             timeout_ms,
+            ..
         } => {
             command["quiet_ms"] = (*quiet_ms).into();
             command["timeout_ms"] = (*timeout_ms).into();
@@ -330,7 +1078,97 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
+        PageRequest::Find {
+            role, name, nth, ..
+        } => {
+            for (key, value) in [("role", role), ("name", name)] {
+                if let Some(value) = value {
+                    command[key] = value.as_str().into();
+                }
+            }
+            if let Some(nth) = nth {
+                command["nth"] = (*nth).into();
+            }
+        }
+        PageRequest::Capture { max_width, .. } => {
+            command["max_width"] =
+                u32::from(max_width.unwrap_or(u32::from(MAX_CAPTURE_WIDTH))).into();
+        }
+        PageRequest::Pointer { steps, button } => {
+            command["button"] = button.as_str().into();
+            command["steps"] = steps
+                .iter()
+                .map(|step| {
+                    let (x, y) = step.at.coordinates();
+                    let mut encoded = serde_json::json!({
+                        "kind": step.kind.as_str(),
+                        "x": x,
+                        "y": y,
+                    });
+                    if let Some(element) = &step.element {
+                        encoded["element"] = element.as_str().into();
+                    }
+                    if let Some(frame) = &step.frame {
+                        encoded["frame"] = frame.as_str().into();
+                    }
+                    encoded
+                })
+                .collect();
+        }
+        PageRequest::Hover { element, point } => {
+            // An unnamed element hovers a viewport point instead.
+            if element.is_none()
+                && let Some((x, y)) = point
+            {
+                command["action"] = "at".into();
+                command["hover"] = true.into();
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+        }
+        PageRequest::Drag {
+            from_point,
+            to_point,
+            steps,
+            ..
+        } => {
+            // A named element travels as its ref under `element`; the
+            // destination element under `to`; unnamed ends as points.
+            if let Some((x, y)) = from_point {
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+            if let Some((x, y)) = to_point {
+                command["to_x"] = (*x).into();
+                command["to_y"] = (*y).into();
+            }
+            command["steps"] = (*steps).into();
+        }
+        PageRequest::Path { points, .. } => {
+            command["points"] = serde_json::Value::Array(
+                points
+                    .iter()
+                    .map(|&(x, y)| serde_json::json!([x, y]))
+                    .collect(),
+            );
+        }
+        PageRequest::Outline { .. } | PageRequest::Click { .. } | PageRequest::Changes { .. } => {}
+        PageRequest::Scroll {
+            to, by, into_view, ..
+        } => {
+            // A named element travels as its ref under `element`, as every
+            // other request's does; the end of the page, the distance and
+            // the element to bring into view have keys of their own.
+            if let Some(to) = to {
+                command["to"] = to.as_str().into();
+            }
+            if let Some(by) = by {
+                command["by"] = (*by).into();
+            }
+            if let Some(into_view) = into_view {
+                command["into_view"] = into_view.as_str().into();
+            }
+        }
     }
     command
 }
@@ -355,13 +1193,30 @@ pub(crate) fn decode_result(
             _ => Some(bounded("outline", MAX_OUTLINE_BYTES)?),
         };
         let navigated = value["navigated"].as_bool()?;
+        // An engine from before `navigation` only knew whether one began soon after.
+        let navigation = match value["navigation"].as_str() {
+            Some("none") => PageNavigation::None,
+            Some("started") => PageNavigation::Started,
+            Some("possible") => PageNavigation::Possible,
+            Some(_) => return None,
+            None if navigated => PageNavigation::Started,
+            None => PageNavigation::Possible,
+        };
+        if navigated != (navigation == PageNavigation::Started) {
+            return None;
+        }
+        // The picture travels as its own bytes, so the findings beside it are
+        // measured without it: a photograph of a page is never findings.
+        let mut picture = None;
+        capture_image(&value["data"], &mut picture)?;
         let data = match &value["data"] {
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
-                if runtime_collab::wire_json_len(data) > MAX_DATA_BYTES {
+                let findings = without_image(data);
+                if runtime_collab::wire_json_len(&findings) > MAX_DATA_BYTES {
                     return None;
                 }
-                Some(data.clone())
+                Some(findings)
             }
             _ => return None,
         };
@@ -370,7 +1225,8 @@ pub(crate) fn decode_result(
             message,
             outline,
             data,
-            navigated,
+            image: picture,
+            navigation,
             loading: navigated && value["loading"].as_bool()?,
         })
     } else {
@@ -382,9 +1238,136 @@ pub(crate) fn decode_result(
     Some((request_id, result))
 }
 
+/// The findings an answer carries, with the picture taken out of them: the
+/// picture's own bytes are the reply's image, never part of its findings.
+fn without_image(data: &serde_json::Value) -> serde_json::Value {
+    let mut findings = data.clone();
+    if let Some(object) = findings.as_object_mut() {
+        object.remove("capture");
+    }
+    findings
+}
+
+/// The picture an answer carries, decoded from its base64 PNG, bounded in
+/// both its encoding and its pixels. `None` refuses the whole answer: a
+/// picture it cannot take is not one it may quietly drop.
+fn capture_image(data: &serde_json::Value, image: &mut Option<Vec<u8>>) -> Option<()> {
+    let Some(capture) = data.get("capture") else {
+        return Some(());
+    };
+    let bytes = decode_png(capture.as_str()?)?;
+    *image = Some(bytes);
+    Some(())
+}
+
+/// The first bytes of every PNG file.
+const PNG_SIGNATURE: [u8; 4] = [0x89, b'P', b'N', b'G'];
+
+/// The PNG `encoded` stands for, refused if it is longer than a picture may
+/// be or is not a PNG at all.
+fn decode_png(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.len() > MAX_CAPTURE_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    // A PNG, and no other kind of file, whatever the page may have wanted.
+    if !bytes.starts_with(&PNG_SIGNATURE) || bytes.len() > MAX_CAPTURE_BYTES {
+        return None;
+    }
+    Some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_says_what_it_did_in_the_words_its_answer_repeats() {
+        let element = || "d1e5".to_string();
+        let described = |request: PageRequest| request.described();
+        assert_eq!(
+            described(PageRequest::Click {
+                element: element(),
+                frame: None,
+            }),
+            "Clicked element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Fill {
+                element: element(),
+                text: "Maria".into(),
+                secret: false,
+                frame: None,
+            }),
+            "Filled element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Submit {
+                element: element(),
+                cross_origin: false,
+                frame: None,
+            }),
+            "Submitted form d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Select {
+                element: element(),
+                values: vec!["a".into(), "b".into()],
+                frame: None,
+            }),
+            "Chose a, b on element d1e5"
+        );
+        let enter = PageKey::parse("Enter").unwrap();
+        assert_eq!(
+            described(PageRequest::Press {
+                element: None,
+                key: enter.clone(),
+                frame: None,
+            }),
+            "Pressed Enter"
+        );
+        assert_eq!(
+            described(PageRequest::Press {
+                element: Some(element()),
+                key: enter,
+                frame: None,
+            }),
+            "Pressed Enter on element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: Some(ScrollTarget::Bottom),
+                by: None,
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled to the bottom"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: Some(-400),
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled by -400 pixels"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: None,
+                into_view: Some(element()),
+                frame: None,
+            }),
+            "Scrolled element d1e5 into view"
+        );
+    }
 
     #[test]
     fn requests_are_bounded_and_round_trip_to_the_wire() {
@@ -419,15 +1402,60 @@ mod tests {
                 assert!(PageKey::parse(bad).is_none(), "{bad}");
             }
         }
+        // phase: key_names_are_read_in_any_letter_case
+        {
+            // A person writes END or end for the same key a keyboard has.
+            for (written, canonical) in [
+                ("END", "End"),
+                ("end", "End"),
+                ("arrowdown", "ArrowDown"),
+                ("PageUp", "PageUp"),
+                ("pageup", "PageUp"),
+                ("SPACE", "Space"),
+                ("ctrl+END", "Control+End"),
+                ("SHIFT+Tab", "Shift+Tab"),
+                ("cmd+a", "Meta+a"),
+            ] {
+                let key = PageKey::parse(written).unwrap_or_else(|| panic!("{written}"));
+                assert_eq!(key.chord(), canonical, "{written}");
+                assert_eq!(PageKey::parse(&key.chord()), Some(key), "{written}");
+            }
+            // A single character still means itself, whatever its case.
+            assert_eq!(PageKey::parse("A").unwrap().key, "A");
+            assert_eq!(PageKey::parse("a").unwrap().key, "a");
+        }
+        // phase: a_bad_key_says_what_a_key_is
+        {
+            let unknown = PageKey::parse_detailed("Homee").unwrap_err();
+            assert!(unknown.contains("\"Homee\" is not a key name"), "{unknown}");
+            assert!(unknown.contains("Home"), "{unknown}");
+            assert!(unknown.contains("did you mean Home?"), "{unknown}");
+            let modifier = PageKey::parse_detailed("Hyper+x").unwrap_err();
+            assert!(
+                modifier.contains("\"Hyper\" is not a key modifier"),
+                "{modifier}"
+            );
+            assert!(modifier.contains("Control"), "{modifier}");
+            let empty = PageKey::parse_detailed("  ").unwrap_err();
+            assert!(empty.contains("needs a key"), "{empty}");
+            let trailing = PageKey::parse_detailed("Control+").unwrap_err();
+            assert!(
+                trailing.contains("ends before it names a key"),
+                "{trailing}"
+            );
+            let twice = PageKey::parse_detailed("Shift+Shift+a").unwrap_err();
+            assert!(twice.contains("held twice"), "{twice}");
+        }
         // phase: invalid_requests_are_refused_before_the_engine
         {
             let element = "d1e2".to_string();
-            assert!(PageRequest::Outline.valid());
+            assert!(PageRequest::Outline { frame: None }.valid());
             assert!(
                 PageRequest::Fill {
                     element: element.clone(),
                     text: "hello".into(),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
@@ -436,21 +1464,229 @@ mod tests {
                     element: element.clone(),
                     text: "x".repeat(MAX_FILL_BYTES + 1),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Select {
                     element: element.clone(),
-                    values: Vec::new()
+                    values: Vec::new(),
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Click {
-                    element: "#submit".into()
+                    element: "#submit".into(),
+                    frame: None,
                 }
                 .valid()
+            );
+            // A chosen file is an absolute path, so a relative one never reaches
+            // the engine to resolve against the browser's own working folder.
+            assert!(
+                PageRequest::FillFiles {
+                    element: element.clone(),
+                    paths: vec!["/var/home/you/scan.pdf".into()],
+                    frame: None,
+                }
+                .valid()
+            );
+            for paths in [
+                Vec::new(),
+                vec!["scan.pdf".into()],
+                vec!["./scan.pdf".into()],
+                vec![format!("/{}", "x".repeat(MAX_FILE_PATH_BYTES))],
+                (0..=MAX_FILE_PATHS)
+                    .map(|n| format!("/var/home/you/{n}.pdf"))
+                    .collect(),
+            ] {
+                assert!(
+                    !PageRequest::FillFiles {
+                        element: element.clone(),
+                        paths,
+                        frame: None,
+                    }
+                    .valid()
+                );
+            }
+        }
+        // phase: pointer_gestures_are_bounded_and_round_trip_to_the_wire
+        {
+            let inside = |kind, element: Option<&str>, x, y| PointerStep {
+                kind,
+                at: PointerPoint::InElement { x, y },
+                element: element.map(str::to_owned),
+                frame: None,
+            };
+            let gesture = |steps: Vec<PointerStep>, button| PageRequest::Pointer { steps, button };
+            let drag = gesture(
+                vec![
+                    inside(PointerStepKind::Down, Some("d1e2"), 4.0, 4.0),
+                    inside(PointerStepKind::Move, Some("d1e3"), 4.0, 4.0),
+                    PointerStep {
+                        kind: PointerStepKind::Up,
+                        at: PointerPoint::Viewport { x: 40.0, y: 90.0 },
+                        element: None,
+                        frame: None,
+                    },
+                ],
+                PointerButton::Left,
+            );
+            assert!(drag.valid());
+            assert_eq!(drag.element(), None, "a gesture addresses many elements");
+            assert_eq!(
+                encode_request(13, &drag),
+                serde_json::json!({"op":"page","request_id":13,"action":"pointer","button":"left",
+                    "steps":[
+                        {"kind":"down","x":4.0,"y":4.0,"element":"d1e2"},
+                        {"kind":"move","x":4.0,"y":4.0,"element":"d1e3"},
+                        {"kind":"up","x":40.0,"y":90.0}]})
+            );
+            // A step naming no element is a viewport point, and it is
+            // written without the key rather than with a null.
+            assert!(
+                encode_request(14, &drag)["steps"][2]
+                    .get("element")
+                    .is_none()
+            );
+            let right = gesture(
+                vec![PointerStep {
+                    kind: PointerStepKind::Down,
+                    at: PointerPoint::Viewport { x: 1.0, y: 2.0 },
+                    element: None,
+                    frame: None,
+                }],
+                PointerButton::Right,
+            );
+            assert_eq!(encode_request(15, &right)["button"], "right");
+            for bad in [
+                // A gesture is a movement of the hand, never empty.
+                gesture(Vec::new(), PointerButton::Left),
+                // A step the engine cannot place.
+                gesture(
+                    vec![PointerStep {
+                        kind: PointerStepKind::Down,
+                        at: PointerPoint::InElement {
+                            x: f64::INFINITY,
+                            y: 0.0,
+                        },
+                        element: None,
+                        frame: None,
+                    }],
+                    PointerButton::Left,
+                ),
+                gesture(
+                    vec![PointerStep {
+                        kind: PointerStepKind::Down,
+                        at: PointerPoint::Viewport {
+                            x: 0.0,
+                            y: MAX_COORDINATE + 1.0,
+                        },
+                        element: None,
+                        frame: None,
+                    }],
+                    PointerButton::Left,
+                ),
+                // A step that names something other than an element ref.
+                gesture(
+                    vec![inside(PointerStepKind::Move, Some("#menu"), 0.0, 0.0)],
+                    PointerButton::Left,
+                ),
+                // More steps than any gesture needs.
+                gesture(
+                    (0..=MAX_POINTER_STEPS)
+                        .map(|_| inside(PointerStepKind::Move, None, 0.0, 0.0))
+                        .collect(),
+                    PointerButton::Left,
+                ),
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            assert_eq!(PointerButton::parse("right"), PointerButton::Right);
+            assert_eq!(
+                PointerButton::parse("middle"),
+                PointerButton::Left,
+                "an unknown button is the one a hand uses"
+            );
+        }
+        // phase: a_scroll_says_one_place_and_one_way_there
+        {
+            let scroll =
+                |element: Option<&str>, to, by, into_view: Option<&str>| PageRequest::Scroll {
+                    element: element.map(str::to_owned),
+                    to,
+                    by,
+                    into_view: into_view.map(str::to_owned),
+                    frame: None,
+                };
+            // The wheel turns over the viewport, or over the box the caller
+            // names, and it turns until one place is reached.
+            for good in [
+                scroll(None, None, Some(600), None),
+                scroll(None, None, Some(-600), None),
+                scroll(None, Some(ScrollTarget::Top), None, None),
+                scroll(None, Some(ScrollTarget::Bottom), None, None),
+                scroll(Some("d1e2"), None, Some(4000), None),
+                scroll(Some("d1e2"), Some(ScrollTarget::Bottom), None, None),
+                scroll(None, None, None, Some("d1e7")),
+                scroll(Some("d1e2"), None, None, Some("d1e7")),
+            ] {
+                assert!(good.valid(), "{good:?}");
+            }
+            // The most a scroll may go by, and a step past it either way.
+            let furthest = i32::try_from(MAX_SCROLL_BY).unwrap();
+            for bad in [
+                // A scroll goes somewhere.
+                scroll(None, None, None, None),
+                // Two places at once.
+                scroll(None, Some(ScrollTarget::Top), Some(400), None),
+                scroll(None, Some(ScrollTarget::Top), None, Some("d1e7")),
+                // A distance that is not bounded, or is nothing at all.
+                scroll(None, None, Some(furthest + 1), None),
+                scroll(None, None, Some(-furthest - 1), None),
+                // Something that is not an element ref.
+                scroll(Some("#menu"), None, Some(400), None),
+                scroll(None, None, None, Some("d1e2;alert(1)")),
+                scroll(None, None, None, Some(&"d1e".repeat(20))),
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            assert_eq!(ScrollTarget::parse("bottom"), Some(ScrollTarget::Bottom));
+            assert_eq!(ScrollTarget::parse("top"), Some(ScrollTarget::Top));
+            assert_eq!(ScrollTarget::parse("sideways"), None);
+            let command = encode_request(9, &scroll(None, Some(ScrollTarget::Bottom), None, None));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":9,"action":"scroll","to":"bottom"})
+            );
+            let command = encode_request(10, &scroll(Some("d1e2"), None, Some(-400), None));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":10,"action":"scroll","element":"d1e2",
+                    "by":-400})
+            );
+            // An element to bring into view travels as its ref, as every
+            // other request's element does.
+            let command = encode_request(11, &scroll(None, None, None, Some("d1e7")));
+            assert_eq!(
+                command,
+                serde_json::json!({"op":"page","request_id":11,"action":"scroll",
+                    "element":"d1e7","into_view":"d1e7"})
+            );
+            // A scroll in a frame names the frame the outline printed.
+            let framed = PageRequest::Scroll {
+                element: None,
+                to: Some(ScrollTarget::Top),
+                by: None,
+                into_view: None,
+                frame: Some(FrameId::parse("1.2").unwrap()),
+            };
+            assert!(framed.valid());
+            assert_eq!(
+                encode_request(12, &framed)["frame"],
+                serde_json::json!("1.2")
             );
         }
         // phase: wire_encoding_names_every_field
@@ -460,6 +1696,7 @@ mod tests {
                 &PageRequest::Press {
                     element: Some("d1e2".into()),
                     key: PageKey::parse("Shift+Enter").unwrap(),
+                    frame: None,
                 },
             );
             assert_eq!(
@@ -472,13 +1709,76 @@ mod tests {
                 &PageRequest::Select {
                     element: "d1e3".into(),
                     values: vec!["NL".into()],
+                    frame: None,
                 },
             );
             assert_eq!(command["values"], serde_json::json!(["NL"]));
         }
+        // phase: a_frame_is_named_only_as_the_outline_prints_it
+        {
+            for good in ["1", "2", "12", "1.2", "3.10.4"] {
+                assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
+            }
+            // A frame is the number the outline printed, in every form a
+            // caller copies it in: the number, its text, and the whole
+            // `[frame=1]` the outline writes.
+            for (written, named) in [
+                ("1", "1"),
+                (" 1", "1"),
+                ("1 ", "1"),
+                ("frame=1", "1"),
+                ("frame=1.2", "1.2"),
+                ("[frame=1]", "1"),
+                ("[frame=2.1]", "2.1"),
+            ] {
+                assert_eq!(
+                    FrameId::parse(written).unwrap().as_str(),
+                    named,
+                    "{written:?}"
+                );
+            }
+            for bad in [
+                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", "1234", "frame=", "frame=a",
+                "[frame=]", "frame=01",
+            ] {
+                assert!(FrameId::parse(bad).is_none(), "{bad:?}");
+            }
+            let deep = (1..=9).map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+            assert!(FrameId::parse(&deep).is_none());
+            let frame = FrameId::parse("1.2").unwrap();
+            let in_frame = PageRequest::Click {
+                element: "d4e9".into(),
+                frame: Some(frame.clone()),
+            };
+            assert!(in_frame.valid());
+            assert_eq!(in_frame.frame(), Some(&frame));
+            assert_eq!(in_frame.clone().main_frame().frame(), None);
+            assert_eq!(
+                encode_request(13, &in_frame)["frame"],
+                serde_json::json!("1.2")
+            );
+            assert_eq!(
+                encode_request(13, &PageRequest::Outline { frame: None })["frame"],
+                serde_json::Value::Null
+            );
+            // A frame id the caller made up never reaches the engine as the
+            // main document.
+            let invented = PageRequest::Outline {
+                frame: Some(FrameId::malformed()),
+            };
+            assert!(!invented.valid());
+            assert!(invented.main_frame().valid());
+        }
         // phase: agent_requests_name_their_arguments_and_bounds
         {
-            let at = encode_request(9, &PageRequest::At { x: 12.5, y: 40.0 });
+            let at = encode_request(
+                9,
+                &PageRequest::At {
+                    x: 12.5,
+                    y: 40.0,
+                    frame: None,
+                },
+            );
             assert_eq!(
                 at,
                 serde_json::json!({"op":"page","request_id":9,"action":"at","x":12.5,"y":40.0})
@@ -486,6 +1786,7 @@ mod tests {
             let settle = PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: 10_000,
+                frame: None,
             };
             assert!(settle.valid());
             assert_eq!(encode_request(10, &settle)["timeout_ms"], 10_000);
@@ -499,32 +1800,265 @@ mod tests {
                     &PageRequest::Submit {
                         element: "d1e2".into(),
                         cross_origin: true,
+                        frame: None,
                     }
                 )["cross_origin"],
                 true
             );
             for bad in [
-                PageRequest::At { x: -1.0, y: 0.0 },
+                PageRequest::At {
+                    x: -1.0,
+                    y: 0.0,
+                    frame: None,
+                },
                 PageRequest::At {
                     x: f64::NAN,
                     y: 0.0,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 10,
                     timeout_ms: 1000,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: 100,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: MAX_SETTLE_MS + 1,
+                    frame: None,
                 },
             ] {
                 assert!(!bad.valid(), "{bad:?}");
             }
-            assert!(PageRequest::Changes.element().is_none());
+            assert!(PageRequest::Changes { frame: None }.element().is_none());
+        }
+        // phase: a_find_names_an_element_by_what_a_page_says_it_is
+        {
+            let by_name = PageRequest::Find {
+                role: None,
+                name: Some("Email".into()),
+                nth: None,
+                frame: None,
+            };
+            assert!(by_name.valid());
+            assert_eq!(by_name.action(), "find");
+            assert_eq!(by_name.element(), None, "a find names no ref of its own");
+            assert_eq!(
+                encode_request(20, &by_name),
+                serde_json::json!({"op":"page","request_id":20,"action":"find","name":"Email"})
+            );
+            let by_role = PageRequest::Find {
+                role: Some("button".into()),
+                name: Some("Remove".into()),
+                nth: Some(2),
+                frame: FrameId::parse("1.2"),
+            };
+            assert!(by_role.valid());
+            assert_eq!(
+                encode_request(21, &by_role),
+                serde_json::json!({"op":"page","request_id":21,"action":"find",
+                    "role":"button","name":"Remove","nth":2,"frame":"1.2"})
+            );
+            assert_eq!(by_role.clone().main_frame().frame(), None);
+            assert_eq!(
+                by_role.described(),
+                "Found button \"Remove\" (2)",
+                "an answer that a dialog cut short says what was asked"
+            );
+            // A description that names nothing, or names it outside the
+            // bounds the engine accepts, never reaches the page.
+            for bad in [
+                PageRequest::Find {
+                    role: None,
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some(String::new()),
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: None,
+                    name: Some(String::new()),
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: None,
+                    name: Some("x".repeat(MAX_FIND_NAME_BYTES + 1)),
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("r".repeat(MAX_FIND_ROLE_BYTES + 1)),
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("button".into()),
+                    name: None,
+                    nth: Some(0),
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("button".into()),
+                    name: None,
+                    nth: None,
+                    frame: Some(FrameId::malformed()),
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+        }
+        // phase: pointer_gestures_are_bounded_and_name_their_two_ends
+        {
+            let hover = PageRequest::Hover {
+                element: Some("d1e4".into()),
+                point: None,
+            };
+            assert!(hover.valid());
+            assert_eq!(hover.element(), Some("d1e4"));
+            assert_eq!(
+                encode_request(20, &hover),
+                serde_json::json!({"op":"page","request_id":20,"action":"hover","element":"d1e4"})
+            );
+            // A point without an element hovers there instead of clicks.
+            let at = PageRequest::Hover {
+                element: None,
+                point: Some((30.0, 44.5)),
+            };
+            assert!(at.valid());
+            assert_eq!(
+                encode_request(21, &at),
+                serde_json::json!({"op":"page","request_id":21,"action":"at","hover":true,
+                    "x":30.0,"y":44.5})
+            );
+            for bad in [
+                PageRequest::Hover {
+                    element: None,
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("#menu".into()),
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("d1e4".into()),
+                    point: Some((1.0, 1.0)),
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let drag = PageRequest::Drag {
+                from: Some("d1e4".into()),
+                from_point: None,
+                to: Some("d1e6".into()),
+                to_point: None,
+                steps: 8,
+            };
+            assert!(drag.valid());
+            assert_eq!(
+                encode_request(22, &drag),
+                serde_json::json!({"op":"page","request_id":22,"action":"drag","element":"d1e4",
+                    "to":"d1e6","steps":8})
+            );
+            let by_point = PageRequest::Drag {
+                from: None,
+                from_point: Some((10.0, 20.0)),
+                to: None,
+                to_point: Some((70.0, 80.0)),
+                steps: 4,
+            };
+            assert!(by_point.valid());
+            assert_eq!(
+                encode_request(23, &by_point),
+                serde_json::json!({"op":"page","request_id":23,"action":"drag","x":10.0,"y":20.0,
+                    "to_x":70.0,"to_y":80.0,"steps":4})
+            );
+            for bad in [
+                PageRequest::Drag {
+                    from: None,
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: None,
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 0,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 65,
+                },
+                PageRequest::Drag {
+                    from: None,
+                    from_point: Some((f64::INFINITY, 0.0)),
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let path = PageRequest::Path {
+                element: Some("d1e9".into()),
+                points: vec![(1.0, 2.0), (3.5, 4.5), (60.0, 70.0)],
+            };
+            assert!(path.valid());
+            let wire = encode_request(24, &path);
+            assert_eq!(
+                wire["points"],
+                serde_json::json!([[1.0, 2.0], [3.5, 4.5], [60.0, 70.0]])
+            );
+            assert_eq!(wire["element"], "d1e9");
+            let free = PageRequest::Path {
+                element: None,
+                points: vec![(1.0, 2.0), (3.0, 4.0)],
+            };
+            assert!(free.valid());
+            assert!(encode_request(25, &free).get("element").is_none());
+            for bad in [
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0); MAX_PATH_POINTS + 1],
+                },
+                PageRequest::Path {
+                    element: None,
+                    points: vec![(-1.0, 2.0), (3.0, 4.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(f64::NAN, 2.0), (3.0, 4.0)],
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
         }
         // phase: findings_decode_as_data_within_their_bound
         {
@@ -550,10 +2084,18 @@ mod tests {
                 "url":"https://a.test/","message":"Read","outline":"- button \"Go\" [ref=d1e1]","navigated":false,"loading":false});
             let (id, reply) = decode_result(&ok).unwrap();
             assert_eq!(id, 3);
+            let reply = reply.unwrap();
+            assert_eq!(reply.outline.as_deref(), Some("- button \"Go\" [ref=d1e1]"));
+            assert_eq!(reply.navigation, PageNavigation::Possible);
+            let read = serde_json::json!({"event":"page_result","request_id":3,"ok":true,
+                "url":"https://a.test/","message":"Read","outline":null,"navigation":"none","navigated":false,"loading":false});
             assert_eq!(
-                reply.unwrap().outline.as_deref(),
-                Some("- button \"Go\" [ref=d1e1]")
+                decode_result(&read).unwrap().1.unwrap().navigation,
+                PageNavigation::None
             );
+            let contradicts = serde_json::json!({"event":"page_result","request_id":3,"ok":true,
+                "url":"https://a.test/","message":"Read","outline":null,"navigation":"started","navigated":false,"loading":false});
+            assert!(decode_result(&contradicts).is_none());
             let failed = serde_json::json!({"event":"page_result","request_id":4,"ok":false,
                 "code":"stale_element","message":"Read the page again"});
             assert_eq!(
@@ -566,6 +2108,122 @@ mod tests {
             let anonymous = serde_json::json!({"event":"page_result","request_id":0,"ok":false,
                 "code":"busy","message":""});
             assert!(decode_result(&anonymous).is_none());
+        }
+    }
+
+    /// A picture of the page is a request like any other, and its answer's
+    /// pixels travel as the reply's own image: a PNG, bounded, and never a
+    /// finding the caller has to decode.
+    #[test]
+    fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
+        use base64::Engine as _;
+        let png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 2, 0, 0, 0, 144, 119, 83, 222,
+        ];
+
+        // phase: the_viewport_when_no_element_is_named
+        let page = PageRequest::Capture {
+            element: None,
+            max_width: None,
+            frame: None,
+        };
+        assert!(page.valid());
+        assert_eq!(page.action(), "capture");
+        assert_eq!(page.described(), "Pictured the page");
+        assert_eq!(page.element(), None);
+        assert_eq!(
+            encode_request(7, &page),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 7,
+                "action": "capture",
+                "max_width": u32::from(MAX_CAPTURE_WIDTH),
+            })
+        );
+
+        // phase: an_element_is_named_by_the_ref_the_outline_printed
+        let element = PageRequest::Capture {
+            element: Some("d1e5".into()),
+            max_width: Some(400),
+            frame: Some(FrameId::parse("1.2").unwrap()),
+        };
+        assert!(element.valid());
+        assert_eq!(element.described(), "Pictured element d1e5");
+        assert_eq!(
+            encode_request(8, &element),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 8,
+                "action": "capture",
+                "element": "d1e5",
+                "frame": "1.2",
+                "max_width": 400,
+            })
+        );
+
+        // phase: a_width_no_engine_paints_or_a_ref_no_outline_printed_is_refused
+        for width in [0, u32::from(MAX_CAPTURE_WIDTH) + 1, 4000] {
+            assert!(
+                !PageRequest::Capture {
+                    element: None,
+                    max_width: Some(width),
+                    frame: None,
+                }
+                .valid(),
+                "{width}"
+            );
+        }
+        assert!(
+            PageRequest::Capture {
+                element: None,
+                max_width: Some(u32::from(MAX_CAPTURE_WIDTH)),
+                frame: None,
+            }
+            .valid()
+        );
+        assert!(
+            !PageRequest::Capture {
+                element: Some("not-a-ref".into()),
+                max_width: None,
+                frame: None,
+            }
+            .valid()
+        );
+
+        // phase: the_answer_carries_the_picture_as_its_own_pixels
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let answer = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+            "url":"https://letters.test/scan","message":"The view","outline":null,
+            "navigation":"none","navigated":false,"loading":false,
+            "data":{"x":0.0,"y":0.0,"width":800.0,"height":600.0,"format":"png","capture":encoded}});
+        let reply = decode_result(&answer)
+            .expect("a picture is a well-formed answer")
+            .1;
+        let reply = reply.expect("it succeeded");
+        assert_eq!(reply.image.as_deref(), Some(png));
+        assert!(
+            reply.data.unwrap().get("capture").is_none(),
+            "the pixels are the image, never a base64 finding beside it"
+        );
+
+        // phase: what_is_not_a_png_in_named_limits_is_not_a_picture
+        for (label, capture) in [
+            ("not base64", "!!!".to_string()),
+            (
+                "another file",
+                base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 ..."),
+            ),
+            (
+                "larger than any engine paints",
+                base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_CAPTURE_BYTES + 1]),
+            ),
+        ] {
+            let bad = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+                "url":"https://letters.test/scan","message":"The view","outline":null,
+                "navigation":"none","navigated":false,"loading":false,
+                "data":{"capture":capture}});
+            assert!(decode_result(&bad).is_none(), "{label}");
         }
     }
 }

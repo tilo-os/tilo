@@ -7,10 +7,11 @@ use std::{cell::RefCell, rc::Rc};
 use tilo_desktop_model::{AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceId};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
-pub use tilo_app::feedback::{Destination, FeedbackHost, Subject};
+pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownRecord, Subject};
 use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
+pub mod recorder;
 pub mod transport;
 
 pub const PACKAGE: &str = "so.tilo.feedback-composer";
@@ -61,12 +62,17 @@ impl PrivateFeedback {
         feedback_composer::prepare(Some(self.services.clone()), device, author, instance)
     }
 
+    /// The services a composer's preparation borrows, for a host that has
+    /// the composer's code from elsewhere than [`Self::prepare`] (the browser
+    /// desktop fetches it the first time Feedback opens).
+    #[must_use]
+    pub fn services(&self) -> FeedbackServices {
+        self.services.clone()
+    }
+
     /// Name the window the next report is about. The desktop chooses it from
     /// where the person asked for Feedback; nothing about it is read until
     /// the person includes context in a review.
-    ///
-    /// # Errors
-    /// Refuses while the controller is busy in an effect.
     pub fn about(&self, subject: Option<Subject>) -> Result<(), Error> {
         self.services.about(subject)
     }
@@ -115,11 +121,32 @@ pub enum Focused {
 /// id, where the host knows one; a tile's label is not used, since it can be
 /// a window title, which may be private.
 pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Focused {
-    let Some(workspace) = tree.active_workspace() else {
-        return Focused::Nothing;
+    match front_tab(tree).map(|tab| &tab.tile) {
+        None => Focused::Nothing,
+        Some(tile) if is_composer(tile) => Focused::Composer,
+        Some(tile) => subject(tile, name).map_or(Focused::Nothing, Focused::App),
+    }
+}
+
+/// What a report about the parts picked in `draft` is about, for a
+/// recording of its window: the window in front (`front`), when every pick
+/// is in its app; otherwise no window, so none is recorded.
+pub fn picked_subject(draft: &tilo_app::feedback::ReportDraft, front: Focused) -> Option<Subject> {
+    let Focused::App(subject) = front else {
+        return None;
     };
-    let tile = tree
-        .active_strip
+    (!draft.picks.is_empty() && draft.picks.iter().all(|pick| pick.app == subject.app))
+        .then_some(subject)
+}
+
+/// The window in front of `tree`, by its tab.
+pub fn focused_tab(tree: &DesktopTree) -> Option<TabId> {
+    front_tab(tree).map(|tab| tab.id)
+}
+
+fn front_tab(tree: &DesktopTree) -> Option<&tilo_desktop_model::Tab> {
+    let workspace = tree.active_workspace()?;
+    tree.active_strip
         .get(&workspace.id)
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first())
@@ -129,12 +156,27 @@ pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Foc
                 .or_else(|| strip.window_groups.first())
         })
         .and_then(|group| group.tabs.iter().find(|tab| tab.id == group.active_tab))
-        .map(|tab| &tab.tile);
-    match tile {
-        None => Focused::Nothing,
-        Some(tile) if is_composer(tile) => Focused::Composer,
-        Some(tile) => subject(tile, name).map_or(Focused::Nothing, Focused::App),
-    }
+}
+
+/// The app the window `tab` shows, as a report names it; `None` for a tab
+/// that is not in `tree` or shows no app.
+pub fn tab_subject(
+    tree: &DesktopTree,
+    tab: TabId,
+    name: impl Fn(&str) -> Option<String>,
+) -> Option<Subject> {
+    let tile = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|shown| shown.id == tab)
+                    .map(|shown| &shown.tile)
+            })
+        })
+    })?;
+    subject(tile, name)
 }
 
 /// Whether `tile` is the feedback composer, under either host's registration.
@@ -173,7 +215,12 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         }
         _ => name(&app).unwrap_or_default(),
     };
-    Some(Subject { app, name })
+    Some(Subject {
+        app,
+        name,
+        control: None,
+        record: None,
+    })
 }
 
 #[cfg(test)]
@@ -192,6 +239,7 @@ mod focus_tests {
                     id,
                     title: "Bank statement".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: id,
                 width: WindowWidth::Fraction(500),
@@ -227,6 +275,8 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: String::new(),
+                control: None,
+                record: None,
             }),
             "a label can be a window title"
         );
@@ -235,6 +285,8 @@ mod focus_tests {
             Focused::App(Subject {
                 app: "org.mozilla.firefox".into(),
                 name: "Name of org.mozilla.firefox".into(),
+                control: None,
+                record: None,
             })
         );
         desktop.set_active_group(StripId(2), 11);
@@ -242,6 +294,44 @@ mod focus_tests {
         assert_eq!(
             composer_tab(&desktop),
             Some((WorkspaceId(1), StripId(2), 11, 11))
+        );
+    }
+
+    /// Picked parts are about the window in front only when every one is
+    /// in its app: a recording never records a window nothing was picked in.
+    #[test]
+    fn picked_parts_are_about_the_window_in_front_only_when_all_are_in_it() {
+        use tilo_app::feedback::report::{Pick, ReportDraft};
+        let notes = Subject {
+            record: Some(ShownRecord {
+                workspace: "w".into(),
+                record: "note-1".into(),
+            }),
+            ..Subject::of_app("so.tilo.notes", "Notes")
+        };
+        let draft = |apps: &[&str]| ReportDraft {
+            picks: apps
+                .iter()
+                .map(|app| Pick {
+                    app: (*app).into(),
+                    ..Pick::default()
+                })
+                .collect(),
+            ..ReportDraft::default()
+        };
+        let front = || Focused::App(notes.clone());
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes", "so.tilo.notes"]), front()),
+            Some(notes.clone())
+        );
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes", "so.tilo.chat"]), front()),
+            None
+        );
+        assert_eq!(picked_subject(&draft(&[]), front()), None);
+        assert_eq!(
+            picked_subject(&draft(&["so.tilo.notes"]), Focused::Composer),
+            None
         );
     }
 }

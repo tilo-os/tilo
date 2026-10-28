@@ -4,6 +4,7 @@
 mod batch;
 mod icloud;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
@@ -22,6 +23,7 @@ use super::super::account_transfer::{
 };
 use super::super::strings::{t, t_args};
 use crate::page;
+use imager_backend::account_sources::Service;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AccountRequest {
@@ -227,6 +229,158 @@ enum Step {
     },
 }
 
+/// Which configured accounts a source row owns. The source itself is an app
+/// identity (GNOME Online Accounts, Nextcloud, rclone), never a generic account
+/// form: each account and each service it turns on is its own decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SourceAccountScope {
+    Gnome,
+    Nextcloud,
+    Rclone,
+    Application(String),
+    Tilo,
+}
+
+impl SourceAccountScope {
+    pub(super) fn id(&self) -> String {
+        match self {
+            Self::Gnome => "goa".into(),
+            Self::Nextcloud => "accounts|nextcloud".into(),
+            Self::Rclone => "accounts|rclone".into(),
+            Self::Application(label) => {
+                format!("accounts|application|{}", super::your_data::slug(label))
+            }
+            Self::Tilo => "accounts|tilo".into(),
+        }
+    }
+
+    pub(super) fn parse(source: &str) -> Option<Self> {
+        match source {
+            "goa" => Some(Self::Gnome),
+            "accounts|nextcloud" => Some(Self::Nextcloud),
+            "accounts|rclone" => Some(Self::Rclone),
+            "accounts|tilo" => Some(Self::Tilo),
+            _ => source
+                .strip_prefix("accounts|application|")
+                .map(|label| Self::Application(label.into())),
+        }
+    }
+
+    fn includes(&self, candidate: &Candidate) -> bool {
+        match self {
+            Self::Gnome => candidate.origin == super::super::account_transfer::Origin::Gnome,
+            Self::Nextcloud => {
+                candidate.origin == super::super::account_transfer::Origin::Nextcloud
+            }
+            Self::Rclone => candidate.origin == super::super::account_transfer::Origin::Rclone,
+            Self::Application(label) => {
+                candidate.origin == super::super::account_transfer::Origin::Application
+                    && super::your_data::slug(&candidate.label) == *label
+            }
+            Self::Tilo => false,
+        }
+    }
+}
+
+/// The person's per-account, per-service choice over the configured accounts
+/// discovered under the consented source roots. An empty selection means every
+/// discovered service is included, so a fresh review starts with all of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct SourceAccountSelection {
+    /// Services the person turned off, by opaque discovery identity. A missing
+    /// identity or service is included.
+    excluded: BTreeMap<String, BTreeSet<Service>>,
+    /// Whether the person edited this review. Until then an older checkpoint's
+    /// exact prepared accounts stay authoritative.
+    touched: bool,
+}
+
+/// The services a configured source actually offers. GNOME Online Accounts and
+/// Nextcloud report them; a file remote (rclone, a granted Windows OneDrive
+/// root) enables Files even though its configuration has no service list. A
+/// source that names no service and is not a file remote keeps an empty list
+/// rather than an invented one.
+pub(super) fn source_account_services(candidate: &Candidate) -> Vec<Service> {
+    use super::super::account_transfer::Provider;
+    if !candidate.services.is_empty() {
+        return candidate.services.clone();
+    }
+    if matches!(
+        candidate.provider,
+        Provider::Google
+            | Provider::Microsoft
+            | Provider::Dropbox
+            | Provider::Nextcloud
+            | Provider::WebDav
+    ) {
+        return vec![Service::Files];
+    }
+    Vec::new()
+}
+
+impl SourceAccountSelection {
+    pub(super) fn services(&self, candidate: &Candidate) -> Vec<Service> {
+        let excluded = self.excluded.get(&candidate.id);
+        source_account_services(candidate)
+            .into_iter()
+            .filter(|service| !excluded.is_some_and(|excluded| excluded.contains(service)))
+            .collect()
+    }
+
+    pub(super) fn includes_service(&self, candidate: &Candidate, service: Service) -> bool {
+        source_account_services(candidate).contains(&service)
+            && !self
+                .excluded
+                .get(&candidate.id)
+                .is_some_and(|excluded| excluded.contains(&service))
+    }
+
+    fn set_account(&mut self, candidate: &Candidate, included: bool) {
+        self.touched = true;
+        let services = source_account_services(candidate);
+        if included {
+            self.excluded.remove(&candidate.id);
+        } else if !services.is_empty() {
+            self.excluded
+                .insert(candidate.id.clone(), services.into_iter().collect());
+        }
+    }
+
+    fn set_service(&mut self, candidate: &Candidate, service: Service, included: bool) {
+        self.touched = true;
+        if included {
+            if let Some(excluded) = self.excluded.get_mut(&candidate.id) {
+                excluded.remove(&service);
+                if excluded.is_empty() {
+                    self.excluded.remove(&candidate.id);
+                }
+            }
+        } else {
+            self.excluded
+                .entry(candidate.id.clone())
+                .or_default()
+                .insert(service);
+        }
+    }
+
+    /// Drop identities the current discovery no longer has and services the
+    /// source stopped enabling, so an old scope cannot survive a changed source.
+    fn retain(&mut self, inventory: &Inventory) {
+        let current = inventory
+            .candidates
+            .iter()
+            .map(|candidate| (&candidate.id, source_account_services(candidate)))
+            .collect::<BTreeMap<_, _>>();
+        self.excluded.retain(|id, excluded| {
+            let Some(services) = current.get(id) else {
+                return false;
+            };
+            excluded.retain(|service| services.contains(service));
+            !excluded.is_empty()
+        });
+    }
+}
+
 pub(super) struct Accounts {
     inventory: Inventory,
     source_roots: Option<SourceRoots>,
@@ -239,6 +393,7 @@ pub(super) struct Accounts {
     step: Step,
     opener: Arc<dyn BrowserOpener>,
     dav_fields: [ui::LocalState<String>; 3],
+    selection: SourceAccountSelection,
 }
 impl Default for Accounts {
     fn default() -> Self {
@@ -254,11 +409,100 @@ impl Default for Accounts {
             step: Step::Overview,
             opener: Arc::new(PortalOpener),
             dav_fields: std::array::from_fn(|_| ui::LocalState::new(String::new())),
+            selection: SourceAccountSelection::default(),
         }
     }
 }
 
 impl Accounts {
+    pub(super) fn source_account_selection(&self) -> &SourceAccountSelection {
+        &self.selection
+    }
+
+    pub(super) fn source_account_selection_snapshot(&self) -> SourceAccountSelection {
+        self.selection.clone()
+    }
+
+    pub(super) fn restore_source_account_selection(&mut self, previous: SourceAccountSelection) {
+        self.selection = previous;
+    }
+
+    pub(super) fn set_source_account(
+        &mut self,
+        inventory: &Inventory,
+        id: &str,
+        included: bool,
+    ) -> Result<bool, &'static str> {
+        let candidate = inventory
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == id && !source_account_services(candidate).is_empty())
+            .ok_or("installer-your-data-changed")?;
+        let before = self.selection.clone();
+        self.selection.set_account(candidate, included);
+        Ok(before != self.selection)
+    }
+
+    pub(super) fn set_source_account_service(
+        &mut self,
+        inventory: &Inventory,
+        id: &str,
+        service: Service,
+        included: bool,
+    ) -> Result<bool, &'static str> {
+        let candidate = inventory
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate.id == id && source_account_services(candidate).contains(&service)
+            })
+            .ok_or("installer-your-data-changed")?;
+        let before = self.selection.clone();
+        self.selection.set_service(candidate, service, included);
+        Ok(before != self.selection)
+    }
+
+    pub(super) fn set_source_accounts(
+        &mut self,
+        inventory: &Inventory,
+        scope: &SourceAccountScope,
+        included: bool,
+    ) -> Result<bool, &'static str> {
+        let mut matched = false;
+        let before = self.selection.clone();
+        for candidate in inventory.candidates.iter().filter(|candidate| {
+            scope.includes(candidate) && !source_account_services(candidate).is_empty()
+        }) {
+            matched = true;
+            self.selection.set_account(candidate, included);
+        }
+        if !matched && !matches!(scope, SourceAccountScope::Gnome) {
+            return Err("installer-your-data-changed");
+        }
+        Ok(before != self.selection)
+    }
+
+    pub(super) fn set_all_source_accounts(
+        &mut self,
+        inventory: &Inventory,
+        included: bool,
+    ) -> bool {
+        let before = self.selection.clone();
+        self.selection.touched = true;
+        if included {
+            self.selection.excluded.clear();
+        } else {
+            for candidate in inventory
+                .candidates
+                .iter()
+                .filter(|candidate| !source_account_services(candidate).is_empty())
+            {
+                self.selection.set_account(candidate, false);
+            }
+        }
+        before != self.selection
+    }
+
     pub fn update_sources(
         &mut self,
         roots: SourceRoots,
@@ -284,6 +528,7 @@ impl Accounts {
         self.actions
             .update_sources(roots.clone(), inventory.clone())
             .map_err(|_| "installer-accounts-sources-changed")?;
+        self.selection.retain(&inventory);
         self.source_roots = Some(roots);
         self.inventory = inventory;
         Ok(())
@@ -325,6 +570,48 @@ impl Accounts {
     }
     pub fn has_prepared_connections(&self) -> bool {
         !self.prepared.is_empty()
+    }
+    /// The GOA source accounts the person selected, with exactly the services
+    /// they left on. Only opaque discovery ids and enabled services travel;
+    /// credentials stay in their source until the destination revalidates it.
+    pub(in crate::setup::journey) fn selected_source_accounts(
+        &self,
+        inventory: &Inventory,
+    ) -> Vec<imager_backend::setup::deferred_handoff::SelectedAccount> {
+        let prepared = self
+            .prepared
+            .iter()
+            .filter_map(|entry| entry.source_id.as_deref())
+            .collect::<BTreeSet<_>>();
+        let checkpoint = !self.selection.touched && !prepared.is_empty();
+        let mut selected = BTreeMap::new();
+        for candidate in inventory.candidates.iter().filter(|candidate| {
+            candidate.origin == super::super::account_transfer::Origin::Gnome
+                && (!checkpoint || prepared.contains(candidate.id.as_str()))
+        }) {
+            let services = self.selection.services(candidate);
+            let Some(identity) = candidate
+                .identity
+                .clone()
+                .filter(|identity| !identity.is_empty())
+            else {
+                continue;
+            };
+            if services.is_empty() {
+                continue;
+            }
+            selected.insert(
+                candidate.id.clone(),
+                imager_backend::setup::deferred_handoff::SelectedAccount {
+                    source_id: candidate.id.clone(),
+                    provider: candidate.provider,
+                    identity,
+                    label: candidate.label.clone(),
+                    services,
+                },
+            );
+        }
+        selected.into_values().collect()
     }
     pub fn prepared_handle(&self) -> Option<PreparedAccounts> {
         if (self.prepared.is_empty() && !self.reviewed_empty) || !self.can_continue() {
@@ -1407,7 +1694,7 @@ impl Accounts {
     pub fn view(
         &self,
         dispatch: Rc<dyn Fn(AccountRequest)>,
-        edit: Rc<dyn Fn(&str, String)>,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
     ) -> Container {
         let mut body = page::stack().with_rhythm(Rhythm::Sibling);
         for key in self.source_review_keys() {
@@ -1415,7 +1702,7 @@ impl Accounts {
         }
         match &self.step {
             Step::ICloud(flow) => {
-                body = body.push(flow.view(dispatch.clone(), edit));
+                body = body.push(flow.view(dispatch.clone(), actions));
             }
             Step::ConfirmRemoval(_) => {
                 body = body
@@ -1436,7 +1723,7 @@ impl Accounts {
                     )));
             }
             Step::ReviewSaved => {
-                body = self.saved_review_view(body, dispatch.clone());
+                body = self.saved_review_view(body, actions);
             }
             Step::Overview if self.saved.running() => {
                 body = body.push(Box::new(Text::new(&t("installer-accounts-bulk-working"))));
@@ -1453,7 +1740,7 @@ impl Accounts {
                         )
                         .secondary(t("installer-accounts-included"))
                         .icon(Icon::CircleCheck)
-                        .on_activate(move || choose(AccountRequest::Remove(id.clone()))),
+                        .on_effect(move || choose(AccountRequest::Remove(id.clone()))),
                     ));
                 }
                 for candidate in self.inventory.candidates.iter().filter(|c| {
@@ -1494,7 +1781,7 @@ impl Accounts {
                         .secondary(t(message))
                         .with_enabled(available)
                         .icon(Icon::Cloud)
-                        .on_activate(move || choose(AccountRequest::Source(id.clone()))),
+                        .on_effect(move || choose(AccountRequest::Source(id.clone()))),
                     ));
                 }
                 body = body.push(Box::new(action_button(
@@ -1525,7 +1812,7 @@ impl Accounts {
                         )
                         .icon(Icon::Cloud)
                         .secondary(t("installer-accounts-add"))
-                        .on_activate(move || choose(AccountRequest::Provider(id.into()))),
+                        .on_effect(move || choose(AccountRequest::Provider(id.into()))),
                     ));
                 }
                 if self
@@ -1543,7 +1830,7 @@ impl Accounts {
                         )
                         .icon(Icon::Music)
                         .secondary(t("installer-accounts-add"))
-                        .on_activate(move || {
+                        .on_effect(move || {
                             choose(AccountRequest::Provider("spotify-options".into()))
                         }),
                     ));
@@ -1564,7 +1851,7 @@ impl Accounts {
                             } else {
                                 "installer-accounts-app-password-needed"
                             }))
-                            .on_activate(move || choose(AccountRequest::Provider(id.to_string()))),
+                            .on_effect(move || choose(AccountRequest::Provider(id.to_string()))),
                     ));
                 }
             }
@@ -1589,7 +1876,6 @@ impl Accounts {
                 ));
             }
             Step::Dav { field, .. } => {
-                let submit = dispatch.clone();
                 let (key, label, kind) = match *field {
                     0 => (
                         "server",
@@ -1610,12 +1896,18 @@ impl Accounts {
                 body = body.push(Box::new(
                     Field::new(
                         t(label),
-                        TextInput::from_state(&self.dav_fields[*field])
-                            .with_id(&format!("installer.account.dav.{key}"))
-                            .with_kind(kind)
-                            .with_secret(*field == 2)
-                            .on_change(move |value| edit(key, value.to_string()))
-                            .on_submit(move |_| submit(AccountRequest::Confirm)),
+                        super::submits(
+                            actions,
+                            super::bound(
+                                actions,
+                                TextInput::from_state(&self.dav_fields[*field])
+                                    .with_id(&format!("installer.account.dav.{key}"))
+                                    .with_kind(kind)
+                                    .with_secret(*field == 2),
+                                field_effect(key),
+                            ),
+                            step_effect(AccountRequest::Confirm),
+                        ),
                     )
                     .with_label_placement(Some(LabelPlacement::Above)),
                 ));
@@ -1643,7 +1935,7 @@ impl Accounts {
                         ListRow::new(format!("installer.account.spotify.{id}"), t(label))
                             .icon(Icon::Music)
                             .secondary(t(detail))
-                            .on_activate(move || choose(AccountRequest::Provider(id.into()))),
+                            .on_effect(move || choose(AccountRequest::Provider(id.into()))),
                     ));
                 }
             }
@@ -1671,18 +1963,22 @@ impl Accounts {
                 }
             }
             Step::PastedCode(_) => {
-                let edit = edit.clone();
-                let submit = dispatch.clone();
                 body = body
                     .push(Box::new(
                         Field::new(
                             t("installer-accounts-code-label"),
-                            TextInput::from_state(&self.dav_fields[2])
-                                .with_id("installer.account.oauth-code")
-                                .with_kind(TextInputKind::Secret)
-                                .with_secret(true)
-                                .on_change(move |value| edit("oauth-code", value.to_string()))
-                                .on_submit(move |_| submit(AccountRequest::SubmitCode)),
+                            super::submits(
+                                actions,
+                                super::bound(
+                                    actions,
+                                    TextInput::from_state(&self.dav_fields[2])
+                                        .with_id("installer.account.oauth-code")
+                                        .with_kind(TextInputKind::Secret)
+                                        .with_secret(true),
+                                    field_effect("oauth-code"),
+                                ),
+                                step_effect(AccountRequest::SubmitCode),
+                            ),
                         )
                         .with_label_placement(Some(LabelPlacement::Above)),
                     ))
@@ -1812,6 +2108,24 @@ impl Drop for Accounts {
             self.actions.cancel_job(&work.job);
         }
     }
+}
+
+/// The account field `key`'s published edit, given what is typed: kept in
+/// this device's memory, never in shared state.
+pub(super) fn field_effect(
+    key: &'static str,
+) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {
+    super::InstallerPreviewEffect::SET_ACCOUNT_FIELD
+        .map(move |value: String| (key.to_owned(), value))
+}
+
+/// The account step `request`, as Enter in a field of the step asks for it.
+pub(super) fn step_effect(
+    request: AccountRequest,
+) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {
+    let (step, selection) = request.parts();
+    super::InstallerPreviewEffect::ACCOUNT_STEP
+        .map(move |_: String| (step.to_owned(), selection.clone()))
 }
 
 fn action_button(

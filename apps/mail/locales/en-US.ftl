@@ -3,32 +3,6 @@
 # Keys are added as surfaces are migrated off literals; a string that is still
 # a literal in the source is not translated yet, not intentionally excluded.
 
-## Account sheet
-mail-setup-heading-add = Add account
-mail-setup-heading-edit = Account settings
-mail-setup-label-display-name = Name
-mail-setup-label-email = Email
-mail-setup-label-username = Username
-mail-setup-label-password = Password
-mail-setup-label-imap-host = Incoming server
-mail-setup-label-smtp-host = Outgoing server
-mail-setup-label-sign-in = Sign in with
-mail-setup-label-account = Account
-mail-setup-auth-password = Password
-mail-setup-auth-oauth = Browser
-# { $provider } is the provider's own name (Gmail, Outlook, …).
-mail-setup-oauth-sign-in = Sign in with { $provider }
-mail-setup-oauth-provider-fallback = your provider
-mail-setup-oauth-note-unavailable = Browser sign-in unavailable
-mail-setup-tls = TLS
-mail-setup-advanced = Advanced
-mail-setup-save = Save
-mail-setup-checking = Checking the account…
-mail-setup-sign-in = Sign in
-mail-setup-signing-in = Signing in…
-mail-setup-cancel = Cancel
-mail-setup-remove = Remove account
-
 ## Compose window
 mail-compose-label-to = To
 mail-compose-label-cc = Cc
@@ -53,7 +27,6 @@ mail-contact-sender-changed = Sending account changed
 mail-contact-prepare = Prepare draft
 mail-contact-existing-draft = A draft is already open
 mail-contact-unavailable = Shared Contacts is unavailable
-mail-contact-person-unavailable = Contact is no longer available
 mail-contact-recipient-changed = Contact changed; select and review it again
 mail-contact-account-changed = Sending account changed; select and review it again
 
@@ -69,6 +42,9 @@ mail-move-messages = Moved messages to { $to }
 mail-purge = Deleted messages for good
 mail-ingest = Fetched mail
 mail-server-applied = The mail server took a change
+mail-keep-copies = Kept fetched mail for your other devices
+mail-forget-copies = Dropped mail its server no longer holds
+mail-mail-copies-copies = Changed the mail kept for your other devices
 mail-start-draft-body = Started writing a message
 mail-discard-draft = Discarded the draft
 mail-send-message = Sent a message from { $account }
@@ -96,5 +72,42 @@ mail-draft-state-rich-body = Edited the draft
 mail-save-draft = Saved the draft
 mail-attach = Attached { $name } to the draft
 mail-mail-server = Recorded how a mail server took a change
+mail-mail-held = Changed the mail held in the mailbox
+mail-held-message-message-id = Changed the Message-ID of a held message
+mail-held-message-from = Changed the sender of a held message
+mail-held-message-to = Changed the recipients of a held message
+mail-held-message-cc = Changed who a held message is copied to
+mail-held-message-subject = Changed the subject of a held message
+mail-held-message-body = Changed the text of a held message
+mail-held-message-minutes = Changed when a held message was sent
+mail-held-message-in-reply-to = Changed the message a held message answers
+mail-held-message-conversation = Moved a held message to another conversation
+mail-deliver-message = Delivered { $subject }
+mail-draft-message = Drafted { $subject }
+mail-draft-reply = Drafted a reply
+
+mail-forward-not-downloaded = { $count ->
+    [one] { $files } is not downloaded yet, so it is not attached
+   *[other] { $files } are not downloaded yet, so they are not attached
+}
+mail-forward-too-large = { $count ->
+    [one] { $files } is more than one message can carry, so it is not attached
+   *[other] { $files } are more than one message can carry, so they are not attached
+}
 
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
+
+## Reader: an HTML message's remote content, links and format
+mail-remote-blocked = Remote images aren’t loaded
+mail-remote-load = Load images
+mail-remote-always = Always for this sender
+mail-remote-loaded = Remote images are loaded for this message
+mail-remote-sender-loads = Remote images from this sender always load
+mail-remote-stop = Stop loading them
+mail-link-open = Open link
+mail-link-copy = Copy link address
+mail-copy = Copy
+mail-select-all = Select all
+mail-show-quoted = Show quoted text
+mail-show-plain = Show plain text
+mail-show-formatted = Show formatted

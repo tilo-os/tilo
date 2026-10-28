@@ -6,7 +6,7 @@ A release SDK test app reached its first compositor-painted frame in a median
 fresh app processes on the same software-rendering builder, three per mode.
 The archive is a 154,688-byte public synthetic-scene artifact. This is a
 validated fixture optimization, not a shipped OS cache policy or hardware result.
-[Raw events, binary hashes, seed hashes and qualification](native-mesa-seed-2026-10-07.json).
+[Raw events, binary hashes, seed hashes and qualification](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/native-mesa-seed-2026-10-07.json).
 
 | Order | Read-only seed | Compositor frame observation (ms) | SDK first presentation (ms) | Encoder-to-blit-copy interval (ms) |
 | --- | --- | --- | --- | --- |

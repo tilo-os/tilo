@@ -19,7 +19,7 @@ pub struct Grant {
     pub node: TreePath,       // room › app › resource kind › resource › item › action
     pub kinds: KindSet,       // any of Read, Undoable, Outside
     pub answer: Answer,       // Allow, Ask, Deny
-    pub lifetime: Lifetime,   // Once, Task(id), Session, Until(time), UntilRevoked
+    pub lifetime: Lifetime,   // Once, Session, Until(time), UntilRevoked
     pub granted_by: Subject,
 }
 ```
@@ -75,10 +75,18 @@ Roles are presets of grants on a room, kept as named grant sets:
 | Role | Grants on the room |
 |---|---|
 | Viewer | Read: Allow |
-| Commenter | Read: Allow; comment units and actions: Allow (Undoable) |
+| Commenter | Read: Allow; comment units and actions, reactions: Allow (Undoable) |
 | Editor | Read, Undoable: Allow; Outside: Ask; moderation: Deny |
 | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`: Allow on members below Moderator |
 | Owner | everything: Allow, and governance |
+
+A built-in role's rules have one definition, the code's (`roles::role_rules`).
+A room stores its roles' grants (`role:<role>:<index>`) so older builds read
+them, but every reader of a stored policy replaces them with the current
+definition (`RoomPolicy::with_current_roles`), so a role's change reaches
+rooms written before it. A room does not edit a built-in role: governance
+refuses to revoke or give a `role:` grant (`Refusal::BuiltInRole`). It adjusts
+a role with grants of its own on the role's subject, and those stay as given.
 
 The room is itself a resource in the tree. Inviting, removing members,
 changing roles and room settings are the room's actions; a role preset or a
@@ -127,8 +135,16 @@ it, and a person's restriction always reaches their agents.
 - **Agent default.** A new agent delegation grants Read and Undoable within the
   scope the person gives it (rooms, apps, a task), and Ask for Outside. People
   are not discouraged from granting more.
-- **Tasks.** A task carries its own grant set (lifetime `Task`), shown on the
-  task and editable as actions; it ends with the task.
+- **Issues.** An agent's run of an issue in the Tasks app is the agent and
+  the issue: the room's grants naming the issue (`Subject::Task` with the
+  issue's address) decide for the run as the agent's own do, the most
+  specific node first, and the approver's grants bound both. "Allow for this
+  issue", offered on the host's confirmation sheet when a run asks, is such a
+  grant for the one action asked about, given as the person, shown and
+  revoked like any other; like an agent's answer for one action it lifts
+  that action's confirmation. It needs no lifetime of its own, as it decides
+  nothing while no run is going. A confirmation of one action grants
+  nothing.
 - **Shortcuts.** A Shortcut's grant set is stored with it and shown on import.
   An unattended run turns Ask into a refusal unless the set holds a matching
   Allow.
@@ -137,6 +153,28 @@ it, and a person's restriction always reaches their agents.
   reviewed once by the installer, and bounded by the installer's own authority.
   It never includes governance ([bots.md](bots.md) §3). Agents and bots hold the
   same kind of root-signed, expiring delegation for their own device keys.
+- **Composed actions.** An effect calling another app's published action
+  while it runs an invocation someone asked of it continues that
+  invocation: the host decides the call as its caller, by their grants and
+  under the custody it kept for them, and the app's own identity adds
+  nothing. A call continuing an invocation the app made of itself through
+  its own door is the app's own request, decided as one.
+- **Attenuation.** What an effect asks for while it continues an invocation
+  (another app's action, an edit of its own resource, an open) never reaches
+  further than that invocation was admitted to: its kind (Read, Undoable,
+  Outside, in that order) and whether it is privileged. Its room is bound
+  already, as the custody it continues holds only there. A child that goes
+  further is not refused outright, nor run because the caller's grants
+  would allow it: it asks first, put to the person on their own device as a
+  request of its own, and runs only once they confirm that one child. So
+  approving an agent's read approves reading, not whatever edit its effect
+  goes on to make. The cap carries down a chain: what a child was admitted
+  to reach is its own reach narrowed by its parent's, so a child that
+  needed only reading (an edit of the person's own record, say) passes no
+  more than reading on. A child the person confirmed reaches what it is. A
+  child is never the person's own gesture: it cannot confirm itself, and
+  an ask in their grants goes to their device like anyone else's
+  (`tilo_action_policy::Reach`, `BrokerActor::verdict_in`).
 - **History.** Every entry records the actor and the person it acted for
   ([resources.md](resources.md) §5.1).
 

@@ -9,7 +9,7 @@
 //!   conflict resolution (take ours / theirs / both) and an editable merged
 //!   result, a text in the document every collaborator edits.
 //!
-//! What is open and the merged result are the [`Diffmerge`] resource;
+//! What is open and the merged result are the [`Session`] resource;
 //! [`DiffmergeShell`] runs it.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
@@ -36,6 +36,8 @@ pub mod app;
 mod chrome;
 pub mod diff_view;
 pub mod doc;
+pub mod folder;
+mod folder_view;
 pub mod highlight;
 pub mod i18n;
 pub mod merge_view;

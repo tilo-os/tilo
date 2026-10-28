@@ -1,0 +1,38 @@
+[package]
+name = "tilo-model-client"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Authenticated, host-scoped model capabilities for Tilo applications."
+
+[features]
+default = []
+runtime-client = ["dep:tilo-rt"]
+
+[dependencies]
+agent-provider-config = { version = "0.1.0", path = "../provider-config" }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+tilo-rt = { workspace = true, optional = true }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["tokio"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

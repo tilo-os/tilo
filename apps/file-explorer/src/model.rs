@@ -348,6 +348,9 @@ fn project_record_entries(
 }
 
 impl WorkspaceRecordIndexPager {
+    /// How many roots one [`Self::poll_generation`] reads.
+    pub const GENERATION_ROOTS_PER_POLL: usize = 8;
+
     pub fn new(roots: &[PathBuf]) -> Self {
         Self {
             source_roots: roots.to_vec(),
@@ -473,26 +476,35 @@ impl WorkspaceRecordIndexPager {
         !self.discovered || self.root_index < self.roots.len()
     }
 
-    /// Cheap, periodic manifest/root-set poll. It never reads record pages;
-    /// a changed or vanished authority withdraws the retained index before a
-    /// fresh bounded page is admitted on the next idle turn.
     /// Whether there is any root whose generation [`Self::poll_generation`]
     /// watches; without one, polling it is a no-op.
     pub fn has_roots(&self) -> bool {
         !self.source_roots.is_empty() || !self.roots.is_empty()
     }
 
-    pub fn poll_generation(&mut self) -> bool {
-        const ROOT_WATCH_BUDGET: usize = 8;
+    /// The roots whose generation [`Self::poll_generation`] reads, in the
+    /// order it takes them. A mount moves a root's generation by changing
+    /// the root itself, so a watch on each root says when to read again.
+    pub fn generation_roots(&self) -> Vec<PathBuf> {
         let mut roots = self.source_roots.clone();
         roots.extend(self.roots.iter().cloned());
         roots.sort();
         roots.dedup();
+        roots
+    }
+
+    /// Cheap manifest/root-set check, when a root's watch reports a change
+    /// or, where none can, on a timer. It never reads record pages; a
+    /// changed or vanished authority withdraws the retained index before a
+    /// fresh bounded page is admitted on the next idle turn. It reads at
+    /// most [`Self::GENERATION_ROOTS_PER_POLL`] roots, taking them in turn.
+    pub fn poll_generation(&mut self) -> bool {
+        let roots = self.generation_roots();
         if roots.is_empty() {
             return false;
         }
         let mut changed = false;
-        for _ in 0..ROOT_WATCH_BUDGET.min(roots.len()) {
+        for _ in 0..Self::GENERATION_ROOTS_PER_POLL.min(roots.len()) {
             let index = self.generation_root_cursor % roots.len();
             self.generation_root_cursor = self.generation_root_cursor.wrapping_add(1);
             // `index` is modulo `roots.len()` above; preserve that invariant
@@ -870,6 +882,9 @@ pub struct Entry {
     pub rich_metadata: Option<MetadataProjectionV1>,
     /// Object observed by the listing, used only as a stale-view precondition.
     pub observed: Option<host_fs::ObservedObject>,
+    /// What an app in the Applications place is, beyond its name: its icon,
+    /// kind and size. `None` for every file and folder.
+    pub app: Option<crate::applications::AppFacts>,
 }
 
 impl Entry {
@@ -903,6 +918,10 @@ impl Entry {
 
 /// Human-readable byte size (e.g. `4.0 kB`). Directories show "—".
 pub fn human_size(entry: &Entry) -> String {
+    if let Some(app) = &entry.app {
+        // An app's size only where it is known; never a placeholder.
+        return app.size.map(crate::i18n::format_bytes).unwrap_or_default();
+    }
     if entry.is_dir {
         "—".to_string()
     } else {
@@ -944,10 +963,72 @@ pub enum ViewMode {
     Grid,
 }
 
+/// Order names the way a person reads them: a run of digits compares by its
+/// value (`IMG_9` before `IMG_10`), letters compare without case, and the
+/// exact spelling breaks a remaining tie so the order is total. Allocates
+/// nothing, as it runs for every comparison of a folder's sort.
+pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut left, mut right) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        let (Some(&l), Some(&r)) = (left.peek(), right.peek()) else {
+            return left.count().cmp(&right.count()).then_with(|| a.cmp(b));
+        };
+        if l.is_ascii_digit() && r.is_ascii_digit() {
+            let by_value = number_cmp(&mut left, &mut right);
+            if by_value != Ordering::Equal {
+                return by_value;
+            }
+            continue;
+        }
+        let letters = l.to_lowercase().cmp(r.to_lowercase());
+        if letters != Ordering::Equal {
+            return letters;
+        }
+        left.next();
+        right.next();
+    }
+}
+
+/// Compare the runs of ASCII digits both sides start with by their values,
+/// consuming them: leading zeros do not count, so `007` ties with `7`.
+fn number_cmp(
+    left: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    right: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    while left.next_if_eq(&'0').is_some() {}
+    while right.next_if_eq(&'0').is_some() {}
+    // Of two runs of significant digits, the longer is the larger number;
+    // of two as long, the first digit that differs decides.
+    let mut first_difference = Ordering::Equal;
+    loop {
+        match (
+            left.next_if(char::is_ascii_digit),
+            right.next_if(char::is_ascii_digit),
+        ) {
+            (Some(l), Some(r)) => {
+                if first_difference == Ordering::Equal {
+                    first_difference = l.cmp(&r);
+                }
+            }
+            (Some(_), None) => {
+                while left.next_if(char::is_ascii_digit).is_some() {}
+                return Ordering::Greater;
+            }
+            (None, Some(_)) => {
+                while right.next_if(char::is_ascii_digit).is_some() {}
+                return Ordering::Less;
+            }
+            (None, None) => return first_difference,
+        }
+    }
+}
+
 pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
         let cmp = match sort_by {
-            SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortBy::Name => name_cmp(&a.name, &b.name),
             SortBy::Size => a.size.cmp(&b.size),
             SortBy::Modified => a.modified.cmp(&b.modified),
             SortBy::Type => a.mime.cmp(&b.mime),
@@ -957,8 +1038,12 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
         } else {
             cmp
         };
-        // Directories always first, regardless of order direction.
-        b.is_dir.cmp(&a.is_dir).then(final_cmp)
+        // Directories always first, regardless of order direction; entries
+        // alike by the chosen key read in name order.
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(final_cmp)
+            .then_with(|| name_cmp(&a.name, &b.name))
     });
 }
 
@@ -986,14 +1071,25 @@ pub(crate) fn read_dir_with_workspace_roots(
 /// `TILO_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
 /// injected views supply workspace roots explicitly.
 fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
+    ui::storage::waiting::refused("listing a folder");
     #[cfg(test)]
     fixture_io_guard::observe_owned_listing(path, in_workspace);
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
+        // The entry's own metadata: a link's, never its target's. It is the
+        // row's identity, so an operation on the row acts on the link.
         let meta = entry.metadata().ok();
         let path = entry.path();
-        let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+        // What the row opens: a link lists as its target (a folder, with a
+        // file's size and date), as activating it follows it. A link to
+        // nothing stays the link.
+        let target = meta
+            .as_ref()
+            .filter(|meta| meta.file_type().is_symlink())
+            .and_then(|_| std::fs::metadata(&path).ok());
+        let shown = target.as_ref().or(meta.as_ref());
+        let is_dir = shown.is_some_and(std::fs::Metadata::is_dir);
         let mime = tilo_mime::from_path_or_octet_stream(&path).to_string();
         // Content hydration state only applies to files — a directory's structure
         // is always fully projected — so we don't query (or badge) folders.
@@ -1036,11 +1132,8 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
             is_dir,
-            size: meta.as_ref().map_or(0, std::fs::Metadata::len),
-            modified: meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .map(DateTime::from),
+            size: shown.map_or(0, std::fs::Metadata::len),
+            modified: shown.and_then(|m| m.modified().ok()).map(DateTime::from),
             mime,
             sync_state,
             content_hash,
@@ -1048,6 +1141,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             availability,
             share,
             history,
+            app: None,
             rich_metadata,
             observed: meta
                 .as_ref()

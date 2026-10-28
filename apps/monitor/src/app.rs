@@ -1,9 +1,10 @@
 //! The Monitor root widget: a two-tab activity monitor (Processes /
 //! Resources) built from the window shell and toolkit widgets.
 //!
-//! The window is one [`NavShell`]. The content header holds the tabs, the
-//! sampling cadence, Refresh and History. The content is the active tab
-//! ([`crate::view::ProcessesPane`] or [`crate::view::ResourcesPane`]); the
+//! The window is one [`NavShell`]. The window bar holds the tabs as its
+//! views, Refresh, the sampling cadence and the list's view options, and its
+//! search narrows the process list (`window_bar`). The content is the active tab
+//! (`crate::view::ProcessesPane` or `crate::view::ResourcesPane`); the
 //! selected process is the inspector. The shared table layout (sort, tree
 //! mode) lives on [`crate::resource::Monitor`]; the tab, filter and
 //! selection are this window's own; the live process snapshot never leaves
@@ -23,7 +24,6 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{Dispatcher, LiveRow, Setting};
-use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -31,10 +31,8 @@ use ui::tilo_resource::{self, Model};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
-    Popover, Switch, TaffyTreeExt, ToggleGroup, Widget,
+    AppModel, Element, InspectorPlacement, ModelPath, NavShell, Switch, TaffyTreeExt, Widget,
 };
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
@@ -100,9 +98,6 @@ impl SortKey {
         !matches!(self, SortKey::Name | SortKey::User)
     }
 }
-
-/// The header's cadence button, by its test id.
-const CADENCE_BUTTON_ID: &str = "monitor.cadence";
 
 /// A process table can contain thousands of kernel entries. Keep the
 /// contextual resource projection small; exact process resources remain
@@ -248,7 +243,6 @@ pub struct MonitorApp {
     /// stored, which tells a change made here from one made elsewhere.
     preferences: Option<(Setting<MonitorPreferences>, MonitorPreferences)>,
 
-    // ---- the view ----
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
@@ -264,26 +258,19 @@ pub struct MonitorApp {
     /// feeding the inspector's sparkline.
     proc_cpu_hist: HashMap<(u32, u64), RollingSeries>,
 
-    // ---- transient chrome ----
     /// The row menu, mounted in the window's top layer by this widget.
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
 
-    // ---- sampling ----
     last_refresh: Instant,
     /// Never sample the live machine — the seeded snapshot is the whole model.
     sample_only: bool,
 
-    // ---- the window ----
     rect: Rect,
     shell: NavShell,
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
-    /// The machine, tab and cadence the header was built for.
-    header_shown: Option<(String, Tab, Cadence)>,
-    /// The sampling cadence menu under the header's button.
-    cadence_menu: Popover,
     /// Model or view state changed since the panes were last told.
     stale: bool,
     metrics_revision: u64,
@@ -295,9 +282,11 @@ pub struct MonitorApp {
     /// How many layouts the window has had, so a capture's drawer opens
     /// over content that has settled at its width.
     layouts: u32,
-    /// Open the cadence menu once laid out (`interval` captures).
-    cadence_menu_seed: bool,
     layout_dirty: bool,
+    /// The views were handed something since the host last took the
+    /// window's structure ([`Widget::take_structure_dirty`]), which takes it
+    /// once: the layout it asks for clears `layout_dirty` on its own.
+    retold: bool,
     /// The door edits and effects go through once the framework hosts the
     /// surface: the table layout as Monitor's actions, and every control
     /// that reaches a process as a [`MonitorEffect`], so the host checks its
@@ -366,6 +355,7 @@ impl MonitorApp {
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("monitor.shell")
+            .with_window_toolbar()
             .content(Box::new(tab_content(&shared, &shown_tab)));
         Self {
             model,
@@ -390,8 +380,6 @@ impl MonitorApp {
             shell,
             shared,
             shown_tab,
-            header_shown: None,
-            cadence_menu: Popover::new().with_label("Update frequency"),
             stale: true,
             metrics_revision: 0,
             published_metrics: None,
@@ -399,15 +387,13 @@ impl MonitorApp {
             inspected: Inspected::Stale,
             reveal_detail: false,
             layouts: 0,
-            cadence_menu_seed: false,
             layout_dirty: true,
+            retold: true,
             dispatcher: None,
             #[cfg(test)]
             requested: Vec::new(),
         }
     }
-
-    // ---- sampling ---------------------------------------------------------
 
     /// Take the machine's newest reading. Where the session pushes them
     /// (Linux), each arrival wakes the window and is taken here; elsewhere
@@ -537,8 +523,6 @@ impl MonitorApp {
         self.proc_cpu_hist.insert((pid, p.started_at), ring);
         self.stale = true;
     }
-
-    // ---- the process list -------------------------------------------------
 
     /// The filtered and sorted flat process list.
     fn visible_processes(&self) -> Vec<ProcessInfo> {
@@ -686,8 +670,6 @@ impl MonitorApp {
         self.stale = true;
     }
 
-    // ---- framework hosting ------------------------------------------------
-
     pub(crate) fn attach_actions(&self, actions: ui::framework::Actions<Monitor>) {
         let mut shared = self.shared.borrow_mut();
         shared.actions = Some(actions);
@@ -829,8 +811,6 @@ impl MonitorApp {
             .find(|process| process.pid == pid && process.started_at == started_at)
             .map(process_row)
     }
-
-    // ---- view changes -----------------------------------------------------
 
     fn commit_tab(&mut self, tab: Tab) {
         if self.tab == tab {
@@ -1048,35 +1028,6 @@ impl MonitorApp {
         self.stale = true;
     }
 
-    // ---- the cadence menu -------------------------------------------------
-
-    /// Open the cadence menu under the header's button.
-    fn open_cadence_menu(&mut self) {
-        let Some(anchor) =
-            ui::widget::find_test_id(&self.shell, CADENCE_BUTTON_ID).map(Widget::get_rect)
-        else {
-            return;
-        };
-        let choices = Cadence::all();
-        let selected = choices
-            .iter()
-            .position(|cadence| *cadence == self.cadence());
-        self.cadence_menu
-            .set_items(choices.iter().map(|cadence| cadence.label()));
-        self.cadence_menu.set_viewport(self.rect);
-        self.cadence_menu.open_at(anchor, selected);
-    }
-
-    fn apply_cadence_choice(&mut self) {
-        if let Some(index) = self.cadence_menu.take_selection()
-            && let Some(cadence) = Cadence::all().get(index)
-        {
-            self.set_cadence(*cadence);
-        }
-    }
-
-    // ---- the row menu -----------------------------------------------------
-
     /// Open the row menu for `pid` at `at`, marking its row.
     fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
         let mut menu = ContextMenu::new();
@@ -1085,9 +1036,9 @@ impl MonitorApp {
             menu.push(item);
             choices.push(choice);
         };
-        // "Show details" only earns a place where the inspector is a closed
-        // drawer; beside the table the right-click already showed them.
-        if self.shell.geometry().inspector == InspectorPlacement::Drawer
+        // "Show details" only earns a place where the inspector is a put-away
+        // sheet; beside the table the right-click already showed them.
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
         {
             push(
@@ -1150,8 +1101,6 @@ impl MonitorApp {
         }
         self.context_pid = None;
     }
-
-    // ---- publishing to the views ------------------------------------------
 
     fn rows_fingerprint(rows: &[ProcessRow]) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -1238,68 +1187,9 @@ impl MonitorApp {
             }
         }
         self.shown_tab.set(self.tab);
-        self.show_header();
         self.show_inspector();
         self.layout_dirty = true;
-    }
-
-    /// The content header: the machine's name, then the tabs, the sampling
-    /// cadence and Refresh. Rebuilt when the tab changes so the segments
-    /// follow it.
-    fn show_header(&mut self) {
-        let host = self.model.metrics.host.clone();
-        let shown = (host, self.tab, self.cadence());
-        if self.header_shown.as_ref() == Some(&shown) {
-            return;
-        }
-        self.header_shown = Some(shown);
-        let tabs = {
-            let requests = Rc::clone(&self.shared);
-            ToggleGroup::new(
-                Tab::ALL
-                    .iter()
-                    .map(|tab| Segment::new(tab.label()))
-                    .collect(),
-                Tab::ALL
-                    .iter()
-                    .position(|tab| *tab == self.tab)
-                    .unwrap_or(0),
-            )
-            .with_id("monitor.tabs")
-            .control_size(ControlSize::Small)
-            .on_view("monitor.tabs", move |index| {
-                if let Some(tab) = Tab::ALL.get(index) {
-                    requests.borrow_mut().push(Request::Tab(*tab));
-                }
-            })
-        };
-        let cadence = {
-            let requests = Rc::clone(&self.shared);
-            // The frequency remains the accessible name while its icon
-            // leaves the full mode switcher room on a narrow window.
-            Button::icon_only(
-                CADENCE_BUTTON_ID,
-                Icon::Timer,
-                &self.cadence().short_label(),
-            )
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
-            .tooltip("Update frequency")
-            .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
-        };
-        let refresh = {
-            let requests = Rc::clone(&self.shared);
-            Button::icon_only("monitor.refresh", Icon::Refresh, "Refresh")
-                .on_view(move || requests.borrow_mut().push(Request::Refresh))
-        };
-        let actions: Vec<Element> = vec![Box::new(cadence), Box::new(refresh)];
-        // Modes occupy the header's leading fill at every width. The host
-        // name remains in Resources, where all machine identity is shown.
-        // Keeping these controls retained also preserves their touch/focus
-        // state through resize instead of replacing the whole header.
-        self.shell.set_content_header("", actions);
-        self.shell.set_content_header_leading(Some(Box::new(tabs)));
+        self.retold = true;
     }
 
     /// The inspector follows the selection on the Processes tab; it is gone
@@ -1376,10 +1266,10 @@ impl MonitorApp {
         self.shell.set_inspector_title(process.name.clone());
     }
 
-    /// Open the inspector where it is a closed drawer, so choosing a process
+    /// Open the inspector where it is a put-away sheet, so choosing a process
     /// on a narrow window shows it.
     fn reveal_inspector(&mut self) {
-        if self.shell.geometry().inspector == InspectorPlacement::Drawer
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
         {
             self.shell.toggle_inspector();
@@ -1388,7 +1278,7 @@ impl MonitorApp {
 
     /// Turn the views' requests into view changes, layout edits and effects.
     /// The views hear of them in the next `sync` or layout: telling them
-    /// rebuilds the inspector and the header, which must never happen while
+    /// rebuilds the inspector, which must never happen while
     /// the host is routing an event through the tree it holds.
     fn apply_requests(&mut self) {
         let requests = self.shared.borrow_mut().take_requests();
@@ -1428,7 +1318,6 @@ impl MonitorApp {
                     self.prefs.show_kernel_threads = show;
                     self.clear_selection_if_filtered_out();
                 }
-                Request::ChooseCadence => self.open_cadence_menu(),
                 Request::ShowStat(stat) => {
                     self.commit_tab(Tab::Resources);
                     self.shared.borrow_mut().reveal = Some(stat);
@@ -1451,8 +1340,6 @@ impl MonitorApp {
             }
         }
     }
-
-    // ---- captures ---------------------------------------------------------
 
     /// Stage the view state of screenshot `scenario` over the sample
     /// machine its fixture provides ([`MonitorModel::scenario`]) and the
@@ -1489,10 +1376,7 @@ impl MonitorApp {
                 self.shared.borrow_mut().menu_seed = pid;
                 self.seed_selected_spark();
             }
-            "interval" => {
-                self.set_cadence(Cadence::Every(2000));
-                self.cadence_menu_seed = true;
-            }
+            "interval" => self.set_cadence(Cadence::Every(2000)),
             _ => {}
         }
         self.stale = true;
@@ -1541,13 +1425,24 @@ impl Widget for MonitorApp {
         // document.
         self.sync_preferences();
         self.maybe_refresh();
+        self.take_window_toolbar_events();
         self.apply_requests();
         self.publish();
+        self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.shell.update(state, path)
+        // The window bar's slots are pressed between events: carry out what
+        // they asked.
+        let asked = self.take_window_toolbar_events();
+        if asked {
+            self.apply_requests();
+        }
+        let changed = self.stale;
+        self.publish();
+        self.declare_window_toolbar();
+        self.shell.update(state, path) || asked || changed
     }
 
     fn build_layout(
@@ -1574,10 +1469,6 @@ impl Widget for MonitorApp {
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
         }
         self.layouts = self.layouts.saturating_add(1);
-        if self.cadence_menu_seed && self.shell.geometry().content_column.width() > 0.0 {
-            self.cadence_menu_seed = false;
-            self.open_cadence_menu();
-        }
         // Open the drawer once the content behind it has settled at its
         // width, so the window under the drawer is the one the person sees.
         if self.reveal_detail
@@ -1588,6 +1479,7 @@ impl Widget for MonitorApp {
             self.reveal_inspector();
             self.shell.snap();
             self.layout_dirty = true;
+            self.retold = true;
         }
     }
 
@@ -1613,10 +1505,6 @@ impl Widget for MonitorApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        if self.cadence_menu.is_open() {
-            self.cadence_menu
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
         if self.context.is_open() {
             self.context
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -1624,14 +1512,6 @@ impl Widget for MonitorApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.cadence_menu.is_open() {
-            self.cadence_menu.handle_event(event, ctx);
-            self.apply_cadence_choice();
-            if *ctx.handled || !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *ctx.handled = true;
-                return;
-            }
-        }
         if self.context.is_open() {
             self.context.handle_event(event, ctx);
             if let Some(index) = self.context.take_selection() {
@@ -1654,9 +1534,6 @@ impl Widget for MonitorApp {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = vec![&self.shell];
-        if self.cadence_menu.is_open() {
-            children.push(&self.cadence_menu);
-        }
         if self.context.is_open() {
             children.push(&self.context);
         }
@@ -1665,9 +1542,6 @@ impl Widget for MonitorApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.shell];
-        if self.cadence_menu.is_open() {
-            children.push(&mut self.cadence_menu);
-        }
         if self.context.is_open() {
             children.push(&mut self.context);
         }
@@ -1675,7 +1549,7 @@ impl Widget for MonitorApp {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.context.is_open() || self.cadence_menu.is_open() || self.shell.wants_pointer_capture()
+        self.context.is_open() || self.shell.wants_pointer_capture()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1692,9 +1566,10 @@ impl Widget for MonitorApp {
     fn take_structure_dirty(&mut self) -> bool {
         // What changed since the last frame reaches the views with the next
         // tree; the shell reports its own changes.
-        // A sync that rebuilt the header or the inspector (`layout_dirty`)
+        // A sync that rebuilt the inspector (`retold`, taken here)
         // and preferences another window or device changed count too.
-        let pending = self.stale || self.layout_dirty || self.preferences_changed();
+        let retold = std::mem::take(&mut self.retold);
+        let pending = self.stale || retold || self.preferences_changed();
         self.shell.take_structure_dirty() || pending
     }
 
@@ -1731,6 +1606,8 @@ impl Widget for MonitorApp {
         self.rect
     }
 }
+
+pub(crate) mod window_bar;
 
 #[cfg(test)]
 mod tests {
@@ -1840,7 +1717,6 @@ mod tests {
     /// are hidden until asked for.
     #[test]
     fn process_list_sorts_filters_and_folds_the_tree() {
-        // Phase `collapsed_tree_lists_roots_by_summed_load`.
         {
             let a = app();
             let rows = a.visible_rows();
@@ -1856,7 +1732,6 @@ mod tests {
             );
         }
 
-        // Phase `expanding_shows_children_and_per_process_lowers_parents`.
         {
             let mut a = app();
             let shell = pid_named(&a, "shell");
@@ -1875,7 +1750,6 @@ mod tests {
             assert!(own < summed, "a parent shows only its own load");
         }
 
-        // Phase `filtering_a_tree_keeps_the_ancestors_open`.
         {
             let mut a = app();
             a.filter = "rustc".into();
@@ -1883,7 +1757,6 @@ mod tests {
             assert_eq!(names(&rows), ["shell", "code", "cargo", "rustc"]);
         }
 
-        // Phase `flat_list_sorts_by_the_chosen_column`.
         {
             let mut a = app();
             a.commit_tree_mode(false);
@@ -2046,7 +1919,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn process_rows_are_bounded_generation_exact_and_local() {
-        // Phase `kill_is_contract_confirmed_and_executes_through_the_effect`.
         {
             let mut a = app();
             let pid = a.selected_pid.expect("sample selects a process");
@@ -2071,7 +1943,6 @@ mod tests {
             assert!(a.selected_pid.is_none());
         }
 
-        // Phase `catalogue_is_bounded_and_an_omitted_generation_resolves`.
         {
             let mut a = app();
             let template = a.model.processes[0].clone();
@@ -2097,7 +1968,6 @@ mod tests {
             assert!(resolved.actions.iter().any(|action| action.id == "kill"));
         }
 
-        // Phase `tail_processes_are_searchable_by_their_generation`.
         {
             let mut a = app();
             let mut tail = a.model.processes[0].clone();
@@ -2123,7 +1993,6 @@ mod tests {
             );
         }
 
-        // Phase `labels_are_single_line_and_bounded`.
         {
             let mut process = app().model.processes[0].clone();
             process.name = format!(
@@ -2135,7 +2004,6 @@ mod tests {
             assert!(label.chars().count() <= MAX_PROCESS_RESOURCE_LABEL_CHARS + 16);
         }
 
-        // Phase `a_stale_generation_is_rejected_before_any_signal`.
         {
             let mut a = app();
             let process = a.model.processes[0].clone();
@@ -2146,7 +2014,6 @@ mod tests {
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
         }
 
-        // Phase `copy_pid_selects_the_process_and_shows_a_toast`.
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
@@ -2159,7 +2026,6 @@ mod tests {
             assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
-        // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.
         {
             let mut a = app();
             a.commit_tab(Tab::Resources);
@@ -2178,7 +2044,6 @@ mod tests {
             );
         }
 
-        // Phase `device_preferences_and_unshared_view_stay_out_of_the_document`.
         {
             let mut first = app();
             let mut second = app();
@@ -2200,13 +2065,13 @@ mod tests {
     }
 
     /// The window lays out at desktop, narrow and phone sizes: the inspector
-    /// docks where it leaves the table its room and is a drawer below that.
+    /// docks where it leaves the table its room and is a sheet below that.
     #[test]
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
             ((800, 600), InspectorPlacement::Docked),
-            ((480, 820), InspectorPlacement::Drawer),
+            ((480, 820), InspectorPlacement::Sheet),
         ] {
             let harness = window(app(), viewport);
             let monitor = harness.root::<MonitorApp>();
@@ -2222,47 +2087,91 @@ mod tests {
         }
     }
 
-    #[test]
-    fn narrow_header_keeps_both_modes_readable_and_clickable() {
-        fn named_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
-            ui::widget::find_test_id(widget, id).map(Widget::get_rect)
-        }
-        let mut harness = window(app(), (390, 844));
-        let tabs = named_rect(harness.root::<MonitorApp>(), "monitor.tabs").unwrap();
-        assert!(
-            tabs.width() >= 160.0,
-            "both labels need real room: {tabs:?}"
-        );
-        assert!(tabs.x0 >= 0.0 && tabs.x1 <= 390.0);
-        click(&mut harness, "Resources");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
-        click(&mut harness, "Processes");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
-        click(&mut harness, CADENCE_BUTTON_ID);
-        assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
+    /// Press the window bar's slot `id`, as the desktop's bar does.
+    fn press(harness: &mut FrameHarness, id: &str) {
+        harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
-    /// The window's controls act through the panes: the tabs, a summary
-    /// tile, the cadence menu, the row menu, the filter and the tree keys.
+    fn bar() -> ui::window_toolbar::WindowToolbar {
+        ui::window_toolbar::declared().expect("the window declares its slots")
+    }
+
+    /// The tabs are the bar's views, the cadence its menu button, the
+    /// list's options its actions; the window draws none of them, and the
+    /// bar's search narrows the list.
+    #[test]
+    fn the_window_bar_switches_views_and_holds_the_lists_options() {
+        let mut harness = window(app(), (390, 844));
+        harness.present_in_window_bar();
+        harness.relayout();
+        for drawn in ["monitor.tabs", "monitor.cadence", "monitor.filter"] {
+            assert!(
+                ui::widget::find_test_id(harness.root::<MonitorApp>(), drawn).is_none(),
+                "the window draws no {drawn} of its own"
+            );
+        }
+        let views = bar().views.expect("the tabs are the bar's views");
+        assert_eq!(
+            views
+                .choices
+                .iter()
+                .map(|view| view.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Processes", "Resources"]
+        );
+        assert_eq!(views.chosen, Tab::Processes.view_id());
+
+        press(&mut harness, Tab::Resources.view_id());
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        assert_eq!(bar().views.unwrap().chosen, Tab::Resources.view_id());
+        assert!(
+            bar()
+                .actions
+                .iter()
+                .all(|action| action.id != window_bar::TREE),
+            "the list's options leave with the list"
+        );
+        press(&mut harness, Tab::Processes.view_id());
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+
+        let cadence = bar()
+            .actions
+            .into_iter()
+            .find(|action| action.id == window_bar::CADENCE)
+            .expect("the update frequency is a menu button");
+        assert_eq!(cadence.items.len(), Cadence::all().len());
+        press(&mut harness, &Cadence::Paused.item_id());
+        assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
+
+        let tree = harness.root::<MonitorApp>().tree_mode;
+        press(&mut harness, window_bar::TREE);
+        assert_eq!(harness.root::<MonitorApp>().tree_mode, !tree);
+        press(&mut harness, window_bar::KERNEL_THREADS);
+        assert!(harness.root::<MonitorApp>().prefs.show_kernel_threads);
+
+        ui::widget::apply_filter(harness.root_mut::<MonitorApp>(), "cargo");
+        harness.relayout();
+        assert_eq!(harness.root::<MonitorApp>().filter, "cargo");
+        assert!(
+            center_of(&harness, "cargo").is_some(),
+            "the match is listed"
+        );
+        assert!(center_of(&harness, "tilo-fs").is_none(), "the rest is not");
+    }
+
+    /// The window's controls act through the panes: the bar's views and
+    /// cadence, a summary tile, the row menu and the tree keys.
     #[test]
     fn window_controls_change_the_view() {
         let mut harness = window(app(), (1280, 800));
 
-        click(&mut harness, "Resources");
+        press(&mut harness, Tab::Resources.view_id());
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
         assert!(harness.inspection_json().unwrap().contains("Host name"));
-        click(&mut harness, "Processes");
+        press(&mut harness, Tab::Processes.view_id());
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
 
-        click(&mut harness, CADENCE_BUTTON_ID);
-        assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
-        let paused = harness
-            .root::<MonitorApp>()
-            .cadence_menu
-            .item_rect(Cadence::all().len() - 1)
-            .expect("the menu lists Paused");
-        harness.click_at(paused.center().x, paused.center().y);
-        harness.relayout();
+        press(&mut harness, &Cadence::Paused.item_id());
         assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
 
         let (x, y) = center_of(&harness, "tilo-fs").expect("tilo-fs row");
@@ -2306,7 +2215,7 @@ mod tests {
         harness.relayout();
         assert!(!harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
 
-        click(&mut harness, "Memory");
+        click(&mut harness, "Memory in use");
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
     }
 
@@ -2410,9 +2319,6 @@ mod tests {
         tilo_system_stats::client::Client::from_stream(app).unwrap()
     }
 
-    /// USER REQUIREMENT: Monitor shows the machine's processes and stats,
-    /// which on Linux reach it only through the session's service.
-    // USER REQUIREMENT (2026-10-18): "the resource monitor isn't allowed to read the system process list/or any system stats"
     #[cfg(target_os = "linux")]
     #[test]
     fn the_monitor_shows_the_processes_and_stats_the_session_serves() {
@@ -2442,14 +2348,13 @@ mod tests {
             assert_eq!(notes.user, "ada");
         }
 
-        click(&mut harness, "Resources");
+        press(&mut harness, Tab::Resources.view_id());
         let resources = harness.inspection_json().unwrap();
         assert!(resources.contains("ada-laptop"), "the served host");
         assert!(resources.contains("Test CPU 9000"), "the served processor");
         assert!(resources.contains("Linux 7.0.9"), "the served kernel");
-        click(&mut harness, "Processes");
+        press(&mut harness, Tab::Processes.view_id());
 
-        // End app goes to the service, and the app leaves the list.
         harness
             .root_mut::<MonitorApp>()
             .answer(MonitorEffect::EndApp {

@@ -36,7 +36,7 @@ use cloud_source::{
 };
 use tilo_dav::{
     Credentials, DavClient, DavResponse, Depth, Limits, Precondition, PropName, StatusCode, Url,
-    props,
+    multistatus, props,
 };
 
 pub mod account;
@@ -200,7 +200,13 @@ impl DavSource {
             connect_timeout: Some(Duration::from_secs(10)),
             redirects: tilo_dav::Redirects::Refuse,
         })
-        .map_err(|_| Error::Offline)?;
+        // The HTTP client could not be built at all; it never reached a
+        // server, which is the same failure mode as a refused connection.
+        .map_err(|error| match error {
+            tilo_dav::Error::Build(error) => transport_error(tilo_dav::Error::Build(error)),
+            // `DavClient::new` only ever answers with `Build`.
+            _ => Error::InvalidResponse("client build"),
+        })?;
         Ok(Self {
             config,
             client,
@@ -214,11 +220,15 @@ impl DavSource {
     }
 
     /// Ask the server whether it offers a `sync-collection` change feed on
-    /// the root and switch to it if so. Returns whether it does.
+    /// the root and switch to it if so. Returns whether it does; a server
+    /// that answers, and answers that it cannot (a refused status, a body
+    /// that is not a `sync-collection` report), does not offer one. Only a
+    /// request that got no answer at all is an error, so the caller can tell
+    /// an unreachable server from an unsupported one.
     pub fn probe(&self) -> Result<bool> {
         let supported = match self.sync_report("") {
             Ok(_) => true,
-            Err(error @ (Error::Offline | Error::Unauthorized)) => return Err(error),
+            Err(error) if error.is_transport_failure() => return Err(error),
             Err(_) => false,
         };
         if let Ok(mut flag) = self.sync_collection.write() {
@@ -254,20 +264,41 @@ impl DavSource {
         }
     }
 
+    /// The response of a request that is expected whatever it answers, so a
+    /// failure to send can say why before the caller reads the status
+    /// (`upload`'s calls, which match on the status themselves).
+    fn answered(sent: std::result::Result<DavResponse, tilo_dav::Error>) -> Result<DavResponse> {
+        sent.map_err(transport_error)
+    }
+
     /// Map a transport result and the response status to our errors.
-    fn check(
-        &self,
-        sent: std::result::Result<DavResponse, tilo_dav::Error>,
-    ) -> Result<DavResponse> {
-        let response = sent.map_err(|_| Error::Offline)?;
-        let status = response.status();
-        if status.is_success() {
+    fn check(&self, sent: Result<DavResponse>) -> Result<DavResponse> {
+        let response = sent?;
+        if response.status().is_success() {
             return Ok(response);
         }
         Err(self.status_error(&response))
     }
 
+    /// A response that has to be a `multistatus`: anything else is the
+    /// status the server answered with, which says more than "no body".
+    fn demanded(
+        &self,
+        sent: Result<DavResponse>,
+        status: StatusCode,
+        what: &'static str,
+    ) -> Result<tilo_dav::Multistatus> {
+        let response = self.check(sent)?;
+        if response.status() != status {
+            return Err(self.status_error(&response));
+        }
+        Self::multistatus(response, what)
+    }
+
     fn status_error(&self, response: &DavResponse) -> Error {
+        // The status is the cause a person and a conformance case read; the
+        // retry meaning of a given status is still the caller's, through
+        // `Error::is_transient`.
         let status = response.status().as_u16();
         let retry_after = response
             .header("retry-after")
@@ -279,7 +310,8 @@ impl DavSource {
     }
 
     fn propfind(&self, url: Url, depth: Depth) -> Result<tilo_dav::Multistatus> {
-        let response = self.check(self.client()?.propfind(url, depth, self.props()))?;
+        let sent = self.client()?.propfind(url, depth, self.props());
+        let response = self.check(sent.map_err(transport_error))?;
         Self::listing(response)
     }
 
@@ -300,21 +332,39 @@ impl DavSource {
                     .is_some_and(|target| target == folder)
         });
         let response = if to_folder {
-            self.check(self.client()?.propfind(folder, depth, self.props()))?
+            self.check(
+                self.client()?
+                    .propfind(folder, depth, self.props())
+                    .map_err(transport_error),
+            )?
         } else {
-            self.check(sent)?
+            self.check(sent.map_err(transport_error))?
         };
         Self::listing(response)
     }
 
     fn listing(response: DavResponse) -> Result<tilo_dav::Multistatus> {
-        response
-            .multistatus(&listing_limits())
-            .map_err(|error| match error {
-                tilo_dav::Error::TooLarge => Error::TooLarge,
-                tilo_dav::Error::Xml(_) => Error::InvalidResponse("multistatus"),
-                _ => Error::Offline,
-            })
+        Self::multistatus(response, "multistatus")
+    }
+
+    /// The `multistatus` document a response declares, read under the
+    /// listing limits.
+    fn multistatus(response: DavResponse, what: &'static str) -> Result<tilo_dav::Multistatus> {
+        let bytes = response
+            .read_bounded(MAX_LISTING_BYTES)
+            .map_err(describe_failure)?;
+        Self::describe(multistatus::parse_bytes(&bytes, &listing_limits()), what)
+    }
+
+    /// A listing body that could not be parsed keeps its cause: which way
+    /// the document was unusable (a non-`multistatus` root, malformed XML,
+    /// a rejected href, a node or depth cap), or that no body arrived to
+    /// parse at all.
+    fn describe(
+        listing: std::result::Result<tilo_dav::Multistatus, tilo_dav::XmlError>,
+        what: &'static str,
+    ) -> Result<tilo_dav::Multistatus> {
+        listing.map_err(|error| Error::InvalidResponse(xml_failure(&error, what)))
     }
 
     fn item_from(&self, response: &tilo_dav::Response) -> Option<Item> {
@@ -365,27 +415,33 @@ impl DavSource {
             .ok_or(Error::Unsupported("file ids"))
     }
 
+    /// The sync REPORT a feed starts with, read the way [`DavSource::probe`]
+    /// asks it: a server that answers something other than a `multistatus`
+    /// has no feed, rather than failing.
     fn sync_report(&self, token: &str) -> Result<tilo_dav::Multistatus> {
-        let body = sync_body(token, self.props());
-        let response = self
-            .client()?
-            .report(self.config.root.clone(), Depth::Zero, body);
-        let response = response.map_err(|_| Error::Offline)?;
-        match response.status() {
-            StatusCode::MULTI_STATUS => {}
-            // RFC 6578 §3.2: an invalid token is a 403 (or 409 on some
-            // servers) with `valid-sync-token`.
-            StatusCode::FORBIDDEN | StatusCode::CONFLICT if !token.is_empty() => {
-                return Err(Error::CursorExpired);
-            }
-            _ => return Err(self.status_error(&response)),
+        let response = self.check(self.report(token))?;
+        if response.status() != StatusCode::MULTI_STATUS {
+            return Err(Error::Unsupported("change feed"));
         }
-        response
-            .multistatus(&listing_limits())
-            .map_err(|error| match error {
-                tilo_dav::Error::TooLarge => Error::TooLarge,
-                _ => Error::InvalidResponse("sync-collection"),
-            })
+        Self::multistatus(response, "sync-collection")
+    }
+
+    /// RFC 6578 §3.2: an invalid token is a 403 (or 409 on some servers)
+    /// with `valid-sync-token`.
+    fn forgot_token(response: &DavResponse) -> bool {
+        matches!(
+            response.status(),
+            StatusCode::FORBIDDEN | StatusCode::CONFLICT
+        )
+    }
+
+    fn report(&self, token: &str) -> Result<DavResponse> {
+        let sent = self.client()?.report(
+            self.config.root.clone(),
+            Depth::Zero,
+            sync_body(token, self.props()),
+        );
+        sent.map_err(transport_error)
     }
 
     fn precondition(expect: Option<&Revision>) -> Precondition<'_> {
@@ -410,7 +466,7 @@ impl DavSource {
             {
                 self.read_freshly_written(url, range.clone(), expected)?
             }
-            (sent, _) => self.check(sent)?,
+            (sent, _) => self.check(sent.map_err(transport_error))?,
         };
         let revision = response.etag().map(Revision::new);
         let served = http::Served {
@@ -439,7 +495,8 @@ impl DavSource {
         range: Option<Range<u64>>,
         expected: &Revision,
     ) -> Result<DavResponse> {
-        let response = self.check(self.client()?.get_range(url, range, Precondition::None))?;
+        let sent = self.client()?.get_range(url, range, Precondition::None);
+        let response = self.check(sent.map_err(transport_error))?;
         if response
             .etag()
             .is_some_and(|tag| tag == expected.as_str() || is_weak_form_of(&tag, expected))
@@ -457,6 +514,134 @@ impl DavSource {
             Err(Error::NotFound) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// The errors that say the request never got an answer: an unreachable
+/// server, a reset or timeout, a body that stopped part-way, or a client that
+/// could not be built. Distinguishing these from a server that answered
+/// wrongly is what [`DavSource::probe`] needs to call a server "not
+/// supporting" a feed rather than failing.
+trait TransportFailure {
+    fn is_transport_failure(&self) -> bool;
+}
+
+impl TransportFailure for Error {
+    fn is_transport_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Offline | Self::InvalidResponse("transport" | "client build" | "body cut short")
+        )
+    }
+}
+
+/// A request that never got an answer. Retrying is the same decision it was
+/// as [`Error::Offline`] (`Error::is_transient` covers it), but the failure
+/// says which: a transport error (a reset, a refused connection, a failed
+/// TLS handshake, a request that ran out of time) or a client that could not
+/// be built at all.
+fn transport_error(error: tilo_dav::Error) -> Error {
+    match error {
+        // `Offline` names a server that is not there, which is what a
+        // connection that never got made looks like; every other transport
+        // failure says what came between the request and the answer.
+        error @ tilo_dav::Error::Transport(_) if unreached(&error) => Error::Offline,
+        tilo_dav::Error::Transport(_) => Error::InvalidResponse("transport"),
+        tilo_dav::Error::Build(_) => Error::InvalidResponse("client build"),
+        // A send only yields the two arms above; these arrive from a path
+        // that also reads, and keep their own cause there.
+        tilo_dav::Error::Read(error) => Error::InvalidResponse(read_failure(&error)),
+        tilo_dav::Error::Xml(error) => Error::InvalidResponse(xml_failure(&error, "multistatus")),
+        tilo_dav::Error::TooLarge => Error::TooLarge,
+    }
+}
+
+/// A body that never arrived in full keeps its cause: the transport that
+/// cut it, the size cap, or a client that could not be built.
+fn describe_failure(error: tilo_dav::Error) -> Error {
+    match error {
+        tilo_dav::Error::TooLarge => Error::TooLarge,
+        tilo_dav::Error::Read(error) => Error::InvalidResponse(read_failure(&error)),
+        // A send only fails as `Build` or `Transport`; the other two arrive
+        // from a path that parses in the same step.
+        tilo_dav::Error::Xml(error) => Error::InvalidResponse(xml_failure(&error, "multistatus")),
+        error @ (tilo_dav::Error::Build(_) | tilo_dav::Error::Transport(_)) => {
+            transport_error(error)
+        }
+    }
+}
+
+/// `true` when the request never reached a server at all: the connection was
+/// refused, the host is gone, a handshake failed, or a proxy is not there. A
+/// connection that opened and then broke — a reset, a timeout — is a
+/// transport failure of its own, so callers can tell an unreachable server
+/// from one that stopped answering mid-request.
+fn unreached(error: &tilo_dav::Error) -> bool {
+    let tilo_dav::Error::Transport(error) = error else {
+        return false;
+    };
+    if error.is_connect() || error.is_timeout() {
+        return true;
+    }
+    // A connect error that reqwest did not classify still names its reason
+    // where the source chain carries an OS error.
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkUnreachable
+            );
+        }
+        cause = current.source();
+    }
+    false
+}
+
+/// Why a body could not be read to its end.
+fn read_failure(error: &std::io::Error) -> &'static str {
+    // reqwest reports a body that stopped under its own kind, with the
+    // reason (an `UnexpectedEof` from a declared length that was not sent, a
+    // reset) further down the source chain.
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            return read_failure(io);
+        }
+        cause = current.source();
+    }
+    match error.kind() {
+        std::io::ErrorKind::UnexpectedEof => "body cut short",
+        std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::NotConnected => "connection closed during body",
+        std::io::ErrorKind::TimedOut => "body timed out",
+        _ => "body read",
+    }
+}
+
+/// Why a listing body is not an acceptable `multistatus` document.
+fn xml_failure(error: &tilo_dav::XmlError, what: &'static str) -> &'static str {
+    match error {
+        // Checked before decoding anything, so the size cap keeps its own
+        // meaning (`Error::TooLarge`) rather than being reworded here.
+        tilo_dav::XmlError::TooLarge => what,
+        tilo_dav::XmlError::NotMultistatus => match what {
+            "sync-collection" => "sync-collection answer is not multistatus",
+            "quota" => "quota answer is not multistatus",
+            _ => "answer is not multistatus",
+        },
+        tilo_dav::XmlError::Malformed => "answer is malformed XML",
+        tilo_dav::XmlError::NotUtf8 => "answer is not UTF-8",
+        tilo_dav::XmlError::Doctype => "answer carries a DTD",
+        tilo_dav::XmlError::TooManyNodes => "answer has too many XML nodes",
+        tilo_dav::XmlError::TooDeep => "answer nests too deeply",
+        tilo_dav::XmlError::TooManyResponses => "answer lists too many resources",
+        tilo_dav::XmlError::InvalidHref => "answer carries an invalid href",
     }
 }
 
@@ -536,7 +721,13 @@ impl CloudSource for DavSource {
             return Err(Error::Unsupported("change feed"));
         }
         let token = cursor.map_or("", |c| c.0.as_str());
-        let listing = self.sync_report(token)?;
+        let sent = self.report(token);
+        // A cursor the server forgot restarts the enumeration, whether the
+        // feed is read here or probed at start-up.
+        if !token.is_empty() && sent.as_ref().is_ok_and(Self::forgot_token) {
+            return Err(Error::CursorExpired);
+        }
+        let listing = self.demanded(sent, StatusCode::MULTI_STATUS, "sync-collection")?;
         let next = listing
             .sync_token
             .clone()
@@ -613,10 +804,7 @@ impl CloudSource for DavSource {
 
     fn create_folder(&self, parent: &ItemId, name: &str) -> Result<Item> {
         let id = paths::child_of(parent, name).ok_or(Error::InvalidResponse("folder name"))?;
-        let response = self
-            .client()?
-            .mkcol(self.url(&id, true)?)
-            .map_err(|_| Error::Offline)?;
+        let response = Self::answered(self.client()?.mkcol(self.url(&id, true)?))?;
         match response.status() {
             status if status.is_success() => self.stat(&id),
             StatusCode::METHOD_NOT_ALLOWED => Err(Error::AlreadyExists),
@@ -640,15 +828,12 @@ impl CloudSource for DavSource {
             return Ok(current);
         }
         let destination = self.url(&destination_id, folder)?;
-        let response = self
-            .client()?
-            .move_to(
-                self.url(id, folder)?,
-                &destination,
-                false,
-                Self::precondition(expect),
-            )
-            .map_err(|_| Error::Offline)?;
+        let response = Self::answered(self.client()?.move_to(
+            self.url(id, folder)?,
+            &destination,
+            false,
+            Self::precondition(expect),
+        ))?;
         match response.status() {
             status if status.is_success() => self.stat(&destination_id),
             // `Overwrite: F` onto an existing item and a failed `If-Match`
@@ -669,10 +854,10 @@ impl CloudSource for DavSource {
 
     fn delete(&self, id: &ItemId, expect: Option<&Revision>) -> Result<()> {
         let folder = self.stat(id)?.is_folder();
-        let response = self
-            .client()?
-            .delete(self.url(id, folder)?, Self::precondition(expect))
-            .map_err(|_| Error::Offline)?;
+        let response = Self::answered(
+            self.client()?
+                .delete(self.url(id, folder)?, Self::precondition(expect)),
+        )?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -731,22 +916,21 @@ impl CloudSource for DavSource {
             .config
             .nextcloud_url("versions", &["restore", "target"], false)
             .ok_or(Error::Unsupported("revisions"))?;
-        self.check(
-            self.client()?
-                .move_to(source, &target, true, Precondition::None),
-        )?;
+        let sent = self
+            .client()?
+            .move_to(source, &target, true, Precondition::None);
+        self.check(sent.map_err(transport_error))?;
         self.stat(id)
     }
 
     fn quota(&self) -> Result<Quota> {
-        let response = self.check(self.client()?.propfind(
+        let sent = self.client()?.propfind(
             self.config.root.clone(),
             Depth::Zero,
             &[QUOTA_USED, QUOTA_AVAILABLE],
-        ))?;
-        let listing = response
-            .multistatus(&listing_limits())
-            .map_err(|_| Error::InvalidResponse("quota"))?;
+        );
+        let response = self.check(sent.map_err(transport_error))?;
+        let listing = Self::multistatus(response, "quota")?;
         let first = listing
             .responses
             .first()

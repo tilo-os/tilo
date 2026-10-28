@@ -29,7 +29,8 @@
 //! macOS) to see typing alone.
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
-//! stderr as `input_carry` stages (see `docs/app-performance.md`).
+//! stderr as `input_carry` stages (see `docs/app-performance.md`), and in
+//! the `focus` mode every scope of one more added task as an `add_item` line.
 //!
 //! A second argument `open` measures only the open, for profiling it. Each
 //! size's open also prints a `FRAMEWORK-OPEN` line, which
@@ -40,6 +41,10 @@
 //! cargo run --release -p tilo-app --features test-support \
 //!     --example framework-scaling -- 5000,50000 open
 //! ```
+//!
+//! A second argument `publication` measures only one full publication of
+//! the resource tree: how many resources it holds, its time, and the heap
+//! the published tree holds per task.
 //!
 //! A second argument `scroll` measures only scrolling: the live window's
 //! list scrolled down 120 frames of 40 px (and of 40.5 px, part of a device
@@ -62,7 +67,7 @@
 //!
 //! A second argument `focus` measures only the keyboard focus order: what an
 //! agent call adding one task costs end to end through the test harness, what
-//! each focus-order recomputation inside it costs, and what one recomputation
+//! one focus-order walk of the harness costs after it, and what one recomputation
 //! of the live window's order costs ([`tilo_app::App::refresh_focus_order`],
 //! timed as its `ui.focus_order` scope alone). Its rows sit outside a scroll
 //! view, so every row is mounted, and a row is about four widgets: 500 tasks
@@ -299,20 +304,38 @@ fn checklist_in<A: ResourceApp<Resource = Checklist>>(
 
 /// p50 of one full publication of `tasks` tasks, and how many resources it
 /// publishes.
-fn publication(tasks: u32) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+fn publication(tasks: u32) -> Result<Publication, Box<dyn std::error::Error>> {
     let mut app = checklist(tasks)?;
     let doc = app.read_document(Clone::clone);
-    let mut published = 0;
+    let mut resources = 0;
+    let mut held = 0;
     let samples = (0..10)
         .map(|_| {
+            let before = HELD.load(Ordering::Relaxed);
             let start = Instant::now();
-            let resources =
+            let published =
                 tilo_app::resources::resources_for(app.harness().root_widget(), None, &doc);
-            published = count(&resources);
-            millis(start)
+            let elapsed = millis(start);
+            held = HELD.load(Ordering::Relaxed).saturating_sub(before);
+            resources = count(&published);
+            elapsed
         })
         .collect();
-    Ok((median(samples), published))
+    Ok(Publication {
+        ms: median(samples),
+        resources,
+        held,
+    })
+}
+
+/// One full publication of the resource tree.
+struct Publication {
+    /// p50, in ms.
+    ms: f64,
+    /// How many resources it holds.
+    resources: usize,
+    /// The heap the published tree holds.
+    held: usize,
 }
 
 /// The sync pass and the whole frame, p50 in ms, while typing into the
@@ -1083,14 +1106,34 @@ fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
     let mut recompute_ms = Vec::new();
     for _ in 0..FOCUS_SAMPLES {
         let start = Instant::now();
-        let (called, phases) = observe(|| app.call("seed", add.clone()));
+        let called = app.call("seed", add.clone());
         add_ms.push(millis(start));
         called?;
-        let (calls, ms) = focus_order_phase(&phases);
-        if calls == 0 {
-            return Err("adding a task recomputed no focus order".into());
+        // The harness walks the order again within a call only while
+        // something can trap focus, as the live window does between
+        // rebuilds: the walk Tab takes over the grown window is timed here.
+        let start = Instant::now();
+        let order = app.harness().focus_order();
+        recompute_ms.push(millis(start));
+        if order.is_empty() {
+            return Err("the window has no focus order to time".into());
         }
-        recompute_ms.push(ms / f64::from(u32::try_from(calls)?));
+    }
+    if std::env::var_os("TILO_PROFILE_RESOURCES").is_some() {
+        // One more add, untimed, with every scope it ran: where the call's
+        // time goes, slowest scope first. Scopes nest, so they do not add up.
+        let (called, mut phases) = observe(|| app.call("seed", add.clone()));
+        called?;
+        phases.sort_by_key(|phase| std::cmp::Reverse(phase.elapsed_ns));
+        for phase in phases {
+            let elapsed = u64::try_from(phase.elapsed_ns).unwrap_or(u64::MAX);
+            eprintln!(
+                "add_item tasks={tasks} {} calls={} ms={:.3}",
+                phase.phase,
+                phase.calls,
+                std::time::Duration::from_nanos(elapsed).as_secs_f64() * 1e3,
+            );
+        }
     }
     let native_ms = drive_live_window::<Mounted, _>(|app| {
         app.init_layout();
@@ -1146,6 +1189,44 @@ fn focus_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// What publishing a window of each size costs, and the heap it holds.
+fn publication_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!("tasks  resources  publication p50  heap held  heap per task");
+    for &tasks in sizes {
+        let Publication {
+            ms,
+            resources,
+            held,
+        } = publication(tasks)?;
+        let per_task = held
+            .checked_div(usize::try_from(tasks)?)
+            .unwrap_or_default();
+        println!("{tasks:>5}  {resources:>9}  {ms:>12.3} ms  {held:>9}  {per_task:>11} B");
+    }
+    Ok(())
+}
+
+/// What a keystroke costs to the next frame in a live window of each size.
+fn keystrokes_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "tasks  keystroke→frame p50  p99  release→frame p50  \
+         publications per keystroke  publishing/keystroke p50"
+    );
+    for &tasks in sizes {
+        TASKS.store(tasks, Ordering::Relaxed);
+        let keys = drive_live_window::<Scaling, _>(keystrokes)??;
+        println!(
+            "{tasks:>5}  {:>16.3} ms  {:>8.3} ms  {:>14.3} ms  {:>26}  {:>21.3} ms",
+            keys.to_frame_ms,
+            keys.to_frame_p99_ms,
+            keys.release_ms,
+            keys.publications,
+            keys.publication_ms
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(2);
     let open_only = mode.as_deref() == Some("open");
@@ -1161,24 +1242,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mode.as_deref() == Some("focus") {
         return focus_mode(&sizes);
     }
+    if mode.as_deref() == Some("publication") {
+        return publication_mode(&sizes);
+    }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
-        println!(
-            "tasks  keystroke→frame p50  p99  release→frame p50  \
-             publications per keystroke  publishing/keystroke p50"
-        );
-        for &tasks in &sizes {
-            TASKS.store(tasks, Ordering::Relaxed);
-            let keys = drive_live_window::<Scaling, _>(keystrokes)??;
-            println!(
-                "{tasks:>5}  {:>16.3} ms  {:>8.3} ms  {:>14.3} ms  {:>26}  {:>21.3} ms",
-                keys.to_frame_ms,
-                keys.to_frame_p99_ms,
-                keys.release_ms,
-                keys.publications,
-                keys.publication_ms
-            );
-        }
-        return Ok(());
+        return keystrokes_mode(&sizes);
     }
     if !open_only {
         println!(
@@ -1195,7 +1263,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opens.push((tasks, open(tasks)?));
             continue;
         }
-        let (publish_ms, published) = publication(tasks)?;
+        let Publication {
+            ms: publish_ms,
+            resources: published,
+            ..
+        } = publication(tasks)?;
         let [(typing_sync, typing), (scrolling_sync, scrolling)] = per_frame(tasks)?;
         TASKS.store(tasks, Ordering::Relaxed);
         let (move_ms, publications) = drive_live_window::<Scaling, _>(pointer_moves)?;

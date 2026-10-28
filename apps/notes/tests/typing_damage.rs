@@ -4,8 +4,8 @@
 //! `App::surface_frame_with_damage` into a scene the host compares part by
 //! part (`ui::scene_parts`), exactly as the shell does.
 //!
-//! A keystroke repaints the line it edits, its caret and what else changed
-//! (the save status bubble), not the app; naming a note repaints its title,
+//! A keystroke repaints the line it edits, its caret and what else changed,
+//! not the app; naming a note repaints its title,
 //! not the page; a pointer resting on a toolbar button repaints the button.
 //! Every frame is presented sparsely over the frame before it and the result
 //! compared with a full render of the same scene, in dark, light and high
@@ -121,6 +121,7 @@ impl Host {
                 .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
                 .collect(),
             copies: Vec::new(),
+            earlier: Vec::new(),
         });
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
@@ -390,9 +391,8 @@ fn measure_within(
     (repainted, elapsed)
 }
 
-/// Begin a test: these share the toolkit's frozen wall clock (one test's
-/// minute turning over would change another's "Edited" line), so they run
-/// one at a time.
+/// Begin a test: they prepare the toolkit's language once, which is not
+/// safe to do from two threads at once.
 fn start() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let serial = SERIAL.lock_recover();
@@ -400,13 +400,22 @@ fn start() -> std::sync::MutexGuard<'static, ()> {
     serial
 }
 
-/// Pin the wall clock `seconds` after the epoch, so when a note says it was
-/// created and edited is the test's to choose.
-fn pin_wall(seconds: u64) {
-    ui::time::freeze_wall(
-        ui::time::UNIX_EPOCH
-            .checked_add(ui::time::Duration::from_secs(seconds))
-            .unwrap(),
+/// `seconds` after the epoch, as the note's "Created … · Edited …" line
+/// reads the clock it was told.
+fn at_seconds(seconds: u64) -> ui::time::SystemTime {
+    ui::time::UNIX_EPOCH
+        .checked_add(ui::time::Duration::from_secs(seconds))
+        .unwrap()
+}
+
+/// Read the note's dates against the wall clock `seconds` after the epoch,
+/// so when a note says it was created and edited is the test's to choose.
+/// The time is handed to the panel, not pinned process-wide: the threads of
+/// the tests beside this one keep their own clock.
+fn hold_edit_clock(app: &mut App, seconds: u64) {
+    assert!(
+        notes::MainPanel::hold_clock_at(app.root_widget_mut(), at_seconds(seconds)),
+        "the window shows a note"
     );
 }
 
@@ -422,16 +431,21 @@ fn dates_line(app: &App) -> Vec<String> {
 /// Open a new note in a fresh window, with the caret in its body, at a
 /// pinned wall clock.
 fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
-    pin_wall(1_790_000_000);
     app.set_theme(theme);
     app.init_layout();
     host.frames(app, 5);
     let first = bounds_of(app, "New note");
     host.click(app, first.center());
+    // The new note opens to be named; Enter keeps its name and goes to
+    // its body.
+    host.key(app, &Key::Named(NamedKey::Enter));
     // The pointer rests in the empty page below the note, so no button's
     // tooltip comes and goes while a test measures the note.
     host.input(app, cursor_moved(640.0, 700.0));
     host.frames(app, 5);
+    // The panel the note shows is mounted now, and reads the time this test
+    // hands it rather than the wall clock of whatever thread draws it.
+    hold_edit_clock(app, 1_790_000_000);
 }
 
 /// Let the note's record finish saving and show it, with no input, as it
@@ -600,15 +614,37 @@ fn invoke_with(app: &mut App, address: &tilo_actions::ActionAddress, arguments: 
 #[test]
 fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
     let _serial = start();
+    // A note's edit time is stamped from the process clock when its save
+    // commits, and the commit is not the test's thread to hold: the test
+    // takes the process to itself and holds the clock in it, so the save
+    // lands at the time the test names.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_keystroke_in_a_note_damages_its_line_not_the_app",
+        a_keystroke_at_the_time_the_test_names,
+    );
+}
+
+fn a_keystroke_at_the_time_the_test_names() {
+    let _held = ui::time::testing::hold_wall_everywhere(
+        ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+        at_seconds(1_790_000_000),
+    );
     for (name, theme) in THEMES {
         let theme = theme();
         drive_live_window::<NotesShell, _>(|app| {
             let mut host = Host::new();
             open_a_new_note(app, &mut host, theme.clone());
+            // The note reads the clock the test holds for the whole process,
+            // which is where its creation and its edits are stamped.
+            assert!(
+                notes::MainPanel::release_clock_in(app.root_widget_mut()),
+                "the window shows a note"
+            );
+            let_the_save_land(app, &mut host);
             let mut worst: f64 = 0.0;
             let mut times = Vec::new();
             for letter in ["T", "h", "e", " ", "f", "o", "x"] {
-                // The save of the previous key lands between keys.
                 let label = format!("{name}: the save landing before {letter:?}");
                 let (landed, _) = measure(app, &mut host, &theme, &label, let_the_save_land);
                 let label = format!("{name}: typing {letter:?}");
@@ -637,16 +673,21 @@ fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
             let label = format!("{name}: the edit time turning over a minute");
             let (_, _) = measure(app, &mut host, &theme, &label, let_the_save_land);
             let dates = dates_line(app);
-            pin_wall(1_790_000_120);
+            let later = at_seconds(1_790_000_120);
+            let _held = ui::time::testing::hold_wall_everywhere(
+                ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+                later,
+            );
             let (typed, _) = measure(app, &mut host, &theme, &label, |app, host| {
                 host.key(app, &character("!"));
             });
-            assert_ne!(dates, dates_line(app), "{label}: the line changed");
+            let_the_save_land(app, &mut host);
+            let after = dates_line(app);
+            assert_ne!(dates, after, "{label}: the line changed");
             eprintln!(
                 "notes-typing-damage {name} minute_turnover frame_px={:.0}",
                 typed.largest
             );
-            // The line, the bubble and the header's line.
             assert!(
                 typed.largest < app_area() * 0.1,
                 "{label}: repainted {:.0} px, over 10 % of the app",
@@ -766,7 +807,6 @@ fn a_keystroke_in_a_code_block_damages_its_run_not_the_editor() {
                 mentions(app, "let") && mentions(app, "x+1"),
                 "{name}: the keys reached the code block"
             );
-            // A note that holds a code block types its prose as any note.
             host.click(app, bounds_of_value(app, "Intro").center());
             host.frames(app, 3);
             let case = format!("{name} paragraph-beside-code");
@@ -860,7 +900,6 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let work = item_id(app, "tags", "work");
             let label = format!("{name}: removing a tag");
             let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
-                // Taking a tag off a note is an edit of the note's tags.
                 let untag = ui::tilo_resource::Invoke::from(
                     notes::notebook::Notebook::paths()
                         .pages
@@ -982,7 +1021,6 @@ fn enter_that_adds_a_block_damages_the_blocks_below_not_the_window() {
                 (&theme, &label),
                 &Key::Named(NamedKey::Enter),
             );
-            // The caret went with "line" to the start of its new paragraph.
             type_text(app, &mut host, "a ");
             host.frames(app, 3);
             assert!(
@@ -1056,7 +1094,6 @@ fn backspace_that_removes_a_block_damages_the_blocks_below_not_the_window() {
                 "{label}: the paragraphs joined: {:?}",
                 values_of(app, "Block text")
             );
-            // Removing an empty paragraph between two.
             caret_in(app, &mut host, "Alpha line", 0);
             host.key(app, &Key::Named(NamedKey::Enter));
             host.frames(app, 3);
@@ -1126,7 +1163,6 @@ fn the_caret_entering_an_empty_paragraph_damages_the_caret_not_the_line() {
                     app_area_at(scale),
                     entered.whole,
                 );
-                // The caret landed in the empty paragraph.
                 type_text(app, &mut host, "b");
                 host.frames(app, 3);
                 assert_eq!(
@@ -1170,7 +1206,6 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             // whether the bubble changes within Enter's frames depends on how
             // fast the save lands.
             let_the_save_land(app, &mut host);
-            // Naming the note in its title renames its row in the page tree.
             let label = format!("{name}: naming the note in its title");
             let (named, _) = measure(app, &mut host, &theme, &label, |app, host| {
                 host.key(app, &Key::Named(NamedKey::Enter));

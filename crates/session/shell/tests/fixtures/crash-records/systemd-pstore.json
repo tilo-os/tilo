@@ -1,0 +1,4 @@
+{"__REALTIME_TIMESTAMP": "1761379200000000", "MESSAGE": "PStore dmesg-ramoops-0.", "FILE": "Panic#1 Part1\n<0>[  612.000100] Kernel panic - not syncing: softlockup: hung tasks\n<4>[  612.000120] CPU: 3 PID: 0 Comm: swapper/3\n"}
+{"__REALTIME_TIMESTAMP": "1761379200000100", "MESSAGE": "PStore console-ramoops-0.", "FILE": "[    0.000000] Booting Linux on physical CPU 0x0\n"}
+{"__REALTIME_TIMESTAMP": "1761379200000200", "MESSAGE": "PStore dmesg-ramoops-1.", "FILE": [79, 111, 112, 115, 35, 49, 32, 80, 97, 114, 116, 49, 10, 60, 49, 62, 91, 32, 32, 53, 48, 48, 46, 49, 93, 32, 73, 110, 116, 101, 114, 110, 97, 108, 32, 101, 114, 114, 111, 114, 58, 32, 255, 10]}
+{"__REALTIME_TIMESTAMP": "1761379200000300", "MESSAGE": "Finished systemd-pstore.service."}

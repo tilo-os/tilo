@@ -9,6 +9,7 @@
 //! [`apply_command`].
 
 use serde::{Deserialize, Serialize};
+use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
 use crate::ids::{MintIds, StripId};
@@ -20,8 +21,10 @@ use crate::workspace::Workspace;
 
 mod admission;
 mod placement;
+pub mod policy;
 pub use admission::{check_owned, namespace_counter, resolve_open_app};
 pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
+pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
@@ -238,10 +241,6 @@ impl DesktopCommand {
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
-///
-/// # Errors
-///
-/// Why the JSON is not a shortcut, or names none.
 pub fn decode_shortcut(json: &str) -> Result<tilo_automation::Shortcut, String> {
     let shortcut: tilo_automation::Shortcut =
         serde_json::from_str(json).map_err(|error| format!("not a shortcut: {error}"))?;
@@ -263,7 +262,6 @@ pub fn stamp_saver(json: &str, saver: &str) -> Result<String, String> {
     serde_json::to_string(&shortcut).map_err(|error| error.to_string())
 }
 
-/// `kind` of a desktop command receipt value.
 pub const RECEIPT_KIND: &str = "desktop.command";
 
 /// Identity of one desktop command (optimistic open, close, reorder): the
@@ -665,6 +663,7 @@ fn duplicate_tab(
         id,
         title,
         tile: content,
+        app_title: None,
     };
     group_at_mut(workspace, strip, group)?
         .tabs
@@ -757,7 +756,6 @@ fn split_tab(
     Ok(())
 }
 
-/// Apply a shortcut command to `workspace`'s saved shortcuts.
 fn apply_shortcut_command(
     workspace: &mut Workspace,
     command: &DesktopCommand,
@@ -775,7 +773,7 @@ fn apply_shortcut_command(
             }
             workspace
                 .shortcuts
-                .sort_by(|left, right| left.id.cmp(&right.id));
+                .compact_sort_by(|left, right| left.id.cmp(&right.id));
         }
         DesktopCommand::DeleteShortcut { id } => {
             let before = workspace.shortcuts.len();
@@ -789,13 +787,9 @@ fn apply_shortcut_command(
     Ok(())
 }
 
-/// Canonical topology reduction. The host checks authority and supplies fresh
-/// identities and a checked record constructor before the tab enters the tree.
-///
-/// # Errors
-///
-/// Returns a description when the command no longer matches the topology, a
-/// name is invalid, or `mint`/`create` refuses.
+/// Canonical topology reduction. The host checks authority ([`may_command`])
+/// and supplies fresh identities and a checked record constructor before the
+/// tab enters the tree.
 pub fn apply_command(
     workspace: &mut Workspace,
     command: &DesktopCommand,
@@ -829,6 +823,7 @@ pub fn apply_command(
                 id,
                 title,
                 tile: content,
+                app_title: None,
             };
             place(workspace, tab, placement, group, strip)?;
         }
@@ -890,6 +885,57 @@ pub fn apply_command(
         }
     }
     Ok(())
+}
+
+/// Apply a strip or workspace edit (`CreateStrip`, `RenameStrip`,
+/// `RemoveStrip`, `MoveStrip`, `RenameWorkspace`) to `tree`'s active
+/// workspace, the one path every host edits strips and names through. A
+/// created strip becomes the workspace's shown strip and is returned; a
+/// removed strip that was shown hands that to the workspace's first.
+pub fn apply_to_active_workspace(
+    tree: &mut DesktopTree,
+    command: &DesktopCommand,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<Option<StripId>, String> {
+    if !matches!(
+        command,
+        DesktopCommand::CreateStrip { .. }
+            | DesktopCommand::RenameStrip { .. }
+            | DesktopCommand::RemoveStrip { .. }
+            | DesktopCommand::MoveStrip { .. }
+            | DesktopCommand::RenameWorkspace { .. }
+    ) {
+        return Err("not a strip or workspace edit".into());
+    }
+    let active = tree.active;
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == active)
+        .ok_or("there is no active workspace")?;
+    let before = workspace.strips.len();
+    apply_command(workspace, command, mint, &mut |_, _| {
+        Err("a strip or workspace edit creates no record".into())
+    })?;
+    let made = matches!(command, DesktopCommand::CreateStrip { .. })
+        .then(|| workspace.strips.get(before).map(|strip| strip.id))
+        .flatten();
+    let first = workspace.strips.first().map(|strip| strip.id);
+    if let Some(made) = made {
+        tree.active_strip.insert(active, made);
+    }
+    if let DesktopCommand::RemoveStrip { strip } = command {
+        let removed = StripId(*strip);
+        // A removed strip shown goes to the workspace's first, as the
+        // native shell's removal does; it keeps no focused window.
+        if tree.active_strip.get(&active) == Some(&removed)
+            && let Some(first) = first
+        {
+            tree.active_strip.insert(active, first);
+        }
+        tree.active_group.remove(&removed);
+    }
+    Ok(made)
 }
 
 /// Name `strip`.

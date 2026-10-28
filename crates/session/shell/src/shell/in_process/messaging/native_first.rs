@@ -174,10 +174,7 @@ impl Actor {
             (self.port.wake)();
         }
     }
-    fn prepare(
-        &self,
-        apps: &mut super::super::InProcessApps,
-    ) -> Result<EnrollmentReview, SendError> {
+    fn prepare(&self, apps: &super::super::InProcessApps) -> Result<EnrollmentReview, SendError> {
         if self.attempt.borrow().is_some()
             || !self.active.borrow().is_empty()
             || apps.native_messaging_transport.is_none()
@@ -296,7 +293,6 @@ impl Actor {
                 &attempt.review.scope,
             )
             .map_err(|_| SendError::Revoked)?;
-            super::first_account::ensure_contacts(apps, &attempt.identity)?;
             self.start(
                 apps,
                 attempt.identity.clone(),
@@ -438,7 +434,6 @@ impl Actor {
                     )
                     .map_err(|_| SendError::Revoked)?;
                 credential.check()?;
-                super::first_account::ensure_contacts(apps, &identity)?;
                 self.start(apps, identity, credential, scope)
             })();
             if result.is_err() {

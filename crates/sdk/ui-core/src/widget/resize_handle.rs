@@ -4,7 +4,7 @@
 //! It resizes nothing itself. Which window a press on a seam resizes, and
 //! how, is one rule in [`super::edge_resize`], applied by the row: the seam
 //! is split between the two windows (the focused one owning all of it), and
-//! the owner's own edge grip lights up under the pointer. A seam that drove
+//! the owner's own edge lights up under the pointer. A seam that drove
 //! its left neighbour's width was how "grabbing Files' left edge resized the
 //! terminal beside it" came about, so the seam no longer drives anything.
 //!
@@ -134,7 +134,7 @@ impl Widget for ResizeHandle {
         _presence: &PresenceCtx,
     ) {
         // Always the idle rule: under the pointer it is the owning window's
-        // own edge grip that lights up, so the seam never suggests that
+        // own edge that lights up, so the seam never suggests that
         // the gap itself, or both windows, will move.
         let thickness = HANDLE_VISIBLE_PX;
         let mid_x = f64::midpoint(self.left_rect.x1, self.right_rect.x0);

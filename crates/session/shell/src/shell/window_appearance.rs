@@ -116,6 +116,9 @@ impl WindowAppearances {
                 .and_then(|id| self.temperatures.get(id).copied())
                 .flatten(),
             your_colour: Some(self.your_colour),
+            // The shape is the window's own, said where its tile is known
+            // (`FrameBuilder::window_appearance_for_app`).
+            corner_radius: None,
         }
     }
 
@@ -150,6 +153,7 @@ mod tests {
             WindowAppearance {
                 workspace_hue: Some(40.0),
                 your_colour: Some(PresenceHue::Teal),
+                corner_radius: None,
             }
         );
         assert_eq!(

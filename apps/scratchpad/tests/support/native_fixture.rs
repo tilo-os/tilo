@@ -1,5 +1,3 @@
-//! Deterministic note content written through the real application.
-
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -25,9 +23,6 @@ pub struct NativeFixtureManifest {
 ///
 /// This refuses every existing path, including an empty directory or symlink.
 /// Body hashes are deterministic BLAKE3; document serialization need not be.
-///
-/// # Errors
-/// Returns directory creation, launch, action or storage errors.
 pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureManifest> {
     let (parent, name) = tilo_files::file_at(directory)?;
     match tilo_files::blocking::metadata(&parent, &name) {

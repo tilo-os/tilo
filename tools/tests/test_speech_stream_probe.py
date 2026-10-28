@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import sys
 import unittest
+from hang import HANG_BOUND
 
 RELEASE = Path(__file__).resolve().parents[1] / "release"
 sys.path.insert(0, str(RELEASE))
@@ -48,7 +49,7 @@ class PublicSpeechStressTests(unittest.TestCase):
             [sys.executable, str(RELEASE / 'probe_speech_stream.py'),
              '--manifest', '/nonexistent', '--worker', '/nonexistent',
              '--model', 'small-q5_1', '--case', 'fr_fr-0'],
-            env=environment, capture_output=True, text=True, timeout=10,
+            env=environment, capture_output=True, text=True, timeout=HANG_BOUND,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('requires an unprivileged, owned hardware-free namespace', result.stderr)

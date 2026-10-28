@@ -52,10 +52,9 @@ fn main() -> Result<(), String> {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        for (width, logical_width) in [(600, 600.0), (1100, 1100.0)] {
+        for width in [600, 1100] {
             let mut app = SettingsApp::with_config_root(output.join("private-config"))
-                .with_category(Category::Keyboard)
-                .with_width_hint(logical_width);
+                .with_category(Category::Keyboard);
             app.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
             app.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
                 std::sync::Arc::clone(&snapshot),

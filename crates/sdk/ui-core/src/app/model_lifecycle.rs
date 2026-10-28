@@ -31,11 +31,11 @@ struct HostedAuthorityWitness {
     owner: Option<crate::permissions::DirectoryPermissionWitness>,
 }
 
-/// Every input of the trailing `publish_action_surface` that can change
-/// without a resource-cache invalidation. Equal stamps mean that publication
-/// would recompute the same resources, descriptors and directory snapshot.
+/// Every input of `publish_action_surface` that can change without a
+/// rebuild of the widget tree. Equal stamps mean that publication would
+/// recompute the same resources, descriptors and directory snapshot.
 #[derive(PartialEq, Eq)]
-struct HostedPublicationStamp {
+pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
@@ -43,12 +43,18 @@ struct HostedPublicationStamp {
     revision: String,
 }
 
+impl PublicationStamp {
+    /// The action directory's revision the surface was published at.
+    pub(super) fn revision(&self) -> &str {
+        &self.revision
+    }
+}
+
 #[derive(Default)]
 pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
     authority: Option<HostedAuthorityWitness>,
-    publication: Option<HostedPublicationStamp>,
 }
 
 /// What one hosted pump did; used by focused tests and the timing trace.
@@ -114,14 +120,32 @@ impl super::App {
                 crate::bound_dispatch::can_merge_remote_owned_document(store, checkout).ok()
             });
             serde_json::json!({
+                "app": entry.route.app_id,
+                "record": entry.route.record,
                 "owners": entry.owners.len(),
                 "merge_ready": merge_ready,
                 "pending_remote": !entry.pending.is_empty(),
                 "committed_read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
                 "committed_read_phase": self.collaboration.manager.controlled_document_read_phase_for_test(&entry.route),
+                "join_failure": self.collaboration.manager.route_join_failure(&entry.route),
                 "committed_queue": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
             })
         }).collect()
+    }
+
+    /// Ask every document route's reader for its whole committed read again,
+    /// as an owner being rebuilt does. How many routes took the ask.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_request_committed_reads_for_test(&self) -> usize {
+        self.document_routes
+            .owners
+            .iter()
+            .filter(|entry| {
+                self.collaboration
+                    .manager
+                    .controlled_request_whole_read_for_test(&entry.route)
+            })
+            .count()
     }
 
     /// Observe the production guard for acknowledged private continuity.
@@ -150,6 +174,8 @@ impl super::App {
         }
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.inputs");
         let (inbound, directory) = self.pump_collab_presence_inner(true);
         // Retire expired/cancelled jobs before their later model continuation.
         // A completion produced below is polled on the following host pass.
@@ -166,6 +192,8 @@ impl super::App {
             || !self.actions.pending_application_launches.is_empty();
         let next_deadline = self.root_widget.next_wake_deadline();
         let deadline_due = next_deadline.is_some_and(|deadline| deadline <= crate::time::now());
+        #[cfg(test)]
+        drop(probe);
         let mut force_sync = always_refresh
             || inbound
             || authority_changed
@@ -182,26 +210,38 @@ impl super::App {
             || self.needs_sync
             || wakes.is_some_and(|(pending, _)| pending)
         {
-            // Drain model notifications and advance update-driven widgets.
             report.updated = true;
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("pump.update");
             self.update_model();
             // A model-dirty wake raised while draining joins this sync.
             force_sync |= self.take_hosted_wakes().is_none_or(|(_, sync)| sync);
         }
         // A host pump is the worker's model frame and must drain asynchronous
         // notifications even when no native Wake/redraw event exists.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.sync");
         report.synced = self.sync_model(force_sync);
+        #[cfg(test)]
+        drop(probe);
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.idle");
         let progress = self.service_idle_model();
+        #[cfg(test)]
+        drop(probe);
         if progress.changed && !report.synced {
             // Local control/history/commit progress changed model state after
             // the (skipped) sync; the publication below must not reuse it.
             self.invalidate_widget_resource_cache();
         }
-        if always_refresh
-            || self.actions.hosted.publication.is_none()
-            || self.hosted_publication_stamp() != self.actions.hosted.publication
-        {
+        #[cfg(test)]
+        let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
+        if always_refresh || !self.publication_current() {
             report.published = true;
+            if always_refresh {
+                // Built again whatever the stamp says.
+                self.actions.published_stamp = None;
+            }
             self.publish_action_surface();
         } else if self.collaboration.manager.is_connected() {
             // Keep the idempotent directory-capability registration that the
@@ -214,9 +254,6 @@ impl super::App {
         // timer): the session's index follows it here too, not only on input.
         self.publish_search_index();
         self.finish_model_directory_refresh(directory);
-        if report.published {
-            self.actions.hosted.publication = self.hosted_publication_stamp();
-        }
         if let Some(started) = started {
             crate::diag!(
                 "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
@@ -264,7 +301,7 @@ impl super::App {
     /// `None` whenever publication cannot be proven current: disconnected,
     /// nothing published yet, an evicted directory snapshot or stamp, or an
     /// exhausted generation that no longer distinguishes later mutations.
-    fn hosted_publication_stamp(&self) -> Option<HostedPublicationStamp> {
+    pub(super) fn publication_stamp(&self) -> Option<PublicationStamp> {
         let resource_generation = self.actions.resource_generation.get();
         let permission_generation = self.actions.permission_generation.get();
         let registry_generation = self.actions.action_registry_generation;
@@ -281,13 +318,20 @@ impl super::App {
             return None;
         }
         let (_, revision) = self.actions.action_directory_stamp.as_ref()?;
-        Some(HostedPublicationStamp {
+        Some(PublicationStamp {
             resource_generation,
             permission_generation,
             registry_generation,
             route: self.bound_broker_route().cloned(),
             revision: revision.clone(),
         })
+    }
+
+    /// Whether a publication now would recompute what the last one
+    /// published, as far as the widget tree it reads stands.
+    pub(super) fn publication_current(&self) -> bool {
+        self.actions.published_stamp.is_some()
+            && self.publication_stamp() == self.actions.published_stamp
     }
 
     /// A native model pass acknowledges only wakes preceding this drain.
@@ -299,7 +343,24 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
-        if !self.root_widget.update(&self.state.doc, &self.state.root) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_update");
+        // The room's presence is state of the frame, lent under the window's
+        // authority, as the draw sees it.
+        let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
+        // What this update moved, not what a widget updated outside an app
+        // noted before it: that stays noted for its own host (an app hosted
+        // in a tile updates in the middle of its host's update).
+        let outer = crate::widget::take_layout_moved();
+        let updated = presence.with_permissions(self.permission_ctx.clone(), || {
+            crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
+        });
+        // An animation moved what its widget lays out: the window is laid
+        // out again. Any other animation frame is only drawn.
+        self.layout.layout_dirty |= crate::widget::take_layout_moved();
+        if outer {
+            crate::widget::note_layout_moved();
+        }
+        if !updated {
             return false;
         }
         self.invalidate_widget_resource_cache();
@@ -328,6 +389,11 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
+        // Declaring window-bar slots (or ceasing to) moves the app's
+        // History between a band of its own and the bar.
+        if self.floating.window_bar.note_slots_declared() {
+            self.layout.request_rebuild();
+        }
         // The record's durability changed and the root synced with it: a
         // frame presents it. Nothing about the tree changed, so it is not a
         // rebuild (which would repaint the whole window for a save bubble).
@@ -351,6 +417,7 @@ impl super::App {
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();
+        self.answer_held_invocations();
         true
     }
 
@@ -402,6 +469,15 @@ impl super::App {
         changed
     }
 
+    /// Whether a state pass outside a frame has work to do: a model update
+    /// anything asked for, a sync the tree owes, or a control invocation
+    /// settled state left queued for the sync to submit.
+    #[cfg(all(feature = "native", test))]
+    pub(super) fn state_tick_pending(&self) -> bool {
+        self.needs_sync
+            || crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
+    }
+
     #[cfg(feature = "native")]
     pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
         let mut changed = self.service_idle_model().changed;
@@ -416,8 +492,49 @@ impl super::App {
         IdleModelProgress { changed }
     }
 
+    /// Run the passes a frame runs before it paints, for a window that will
+    /// not paint: model update, sync and the control invocations a sync
+    /// submits, plus the layout those effects address. Rendering and state
+    /// are decoupled, so an app nobody is looking at (occluded on macOS, on
+    /// another Space, behind a full-screen app) still answers the wakes its
+    /// workers, its engine and its action door send, and a deferred
+    /// invocation is executed instead of waiting for a `RedrawRequested`
+    /// that never comes.
+    #[cfg(feature = "native")]
+    pub(super) fn run_state_tick(&mut self) {
+        let _entry = self.enter_wake_scope();
+        self.poll_model_invocations();
+        let updated = self.update_native_model();
+        // A widget schedules work for itself ([`Widget::next_wake_deadline`]:
+        // an engine handshake that is due, an operation whose window is about
+        // to time out) and serves it from the sync. A window that paints
+        // reaches it through the loop's deadline; one that is never drawn
+        // reaches it here, and a deadline left to wait for a frame is a
+        // request that answered nobody.
+        let now = crate::time::now();
+        let deadline_due = self
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        let served = deadline_due && self.root_widget.serve_deadline(now);
+        if !self.sync_model(updated || served) {
+            return;
+        }
+        // What the sync submitted and what widgets settled are geometry the
+        // effects behind them address.
+        self.layout.structure_dirty |= self.take_root_structure_dirty();
+        self.forget_replaced_widgets();
+        if self.layout.structure_dirty {
+            self.rebuild_structure();
+        }
+    }
+
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("idle.discovery");
         let history_changed = self.refresh_local_undo_discovery();
+        #[cfg(test)]
+        drop(probe);
         let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.

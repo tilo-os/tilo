@@ -37,10 +37,6 @@ fn recording_codecs() -> Vec<StreamCodec> {
 /// An encoder for a recording of this size, in the most compatible codec
 /// that works here. A listed codec can still refuse a size (hardware
 /// encoders have minimum dimensions), so each is tried in turn.
-///
-/// # Errors
-///
-/// Returns every codec's failure when none can encode this size.
 pub fn recording_encoder(
     width: u32,
     height: u32,
@@ -116,8 +112,6 @@ impl Mp4Recording {
         if with_audio { "mov" } else { "mp4" }
     }
 
-    /// # Errors
-    /// Returns pipeline construction or push errors.
     pub fn write_access_unit(&mut self, unit: &[u8]) -> Result<(), String> {
         if unit.is_empty() {
             return Ok(());
@@ -162,8 +156,6 @@ impl Mp4Recording {
     /// Append interleaved stereo S16LE samples (48 kHz) to a named MOV audio
     /// track. Partial sample frames stay with the caller; accepting only
     /// aligned buffers keeps timestamps exact.
-    /// # Errors
-    /// Returns invalid track, sample-shape or push errors.
     pub fn write_pcm_audio(&mut self, track_index: usize, pcm: &[u8]) -> Result<(), String> {
         let sample_index = self
             .audio_sample_indices

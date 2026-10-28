@@ -63,27 +63,6 @@ impl std::fmt::Debug for CalDavConfig {
 }
 
 impl CalDavConfig {
-    /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`
-    /// endpoint for the big providers. Mirrors what a desktop client's
-    /// autoconfig does. Returns true if it recognised the domain.
-    pub fn autofill_from_username(&mut self) -> bool {
-        let Some((_, domain)) = self.username.split_once('@') else {
-            return false;
-        };
-        let url = match domain.to_ascii_lowercase().as_str() {
-            "gmail.com" | "googlemail.com" => "https://apidata.googleusercontent.com/caldav/v2",
-            "icloud.com" | "me.com" => "https://caldav.icloud.com",
-            "fastmail.com" | "fastmail.fm" => "https://caldav.fastmail.com/dav/calendars",
-            "yahoo.com" => "https://caldav.calendar.yahoo.com",
-            other => {
-                self.server_url = format!("https://{other}/.well-known/caldav");
-                return false;
-            }
-        };
-        self.server_url = url.to_string();
-        true
-    }
-
     /// Field-level validation for the setup form: returns `(field, reason)`
     /// pairs for anything missing or malformed. Empty vec == valid.
     pub fn validate(&self) -> Vec<(&'static str, String)> {
@@ -302,48 +281,8 @@ impl AccountStore {
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// Compatibility loader; reports a sanitized error if custody cannot be opened.
-    pub fn load_from_settings() -> Option<Self> {
-        if let Ok(store) = Self::try_load() {
-            Some(store)
-        } else {
-            tracing::error!("calendar account credentials could not be opened");
-            None
-        }
-    }
-
-    /// Load accounts, returning credential custody failures to the caller.
-    ///
-    /// # Errors
-    /// Returns an error if the config root or protected credential storage is unavailable.
-    pub fn try_load() -> Result<Self, String> {
-        let root = accounts::config_root().ok_or("no config dir for calendar accounts")?;
-        let credentials = AccountCredentials::open()?;
-        Ok(Self::from_shared(
-            &SharedStore::load_in(&root),
-            Some(&credentials),
-        ))
-    }
-
-    /// Persist Calendar's account projection to the canonical shared store.
-    /// Other account types and their sealed secrets are retained by
-    /// [`Self::persist_in`]; callers receive an error when the real config
-    /// root cannot be resolved or written, rather than claiming a setting was
-    /// saved when it was not.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when no Tilo config root is available or persistence fails.
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
-        self.persist_with_vault(
-            &root,
-            AccountCredentials::open().map_err(std::io::Error::other)?,
-        )
-    }
-
-    /// Compatibility loader under an explicit recovery/test config root.
+    /// The accounts kept under the config root `config_root`, none when its
+    /// credentials cannot be opened.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
             tracing::error!("calendar account credentials could not be opened");
@@ -603,7 +542,6 @@ mod tests {
 
     #[test]
     fn account_store_round_trips_accounts_visibility_and_vaulted_secrets() {
-        // Case `shared_store_round_trips_accounts_and_calendars`.
         {
             let root = temp_root();
             let mut store = AccountStore::new();
@@ -628,7 +566,6 @@ mod tests {
             assert!(back.accounts[0].collapsed);
             std::fs::remove_dir_all(&root).ok();
         }
-        // Case `visibility_round_trip_preserves_unrelated_accounts_and_secrets`.
         {
             let root = temp_root();
             let other_id = AccountId::from("unrelated-service");
@@ -660,7 +597,6 @@ mod tests {
             assert!(SecretVault::open_in(&root).get(&other_id).is_some());
             std::fs::remove_dir_all(&root).ok();
         }
-        // Case `upsert_replaces_by_id_not_appends`.
         {
             let mut store = AccountStore::new();
             store.upsert(CalendarAccount::new(cfg("A", "a@x.example")));
@@ -670,7 +606,6 @@ mod tests {
             assert_eq!(store.len(), 1);
             assert_eq!(store.accounts[0].config.display_name, "A renamed");
         }
-        // Case `password_persists_to_the_vault_not_the_store_json`.
         {
             let root = temp_root();
             let mut c = cfg("A", "a@x.example");
@@ -693,11 +628,9 @@ mod tests {
             );
             std::fs::remove_dir_all(&root).ok();
         }
-        // Case `sample_store_has_accounts_and_calendars`.
         {
             let store = AccountStore::sample();
             assert_eq!(store.len(), 2);
-            // Two visible + one hidden calendar across the sample accounts.
             let total = store.all_calendars().count();
             assert_eq!(total, 4);
             let visible = store.all_calendars().filter(|(_, c)| c.visible).count();

@@ -999,6 +999,11 @@ impl XkbKeymap {
         }
     }
 
+    /// How many layouts (groups) of this keymap carry `keycode`.
+    pub fn num_layouts_for_key(&mut self, keycode: xkb_keycode_t) -> xkb_layout_index_t {
+        unsafe { (XKBH.xkb_keymap_num_layouts_for_key)(self.keymap.as_ptr(), keycode) }
+    }
+
     /// Check whether the given key repeats.
     pub fn key_repeats(&mut self, keycode: xkb_keycode_t) -> bool {
         unsafe { (XKBH.xkb_keymap_key_repeats)(self.keymap.as_ptr(), keycode) == 1 }

@@ -164,6 +164,7 @@ pub fn history() -> Vec<HistoryEntry> {
         url: url.into(),
         status,
         duration_ms,
+        replay: None,
     };
     vec![
         sent(HttpMethod::Get, "https://api.example.com/v2/users", 200, 84),

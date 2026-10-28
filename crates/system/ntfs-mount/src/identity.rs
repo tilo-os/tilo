@@ -55,10 +55,6 @@ impl UdevProperties {
     }
 
     /// Read the record for device `major:minor` under `udev_data`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error if udev has no record for the device.
     pub fn read(udev_data: &Path, major_minor: &str) -> io::Result<Self> {
         fs::read_to_string(udev_data.join(format!("b{major_minor}"))).map(|text| Self::parse(&text))
     }

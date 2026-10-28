@@ -13,7 +13,6 @@
 
 ## Old computers
 arrival-joke-netscape = Best viewed in Netscape Navigator 4.0 at 800×600
-arrival-joke-uninstalling-windows = Uninstalling Windows™®…
 arrival-joke-splines = Reticulating splines…
 arrival-joke-downloading-cloud = Downloading the cloud…
 arrival-joke-more-ram = Downloading more RAM…
@@ -43,7 +42,6 @@ arrival-joke-doughnuts = Eating doughnuts…
 
 ## About ourselves
 arrival-joke-free-beer = Free as in free beer (and freedom, too)
-arrival-joke-interjection = I’d like to interrupt for a moment. What you are referring to as Li…
 arrival-joke-fomo = Fighting FOMO…
 arrival-joke-taking-our-time = Taking our time…
 arrival-joke-shy-gpu = Warming up the GPU (it’s shy)…
@@ -62,7 +60,95 @@ arrival-tip-operating-system = Tilo is an operating system. This one runs in you
 #   Wiggle your cursor next to someone to chat with them
 #   Strips as places
 
-## Said instead of a line when the network, or the first frame, is slow
+## Said instead of a line when a step of getting in is slow
 arrival-slow-loading = Still loading. Your network may be slow.
 arrival-slow-connecting = Still connecting. Your network may be slow.
+arrival-slow-starting = Still starting Tilo. This device may be busy.
+arrival-slow-opening = Still opening the workspace.
 arrival-slow-drawing = Still starting graphics. Without a graphics card this takes longer.
+# Said with Try again beside it once a step has not moved on for long; the
+# page keeps waiting meanwhile.
+arrival-stalled = This is taking longer than it should. Keep waiting, or try again.
+
+## Said in the line's place when the page cannot get in or go on
+# { $workspace } is the workspace's name; a message ending in -unnamed is
+# said where the page does not know it.
+arrival-retry = Try again
+arrival-failed-stopped-drawing = The desktop stopped working. Try again to start it.
+arrival-failed-unreachable = Can’t reach { $workspace } right now. Check your connection, then try again.
+arrival-failed-unreachable-unnamed = Can’t reach the workspace right now. Check your connection, then try again.
+arrival-failed-desktop = You got into { $workspace }, but its desktop did not start in this tab. Try again.
+arrival-failed-desktop-unnamed = You got into the workspace, but its desktop did not start in this tab. Try again.
+arrival-failed-general = Something went wrong opening { $workspace }. Try again, or come back later.
+arrival-failed-general-unnamed = Something went wrong opening the workspace. Try again, or come back later.
+arrival-failed-removed = You were removed from { $workspace }. To come back, ask someone in it for a new invitation.
+arrival-failed-removed-unnamed = You were removed from this workspace. To come back, ask someone in it for a new invitation.
+arrival-failed-invitation-only = You need an invitation to join { $workspace } for now. Ask someone in it for an invite link, then open it here.
+arrival-failed-invitation-only-unnamed = You need an invitation to join this workspace for now. Ask someone in it for an invite link, then open it here.
+arrival-door-heading = { $workspace } is invite-only for now
+arrival-door-heading-unnamed = This workspace is invite-only for now
+arrival-door-body = Ask someone in it for an invite link, then paste it here.
+arrival-invite-link = Invite link
+arrival-invite-placeholder = Paste an invite link
+arrival-invite-open = Open
+arrival-invite-not-a-link = That isn’t an invite link. Paste the whole link you were sent.
+arrival-door-wait-heading = Sorry, Tilo is invite-only right now
+arrival-door-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
+arrival-wait-email = Email
+arrival-wait-placeholder = you@example.com
+arrival-wait-join = Join the wait list
+arrival-wait-inbox = Check your inbox: we sent a link to { $email } to confirm.
+arrival-wait-again-prompt = Didn’t get it?
+arrival-wait-again = Send it again
+arrival-wait-again-sent = Asked again. We send at most one link an hour, so check your spam folder too.
+arrival-wait-listed = You’re on the list ({ $email })
+arrival-wait-confirmed = You’re on the list.
+arrival-wait-invited = You’re invited: the link is in your inbox.
+arrival-wait-invited-no-mail = You’re invited: whoever invited you sends you the link.
+arrival-wait-expired = That link no longer works. Leave your address again.
+arrival-wait-change = Changed your mind?
+arrival-wait-leave = Take me off the list
+arrival-wait-left = You’re off the list.
+arrival-wait-leave-too-many = Too many tries from your network just now. Try again later.
+arrival-wait-privacy = We only use your email to send you an invite.
+arrival-wait-privacy-mail = We email you a link to confirm, then your invite. Nothing else.
+arrival-wait-no-mail = No email is sent from here: whoever invites you sends you the link.
+arrival-wait-contact = Questions or removal: { $contact }
+arrival-wait-invalid = That doesn’t look like an email address.
+arrival-wait-too-many = Too many sign-ups from your network just now. Try again later.
+arrival-wait-full = The wait list is full for now. Please try again in a few days.
+arrival-wait-failed = That didn’t go through. Try again in a moment.
+arrival-sign-in-ask = Already have a Tilo identity?
+arrival-sign-in = Sign in
+arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.
+arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.
+arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.
+arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
+arrival-invite-toggle = Have an invite link?
+arrival-door-own = Or try Tilo on your own
+arrival-failed-cooling-down = { $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
+arrival-failed-cooling-down-unnamed = This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
+arrival-failed-custody-busy = Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.
+arrival-failed-custody-busy-unnamed = Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.
+
+## The reconnect screen: the page was not let in yet and tries again
+# { $time } is how long until the next try, such as "40 s" or "2 min 05 s".
+arrival-reconnect-unreachable = Can’t reach { $workspace }
+arrival-reconnect-unreachable-unnamed = Can’t reach the workspace
+arrival-reconnect-unreachable-body = It may be restarting. It opens here as soon as it’s back.
+arrival-reconnect-refused = Not in { $workspace } yet
+arrival-reconnect-refused-unnamed = Not in the workspace yet
+arrival-reconnect-refused-body = It turned this browser away for now. The next try asks as a new device of yours.
+arrival-reconnect-offline = You’re offline
+arrival-reconnect-offline-body = The workspace opens as soon as you’re back online.
+arrival-reconnect-busy = { $workspace } is busy
+arrival-reconnect-busy-unnamed = The workspace is busy
+arrival-reconnect-busy-body = A lot of people are getting in right now. It opens here once there’s room.
+arrival-reconnect-next = Trying again in { $time }
+arrival-reconnect-trying = Trying now…
+arrival-reconnect-waiting-online = Waiting for the network…
+arrival-reconnect-try-now = Try now
+arrival-reconnect-details = Technical details
+arrival-reconnect-copy = Copy details
+arrival-reconnect-copied = Copied
+arrival-reconnect-copy-failed = Couldn’t copy. Select the text instead.

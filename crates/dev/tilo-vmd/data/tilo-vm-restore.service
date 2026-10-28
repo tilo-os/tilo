@@ -6,7 +6,7 @@ Wants=systemd-logind.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/tilo-vmd restore
+ExecStart=/usr/libexec/tilo/tilo-vmd restore
 RemainAfterExit=yes
 
 [Install]

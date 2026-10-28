@@ -12,7 +12,7 @@ name: Build / env tool catalog
 # fingerprint>, Cosign-signed. The fingerprint covers the catalog list and
 # the builder sources that decide an image's contents, so an unchanged
 # catalog on an unchanged runtime exits early. Until the runtime is
-# published a main run waits by exiting early; the scheduled run builds the
+# published a stable run waits by exiting early; the scheduled run builds the
 # catalog once it is. A dispatch on a branch builds against the published
 # runtime, or an unpublished preview of it when there is none, seals with a
 # throwaway key and publishes nothing.
@@ -22,7 +22,7 @@ on:
   schedule:
     - cron: "11 */6 * * *"
   push:
-    branches: [main]
+    branches: [stable]
     paths:
       - os/env-tools-catalog.txt
       - os/Containerfile.env-tools
@@ -32,7 +32,7 @@ on:
       - .forgejo/workflows/build-env-tools.yml
 
 concurrency:
-  group: env-tools-${{ github.ref == 'refs/heads/main' && 'publication' || github.ref }}
+  group: env-tools-${{ github.ref == 'refs/heads/stable' && 'publication' || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
             1) runtime=preview ;;
             *) exit "$status" ;;
           esac
-          if [[ $GITHUB_REF == refs/heads/main ]]; then
+          if [[ $GITHUB_REF == refs/heads/stable ]]; then
             if [[ $runtime == preview ]]; then
               echo "::notice::the env-runtime for this checkout is not published yet; the scheduled run builds the catalog once it is"
               build=false

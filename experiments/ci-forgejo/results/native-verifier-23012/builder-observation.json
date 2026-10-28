@@ -1,7 +1,0 @@
-{
-  "api_run_id": 23012,
-  "job_id": 84453,
-  "observed_log_timestamp": "2026-09-19T01:51:14.5642416Z",
-  "resolved_image": "code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
-  "source": "Successful builder job log: Resolved CI builder; followed by setting image output"
-}

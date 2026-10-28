@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_automation::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
+    Binding, Condition, Selector, Shortcut, Step, StepKind, StepPolicy, TriggerSpec,
 };
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -29,6 +29,10 @@ pub struct Program {
     /// keeps when it runs on its own and what it may do then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
+    /// How long each step of a run may take before it is given up on
+    /// (`Shortcut::step_timeout_secs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_timeout_secs: Option<u64>,
 }
 
 /// One shortcut being written.
@@ -60,6 +64,9 @@ pub struct Draft {
     /// Carried unchanged from the saved shortcut, so editing its steps
     /// keeps when it runs on its own and what it may do then.
     pub triggers: Vec<TriggerSpec>,
+    /// Carried unchanged like the triggers: how long each step of a run may
+    /// take, or `None` for the engine's own patience.
+    pub step_timeout_secs: Option<u64>,
     /// Whether saving replaces a saved shortcut rather than creating one.
     pub replaces_saved: bool,
 }
@@ -79,6 +86,9 @@ pub struct StepNode {
     pub head: Option<Head>,
     /// An action step's arguments, each bound on its own.
     pub args: BTreeMap<String, Binding>,
+    /// What the run does when the step fails; [`StepPolicy::Fail`], the
+    /// default, stops it.
+    pub on_error: StepPolicy,
 }
 
 /// A [`StepKind`] without the parts a [`StepNode`] stores apart: an action's
@@ -107,8 +117,26 @@ pub enum Head {
         param: ActionParam,
     },
     Ai {
-        transform: AiTransform,
-        input: Binding,
+        /// What to do, in the person's words.
+        prompt: String,
+        /// The step's own input; the step before it when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Binding>,
+        /// The shape the answer must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+    },
+    Task {
+        /// What the task is to do, in the person's words.
+        instruction: String,
+        /// What it may use, as the grant node of each action. It narrows the
+        /// shortcut's own grant and never widens it. Held as the values the
+        /// policy layer reads, the shape the agent's task action takes them in.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<serde_json::Value>,
+        /// The shape the summary must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -169,10 +197,31 @@ impl Head {
                 BTreeMap::new(),
                 Vec::new(),
             ),
-            StepKind::Ai { transform, input } => (
+            StepKind::Ai {
+                prompt,
+                output,
+                input,
+            } => (
                 Self::Ai {
-                    transform: transform.clone(),
+                    prompt: prompt.clone(),
+                    output: output.clone(),
                     input: input.clone(),
+                },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+            StepKind::Task {
+                instruction,
+                allow,
+                output,
+            } => (
+                Self::Task {
+                    instruction: instruction.clone(),
+                    allow: allow
+                        .iter()
+                        .filter_map(|rule| serde_json::to_value(rule).ok())
+                        .collect(),
+                    output: output.clone(),
                 },
                 BTreeMap::new(),
                 Vec::new(),
@@ -210,7 +259,27 @@ impl Head {
             },
             Self::SetVar { name, value } => StepKind::SetVar { name, value },
             Self::Ask { param } => StepKind::Ask { param },
-            Self::Ai { transform, input } => StepKind::Ai { transform, input },
+            Self::Ai {
+                prompt,
+                output,
+                input,
+            } => StepKind::Ai {
+                prompt,
+                output,
+                input,
+            },
+            Self::Task {
+                instruction,
+                allow,
+                output,
+            } => StepKind::Task {
+                instruction,
+                allow: allow
+                    .iter()
+                    .filter_map(|rule| serde_json::from_value(rule.clone()).ok())
+                    .collect(),
+                output,
+            },
         }
     }
 }
@@ -242,6 +311,7 @@ impl Draft {
             steps: self.block("", ""),
             output: self.output.clone(),
             triggers: self.triggers.clone(),
+            step_timeout_secs: self.step_timeout_secs,
         }
     }
 
@@ -254,7 +324,7 @@ impl Draft {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
-                Some(Step::new(node.id.0.clone(), kind))
+                Some(Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone()))
             })
             .collect()
     }
@@ -326,6 +396,7 @@ impl Draft {
                 id: Atom(step.id.clone()),
                 head: Some(head),
                 args,
+                on_error: step.on_error.clone(),
             };
             match self.steps.get_mut(&key) {
                 Some(stored) => {
@@ -356,6 +427,7 @@ impl Draft {
             output: program.output,
             grant,
             triggers: program.triggers,
+            step_timeout_secs: program.step_timeout_secs,
             saved_by: None,
         }
     }
@@ -375,6 +447,33 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
     pub drafts: Collection<Draft>,
+    /// The repeated work the person said no to: the sequence of actions
+    /// ([`crate::proposal::Proposal::key`]), so it is not offered again. It
+    /// says nothing about what the person did, only which proposals were
+    /// turned down.
+    pub ignored: Vec<String>,
+}
+
+/// `name`, numbered past the drafts that already go by it: "New shortcut",
+/// then "New shortcut 2", "New shortcut 3".
+fn unused_name(workbench: &Workbench, name: &str) -> String {
+    let base = name.trim();
+    let number = |taken: &str| -> Option<u32> {
+        let rest = taken.trim().strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = workbench
+        .drafts
+        .iter()
+        .filter_map(|(_, draft)| number(&draft.name))
+        .max();
+    match highest {
+        Some(highest) if !base.is_empty() => format!("{base} {}", highest.saturating_add(1)),
+        _ => name.to_owned(),
+    }
 }
 
 fn draft_mut<'a>(workbench: &'a mut Workbench, draft: &Id) -> Result<&'a mut Draft, Refusal> {
@@ -412,6 +511,11 @@ pub fn upgrade(
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ObjType, ReadDoc as _, Value};
     use ui::tilo_resource::evolution::{collection_items, retype_json, retype_json_items};
+    if from == 2 {
+        // Version 3 adds the proposals the person turned down; a workbench
+        // that predates it has turned none down.
+        return Ok(());
+    }
     if from != 1 {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Shortcuts workbench migration from {from}"
@@ -437,19 +541,103 @@ pub fn upgrade(
 #[resource(
     kind = "shortcuts.workbench",
     label = "Shortcuts",
-    version = 2,
+    version = 3,
     migrate = upgrade
 )]
 impl Workbench {
+    /// Open a shortcut the app proposed, named after the work it noticed, as
+    /// an unsaved draft for review. Never arms a trigger.
+    #[action]
+    pub fn draft_proposal(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The shortcut that does the repeated work, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        if shortcut.to_string().len() > 16 * 1024 {
+            return Err(Refusal::new("Shortcut draft is too large"));
+        }
+        let shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        if self
+            .drafts
+            .iter()
+            .any(|(_, draft)| draft.name.trim() == shortcut.name.trim())
+        {
+            return Err(Refusal::new(format!(
+                "A draft called “{}” is already open",
+                shortcut.name.trim()
+            )));
+        }
+        let id = cx.id();
+        let draft_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: Vec::new(),
+            step_timeout_secs: shortcut.step_timeout_secs,
+        };
+        let draft = Draft::new(shortcut.name, draft_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, draft);
+        Ok(())
+    }
+
+    /// Do not offer this repeated work again.
+    #[action]
+    pub fn ignore_proposal(
+        &mut self,
+        #[param("The steps of the proposal, as its key")] key: String,
+    ) {
+        if key.trim().is_empty() {
+            return;
+        }
+        if !self.ignored.contains(&key) {
+            self.ignored.push(key);
+        }
+    }
+
+    /// Offer this repeated work again after all.
+    #[action]
+    pub fn allow_proposal(&mut self, #[param("The proposal's key")] key: String) {
+        self.ignored.retain(|ignored| *ignored != key);
+    }
     /// Start a new shortcut.
+    ///
+    /// A name another draft already has is numbered ("New shortcut 2"), so
+    /// the drafts can be told apart in the list.
     #[action]
     pub fn new_draft(&mut self, cx: &mut ActionCx, #[param("Name of the shortcut")] name: String) {
+        let name = unused_name(self, &name);
         let id = cx.id();
         let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
         let draft = Draft::new(name, shortcut_id, &Program::default(), false, &mut || {
             cx.id()
         });
         self.drafts.push(id, draft);
+    }
+
+    /// Copy a draft, its steps, inputs and triggers, into a new unsaved
+    /// draft named after it. A variant starts from the whole automation
+    /// instead of being rebuilt step by step.
+    #[action]
+    pub fn duplicate_draft(&mut self, cx: &mut ActionCx, draft: &Id) -> Result<(), Refusal> {
+        let original = self
+            .drafts
+            .get(draft)
+            .cloned()
+            .ok_or_else(|| Refusal::from("there is no such draft"))?;
+        let program = original.program();
+        let name = if original.name.trim().is_empty() {
+            String::from("Copy")
+        } else {
+            format!("{} copy", original.name.trim())
+        };
+        let name = unused_name(self, &name);
+        let id = cx.id();
+        let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let copy = Draft::new(name, shortcut_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, copy);
+        Ok(())
     }
 
     /// Import a shortcut as an unsaved draft for review. Never arms a trigger.
@@ -471,6 +659,7 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: Vec::new(),
+            step_timeout_secs: shortcut.step_timeout_secs,
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, false, &mut || cx.id());
         self.drafts.push(id, draft);
@@ -492,9 +681,41 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: shortcut.triggers,
+            step_timeout_secs: shortcut.step_timeout_secs,
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, true, &mut || cx.id());
         self.drafts.push(id, draft);
+        Ok(())
+    }
+
+    /// Copy a saved shortcut into a new unsaved draft for review. Its
+    /// triggers are carried, so a duplicate that runs on its own is reviewed
+    /// in the save sheet before it is armed.
+    #[action]
+    pub fn duplicate_shortcut(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The saved shortcut, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        let shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: shortcut.triggers,
+            step_timeout_secs: shortcut.step_timeout_secs,
+        };
+        let name = if shortcut.name.trim().is_empty() {
+            String::from("Copy")
+        } else {
+            format!("{} copy", shortcut.name.trim())
+        };
+        let name = unused_name(self, &name);
+        let id = cx.id();
+        let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let copy = Draft::new(name, shortcut_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, copy);
         Ok(())
     }
 
@@ -659,6 +880,88 @@ impl Workbench {
         })
     }
 
+    /// Say what a run does when a step fails: stop (the default), try it
+    /// again a few times, do something else instead, or go on with a value
+    /// of the shortcut's own.
+    #[action]
+    pub fn set_step_policy(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("What to do when it fails, as JSON; empty stops the run")] policy: String,
+    ) -> Result<(), Refusal> {
+        let policy: StepPolicy = if policy.trim().is_empty() {
+            StepPolicy::Fail
+        } else {
+            serde_json::from_str(&policy)
+                .map_err(|error| Refusal::new(format!("not a policy: {error}")))?
+        };
+        edit_program(self, cx, draft, |program| {
+            step_mut(&mut program.steps, &path)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .on_error = policy;
+            Ok(())
+        })
+    }
+
+    /// Move a step into another block of the same draft: `""` for the top
+    /// level, or a block of a step such as `2.then`, `2.else` or `3.each`.
+    /// It lands at `index` there, counted from 0 (past the block's last
+    /// step puts it last), and the steps that follow it make room. A step
+    /// never moves inside its own blocks.
+    #[action]
+    pub fn set_nested(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("The block it moves into: empty for the top level, or like 2.then")] block: String,
+        #[param("Where it lands there: 0 first, or past its last step")] index: usize,
+    ) -> Result<(), Refusal> {
+        draft_mut(self, draft)?
+            .step_item(&path)
+            .ok_or_else(|| Refusal::new(format!("there is no step `{path}`")))?;
+        edit_program(self, cx, draft, |program| {
+            let (from, at) = split_path(&path).ok_or_else(|| format!("no step `{path}`"))?;
+            let moved = block_at(&program.steps, from)
+                .and_then(|steps| steps.get(at))
+                .cloned()
+                .ok_or_else(|| format!("there is no step `{path}`"))?;
+            if block == from || block.starts_with(&format!("{from}.")) {
+                return Err(format!("step `{path}` cannot move into its own block"));
+            }
+            let count = block_at(&program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?
+                .len();
+            let from_block = from.to_owned();
+            block_mut(&mut program.steps, &from_block)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .remove(at);
+            let destination = block_mut(&mut program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?;
+            destination.insert(index.min(count), moved);
+            Ok(())
+        })
+    }
+
+    /// Say what the shortcut reports when it finishes, or that it reports
+    /// nothing.
+    #[action]
+    pub fn set_output(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("Where the value comes from, as binding JSON; empty reports nothing")]
+        binding: String,
+    ) -> Result<(), Refusal> {
+        let binding = parse_binding(&binding)?;
+        edit_program(self, cx, draft, |program| {
+            program.output = binding;
+            Ok(())
+        })
+    }
+
     /// Declare a value the shortcut is started with.
     #[action]
     pub fn add_input(
@@ -754,8 +1057,31 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::SetVar { .. } => "set".into(),
         StepKind::Ask { .. } => "ask".into(),
         StepKind::Ai { .. } => "ai".into(),
+        StepKind::Task { .. } => "task".into(),
     };
     let base = if base.is_empty() { "step".into() } else { base };
+    unique_step_id(steps, &base, "step")
+}
+
+/// `base`, made readable ("letters, digits, - or _"), and numbered past every
+/// step id `steps` (at any depth) already has; `fallback` when it has nothing
+/// left.
+pub(crate) fn unique_step_id(steps: &[Step], base: &str, fallback: &str) -> String {
+    let base: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base = if base.is_empty() {
+        fallback.to_owned()
+    } else {
+        base
+    };
     let mut taken = Vec::new();
     collect_ids(steps, &mut taken);
     if !taken.contains(&base) {
@@ -781,7 +1107,8 @@ fn collect_ids(steps: &[Step], out: &mut Vec<String>) {
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
-            | StepKind::Ai { .. } => {}
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
         }
     }
 }
@@ -837,6 +1164,80 @@ pub fn block_at<'a>(steps: &'a [Step], block: &str) -> Option<&'a [Step]> {
         (StepKind::If { then, .. }, "then") => Some(then),
         (StepKind::If { otherwise, .. }, "else") => Some(otherwise),
         (StepKind::ForEach { body, .. }, "each") => Some(body),
+        _ => None,
+    }
+}
+
+impl Draft {
+    /// The item holding the step at `path` (`2.then.1`), which
+    /// [`Workbench::set_nested`] moves in the stored draft itself.
+    #[must_use]
+    pub fn step_item(&self, path: &str) -> Option<Id> {
+        let (block, index) = path.rsplit_once('.').unwrap_or(("", path));
+        let block = segments(block)?;
+        self.item_at(&block, index.parse().ok()?)
+    }
+
+    /// The item of the step at `index` of `block`.
+    fn item_at(&self, block: &[Segment], index: usize) -> Option<Id> {
+        let (parent, branch) = self.block_owner(block);
+        self.steps
+            .iter()
+            .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
+            .map(|(key, _)| key.clone())
+            .nth(index)
+    }
+
+    /// The item id of the step whose block `block` names, and which of its
+    /// branches that block is.
+    fn block_owner(&self, block: &[Segment]) -> (String, String) {
+        let Some((Segment::Branch(branch), addressing)) = block.split_last() else {
+            return (String::new(), String::new());
+        };
+        if addressing.is_empty() {
+            return (String::new(), (*branch).to_owned());
+        }
+        let owner = self
+            .item_at(addressing, index_of(addressing).unwrap_or_default())
+            .map_or_else(String::new, |owner| owner.as_str().to_owned());
+        (owner, (*branch).to_owned())
+    }
+}
+
+/// A block address (`2.then`) as its segments: step indices, then the
+/// branches they lead into.
+type Block = Vec<Segment>;
+
+/// One segment of a block address: where a step sits in its block, or which
+/// of a step's blocks it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Segment {
+    At(usize),
+    Branch(&'static str),
+}
+
+/// The segments of `block`, in order; `None` when one is neither a step
+/// index nor a branch.
+fn segments(block: &str) -> Option<Block> {
+    block
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            if let Some(branch) = [THEN, ELSE, EACH]
+                .into_iter()
+                .find(|branch| *branch == segment)
+            {
+                return Some(Segment::Branch(branch));
+            }
+            segment.parse().ok().map(Segment::At)
+        })
+        .collect()
+}
+
+/// The index `addressing` ends with, when it ends with one.
+fn index_of(addressing: &[Segment]) -> Option<usize> {
+    match addressing.last() {
+        Some(Segment::At(index)) => Some(*index),
         _ => None,
     }
 }

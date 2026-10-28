@@ -4,10 +4,51 @@
 #include "include/cef_parser.h"
 #include <functional>
 #include <set>
+#include <string>
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 
 namespace tilo {
+// The engine opens every tab on a blank page before its first address. That
+// entry, first in the session history, is no page the person visited, so it
+// is never a step back.
+inline bool BootstrapEntry(int index,const std::string& url) { return index==0 && url=="about:blank"; }
+// Whether all that is behind the current page is that blank page.
+inline bool OnlyBootstrapBehind(CefRefPtr<CefBrowser> browser) {
+  class Shape final : public CefNavigationEntryVisitor {
+   public:
+    bool Visit(CefRefPtr<CefNavigationEntry> entry,bool current,int index,int) override {
+      if(index==0) bootstrap=BootstrapEntry(index,entry->GetURL().ToString());
+      if(current) this->current=index;
+      return !current && index<1;
+    }
+    bool bootstrap=false;int current=-1;
+    IMPLEMENT_REFCOUNTING(Shape);
+  };
+  CefRefPtr<Shape> shape=new Shape;browser->GetHost()->GetNavigationEntries(shape,false);
+  return shape->bootstrap && shape->current==1;
+}
+// The first page a tab opens takes the blank page's place: once it has
+// committed, the session history forgets the blank page, so neither the page's
+// own history.back() nor history.length can reach it. Called as the page
+// commits, before its scripts can ask the browser to go back.
+inline void ForgetBootstrap(CefRefPtr<CefBrowser> browser) {
+  class Shape final : public CefNavigationEntryVisitor {
+   public:
+    bool Visit(CefRefPtr<CefNavigationEntry> entry,bool current,int index,int total) override {
+      if(index==0) bootstrap=BootstrapEntry(index,entry->GetURL().ToString());
+      if(current) this->current=index;
+      this->total=total;
+      return true;
+    }
+    bool bootstrap=false;int current=-1,total=0;
+    IMPLEMENT_REFCOUNTING(Shape);
+  };
+  CefRefPtr<Shape> shape=new Shape;browser->GetHost()->GetNavigationEntries(shape,false);
+  // Only the blank page and the page now open: nothing a person visited goes.
+  if(shape->bootstrap && shape->current==1 && shape->total==2)
+    browser->GetHost()->ExecuteDevToolsMethod(0,"Page.resetNavigationHistory",nullptr);
+}
 // Browser-process-only session history. Page content never receives this API.
 class NavigationHistory final : public CefDevToolsMessageObserver {
  public:
@@ -53,6 +94,7 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
         auto entry=all->GetDictionary(i);
         if(!entry || entry->GetType("id")!=VTYPE_INT || entry->GetInt("id")<=0 || entry->GetType("url")!=VTYPE_STRING || entry->GetType("title")!=VTYPE_STRING) continue;
         if(entry->GetString("url").ToString().size()>8192 || entry->GetString("title").ToString().size()>4096) continue;
+        if(BootstrapEntry(i,entry->GetString("url").ToString())) continue;
         auto row=CefDictionaryValue::Create();int id=entry->GetInt("id");
         row->SetInt("id",id);row->SetString("url",entry->GetString("url"));row->SetString("title",entry->GetString("title"));
         allowed_.insert(id);entries->SetDictionary(entries->GetSize(),row);

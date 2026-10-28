@@ -1,0 +1,5 @@
+{"manifest_version": 3, "name": "Sweeper", "version": "1.0",
+ "action": {"default_title": "Capture"},
+ "permissions": ["scripting"],
+ "host_permissions": ["<all_urls>"],
+ "background": {"service_worker": "worker.js"}}

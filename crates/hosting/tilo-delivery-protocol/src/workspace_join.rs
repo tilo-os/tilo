@@ -81,10 +81,6 @@ impl InteractiveOwnerTrust {
 
     /// Verify that `authority` may govern exactly `room`/`workspace_id` right now, and bind
     /// that scope to the Iroh service key terminating it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the room/workspace binding or the certificate is invalid.
     pub fn verify(
         room: String,
         workspace_id: u64,
@@ -145,10 +141,6 @@ pub struct IrohWorkspaceHostHintV1 {
 
 impl IrohWorkspaceHostHintV1 {
     /// Sign this opaque address payload and its distinct Iroh service key with the host device.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn transport_hint(
         &self,
         host_key: &ed25519_dalek::SigningKey,
@@ -166,10 +158,6 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Parse and verify a signed Iroh workspace-host hint.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the inputs violate this operation's bounds or invariants.
     pub fn from_transport_hint(hint: &TransportHint) -> Result<Self, WorkspaceJoinError> {
         if hint.kind != TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1 {
             return Err(WorkspaceJoinError::Protocol(
@@ -198,10 +186,6 @@ impl IrohWorkspaceHostHintV1 {
     /// This is the restart-safe path for an already persisted `TransportHint`. The trust token
     /// cannot be derived from the public payload struct alone because this method first verifies
     /// the host signature and its exact service-key binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
     pub fn authenticate_transport_hint(
         hint: &TransportHint,
     ) -> Result<(Self, WorkspaceHostTrust), WorkspaceJoinError> {
@@ -211,10 +195,6 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Require an inspected invitation to name this exact governed host scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "the grant is checked against this host's governing authority, not a field of the grant itself"
@@ -250,10 +230,6 @@ impl IrohWorkspaceHostHintV1 {
     }
 
     /// Require a returned bootstrap to preserve the signed host/governor scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns `WorkspaceJoinError` if the value fails validation or verification.
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "the grant is checked against this host's governing authority, not a field of the grant itself"

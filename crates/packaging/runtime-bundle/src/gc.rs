@@ -71,7 +71,6 @@ pub const DEFAULT_GRACE_SECS: u64 = 60 * 60;
 pub enum Kept {
     /// An installed package names it.
     Referenced,
-    /// It is pinned.
     Pinned,
     /// It was installed within the grace period.
     Leased,
@@ -153,17 +152,12 @@ impl BundleRoot {
         &self.root
     }
 
-    /// The bundle directory of `version`.
     pub fn bundle(&self, version: &str) -> PathBuf {
         self.root.join(version)
     }
 
     /// Hold off collection while installing: any number of installs share
     /// this lock, and a collection skips while any holds it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error from creating the root or locking.
     pub fn install_lock(&self) -> io::Result<FileLock> {
         fs::create_dir_all(&self.root)?;
         FileLock::open(&self.root.join(GC_LOCK_FILE), LockMode::Shared)
@@ -171,30 +165,18 @@ impl BundleRoot {
 
     /// Record that `version` was installed (or found installed) at `now`,
     /// so it survives the grace period whatever names it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the write error.
     pub fn lease(&self, version: &str, now: u64) -> io::Result<()> {
         let path = self.state_file(LEASES_DIR, version)?;
         tilo_files::native::atomic::write(&path, now.to_string().as_bytes())
     }
 
     /// Keep `version` until [`Self::unpin`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the write error.
     pub fn pin(&self, version: &str) -> io::Result<()> {
         let path = self.state_file(PINS_DIR, version)?;
         tilo_files::native::atomic::write(&path, b"")
     }
 
     /// Stop keeping `version` for its pin alone.
-    ///
-    /// # Errors
-    ///
-    /// Returns a removal error other than the pin being absent.
     pub fn unpin(&self, version: &str) -> io::Result<()> {
         remove_file_if_present(&self.state_file(PINS_DIR, version)?)
     }
@@ -217,11 +199,6 @@ impl BundleRoot {
     /// looking the bundle up, and keep it until the sandbox that mounts the
     /// bundle has exited. Waits only while a collection is deleting this
     /// very bundle; the lookup after it then finds the bundle gone.
-    ///
-    /// # Errors
-    ///
-    /// Returns a version that names no plain path component, or the error
-    /// from creating or locking the lease file.
     pub fn hold_launch(&self, version: &str) -> io::Result<FileLock> {
         let path = self.state_file(LAUNCHES_DIR, version)?;
         FileLock::open_current(&path, LockMode::Shared)
@@ -263,11 +240,6 @@ impl BundleRoot {
     /// so no lookup finds it from here on, and return where it went. `None`
     /// when there is no such bundle. The caller deletes it with
     /// [`Self::purge`] once nothing holds it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a version that names no plain directory component, or the
-    /// error from creating the trash or renaming.
     pub fn retire(&self, version: &str) -> io::Result<Option<PathBuf>> {
         check_version(version)?;
         let bundle = self.bundle(version);
@@ -293,10 +265,6 @@ impl BundleRoot {
     /// app has it mounted; then it stays in the trash, which no lookup
     /// reads, until a later collection finds it free. Returns whether it
     /// was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a path outside this root's trash, or the removal error.
     pub fn purge(&self, trashed: &Path, holds: &Holds) -> io::Result<bool> {
         let version = self.trashed_name(trashed)?;
         if check_version(version).is_err() {
@@ -346,12 +314,6 @@ impl BundleRoot {
     /// renames, so a launch that mounted a bundle in between keeps it. Each
     /// bundle's launch lease is held exclusively from before its rename
     /// until it is deleted or put back, so no launch looks it up meanwhile.
-    ///
-    /// # Errors
-    ///
-    /// Returns a failure to read the root, the references, or to move or
-    /// delete a bundle. A bundle that failed to delete stays in the trash,
-    /// where nothing selects it, for the next collection.
     pub fn collect(
         &self,
         references: References<'_>,
@@ -792,7 +754,6 @@ mod tests {
         // The trash itself is not a version either.
         assert_eq!(crate::resolve_bundle_path(TRASH_DIR), None);
         drop(env);
-        // The next collection finishes the job.
         let collected = root
             .collect(&refs(&["v2"]), &nothing_held, options())
             .unwrap();
@@ -850,7 +811,6 @@ mod tests {
         fs::write(outside.path().join("keep"), b"precious").unwrap();
         let root = BundleRoot::new(dir.path().join("root"));
         bundle(&root, "v1", 10);
-        // A version name and the trash that are links out of the root.
         std::os::unix::fs::symlink(outside.path(), root.bundle("v-link")).unwrap();
         std::os::unix::fs::symlink(outside.path(), root.path().join(TRASH_DIR)).unwrap();
         let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
@@ -898,7 +858,6 @@ mod tests {
         assert!(collected.removed.is_empty());
         assert_eq!(collected.kept, vec![("v1".to_string(), Kept::Launching)]);
         assert!(selectable(&root, "v1"), "a held bundle stays where it is");
-        // A launcher that dies releases its hold with its descriptors.
         drop(launch);
         let collected = root.collect(&refs(&[]), &nothing_held, options()).unwrap();
         assert_eq!(collected.removed, vec![("v1".to_string(), 24)]);
@@ -926,6 +885,26 @@ mod tests {
         assert!(!trashed.exists());
     }
 
+    /// Wait until a thread of this process is blocked taking a lock on
+    /// `lease`, as the kernel lists it.
+    fn waiting_on(lease: &Path) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let inode = fs::metadata(lease).unwrap().ino();
+            let (pid, inode) = (format!(" {} ", std::process::id()), format!(":{inode} "));
+            tilo_test_env::wait_until("the launch to wait on the collection's hold", || {
+                fs::read_to_string("/proc/locks").is_ok_and(|locks| {
+                    locks.lines().any(|lock| {
+                        lock.contains("->") && lock.contains(&pid) && lock.contains(&inode)
+                    })
+                })
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = lease;
+    }
+
     #[test]
     fn a_launch_waiting_on_a_collection_sees_the_bundle_whole_or_gone() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,7 +927,7 @@ mod tests {
                     let toolkit = bundle.join("lib/libruntime_dylib.so");
                     seen_tx.send((manifest.exists(), toolkit.exists())).unwrap();
                 })));
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                waiting_on(&dir.path().join(LAUNCHES_DIR).join("v1"));
                 assert!(
                     seen_rx.try_recv().is_err(),
                     "the launch waits while the collection holds the bundle"

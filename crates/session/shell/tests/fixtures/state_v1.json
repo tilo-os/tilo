@@ -124,6 +124,21 @@
             }
           },
           {
+            "id": "role:commenter:2",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001/**/field:reactions",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
             "id": "role:editor:0",
             "subject": {
               "role": "editor"
@@ -402,20 +417,6 @@
         "policy": {},
         "user_choices": {}
       },
-      "tasks": [
-        {
-          "id": "task-1",
-          "title": "Review",
-          "created_by": "owner-key",
-          "assigned_agent": null,
-          "route": "manual",
-          "status": "queued",
-          "resource": null,
-          "created_at": 10,
-          "updated_at": 20,
-          "audit": []
-        }
-      ],
       "effect_receipts": [],
       "shortcuts": [
         {
@@ -494,6 +495,21 @@
               "role": "commenter"
             },
             "node": "room:00000000-0000-4000-8000-000000000002/**/field:comments",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:2",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002/**/field:reactions",
             "kinds": [
               "undoable"
             ],
@@ -766,7 +782,6 @@
         "policy": {},
         "user_choices": {}
       },
-      "tasks": [],
       "effect_receipts": [],
       "shortcuts": [],
       "schedule_claims": [],

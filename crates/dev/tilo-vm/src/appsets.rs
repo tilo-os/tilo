@@ -45,9 +45,6 @@ pub fn all() -> Vec<AppSet> {
 }
 
 /// The set called `name`.
-///
-/// # Errors
-/// The names that do exist, for the error message.
 pub fn find(name: &str) -> Result<AppSet, Vec<String>> {
     let sets = all();
     sets.iter()

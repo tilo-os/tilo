@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 from .. import session_unit
 from ..core import Unobservable, check, expect
 from ..vm import VmError
@@ -122,5 +124,13 @@ def services(ctx, res):
     res.metrics["session_unit"] = fields
     session = session_unit_problem(fields, ctx.facts.get("session_restarted_during") or [], ctx.vm.slot,
                                    ctx.facts.get("session_restarts_caused", 0))
-    problems = ([f"failed: {failed}"] if failed else []) + ([f"restart loops: {looping}"] if looping else [])
+    # A failed run publishes no report data: each failed unit says in the detail what it
+    # last logged, so the cause is in the log and not only in a file nobody can read.
+    said = {unit: " | ".join(line.strip() for line in ctx.vm.exec(
+                f"journalctl --user -u {shlex.quote(unit)} -b -o cat --no-pager -n 3 2>&1",
+                check=False).splitlines() if line.strip())[:600]
+            for unit in failed[:4]}
+    problems = ([f"failed: {failed}" + "".join(f"; {unit} last logged: {text}" for unit, text in said.items()
+                                                if text)] if failed else []) \
+        + ([f"restart loops: {looping}"] if looping else [])
     expect(not problems and not session, "; ".join(problems + ([session] if session else [])))

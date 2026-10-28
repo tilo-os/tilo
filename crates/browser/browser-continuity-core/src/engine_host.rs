@@ -22,9 +22,6 @@ pub fn command(host: &Path) -> std::io::Result<Command> {
 ///
 /// A missing projection grants nothing and needs no policy. A present invalid
 /// projection fails closed. The caller still owns spawning/reaping the child.
-///
-/// # Errors
-/// Returns filesystem or confinement preparation failures.
 #[cfg(target_os = "linux")]
 pub fn exclude_migration_from_engine(
     command: &mut Command,

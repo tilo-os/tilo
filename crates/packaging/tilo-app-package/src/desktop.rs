@@ -43,10 +43,6 @@ pub fn optional_runtime_dependencies(manifest: &Manifest) -> &[String] {
 /// Validate the signed target before a native installer or launcher uses
 /// its desktop size/runtime contract. Web and foreign native targets are
 /// artifacts for their own host, never native executables on this one.
-///
-/// # Errors
-///
-/// Returns a schema error or a target incompatible with the native host.
 pub fn validate_native_host(manifest: &Manifest) -> Result<(), ManifestError> {
     validate_manifest(manifest)?;
     if let Some(target) = &manifest.target
@@ -97,6 +93,7 @@ pub fn desktop_manifest(
             .entrypoint
             .as_ref()
             .map_or(100, |entry| entry.splash_budget_ms),
+        runtime: None,
     });
     manifest.target = Some(Target {
         platform: platform.to_owned(),

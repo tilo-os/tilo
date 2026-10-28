@@ -27,7 +27,6 @@ pub fn tool_of(command: &str) -> &'static str {
     }
 }
 
-/// The items of a run of `command` that printed `output`.
 #[must_use]
 pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
     let text = strip_ansi(&String::from_utf8_lossy(output));
@@ -63,8 +62,9 @@ pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
     items
 }
 
-/// `text` without its escape sequences (CSI, OSC, other `ESC x`), carriage
-/// returns resolved to the last overwrite of each line.
+/// `text` without its escape sequences (CSI, OSC and the other strings,
+/// charset designations, other `ESC x`), carriage returns resolved to the
+/// last overwrite of each line.
 #[must_use]
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -79,7 +79,8 @@ pub fn strip_ansi(text: &str) -> String {
                         }
                     }
                 }
-                Some(']') => {
+                // OSC, and DCS, SOS, PM and APC: a string up to BEL or ST.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
                     while let Some(next) = chars.next() {
                         if next == '\u{7}' {
                             break;
@@ -90,6 +91,14 @@ pub fn strip_ansi(text: &str) -> String {
                         }
                     }
                 }
+                // Intermediates, then one final byte: the charset
+                // designations `ESC ( B` (which `tput sgr0` prints),
+                // `ESC ) 0`, `ESC $ ( B` and the like.
+                Some(' '..='/') => {
+                    while chars.next_if(|next| (' '..='/').contains(next)).is_some() {}
+                    chars.next_if(|next| ('0'..='~').contains(next));
+                }
+                // Any other `ESC x`, such as `ESC 7` or `ESC =`.
                 _ => {}
             },
             '\r' => {
@@ -407,6 +416,11 @@ pub fn git_status(text: &str) -> Vec<RunItem> {
 
 /// The command that runs the one test `test` of a run of `command` by its
 /// tool, or `None` when the tool has no such command.
+///
+/// The run's environment assignments, toolchain and `cargo test` selection
+/// (package, target, features, profile) are kept, so the test is built the
+/// way the run built it and only its own target compiles; the run's test
+/// filters are dropped for `--exact` and the test's name.
 #[must_use]
 pub fn rerun_test(command: &str, test: &str) -> Option<String> {
     if tool_of(command) != "cargo"
@@ -417,19 +431,104 @@ pub fn rerun_test(command: &str, test: &str) -> Option<String> {
     {
         return None;
     }
-    // `cargo test -p crate …` keeps its package selection.
     let words: Vec<&str> = command.split_whitespace().collect();
-    let mut package = String::new();
-    let mut words_iter = words.iter();
-    while let Some(word) = words_iter.next() {
-        if (*word == "-p" || *word == "--package")
-            && let Some(name) = words_iter.next()
-        {
-            package = format!(" -p {name}");
+    let environment = words
+        .iter()
+        .take_while(|word| word.contains('=') && !word.starts_with('-'))
+        .count();
+    let mut kept: Vec<&str> = words.get(..=environment)?.to_vec();
+    let mut rest = words.get(environment + 1..).unwrap_or_default().iter();
+    let mut subcommand = rest.next().copied();
+    if let Some(toolchain) = subcommand.filter(|word| word.starts_with('+')) {
+        kept.push(toolchain);
+        subcommand = rest.next().copied();
+    }
+    if !kept.iter().all(|word| shell_safe(word)) {
+        return None;
+    }
+    kept.push("test");
+    // Another subcommand (`nextest run`) shares only the package selection.
+    let selection: &[&str] = if matches!(subcommand, Some("test" | "t")) {
+        CARGO_TEST_SELECTION
+    } else {
+        &["-p", "--package"]
+    };
+    while let Some(&word) = rest.next() {
+        if word == "--" {
+            break;
+        }
+        let (flag, inline) = word.split_once('=').unwrap_or((word, ""));
+        if !selection.contains(&flag) || !shell_safe(word) {
+            continue;
+        }
+        kept.push(word);
+        if inline.is_empty() && CARGO_VALUE_FLAGS.contains(&flag) {
+            match rest.next() {
+                Some(&value) if shell_safe(value) => kept.push(value),
+                _ => {
+                    kept.pop();
+                }
+            }
         }
     }
-    let program = words.first().copied().unwrap_or("cargo");
-    Some(format!("{program} test{package} -- --exact {test}"))
+    Some(format!("{} -- --exact {test}", kept.join(" ")))
+}
+
+/// The `cargo test` options that choose what is built and how, kept when one
+/// test runs again.
+const CARGO_TEST_SELECTION: &[&str] = &[
+    "-p",
+    "--package",
+    "--workspace",
+    "--exclude",
+    "--lib",
+    "--bins",
+    "--bin",
+    "--tests",
+    "--test",
+    "--examples",
+    "--example",
+    "--benches",
+    "--bench",
+    "--all-targets",
+    "--doc",
+    "-F",
+    "--features",
+    "--all-features",
+    "--no-default-features",
+    "-r",
+    "--release",
+    "--profile",
+    "--target",
+    "--manifest-path",
+    "--locked",
+    "--offline",
+    "--frozen",
+];
+
+/// The kept options whose value is the next word unless given as `--x=value`.
+const CARGO_VALUE_FLAGS: &[&str] = &[
+    "-p",
+    "--package",
+    "--exclude",
+    "--bin",
+    "--test",
+    "--example",
+    "--bench",
+    "-F",
+    "--features",
+    "--profile",
+    "--target",
+    "--manifest-path",
+];
+
+/// Whether `word` reads the same to the shell as it does here: no quoting,
+/// expansion or control characters.
+fn shell_safe(word: &str) -> bool {
+    word.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '-' | '_' | '=' | '.' | ',' | '/' | ':' | '+' | '@')
+    })
 }
 
 /// What showing one of a run's items opens.

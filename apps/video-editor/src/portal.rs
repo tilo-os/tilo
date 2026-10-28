@@ -149,21 +149,52 @@ fn project_filter() -> FileFilter {
 /// Getting them the wrong way round would overwrite the project the user
 /// meant to open, so the distinction is carried in the type rather than
 /// remembered in a flag beside it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ProjectOutcome {
     Open(std::path::PathBuf),
     Save(std::path::PathBuf),
+    /// Where to save, chosen where it has no path here (a browser page's
+    /// Save dialog file, or a download): kept for every later Save.
+    SaveTo(ui::portal::SaveDestination),
+    /// A project file chosen where files have no paths (a browser page):
+    /// its name and contents.
+    OpenContents {
+        name: String,
+        bytes: Vec<u8>,
+    },
+    /// The project's bytes were written to a [`Self::SaveTo`] destination.
+    Saved,
     Cancelled,
     Failed(String),
 }
 
 /// Receiver the UI thread drains for an in-flight project open/save.
-pub struct ProjectChannel {
-    rx: ui::portal::PortalChannel,
-    save: bool,
+pub enum ProjectChannel {
+    /// A chooser answering with a path, to read (`save == false`) or write.
+    Path {
+        rx: ui::portal::PortalChannel,
+        save: bool,
+    },
+    /// An Open chooser answering with the file's contents.
+    Contents(ui::portal::ContentsChannel),
+    /// A Save chooser answering with where to save.
+    Destination(ui::portal::DestinationChannel),
+    /// The project's bytes being written to a kept destination.
+    Saving(ui::portal::SaveChannel),
 }
 
 impl ProjectChannel {
+    /// Whether this round-trip saves the project (its chooser or its
+    /// write), rather than opening one.
+    #[must_use]
+    pub fn is_save(&self) -> bool {
+        match self {
+            Self::Path { save, .. } => *save,
+            Self::Contents(_) => false,
+            Self::Destination(_) | Self::Saving(_) => true,
+        }
+    }
+
     /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
     ///
     /// # Errors
@@ -171,24 +202,56 @@ impl ProjectChannel {
     /// [`std::sync::mpsc::TryRecvError::Empty`] while the dialog is still
     /// open, and `Disconnected` once it can no longer answer.
     pub fn try_recv(&self) -> Result<ProjectOutcome, std::sync::mpsc::TryRecvError> {
-        self.rx.try_recv().map(|outcome| match outcome {
-            ui::portal::PortalOutcome::Opened(p) if self.save => ProjectOutcome::Save(p),
-            ui::portal::PortalOutcome::Opened(p) => ProjectOutcome::Open(p),
-            ui::portal::PortalOutcome::Cancelled => ProjectOutcome::Cancelled,
-            ui::portal::PortalOutcome::Failed(e) => ProjectOutcome::Failed(e),
-        })
+        use ui::portal::{ContentsOutcome, DestinationOutcome, PortalOutcome, SaveOutcome};
+        match self {
+            Self::Path { rx, save } => rx.try_recv().map(|outcome| match outcome {
+                PortalOutcome::Opened(p) if *save => ProjectOutcome::Save(p),
+                PortalOutcome::Opened(p) => ProjectOutcome::Open(p),
+                PortalOutcome::Cancelled => ProjectOutcome::Cancelled,
+                PortalOutcome::Failed(e) => ProjectOutcome::Failed(e),
+            }),
+            Self::Contents(rx) => rx.try_recv().map(|outcome| match outcome {
+                ContentsOutcome::Picked(files) => match files.into_iter().next() {
+                    Some(file) => ProjectOutcome::OpenContents {
+                        name: file.name,
+                        bytes: file.bytes,
+                    },
+                    None => ProjectOutcome::Cancelled,
+                },
+                ContentsOutcome::Cancelled => ProjectOutcome::Cancelled,
+                ContentsOutcome::Failed(e) => ProjectOutcome::Failed(e),
+            }),
+            Self::Destination(rx) => rx.try_recv().map(|outcome| match outcome {
+                DestinationOutcome::Chosen(destination) => match destination.location() {
+                    Some(path) => ProjectOutcome::Save(path.to_path_buf()),
+                    None => ProjectOutcome::SaveTo(destination),
+                },
+                DestinationOutcome::Cancelled => ProjectOutcome::Cancelled,
+                DestinationOutcome::Failed(e) => ProjectOutcome::Failed(e),
+            }),
+            Self::Saving(rx) => rx.try_recv().map(|outcome| match outcome {
+                SaveOutcome::Saved => ProjectOutcome::Saved,
+                SaveOutcome::Cancelled => ProjectOutcome::Cancelled,
+                SaveOutcome::Failed(e) => ProjectOutcome::Failed(e),
+            }),
+        }
     }
 }
 
-/// Open the host chooser for a project file to load.
+/// Open the host chooser for a project file to load: by path where files
+/// have paths (relative media resolves beside the file), else by contents.
 pub fn request_open_project() -> ProjectChannel {
-    ProjectChannel {
-        rx: PickRequest::open("Open project", "Open")
-            .thread_name("video-editor-open-project")
-            .filter(project_filter())
-            .all_files()
-            .send(),
-        save: false,
+    let request = PickRequest::open("Open project", "Open")
+        .thread_name("video-editor-open-project")
+        .filter(project_filter())
+        .all_files();
+    if tilo_files::available(tilo_files::Feature::NativePaths) {
+        ProjectChannel::Path {
+            rx: request.send(),
+            save: false,
+        }
+    } else {
+        ProjectChannel::Contents(request.send_contents())
     }
 }
 
@@ -202,14 +265,16 @@ pub fn request_open_project() -> ProjectChannel {
 ///
 /// `suggested_name` seeds the filename field with the project's name plus
 /// the project extension, so the user is not made to invent either.
+///
+/// Where files have no paths (a browser page), the answer is a destination
+/// the host keeps, which the project writes to on this and every later Save.
 pub fn request_save_project(suggested_name: &str) -> ProjectChannel {
-    ProjectChannel {
-        rx: PickRequest::save("Save project", "Save", suggested_name)
+    ProjectChannel::Destination(
+        PickRequest::save("Save project", "Save", suggested_name)
             .thread_name("video-editor-save-project")
             .filter(project_filter())
-            .send(),
-        save: true,
-    }
+            .send_save_destination(),
+    )
 }
 
 #[cfg(test)]
@@ -218,7 +283,6 @@ mod tests {
 
     #[test]
     fn project_dialogs_are_configured_and_drain_their_channel() {
-        // Case `the_project_dialogs_are_each_configured_for_their_own_job`.
         {
             let open = PickRequest::open("Open project", "Open")
                 .filter(project_filter())
@@ -237,7 +301,6 @@ mod tests {
             assert_eq!(save.suggested_name(), Some("Coastline_Doc_v3.qvp"));
             assert_eq!(save.filter_names(), vec!["Video project"]);
         }
-        // Case `the_project_channel_remembers_which_flow_asked_for_the_path`.
         {
             // The same chosen path means "load this" for one flow and "write
             // here" for the other. Confusing them destroys the file the user
@@ -246,19 +309,19 @@ mod tests {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
-            assert_eq!(
+            assert!(matches!(
                 request_open_project().try_recv(),
-                Ok(ProjectOutcome::Open(p.clone())),
-            );
+                Ok(ProjectOutcome::Open(opened)) if opened == p,
+            ));
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
-            assert_eq!(
+            assert!(matches!(
                 request_save_project("Holiday.qvp").try_recv(),
-                Ok(ProjectOutcome::Save(p)),
-            );
-            assert_eq!(
+                Ok(ProjectOutcome::Save(saved)) if saved == p,
+            ));
+            assert!(matches!(
                 request_open_project().try_recv(),
                 Ok(ProjectOutcome::Cancelled),
-            );
+            ));
             let titles: Vec<String> = recorder
                 .pick_requests()
                 .iter()
@@ -266,17 +329,60 @@ mod tests {
                 .collect();
             assert_eq!(titles, ["Open project", "Save project", "Open project"]);
         }
-        // Case `an_empty_project_channel_reports_empty_rather_than_blocking`.
         {
             let (_tx, rx) = std::sync::mpsc::channel::<ui::portal::PortalOutcome>();
-            let ch = ProjectChannel { rx, save: false };
-            assert_eq!(ch.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+            let ch = ProjectChannel::Path { rx, save: false };
+            assert!(matches!(
+                ch.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
+        // Case `a_host_without_paths_answers_with_contents_or_a_kept_save`:
+        // a browser page hands over the chosen project's contents and keeps
+        // a saved one itself, so Open and Save work there too.
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(ui::portal::ContentsOutcome::Picked(vec![
+                ui::portal::PickedContents {
+                    name: "Holiday.qvp".into(),
+                    media_type: None,
+                    bytes: b"project".to_vec(),
+                    location: None,
+                },
+            ]))
+            .unwrap();
+            assert!(matches!(
+                ProjectChannel::Contents(rx).try_recv(),
+                Ok(ProjectOutcome::OpenContents { name, bytes })
+                    if name == "Holiday.qvp" && bytes == b"project",
+            ));
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(ui::portal::DestinationOutcome::Chosen(
+                ui::portal::SaveDestination::kept("Holiday.qvp", |_| {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = tx.send(ui::portal::SaveOutcome::Saved);
+                    rx
+                }),
+            ))
+            .unwrap();
+            assert!(matches!(
+                ProjectChannel::Destination(
+                    ui::portal::DestinationChannel::from_outcomes(rx)
+                )
+                .try_recv(),
+                Ok(ProjectOutcome::SaveTo(kept)) if kept.name() == "Holiday.qvp",
+            ));
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(ui::portal::SaveOutcome::Saved).unwrap();
+            assert!(matches!(
+                ProjectChannel::Saving(rx).try_recv(),
+                Ok(ProjectOutcome::Saved)
+            ));
         }
     }
 
     #[test]
     fn export_and_import_dialogs_offer_formats_and_drain_cancellation() {
-        // Case `export_destination_is_a_save_dialog_seeded_with_the_project_name`.
         {
             let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
                 .filter(container_filter("mp4"))
@@ -290,7 +396,6 @@ mod tests {
             );
             assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
         }
-        // Case `each_container_offers_its_own_extension`.
         {
             // The dialog must not invite saving an H.264 stream as .webm — the
             // filter follows the container the encode chain will actually mux.
@@ -298,7 +403,6 @@ mod tests {
             assert_eq!(container_filter("mov").name(), "QuickTime video");
             assert_eq!(container_filter("webm").name(), "WebM video");
         }
-        // Case `a_cancelled_export_dialog_drains_like_an_import_does`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let rx = ui::host::scoped(&services, || {
@@ -307,7 +411,6 @@ mod tests {
             assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
             assert_eq!(recorder.pick_requests()[0].title(), "Export video");
         }
-        // Case `import_is_multi_select_with_media_then_an_escape_hatch`.
         {
             let r = PickRequest::open_multiple("Import media", "Import")
                 .filter(media_filter())
@@ -316,7 +419,6 @@ mod tests {
             assert!(r.is_multiple(), "a user may import many clips at once");
             assert_eq!(r.filter_names(), vec!["Media", "All files"]);
         }
-        // Case `a_cancelled_import_drains_through_the_channel_the_worker_feeds`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);

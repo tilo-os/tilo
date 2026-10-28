@@ -26,12 +26,10 @@ pub struct Month {
 }
 
 impl Month {
-    /// The month `today` falls in, its weeks starting on `week_start`.
     #[must_use]
     pub fn around(today: NaiveDate, week_start: Weekday) -> Self {
         let first = today.with_day(1).unwrap_or(today);
-        let lead =
-            (first.weekday().num_days_from_monday() + 7 - week_start.num_days_from_monday()) % 7;
+        let lead = first.weekday().days_since(week_start);
         let mut column = week_start;
         let columns = std::array::from_fn(|_| {
             let this = column;
@@ -41,7 +39,7 @@ impl Month {
         let days = days_in_month(first);
         let mut weeks = [[None; 7]; WEEKS];
         for day in 1..=days {
-            let cell = lead + day - 1;
+            let cell = lead.saturating_add(day).saturating_sub(1);
             let (row, col) = ((cell / 7) as usize, (cell % 7) as usize);
             if let Some(slot) = weeks.get_mut(row).and_then(|week| week.get_mut(col)) {
                 *slot = Some(day);
@@ -69,12 +67,9 @@ impl Month {
 
 /// How many days `first`'s month has.
 fn days_in_month(first: NaiveDate) -> u32 {
-    let next = if first.month() == 12 {
-        NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)
-    } else {
-        NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)
-    };
-    next.and_then(|next| next.pred_opt())
+    first
+        .checked_add_months(chrono::Months::new(1))
+        .and_then(|next| next.pred_opt())
         .map_or(31, |last| last.day())
 }
 

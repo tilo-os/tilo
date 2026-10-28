@@ -33,10 +33,6 @@ pub fn project_summary(id: &str, props: &ProjectSummaryProps) -> ui::widget::Col
 }
 
 /// Build this component from a serialized UI graph node.
-///
-/// # Errors
-///
-/// Returns a field-specific error when `title` or `detail` is not a string.
 pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {
     let string = |key| {
         request

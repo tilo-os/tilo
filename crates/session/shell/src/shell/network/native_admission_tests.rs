@@ -17,7 +17,7 @@ use std::{
 use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
 
-/// One frame at 60 Hz: what a tick of the frame loop may take.
+/// One frame at 60 Hz: what a tick of the frame loop may cost its thread.
 const FRAME: Duration = Duration::from_millis(16);
 
 /// One data sync on a disk under write load.
@@ -54,7 +54,7 @@ fn queued_write_then_departure() -> Fixture {
     );
     let (hint, continuity) = owner
         .with_current(room, |view| {
-            Ok((view.transport_hint().clone(), view.continuity()))
+            Ok((view.transport_hint()?.clone(), view.continuity()))
         })
         .unwrap();
     let input = Arc::new(native_ingress::Scope::new(
@@ -134,23 +134,62 @@ fn a_tick_off_the_loop_publishes_its_admission_on_its_own_thread() {
     );
 }
 
+/// One frame-loop tick, and the CPU it cost its thread: the work the
+/// loop did, apart from time the thread was preempted on a loaded machine.
+fn frame_tick_cost(net: &ShellNetwork) -> Duration {
+    let started = tilo_rt::thread_cpu_time().expect("the thread's CPU clock");
+    net.frame_tick();
+    tilo_rt::thread_cpu_time()
+        .expect("the thread's CPU clock")
+        .saturating_sub(started)
+}
+
 #[test]
 fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     let mut fixture = queued_write_then_departure();
+    // The worker stops inside the admission's first data sync until the
+    // test lets it go: the loop must keep ticking while it is there.
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    *fixture.net.native_admission.on_worker_sync.lock().unwrap() = Some(Arc::new(move || {
+        let _ = entered_tx.send(());
+        released
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the test let the held sync go");
+    }));
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(30))
         .expect("deadline");
     let ((slowest, overtaken), syncs) = on_a_slow_disk(|| {
         let mut slowest = Duration::ZERO;
         let mut overtaken = false;
+        while entered.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "the frame loop never handed the signed write to the worker"
+            );
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The worker is inside its sync: each tick returns without it, and
+        // handles nothing that arrived after the write.
+        for _ in 0..16 {
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
+            assert!(
+                fixture.net.peer_departures().is_empty(),
+                "an event that arrived after the signed write was handled while it was admitted"
+            );
+        }
+        release.send(()).expect("the worker waits in its sync");
         while fixture.net.peer_departures().is_empty() {
             assert!(
                 Instant::now() < deadline,
                 "the frame loop never handled the queued events"
             );
-            let started = Instant::now();
-            fixture.net.frame_tick();
-            slowest = slowest.max(started.elapsed());
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
             // The departure arrived after the write: it may not be handled
             // before the write reached the broker.
             overtaken |= !fixture.net.peer_departures().is_empty()
@@ -166,7 +205,7 @@ fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     );
     assert!(
         slowest <= FRAME,
-        "a frame-loop network tick took {slowest:?} admitting signed input, over one frame ({FRAME:?})"
+        "a frame-loop network tick spent {slowest:?} of its thread's CPU admitting signed input, over one frame ({FRAME:?})"
     );
     assert!(admitted(&fixture), "the signed write was admitted");
     assert!(
@@ -184,4 +223,78 @@ fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
         "the committed change drove the owner's publication"
     );
     assert_eq!(fixture.net.event_rx.lock().unwrap().len(), 0);
+}
+
+/// A room replays its records to a member as it joins, often before the
+/// app that opens them has named its surface. Such an input is held, not
+/// dropped, and admitted again, in the order it arrived, once a surface is
+/// named: dropping it lost the record's history, and every later change to
+/// it then failed in the app.
+#[test]
+fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = tilo_joined_room::open_file(&directory.path().join("owner.json")).unwrap();
+    let (intent, bootstrap, messages, governor, now) = raw_fixture();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    owner.install(&enrollment, now).unwrap();
+    let room = RoomId::parse(ROOM).unwrap();
+    let (certificate, hint, continuity) = owner
+        .with_current(room, |view| {
+            Ok((
+                view.device().clone(),
+                view.transport_hint()?.clone(),
+                view.continuity(),
+            ))
+        })
+        .unwrap();
+    let scope = Arc::new(native_ingress::Scope::new(
+        native_ingress::Connect::new(owner, room).unwrap(),
+        hint,
+        certificate,
+        continuity,
+    ));
+    let mut documents = messages
+        .into_iter()
+        .filter(|message| matches!(message, NeighbourMsg::AppDocument { .. }));
+    let first = scope.input(governor, true, documents.next().expect("a document"));
+    let second = scope.input(governor, true, first.message().clone());
+    let state = native_admission::State::default();
+
+    state.hold(first);
+    state.hold(second);
+    ui::app_surface::register_package(
+        "so.tilo.test.held-input",
+        b"[[resources]]\nkind = \"held.input\"\n",
+    );
+    let again = state.next_again();
+    assert_eq!(
+        again.len(),
+        2,
+        "a surface was named: what was held is admitted again, together"
+    );
+    assert!(state.next_again().is_empty(), "both were taken");
+
+    let third = scope.input(
+        governor,
+        true,
+        documents
+            .next()
+            .unwrap_or(NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
+    );
+    state.hold(third);
+    assert!(
+        state.next_again().is_empty(),
+        "held again with no surface named since: it waits"
+    );
+    ui::app_surface::register_package(
+        "so.tilo.test.held-input-later",
+        b"[[resources]]\nkind = \"held.later\"\n",
+    );
+    assert_eq!(
+        state.next_again().len(),
+        1,
+        "another surface was named: it is admitted again"
+    );
+    assert!(state.next_again().is_empty());
 }

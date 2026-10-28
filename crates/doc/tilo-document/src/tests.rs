@@ -15,7 +15,6 @@ fn body_ids(state: &RichTextState) -> Vec<String> {
     state.body().all().map(str::to_owned).collect()
 }
 
-/// A replica whose document has `paragraphs` paragraphs.
 fn document(paragraphs: usize) -> Replica<RichText> {
     let mut replica = Replica::<RichText>::new();
     for n in 0..paragraphs {
@@ -446,15 +445,11 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
     let after = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
     let row = |cols: usize, text: &str| vec![text.to_owned(); cols];
     let hostile = [
-        // Nothing to lay out.
         Vec::new(),
         vec![Vec::new()],
-        // Ragged rows.
         vec![row(3, "a"), row(2, "b")],
-        // Past the table bounds.
         vec![row(action::MAX_TABLE_DIMENSION + 1, "")],
         vec![row(1, ""); action::MAX_TABLE_DIMENSION + 1],
-        // More text than one action may carry, spread over the cells.
         vec![row(2, &"x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1))],
     ];
     let heads = replica.heads();
@@ -768,7 +763,6 @@ fn text_typed_in_carries_its_invokers_name_from_the_one_change_that_wrote_it() {
             "{action:?} marks exactly what it typed"
         );
 
-        // The peer replays the envelope into the very same change.
         peer.replay(&envelope).unwrap();
         assert_eq!(
             origin.heads(),
@@ -1106,6 +1100,63 @@ fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
     );
 }
 
+/// The document carries whether it holds work its file does not: an edit
+/// sets it, and the two actions that take a file's content clear it. That is
+/// what a window's bar marks "Edited" from — not a repaint flag, which is
+/// gone the moment after the frame is drawn.
+#[test]
+fn the_document_remembers_work_its_file_has_not_taken() {
+    use tilo_actions::Action;
+    let mut doc = automerge::AutoCommit::new();
+    RichText::initialize(&mut doc).unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "a new document is empty, not unsaved"
+    );
+
+    let bytes = b"# Report\n";
+    crate::action::RichTextAction::ReplaceFormatted {
+        format: crate::action::ImportFormat::Markdown,
+        bytes: bytes.to_vec(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "the document is what its file holds"
+    );
+
+    let block = RichText::read(&doc)
+        .unwrap()
+        .body()
+        .id_at(0)
+        .unwrap()
+        .to_owned();
+    crate::action::RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block,
+        at: 0,
+        del: 0,
+        ins: "Work in progress: ".into(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        RichText::read(&doc).unwrap().unsaved(),
+        "an edit is unsaved work"
+    );
+
+    crate::action::RichTextAction::NoteFileWritten {
+        digest: tilo_content::hash_bytes(b"saved"),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    assert!(
+        !RichText::read(&doc).unwrap().unsaved(),
+        "the file took the work"
+    );
+}
+
 /// The body's blocks as `(id, kind, alt)`.
 fn block_alts(replica: &Replica<RichText>) -> Vec<(String, String, Option<String>)> {
     let c = replica.state().unwrap().containers().clone();
@@ -1156,14 +1207,12 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
         (vec![paragraph.clone()], "A desk light"),
         // Nor does a mixed selection, even with an image in it.
         (vec![image.clone(), paragraph], "A desk light"),
-        // Blank, multi-line and oversized descriptions.
         (vec![image.clone()], "   "),
         (vec![image.clone()], "A desk\nlight"),
         (
             vec![image.clone()],
             &"x".repeat(action::MAX_IMAGE_ALT_CHARS + 1),
         ),
-        // A stale image.
         (vec!["gone".to_owned()], "A desk light"),
     ] {
         assert!(

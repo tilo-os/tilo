@@ -283,7 +283,6 @@ pub struct GpuFrame {
     opaque: bool,
     width: u32,
     height: u32,
-    /// The surface it belongs to.
     surface: u64,
     /// The pixels, once something read them back.
     rgba: OnceLock<Option<Arc<Vec<u8>>>>,
@@ -727,7 +726,7 @@ fn retire(retiring: Retiring) {
 pub struct ReleaseLatency {
     /// Buffers given back since the process started.
     pub releases: u64,
-    /// Over the latest window of up to [`RELEASE_SUMMARY_EVERY`] releases.
+    /// Over the latest window of up to `RELEASE_SUMMARY_EVERY` releases.
     pub p50: Duration,
     pub p99: Duration,
     pub max: Duration,
@@ -1536,7 +1535,6 @@ mod tests {
         );
         drop(d);
 
-        // A new size starts over.
         let resized = Arc::new([20, 20, 20, 255].repeat((width * (height + 4)) as usize));
         let (_, bytes) = uploaded(&mut || {
             ring.upload(surface, &resized, (width, height + 4), Some(&[line(0)]))
@@ -1555,7 +1553,6 @@ mod tests {
             eprintln!("no wgpu adapter; skipping");
             return;
         };
-        // Phase `a_bgra_buffer_reads_back_as_rgba_with_its_alpha`.
         {
             let frame = client_frame(
                 &present,
@@ -1571,7 +1568,6 @@ mod tests {
             assert_eq!(pixels.len(), 3 * 2 * 4);
             assert_eq!(&pixels[..4], &[30, 20, 10, 128]);
         }
-        // Phase `an_x_format_reads_back_opaque`.
         {
             let frame = client_frame(
                 &present,
@@ -1581,7 +1577,6 @@ mod tests {
             );
             assert_eq!(&frame.rgba().expect("readback")[..4], &[1, 2, 3, 255]);
         }
-        // Phase `a_renderer_without_the_texture_gets_the_cropped_pixels`.
         {
             let frame = client_frame(
                 &present,
@@ -1604,7 +1599,6 @@ mod tests {
             forget_surface(3);
             assert_eq!(external_pixels(image.data.id()), None);
         }
-        // Phase `an_image_is_drawable_exactly_while_its_frame_is_held`.
         {
             let frame = client_frame(
                 &present,
@@ -1702,7 +1696,6 @@ mod tests {
             );
             scene
         };
-        // Phase `a_bgra_x_buffer_is_converted_by_the_one_copy`.
         let frame = client_frame(
             &present,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -1725,7 +1718,6 @@ mod tests {
             3 * 2 * 4,
             "of the frame's bytes"
         );
-        // Phase `the_next_render_draws_it_from_the_atlas`.
         apply(&mut renderer, Some(present.generation), &mut applied);
         let again = render_and_read(&present, &mut renderer, &scene, (3, 2));
         assert_eq!(again, pixels);
@@ -1734,7 +1726,6 @@ mod tests {
             after,
             "a frame already in the atlas is not copied again"
         );
-        // Phase `a_premultiplied_buffer_keeps_its_alpha`.
         let translucent = client_frame(
             &present,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -1744,9 +1735,7 @@ mod tests {
         let scene = draw(&translucent);
         apply(&mut renderer, Some(present.generation), &mut applied);
         let pixels = render_and_read(&present, &mut renderer, &scene, (3, 2));
-        // Half-covering red over the black base.
         assert_near(&pixels[..4], &[0x40, 0x00, 0x00, 0xFF]);
-        // Phase `a_frame_that_went_is_no_longer_drawn_from_its_buffer`.
         drop(frame);
         apply(&mut renderer, Some(present.generation), &mut applied);
         assert_eq!(
@@ -1832,7 +1821,6 @@ mod tests {
             let bytes = map.buffer_mut();
             for y in 0..HEIGHT as usize {
                 for x in 0..WIDTH as usize {
-                    // B, G, R, X in memory.
                     let at = y.saturating_mul(stride).saturating_add(x.saturating_mul(4));
                     bytes[at..at.saturating_add(4)].copy_from_slice(&[
                         column(x),
@@ -1871,7 +1859,6 @@ mod tests {
                 .count()
         };
 
-        // Phase `a_commit_imports_the_buffer_and_draws_it_with_no_readback`.
         let frame = import_dmabuf_on(&present, &dmabuf, surface, false).unwrap_or_else(|why| {
             panic!("a linear client buffer must import, not fall back: {why}")
         });
@@ -1909,7 +1896,6 @@ mod tests {
             "one GPU copy into the atlas"
         );
 
-        // Phase `a_recommit_of_the_same_buffer_imports_and_uploads_nothing`.
         let again = import_dmabuf_on(&present, &dmabuf, surface, false).expect("cached import");
         assert_eq!(
             imports_of_surface(),
@@ -1930,7 +1916,6 @@ mod tests {
         );
         assert_eq!(readbacks_now(), readbacks, "still no CPU readback");
 
-        // Phase `reading_pixels_back_is_counted`.
         let read = frame.rgba().expect("on-demand readback");
         assert_eq!(
             readbacks_now(),
@@ -2260,29 +2245,26 @@ mod tests {
             None,
             &vello::kurbo::Rect::new(0.0, 0.0, 3.0, 2.0),
         );
-        // Phase `a_queued_frame_pins_what_it_draws`.
         let mut pins = FramePins::default();
         pins.add_scene(&scene);
         pins.add_scene(&scene);
         assert_eq!(pins.len(), 1, "one frame, pinned once");
-        // Phase `a_superseded_frame_a_queued_frame_draws_is_kept`.
         let releases_before = release_latency().releases;
         frame.note_superseded();
+        let held = Arc::downgrade(&frame);
         drop(frame);
+        // The lease runs only after the frame itself is dropped.
         assert!(
-            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            held.strong_count() > 0 && given_back.try_recv().is_err(),
             "the buffer stays held while a queued frame can still draw it"
         );
-        // Phase `presenting_the_frame_gives_the_buffer_back_once`.
         drop(pins);
         assert_eq!(
-            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
             Ok("first"),
             "the buffer goes back once the frame drawing it is done"
         );
-        assert!(given_back.recv_timeout(Duration::from_millis(50)).is_err());
         assert!(release_latency().releases > releases_before);
-        // Phase `a_readback_holds_its_frame`.
         let frame = client_frame(
             &present,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -2293,11 +2275,22 @@ mod tests {
         let reader = Arc::clone(&frame);
         drop(frame);
         assert_eq!(&reader.rgba().expect("readback")[..4], &[4, 5, 6, 255]);
-        assert!(given_back.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(
+            given_back.try_recv().is_err(),
+            "the reader still holds the frame, so its buffer"
+        );
         drop(reader);
         assert_eq!(
-            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
             Ok("second")
+        );
+        // Each lease went back once: with both run and dropped, only this
+        // test's own sender is left.
+        drop(on_release);
+        assert_eq!(
+            given_back.recv_timeout(tilo_test_env::hang_bound()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+            "no buffer went back twice"
         );
     }
 
@@ -2335,7 +2328,6 @@ mod tests {
             made = made.saturating_add(1);
             Ok::<u32, String>(value)
         };
-        // Phase `a_steady_swapchain_imports_each_buffer_once`.
         let first = fresh(1);
         let second = fresh(2);
         for _ in 0..3 {
@@ -2349,12 +2341,10 @@ mod tests {
             }
         }
         assert_eq!(cache.imports, 2, "three commits of two buffers import two");
-        // Phase `the_same_buffer_on_another_surface_is_its_own_import`.
         cache
             .get_or_import((1, 11), TestBuffer(1, Arc::clone(&first.1)), || import(1))
             .expect("import");
         assert_eq!(cache.imports, 3);
-        // Phase `a_destroyed_buffer_is_dropped_and_a_new_device_imports_again`.
         first.1.store(true, std::sync::atomic::Ordering::Relaxed);
         cache
             .get_or_import((1, 10), TestBuffer(2, Arc::clone(&second.1)), || import(2))
@@ -2368,11 +2358,9 @@ mod tests {
             .expect("import");
         assert_eq!(cache.imports, 4, "a new presenting device imports again");
         assert_eq!(cache.entries.len(), 1, "nothing of the old device is kept");
-        // Phase `a_failed_import_is_not_cached`.
         let failed = cache.get_or_import((2, 10), fresh(3), || Err("refused".to_owned()));
         assert_eq!(failed, Err("refused".to_owned()));
         assert_eq!(cache.entries.len(), 1);
-        // Phase `a_surface_keeps_a_bounded_set_and_forgets_on_destroy`.
         let buffers: Vec<_> = (100..)
             .take(IMPORTS_PER_SURFACE.saturating_add(3))
             .map(fresh)

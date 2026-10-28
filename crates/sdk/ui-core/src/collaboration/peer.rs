@@ -1,6 +1,6 @@
 //! Host-injected authenticated peer transport. No runtime, socket, GPU or Send
 //! requirements: the browser adapter owns its asynchronous transport locally.
-use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec};
+use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec, annotation};
 
 /// Transport adapters must authenticate ordinary peer joins and verify inbound
 /// envelopes before publishing events. Installing this adapter grants no model,
@@ -20,7 +20,9 @@ pub trait PeerTransport {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         None
     }
-    fn join_route(&mut self, _: RouteSpec) -> Result<(), String> {
+    /// Join `route`, whose record holds `record_kind`. The kind is what a
+    /// host needs to create the record on this device's first change.
+    fn join_route(&mut self, _: RouteSpec, _: crate::record::RecordKind) -> Result<(), String> {
         Err("route joining unavailable".into())
     }
     fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
@@ -55,6 +57,9 @@ pub(super) struct PeerTransportAdapter {
     peer: std::mem::ManuallyDrop<Box<dyn PeerTransport>>,
     owner: std::thread::ThreadId,
     closed: Option<String>,
+    /// The last change the peer answered but would not take. A refusal fails
+    /// that change alone; only a real disconnect closes the adapter.
+    refused_change: Option<String>,
 }
 
 // SAFETY: the `!Send` handles inside `peer` are only reached on `owner`:
@@ -74,6 +79,7 @@ impl PeerTransportAdapter {
             peer: std::mem::ManuallyDrop::new(Box::new(peer)),
             owner: std::thread::current().id(),
             closed: None,
+            refused_change: None,
         }
     }
 
@@ -85,12 +91,27 @@ impl PeerTransportAdapter {
         );
     }
 
-    fn admit(&mut self, result: Result<(), String>) -> Result<(), super::TransportError> {
-        result.map_err(|error| {
-            tracing::warn!(%error, "collaboration peer transport unavailable");
-            self.closed = Some(error);
-            super::TransportError::Closed
-        })
+    /// Admit a command's answer. A peer that answered "no" to one change
+    /// keeps the connection: that change is refused, not the peer lost.
+    fn admit(
+        &mut self,
+        change: bool,
+        result: Result<(), String>,
+    ) -> Result<(), super::TransportError> {
+        let Err(error) = result else {
+            if change {
+                self.refused_change = None;
+            }
+            return Ok(());
+        };
+        if annotation::refused(&error) {
+            tracing::warn!(%error, "collaboration peer refused a change");
+            self.refused_change = Some(error);
+            return Ok(());
+        }
+        tracing::warn!(%error, "collaboration peer transport unavailable");
+        self.closed = Some(error);
+        Err(super::TransportError::Closed)
     }
 }
 
@@ -135,10 +156,15 @@ impl super::CollabTransport for PeerTransportAdapter {
         if self.closed.is_some() {
             return Err(super::TransportError::Closed);
         }
+        let change = matches!(
+            &command,
+            TransportCommand::Primary(CollabRequest::Document { .. })
+                | TransportCommand::ToRoute(_, CollabRequest::Document { .. })
+        );
         let result = match command {
             TransportCommand::Primary(request) => self.peer.send(request),
             TransportCommand::ToRoute(route, request) => self.peer.send_to_route(route, request),
-            TransportCommand::Join(route) => self.peer.join_route(route),
+            TransportCommand::Join(route, record_kind) => self.peer.join_route(route, record_kind),
             // The adapter reports the real acknowledgement of the latest Hello
             // through `take_primary_route_result`; there is nothing to enqueue.
             TransportCommand::ConfirmPrimaryRoute => Ok(()),
@@ -155,7 +181,7 @@ impl super::CollabTransport for PeerTransportAdapter {
                 self.peer.publish_action_directory(app_id)
             }
         };
-        self.admit(result)
+        self.admit(change, result)
     }
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
@@ -163,6 +189,11 @@ impl super::CollabTransport for PeerTransportAdapter {
         if self.closed.is_none() {
             out.extend(self.peer.poll());
         }
+    }
+
+    fn refused_change(&self) -> Option<String> {
+        self.check_owner();
+        self.refused_change.clone()
     }
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
@@ -173,5 +204,113 @@ impl super::CollabTransport for PeerTransportAdapter {
     fn take_action_directory_requests(&mut self, out: &mut Vec<ActionDirectoryRequest>) {
         self.check_owner();
         out.extend(self.peer.take_action_directory_requests());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collaboration::{CollabTransport, TransportCommand, TransportStatus};
+
+    /// A host peer that answers every document change with whatever its
+    /// `answer` says, as the browser's workspace host does.
+    struct AnsweringPeer {
+        answer: Result<(), String>,
+        connected: bool,
+    }
+
+    impl PeerTransport for AnsweringPeer {
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            match request {
+                CollabRequest::Document { .. } => self.answer.clone(),
+                _ => Ok(()),
+            }
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            vec![]
+        }
+        fn join_route(&mut self, _: RouteSpec, _: crate::record::RecordKind) -> Result<(), String> {
+            Ok(())
+        }
+        fn send_to_route(&mut self, _: RouteSpec, request: CollabRequest) -> Result<(), String> {
+            self.send(request)
+        }
+    }
+
+    fn adapter(answer: Result<(), String>) -> PeerTransportAdapter {
+        PeerTransportAdapter::new(AnsweringPeer {
+            answer,
+            connected: true,
+        })
+    }
+
+    fn submit_change(
+        adapter: &mut PeerTransportAdapter,
+    ) -> Result<(), crate::collaboration::TransportError> {
+        adapter.submit(TransportCommand::Primary(
+            CollabRequest::document_incremental(b"change".to_vec()),
+        ))
+    }
+
+    #[test]
+    fn a_change_the_peer_refuses_leaves_the_connection_open() {
+        let mut adapter = adapter(Err(
+            "the workspace refused the change: named no kind for a new record".into(),
+        ));
+        submit_change(&mut adapter).expect("a refusal is not a queue failure");
+        assert!(
+            adapter.status().is_open(),
+            "the peer answered; the connection is fine"
+        );
+        assert_eq!(
+            adapter.refused_change().as_deref(),
+            Some("the workspace refused the change: named no kind for a new record")
+        );
+    }
+
+    #[test]
+    fn a_lost_or_broken_peer_still_closes() {
+        let mut adapter = adapter(Err("peer connection dropped mid-change".into()));
+        assert_eq!(
+            submit_change(&mut adapter),
+            Err(crate::collaboration::TransportError::Closed)
+        );
+        assert!(matches!(adapter.status(), TransportStatus::Closed(_)));
+        assert_eq!(adapter.refused_change(), None);
+        assert_eq!(
+            submit_change(&mut adapter),
+            Err(crate::collaboration::TransportError::Closed)
+        );
+    }
+
+    #[test]
+    fn the_next_change_that_goes_through_withdraws_the_refusal() {
+        struct RefuseThenAccept(Option<String>);
+        impl PeerTransport for RefuseThenAccept {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+                self.0.take().map_or(Ok(()), Err)
+            }
+            fn poll(&mut self) -> Vec<CollabEvent> {
+                vec![]
+            }
+        }
+        let mut adapter = PeerTransportAdapter::new(RefuseThenAccept(Some(
+            "the workspace refused the change: named no kind".into(),
+        )));
+        submit_change(&mut adapter).unwrap();
+        assert!(adapter.refused_change().is_some());
+        submit_change(&mut adapter).unwrap();
+        assert_eq!(
+            adapter.refused_change(),
+            None,
+            "a change that goes through answers for the ones before it"
+        );
+        assert!(adapter.status().is_open());
     }
 }

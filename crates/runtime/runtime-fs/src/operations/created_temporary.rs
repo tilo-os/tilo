@@ -132,8 +132,6 @@ impl NativeCreatedTemporary {
     }
     /// One-use retirement through the same genuine native operation owner. The
     /// old bytes remain recoverable under protected custody, independently of Purge.
-    /// # Errors
-    /// Refuses consumed custody, stale scope or job admission errors before effects.
     pub fn retire(self: &Arc<Self>) -> Result<FsJob, FsError> {
         let mut submitted = lock(&self.submitted)?;
         if *submitted {

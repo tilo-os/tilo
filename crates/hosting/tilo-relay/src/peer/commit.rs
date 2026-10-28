@@ -34,6 +34,90 @@ pub(super) async fn handle_commit(
     subscribed: &[u64],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
+    let admission = admit_commit(peer, session, subscribed, env).await?;
+    match admission {
+        CommitAdmission::Answered(reply) => Ok(reply),
+        CommitAdmission::Admitted(admitted) => admitted.finish(session).await.map(Some),
+    }
+}
+
+/// Handle `commits`, a run of `Commit`s the author sent back to back: admit
+/// every one before waiting for the first, so the workspace's owner finds
+/// them queued together and makes them durable under shared barriers
+/// (`crate::persistence::Group`), then answer each in the order sent. A
+/// copy of a commit in the same run must wait for the first to be recorded,
+/// so a run never holds two with the same operation id
+/// ([`commit_run_key`]).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the admitted commits move into the answering loop one by one; the lint does not see the move"
+)]
+pub(super) async fn handle_commit_run(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    commits: Vec<Envelope>,
+) -> Result<Vec<Option<Envelope>>, PeerError> {
+    let mut admitted = Vec::with_capacity(commits.len());
+    for env in commits {
+        admitted.push(admit_commit(peer, session, subscribed, env).await?);
+    }
+    let mut replies = Vec::with_capacity(admitted.len());
+    for admission in admitted {
+        replies.push(match admission {
+            CommitAdmission::Answered(reply) => reply,
+            CommitAdmission::Admitted(admitted) => Some(admitted.finish(session).await?),
+        });
+    }
+    Ok(replies)
+}
+
+/// What keys a commit within a run: its author and operation id.
+pub(super) const fn commit_run_key(env: &Envelope) -> Option<([u8; 32], [u8; 16])> {
+    match env {
+        Envelope::Commit {
+            author_device_public_key,
+            op,
+            ..
+        } => Some((*author_device_public_key, *op)),
+        _ => None,
+    }
+}
+
+/// A `Commit` after its admission.
+enum CommitAdmission {
+    /// Answered without persisting: refused, or resent and found in the
+    /// ledger.
+    Answered(Option<Envelope>),
+    /// Queued with the workspace's owner.
+    Admitted(Box<AdmittedCommit>),
+}
+
+/// A commit queued with its workspace's owner, not yet durable.
+struct AdmittedCommit {
+    ws: SharedWorkspace,
+    workspace_id: u64,
+    op: [u8; 16],
+    author: [u8; 32],
+    digest: [u8; 32],
+    authored: Envelope,
+    admitted: super::admission::AdmittedState,
+    observed: Option<crate::compaction::Observed>,
+    admitting: Option<crate::compaction::Admitting>,
+    /// Held until the commit is recorded: a copy of it (a resend after a
+    /// reconnect) waits for this one, then is answered from the ledger.
+    claim: crate::workspace::CommitClaim,
+    committing: Option<std::time::Instant>,
+}
+
+/// Check, claim and queue `env`, a `Commit`, without waiting for it to be
+/// durable.
+async fn admit_commit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<CommitAdmission, PeerError> {
     let Envelope::Commit {
         workspace_id,
         op,
@@ -47,11 +131,11 @@ pub(super) async fn handle_commit(
         ));
     };
     let refused = |reason: &str| {
-        Ok(Some(Envelope::CommitRefused {
+        Ok(CommitAdmission::Answered(Some(Envelope::CommitRefused {
             workspace_id,
             op,
             reason: reason.into(),
-        }))
+        })))
     };
     if !subscribed.contains(&workspace_id) {
         return refused("commit sent before subscribing to workspace");
@@ -75,11 +159,15 @@ pub(super) async fn handle_commit(
     };
     let digest = *blake3::hash(&delta).as_bytes();
     let claiming = crate::timing::start();
-    // Held until the commit is recorded: a copy of it (a resend after a
-    // reconnect) waits for this one, then is answered from the ledger.
-    let _claim = match claim(&ws, author_device_public_key, op).await {
+    let claim = match claim(&ws, author_device_public_key, op).await {
         Ok(claim) => claim,
-        Err(admitted) => return Ok(Some(resent_commit(workspace_id, admitted, digest))),
+        Err(admitted) => {
+            return Ok(CommitAdmission::Answered(Some(resent_commit(
+                workspace_id,
+                admitted,
+                digest,
+            ))));
+        }
     };
     crate::timing::event("commit.claim_wait", claiming, 0);
     let committing = crate::timing::start();
@@ -110,35 +198,69 @@ pub(super) async fn handle_commit(
         false,
     ))
     .await?;
-    // What an author is told is committed never depends on work that can
-    // still fail: wait for the change to be durable and published.
-    crate::persistence::receipt(admitted.completion).await?;
-    crate::timing::event("commit.durable", committing, 0);
-    tell_governor(&ws, &authored).await;
-    let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
-    if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
-        compactor.note(&ws, workspace_id, observed);
-    }
-    drop(admitting);
-    // The author holds what it committed; a resume never replays it to it.
-    if let Some(position) = resume_record(session, workspace_id, [&authored]) {
-        let _ = session.outbound.try_send(position);
-    }
-    let seq = remember_commit(
-        &ws,
-        crate::store::CommitRecord {
-            author: author_device_public_key,
-            op,
-            seq: durable,
-            digest,
-        },
-    )
-    .await?;
-    Ok(Some(Envelope::Committed {
+    Ok(CommitAdmission::Admitted(Box::new(AdmittedCommit {
+        ws,
         workspace_id,
         op,
-        seq,
-    }))
+        author: author_device_public_key,
+        digest,
+        authored,
+        admitted,
+        observed,
+        admitting,
+        claim,
+        committing,
+    })))
+}
+
+impl AdmittedCommit {
+    /// Wait for the commit to be durable and published, record it, and
+    /// answer its author with its host order.
+    async fn finish(self: Box<Self>, session: &SessionCtx<'_>) -> Result<Envelope, PeerError> {
+        let Self {
+            ws,
+            workspace_id,
+            op,
+            author,
+            digest,
+            authored,
+            admitted,
+            observed,
+            admitting,
+            claim,
+            committing,
+        } = *self;
+        // What an author is told is committed never depends on work that can
+        // still fail: wait for the change to be durable and published.
+        crate::persistence::receipt(admitted.completion).await?;
+        crate::timing::event("commit.durable", committing, 0);
+        tell_governor(&ws, &authored).await;
+        let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
+        if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
+            compactor.note(&ws, workspace_id, observed);
+        }
+        drop(admitting);
+        // The author holds what it committed; a resume never replays it to it.
+        if let Some(position) = resume_record(session, workspace_id, [&authored]) {
+            let _ = session.outbound.try_send(position);
+        }
+        let seq = remember_commit(
+            &ws,
+            crate::store::CommitRecord {
+                author,
+                op,
+                seq: durable,
+                digest,
+            },
+        )
+        .await?;
+        drop(claim);
+        Ok(Envelope::Committed {
+            workspace_id,
+            op,
+            seq,
+        })
+    }
 }
 
 /// Why the room refuses `delta`, a page's commit, if it does: decided as a

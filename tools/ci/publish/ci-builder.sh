@@ -22,13 +22,11 @@ case ${1:-} in
     [[ $(uname -m) == "$arch" ]] || die "the $arch builder is built natively, not on $(uname -m)"
     channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
     [[ -n $channel ]] || die 'no channel in rust-toolchain.toml'
-    assets=$scratch/github-assets
-    TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
-      "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
+    assets=$(pinned_assets "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
       "wasm-bindgen-0.2.108-$arch-unknown-linux-musl.tar.gz" \
       "cargo-xwin-v0.23.1.$arch-unknown-linux-musl.tar.gz" \
       "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" "$(bash tools/ci/install-xwayland-satellite.sh --asset-name)" \
-      "${extra[@]}"
+      "${extra[@]}")
     # buildah bind-mounts single files only from a writable context, so the build gets a copy
     # of exactly the files the Containerfile uses.
     context=$scratch/ci-builder-context
@@ -36,7 +34,8 @@ case ${1:-} in
     for file in dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv \
       tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh \
       tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh \
-      tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch; do
+      tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch \
+      tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh; do
       install -D -m 0644 "$file" "$context/$file"
     done
     bash tools/ci/publish/oci-build.sh "$context" os/Containerfile.builder "$out" \

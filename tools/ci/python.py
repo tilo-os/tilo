@@ -32,7 +32,6 @@ class TrustedLocalModules:
     sources = {
         'ci': 'ci/__init__.py',
         'ci.resolve_builder': 'ci/resolve_builder.py',
-        'ci.affected_packages': 'ci/affected_packages.py',
         'ci.workspace_graph': 'ci/workspace_graph.py',
         'ci.runner_labels': 'ci/runner_labels.py',
         'app_release': 'apps/app_release.py',
@@ -45,10 +44,6 @@ class TrustedLocalModules:
         'app_packaging_contract': 'app_packaging_contract.py',
         'app_packaging_plan': 'app_packaging_plan.py',
         'app_packaging_qualification': 'app_packaging_qualification.py',
-        'app_packaging_product': 'app_packaging_product.py',
-        'app_packaging_coordinator': 'app_packaging_coordinator.py',
-        'app_packaging_service': 'app_packaging_service.py',
-        'accept_app_artifacts': 'accept_app_artifacts.py',
         'assemble_verified_apps': 'assemble_verified_apps.py',
         'canonical_verifier_bundle': 'canonical_verifier_bundle.py',
     }

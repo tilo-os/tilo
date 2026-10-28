@@ -235,7 +235,6 @@ fn epub_nav_mirrors_the_heading_tree() {
         let links = nav.matches("<a href=").count();
         assert_eq!(links, 4, "one TOC entry per heading\n{nav}");
 
-        // Each heading's label appears in the nav.
         for label in ["Chapter One", "Section A", "Chapter Two", "Section B"] {
             assert!(nav.contains(label), "nav lists heading '{label}':\n{nav}");
         }
@@ -274,7 +273,6 @@ fn epub_nav_mirrors_the_heading_tree() {
             5,
             "one TOC entry per heading\n{nav}"
         );
-        // Multiple nesting levels.
         assert!(
             nav.matches("<ol>").count() >= 3,
             "deep nesting opens several lists\n{nav}"
@@ -315,7 +313,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
         let epub = render_epub(&snap, &blobs).expect("render");
         let parts = unzip(&epub);
 
-        // A packaged image resource exists under OEBPS/images/.
         let img_part = parts.iter().find(|(n, _)| n.starts_with("OEBPS/images/"));
         assert!(
             img_part.is_some(),
@@ -334,7 +331,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
             "packaged image bytes match the blob"
         );
 
-        // The OPF manifest lists it with the PNG media-type.
         let opf = part_str(&parts, "OEBPS/content.opf");
         assert!(
             opf.contains("media-type=\"image/png\""),
@@ -463,7 +459,6 @@ fn assert_well_formed_xml(xml: &str) {
     while i < bytes.len() {
         match bytes[i] {
             b'<' => {
-                // Find the closing '>'.
                 let rel = xml[i..]
                     .find('>')
                     .unwrap_or_else(|| panic!("unterminated tag at {i}\n{xml}"));
@@ -488,7 +483,6 @@ fn assert_well_formed_xml(xml: &str) {
                 } else if tag.ends_with('/') {
                     // Self-closing — no stack change.
                 } else {
-                    // Opening tag.
                     stack.push(tag_name(tag).clone());
                 }
                 i = end.saturating_add(1);

@@ -822,7 +822,6 @@ mod tests {
                 c.transition_duration = 1.0;
             }
 
-            // Just inside the incoming clip's transition window.
             let layers = plan_layers(&p, 20.3);
             assert!(
                 layers.iter().any(|l| l.clip == late),
@@ -842,13 +841,10 @@ mod tests {
                 "an abutting predecessor is still the A side of the dissolve: {layers:?}",
             );
         }
-        // Case `empty_when_no_clip_covers_playhead`.
         {
             let p = sample_project();
-            // Far past the end of every clip.
             assert_eq!(composite(&p, 10_000.0), CompositedFrame::Empty);
         }
-        // Case `picks_the_top_video_clip`.
         {
             let p = sample_project();
             // At t=21..27 the sunset insert on V2 overlays the V1 spine.
@@ -860,7 +856,6 @@ mod tests {
                 CompositedFrame::Empty => panic!("expected a clip at the playhead"),
             }
         }
-        // Case `fade_in_darkens_the_head`.
         {
             let p = sample_project();
             // The drone clip on V1 has a 1.5s fade-in starting at t=0.
@@ -876,7 +871,6 @@ mod tests {
             );
             assert!(head < 0.2, "very head of a fade-in is near-black");
         }
-        // Case `grade_changes_the_base_colour`.
         {
             let neutral = palette_rgb(0);
             let brighter = neutral.graded(&Filters {
@@ -893,7 +887,6 @@ mod tests {
             // Full desaturation collapses channels toward luma → near-equal.
             assert!((desat.r - desat.g).abs() < 1e-6 && (desat.g - desat.b).abs() < 1e-6);
         }
-        // Case `grayscale_effect_collapses_channels_and_empty_is_a_noop`.
         {
             use crate::model::{ClipEffect, EffectKind};
             let c = palette_rgb(0); // a saturated bluish clip
@@ -908,7 +901,6 @@ mod tests {
                 (g.r - g.g).abs() < 0.12 && (g.g - g.b).abs() < 0.12,
                 "grayscale converges the channels: {g:?}",
             );
-            // Invert flips the colour.
             let inv = c.with_effects(&[ClipEffect {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Invert,
@@ -916,7 +908,6 @@ mod tests {
             }]);
             assert!((inv.r - (1.0 - c.r)).abs() < 1e-6);
         }
-        // Case `effects_stack_in_order_and_change_the_composite`.
         {
             use crate::model::{ClipEffect, EffectKind};
             let mut p = sample_project();
@@ -942,7 +933,6 @@ mod tests {
                 "grayscale reduces channel spread in the composite"
             );
         }
-        // Case `identity_grade_is_a_near_noop`.
         {
             let c = palette_rgb(3);
             let g = c.graded(&Filters::default());
@@ -950,7 +940,6 @@ mod tests {
                 (c.r - g.r).abs() < 1e-9 && (c.g - g.g).abs() < 1e-9 && (c.b - g.b).abs() < 1e-9
             );
         }
-        // Case `transition_flash_decays_to_none`.
         {
             let p = sample_project();
             // V2 sunset dissolves in at t=21.
@@ -963,7 +952,6 @@ mod tests {
             };
             assert!(late.is_none(), "flash gone well past the cut");
         }
-        // Case `source_time_maps_playhead_into_the_clip_window`.
         {
             use crate::model::{MediaKind, Project, Track, TrackKind};
             use uuid::Uuid;
@@ -1048,7 +1036,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn preview_decoder_extracts_frames_through_the_engine_seam() {
-        // Case `decoder_extracts_a_frame_through_the_engine_seam`.
         {
             // Hermetic proof of the extraction seam on the synthesized backend: a
             // real file on disk (so the hydration gate passes), a real seek + poll,
@@ -1076,7 +1063,6 @@ mod tests {
 
             std::fs::remove_file(&f).ok();
         }
-        // Case `decoder_yields_nothing_for_an_unhydrated_reference`.
         {
             // A projected reference (bytes not local) must not fabricate a frame —
             // the widget then shows the representative frame, never blocks.
@@ -1117,7 +1103,6 @@ mod tests {
             );
             assert!(dec.frame().is_none());
         }
-        // Case `render_rgba_produces_a_sized_opaque_buffer_reflecting_the_grade`.
         {
             let p = sample_project();
             // Inside the graded drone open (brighter than a neutral clip elsewhere).
@@ -1149,10 +1134,12 @@ mod tests {
             gst::init().expect("gstreamer init");
             let dir = std::env::temp_dir();
             let f = dir.join(format!("tilo-ve-realdec-{}.mp4", std::process::id()));
+            let encoder = media_stack::h264_encoder_with_keyframes_every(30)
+                .expect("the media stack has an H.264 encoder");
             let desc = format!(
                 "videotestsrc pattern=smpte num-buffers=60 ! \
              video/x-raw,width=192,height=108,framerate=30/1 ! videoconvert ! \
-             openh264enc ! h264parse ! mp4mux ! filesink location={}",
+             {encoder} ! h264parse ! mp4mux ! filesink location={}",
                 f.display()
             );
             let pipeline = gst::parse::launch(&desc)
@@ -1202,8 +1189,6 @@ mod tests {
             std::fs::remove_file(&f).ok();
         }
     }
-
-    // --- layer plan -------------------------------------------------------
 
     /// Two abutting clips on one video track, plus an optional second
     /// track above. Returns (project, track ids).
@@ -1275,7 +1260,6 @@ mod tests {
         reason = "the plan copies the clip's grade through unchanged"
     )]
     fn layer_plan_stacks_tracks_and_samples_source_time() {
-        // Case `the_plan_stacks_every_video_track_bottom_first`.
         {
             let (p, v1, v2) = stacked_project();
             // At t=7 both tracks are covered: V1's second clip and V2's insert.
@@ -1290,7 +1274,6 @@ mod tests {
             assert_eq!(lower.track, v1, "V1 is composited first (underneath)");
             assert_eq!(upper.track, v2, "V2 is composited last (on top)");
         }
-        // Case `a_muted_video_track_drops_out_of_the_plan`.
         {
             let (mut p, _v1, v2) = stacked_project();
             let idx = p.tracks.iter().position(|t| t.id == v2).unwrap();
@@ -1307,7 +1290,6 @@ mod tests {
                 "a locked track still renders"
             );
         }
-        // Case `soloing_a_track_hides_the_others`.
         {
             let (mut p, v1, v2) = stacked_project();
             let i1 = p.tracks.iter().position(|t| t.id == v1).unwrap();
@@ -1323,7 +1305,6 @@ mod tests {
             assert_eq!(soloed.len(), 1, "soloing V2 hides V1: {soloed:?}");
             assert_eq!(p.clip(soloed[0].clip).unwrap().track, v2);
 
-            // Soloing both is the same as soloing neither.
             p.tracks[i1].solo = true;
             assert_eq!(
                 plan_layers(&p, 7.0).len(),
@@ -1331,7 +1312,6 @@ mod tests {
                 "every track soloed shows every track"
             );
 
-            // Mute still wins for a track that is itself soloed.
             p.tracks[i1].muted = true;
             let muted_solo = plan_layers(&p, 7.0);
             assert_eq!(
@@ -1341,7 +1321,6 @@ mod tests {
             );
             assert_eq!(p.clip(muted_solo[0].clip).unwrap().track, v2);
         }
-        // Case `a_layer_samples_its_clips_own_source_time`.
         {
             let (mut p, v1, _) = stacked_project();
             let cid = p.clips_on(v1)[1].id;
@@ -1355,7 +1334,6 @@ mod tests {
                 "source time follows the in-point: {l:?}"
             );
         }
-        // Case `the_plan_carries_the_grade_effects_and_envelope`.
         {
             let (mut p, v1, _) = stacked_project();
             let cid = p.clips_on(v1)[0].id;
@@ -1388,7 +1366,6 @@ mod tests {
                 l.alpha
             );
         }
-        // Case `an_empty_timeline_plans_nothing`.
         {
             let p = Project::new("t");
             assert!(plan_layers(&p, 0.0).is_empty());
@@ -1406,7 +1383,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn transitions_plan_distinct_bounded_layer_stacks() {
-        // Case `a_dissolve_puts_the_outgoing_clip_underneath_the_incoming_one`.
         {
             // The heart of the fix: a transition is two layers, so both clips
             // are sampled. The old flash sampled neither.
@@ -1438,7 +1414,6 @@ mod tests {
                 "an abutting cut freezes the outgoing clip on its tail",
             );
         }
-        // Case `a_fade_in_has_no_outgoing_layer_so_it_mixes_with_black`.
         {
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
@@ -1452,7 +1427,6 @@ mod tests {
             assert_eq!(layers[0].clip, incoming);
             assert!((layers[0].alpha - 0.5).abs() < 0.02);
         }
-        // Case `a_dip_hands_the_frame_from_one_clip_to_the_other_through_black`.
         {
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
@@ -1487,7 +1461,6 @@ mod tests {
             let lit: f64 = bottom.iter().map(|l| l.alpha).sum();
             assert!(lit < 0.02, "the midpoint of a dip is black: {bottom:?}");
         }
-        // Case `a_wipe_carries_geometry_not_a_flash`.
         {
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
@@ -1508,7 +1481,6 @@ mod tests {
             // a wipe is geometry, not a cross-fade.
             assert!((layers[1].alpha - 1.0).abs() < 1e-9);
         }
-        // Case `each_transition_plans_a_distinct_stack`.
         {
             let (base, v1, _) = stacked_project();
             let at = 5.0 + TRANSITION_SECS * 0.5;
@@ -1534,7 +1506,6 @@ mod tests {
                 }
             }
         }
-        // Case `a_transition_expires_and_leaves_a_single_layer`.
         {
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
@@ -1547,7 +1518,6 @@ mod tests {
             );
             assert!((after[0].alpha - 1.0).abs() < 1e-9);
         }
-        // Case `a_transition_never_outruns_a_very_short_clip`.
         {
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
@@ -1570,9 +1540,7 @@ mod tests {
                 "and is over by the clip's end"
             );
         }
-        // Case `a_clips_own_transition_length_drives_the_plan`.
         {
-            // The ramp used to be a constant for every clip in every project.
             let (mut p, v1, _) = stacked_project();
             let incoming = p.clips_on(v1)[1].id;
             p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
@@ -1600,7 +1568,6 @@ mod tests {
                 "the outgoing clip is still underneath past the default length",
             );
 
-            // A shorter ramp is already over there.
             p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 0.25;
             let quick = plan_layers(&p, at_default_mid);
             assert_eq!(

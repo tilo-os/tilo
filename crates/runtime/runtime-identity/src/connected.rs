@@ -1,6 +1,3 @@
-//! Host-owned connected identity service. The host binds and revalidates the
-//! handler's app/workspace authority; the child supplies no replacement context.
-
 use crate::{
     NotAvailable,
     wire::{Request, Response},
@@ -16,16 +13,20 @@ pub fn serve(
 ) -> Result<(), NotAvailable> {
     stream.set_nonblocking(false)?;
     loop {
-        let request = match crate::client::read_frame(&mut stream) {
-            Ok(request) => request,
-            Err(NotAvailable::ConnectionFailed(error))
-                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                return Ok(());
+        let request = match crate::wire::FRAMING.read_value(&mut stream) {
+            Ok(Some(request)) => request,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                let error: std::io::Error = error.into();
+                if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    return Ok(());
+                }
+                return Err(NotAvailable::ConnectionFailed(error));
             }
-            Err(error) => return Err(error),
         };
-        crate::client::write_frame(&mut stream, &handler(request))?;
+        crate::wire::FRAMING
+            .write_value(&mut stream, &handler(request))
+            .map_err(|error| NotAvailable::ConnectionFailed(error.into()))?;
     }
 }
 

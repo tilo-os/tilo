@@ -74,6 +74,18 @@ class Switches(unittest.TestCase):
             latency_bench.drive_switches(control, self.log, 2, 0)
 
 
+class Profile(unittest.TestCase):
+    def test_the_session_finds_its_home_and_runtime_directory(self):
+        root = latency_bench.scratch_profile()
+        self.addCleanup(__import__("shutil").rmtree, root, True)
+        args = argparse.Namespace(width=1920, height=1080, refresh_hz=60)
+        env = latency_bench.session_env(root, args, root / "run" / "test-control.sock",
+                                        root / "trace.csv")
+        for name in ("HOME", "XDG_RUNTIME_DIR"):
+            self.assertTrue(Path(env[name]).is_dir(), f"{name} {env[name]} must exist before the shell starts")
+        self.assertEqual((root / "run").stat().st_mode & 0o777, 0o700)
+
+
 class Records(unittest.TestCase):
     def test_one_pointer_record_and_the_switch_records(self):
         switch = {"first_queued_us": 8000, "first_shown_us": 8000, "settled_queued_us": 410000,

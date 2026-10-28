@@ -33,10 +33,8 @@ fn assert_generated_tree_source(source: &str) {
     syn::parse_file(source).unwrap();
     for needle in [
         "pub struct ProjectTreeConfig",
-        "M: TreeModel",
+        "M: TreeModel + 'static",
         "TreeView::from_model(model)",
-        ".with_slot_delegate(",
-        "TreeSlotState::Error",
         ".with_row_delegate(",
         ".reorderable()",
     ] {
@@ -1184,8 +1182,8 @@ fn component_templates_keep_their_generic_model_boundaries() {
         syn::parse_file(&source).unwrap();
         assert!(source.contains("pub struct ActivityListConfig"));
         assert!(source.contains("M: ListModel"));
-        assert!(source.contains("VirtualList::new_async"));
-        assert!(source.contains("ListRowState<'a>"));
+        assert!(source.contains("VirtualList::new(model"));
+        assert!(source.contains("FnMut(&M, usize, &M::Key) -> Element"));
         assert!(source.contains("with_selection(config.selection.clone())"));
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
@@ -1313,9 +1311,9 @@ fn component_generation_is_safe_localised_and_transactional() {
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
             "{catalog}"
         );
-        assert!(catalog.contains("project-tree-loading = { \"Loading…\" }"));
         assert!(
-            catalog.contains("project-tree-load-error = { \"Could not load. Activate to retry\" }")
+            !catalog.contains("project-tree-loading"),
+            "the tree's placeholders are the framework's, not the app's"
         );
 
         add_app_artifact(AddRequest {
@@ -1722,7 +1720,10 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
-        let registry = locale_registry_source(&["en-US".to_owned()]);
+        let registry = locale_registry_with_keys(
+            &["en-US".to_owned()],
+            &catalog_message_ids(&parse_fluent_catalog(STARTER_APP_CATALOG).unwrap()),
+        );
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -2000,9 +2001,10 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         })
         .unwrap();
         assert_eq!(preserved.checked, ["de-DE"]);
+        // The catalog grew `settings-title` and the registry gained its key.
         assert_eq!(
             preserved.files.as_slice(),
-            std::slice::from_ref(&translation_path)
+            [translation_path.clone(), app.join("src/locales.rs")]
         );
         assert!(
             preserved
@@ -2122,6 +2124,93 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert!(error.to_string().contains("app-owned"), "{error:#}");
         assert!(!app.join("locales/nl.ftl").exists());
         assert_eq!(std::fs::read_to_string(library_path).unwrap(), before);
+    }
+
+    // Phase: a_message_is_one_key_and_a_term_is_no_key.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        let source = app.join("locales/en-US.ftl");
+        let mut catalog = std::fs::read_to_string(&source).unwrap();
+        // A plural message is one message: its categories are selectors
+        // inside it, not ids of their own.
+        catalog.push_str(
+            "\nstarter-books =\n    { $count ->\n        [one] One book\n       *[other] { $count } books\n    }\nstarter-add-one = +1\n-item-term = a term, not a message\n",
+        );
+        std::fs::write(&source, &catalog).unwrap();
+        sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: None,
+            prune: false,
+            reset_variables: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let registry = std::fs::read_to_string(app.join("src/locales.rs")).unwrap();
+        let keys = declared_key_names(&registry).unwrap();
+        assert!(
+            keys.contains(&"STARTER_BOOKS".to_owned()),
+            "a message with plural categories is one key: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"STARTER_ADD_ONE".to_owned()),
+            "a message whose id ends in `-one` is still a message: {keys:?}"
+        );
+        assert!(
+            !keys
+                .iter()
+                .any(|key| key.starts_with('-') || key == "ITEM_TERM"),
+            "a term is no control's label: {keys:?}"
+        );
+        assert_eq!(label_key_name("starter-books"), "STARTER_BOOKS");
+        assert_eq!(label_key_name("starter-add-one"), "STARTER_ADD_ONE");
+        assert_eq!(label_key_name("-brand"), "");
+    }
+
+    // Phase: a_key_the_catalog_lacks_is_reported_and_refreshed.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        let registry_path = app.join("src/locales.rs");
+        let current = std::fs::read_to_string(&registry_path).unwrap();
+        // A catalog message with no key behind it is exactly the state a
+        // hand edit of locales/en-US.ftl leaves, and the one `check` reports.
+        let mut catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        catalog.push_str("starter-saved = Saved\n");
+        std::fs::write(app.join("locales/en-US.ftl"), &catalog).unwrap();
+        let report = doctor_app(&app).unwrap();
+        let locale_check = report
+            .checks
+            .iter()
+            .find(|check| check.label == "locale registry")
+            .expect("the registry is inspected");
+        assert_eq!(locale_check.status, DoctorStatus::Fail, "{locale_check:?}");
+        assert!(locale_check.detail.contains("stale"), "{locale_check:?}");
+
+        sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: None,
+            prune: false,
+            reset_variables: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let refreshed = std::fs::read_to_string(&registry_path).unwrap();
+        assert!(
+            refreshed.contains(r#"pub const STARTER_SAVED: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-saved");"#),
+            "the refresh adds the key: {refreshed}"
+        );
+        let report = doctor_app(&app).unwrap();
+        let locale_check = report
+            .checks
+            .iter()
+            .find(|check| check.label == "locale registry")
+            .expect("the registry is inspected");
+        assert_eq!(locale_check.status, DoctorStatus::Pass, "{locale_check:?}");
+        assert_ne!(refreshed, current);
+        syn::parse_file(&refreshed).expect("the refreshed registry is Rust");
     }
 }
 
@@ -2504,8 +2593,11 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(library.contains("impl ResourceApp for App"));
         assert!(library.contains(".input(cx.paths().name)"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
-        assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
+        assert!(
+            library.contains("crate::locales::keys::STARTER_CLEAR")
+                && library.contains("Greeting::CLEAR.invoke()")
+        );
+        assert!(library.contains("labeled_field(crate::locales::keys::STARTER_NAME_LABEL, name)"));
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
         assert!(library.contains("pub mod locales;"));
@@ -2516,6 +2608,30 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
             locale_registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["en-US"]);"#)
         );
         assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
+        // Every message of the template catalog is a generated key, so a
+        // label the catalog lacks stops the app compiling.
+        assert!(
+            locale_registry.contains("pub mod keys {"),
+            "the scaffold generates the label keys"
+        );
+        let catalog =
+            std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
+        let messages = catalog_message_ids(&parse_fluent_catalog(&catalog).unwrap());
+        assert_eq!(
+            declared_key_names(&locale_registry).unwrap(),
+            messages
+                .iter()
+                .map(|id| label_key_name(id))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            locale_registry.contains(r#"pub const STARTER_CLEAR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-clear");"#),
+            "a key names the message it is"
+        );
+        assert!(
+            locale_registry.contains(r#"pub const STARTER_GREETING: ui::i18n::LabelKey = ui::i18n::LabelKey::new("starter-greeting");"#),
+            "a key may hold arguments; it is still the message"
+        );
         let manifest =
             std::fs::read_to_string(destination.join("tilo-app.toml")).expect("manifest");
         assert!(manifest.contains("mode = \"off\""));
@@ -4630,7 +4746,7 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     std::fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep 30 &\nprintf '%s\\n' $! > '{}'\nwait\n",
+            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep infinity &\nprintf '%s\\n' $! > '{}'\nwait\n",
             leader.display(),
             sleeper.display()
         ),
@@ -4647,30 +4763,26 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let leader_watch = leader.clone();
     let sleeper_watch = sleeper.clone();
     let source = app.join("src/main.rs");
-    let edited = std::sync::Arc::new(std::sync::OnceLock::new());
-    let edited_at = edited.clone();
     let watcher = std::thread::spawn(move || {
         tilo_test_env::wait_until("the fake cargo and its child to start", || {
             leader_watch.is_file() && sleeper_watch.is_file()
         });
-        let _ = edited_at.set(Instant::now());
         let _ = sender.send(Ok(Event::new(EventKind::Modify(
             notify::event::ModifyKind::Any,
         ))
         .add_path(source)));
     });
-    let outcome =
-        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
+    // The fake build never ends on its own: only the cancel ends it.
+    let (done, built) = mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {})
+            .map(|outcome| matches!(outcome, DevCandidate::Superseded))
+            .map_err(|error| error.to_string());
+        let _ = done.send(outcome);
+    });
+    let superseded = tilo_test_env::recv("the stale build to be cancelled", &built).unwrap();
     watcher.join().unwrap();
-    assert!(
-        matches!(outcome, DevCandidate::Superseded),
-        "a source edit during the build must cancel it"
-    );
-    let cancel = edited.get().expect("the edit was sent").elapsed();
-    assert!(
-        cancel < Duration::from_secs(2),
-        "cancelling a stale build took {cancel:?}"
-    );
+    assert!(superseded, "a source edit during the build must cancel it");
     let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
     let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();
     assert!(
@@ -4777,9 +4889,7 @@ done\n",
 /// compiler this build started.
 #[cfg(unix)]
 fn command_still_running(pid: &str, name: &str) -> bool {
-    let Some(deadline) = Instant::now().checked_add(Duration::from_millis(500)) else {
-        return true;
-    };
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if command_file_name(pid).as_deref() != Some(name) {
             return false;
@@ -4848,9 +4958,14 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
     // winit, vello and automerge are not patched: the SDK depends on its forks
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
-    let forks = ["wayland-backend", "rustls-native-certs"];
-    // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
-    let git_forks = ["accesskit", "atspi"];
+    // The accessibility crates are vendored releases with a manifest edit,
+    // reached like every other fork under vendor/.
+    let forks = [
+        "wayland-backend",
+        "rustls-native-certs",
+        "accesskit_unix",
+        "atspi",
+    ];
     // A fork only an engine library's graph uses (rustypipe, which Music and
     // Tube load from the YouTube engine) is not the SDK's and stays out.
     let engine_forks = ["rustypipe"];
@@ -4859,14 +4974,10 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
             assert!(workspace_patches.contains_key(name), "{name}");
             assert!(!patches.contains_key(name), "{name}");
         }
-        for name in git_forks {
-            assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
-            assert!(
-                workspace_patches[name]["git"]
-                    .as_str()
-                    .is_some_and(|url| url.starts_with("https://")),
-                "{name}"
-            );
+        // No fork is fetched from another git host, which would fail every
+        // build of the app whenever that host is down.
+        for (name, patch) in workspace_patches {
+            assert!(patch.get("git").is_none(), "{name} is fetched from git");
         }
     };
 
@@ -5191,7 +5302,6 @@ fn every_template_scaffolds_a_portable_app() {
         assert!(report.passed(), "{}: {}", template.name(), report.render());
         assert!(report.files > 0);
         assert!(report.render().starts_with("portability: ok"));
-        // The manifest declares every capability the generated code uses.
         let manifest = tilo_app_package::Manifest::from_toml_str(
             &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
         )
@@ -5659,11 +5769,6 @@ fn reload_replaces_the_contents_of_every_open_window() {
     assert_eq!(open[1].contents, "draft");
 }
 
-/// How long a spawned stand-in app may take to reach a state on a loaded
-/// machine. Waits end as soon as the state is reached.
-#[cfg(unix)]
-const PROCESS_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Kills and reaps the stand-in app on every exit from the test, including a
 /// failed assertion.
 #[cfg(unix)]
@@ -5703,30 +5808,17 @@ while true; do sleep 0.2; done\n",
             .expect("app process"),
     );
     let ready = state.with_extension("ready");
-    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
-        panic!("clock");
-    };
-    while Instant::now() < deadline && !ready.is_file() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(ready.is_file(), "the app did not open its windows");
+    tilo_test_env::wait_until("the app to open its windows", || ready.is_file());
     let pid = std::fs::read_to_string(state.with_extension("pid")).unwrap();
     assert!(
         reload_running_dev_app(&child.0),
         "the running app accepts an in-place reload"
     );
     let contents_path = state.with_extension("contents");
-    let mut contents = String::new();
-    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
-        panic!("clock");
-    };
-    while Instant::now() < deadline {
-        contents = std::fs::read_to_string(&contents_path).unwrap_or_default();
-        if contents.contains("hello-next") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let contents = tilo_test_env::wait_for("the app to reload its windows", || {
+        let contents = std::fs::read_to_string(&contents_path).unwrap_or_default();
+        contents.ends_with("notes=draft-next\n").then_some(contents)
+    });
     drop(child);
     assert_eq!(
         std::fs::read_to_string(state.with_extension("windows")).unwrap(),

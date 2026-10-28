@@ -39,9 +39,6 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             state: state.id().to_owned(),
             call: call.clone(),
         },
-        PresencePayload::Wave { target } => PeerPresencePayload::Wave {
-            target: target.clone(),
-        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -74,7 +71,6 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
             state: ui::Availability::from_id(&state)?,
             call,
         },
-        PeerPresencePayload::Wave { target } => PresencePayload::Wave { target },
         // Talking beside a pointer is the desktop's to show, never an app's.
         PeerPresencePayload::Chat { .. } | PeerPresencePayload::Reaction { .. } => return None,
     };
@@ -131,9 +127,6 @@ mod tests {
             PresencePayload::Availability {
                 state: ui::Availability::Focusing,
                 call: Some("voice".into()),
-            },
-            PresencePayload::Wave {
-                target: "peer@7".into(),
             },
         ];
         for payload in variants {

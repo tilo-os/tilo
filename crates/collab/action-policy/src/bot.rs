@@ -62,7 +62,6 @@ pub fn scoped_rules(room: &str, rules: &[Rule]) -> Result<Vec<Rule>, BotRuleErro
         .collect()
 }
 
-/// The prefix every grant of `installation` carries.
 #[must_use]
 pub fn grant_prefix(installation: &str) -> String {
     format!("bot:{installation}:")

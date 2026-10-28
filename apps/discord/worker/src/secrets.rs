@@ -140,8 +140,21 @@ mod tests {
             panic!("asks the host");
         };
         assert_eq!((purpose.as_str(), item.as_str()), (BOT_TOKEN, TOKEN_ITEM));
-        // Let both waiters register before answering.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Both waiters registered before the answer.
+        let key = (BOT_TOKEN.to_owned(), TOKEN_ITEM.to_owned());
+        tilo_test_env::within("both waiters register", async {
+            while secrets
+                .waiting
+                .lock()
+                .unwrap()
+                .get(&key)
+                .map_or(0, Vec::len)
+                < 2
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         secrets.deliver(BOT_TOKEN, TOKEN_ITEM, Some(&Bytes(b"tok\n".to_vec())));
         assert_eq!(a.await.unwrap().as_deref().map(String::as_str), Some("tok"));
         assert_eq!(b.await.unwrap().as_deref().map(String::as_str), Some("tok"));

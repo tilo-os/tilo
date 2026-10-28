@@ -173,24 +173,21 @@ fn mcp_process_owns_and_reaps_its_children() {
                 )
                 .unwrap();
                 let broker = runtime_collab::CollabClient::from_raw(connection.bootstrap());
-                let channel = tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
+                let channel = tilo_test_env::within(
+                    "the signed client to join its channel",
                     broker.join_channel(&workspace_id, &presentation),
                 )
                 .await
-                .unwrap()
                 .unwrap();
                 ready.send(()).unwrap();
                 // Deliberately keep the actual imported channel and RPC connection
                 // while the client cannot consume EOF or send capability releases.
-                released
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                tilo_test_env::recv("the test to release the client", &released);
                 drop(channel);
                 drop(broker);
             }));
         });
-        let ready = admitted.recv_timeout(std::time::Duration::from_secs(10));
+        let ready = admitted.recv_timeout(tilo_test_env::hang_bound());
         if let Err(error) = ready {
             let _ = release.send(());
             client.join().unwrap();
@@ -280,15 +277,25 @@ fn mcp_process_owns_and_reaps_its_children() {
                 executable: PathBuf::from("/bin/sh"),
                 args: vec![
                     "-c".into(),
-                    format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+                    // Renamed into place, so the file exists only once it
+                    // holds the whole pid: the input waits for it to exist.
+                    format!(
+                        "echo $$ > '{0}.partial' && mv '{0}.partial' '{0}'; exec sleep 30",
+                        pid_file.display()
+                    ),
                 ],
             }],
         })
         .unwrap();
+        // EOF once the child is up, however long its start takes.
         serve(
             &root,
             manifest,
-            DelayedEof(Duration::from_millis(300)),
+            InputAfterFile {
+                ready: pid_file.clone(),
+                input: Cursor::new(Vec::new()),
+                waited: false,
+            },
             Vec::new(),
         )
         .unwrap();
@@ -312,17 +319,20 @@ fn mcp_process_owns_and_reaps_its_children() {
             }],
         })
         .unwrap();
-        // The input stays idle far longer than any loaded start-up, so returning
-        // well before its EOF proves the child's exit interrupted the wait.
+        // The input stays idle for the whole hang bound, so returning before
+        // its EOF proves the child's exit interrupted the wait.
         let started = Instant::now();
         let error = serve(
             &root,
             manifest,
-            DelayedEof(Duration::from_secs(120)),
+            DelayedEof(tilo_test_env::hang_bound()),
             Vec::new(),
         )
         .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(60));
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "serve waited for the idle input instead of the child's exit"
+        );
         assert!(error.to_string().contains("exited"));
     }
     // Phase `output_failure_reaps_the_surviving_child_and_releases_the_profile`.
@@ -339,7 +349,12 @@ fn mcp_process_owns_and_reaps_its_children() {
                 executable: PathBuf::from("/bin/sh"),
                 args: vec![
                     "-c".into(),
-                    format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+                    // Renamed into place, so the file exists only once it
+                    // holds the whole pid: the input waits for it to exist.
+                    format!(
+                        "echo $$ > '{0}.partial' && mv '{0}.partial' '{0}'; exec sleep 30",
+                        pid_file.display()
+                    ),
                 ],
             }],
         })
@@ -441,14 +456,16 @@ fn mcp_process_owns_and_reaps_its_children() {
             let started = started.clone();
             crate::shell::persist::queue_save(&tree.read(), &path, move || {
                 started.send(()).unwrap();
-                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                tilo_test_env::recv("the controller to release the shutdown save", &released);
             });
         });
         session.broker.local_session_lifecycle().watch(&listener);
         let returned = Arc::new(AtomicBool::new(false));
         let observed = returned.clone();
         let controller = std::thread::spawn(move || {
-            saving.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Closing a session under load can take longer than any fixed
+            // budget before its final save starts; only a hang is a failure.
+            tilo_test_env::recv("the shutdown save to start", &saving);
             // Keep the actual final writer occupied while checking retirement.
             std::thread::sleep(Duration::from_millis(100));
             let waited = !observed.load(Ordering::SeqCst);
@@ -482,7 +499,7 @@ fn mcp_process_owns_and_reaps_its_children() {
         let session = Session::start(&root).unwrap();
         let mut client = UnixStream::connect(session.identity_socket()).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         HANDSHAKE_FRAMING
             .write(
@@ -503,7 +520,6 @@ fn mcp_process_owns_and_reaps_its_children() {
             !matches!(reply, Response::Denied(_)),
             "the actual identity worker answered: {reply:?}"
         );
-        // Another accepted connection stops inside a partial handshake.
         let mut partial = UnixStream::connect(session.identity_socket()).unwrap();
         partial.write_all(&[0]).unwrap();
         drop(session);

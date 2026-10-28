@@ -69,7 +69,6 @@ impl VcpValue {
     }
 }
 
-/// XOR checksum over `seed` and `bytes`.
 pub fn checksum(seed: u8, bytes: &[u8]) -> u8 {
     bytes.iter().fold(seed, |acc, b| acc ^ b)
 }
@@ -150,10 +149,6 @@ pub enum DdcError {
 }
 
 /// Read a VCP feature, retrying busy or garbled replies.
-///
-/// # Errors
-///
-/// Returns the last failure once every attempt failed.
 pub fn get_vcp(transport: &mut dyn I2cTransport, vcp: u8) -> Result<VcpValue, DdcError> {
     let frame = request(&[GET_VCP, vcp]);
     let mut last = DdcError::Reply(ReplyError::Malformed);
@@ -186,10 +181,6 @@ pub fn get_vcp(transport: &mut dyn I2cTransport, vcp: u8) -> Result<VcpValue, Dd
 /// Write a VCP feature. DDC/CI has no acknowledgement for a set, so only
 /// bus errors are retried; the settle pause keeps the next command from
 /// arriving before the monitor is ready.
-///
-/// # Errors
-///
-/// Returns the last bus error once every attempt failed.
 pub fn set_vcp(transport: &mut dyn I2cTransport, vcp: u8, value: u16) -> Result<(), DdcError> {
     let [hi, lo] = value.to_be_bytes();
     let frame = request(&[SET_VCP, vcp, hi, lo]);
@@ -220,9 +211,6 @@ impl I2cDevice {
     /// `I2C_SLAVE` from `linux/i2c-dev.h`.
     const I2C_SLAVE: libc::c_ulong = 0x0703;
 
-    /// # Errors
-    ///
-    /// Returns the error from opening the node or selecting the address.
     pub fn open(path: &std::path::Path) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
         let file = std::fs::OpenOptions::new()

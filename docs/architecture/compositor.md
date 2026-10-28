@@ -491,6 +491,24 @@ output's pixels on the CPU: rotate and swizzle or PQ encode, and an ICC
 profile's copy and qcms pass) are both zero while every output renders
 direct, rotated and ICC-profiled outputs included.
 
+### GPUs that cannot run vello
+
+On a Mali Bifrost (`cpu_present::cpu_render_reason`: vello's compute
+pipeline faults under panvk) the scene is rasterized on the CPU
+(`tilo_cpu_raster`). Where the GPU's GLES driver comes up on the render
+node, frames come as layers on every frame (`FrameBuilder::keep_strip_canvases`,
+`LayerPolicy::Always`): `cpu_layers::CpuLayers` keeps the backdrop, the
+workspace, each strip in canvas coordinates and the chrome in canvases of
+their own, and rasterizes only what changed in them, where it is shown.
+`gl_compose::GlCompositor` uploads what changed and composites the layers
+and the pointer into GBM scanout buffers (`gl_present`), skipping tiles that
+hold no ink; a strip pan only moves where its canvas is read. The present
+thread is not realtime there: rasterizing runs on it for longer than a
+realtime thread may run without blocking. `GL-PRESENT` lines in the session
+log give the frames' layer update, composite and flip wait (p50/p90), and
+`CPU-FRAME … layers_px=` what each layer rasterized. `TILO_DRM_GL_COMPOSE=0`
+keeps the dumb-buffer copies of one screen canvas.
+
 ### Fullscreen client scanout
 
 A fullscreen client whose buffer is the only thing visible on its output is
@@ -650,17 +668,37 @@ scanout tranche need the importer to accept them first.
 
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
-fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
-a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
+fullscreen phases in `shell::frame`). The reference GPU target is the Lenovo
+83ED registered as `tilo device vm yoga`
+(`docs/benchmarks/reference-hardware.md`); book it as a slot, on the
+internal panel at 60 Hz, and ask a person to look at anything that has no
+line in the session log. `scripts/perf/drm_hardware_checks.py` runs the
+log-only checks in one pass and writes them as a
+`drm.presentation-checks` record — one sample per check, fail never skip:
 
-1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
+```sh
+TILO_VM=yoga tilo device vm status            # the booted image digest
+python3 scripts/perf/drm_hardware_checks.py --device yoga --slot device \
+  --commit <deployed shell commit> --image-digest sha256:<digest> \
+  --out target/drm-hardware
+```
+
+It grades `atomic-flips`, `no-page-flip-errors`, `vblank-pacing` and
+`client-buffer-release`, and reports `client-scanout` without grading it (a
+run may scan no client out). A session started with `TILO_KMS_ATOMIC=0`
+cannot be graded from the same log, so run it on its own and check it by
+hand against step 5 below, and so is the `B8G8R8A8` client of step 3 and the
+`WAYLAND_DEBUG=1` feedback batches, which need a person at the panel. The
+rest is driven from a person's seat on the same slot:
+
+1. `tilo device swap shell` from the branch, then play a 4K60 video fullscreen
    in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With
    `WAYLAND_DEBUG=1` the client's log shows a second
    `zwp_linux_dmabuf_feedback_v1` batch once it is fullscreen, whose first
    tranche has `tranche_flags 1` (scanout) and the card's `dev_t` as
    `tranche_target_device`; it gets a batch without it when an overlay
    appears.
-2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
+2. `tilo device logs -n 400` shows `client_scanout_status=active`, and the
    phase summaries count `client_scanout_frames` at the refresh rate while
    `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows
    the render engine idle apart from the video decoder.
@@ -678,7 +716,7 @@ Atomic page flips need the same GPU slot: a headful slot's vkms card has a
 `kms_flip_api=legacy reason="the connector presents without page flips"`
 and proves nothing about flips.
 
-1. `tilo-vm logs -n 400 | grep kms_flip_api` shows
+1. `tilo device logs -n 400 | grep kms_flip_api` shows
    `kms_flip_api=atomic connector=…` once per output, and no
    `an atomic flip failed` line during the session.
 2. Animate the desktop (open the overview, switch workspaces back and

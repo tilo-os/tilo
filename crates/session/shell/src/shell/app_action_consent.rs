@@ -9,16 +9,74 @@
 //! `Scope::Action`, the chosen `Expiry`) in the workspace's records,
 //! granted by that person. Nobody present means nobody to ask: the request
 //! is refused without a sheet.
+//!
+//! What an agent's run asks its person reaches them as an ordinary
+//! notification instead ([`SheetPrompter::notify`]): agents never take the
+//! screen. Its Answer puts the question on the same sheet.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use tilo_lock::MutexRecover as _;
 use tokio::sync::oneshot;
 
 use crate::shell::portal_dialog::PortalDialogQueue;
 pub use tilo_action_broker::app_actions::{
-    AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    AnswerLater, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
+use tilo_desktop::notifications::Notification;
+
+/// The key of a notice's Answer: the request's handle follows it.
+pub const ANSWER_PREFIX: &str = "answer-request:";
+
+/// A notice for the compositor loop to post or take back.
+pub enum Notice {
+    Post {
+        handle: String,
+        notice: Box<Notification>,
+    },
+    Withdraw {
+        handle: String,
+    },
+}
+
+/// The notices waiting for the compositor loop, and what each notified
+/// request's Answer does, by handle.
+#[derive(Default)]
+struct Notified {
+    notices: Vec<Notice>,
+    answers: HashMap<String, (PortalDialogQueue, AppActionConsentRequest, AnswerLater)>,
+}
+
+static NOTIFIED: Mutex<Option<Notified>> = Mutex::new(None);
+
+fn notified<T>(with: impl FnOnce(&mut Notified) -> T) -> T {
+    with(
+        NOTIFIED
+            .lock_recover()
+            .get_or_insert_with(Notified::default),
+    )
+}
+
+/// The notices queued since the last call.
+pub fn drain_notices() -> Vec<Notice> {
+    notified(|notified| std::mem::take(&mut notified.notices))
+}
+
+/// The person chose to answer the notified request `handle`: put it on
+/// the sheet. Whether it still waited for them.
+pub fn answer_notice(handle: &str) -> bool {
+    let Some((queue, request, answer)) = notified(|notified| notified.answers.remove(handle))
+    else {
+        return false;
+    };
+    match queue.enqueue_action_grant(request) {
+        Ok(reply) => answer(reply),
+        Err(error) => tracing::warn!(%error, "the notified request could not be put to the person"),
+    }
+    true
+}
 
 /// How an answer reads on the sheet, in the session's language.
 #[must_use]
@@ -77,6 +135,71 @@ impl AppActionConsentPrompter for SheetPrompter {
         }
         self.queue.enqueue_action_grant(request).ok()
     }
+
+    fn notify(&self, request: AppActionConsentRequest, answer: AnswerLater) -> bool {
+        if !is_session_person(&request) {
+            return false;
+        }
+        notify_on(&self.queue, request, answer);
+        true
+    }
+
+    fn withdraw(&self, handle: &str) {
+        withdraw_notice(handle);
+        // Answered elsewhere while its sheet is up here: the sheet goes too.
+        self.queue.cancel(handle);
+    }
+}
+
+/// Tell the person about `request` with an ordinary notice whose Answer
+/// puts it on `queue`'s sheet and hands their answer to `answer`.
+pub(crate) fn notify_on(
+    queue: &PortalDialogQueue,
+    request: AppActionConsentRequest,
+    answer: AnswerLater,
+) {
+    let handle = request.handle.clone();
+    let mut notice = Notification::new(
+        crate::shell::i18n::t_args(
+            "consent-notice-title",
+            &[
+                ("who", request.app_id.clone().into()),
+                ("action", request.action_label.clone().into()),
+            ],
+        ),
+        request
+            .scope
+            .clone()
+            .unwrap_or_else(|| request.resource_label.clone()),
+    )
+    .with_icon_kind(tilo_desktop::notifications::NotificationIconKind::Permission)
+    .with_addressed(tilo_desktop::notifications::Addressed::Ask);
+    notice.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+    notice.actions = vec![(
+        format!("{ANSWER_PREFIX}{handle}"),
+        crate::shell::i18n::t("consent-notice-answer"),
+    )];
+    notified(|notified| {
+        notified
+            .answers
+            .insert(handle.clone(), (queue.clone(), request, answer));
+        notified.notices.push(Notice::Post {
+            handle,
+            notice: Box::new(notice),
+        });
+    });
+    crate::shell::wake_compositor();
+}
+
+/// Take back the notice of the request `handle`.
+pub(crate) fn withdraw_notice(handle: &str) {
+    notified(|notified| {
+        notified.answers.remove(handle);
+        notified.notices.push(Notice::Withdraw {
+            handle: handle.to_owned(),
+        });
+    });
+    crate::shell::wake_compositor();
 }
 
 /// Whether someone is at this session's unlocked screen. Starts false, so
@@ -119,6 +242,9 @@ mod tests {
             needs_confirmation: false,
             confirming: false,
             moderation: None,
+            preview: None,
+            scope: None,
+            draft: None,
         }
     }
 
@@ -203,6 +329,24 @@ mod tests {
             assert!(sheet.confirm(), "separate explicit final approval");
             assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once);
         }
+    }
+
+    #[test]
+    fn a_confirmation_with_a_scope_may_also_allow_it_there() {
+        let queue = PortalDialogQueue::default();
+        let prompter = SheetPrompter::new(queue.clone(), Arc::new(|_| true));
+        let mut question = request("person:ada");
+        question.confirming = true;
+        question.scope = Some("Prepare release notes".into());
+        let mut answer = prompter.ask(question).expect("the person is asked");
+        let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
+        assert!(sheet.pump());
+        let choices = sheet.view().unwrap().choices().to_vec();
+        assert_eq!(choices.len(), 2, "{choices:?}");
+        assert!(choices[1].contains("Prepare release notes"), "{choices:?}");
+        assert!(sheet.select_next(false));
+        assert!(sheet.confirm());
+        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Always));
     }
 
     #[test]

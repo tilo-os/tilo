@@ -1,6 +1,11 @@
 # Google Drive adapter against Rystic
 
-## Current verification
+See the [current developer handoff](rystic-feedback.md), prepared 2026-10-17.
+A metadata-only check that day still reported 0.0.5 as latest; the runtime
+measurements below are from 2026-10-14, not a new Oct 17 HTTP test. DOCX stand-in
+bytes are a known fidelity limit, not a blocker for the Tilo integration.
+
+## Last runtime verification — 0.0.5
 
 On 2026-10-14, **before starting a metered instance**, ran
 `rystic update -no-self google-drive-twin`. This updated the installed twin from

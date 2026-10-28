@@ -58,6 +58,10 @@ struct StubHost {
     kind: Arc<StdMutex<tilo_actions::OperationKind>>,
     /// The tags of the published action's contract.
     tags: Arc<StdMutex<Vec<String>>>,
+    /// Answer for the resource as published, whatever id the caller named:
+    /// as the host does for the id a window bound a resource under, which
+    /// names no resource it publishes.
+    catalogue_only: bool,
 }
 
 impl StubHost {
@@ -107,7 +111,7 @@ impl ActionHost for StubHost {
     fn query(
         &self,
         _caller: &Caller,
-        query: CatalogueQuery,
+        mut query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         if matches!(self.availability, CatalogueAvailability::ExitDuringQuery)
             && query.provider.is_some()
@@ -125,6 +129,11 @@ impl ActionHost for StubHost {
         let mut row = self.row();
         if let Some(provider) = query.provider.clone() {
             row.provider = provider;
+        }
+        if self.catalogue_only {
+            // An id this host publishes nothing under (a bound one): the
+            // page holds what it does publish, and answers no target.
+            query.target = None;
         }
         let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
         page.providers = vec![CatalogueProvider {
@@ -219,14 +228,26 @@ impl ActionHost for StubHost {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+/// Run `future` on a current-thread runtime whose clock moves only when
+/// every task waits, so "time passed and nothing happened" is exact: every
+/// piece of work that could happen first has.
+fn run_paused<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
         .build()
         .unwrap()
         .block_on(future)
@@ -599,7 +620,6 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
         )
         .await;
 
-        // An HTTP session continues a run the same way.
         let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}});
         let response = endpoint
             .dispatch(
@@ -1345,6 +1365,130 @@ fn an_effect_answers_with_its_picture_address_not_the_picture() {
     });
 }
 
+/// The id a window bound a resource under names no action to the host
+/// (`tilo-ui-bound:v1:…`), so asking it about a bound resource afterwards
+/// cannot say what ran. The answer says it instead, and that mark decides:
+/// a read on a bound resource shows its picture, not content that was only
+/// named.
+#[test]
+fn a_read_of_a_bound_resource_shows_its_picture_even_where_the_host_cannot_resolve_it() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    // The host answers for no such resource, exactly as a bound id.
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"url":"https://site.test/","agent":{"kind":"view","action":"outline"}})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        assert_eq!(images(&reply), 1, "{reply}");
+    });
+}
+
+/// The same bound resource whose answer says what ran was an effect keeps
+/// its picture as an artifact: named, and shown on request.
+#[test]
+fn a_bound_resources_effect_still_answers_with_its_picture_address() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"agent":{"kind":"effect"}})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert!(
+            reply["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|block| block["type"] != "image"),
+            "{reply}"
+        );
+        assert!(
+            reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tilo.content:look"),
+            "{reply}"
+        );
+    });
+}
+
+/// The same bound resource as an ordinary caller reaches it: the MCP door
+/// names the revision it invokes at (a confirmed action, a retried one), and
+/// the class is then asked where the host answers for what it publishes. An
+/// id a window bound a resource under names no action, so an answer that does
+/// not say what ran (`agent.kind`) must not be read as a refusal to show the
+/// picture: silence is not "effect".
+#[test]
+fn a_bound_resource_invoked_at_a_revision_shows_its_picture() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"url":"https://site.test/","message":"Found canvas"})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY,"revision":"1"}),
+        )
+        .await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        assert_eq!(images(&reply), 1, "{reply}");
+    });
+}
+
 /// A look at an unchanged picture costs a line, not an image: the answer
 /// names the invocation that showed it, whose `tilo_status` shows it again.
 /// Each session keeps its own record.
@@ -1578,8 +1722,10 @@ fn a_session_can_pin_the_full_rows_it_parses() {
 #[test]
 fn opening_a_host_application_answers_without_waiting_for_a_peer() {
     let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
-    run(async {
-        let started = std::time::Instant::now();
+    // On the paused clock the answer takes no time unless it waits on a
+    // timer, as waiting for a peer to start would.
+    run_paused(async {
+        let started = tokio::time::Instant::now();
         let reply = tool(
             &server,
             "tilo_invoke",

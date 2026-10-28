@@ -3,20 +3,18 @@
 //! writing a pre-configured image to a stick, and installing Tilo onto a disk.
 //!
 //! Every field is a toolkit control in a [`Form`]: names are [`TextInput`]s,
-//! the catalog choices are [`Dropdown`]s that filter while open. Each edit is
-//! reported to the wizard as a [`Command::Profile`], which submits the field
-//! edit at the profile's path — one undo boundary, replicated to
-//! collaborators and the same edit the palette or an agent would make. The form
+//! the catalog choices are [`Dropdown`]s that filter while open. Each control
+//! is bound to the field edit at the profile's path — one undo boundary,
+//! replicated to collaborators and the same edit the palette or an agent
+//! would make. The form
 //! holds no profile of its own: it is composed from an [`InstallProfile`]
 //! snapshot, so the document stays authoritative. Secrets stay off the host
 //! and are collected only on the target machine (HIG §3).
 
-use std::rc::Rc;
-
+use ui::framework::Actions;
 use ui::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
-use crate::app::{Command, Commands};
 use crate::model::{Filesystem, InstallProfile};
 use crate::resource::Imager;
 
@@ -180,25 +178,37 @@ pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resou
     }
 }
 
+/// The binding that sets `field` to the value its control shows, or refuses
+/// a value the catalog does not list; `None` before the framework attaches.
+fn field_binding(
+    field: CzField,
+    actions: Option<&Actions<Imager>>,
+) -> Option<ui::tilo_actions::ActionBinding<String>> {
+    let actions = actions?;
+    let edit = move |shown: String| {
+        profile_value(field, &shown)
+            .and_then(|value| field_edit(field, value))
+            .ok_or_else(|| format!("Choose a listed {}", field.label()))
+    };
+    match text_path(field) {
+        Some(path) => actions.edit_binding_with(path, move |_, shown: String| edit(shown)),
+        None => actions.edit_binding_with(Imager::paths().profile.filesystem, move |_, shown| {
+            edit(shown)
+        }),
+    }
+}
+
 fn text_field(
     profile: &InstallProfile,
     field: CzField,
-    commands: &Commands,
-    actions: Option<&ui::framework::Actions<Imager>>,
+    actions: Option<&Actions<Imager>>,
 ) -> Field {
-    let sink = Rc::clone(commands);
     let input = TextInput::local()
         .with_id(&field.id())
         .with_initial_value(&shown_value(profile, field));
-    let input = if let Some(binding) = actions.zip(text_path(field)).and_then(|(actions, path)| {
-        actions.edit_binding(path, |path, value: String| path.replace(value))
-    }) {
-        input.on_action(binding)
-    } else {
-        input.on_change(move |value| {
-            sink.borrow_mut()
-                .push(Command::Profile(field, value.to_string()));
-        })
+    let input = match field_binding(field, actions) {
+        Some(binding) => input.on_action(binding),
+        None => input,
     };
     let control = if field == CzField::Username {
         input.with_kind(ui::widget::TextInputKind::Username)
@@ -218,20 +228,18 @@ fn choice_field(
     profile: &InstallProfile,
     field: CzField,
     options: Vec<String>,
-    commands: &Commands,
+    actions: Option<&Actions<Imager>>,
     open: bool,
 ) -> Field {
     let shown = shown_value(profile, field);
     let listed = options.contains(&shown);
-    let sink = Rc::clone(commands);
     let state = LocalState::new(shown);
     let mut choice = Dropdown::from_state(options, &state)
         .with_id(&field.id())
-        .with_accessible_name(field.label())
-        .on_change(move |value| {
-            sink.borrow_mut()
-                .push(Command::Profile(field, value.to_string()));
-        });
+        .with_accessible_name(field.label());
+    if let Some(binding) = field_binding(field, actions) {
+        choice = choice.on_action(binding);
+    }
     if open {
         choice = choice.open();
     }
@@ -247,8 +255,7 @@ fn choice_field(
 /// time-zone chooser open for a documentation frame.
 pub(crate) fn form(
     profile: &InstallProfile,
-    commands: &Commands,
-    actions: Option<&ui::framework::Actions<Imager>>,
+    actions: Option<&Actions<Imager>>,
     timezone_open: bool,
 ) -> Form {
     let keyboards = KEYBOARDS
@@ -265,9 +272,9 @@ pub(crate) fn form(
     Form::new()
         .section(
             FormSection::new("Identity")
-                .field(text_field(profile, CzField::Hostname, commands, actions))
-                .field(text_field(profile, CzField::FullName, commands, actions))
-                .field(text_field(profile, CzField::Username, commands, actions)),
+                .field(text_field(profile, CzField::Hostname, actions))
+                .field(text_field(profile, CzField::FullName, actions))
+                .field(text_field(profile, CzField::Username, actions)),
         )
         .section(
             FormSection::new("Region")
@@ -275,21 +282,21 @@ pub(crate) fn form(
                     profile,
                     CzField::Timezone,
                     timezones(),
-                    commands,
+                    actions,
                     timezone_open,
                 ))
                 .field(choice_field(
                     profile,
                     CzField::Locale,
                     locales,
-                    commands,
+                    actions,
                     false,
                 ))
                 .field(choice_field(
                     profile,
                     CzField::Keyboard,
                     keyboards,
-                    commands,
+                    actions,
                     false,
                 )),
         )
@@ -299,7 +306,7 @@ pub(crate) fn form(
             profile,
             CzField::Filesystem,
             filesystems,
-            commands,
+            actions,
             false,
         )))
 }
@@ -311,7 +318,6 @@ mod tests {
     /// Timezone catalog and canonical values.
     #[test]
     fn customization_catalogs_match_the_embedded_profile_contract() {
-        // Phase `built_in_timezone_catalog_is_worldwide_canonical_and_safe`.
         {
             let zones = timezones();
             assert!(zones.len() >= 400, "catalog unexpectedly incomplete");
@@ -338,7 +344,6 @@ mod tests {
             }));
         }
 
-        // Phase `canonical_values_match_the_embedded_profile_contract`.
         {
             assert_eq!(
                 profile_value(CzField::Keyboard, "German (QWERTZ)"),

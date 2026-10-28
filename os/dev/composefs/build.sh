@@ -65,11 +65,11 @@ cp -f "$TILO_OS_DIR/tests/recovery-boot-check.sh" "$TREE/usr/libexec/tilo-recove
 ROLLBACK_BIN="${ROLLBACK_BIN:-$TILO_REPO/target/release/tilo-rollback}"
 [ -x "$ROLLBACK_BIN" ] || die "no tilo-rollback binary at $ROLLBACK_BIN
   Remedy: cargo build -p tilo-rollback --release"
-cp -f "$ROLLBACK_BIN" "$TREE/usr/bin/tilo-rollback"
+cp -f "$ROLLBACK_BIN" "$TREE/usr/libexec/tilo/tilo-rollback"
 CRYPTO_BIN="${CRYPTO_BIN:-$TILO_REPO/target/release/tilo-crypto}"
 [ -x "$CRYPTO_BIN" ] || die "no tilo-crypto binary at $CRYPTO_BIN
   Remedy: cargo build -p tilo-crypto --release"
-cp -f "$CRYPTO_BIN" "$TREE/usr/bin/tilo-crypto"
+cp -f "$CRYPTO_BIN" "$TREE/usr/libexec/tilo/tilo-crypto"
 # The repair entry is derived from the installed UKI by rewriting its sealed
 # command line in place, so the tool that does that has to be on the machine:
 # tilo-esp-write, run under the name tilo-uki-cmdline as the image links it.

@@ -204,7 +204,8 @@ pub struct ConflictPassStats {
     pub nodes: usize,
     /// Times the namespace lock was taken.
     pub lock_holds: usize,
-    /// The longest of those holds.
+    /// The most nodes examined under one of those holds.
+    pub max_nodes_per_hold: usize,
     pub longest_hold: Duration,
     /// All of them together.
     pub total_hold: Duration,
@@ -277,6 +278,7 @@ impl NamespaceScan {
             drop(ns);
             stats.held(held.elapsed());
             stats.nodes = stats.nodes.saturating_add(ids.len());
+            stats.max_nodes_per_hold = stats.max_nodes_per_hold.max(ids.len());
             if ids.len() < SCAN_STEP_NODES {
                 break;
             }
@@ -365,7 +367,6 @@ mod tests {
             );
             assert!(name.as_bytes().len() <= MAX_FILE_NAME_BYTES);
         }
-        // Phase `concurrent_content_edits_produce_a_conflict_copy`.
         {
             let mut a = Namespace::new("A").unwrap();
             let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
@@ -393,7 +394,6 @@ mod tests {
             assert_eq!(copy.hash, Some(loser));
             assert!(detect(&a).is_empty(), "idempotent");
         }
-        // Phase `concurrent_atomic_revisions_preserve_record_and_version_binding`.
         {
             let mut a = Namespace::new("A").unwrap();
             let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
@@ -437,7 +437,6 @@ mod tests {
                 Hash::from(loser.content_hash.unwrap().0)
             );
         }
-        // Phase `no_conflict_when_edits_are_sequential`.
         {
             let mut a = Namespace::new("A").unwrap();
             let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
@@ -449,7 +448,6 @@ mod tests {
 
     #[test]
     fn deletes_resurrect_only_when_racing_an_edit() {
-        // Phase `plain_delete_does_not_resurrect`.
         {
             // A deletes a file with no concurrent edit → no conflict copy.
             let mut a = Namespace::new("A").unwrap();
@@ -457,7 +455,6 @@ mod tests {
             a.remove(ino);
             assert!(detect(&a).is_empty(), "a clean delete must not resurrect");
         }
-        // Phase `modify_delete_race_resurrects_the_edit`.
         {
             // A deletes /doc while B edits its content concurrently.
             let mut a = Namespace::new("A").unwrap();
@@ -480,7 +477,6 @@ mod tests {
                 .expect("B's concurrent edit must be surfaced");
             materialize(&mut a, c, 9, 6);
 
-            // The edited content is now visible again as a conflict copy at root.
             let copy_name =
                 String::from_utf8(conflict_name("doc", &h(9)).as_bytes().to_vec()).unwrap();
             let copy = a.entry_at(&copy_name).expect("resurrected conflict copy");
@@ -524,13 +520,16 @@ mod tests {
         assert_eq!(first.nodes, nodes);
         // The generation, then each step; the last step comes up short.
         assert_eq!(first.lock_holds, 2 + nodes / SCAN_STEP_NODES);
+        assert_eq!(first.max_nodes_per_hold, SCAN_STEP_NODES);
 
-        // Idle passes, and a local edit, examine nothing.
         a.lock_recover().set_content(doc, Some(&h(10)), 10, 5);
         for _ in 0..3 {
             assert!(scan.due(&a).is_empty());
             let idle = scan.last_pass();
-            assert_eq!((idle.nodes, idle.lock_holds), (0, 1));
+            assert_eq!(
+                (idle.nodes, idle.lock_holds, idle.max_nodes_per_hold),
+                (0, 1, 0)
+            );
         }
         assert_eq!(scan.scans(), 1);
 

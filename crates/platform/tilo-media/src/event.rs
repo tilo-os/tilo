@@ -73,6 +73,12 @@ pub enum MediaEvent {
     /// playback, so a player can offer to add formats instead of only showing
     /// the reason. `codec` is a human name ("H.264", "HEVC", "AAC").
     MissingDecoder { codec: String },
+    /// The host relaying a page's source (its fetch proxy) streamed as much
+    /// as it allows this visitor or room for now. Comes in the same poll as,
+    /// and just before, the [`MediaEvent::Error`] that stops playback, so a
+    /// player can say that playback may resume later rather than that the
+    /// source is broken.
+    LimitReached,
 }
 
 /// The human name of the codec a stream of `media_type` (a caps name such as
@@ -115,5 +121,28 @@ mod tests {
         assert_eq!(codec_name("audio/mpeg", Some(1)), "MP3");
         assert_eq!(codec_name("video/mpeg", Some(2)), "MPEG-2");
         assert_eq!(codec_name("video/x-weird", None), "video/x-weird");
+    }
+}
+
+/// A picture that stays where the page's media element shows it: a renderer
+/// copies it from `element` on the GPU, instead of the engine reading its
+/// pixels back ([`crate::MediaEngine::take_element_picture`]). `element` is
+/// the page's video element (a `wasm_bindgen::JsValue`), opaque here.
+#[derive(Clone)]
+pub struct ElementPicture {
+    pub width: u32,
+    pub height: u32,
+    /// Counts the pictures the element showed: a new one, a new serial.
+    pub serial: u64,
+    pub element: std::rc::Rc<dyn std::any::Any>,
+}
+
+impl std::fmt::Debug for ElementPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElementPicture")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("serial", &self.serial)
+            .finish_non_exhaustive()
     }
 }

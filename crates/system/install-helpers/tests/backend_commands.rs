@@ -1,7 +1,3 @@
-//! The installer backend's checks and writes, through the shipped
-//! `tilo-staging-handoff` binary as `tilo-install`, `tilo-guided-partition`
-//! and `tilo-installer-profile-extract` run it.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -20,7 +16,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 fn helper(args: &[&str], stdin: &[u8]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-staging-handoff"))
+    let mut child = Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

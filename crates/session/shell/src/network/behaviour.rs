@@ -33,11 +33,6 @@ pub const DEVICE_KEY_PATH: &str = "/var/lib/tilo/device-private/keypair.bin";
 
 /// Load the device key, creating it only when the path is genuinely absent.
 /// Malformed, unreadable or over-permissive files are never replaced.
-///
-/// # Errors
-///
-/// Returns an error if the key file exists but is malformed or unreadable,
-/// or if creating a fresh key or its parent directory fails.
 pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::SecretKey> {
     let canonical_paths = tilo_user_identity::IdentityPaths::under(
         path.parent()
@@ -78,7 +73,6 @@ mod tests {
 
     #[test]
     fn device_key_persists_and_is_never_replaced() {
-        // Phase `keypair_persists_and_is_the_iroh_identity`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("device/keypair.bin");
@@ -88,7 +82,6 @@ mod tests {
             let seed: [u8; 32] = std::fs::read(&path).unwrap().try_into().unwrap();
             assert_eq!(first.to_bytes(), seed);
         }
-        // Phase `malformed_key_is_never_replaced`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("keypair.bin");
@@ -104,7 +97,6 @@ mod tests {
             );
             assert_eq!(std::fs::read(path).unwrap(), b"not a key");
         }
-        // Phase `liveness_and_salt_are_stable`.
         {
             let key = iroh::SecretKey::from_bytes(&[3; 32]);
             assert_eq!(peer_salt_from_keypair(&key), peer_salt_from_keypair(&key));

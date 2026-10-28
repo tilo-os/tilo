@@ -19,12 +19,14 @@
 #                          when built with `--features dev-overrides`.
 #
 # Behaviour:
-#   - Runs against a scratch profile: HOME, the four XDG homes, the device
-#     identity root (TILO_IDENTITY_ROOT) and the filesystem daemon's
-#     handoff directories all point inside it, so the compositor never
-#     reads or writes your real identity, settings or workspaces, nor
-#     talks to the machine's filesystem daemon. A profile that resolves
-#     to your real config is refused.
+#   - Runs against a scratch profile: HOME, the four XDG homes, the runtime
+#     directory (XDG_RUNTIME_DIR), the device identity root
+#     (TILO_IDENTITY_ROOT) and the filesystem daemon's handoff directories
+#     all point inside it, so the compositor never reads or writes your real
+#     identity, settings or workspaces, never touches the sockets and files
+#     of the desktop you are running it beside, nor talks to the machine's
+#     filesystem daemon. A profile that resolves to your real config is
+#     refused.
 #   - Removes a stale socket at the chosen path, but refuses one a live
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
@@ -91,7 +93,7 @@ case "$REAL_CONFIG/" in
         exit 1
         ;;
 esac
-mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,system/run,system/fs-cache,system/peer-cache}
+mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,run,system/run,system/fs-cache,system/peer-cache}
 chmod 700 -- "$PROFILE"
 REAL_HOME="$(realpath -m -- "$HOME")"
 if [ "$(realpath -m -- "$PROFILE/home")" = "$REAL_HOME" ]; then
@@ -137,6 +139,7 @@ TILO_TEST_CONTROL="$SOCKET" \
     XDG_DATA_HOME="$PROFILE/data" \
     XDG_STATE_HOME="$PROFILE/state" \
     XDG_CACHE_HOME="$PROFILE/cache" \
+    XDG_RUNTIME_DIR="$PROFILE/run" \
     TILO_IDENTITY_ROOT="$PROFILE/identity" \
     TILO_AUTHORITY_SOCKET_DIR="$PROFILE/system/run" \
     TILO_FS_CONTENT_PEER_CACHE_DIR="$PROFILE/system/peer-cache" \

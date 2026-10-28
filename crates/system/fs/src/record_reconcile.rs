@@ -46,7 +46,6 @@ pub struct ReconcileRangeV1 {
 pub enum ReconcileAnswerV1 {
     /// Both sides hold the same items.
     Equal,
-    /// The server's items in the range.
     Items(Vec<RecordStreamCursor>),
     /// The server's summaries of sub-ranges covering the range.
     Split(Vec<ReconcileRangeV1>),

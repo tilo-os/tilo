@@ -30,9 +30,21 @@ fields = [
   { path = "draft.html_body", type = "Option<String>" },
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
-  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:32d3007b3b137974" },
-  { path = "outbox", type = "Outbox<Outgoing>" },
-  { path = "server", type = "Outbox<ServerUpdate>" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:b86bfc65e3faa1c9" },
+  { path = "draft.shown_as", type = "Option<String>", readonly = true },
+  { path = "draft.drafted", type = "Option<String>", readonly = true },
+  { path = "outbox", type = "Outbox<Outgoing>", unit = true },
+  { path = "server", type = "Outbox<ServerUpdate>", unit = true },
+  { path = "held", type = "Collection<crate::held::HeldMessage>", stored = "collection" },
+  { path = "held.*.message_id", type = "String" },
+  { path = "held.*.from", type = "String" },
+  { path = "held.*.to", type = "String" },
+  { path = "held.*.cc", type = "String" },
+  { path = "held.*.subject", type = "String", label = true },
+  { path = "held.*.body", type = "String" },
+  { path = "held.*.minutes", type = "i64" },
+  { path = "held.*.in_reply_to", type = "Option<String>" },
+  { path = "held.*.conversation", type = "String" },
 ]
 
 [[resources.verbs]]
@@ -103,6 +115,13 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "show-draft"
+kind = "outside"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "attach"
 kind = "outside"
 params = [
@@ -125,6 +144,41 @@ params = [
   { name = "account", required = true, schema = { type = "string" } },
   { name = "message", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
   { name = "in_reply_to", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "deliver-message"
+kind = "undoable"
+params = [
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "to", required = false, schema = { type = ["string", "null"] } },
+  { name = "cc", required = false, schema = { type = ["string", "null"] } },
+  { name = "subject", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "date", required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }] } },
+  { name = "read", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "reply_to", required = false, schema = { type = ["string", "null"] } },
+  { name = "conversation", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "draft-message"
+kind = "undoable"
+params = [
+  { name = "to", required = true, schema = { type = "string" } },
+  { name = "subject", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "cc", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "draft-reply"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "all", required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -340,5 +394,34 @@ id = "set-active-account"
 kind = "undoable"
 params = [
   { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "mail.copies"
+label = "Mail on your devices"
+version = 1
+person = true
+fields = [
+  { path = "copies", type = "Collection<KeptCopy>", readonly = true, stored = "collection" },
+  { path = "copies.*.account", type = "String" },
+  { path = "copies.*.content", type = "String" },
+  { path = "copies.*.minutes", type = "i64" },
+  { path = "copies.*.folder", type = "Folder" },
+  { path = "copies.*.uid", type = "u32" },
+  { path = "copies.*.uid_validity", type = "u32" },
+]
+
+[[resources.verbs]]
+id = "keep-copies"
+kind = "undoable"
+params = [
+  { name = "copies", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
+]
+
+[[resources.verbs]]
+id = "forget-copies"
+kind = "undoable"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 

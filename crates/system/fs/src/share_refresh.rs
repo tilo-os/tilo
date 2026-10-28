@@ -111,11 +111,6 @@ impl SharedCredential {
 }
 
 /// Send one request on a connection of its own.
-///
-/// # Errors
-///
-/// Returns an error on credential, transport, authentication or protocol
-/// failure.
 pub async fn request_shared(
     client: &RecordProtocolClient,
     credential: &SharedCredential,
@@ -136,11 +131,6 @@ pub async fn request_shared(
 }
 
 /// Read the record's snapshot on a connection of its own.
-///
-/// # Errors
-///
-/// Returns an error when the request fails, the host refuses it, or it
-/// answers for another workspace or record than the invite names.
 pub async fn fetch_shared_snapshot(
     client: &RecordProtocolClient,
     credential: &SharedCredential,
@@ -420,11 +410,6 @@ impl ShareRefresher {
     /// Ask the host to prove it durably holds `request`'s revision, on the
     /// held stream when there is one. `None` for a named invitation, which
     /// has no such exchange.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the host denies the request, does not hold
-    /// the revision, or its receipt does not verify.
     pub async fn host_replica_observation(
         &mut self,
         request: ReplicaAckRequestV1,

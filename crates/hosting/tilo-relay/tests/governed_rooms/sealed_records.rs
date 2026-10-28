@@ -44,7 +44,7 @@ fn sealed(
 
 /// `person`'s `device` redeems an invitation to `room` that `issuer` issues;
 /// its replica, from the bootstrap alone.
-async fn join(
+pub(super) async fn join(
     relay: &Relay,
     issuer: &TestDevice,
     room: &str,
@@ -129,6 +129,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic");
     let message = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &message);

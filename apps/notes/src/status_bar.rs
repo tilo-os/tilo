@@ -44,8 +44,8 @@ pub struct StatusBarState {
     pub word_count: Option<usize>,
 }
 
-/// Holds the latest [`StatusBarState`] and formats it for the floating
-/// status bubble.
+/// Holds the latest [`StatusBarState`] and formats it for the note's
+/// accessible status.
 #[derive(Default)]
 pub struct StatusModel {
     state: StatusBarState,

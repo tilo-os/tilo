@@ -262,17 +262,11 @@ impl Storage {
     }
 
     /// Load the active root-signed channel authorization.
-    ///
-    /// # Errors
-    /// Returns an I/O or parse error for corrupt or unreadable state.
     pub fn load_channel_authorization(&self) -> Result<Option<ChannelAuthorization>, StorageError> {
         load_json(&self.channel_authorization_path(), "channel authorization")
     }
 
     /// Atomically install the active root-signed channel authorization.
-    ///
-    /// # Errors
-    /// Returns an encoding or durable-write error.
     pub fn save_channel_authorization(
         &self,
         authorization: &ChannelAuthorization,
@@ -281,9 +275,6 @@ impl Storage {
     }
 
     /// Load the collector's untrusted staged batch manifest.
-    ///
-    /// # Errors
-    /// Returns an I/O or parse error for corrupt or unreadable state.
     pub fn load_staged_promotion(&self) -> Result<Option<StagedPromotion>, StorageError> {
         load_json(
             &self.staged_promotion_path(),
@@ -292,17 +283,11 @@ impl Storage {
     }
 
     /// Atomically replace the collector's staged batch manifest.
-    ///
-    /// # Errors
-    /// Returns an encoding or durable-write error.
     pub fn save_staged_promotion(&self, staged: &StagedPromotion) -> Result<(), StorageError> {
         save_json(&self.staged_promotion_path(), staged)
     }
 
     /// Remove a consumed or empty staged batch manifest.
-    ///
-    /// # Errors
-    /// Returns an I/O error if the durable deletion fails.
     pub fn delete_staged_promotion(&self) -> Result<bool, StorageError> {
         delete_if_exists(&self.staged_promotion_path())
     }
@@ -544,10 +529,6 @@ impl Storage {
     /// keeps anyway for thin installs, with only its package root recorded
     /// here. Bytes that cannot be rebuilt exactly from those parts are kept
     /// whole.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid digest, digest mismatch, path collision,
-    /// or durable-write failure.
     pub fn save_staged_artifact(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), StorageError> {
         let actual = blake3::hash(bytes).to_hex().to_string();
         if !actual.eq_ignore_ascii_case(blake3_hex) {
@@ -603,19 +584,12 @@ impl Storage {
     }
 
     /// Load package bytes and re-check their content-addressed path.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid digest, missing bytes, or content mismatch.
     pub fn load_staged_artifact(&self, blake3_hex: &str) -> Result<Vec<u8>, StorageError> {
         self.find_staged_artifact(blake3_hex)?
             .ok_or_else(|| StorageError::Io(format!("staged artifact {blake3_hex} is missing")))
     }
 
     /// Load package bytes previously staged under `blake3_hex`, if any.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid digest, unreadable bytes, or content
-    /// mismatch.
     pub fn find_staged_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         // Compaction writes the root before it removes the whole package,
         // so reading in this order always finds one of them.
@@ -1002,14 +976,12 @@ impl Storage {
             .join(format!("{}.json", filename_encode(package_id)))
     }
 
-    /// One quarantined entry's file path.
     fn quarantined_entry_path(&self, package_id: &str) -> PathBuf {
         self.root
             .join("quarantined")
             .join(format!("{}.json", filename_encode(package_id)))
     }
 
-    /// One pending submission's file path.
     fn pending_path(&self, submission_id: &str) -> PathBuf {
         self.root
             .join("pending")
@@ -1458,11 +1430,6 @@ impl<'a> SnapshotLock<'a> {
     }
 
     /// Durably publish one already signed snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if another transaction is pending, the transition is
-    /// stale, or any journal, archive, or pointer write fails.
     pub fn publish(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         if let Some(pending) = self.pending_transaction()? {
             if pending != *snapshot {
@@ -1487,11 +1454,6 @@ impl<'a> SnapshotLock<'a> {
     /// compact snapshot it replaces names are removed, so a client one
     /// snapshot behind can still fetch the indexes it was given. The caller
     /// signs `compact` with the key that signed the current snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `compact` is not the compact form of the current
-    /// snapshot, an index does not match its name, or a write fails.
     pub fn publish_compact(
         &self,
         compact: &CompactRegistrySnapshot,
@@ -2241,7 +2203,6 @@ pub struct ReviewRecord {
 pub struct ServerIdentity {
     /// Owner Ed25519 pubkey (32 bytes, hex).
     pub owner_pubkey_hex: String,
-    /// Human-readable registry name.
     pub name: String,
     /// Human-readable registry description.
     pub description: String,
@@ -2803,7 +2764,6 @@ mod tests {
         assert_eq!(storage.history_members().unwrap().len(), 20);
         assert!(storage.history_compaction().unwrap().is_none());
 
-        // A linked history keeps exactly the newest members.
         for entry in std::fs::read_dir(storage.root.join("snapshots")).unwrap() {
             std::fs::remove_file(entry.unwrap().path()).unwrap();
         }

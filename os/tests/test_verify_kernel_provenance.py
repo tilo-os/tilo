@@ -112,5 +112,87 @@ class VerifyKernelProvenanceTests(unittest.TestCase):
             self.assertIn("expected", result.stderr)
 
 
+KERNEL_SH = Path(__file__).resolve().parents[2] / "tools/ci/publish/kernel.sh"
+PINS = Path(__file__).resolve().parents[1] / "kernel-buildroot-snapshot.env"
+
+
+def pinned(arch: str) -> str:
+    key = f"KERNEL_BUILDROOT_{arch.upper()}_REF="
+    return next(line[len(key):] for line in PINS.read_text().splitlines() if line.startswith(key))
+
+
+class CrossBuiltProvenanceTests(unittest.TestCase):
+    """The predicate kernel.sh provenance writes for a cross-compiled aarch64 kernel names the
+    x86_64 buildroot it ran FROM and the machine, and verify-kernel-provenance.sh accepts it."""
+
+    def provenance_dir(self, temporary: Path, built: dict[str, tuple[str, str]]) -> Path:
+        for arch, (built_on, buildroot) in built.items():
+            out = temporary / arch
+            out.mkdir()
+            (out / "digest").write_text(KERNEL.split("@", 1)[1] + "\n")
+            (out / "build-architecture").write_text(built_on + "\n")
+            (out / "buildroot").write_text(buildroot + "\n")
+        return temporary
+
+    def write(self, temporary: Path, built: dict[str, tuple[str, str]]) -> subprocess.CompletedProcess:
+        directory = self.provenance_dir(temporary, built)
+        return subprocess.run(["bash", str(KERNEL_SH), "provenance", str(directory)],
+                              capture_output=True, text=True)
+
+    def test_cross_built_kernel_names_its_buildroot_and_machine(self):
+        x86, arm = pinned("x86_64"), pinned("aarch64")
+        with tempfile.TemporaryDirectory() as temporary:
+            result = self.write(Path(temporary), {"x86_64": ("x86_64", x86), "aarch64": ("x86_64", x86)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            statement = json.loads((Path(temporary) / "aarch64/provenance.json").read_text())
+        definition = statement["buildDefinition"]
+        self.assertEqual(definition["externalParameters"], {"architecture": "aarch64"})
+        self.assertEqual(definition["internalParameters"]["buildArchitecture"], "x86_64")
+        self.assertEqual([d["uri"] for d in definition["resolvedDependencies"]][1:], [x86])
+        # As the OS build verifies the published kernel: signature, provenance, buildroot.
+        definition["resolvedDependencies"][0]["uri"] = SOURCE
+        payload = base64.b64encode(json.dumps({"predicate": statement}).encode()).decode()
+        with tempfile.TemporaryDirectory() as temporary:
+            bin_dir = Path(temporary)
+            (bin_dir / "provenance.json").write_text(json.dumps([{"payload": payload}]))
+            (bin_dir / "signed").write_text(f"{KERNEL}\n{x86}\n")
+            (bin_dir / "cosign").write_text(
+                "#!/usr/bin/env bash\n"
+                f'dir="{bin_dir}"\n'
+                'ref="${@: -1}"\n'
+                'case "$1" in\n'
+                '  verify) grep -Fxq -- "$ref" "$dir/signed" ;;\n'
+                '  verify-attestation) cat "$dir/provenance.json" ;;\n'
+                "  *) exit 2 ;;\n"
+                "esac\n")
+            (bin_dir / "skopeo").write_text("#!/usr/bin/env bash\nprintf '{\"Architecture\":\"arm64\"}'\n")
+            for tool in ("cosign", "skopeo"):
+                (bin_dir / tool).chmod(0o755)
+            result = subprocess.run(["bash", str(SCRIPT), KERNEL, "--architecture", "aarch64"],
+                                    env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}"),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest(phase="native builds keep their own buildroots"):
+            with tempfile.TemporaryDirectory() as temporary:
+                result = self.write(Path(temporary), {"x86_64": ("x86_64", x86), "aarch64": ("aarch64", arm)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                statement = json.loads((Path(temporary) / "aarch64/provenance.json").read_text())
+                self.assertEqual(statement["buildDefinition"]["internalParameters"]["buildArchitecture"], "aarch64")
+                self.assertEqual(statement["buildDefinition"]["resolvedDependencies"][1]["uri"], arm)
+
+    def test_provenance_refuses_what_the_build_could_not_have_used(self):
+        x86, arm = pinned("x86_64"), pinned("aarch64")
+        for built in ({"x86_64": ("x86_64", x86), "aarch64": ("x86_64", arm)},
+                      {"x86_64": ("x86_64", x86), "aarch64": ("aarch64", x86)},
+                      {"x86_64": ("aarch64", arm), "aarch64": ("aarch64", arm)},
+                      {"x86_64": ("x86_64", x86),
+                       "aarch64": ("x86_64", "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "6" * 64)}):
+            with self.subTest(built=built), tempfile.TemporaryDirectory() as temporary:
+                result = self.write(Path(temporary), built)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((Path(temporary) / "aarch64/provenance.json").exists()
+                                 and (Path(temporary) / "x86_64/provenance.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,6 @@
+{"manifest_version": 3, "name": "Settler", "version": "1.0",
+ "action": {"default_title": "Settings", "default_popup": "popup.html"},
+ "permissions": ["scripting", "storage"],
+ "host_permissions": ["<all_urls>"],
+ "content_scripts": [{"matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_start", "all_frames": true}],
+ "background": {"service_worker": "worker.js"}}

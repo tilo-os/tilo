@@ -46,12 +46,24 @@ extern "C" {
     fn buffered_percent(this: &TiloMediaElement) -> f64;
     #[wasm_bindgen(method, js_name = takeError)]
     fn take_error(this: &TiloMediaElement) -> Option<String>;
+    #[wasm_bindgen(method, js_name = takeLimitReached)]
+    fn take_limit_reached(this: &TiloMediaElement) -> bool;
     #[wasm_bindgen(method)]
     fn frame(this: &TiloMediaElement) -> Option<Vec<u8>>;
     #[wasm_bindgen(method, js_name = frameWidth)]
     fn frame_width(this: &TiloMediaElement) -> u32;
     #[wasm_bindgen(method, js_name = frameHeight)]
     fn frame_height(this: &TiloMediaElement) -> u32;
+    #[wasm_bindgen(method, js_name = picturesFit)]
+    fn pictures_fit(this: &TiloMediaElement) -> bool;
+    #[wasm_bindgen(method, js_name = takePicture)]
+    fn take_picture(this: &TiloMediaElement) -> bool;
+    #[wasm_bindgen(method, js_name = pictureWidth)]
+    fn picture_width(this: &TiloMediaElement) -> u32;
+    #[wasm_bindgen(method, js_name = pictureHeight)]
+    fn picture_height(this: &TiloMediaElement) -> u32;
+    #[wasm_bindgen(method, js_name = pictureElement)]
+    fn picture_element(this: &TiloMediaElement) -> JsValue;
     #[wasm_bindgen(method, js_name = setMetadata)]
     fn set_metadata(this: &TiloMediaElement, title: &str, artist: &str, album: &str, artwork: &str);
     #[wasm_bindgen(method, js_name = publishState)]
@@ -81,6 +93,16 @@ fn to_ms(value: f64) -> Option<u64> {
     (value.is_finite() && value >= 0.0).then_some(value as u64)
 }
 
+/// How the element's pictures reach the engine's consumer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pictures {
+    /// Read back as RGBA ([`WebState::latest_frame`]).
+    ReadBack,
+    /// Left in the element for a renderer to copy on the GPU
+    /// ([`WebState::take_element_picture`]).
+    InElement,
+}
+
 pub(crate) struct WebState {
     element: TiloMediaElement,
     opened: bool,
@@ -92,6 +114,13 @@ pub(crate) struct WebState {
     seek_pending: bool,
     latest: Option<VideoFrame>,
     latest_native: Option<Frame>,
+    pictures: Pictures,
+    /// Pictures the element showed since it was made.
+    picture_serial: u64,
+    /// The newest picture, until taken.
+    picture: Option<crate::ElementPicture>,
+    /// `picture_serial` when the source opened: a larger one showed it.
+    serial_at_open: u64,
     actions: Vec<crate::NowPlayingAction>,
 }
 
@@ -111,6 +140,10 @@ impl WebState {
             seek_pending: false,
             latest: None,
             latest_native: None,
+            pictures: Pictures::ReadBack,
+            picture_serial: 0,
+            picture: None,
+            serial_at_open: 0,
             actions: Vec::new(),
         })
     }
@@ -123,6 +156,8 @@ impl WebState {
         self.ended_reported = false;
         self.latest = None;
         self.latest_native = None;
+        self.picture = None;
+        self.serial_at_open = self.picture_serial;
         self.element.set_volume(f64::from(volume));
         match source {
             Source::Remote { url } => self.element.open(url),
@@ -197,7 +232,22 @@ impl WebState {
     }
 
     pub(crate) fn frame_is_current(&self) -> bool {
-        self.latest.is_some() && !self.seek_pending
+        (self.latest.is_some() || self.picture_serial > self.serial_at_open) && !self.seek_pending
+    }
+
+    /// From now on, pictures stay in the element for a renderer to copy on
+    /// the GPU: reading each one back costs the page's main thread a
+    /// colour conversion and a copy of every pixel, per picture.
+    pub(crate) fn prefer_element_pictures(&mut self) {
+        if self.pictures == Pictures::ReadBack {
+            self.pictures = Pictures::InElement;
+            self.latest = None;
+            self.latest_native = None;
+        }
+    }
+
+    pub(crate) fn take_element_picture(&mut self) -> Option<crate::ElementPicture> {
+        self.picture.take()
     }
 
     pub(crate) fn set_now_playing(&self, now: &crate::NowPlaying) {
@@ -223,6 +273,9 @@ impl WebState {
                 self.actions.push(action);
             }
         }
+        if self.element.take_limit_reached() {
+            events.push(MediaEvent::LimitReached);
+        }
         if let Some(error) = self.element.take_error() {
             events.push(MediaEvent::Error(error));
         }
@@ -242,7 +295,18 @@ impl WebState {
             self.last_position = Some(position);
             events.push(MediaEvent::Position { ms: position });
         }
-        if let Some(rgba) = self.element.frame() {
+        if self.pictures == Pictures::InElement && self.element.pictures_fit() {
+            if self.element.take_picture() {
+                self.picture_serial = self.picture_serial.saturating_add(1);
+                self.picture = Some(crate::ElementPicture {
+                    width: self.element.picture_width(),
+                    height: self.element.picture_height(),
+                    serial: self.picture_serial,
+                    element: std::rc::Rc::new(self.element.picture_element()),
+                });
+                self.seek_pending = false;
+            }
+        } else if let Some(rgba) = self.element.frame() {
             let (width, height) = (self.element.frame_width(), self.element.frame_height());
             let expected = (width as usize)
                 .saturating_mul(height as usize)

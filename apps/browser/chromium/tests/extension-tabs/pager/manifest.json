@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Pager", "version": "1.0",
+ "action": {"default_title": "Page", "default_popup": "popup.html"},
+ "permissions": ["activeTab", "scripting"],
+ "background": {"service_worker": "worker.js"}}

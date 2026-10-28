@@ -1,14 +1,6 @@
 reason = "features that landed between 2026-10-15 and 2026-10-19 while nothing measured apps on main. Browser, compared symbol by symbol with its aarch64 build of 2026-10-15: signed-in website sessions (opening, verifying and forgetting a service session, its native engine restarts and cookie and origin-storage codecs, about 90 KB, with their custody now loaded from the accounts engine instead of the tapp), personal bookmarks as a person-scoped record with import and history (about 100 KB), the toolbar as slots in the window bar and the library panel (about 25 KB), reader view, history by day and the record framework's generics for the new resources; it measured 2,340,864 B on aarch64 and 2,546,176 B on x86_64 against 1,966,080 B and 2,097,152 B. Discord gained bridging a server from the app (finding the person's servers over HTTP, the setup sheet, adopting a server and removing unused channels): 1,512,960 B and 1,644,544 B against 1,441,792 B and 1,572,864 B. Settings sits 7,680 B (aarch64) and 33,792 B (x86_64) over after its catalogues and libraries moved to language packs and engines; these add each overage with the ratchet's headroom"
 run = "r5260902b38"
 
-[apps."so.tilo.browser"]
-x86_64 = 524288
-aarch64 = 458752
-
-[apps."so.tilo.discord"]
-x86_64 = 131072
-aarch64 = 131072
-
 [apps."so.tilo.settings"]
 x86_64 = 122880
 aarch64 = 106496

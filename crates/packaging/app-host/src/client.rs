@@ -4,6 +4,7 @@
 //! runtime and `LocalSet` while keeping one Cap'n Proto connection alive for
 //! its whole lifetime. It never reaches for a host path or executable.
 
+pub use crate::app_host_capnp::CatalogueRefusal as WireCatalogueRefusal;
 use crate::app_host_capnp::{
     FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
     app_host,
@@ -14,6 +15,114 @@ mod pending;
 use package_store::InstalledPackage;
 pub use pending::PendingRead;
 use tilo_app_package::PackageId;
+
+/// Why the host refused a catalogue read: the one thing the Store decides
+/// what to say from. It travels typed on the wire (`CatalogueRefusal`), so a
+/// reworded detail never changes how the Store handles it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The system's interface declaration cannot be read: the system needs
+    /// an update before any repository can be judged.
+    SystemUpdateNeeded,
+    /// The repository's catalogue is authentic but expired.
+    Expired,
+    /// The repository did not answer within the read's deadline.
+    TimedOut,
+    /// A device-provided Flatpak repository has no OCI summary yet.
+    DeviceRepositoryStale,
+}
+
+impl Refusal {
+    /// This refusal as the wire carries it.
+    #[must_use]
+    pub fn to_wire(self) -> WireCatalogueRefusal {
+        match self {
+            Self::SystemUpdateNeeded => WireCatalogueRefusal::SystemUpdateNeeded,
+            Self::Expired => WireCatalogueRefusal::Expired,
+            Self::TimedOut => WireCatalogueRefusal::TimedOut,
+            Self::DeviceRepositoryStale => WireCatalogueRefusal::DeviceRepositoryStale,
+        }
+    }
+
+    /// The refusal the wire names; `None` for `none`.
+    #[must_use]
+    pub fn from_wire(wire: WireCatalogueRefusal) -> Option<Self> {
+        match wire {
+            WireCatalogueRefusal::None => None,
+            WireCatalogueRefusal::SystemUpdateNeeded => Some(Self::SystemUpdateNeeded),
+            WireCatalogueRefusal::Expired => Some(Self::Expired),
+            WireCatalogueRefusal::TimedOut => Some(Self::TimedOut),
+            WireCatalogueRefusal::DeviceRepositoryStale => Some(Self::DeviceRepositoryStale),
+        }
+    }
+}
+
+/// Why a catalogue read gave no rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogueError {
+    /// The host refused it for a reason the Store explains.
+    Refused {
+        refusal: Refusal,
+        /// For logs; never decides anything.
+        detail: String,
+    },
+    /// Anything else: the transport, the host, the repository.
+    Failed(String),
+}
+
+impl CatalogueError {
+    /// The refusal, when the host refused.
+    #[must_use]
+    pub fn refusal(&self) -> Option<Refusal> {
+        match self {
+            Self::Refused { refusal, .. } => Some(*refusal),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CatalogueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused { refusal, detail } => write!(f, "{refusal:?}: {detail}"),
+            Self::Failed(error) => f.write_str(error),
+        }
+    }
+}
+
+impl From<String> for CatalogueError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for CatalogueError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.to_owned())
+    }
+}
+
+/// The refusal a catalogue read's results name, if any.
+fn catalogue_refusal(
+    refusal: Result<WireCatalogueRefusal, capnp::NotInSchema>,
+    detail: Result<capnp::text::Reader<'_>, capnp::Error>,
+) -> Option<CatalogueError> {
+    // A refusal this client does not know is a host from another runtime
+    // version, which the interface check keeps from happening; read it as
+    // a failure rather than as rows.
+    let refusal = match refusal {
+        Ok(wire) => Refusal::from_wire(wire)?,
+        Err(unknown) => {
+            return Some(CatalogueError::Failed(format!(
+                "the app host refused the read for a reason this Store does not know ({unknown})"
+            )));
+        }
+    };
+    Some(CatalogueError::Refused {
+        refusal,
+        detail: text_result(detail).unwrap_or_default(),
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlatpakAction {
@@ -138,9 +247,6 @@ impl BlockingClient {
     }
 
     /// Open an explicitly owned connected capability in a test host.
-    ///
-    /// # Errors
-    /// Returns why the runtime or supplied connection could not be opened.
     #[cfg(all(unix, feature = "test-support"))]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
         use std::os::fd::IntoRawFd as _;
@@ -174,9 +280,6 @@ impl BlockingClient {
     }
 
     /// Inspect an installed app's exact optional runtime without fetching payload.
-    ///
-    /// # Errors
-    /// Returns signed declaration, installed identity or repository refusal.
     pub fn inspect_optional_runtime(
         &self,
         app_id: &str,
@@ -194,9 +297,6 @@ impl BlockingClient {
 
     /// Acquire the exact displayed review after explicit consent. The call
     /// completes only after verified installation. Disconnect is not rollback.
-    ///
-    /// # Errors
-    /// Returns changed consumer/offer, download, signer or installation failure.
     pub fn acquire_optional_runtime(
         &self,
         review: &crate::runtime_transaction::RuntimeReview,
@@ -206,9 +306,6 @@ impl BlockingClient {
 
     /// Acquire with connection-owned, best-effort real download/install progress.
     /// Disconnecting the observer does not cancel or roll back installation.
-    ///
-    /// # Errors
-    /// Returns the same exact admission and installation errors as acquisition.
     pub fn acquire_optional_runtime_reporting(
         &self,
         review: &crate::runtime_transaction::RuntimeReview,
@@ -227,9 +324,6 @@ impl BlockingClient {
     }
 
     /// Review immutable file bytes using the host's current trusted attestors.
-    ///
-    /// # Errors
-    /// Returns why the host refused the local package.
     pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
         let mut request = self.client.review_local_request();
         request.get().set_tapp_bytes(bytes);
@@ -244,9 +338,6 @@ impl BlockingClient {
     }
 
     /// Install exactly the immutable archive/root previously reviewed.
-    ///
-    /// # Errors
-    /// Returns current trust, payload, runtime or local update policy refusal.
     pub fn install_local(
         &self,
         bytes: &[u8],
@@ -263,10 +354,6 @@ impl BlockingClient {
     }
 
     /// Install a verified package through the privileged host service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the service rejects the package or the response is malformed.
     pub fn install(
         &self,
         bytes: &[u8],
@@ -293,9 +380,6 @@ impl BlockingClient {
     }
 
     /// Install the exact signed catalogue offer through the shared installer.
-    ///
-    /// # Errors
-    /// Returns why the selected offer, runtime or installation was refused.
     pub fn install_offer(
         &self,
         registry: &str,
@@ -437,16 +521,13 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns why the configured repository cannot be verified or read.
-    pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
+    pub fn registry_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_registry_catalogue(registry))
     }
 
     /// Resolve a signed offer providing exactly this runtime, without
     /// installation, as its JSON catalogue entry (`null` when none is offered).
     /// The caller owns parsing, so this client stays free of the installer.
-    ///
-    /// # Errors
-    /// Returns a repository proof, transport or response error.
     pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
         let mut request = self.client.runtime_offer_request();
         request.get().set_registry(registry);
@@ -468,10 +549,7 @@ impl BlockingClient {
     /// The verified metadata the host last accepted from an enabled
     /// repository, without the network. Fails when there is none, or when it
     /// no longer verifies (it expired, or a newer one was accepted since).
-    ///
-    /// # Errors
-    /// Returns why no verified catalogue is held for the repository.
-    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, String> {
+    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_last_verified_catalogue(registry))
     }
 
@@ -479,14 +557,15 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns why the repository cannot be read on this device.
-    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+    pub fn flatpak_catalogue(
+        &self,
+        remote: &str,
+        user_managed: bool,
+    ) -> Result<String, CatalogueError> {
         self.complete(self.begin_flatpak_catalogue(remote, user_managed))
     }
 
     /// Install from a configured repository belonging to this account.
-    ///
-    /// # Errors
-    /// Returns why the repository or installation was refused.
     pub fn flatpak_install_remote(
         &self,
         remote: &str,
@@ -516,9 +595,6 @@ impl BlockingClient {
     }
 
     /// Enable or disable an existing repository in this account's scope.
-    ///
-    /// # Errors
-    /// Returns why the repository change was refused or failed.
     pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
         let mut request = self.client.remote_request();
         request.get().set_action(if enabled {

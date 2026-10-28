@@ -122,11 +122,26 @@ class AppCopyTests(unittest.TestCase):
             self.crate(root, "crates/sdk/provider-settings-ui",
                        {"en-US": shared, "de-DE": shared}, "")
             own = "settings-x = X\n"
-            self.crate(root, "apps/settings", {"en-US": own, "de-DE": own},
+            self.crate(root, "apps/settings-core", {"en-US": own, "de-DE": own},
                        'fn pane() { t("agent-cancel"); t("agent-absent"); }\n')
             self.assertEqual(copy.missing_copy(root), [
-                "apps/settings/src/view.rs:1: de-DE lacks agent-absent",
-                "apps/settings/src/view.rs:1: en-US lacks agent-absent",
+                "apps/settings-core/src/view.rs:1: de-DE lacks agent-absent",
+                "apps/settings-core/src/view.rs:1: en-US lacks agent-absent",
+            ])
+
+    def test_settings_panes_resolve_the_core_catalogue(self):
+        # The panes, in the app and in settings-rare, have no catalogue of
+        # their own: their keys are settings-core's.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            own = "settings-x = X\n"
+            self.crate(root, "apps/settings-core", {"en-US": own}, "")
+            rare = root / "apps/settings-rare/src"
+            rare.mkdir(parents=True)
+            (rare / "pane.rs").write_text('fn pane() { t("settings-x"); t("settings-gone"); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "apps/settings-rare/src/pane.rs:1: en-US lacks settings-gone",
             ])
 
     def test_every_actual_source_key_is_in_its_catalogues(self):

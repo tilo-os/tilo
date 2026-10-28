@@ -10,18 +10,84 @@
 //! (the same pipeline `app install` uses). One install runs per runtime
 //! however many windows ask, and a failure is reported once, so the next
 //! request retries.
+//!
+//! Settings asks one more thing, for the person's languages: which language
+//! packs the repositories offer, and to install one. The host answers it
+//! that and nothing else, and answers no other app either request.
 
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
 use package_store::{Catalog, InstalledPackage};
-use runtime_portal::runtime_request::{Phase, Request, Response, read_message, write_message};
+use runtime_portal::runtime_request::{
+    OfferedLanguage, Phase, Request, Response, read_message, write_message,
+};
 use tilo_lock::MutexRecover as _;
 
 /// How the host installs a runtime: reports progress, then succeeds or says why not.
 pub type Installer =
     dyn Fn(&str, &mut dyn FnMut(Phase, u64, Option<u64>)) -> Result<(), String> + Send + Sync;
+
+/// The one app the host answers about language packs.
+pub const SETTINGS_APP_ID: &str = "so.tilo.settings";
+
+/// How the host answers about language packs: which the repositories offer,
+/// whether one is installed, and installing one by its locale.
+pub struct LanguagePackHost {
+    /// The packs the enabled repositories offer.
+    pub offers: Box<dyn Fn() -> Result<Vec<OfferedLanguage>, String> + Send + Sync>,
+    /// Whether the newest offered pack of a locale is installed.
+    pub installed: Box<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Install a locale's pack, reporting progress.
+    pub installer: Arc<Installer>,
+}
+
+impl LanguagePackHost {
+    /// The production host: the enabled repositories and the verified
+    /// installer, into the person's language packs.
+    #[must_use]
+    pub fn enabled_repositories() -> Self {
+        Self {
+            offers: Box::new(|| {
+                app_cli::language_pack_offers().map(|offers| {
+                    offers
+                        .into_iter()
+                        .map(|offer| OfferedLanguage {
+                            installed: app_cli::installed_language_pack(&offer.locale).as_deref()
+                                == Some(offer.offer.version.as_str()),
+                            locale: offer.locale,
+                        })
+                        .collect()
+                })
+            }),
+            installed: Box::new(|locale| app_cli::installed_language_pack(locale).is_some()),
+            installer: Arc::new(|locale, report| {
+                app_cli::install::install_language_pack_from_enabled(locale, &mut |progress| {
+                    report(phase_of(&progress), progress.received, progress.total);
+                })
+                .map_err(|error| error.user_message())
+            }),
+        }
+    }
+}
+
+fn phase_of(progress: &app_cli::install::DownloadProgress) -> Phase {
+    match progress.phase {
+        app_cli::install::InstallPhase::Downloading => Phase::Downloading,
+        app_cli::install::InstallPhase::Installing { .. } => Phase::Installing,
+    }
+}
+
+/// Whether `locale` reads as a BCP 47 tag a pack could be named by.
+fn plausible_locale(locale: &str) -> bool {
+    (2..=35).contains(&locale.len())
+        && locale
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && !locale.starts_with('-')
+        && !locale.ends_with('-')
+}
 
 /// How the host starts a package: its row and the address to open.
 pub type Launcher = dyn Fn(&InstalledPackage, Option<&str>) -> Result<(), String> + Send + Sync;
@@ -42,6 +108,7 @@ pub struct RuntimeRequests {
     installed: Box<dyn Fn(&str) -> bool + Send + Sync>,
     installer: Arc<Installer>,
     launcher: Arc<Launcher>,
+    packs: LanguagePackHost,
     jobs: Arc<Mutex<HashMap<String, Job>>>,
 }
 
@@ -49,7 +116,7 @@ impl RuntimeRequests {
     /// The production host: the shared installer over the enabled repositories.
     #[must_use]
     pub fn new(catalog: Arc<Catalog>) -> Arc<Self> {
-        Self::with(
+        Self::with_language_packs(
             catalog,
             Box::new(app_cli::runtime_installed),
             Arc::new(|runtime, report| {
@@ -67,6 +134,7 @@ impl RuntimeRequests {
                 .map_err(|error| error.user_message())
             }),
             Arc::new(crate::service::launch_package),
+            LanguagePackHost::enabled_repositories(),
         )
     }
 
@@ -78,11 +146,34 @@ impl RuntimeRequests {
         installer: Arc<Installer>,
         launcher: Arc<Launcher>,
     ) -> Arc<Self> {
+        Self::with_language_packs(
+            catalog,
+            probe,
+            installer,
+            launcher,
+            LanguagePackHost {
+                offers: Box::new(|| Err("no repository offers language packs".into())),
+                installed: Box::new(|_| false),
+                installer: Arc::new(|_, _| Err("no repository offers language packs".into())),
+            },
+        )
+    }
+
+    /// A host with the given probe, installers and language packs (tests).
+    #[must_use]
+    pub fn with_language_packs(
+        catalog: Arc<Catalog>,
+        probe: Box<dyn Fn(&str) -> bool + Send + Sync>,
+        installer: Arc<Installer>,
+        launcher: Arc<Launcher>,
+        packs: LanguagePackHost,
+    ) -> Arc<Self> {
         Arc::new(Self {
             catalog,
             installed: probe,
             installer,
             launcher,
+            packs,
             jobs: Arc::default(),
         })
     }
@@ -135,24 +226,60 @@ impl RuntimeRequests {
         }
     }
 
-    /// Answer one request from `app_id`.
     #[must_use]
     pub fn answer(self: &Arc<Self>, app_id: &str, request: &Request) -> Response {
-        let runtime = match request {
-            Request::Ensure { runtime } => runtime,
-            Request::Relaunch { uri } => return self.relaunch(app_id, uri.as_deref()),
-        };
-        if !self.declares(app_id, runtime) {
-            return Response::Refused {
-                message: format!("{app_id} does not declare {runtime}"),
-            };
+        let refused = |message: String| Response::Refused { message };
+        match request {
+            Request::Ensure { runtime } => {
+                if !self.declares(app_id, runtime) {
+                    return refused(format!("{app_id} does not declare {runtime}"));
+                }
+                self.ensure(
+                    runtime.clone(),
+                    (self.installed)(runtime),
+                    Arc::clone(&self.installer),
+                    runtime.clone(),
+                )
+            }
+            Request::Relaunch { uri } => self.relaunch(app_id, uri.as_deref()),
+            Request::LanguagePacks | Request::InstallLanguagePack { .. }
+                if app_id != SETTINGS_APP_ID =>
+            {
+                refused(format!("{app_id} does not choose the person's languages"))
+            }
+            Request::LanguagePacks => match (self.packs.offers)() {
+                Ok(offered) => Response::LanguagePacks { offered },
+                Err(message) => Response::Failed { message },
+            },
+            Request::InstallLanguagePack { locale } => {
+                if !plausible_locale(locale) {
+                    return refused(format!("{locale:?} is not a language"));
+                }
+                self.ensure(
+                    format!("language-pack:{locale}"),
+                    (self.packs.installed)(locale),
+                    Arc::clone(&self.packs.installer),
+                    locale.clone(),
+                )
+            }
         }
-        if (self.installed)(runtime) {
-            self.jobs.lock_recover().remove(runtime);
+    }
+
+    /// Where the install `key` of `subject` stands, starting it unless it
+    /// runs or `done` says there is nothing to do.
+    fn ensure(
+        self: &Arc<Self>,
+        key: String,
+        done: bool,
+        installer: Arc<Installer>,
+        subject: String,
+    ) -> Response {
+        let mut jobs = self.jobs.lock_recover();
+        if done && !matches!(jobs.get(&key), Some(Job::Running { .. })) {
+            jobs.remove(&key);
             return Response::Installed;
         }
-        let mut jobs = self.jobs.lock_recover();
-        match jobs.get(runtime) {
+        match jobs.get(&key) {
             Some(Job::Running {
                 phase,
                 received,
@@ -164,12 +291,12 @@ impl RuntimeRequests {
             },
             Some(Job::Failed(message)) => {
                 let message = message.clone();
-                jobs.remove(runtime);
+                jobs.remove(&key);
                 Response::Failed { message }
             }
             None => {
                 jobs.insert(
-                    runtime.clone(),
+                    key.clone(),
                     Job::Running {
                         phase: Phase::Preparing,
                         received: 0,
@@ -177,7 +304,7 @@ impl RuntimeRequests {
                     },
                 );
                 drop(jobs);
-                self.spawn_install(runtime.clone());
+                self.spawn_install(key, installer, subject);
                 Response::Installing {
                     phase: Phase::Preparing,
                     received: 0,
@@ -187,14 +314,12 @@ impl RuntimeRequests {
         }
     }
 
-    fn spawn_install(self: &Arc<Self>, runtime: String) {
-        let host = Arc::clone(self);
+    fn spawn_install(self: &Arc<Self>, key: String, installer: Arc<Installer>, subject: String) {
+        let jobs = Arc::clone(&self.jobs);
         std::thread::Builder::new()
-            .name("tilo-runtime-install".into())
+            .name("tilo-app-host-install".into())
             .spawn(move || {
-                let jobs = Arc::clone(&host.jobs);
-                let key = runtime.clone();
-                let outcome = (host.installer)(&runtime, &mut |phase, received, total| {
+                let outcome = installer(&subject, &mut |phase, received, total| {
                     jobs.lock_recover().insert(
                         key.clone(),
                         Job::Running {
@@ -207,16 +332,16 @@ impl RuntimeRequests {
                 let mut jobs = jobs.lock_recover();
                 match outcome {
                     Ok(()) => {
-                        jobs.remove(&runtime);
+                        jobs.remove(&key);
                     }
                     Err(message) => {
-                        tracing::warn!(%runtime, %message, "runtime install for an app failed");
-                        jobs.insert(runtime, Job::Failed(message));
+                        tracing::warn!(%key, %message, "an install an app asked for failed");
+                        jobs.insert(key, Job::Failed(message));
                     }
                 }
             })
             .map_or_else(
-                |error| tracing::error!(%error, "cannot start the runtime install"),
+                |error| tracing::error!(%error, "cannot start the install"),
                 drop,
             );
     }
@@ -290,14 +415,10 @@ mod tests {
     }
 
     fn settle(host: &Arc<RuntimeRequests>, request: &Request) -> Response {
-        for _ in 0..500 {
+        tilo_test_env::wait_for("the install to settle", || {
             let answer = host.answer("so.tilo.browser", request);
-            if !matches!(answer, Response::Installing { .. }) {
-                return answer;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the install never settled");
+            (!matches!(answer, Response::Installing { .. })).then_some(answer)
+        })
     }
 
     #[test]
@@ -319,6 +440,72 @@ mod tests {
         let other = host.answer("so.tilo.notes", &ensure(ENGINE));
         assert!(matches!(other, Response::Refused { .. }), "{other:?}");
         assert_eq!(started.load(Ordering::SeqCst), 0, "nothing was installed");
+    }
+
+    /// Settings, and only Settings, may ask which language packs the
+    /// repositories offer and install one by its locale; the install runs
+    /// once however often it asks, and a locale must read as one.
+    #[test]
+    fn settings_alone_lists_and_installs_language_packs() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let (counted, finished) = (Arc::clone(&started), Arc::clone(&done));
+        let installed = Arc::clone(&done);
+        let host = RuntimeRequests::with_language_packs(
+            catalog(dir.path()),
+            Box::new(|_| false),
+            Arc::new(|_, _| Ok(())),
+            Arc::new(|_, _| Ok(())),
+            LanguagePackHost {
+                offers: Box::new(|| {
+                    Ok(vec![OfferedLanguage {
+                        locale: "de-DE".into(),
+                        installed: false,
+                    }])
+                }),
+                installed: Box::new(move |_| installed.load(Ordering::SeqCst)),
+                installer: Arc::new(move |locale, report| {
+                    assert_eq!(locale, "de-DE");
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    report(Phase::Downloading, 10, Some(20));
+                    finished.store(true, Ordering::SeqCst);
+                    Ok(())
+                }),
+            },
+        );
+        let install = Request::InstallLanguagePack {
+            locale: "de-DE".into(),
+        };
+        for request in [&Request::LanguagePacks, &install] {
+            let answer = host.answer("so.tilo.browser", request);
+            assert!(matches!(answer, Response::Refused { .. }), "{answer:?}");
+        }
+        assert_eq!(
+            host.answer(SETTINGS_APP_ID, &Request::LanguagePacks),
+            Response::LanguagePacks {
+                offered: vec![OfferedLanguage {
+                    locale: "de-DE".into(),
+                    installed: false
+                }]
+            }
+        );
+        let odd = Request::InstallLanguagePack {
+            locale: "../de".into(),
+        };
+        assert!(matches!(
+            host.answer(SETTINGS_APP_ID, &odd),
+            Response::Refused { .. }
+        ));
+        let answer = tilo_test_env::wait_for("the install to settle", || {
+            let answer = host.answer(SETTINGS_APP_ID, &install);
+            (!matches!(answer, Response::Installing { .. })).then_some(answer)
+        });
+        assert_eq!(answer, Response::Installed);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // Settings asks for no runtime it does not declare.
+        let runtime = host.answer(SETTINGS_APP_ID, &ensure(ENGINE));
+        assert!(matches!(runtime, Response::Refused { .. }), "{runtime:?}");
     }
 
     #[test]
@@ -349,18 +536,14 @@ mod tests {
         );
         let first = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert!(matches!(first, Response::Installing { .. }), "{first:?}");
-        for _ in 0..500 {
-            if host.answer("so.tilo.browser", &ensure(ENGINE))
+        tilo_test_env::wait_until("the install's progress to reach the asker", || {
+            host.answer("so.tilo.browser", &ensure(ENGINE))
                 == (Response::Installing {
                     phase: Phase::Downloading,
                     received: 40,
                     total: Some(100),
                 })
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        });
         let progress = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert_eq!(
             progress,
@@ -400,12 +583,9 @@ mod tests {
         );
         let retry = host.answer("so.tilo.browser", &ensure(ENGINE));
         assert!(matches!(retry, Response::Installing { .. }), "{retry:?}");
-        for _ in 0..500 {
-            if attempts.load(Ordering::SeqCst) == 2 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the retried install", || {
+            attempts.load(Ordering::SeqCst) == 2
+        });
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 

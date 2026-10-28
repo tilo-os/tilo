@@ -74,6 +74,42 @@ pub fn store_key(
     Ok(SymmetricKey::from_bytes(*out))
 }
 
+/// The at-rest key of one person's store on any device, from the person's
+/// own key alone.
+///
+/// `HKDF-SHA256(ikm = user secret, salt = the person's random salt, info =
+/// label ‖ 0 ‖ user identity)`.
+///
+/// [`store_key`] ties the vault to the machine: losing the device key loses
+/// the store even when the person's own key is intact. This derivation is
+/// the other way round — the person's key keeps the store, and a machine
+/// that cannot reach it keeps the vault shut. The user identity is the
+/// public half, which separates a person's stores in a shared data home
+/// without naming them; the salt stays in the person's data directory, so
+/// the same key with another salt opens nothing.
+///
+/// # Errors
+///
+/// [`Error::InvalidKey`] for a user secret shorter than 16 bytes and for an
+/// empty or over-long user identity, neither of which can be key material.
+pub fn user_store_key(
+    user_secret: &[u8],
+    user_salt: &[u8; 32],
+    user_identity: &[u8],
+) -> Result<SymmetricKey> {
+    if user_secret.len() < 16 || user_identity.is_empty() || user_identity.len() > 64 {
+        return Err(Error::InvalidKey);
+    }
+    let mut info = crate::Label::SecretService.as_str().as_bytes().to_vec();
+    info.push(0);
+    info.extend_from_slice(user_identity);
+    let mut out = Zeroizing::new([0_u8; 32]);
+    Hkdf::<Sha256>::new(Some(user_salt), user_secret)
+        .expand(&info, out.as_mut())
+        .map_err(|_| Error::InvalidKey)?;
+    Ok(SymmetricKey::from_bytes(*out))
+}
+
 /// Length of a [`CallerKey`] proof.
 pub const CALLER_PROOF_LEN: usize = 32;
 
@@ -381,6 +417,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(plain.as_slice(), b"hunter2 tilo");
+    }
+
+    #[test]
+    fn user_store_keys_bind_the_person_the_salt_and_the_identity() {
+        let base = user_store_key(&[1; 32], &[2; 32], &[3; 32]).unwrap();
+        assert_eq!(
+            base.expose_secret(),
+            user_store_key(&[1; 32], &[2; 32], &[3; 32])
+                .unwrap()
+                .expose_secret()
+        );
+        for other in [
+            user_store_key(&[9; 32], &[2; 32], &[3; 32]).unwrap(),
+            user_store_key(&[1; 32], &[9; 32], &[3; 32]).unwrap(),
+            user_store_key(&[1; 32], &[2; 32], &[9; 32]).unwrap(),
+        ] {
+            assert_ne!(base.expose_secret(), other.expose_secret());
+        }
+        // The same person and salt on another device key: the store is the
+        // same, which is the whole point of keying it by the person.
+        assert_ne!(base.expose_secret(), &[0_u8; 32]);
+        assert!(user_store_key(&[1; 8], &[2; 32], &[3; 32]).is_err());
+        assert!(user_store_key(&[1; 32], &[2; 32], &[]).is_err());
+        assert!(user_store_key(&[1; 32], &[2; 32], &[3; 65]).is_err());
     }
 
     #[test]

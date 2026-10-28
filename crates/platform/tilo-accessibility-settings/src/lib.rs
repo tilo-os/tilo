@@ -57,10 +57,10 @@ macro_rules! accessibility_settings {
             pub large_cursor: bool,
             /// Pointer size in logical pixels (the compositor's cursor theme size).
             pub cursor_size: u32,
-            /// Run the screen reader.
             $(#[$readonly])*
             pub screen_reader: bool,
-            /// When the on-screen keyboard runs.
+            /// When the on-screen keyboard shows: with no hardware keyboard,
+            /// always, or never.
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,
@@ -83,6 +83,10 @@ macro_rules! accessibility_settings {
             pub magnifier_zoom: u8,
             /// A lens around the point of interest, or the whole screen magnified.
             pub magnifier_view: MagnifierView,
+            /// The zoom the magnifier's toggle turns back on to: the last one
+            /// in use. Changed by stepping the magnifier.
+            $(#[$readonly])*
+            pub magnifier_last_zoom: u8,
             /// Paint full-screen guide lines through the hardware pointer.
             pub cursor_crosshair: bool,
             /// Make text insertion carets wider in every Tilo toolkit application.
@@ -99,6 +103,9 @@ macro_rules! accessibility_settings {
             /// Backend-neutral voice/language preset.
             $(#[$readonly])*
             pub screen_reader_voice: ScreenReaderVoice,
+            /// The screen reader, text size, contrast, language and keyboard
+            /// layout this person turns on apply to the login screens too.
+            pub apply_to_sign_in: bool,
             /// Personal recognition language; selecting it never grants microphone access.
             pub dictation_language: DictationLanguage,
             /// Preserve recognised speech without removing explicit self-repairs.
@@ -122,6 +129,7 @@ macro_rules! accessibility_settings {
                     color_filter: $crate::ColorFilter::None,
                     magnifier_zoom: $crate::__private::OFF,
                     magnifier_view: $crate::__private::MagnifierView::Lens,
+                    magnifier_last_zoom: $crate::__private::DEFAULT_ZOOM,
                     cursor_crosshair: false,
                     thick_text_caret: false,
                     switch_control: false,
@@ -129,6 +137,7 @@ macro_rules! accessibility_settings {
                     switch_scan_ms: 0,
                     screen_reader_rate: $crate::DEFAULT_SCREEN_READER_RATE,
                     screen_reader_voice: $crate::ScreenReaderVoice::System,
+                    apply_to_sign_in: $crate::__private::APPLY_TO_SIGN_IN.default_value(),
                     dictation_language: $crate::__private::DictationLanguage::default(),
                     dictation_literal: false,
                 }
@@ -219,6 +228,9 @@ macro_rules! accessibility_settings {
                 if let Some(value) = key(section, "magnifier_view") {
                     settings.magnifier_view = value;
                 }
+                if let Some(value) = key(section, $crate::__private::LAST_ZOOM_KEY) {
+                    settings.magnifier_last_zoom = value;
+                }
                 if let Some(value) = key(section, "cursor_crosshair") {
                     settings.cursor_crosshair = value;
                 }
@@ -240,6 +252,9 @@ macro_rules! accessibility_settings {
                 if let Some(value) = key(section, "screen_reader_voice") {
                     settings.screen_reader_voice = value;
                 }
+                if let Some(value) = key(section, $crate::__private::APPLY_TO_SIGN_IN.name()) {
+                    settings.apply_to_sign_in = value;
+                }
                 if let Some(value) = key(section, "dictation_language") {
                     settings.dictation_language = value;
                 }
@@ -250,6 +265,7 @@ macro_rules! accessibility_settings {
                 settings.bounce_keys_delay_ms =
                     $crate::__private::clamp(settings.bounce_keys_delay_ms, &$crate::__private::BOUNCE_KEYS_DELAY_RANGE);
                 settings.magnifier_zoom = settings.magnifier_zoom.clamp($crate::__private::OFF, $crate::__private::MAX_ZOOM);
+                settings.magnifier_last_zoom = $crate::__private::remembered_zoom(settings.magnifier_last_zoom);
                 settings.screen_reader_rate =
                     $crate::__private::settings_store::accessibility::clamped_rate(settings.screen_reader_rate);
                 settings
@@ -278,6 +294,18 @@ macro_rules! accessibility_settings {
                 $crate::__private::SWITCH_SCAN_RANGE_MS
                     .contains(&self.switch_scan_ms)
                     .then(|| ::std::time::Duration::from_millis(u64::from(self.switch_scan_ms)))
+            }
+
+            /// Step the magnifier: turn it on at the zoom last in use or
+            /// off, or magnify a level more or less, remembering the zoom.
+            pub fn step_magnifier(&mut self, step: $crate::__private::MagnifierStep) {
+                let (zoom, remembered) = $crate::__private::step_zoom(
+                    self.magnifier_zoom,
+                    self.magnifier_last_zoom,
+                    step,
+                );
+                self.magnifier_zoom = zoom;
+                self.magnifier_last_zoom = remembered;
             }
 
             pub fn magnifier(self) -> $crate::__private::MagnifierState {
@@ -309,11 +337,6 @@ macro_rules! accessibility_settings {
             pub fn cursor_size_label(size: u32) -> &'static str {
                 $crate::__private::closest_label(Self::CURSOR_SIZES, size)
             }
-
-            /// Map a cursor-size label back to its pixel size, if recognised.
-            pub fn cursor_size_px(label: &str) -> Option<u32> {
-                $crate::__private::labelled(Self::CURSOR_SIZES, label)
-            }
         }
 
     };
@@ -326,7 +349,11 @@ pub mod __private {
     pub use crate::{BOUNCE_KEYS_DELAY_RANGE, CURSOR_SIZE_RANGE, SWITCH_SCAN_RANGE_MS};
     pub use settings_store;
     pub use settings_store::dictation::DictationLanguage;
-    pub use settings_store::magnifier::{MAX_ZOOM, MagnifierState, MagnifierView, OFF};
+    pub use settings_store::magnifier::{
+        DEFAULT_ZOOM, LAST_ZOOM_KEY, MAX_ZOOM, MagnifierState, MagnifierStep, MagnifierView, OFF,
+        remembered_zoom, step as step_zoom,
+    };
+    pub use settings_store::sign_in_comforts::APPLY_TO_SIGN_IN;
 
     pub fn clamp<T: Ord + Copy>(value: T, range: &std::ops::RangeInclusive<T>) -> T {
         value.clamp(*range.start(), *range.end())
@@ -439,6 +466,12 @@ mod tests {
         let round_trip: AccessibilitySettings =
             serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
         assert_eq!(round_trip, settings);
+    }
+
+    #[test]
+    fn the_login_screens_follow_the_person_unless_they_keep_them_apart() {
+        assert!(read(serde_json::json!({})).apply_to_sign_in);
+        assert!(!read(serde_json::json!({"apply_to_sign_in": false})).apply_to_sign_in);
     }
 
     #[test]

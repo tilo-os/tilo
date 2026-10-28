@@ -247,6 +247,22 @@ clones cannot extend this lifetime. A legacy client's request connection remains
 its lease. No client reconnects through a global socket to recover a consumed
 launcher capability.
 
+A request with `"end_report":true` reads one line on the lease just before it
+closes, saying how the session ended: `{"ended":"exited"}`;
+`{"ended":"failed","reason":…}` when the guest could not be set up and no shell
+started; and for a relay session `{"ended":"lost","reason":…}` or
+`{"ended":"superseded"}`. The reason is for the log. Terminal says the
+environment could not be set up and offers to try again.
+
+Nothing about setting a guest up is written on its terminal
+(`crates/runtime/ush/src/setup.rs`). The supervisor starts `ush run` with the
+pty as standard input and output, and hands it the pty again as descriptor 3
+(`--terminal-fd 3`). Its standard error is a pipe the supervisor reads and
+logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
+`{"setup":"failed","reason":…}` line that becomes the `failed` report. The
+guest's first process makes the terminal its standard error just before it
+starts the shell.
+
 ## Command runs
 
 Terminal records what a session **ran**, not what its screen showed. A
@@ -268,26 +284,37 @@ marks its runs with, chosen by Terminal for that session:
 {"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
 ```
 
-`runs` is 16 to 64 letters and digits. An interactive session answers
-`"runs":true`: when its shell is `bash`, `ush` starts it with an rc file of its
-own (`/run/ush/runs.bash` in a guest; for the Host target one that reads
-`/etc/profile` first, as the login shell would) that sources the person's
-`~/.bashrc` and then writes three marks into the pty stream:
+`runs` is 16 to 64 letters and digits. An interactive session's shell starts
+the same way on the Host and in a guest: as the session's login shell. A
+`bash` starts on an rc file of `ush`'s own (`/run/ush/shell.bash` in a guest)
+that runs what must come before the person's files (the native editor's
+builtin, in a guest), then what `bash --login` reads (`/etc/profile`, then the
+first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`, else
+`~/.bashrc`); any other shell starts with `-l`. With a key, the session
+answers `"runs":true`, and the rc file ends by writing three marks into the
+pty stream:
 
 ```text
-ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
-ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> BEL   a command line starts
-ESC ] 133 ; D ; <status> ; k=<key> BEL                it ended with <status>
+ESC ] 133 ; A ; k=<key> BEL                                     the prompt is shown
+ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> ; t=<n> BEL     a command line starts
+ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                  it ended with <status>
 ```
 
 `cmd` and `cwd` are base64 of the command line as the shell's history holds
-it and of the working directory. The key is a shell variable the rc file
-takes out of the environment before anything runs, so no program the session
-runs sees it, and output that imitates a mark (a `cat` of a file holding one)
-is not taken for one: Terminal acts only on marks carrying its key, and takes
-every mark out of what the screen shows. Another shell writes no marks; a
-`command` session and an environment on a relay answer `"runs":false`. Their
-output is live only.
+it and of the working directory, and `t` is that command's place in the
+shell's history, read from the history entry the shell is about to run. A
+line that runs nothing (an empty one, `exit`) takes no place there, so it
+marks no run, and the number makes the run tell itself apart from the one
+before it: a person typing a request's command by hand, before the shell
+reaches the request's own line, cannot take the id the request's run is
+recorded under. Which lines belong to which request is still decided by the
+lines themselves, in the order the shell reached them. The key is a shell
+variable the rc file takes out of the environment before anything runs, so no
+program the session runs sees it, and output that imitates a mark (a `cat` of
+a file holding one) is not taken for one: Terminal acts only on marks
+carrying its key, and takes every mark out of what the screen shows. Another
+shell writes no marks; a `command` session and an environment on a relay
+answer `"runs":false`. Their output is live only.
 
 ### A run
 
@@ -302,9 +329,17 @@ when it ends, by the Terminal that runs the session:
 | `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
 | `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
 | `tool`, `items` | which parser read it, and what it found |
+| `undoable` | whether what it changed is something Tilo can put back |
 
 No run writes a CRDT operation per character: the output is one blob, the
 rest a handful of fields.
+
+`undoable` is read once, from the command when it ended: a command that only
+looks (`ls`, `git status`, `cargo test`) is not undoable however much it
+printed, one whose change Tilo can put back (`rm`, `mv`, `cp`, `sed -i`) is,
+and one Tilo does not know is not offered. The past does not say: a `git
+commit` leaves what it replaced in the repository, so undo would have to ask
+git for it, and a command nobody listed is not guessed at.
 
 ### Parsers
 
@@ -332,8 +367,10 @@ where it has them, a path, line, column, code or test name.
   session whose shell does not mark its runs, or one in the device's own
   shell, settles the request as failed.
 - `rerun` (on a run) runs its command line again; `rerun-test` (on a run, with
-  a test name it reported) runs that one test the way the run's tool does
-  (`cargo test -p <package> -- --exact <name>`); both are Outside like `run`.
+  a test name it reported) runs that one test the way the run's tool does,
+  keeping the run's environment, toolchain and package and target selection
+  (`cargo test -p <package> --test <target> -- --exact <name>`); both are
+  Outside like `run`.
 - `open-item` (on a run, with the item's position among its items) shows an
   item: a location or a diagnostic opens its file (relative to the run's
   directory), a URL opens in the browser.
@@ -379,7 +416,7 @@ available; the tools an environment already has keep working.
 
 `perm trust-dir ~/src` applies `grant-dir`, which mints a
 `collab_types::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
-`Scope::FsPath`, `Effect::Grant`, `Verb::Write` — into the record, and every
+`Scope::FsPath`, `Effect::Grant`, `Access::Write` — into the record, and every
 question is `decide_capability`. That is the same record the compositor stores,
 renders in its permissions panel and can revoke. A `Restrict` written elsewhere
 narrows the bind here, and an expired grant does not survive into the next
@@ -408,6 +445,67 @@ Tilo ships no signature database, and this runtime does not provide one.
   `/var/lib/ush/quarantine` with its executable bits cleared, so the original
   path stops resolving. No file is moved there automatically.
 
+## `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate` — actions, not syscalls
+
+These are the guest's own verbs, under the names the person already types.
+Each invocation is parsed into one typed action, planned against the tree as
+it is, checked against the environment's grants **as a whole** — so a command
+with forty operands is allowed or refused in one piece, never half done — and
+then carried out by the supervisor, which is the only side that can read the
+record. It is recorded in the audit log and in the environment's recoverable
+history, and `undo file-action ID` takes it back:
+
+```
+$ rm ~/src/notes.md
+done (1 operation); `undo file-action 1793051200-000` puts it back
+$ undo file-action 1793051200-000
+undid 1793051200-000 (1 operation)
+```
+
+Nothing is unlinked. `rm` renames the path into `/var/lib/tilo-recoverable`
+under the environment's own `/var`, an overwrite moves the previous contents
+aside the same way, and `rmdir` only ever removes an empty directory, so undo
+recreates it. `rm -f` is the one action that really removes — callers name it
+to the person before it runs, and undoing it has nothing to put back.
+
+`ush history` lists what was removed or replaced, newest first. A flag this
+runtime does not implement (`-i`, `-a`, `-L`, `--preserve`) is refused by name
+rather than quietly ignored, so a script that relied on it fails loudly
+instead of losing data quietly.
+
+Outside a guest the same verbs run in the host's own shell, where there is no
+environment record to check: the person's permissions are the only bound, and
+the history lives in `~/.local/share/ush/recoverable`.
+
+## `version` — a file's own history, in the words an agent already knows
+
+A file on a Tilo mount is versioned already: every write appends a version, and
+the mounted file answers that history over the same bounded attributes the file
+manager's History view reads. `version` is that history with git's verbs on it,
+and no store of its own:
+
+```
+$ version status notes.md
+9f14c0aa  notes.md (3 revisions), last edited
+$ version log notes.md          # every revision, with its agent and time
+$ version show notes.md HEAD    # one revision's bytes, for piping
+$ version diff notes.md abc123  # what changed since abc123
+$ version restore notes.md abc123
+notes.md is back to abc123 as a new revision
+```
+
+A revision is named by `HEAD`, a full id, or any unambiguous prefix of one; an
+ambiguous prefix is refused rather than guessed. `restore` goes through the same
+checked-restore path the History view uses, so a file that changed between the
+read and the write is refused instead of overwritten. Every verb takes `--json`
+and prints one object, and a refusal prints a stable `error` code, so a script or
+an agent reads a result instead of parsing prose.
+
+Writing the file *is* the version, so there is no `commit`: a commit a caller
+could forget would let the log disagree with what the person sees. `branch`,
+`merge` and `init` have no meaning here either — a mount is the repository, and
+two people editing one document at once is the CRDT's own collaboration.
+
 ## Commands
 
 ```
@@ -420,6 +518,8 @@ perm list            perm revoke ID
 scan PATH            guard status
 quarantine list | add PATH | restore PATH
 restart
+cp …  mv …  rm …  mkdir …  rmdir …  ln …  truncate …   one action each
+history [--json]     undo file-action ID
 tilo …  app …  store …  system …      brokered to the host session
 ```
 

@@ -134,18 +134,17 @@ impl ActionDescriptor {
 }
 
 impl InputSpec {
-    fn of(input: &ActionInput) -> Self {
+    fn of(input: ActionInput<'_>) -> Self {
         match input {
             ActionInput::Immediate(_) | ActionInput::Deferred { .. } => InputSpec::None,
             ActionInput::Prompted {
                 prompt,
                 placeholder,
                 collects,
-                ..
             } => InputSpec::Text {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: *collects,
+                prompt: prompt.to_owned(),
+                placeholder: placeholder.to_owned(),
+                collects,
             },
         }
     }
@@ -184,6 +183,14 @@ pub struct ActionDescriptor {
     /// The resource's human label, as the app words it.
     pub resource_label: String,
     pub action_label: String,
+    /// The other words people use for the action ([`ActionSpec::keywords`]),
+    /// published with its label so every search ranks them as it ranks the
+    /// label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// The action's own picture ([`ActionSpec::icon`]), by its Lucide name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
     pub kind: OperationKind,
@@ -385,11 +392,13 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
+            keywords: action.keywords.clone(),
+            icon: action.icon.clone(),
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,
             contract: action.contract.clone(),
-            input: InputSpec::of(&action.input),
+            input: InputSpec::of(action.input()),
             params: action.params().to_vec(),
             view,
         });
@@ -474,9 +483,11 @@ pub fn encode(
     ensure_available(spec)?;
     spec.validate_deferred_shape()
         .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    match (&spec.input, argument) {
-        (ActionInput::Deferred { type_id, build }, None) => {
-            let encoded = build();
+    match (spec.input(), argument) {
+        (ActionInput::Deferred { type_id }, None) => {
+            let Some(encoded) = spec.build_deferred() else {
+                return Err(DoorError::Unknown(address.clone()));
+            };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
                 return Err(DoorError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -493,10 +504,15 @@ pub fn encode(
         (ActionInput::Deferred { .. }, Some(_)) => {
             Err(DoorError::UnexpectedArgument(address.clone()))
         }
-        (ActionInput::Immediate(encoded), None) => Ok(encoded.as_ref().clone()),
+        (ActionInput::Immediate(_), None) => spec
+            .encode_immediate()
+            .map(std::sync::Arc::unwrap_or_clone)
+            .ok_or_else(|| DoorError::Unknown(address.clone())),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
-        (ActionInput::Prompted { build, .. }, Some(text)) => {
-            let encoded = build(text);
+        (ActionInput::Prompted { .. }, Some(text)) => {
+            let Some(encoded) = spec.build_text(text) else {
+                return Err(DoorError::Unknown(address.clone()));
+            };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
                 return Err(DoorError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -637,11 +653,6 @@ pub fn invoke(
 /// [`invoke`] after an outer policy boundary has completed the action
 /// contract's confirmation step. This is intentionally separate from
 /// [`invoke`], whose default is fail-closed for consequential actions.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke`], except confirmation has already
-/// been granted by the caller.
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -677,11 +688,6 @@ fn invoke_with_consent(
 }
 
 /// Typed-argument counterpart to [`invoke`].
-///
-/// # Errors
-///
-/// Returns address, availability, confirmation, argument, registry, dispatch,
-/// and result-contract errors encountered while invoking the action.
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -698,11 +704,6 @@ pub fn invoke_json(
 
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.
-///
-/// # Errors
-///
-/// Returns the same errors as [`invoke_json`], except confirmation has already
-/// been granted by the caller.
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -761,7 +762,7 @@ fn ensure_deferred_local_owner(
 ) -> Result<(), DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     if spec.deferred_invocation_type().is_some()
-        || matches!(spec.input, ActionInput::Deferred { .. })
+        || matches!(spec.input(), ActionInput::Deferred { .. })
     {
         spec.validate_deferred_shape()
             .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
@@ -1432,7 +1433,7 @@ mod tests {
                     )],
                     |args| encoded(&Note::Retitle(args.text("title").unwrap_or("").to_owned())),
                 )
-                .programmatic()
+                .for_audience(crate::Audience::Agents)
                 .with_risk(|args| {
                     if args.text("title").is_some_and(str::is_empty) {
                         crate::RiskLevel::Destructive
@@ -1494,7 +1495,6 @@ mod tests {
         run(&mut doc, "", true).expect("a confirmed destructive value runs");
         assert_eq!(stored_title(&doc).as_deref(), Some(""));
 
-        // The legacy text door classifies the same value the same way.
         let mut transport = LocalTransport::new();
         assert_eq!(
             invoke(
@@ -1662,8 +1662,7 @@ mod tests {
         // Arguments that cannot bind build nothing, so they get the declared policy.
         assert_eq!(spec.confirmation_for_json(&serde_json::Map::new()), none);
 
-        // The inert contract carries both properties across every boundary.
-        assert!(spec.is_programmatic() && spec.contract.is_programmatic());
+        assert!(!spec.reaches_people() && !spec.contract.reaches_people());
         assert!(spec.contract.confirmation_depends_on_arguments());
         assert_eq!(spec.contract.confirmation, none);
         assert_eq!(spec.contract.advertised_confirmation(), confirm);

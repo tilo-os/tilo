@@ -1289,6 +1289,7 @@ fn start_placeholders(
             HydratorConfig {
                 readahead_max: 256 * 1024 * 1024,
                 readahead_workers: 8,
+                access_bound: crate::hydration::BLOCKED_READ_BOUND,
                 ..HydratorConfig::default()
             },
         )

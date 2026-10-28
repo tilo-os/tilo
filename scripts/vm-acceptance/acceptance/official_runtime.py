@@ -56,13 +56,13 @@ def inspect(package, root, version, runtime, publisher):
             or not re.fullmatch(r"[0-9a-f]{64}", publisher)
             or not re.fullmatch(r"tilo-runtime/[A-Za-z0-9.+_-]+", runtime)):
         raise RuntimeError("unsupported official package identity")
-    command("/usr/bin/tilo-install", "verify", package)
-    identity = fields(command("/usr/bin/tilo-install", "inspect", package))
+    command("/usr/libexec/tilo/tilo-install", "verify", package)
+    identity = fields(command("/usr/libexec/tilo/tilo-install", "inspect", package))
     expected = {"id": package, "version": version, "package-id": "tapp:" + root,
                 "publisher": "ed25519:" + publisher, "runtime": runtime + " (installed)"}
     if any(identity.get(key) != value for key, value in expected.items()):
         raise RuntimeError("installed package differs from reviewed official identity")
-    tool = "/usr/bin/tilo-runtime-bundle"
+    tool = "/usr/libexec/tilo/tilo-runtime-bundle"
     tag = runtime.split("/", 1)[1]
     bundle = Path(command(tool, "path", "--version", tag).strip())
     manifest_path = bundle / "bundle.toml"
@@ -111,8 +111,8 @@ def inspect(package, root, version, runtime, publisher):
         raise RuntimeError("installed app executable escapes payload")
     executable_path = Path(identity["payload-root"]) / executable
     executable_sha, executable_stamp = hash_file(executable_path)
-    command("/usr/bin/tilo-install", "verify", package)
-    after_identity = fields(command("/usr/bin/tilo-install", "inspect", package))
+    command("/usr/libexec/tilo/tilo-install", "verify", package)
+    after_identity = fields(command("/usr/libexec/tilo/tilo-install", "inspect", package))
     if (identity != after_identity and any(identity.get(key) != after_identity.get(key)
             for key in (*expected, "payload-root", "manifest"))):
         raise RuntimeError("installed package selection changed across verification")

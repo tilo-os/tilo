@@ -2,7 +2,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{fs::MetadataExt, net::UnixListener, process::CommandExt};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 #[test]
 fn consumes_systemd_listener_without_unlinking_or_rebinding() {
@@ -25,7 +24,7 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
         .arg("-c")
         .arg("LISTEN_PID=$$; export LISTEN_PID; exec \"$@\"")
         .arg("tilo-ush-activation-test")
-        .arg(env!("CARGO_BIN_EXE_tilo-ush"))
+        .arg(tilo_test_env::package_binary!("tilo-ush"))
         .arg("serve")
         .arg("--socket")
         .arg(&socket)
@@ -47,18 +46,11 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
     drop(inherited);
     drop(listener);
 
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(child.try_wait().expect("poll child"), None);
-    assert_eq!(
-        std::fs::metadata(&socket)
-            .expect("activated socket remains")
-            .ino(),
-        original_inode,
-        "daemon replaced the systemd-owned socket"
-    );
-
     let mut stream = std::os::unix::net::UnixStream::connect(&socket)
         .expect("connect through inherited listener");
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .expect("bound the answer");
     stream.write_all(b"{}\n").expect("write request");
     let mut response = String::new();
     BufReader::new(stream)
@@ -67,6 +59,16 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
     assert!(
         response.contains("denied"),
         "unexpected response: {response}"
+    );
+    // Serving the request means the daemon finished starting: it kept the
+    // inherited socket instead of replacing it, and runs on.
+    assert_eq!(child.try_wait().expect("poll child"), None);
+    assert_eq!(
+        std::fs::metadata(&socket)
+            .expect("activated socket remains")
+            .ino(),
+        original_inode,
+        "daemon replaced the systemd-owned socket"
     );
 
     child.kill().expect("stop daemon");

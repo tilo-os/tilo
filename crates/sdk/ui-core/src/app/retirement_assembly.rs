@@ -62,7 +62,7 @@ impl Drop for AppAssemblyCustody {
 pub(super) struct AppAssemblyValues {
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     pub startup_renderer: Option<Option<native_runner::startup::RendererPreparation>>,
-    pub history: Option<Option<Box<crate::history_mode::host::HistoryHost>>>,
+    pub history: Option<Option<crate::history_mode::host::HistoryChrome>>,
     #[cfg(any(test, feature = "test-support"))]
     pub controlled_installed_history_definition:
         Option<Option<&'static crate::history_mode::HistoryDefinition>>,
@@ -243,7 +243,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     )));
     assembly.values.profiler = Some((inputs.profiler)());
     assembly.values.native_input_probe = Some(None);
-    assembly.values.floating = Some(FloatingRuntime::new((inputs.floating_surface_client)()));
+    let floating = (inputs.floating_surface_client)();
+    if floating.is_some() {
+        // The shell says where this window's room stands.
+        crate::room_sync::hosted_by_shell();
+    }
+    assembly.values.floating = Some(FloatingRuntime::new(floating));
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {

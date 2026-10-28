@@ -16,9 +16,10 @@ pub mod status_bar;
 pub use header_row::{HeaderRowFace, HeaderRowMetrics, paint_history_control};
 pub use nav_row::{
     NavCount, NavRowFace, NavRowLayout, NavRowStyle, NavSectionFace, NavSectionLayout,
-    nav_badge_column, nav_item_height, nav_rail_item_height, nav_rail_row_height,
-    nav_row_description, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
-    paint_nav_row, paint_nav_section, rail_caption_lines, rail_width_fitting,
+    nav_badge_column, nav_item_height, nav_list_width_fitting, nav_rail_item_height,
+    nav_rail_row_height, nav_row_description, nav_row_height, nav_row_layout, nav_section_height,
+    nav_section_layout, paint_nav_row, paint_nav_section, rail_caption_fits, rail_caption_lines,
+    rail_width_fitting, sidebar_rail_width_fitting,
 };
 pub use page::PageGeometry;
 pub use selector::{
@@ -27,6 +28,7 @@ pub use selector::{
 pub use shell::{
     ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, RowJoin, SELECTION_MIN_STEP,
     SelectionState, SelectionTier, chrome_hairline, column_gutter, fill_scrim, lightness_step,
-    paint_row_selection, paint_row_selection_joined, panel_border, panel_ground, panel_shadow,
-    row_bleed, scrim_channel, scrim_maps, selection_floor_ramp, selection_tier, selection_tier_on,
+    paint_alignment_guide, paint_row_selection, paint_row_selection_joined, panel_border,
+    panel_ground, panel_shadow, row_bleed, scrim_channel, scrim_maps, selection_floor_ramp,
+    selection_tier, selection_tier_on,
 };

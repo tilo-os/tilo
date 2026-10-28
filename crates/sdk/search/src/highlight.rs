@@ -6,12 +6,19 @@
 use std::ops::Range;
 
 use crate::fold::{fold, fold_char};
+use crate::query::{infix_allowed, names_only};
+use crate::weight::{FieldWeight, MatchTier};
 
-/// The byte range in raw `text` of the best occurrence of `query` under
-/// folding: the first one starting a word, else the first. `None` when the
-/// query is empty or absent.
+/// The byte range in raw `text`, a field of `weight`, of the occurrence of
+/// `query` the index matches there under folding: the first one starting a
+/// word, or inside a word where a field of `weight` matches inside words
+/// (a name or an identity, the query long enough to be a fragment). A query
+/// only beginning a name ([`MIN_ALIAS_SCALARS`]) shows in any other field
+/// only as a whole word. `None` where the index finds no match.
+///
+/// [`MIN_ALIAS_SCALARS`]: crate::MIN_ALIAS_SCALARS
 #[must_use]
-pub fn locate(query: &str, text: &str) -> Option<Range<usize>> {
+pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usize>> {
     let query = fold(query.trim());
     if query.is_empty() {
         return None;
@@ -25,18 +32,44 @@ pub fn locate(query: &str, text: &str) -> Option<Range<usize>> {
             origin.resize(folded.len(), offset);
         });
     }
+    let scalars: Vec<char> = query.chars().collect();
+    // Punctuation the query starts or ends with is a word's edge itself.
+    let opens = scalars
+        .first()
+        .is_some_and(|first| !first.is_alphanumeric());
+    let closes = scalars.last().is_some_and(|last| !last.is_alphanumeric());
     let starts_word = |at: usize| {
-        folded
-            .get(..at)
-            .and_then(|before| before.chars().next_back())
-            .is_none_or(|previous| !previous.is_alphanumeric())
+        opens
+            || folded
+                .get(..at)
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(|previous| !previous.is_alphanumeric())
     };
-    let mut occurrences = folded.match_indices(query.as_str()).map(|(at, _)| at);
-    let first = occurrences.next()?;
-    let at = if starts_word(first) {
-        first
+    let ends_word = |at: usize| {
+        closes
+            || folded
+                .get(at.saturating_add(query.len())..)
+                .and_then(|after| after.chars().next())
+                .is_none_or(|next| !next.is_alphanumeric())
+    };
+    let at = if names_only(&scalars) && weight != FieldWeight::TITLE {
+        folded
+            .match_indices(query.as_str())
+            .map(|(at, _)| at)
+            .find(|at| starts_word(*at) && ends_word(*at))?
     } else {
-        occurrences.find(|at| starts_word(*at)).unwrap_or(first)
+        let inside_words = infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
+        let mut occurrences = folded.match_indices(query.as_str()).map(|(at, _)| at);
+        let first = occurrences.next()?;
+        if starts_word(first) {
+            first
+        } else if let Some(at) = occurrences.find(|at| starts_word(*at)) {
+            at
+        } else if inside_words {
+            first
+        } else {
+            return None;
+        }
     };
     // The match covers every raw scalar that contributed a folded byte.
     let start = *origin.get(at)?;
@@ -52,16 +85,13 @@ mod tests {
     #[test]
     fn locates_the_raw_range_of_a_folded_match() {
         let text = "Le Café Crème, déjà vu";
+        let title = |query: &str, text: &str| locate(query, text, FieldWeight::TITLE);
         assert_eq!(
-            locate("creme", text).and_then(|range| text.get(range)),
+            title("creme", text).and_then(|range| text.get(range)),
             Some("Crème")
         );
-        assert_eq!(
-            locate("afé", text).and_then(|range| text.get(range)),
-            Some("afé")
-        );
-        assert_eq!(locate("dun", "redundant dune"), Some(10..13));
-        assert_eq!(locate("zzz", text), None);
-        assert_eq!(locate("", text), None);
+        assert_eq!(title("dun", "redundant dune"), Some(10..13));
+        assert_eq!(title("zzz", text), None);
+        assert_eq!(title("", text), None);
     }
 }

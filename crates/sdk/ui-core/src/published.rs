@@ -47,7 +47,6 @@ impl<T: Clone> Clone for Filtered<T> {
 pub struct SharedResource(Rc<Node>);
 
 struct Node {
-    /// The resource without its children.
     head: Resource,
     children: SharedChildren,
     filtered: RefCell<Option<(u64, Filtered<SharedResource>)>>,
@@ -70,7 +69,6 @@ impl Default for SharedChildren {
 }
 
 impl SharedChildren {
-    /// Children made of `items`.
     pub fn new(items: Vec<SharedResource>) -> Self {
         Self(Rc::new(Children {
             items,
@@ -98,7 +96,6 @@ impl SharedChildren {
         self.0.items.is_empty()
     }
 
-    /// Whether `self` and `other` are the very same children.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
@@ -165,12 +162,10 @@ impl SharedResource {
         &self.0.head
     }
 
-    /// The resource's id.
     pub fn id(&self) -> &str {
         self.0.head.id.as_str()
     }
 
-    /// Its children.
     pub fn children(&self) -> &SharedChildren {
         &self.0.children
     }

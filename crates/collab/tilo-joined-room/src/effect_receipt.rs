@@ -274,7 +274,12 @@ impl NativeWorkspaceOwner {
             .ok_or("effect generation exhausted")?;
         // The signed delta includes the root update as well as the new receipt.
         self.with_current(room, |previous| {
-            peer.durable_mutation_messages(&previous.peer, key, now, generation)?;
+            peer.publication_mut().durable_mutation_messages(
+                &previous.peer,
+                key,
+                now,
+                generation,
+            )?;
             Ok(())
         })?;
         candidate.peer = peer;

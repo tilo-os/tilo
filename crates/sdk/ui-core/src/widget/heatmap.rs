@@ -258,7 +258,7 @@ impl Widget for Heatmap {
         let high = self
             .style
             .high_color
-            .unwrap_or(theme.tokens.colors.intent.neutral_fill);
+            .unwrap_or(theme.tokens.colors.intent.value_fill);
         let missing = self
             .style
             .missing_color

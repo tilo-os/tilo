@@ -3,7 +3,6 @@
  * A pointer is an observed LIVE_V1 pointer, never inferred from an MCP session.
  */
 import {STALE_AFTER_MS} from './live-presence.mjs';
-import {colorOf} from './peer.mjs';
 import {markerText} from './live-cursors.mjs';
 
 const sources = new WeakMap();
@@ -84,7 +83,10 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
         const current=layer();watch(current);
         const at=state.observedPresentedAtMs??now();
         if((current?.members().length??0)>MAX_PRESENCES)throw Error('presence capacity exceeded');
-        const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.focus?.app===app&&p.focus?.record===state.record&&finite(p.pointer)&&p.pointer.length===2&&p.pointer[0]>=0&&p.pointer[1]>=0&&p.pointer[0]<size[0]&&p.pointer[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
+        // An agent's pointer over this record's window is a point in the
+        // record's own surface, which this pane shows. An agent's presence
+        // always names its colour.
+        const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.participant?.kind==='agent'&&p.pointer?.window?.app===app&&p.pointer.window.record===state.record&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer.at],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
         if(pointers.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
         copy??=makeCanvas(canvas.width,canvas.height);
         if(copy.width!==canvas.width)copy.width=canvas.width;
@@ -165,7 +167,7 @@ export function createPanorama({canvas,sources:inputs,width=1920,height=1080,now
             // Native-size markers remain readable under camera zoom. Their
             // whole label is clipped to this pane, never over its neighbour.
             ctx.setTransform(1,0,0,1,0,0);
-            ctx.fillStyle=/^#[0-9a-f]{6}$/i.test(p.participant?.color)?p.participant.color:colorOf(p.publisher);
+            ctx.fillStyle=p.participant.color;
             ctx.beginPath();ctx.moveTo(point[0],point[1]);ctx.lineTo(point[0]+9,point[1]+14);ctx.lineTo(point[0]+2,point[1]+12);ctx.closePath();ctx.fill();
             ctx.font='11px system-ui';ctx.fillText(markerText(p.publisher,p.participant).slice(0,120),point[0]+12,point[1]+13,240);
             pointers.push({publisher:p.publisher,sequence:p.seq,receivedAtMs:p.receivedAtMs,screen:point,kind:'observed-pointer'});

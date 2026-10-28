@@ -108,11 +108,6 @@ enum AuthFrame {
 ///
 /// `now_ns` is Unix time used for certificate, revocation, and challenge
 /// validation. The caller should sample it immediately before this call.
-///
-/// # Errors
-///
-/// Returns an error when endpoint binding, frame bounds, transport I/O,
-/// certificate validation, revocation checks, or the handshake deadline fails.
 pub async fn authenticate_fs_peer_at<S>(
     stream: &mut S,
     credentials: &PeerCredentials,
@@ -143,11 +138,6 @@ where
 ///
 /// This maps directly to Iroh/QUIC's `(RecvStream, SendStream)` bidirectional
 /// stream halves while retaining the same concurrent, deadlock-free exchange.
-///
-/// # Errors
-///
-/// Returns an error under the same fail-closed conditions as
-/// [`authenticate_fs_peer_at`].
 // The split-stream entry point keeps the two I/O halves and the six
 // independently authenticated handshake inputs explicit at this trust boundary.
 pub async fn authenticate_fs_peer_parts_at<R, W>(
@@ -328,7 +318,6 @@ mod tests {
         assert_eq!(decoded.nonce, [2; 32]);
         assert_eq!(decoded.expires_at_ns, 300);
 
-        // The configured limit bounds both directions.
         assert!(matches!(
             write_frame(&mut Vec::new(), &challenge, 66).await,
             Err(AuthenticatedTransportError::FrameTooLarge {
@@ -404,9 +393,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    // The handshake deadlines run on tokio's held clock: it moves only while
+    // both sides wait, so signing and checking proofs on a busy machine never
+    // spends a deadline, and a silent peer still reaches its timeout.
+    #[tokio::test(start_paused = true)]
     async fn duplex_handshake_certifies_identity_within_bounds_and_deadlines() {
-        // Phase `duplex_peers_mutually_establish_certified_identity`.
         {
             // Capacity 1 proves neither phase relies on both full frames being
             // buffered before either side begins reading.
@@ -444,7 +435,6 @@ mod tests {
             assert_eq!(seen_a.device_public_key, a.endpoint);
             assert_eq!(seen_a.user_public_key, a.credentials.user_public_key());
         }
-        // Phase `oversized_frame_is_rejected_before_payload_allocation`.
         {
             let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
             let local = party(5, 6, "Local");
@@ -482,7 +472,6 @@ mod tests {
                 })
             ));
         }
-        // Phase `silent_peer_hits_whole_handshake_timeout`.
         {
             let (mut local_stream, _silent_stream) = tokio::io::duplex(64);
             let local = party(9, 10, "Local");
@@ -510,7 +499,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn handshake_rejects_misdirected_revoked_and_tampered_proofs() {
-        // Phase `challenge_for_another_endpoint_is_not_signed`.
         {
             let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
             let a = party(11, 12, "A");
@@ -544,7 +532,6 @@ mod tests {
                 Err(AuthenticatedTransportError::RemoteVerifierEndpointMismatch)
             ));
         }
-        // Phase `effective_revocation_rejects_otherwise_valid_peer`.
         {
             let (mut a_stream, mut b_stream) = tokio::io::duplex(256);
             let a = party(15, 16, "A");
@@ -592,7 +579,6 @@ mod tests {
                 "revocation is evaluated by the admitting side"
             );
         }
-        // Phase `tampered_proof_is_rejected`.
         {
             let (mut local_stream, mut attacker_stream) = tokio::io::duplex(128);
             let local = party(19, 20, "Local");

@@ -17,7 +17,6 @@ use crate::native::http as backend;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::web::fetch as backend;
 
-/// Whether a client follows redirects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Redirects {
     /// Follow up to this many hops. A page follows at most 20, whatever the
@@ -351,7 +350,6 @@ impl RequestBuilder {
         })
     }
 
-    /// Add every header in `headers`.
     pub fn headers(self, headers: HeaderMap) -> Self {
         self.map(|request| {
             let mut current = None;
@@ -404,7 +402,6 @@ impl RequestBuilder {
         })
     }
 
-    /// The request body, sent as is.
     pub fn body(self, body: impl Into<Bytes>) -> Self {
         let body = body.into();
         self.map(|request| {
@@ -460,10 +457,6 @@ impl RequestBuilder {
     }
 
     /// The assembled request, for [`Client::send`].
-    ///
-    /// # Errors
-    ///
-    /// The first error made while building it.
     pub fn build(self) -> Result<Request, NetError> {
         self.request
     }

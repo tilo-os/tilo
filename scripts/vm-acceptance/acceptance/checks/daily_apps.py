@@ -322,11 +322,14 @@ def _text_field(ctx, res, app: DailyApp, sid, undo: bool) -> None:
     # A pasted text followed by one typed letter: a paste that does nothing leaves just the letter.
     pasted = f"tilo{token}p"
     ctx.vm.raw({"op": "clipboard_copy", "text": pasted})
+    # An X11 app learns of the new selection through Xwayland, out of order with the keys.
     time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+v")
+    # The app fetches the pasted text after the key, from the clipboard's owner, and shows
+    # no sign of having it: the letter typed next waits as a person would.
     time.sleep(0.8)
+    # The letter and the copy go through the same keyboard, so they arrive in order.
     ctx.vm.input("type", "q")
-    time.sleep(0.5)
     ctx.vm.key("ctrl+a", "ctrl+c")
     ok, got = _wait_clipboard(ctx, pasted + "q")
     res.metrics["pasted_from_tilo"] = ok
@@ -467,26 +470,47 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
             return None
         last["f"] = f
         r, b = f["rect"], f["buffer"]
-        spans = r["w"] >= drect[2] * 0.95 and r["h"] >= drect[3] * 0.9
+        # A lone tile already spans most of its output (1856 of 1920 px): full screen
+        # is larger than the tile it left as well.
+        spans = (r["w"] >= drect[2] * 0.95 and r["h"] >= drect[3] * 0.9
+                 and (r["w"] > tile[2] + SCALE_SLACK_PX or r["h"] > tile[3] + SCALE_SLACK_PX))
         redrawn = abs(b["w"] / r["w"] - b["h"] / r["h"]) < 0.05 and b["w"] >= r["w"] - SCALE_SLACK_PX
         return (spans and redrawn) or None
 
     ok = wait_until(filled, SCALE_SETTLE_S, 0.5)
     f = last.get("f") or {}
     res.metrics["fullscreen"] = {"display": list(drect), "rect": f.get("rect"), "buffer": f.get("buffer")}
-    path = ctx.shot(f"{app.label}-fullscreen")
-    if f.get("rect"):
+    # The resize commits a buffer of the new size before the client has drawn into it: an X11
+    # client's server-side pixmap starts black, and a GL client on a CPU rasteriser takes
+    # seconds to draw its first frame at full screen (its first frame on opening took as
+    # long). Wait, bounded as on opening, for the frame with content.
+    deadline = time.monotonic() + NON_FLAT_S
+    started = time.monotonic()
+    while True:
+        path = ctx.shot(f"{app.label}-fullscreen")
+        if not f.get("rect"):
+            break
         res.metrics["fullscreen_pixels"] = core.region_stats(core.load_image(path), _rect(f))
+        if res.metrics["fullscreen_pixels"]["stddev"] > 0.02 or time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
+        f = _frame(ctx, sid) or f
+    res.metrics["fullscreen"]["seconds_to_content"] = round(time.monotonic() - started, 2)
     expect(ok, f"{app.name} full screen: its frame {f.get('rect')} (buffer {f.get('buffer')}) does not "
                f"cover output {disp} {drect} at a matching size")
     expect(res.metrics.get("fullscreen_pixels", {}).get("stddev", 0) > 0.02,
-           f"{app.name} full screen is a flat fill ({res.metrics.get('fullscreen_pixels')})")
+           f"{app.name} full screen is still a flat fill {NON_FLAT_S} s after it filled its output "
+           f"({res.metrics.get('fullscreen_pixels')})")
     ctx.vm.key("super+f")
     ctx.wait_state(lambda s: not _fullscreen_state(s, gid), 5, f"{app.name} restored after Super+F")
 
+    full = f.get("rect") or {"w": drect[2], "h": drect[3]}
+
     def back_in_tile():
+        # Smaller than full screen again, by more than rounding.
         f = _frame(ctx, sid)
-        return f if f and f.get("rect") and f["rect"]["w"] < drect[2] * 0.95 else None
+        r = f and f.get("rect")
+        return f if r and (r["w"] < full["w"] - SCALE_SLACK_PX or r["h"] < full["h"] - SCALE_SLACK_PX) else None
 
     restored = wait_until(back_in_tile, SCALE_SETTLE_S, 0.5)
     res.metrics["restored_rect"] = restored["rect"] if restored else None

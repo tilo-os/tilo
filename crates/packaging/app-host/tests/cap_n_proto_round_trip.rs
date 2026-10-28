@@ -17,9 +17,6 @@ use app_host::transport;
 use capnp_rpc::rpc_twoparty_capnp;
 use package_store::{Catalog, PackageStore, SystemStore};
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 struct Harness {
     socket: PathBuf,
     store_root: PathBuf,
@@ -60,8 +57,8 @@ impl Harness {
 
     async fn connect(&self) -> anyhow::Result<capnp_app_host::Client> {
         let mut last = None;
-        let started = std::time::Instant::now();
-        while started.elapsed() < HANG_BOUND {
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(mut stream) => {
                     use tokio::io::AsyncWriteExt;
@@ -99,7 +96,6 @@ fn install_list_pin_resolve_over_capnp() {
         let h = Harness::new().unwrap();
         let client = h.connect().await.unwrap();
 
-        // Build a real tapp the server can accept.
         let (bytes, expected_id) = common::build_tapp(2);
         let expected_publisher = app_registry::tapp::load(&bytes)
             .unwrap()

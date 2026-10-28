@@ -338,7 +338,8 @@ async function movePointer(page, ms = 2500) {
     await sleep(80);
   }
 }
-const cursorLabels = page => page.tab.evaluate("[...document.querySelectorAll('.tilo-live-cursor')].map(n => ({label: n.textContent, kind: n.dataset.kind}))");
+// The members' pointers the desktop's frame draws.
+const cursorLabels = page => page.tab.evaluate("(globalThis.tiloMount?.pointers?.() ?? []).map(p => ({label: p.label, kind: p.agent ? 'agent' : 'person'}))");
 const remoteState = page => page.tab.evaluate('(globalThis.peer?.live?.remoteState() ?? []).map(r => ({label: r.participant?.label, kind: r.participant?.kind, pointer: !!r.pointer, focus: r.focus ?? null, selection: r.selection ?? null}))');
 // The records the page's peer names for `appId`, from its snapshot.
 async function pageRecords(page, appId) {

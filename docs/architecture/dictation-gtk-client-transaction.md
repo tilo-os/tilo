@@ -56,9 +56,9 @@ the exact deleting actor remains unconfirmed by the scoped journal. Subsequent
 qualification held only the existing owned worktree lock through prep/test/full
 export, with bounded lifetime and no runner reservation or global policy change.
 
-[The ledger](dictation-gtk-client-transaction.json) retains exact source/model/
+[The ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-gtk-client-transaction.json) retains exact source/model/
 audio/module/package identities, controls and original/portable raw hashes.
-[Historical drivers and full outputs](../../tools/release/fixtures/gtk_dictation_20261010/README.md)
+[Historical drivers and full outputs](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/tools/release/fixtures/gtk_dictation_20261010/README.md)
 remain distinct from the earlier stock-GTK undo failure and safety-only pass.
 The repository module changes only the historical source's SPDX comment to
 match the repository licence; its repository builder corroborates identical complete executable bytes

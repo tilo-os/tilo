@@ -30,8 +30,6 @@ notes-menu-delete = Delete
 notes-a11y-new-child-under = New sub-note in
 notes-a11y-more-actions-for = More actions for
 
-notes-view-editor = Editor
-
 ## History: what each change did, by field and by verb
 
 notes-page-body = Edited { $item }
@@ -71,6 +69,7 @@ notes-delete-tag = Deleted the tag { $item }
 notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }
+notes-append-to-note = Added to { $title }
 
 ## Keyboard shortcuts sheet
 notes-help-title = Keyboard shortcuts
@@ -135,6 +134,8 @@ notes-no-previous = No earlier note
 notes-no-next = No later note
 notes-link-copied = Copied link to { $title }
 notes-link-unsafe = This link can't be opened safely
+notes-resource-link-invalid = This link does not lead to anything here
+notes-resource-link-open-failed = The link could not be opened
 notes-link-open-failed = The link didn't open
 notes-import-title = Import Markdown
 notes-import-accept = Import
@@ -142,6 +143,20 @@ notes-markdown-files = Markdown
 notes-import-not-utf8 = The file isn't UTF-8 text
 notes-imported = Imported { $title }
 notes-import-failed = Not imported: { $error }
+notes-notion-import-title = Import Notion export
+notes-notion-menu-import = Import from Notion
+notes-notion-files = Notion export
+notes-notion-json-files = Notion page listing
+notes-notion-imported =
+    { $pages ->
+        [one] Imported one page
+       *[other] Imported { $pages } pages
+    }
+notes-notion-empty = No page in this file to import
+notes-notion-too-big = The export is too large to import
+notes-notion-too-many-pages = The export holds more than { $limit } pages
+notes-notion-archive-invalid = The export archive cannot be read
+notes-notion-unreadable = This file is not a Notion export
 notes-export-title = Export Markdown
 notes-export-accept = Export
 notes-insert-image-title = Insert image
@@ -179,3 +194,7 @@ notes-status-counts = { $notes ->
     [one] 1 word
    *[other] { $words } words
 }
+
+notes-outline = Outline
+notes-outline-empty = No headings
+notes-outline-untitled = Untitled heading

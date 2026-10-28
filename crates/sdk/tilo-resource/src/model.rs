@@ -27,20 +27,30 @@ pub type Doc = AutoCommit;
 /// Why a document could not be read as, or written from, a typed value.
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
-    #[error("{path}: expected {expected}")]
+    #[error("{}expected {expected}", located(.path))]
     Shape {
         path: String,
         expected: &'static str,
     },
-    #[error("{path}: required value is missing")]
+    #[error("{}required value is missing", located(.path))]
     Missing { path: String },
-    #[error("{path}: {message}")]
+    #[error("{}{message}", located(.path))]
     Invalid { path: String, message: String },
     #[error("document error: {0}")]
     Automerge(#[from] automerge::AutomergeError),
     /// A [`check`](Model::check) refused the change, in its own words.
     #[error("{0}")]
     Refused(String),
+}
+
+/// Where an error was found, as its message begins: `clips.title: `, or
+/// nothing at the record itself.
+fn located(path: &str) -> String {
+    if path.is_empty() {
+        String::new()
+    } else {
+        format!("{path}: ")
+    }
 }
 
 impl ModelError {
@@ -1560,7 +1570,6 @@ impl<T: Model> Model for Option<T> {
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     const NULLABLE: bool = true;
-    // Run by one set of functions for every option, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::OptionOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();
@@ -1709,7 +1718,6 @@ impl<T: Model> Model for Vec<T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every list, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::VecOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();
@@ -1783,7 +1791,6 @@ impl<T: Model> Model for BTreeMap<String, T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every map, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::MapOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();

@@ -18,7 +18,7 @@ mod steward;
 mod support;
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerSnapshot};
+use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerEvent, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace};
@@ -81,6 +81,79 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
             .failures
             .iter()
             .all(|failure| failure.subject != FailureSubject::Admission)
+    );
+    peer.close();
+    host.relay.shutdown().await;
+}
+
+/// Back online after a long outage, a session waiting out its backoff
+/// reconnects when told the network is back, not up to half a minute
+/// later; a connected session is left as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let listen = host.web.addr;
+    let peer = start_peer(
+        Host::Https(host.https()),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    peer.join(workspace()).unwrap();
+    // Wait for the join's own `Ready` event, not a ready phase: the join
+    // is a command the session takes up later, so the phase can read
+    // ready (connected, no room waiting) before the room is even asked
+    // for, and the session marks the room ready before it emits the
+    // event. Either way that `Ready` would land after the drain below.
+    wait_for("the room's Ready", || async {
+        peer.drain()
+            .iter()
+            .any(|event| {
+                matches!(event, PeerEvent::Ready { workspace_id } if *workspace_id == workspace())
+            })
+            .then_some(())
+    })
+    .await;
+    ready(&[&peer]).await;
+    // Any status change bumps the generation (each envelope's contact
+    // time does); a reconnect is what subscribes the room anew.
+    let _ = peer.drain();
+    peer.retry_now().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !peer
+            .drain()
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Ready { .. })),
+        "a connected session is left as it is"
+    );
+
+    drop(host.web);
+    host.relay.shutdown().await;
+    // Gone long enough that the next attempt is many seconds away.
+    let due = wait_for("a long backoff", || async {
+        let status = peer.status();
+        (status.attempt >= 5)
+            .then_some(status.next_attempt_at_ms)
+            .flatten()
+    })
+    .await;
+    let host = start_host(&root, &host_device, state.path(), listen).await;
+    peer.retry_now().unwrap();
+    ready(&[&peer]).await;
+    assert!(
+        tilo_clock::unix_now_ms() < due,
+        "back before the backoff ran out"
     );
     peer.close();
     host.relay.shutdown().await;

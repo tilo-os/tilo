@@ -312,35 +312,40 @@ fn cancellation_after_ciphertext_creation_cleans_partial_without_publication() {
     let grant = MediaGrant::open(&media_path).unwrap();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
+    // The export is held at its first progress report, with its ciphertext
+    // storage created, until the test has cancelled it.
+    let (reached, observed) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel::<()>();
     let worker = std::thread::spawn(move || {
-        reviewed.export_to(
+        let mut hold = Some((reached, held));
+        reviewed.export_to_reporting(
             &grant,
             "interrupted",
             "binding",
             Zeroizing::new(PASSWORD.to_vec()),
             &worker_cancel,
+            &mut |_| {
+                if let Some((reached, held)) = hold.take() {
+                    let _ = reached.send(());
+                    let _ = held.recv();
+                }
+                Ok(())
+            },
         )
     });
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        assert!(std::time::Instant::now() < deadline);
-        let partial = std::fs::read_dir(&media_path).unwrap().any(|entry| {
+    tilo_test_env::recv("the export to stream into storage", &observed);
+    assert!(
+        std::fs::read_dir(&media_path).unwrap().any(|entry| {
             entry
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
                 .ends_with(".partial")
-        });
-        if partial {
-            cancel.store(true, Ordering::Relaxed);
-            break;
-        }
-        assert!(
-            !worker.is_finished(),
-            "Export completed before cancellation could observe storage"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        }),
+        "the streaming export has its ciphertext storage"
+    );
+    cancel.store(true, Ordering::Relaxed);
+    release.send(()).unwrap();
     assert!(worker.join().unwrap().is_err());
     assert_eq!(std::fs::read_dir(&media_path).unwrap().count(), 0);
     assert_eq!(

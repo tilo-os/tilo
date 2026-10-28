@@ -27,6 +27,11 @@ pub const ANY_ITEM: &str = "*";
 #[derive(Clone, Debug, Deserialize)]
 pub struct SurfaceFile {
     pub resources: Vec<Surface>,
+    /// The resource kinds of other apps this app reads (`reads = [kind]`):
+    /// a declared, read-only, live join to their records. The app changes
+    /// them only by invoking their actions.
+    #[serde(default)]
+    pub reads: Vec<String>,
 }
 
 impl SurfaceFile {
@@ -41,6 +46,16 @@ impl SurfaceFile {
         // a second, TOML-specific copy of their whole deserializer.
         let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
         serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    /// Whether this app declares that it reads a resource kind of the app
+    /// whose surface is `other`.
+    #[must_use]
+    pub fn reads_any_of(&self, other: &Self) -> bool {
+        other
+            .resources
+            .iter()
+            .any(|surface| self.reads.contains(&surface.kind))
     }
 
     /// The resource of kind `kind`, or the app's first (its own record)
@@ -58,24 +73,27 @@ impl SurfaceFile {
 #[derive(Clone, Debug)]
 pub struct KindSurface(pub Surface);
 
+/// The unit a unit field is, items as [`ANY_ITEM`].
+fn unit_of(field: &tilo_actions::surface::FieldSurface) -> UnitPath {
+    let mut unit = Vec::new();
+    for key in field.path.split('.') {
+        unit.push(if key == ANY_ITEM {
+            PathStep::Item(ANY_ITEM.to_owned())
+        } else {
+            PathStep::Field(key.to_owned())
+        });
+    }
+    if matches!(field.stored.as_str(), "collection" | "keyed") {
+        unit.push(PathStep::Item(ANY_ITEM.to_owned()));
+    }
+    unit
+}
+
 impl KindSurface {
     /// Every unit of the resource, items as [`ANY_ITEM`], and the record.
     fn every_unit(&self) -> Vec<UnitPath> {
         let mut units = vec![Vec::new()];
-        for field in self.0.fields.iter().filter(|field| field.unit) {
-            let mut unit = Vec::new();
-            for key in field.path.split('.') {
-                unit.push(if key == ANY_ITEM {
-                    PathStep::Item(ANY_ITEM.to_owned())
-                } else {
-                    PathStep::Field(key.to_owned())
-                });
-            }
-            if matches!(field.stored.as_str(), "collection" | "keyed") {
-                unit.push(PathStep::Item(ANY_ITEM.to_owned()));
-            }
-            units.push(unit);
-        }
+        units.extend(self.0.fields.iter().filter(|field| field.unit).map(unit_of));
         units
     }
 }
@@ -118,6 +136,15 @@ impl ReceiptSurface for KindSurface {
             // grant on their action.
             ClaimedAction::History(_) | ClaimedAction::Framework(_) => self.every_unit(),
         }
+    }
+
+    fn outboxes(&self) -> Vec<UnitPath> {
+        self.0
+            .fields
+            .iter()
+            .filter(|field| field.unit && tilo_actions::surface::is_outbox_type(&field.ty))
+            .map(unit_of)
+            .collect()
     }
 }
 
@@ -214,11 +241,45 @@ unit = true
 
 [[resources.fields]]
 owner = "page"
+path = "shares"
+title = "Shares"
+type = "tilo_resource::Outbox<Share>"
+unit = true
+
+[[resources.fields]]
+owner = "page"
+path = "drafts"
+title = "Drafts"
+type = "Vec<Outbox>"
+
+[[resources.fields]]
+owner = "page"
 path = "created"
 readonly = true
 stored = "value"
 title = "Created"
 type = "u64"
+
+[[resources.fields]]
+owner = "page"
+path = "log"
+readonly = true
+stored = "collection"
+title = "Log"
+type = "Collection<Entry>"
+unit = true
+
+[[resources.fields]]
+owner = "entry"
+path = "log.*.text"
+readonly = true
+type = "String"
+
+[[resources.fields]]
+owner = "entry"
+path = "log.*.reactions"
+readonly = true
+type = "ui::tilo_resource::Reactions"
 
 [[resources.verbs]]
 id = "comment"
@@ -263,6 +324,11 @@ writes = ["record", "comments.*"]
             .unwrap();
         assert_eq!(surface.kind(), "notes.page");
         assert_eq!(
+            surface.outboxes(),
+            vec![vec![PathStep::Field("shares".into())]],
+            "its outbox, and no other field"
+        );
+        assert_eq!(
             surface.verb("comment"),
             Some((ActionKind::Undoable, Some("comments".into())))
         );
@@ -278,6 +344,18 @@ writes = ["record", "comments.*"]
         assert!(
             !surface.editable(&[PathStep::Field("created".into()), PathStep::Key("x".into()),])
         );
+        let entry = |field: &str| {
+            [
+                PathStep::Field("log".into()),
+                PathStep::Item("e1".into()),
+                PathStep::Field(field.into()),
+            ]
+        };
+        assert!(
+            surface.editable(&entry("reactions")),
+            "a read-only item still takes reactions"
+        );
+        assert!(!surface.editable(&entry("text")));
         let comment = ClaimedAction::Verb {
             action: ActionKey::new("notes", "notes.page", "comment"),
             item: Some("c1".into()),
@@ -303,7 +381,6 @@ writes = ["record", "comments.*"]
         assert!(forged.surface(&record, None, Some(&hash)).is_none());
     }
 
-    /// Every app's committed surface parses as a receiver reads it.
     #[test]
     fn every_committed_surface_parses() {
         let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");

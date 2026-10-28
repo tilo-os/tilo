@@ -463,7 +463,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn default_selection_follows_exact_precedence_and_falls_through_safely() {
-        // Phase `exact_precedence_and_escape_hatches`.
         {
             let pdf = r("pdf");
             let apps = [
@@ -529,7 +528,6 @@ mod tests {
                 "so.tilo.a"
             );
         }
-        // Phase `invalid_or_uninstalled_selection_falls_through_safely`.
         {
             let pdf = r("pdf");
             let apps = [app("so.tilo.viewer", "Viewer", "pdf")];
@@ -541,7 +539,6 @@ mod tests {
             assert_eq!(selected.package_id, "so.tilo.viewer");
             assert_eq!(selected.source, SelectionSource::DeterministicFallback);
         }
-        // Phase `explicit_personal_escape_never_falls_back_to_workspace_policy`.
         {
             let pdf = r("pdf");
             let apps = [
@@ -678,7 +675,6 @@ mod tests {
 
     #[test]
     fn defaults_persist_atomically_and_normalize_resource_identifiers() {
-        // Phase `a_settings_section_round_trips`.
         {
             let defaults = PersonalDefaults {
                 handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
@@ -693,7 +689,6 @@ mod tests {
                 PersonalDefaults::default()
             );
         }
-        // Phase `resource_identifiers_are_normalized_and_active_schemes_rejected`.
         {
             assert_eq!(
                 ResourceKind::mime(" Text/HTML ").unwrap().as_str(),

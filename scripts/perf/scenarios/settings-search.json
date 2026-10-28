@@ -1,12 +1,10 @@
 {
-  "name": "Settings real search z-backspace, Retina 2x",
+  "name": "Settings window search z-backspace, Retina 2x",
   "interval_us": 16667,
   "warmup_steps": 61,
   "steps": [
     {
-      "kind": "click",
-      "x": 80.0,
-      "y": 48.0
+      "kind": "find"
     },
     {
       "kind": "repeat",

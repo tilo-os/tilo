@@ -36,19 +36,13 @@ impl DirectoryCapability {
     pub(crate) fn check(&self) -> Result<(), FsError> {
         self.session.check_directory(&self.root)
     }
-    /// # Errors
-    /// Returns canonical live scope or native metadata errors.
     pub fn metadata(&self) -> Result<Metadata, FsError> {
         self.session
             .metadata(&GrantedEntry::Directory(self.root.clone()))
     }
-    /// # Errors
-    /// Returns Busy rather than truncating a snapshot, or native live/cursor errors.
     pub fn list(&self, cursor: Option<PageCursor>) -> Result<DirectoryPage, FsError> {
         self.session.list(&self.root, cursor)
     }
-    /// # Errors
-    /// Refuses non-directory children and canonical live/name/native errors.
     pub fn directory(&self, name: &EntryName) -> Result<Arc<Self>, FsError> {
         let GrantedEntry::Directory(root) = self.session.lookup(&self.root, name)? else {
             return Err(FsError::Unsupported("directory child required"));
@@ -96,8 +90,6 @@ impl DirectoryCapability {
         crate::selected_file::open_granted(self.session.clone(), file, mode)
     }
     /// Create an empty child through a canonical durable job; never overwrites.
-    /// # Errors
-    /// Returns absent operation-store, queue, live authority or job admission errors.
     pub fn create_file(&self, name: EntryName) -> Result<FsJob, FsError> {
         self.check()?;
         self.session.start(FsOperation::CreateFile {
@@ -689,8 +681,6 @@ impl WorkspaceJobBackend for NativeJob {
 /// Text-path operations are refused; consumers use the raw-component capability.
 pub struct DirectoryWorkspaceBackend(Arc<DirectoryCapability>);
 impl DirectoryWorkspaceBackend {
-    /// # Errors
-    /// Returns the actual session/grant admission error.
     pub fn new(session: FsSession, root: DirectoryGrant) -> Result<Self, FsError> {
         Ok(Self(Arc::new(DirectoryCapability::new(session, root)?)))
     }
@@ -1154,7 +1144,7 @@ mod terminal_receipt_tests {
             replacement_pin: Mutex::new(None),
             terminal: Mutex::new(NativeTerminal::default()),
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut observed = vec![];
         let operation;
         loop {

@@ -3,7 +3,6 @@
 
 use super::*;
 
-/// `len` bytes that differ from those of every other `seed`.
 fn distinct(len: usize, seed: u64) -> Bytes {
     let mut bytes = vec![0x5a; len];
     for (byte, seeded) in bytes.iter_mut().zip(seed.to_le_bytes()) {
@@ -130,7 +129,6 @@ async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_spill() {
                 .is_empty(),
             "nothing of the abandoned import was stored"
         );
-        // The blob store leaves the spilled part of a failed stream behind.
         let spilled = std::fs::read_dir(directory.path().join("temp"))
             .unwrap()
             .count();

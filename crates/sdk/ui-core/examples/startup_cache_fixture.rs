@@ -64,9 +64,6 @@ fn copy_archive_pair(
 }
 
 /// Export completed public probe archives into a new read-only directory.
-///
-/// # Errors
-/// Returns an error for absent archives, filesystem errors or an existing target.
 pub fn publish_cache(cache: &Path, dir: &Path) -> Result<u64, Box<dyn std::error::Error>> {
     // Only the probe's bounded public shader archives are exported. Never
     // overwrite an existing artifact or publish user scene data.
@@ -100,9 +97,6 @@ pub fn publish_cache(cache: &Path, dir: &Path) -> Result<u64, Box<dyn std::error
 }
 
 /// Copy regular read-only archives into a private cache namespace.
-///
-/// # Errors
-/// Returns an error for invalid archives, filesystem errors or an existing target.
 pub fn populate_seed(source: &Path, cache: &Path) -> Result<u64, Box<dyn std::error::Error>> {
     let sf = cache.join("mesa_shader_cache_sf");
     let mut bytes = 0_u64;

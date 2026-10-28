@@ -69,31 +69,40 @@ pub fn context_switches(tid: &str) -> u64 {
 /// Run `start` and return its result with the id of the thread it spawned
 /// under `comm` (the kernel's 15-byte truncation of the thread name).
 ///
+/// Only for a thread no other test of the process can start at the same
+/// time: test binaries run their tests as threads of one process, and a
+/// thread found by name may be another test's. Where that can happen, have
+/// the code under test record its thread's [`current_thread_id`] instead.
+///
+/// A thread the found one starts carries its name too until it names
+/// itself (Linux copies the parent's name to a new thread), so two
+/// matches for a moment are a parent and its child; only one that stays
+/// is another test's.
+///
 /// # Panics
-/// `/proc/self/task` cannot be listed, or no new thread of that name
-/// appears within 5 s.
+/// `/proc/self/task` cannot be listed, or no single new thread of that name
+/// is there within the hang bound.
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
-    // A thread names itself once it runs, so it may not be named yet.
-    let waiting = Instant::now();
-    loop {
-        let named = own_thread_ids()
+    // A thread names itself once it runs, so it may not be named yet; nor
+    // may a thread it started, which goes by its name until then.
+    let what = format_args!(
+        "exactly one new thread named {comm} (a second one that stays was started by another \
+         test of this process, so which is this test's is unknown)"
+    );
+    let tid = crate::wait_for(what, || {
+        let named: Vec<String> = own_thread_ids()
             .difference(&before)
-            .find(|tid| {
+            .filter(|tid| {
                 std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
                     .is_ok_and(|name| name.trim() == comm)
             })
-            .cloned();
-        if let Some(tid) = named {
-            return (started, tid);
-        }
-        assert!(
-            waiting.elapsed() < Duration::from_secs(5),
-            "no new thread named {comm}"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+            .cloned()
+            .collect();
+        <[String; 1]>::try_from(named).ok().map(|[tid]| tid)
+    });
+    (started, tid)
 }
 
 /// The id of this process's one live thread named `comm` (the kernel's
@@ -115,15 +124,53 @@ pub fn named_thread(comm: &str) -> String {
     tid
 }
 
-/// Fail if thread `tid` is scheduled at all during an idle 400 ms.
+/// Whether thread `tid` of this process is asleep: blocked on a timer, a
+/// poll, a lock or a channel rather than running or runnable.
+fn asleep(tid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('S'))
+    })
+}
+
+/// The context switches of thread `tid` once it is asleep. A woken thread is
+/// runnable until it has run and gone back to sleep, which counts a switch,
+/// so the count is final for everything that happened before the call.
+///
+/// # Panics
+/// The thread has exited, does not fall asleep within the hang bound, or
+/// its counts cannot be read.
+pub fn asleep_switches(tid: &str) -> u64 {
+    crate::wait_for(format_args!("thread {tid} to fall asleep"), || {
+        assert!(
+            std::path::Path::new(&format!("/proc/self/task/{tid}")).exists(),
+            "thread {tid} has exited, so it can never fall asleep"
+        );
+        asleep(tid).then(|| context_switches(tid))
+    })
+}
+
+/// Whether thread `tid` of this process is blocked in the kernel (state
+/// `S`): waiting on a lock, a poll, a condvar or a timer, rather than
+/// running or about to run; `false` for a thread that cannot be read.
+///
+/// A test that wants to observe a thread *while* it waits, say to check
+/// that a held lock has not been granted, waits until this holds instead of
+/// sleeping for a while and hoping the thread got there.
+pub fn blocked(tid: &str) -> bool {
+    asleep(tid)
+}
+
+/// Fail if thread `tid`, once asleep, is scheduled at all during an idle
+/// 400 ms. It may start or finish work first, however slowly: the window
+/// opens once it has gone to sleep, and closes once it is asleep again.
 ///
 /// # Panics
 /// The thread was scheduled, or its counts cannot be read.
 pub fn assert_stays_asleep(tid: &str, what: &str) {
-    std::thread::sleep(Duration::from_millis(50));
-    let settled = context_switches(tid);
+    let settled = asleep_switches(tid);
     std::thread::sleep(Duration::from_millis(400));
-    let woke = context_switches(tid).saturating_sub(settled);
+    let woke = asleep_switches(tid).saturating_sub(settled);
     assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
 }
 

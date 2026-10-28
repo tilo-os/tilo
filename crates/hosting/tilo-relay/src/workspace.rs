@@ -34,7 +34,7 @@ impl Membership {
 
     /// Replace the membership with a new set. A set that leaves out a device
     /// of the old one wakes the sessions admitted under it to re-check
-    /// ([`crate::authority_epoch`]). One that only adds devices narrows
+    /// (`crate::authority_epoch`). One that only adds devices narrows
     /// nobody's access and wakes nobody: a public room admitting a crowd
     /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
@@ -220,7 +220,6 @@ pub const MAX_REMEMBERED_COMMITS: usize = 16_384;
 /// durable.
 #[must_use]
 pub enum CommitLedgerWrite {
-    /// Append one record.
     Append(CommitRecord),
     /// Replace the ledger, dropping evicted records.
     Rewrite(Vec<CommitRecord>),
@@ -575,7 +574,6 @@ impl WorkspaceRuntime {
         }
     }
 
-    /// Whether `device` is a live member.
     pub fn is_live_member(&self, device: &[u8; 32]) -> bool {
         self.live_members.contains_key(device)
     }
@@ -753,10 +751,6 @@ impl WorkspaceRuntime {
     /// Remember an authenticated device before sharing this runtime, so deltas
     /// received while it is offline are queued across daemon restarts. Live
     /// sessions use the serialized async admission in `workspace_io`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if persisting the updated membership list fails.
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
         if !self.membership.contains(&device) {
             let mut devices = self.membership.devices.clone();
@@ -1535,7 +1529,6 @@ mod tests {
             doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
             assert_ne!(doc_b.get_heads(), doc_a.get_heads(), "B starts divergent");
 
-            // ---- Anti-entropy against the host's materialized doc. ----
             let have: Vec<[u8; 32]> = doc_b.get_heads().into_iter().map(|h| h.0).collect();
             let delta_since = rt.changes_since(&have);
             assert!(

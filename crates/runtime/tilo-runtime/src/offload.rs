@@ -4,13 +4,19 @@
 //!
 //! The route is configured by the device's home-peer registry, the
 //! person's always-on relays this device enrolled: the one that retains the
-//! session's rooms places their compute jobs ([`tilo_relay::offload::home_relay`]).
-//! A device with no such relay, or with [`OFFLOAD_ENV`] set to `off`, has no
-//! route, and the door runs every offloadable action through the app's own
-//! handler as it always has. With one, the route starts in the background
-//! on the process's app runtime ([`tilo_relay::offload::DeviceOffload`]) and
+//! invoking room places its compute jobs. The registry is read again for
+//! every offloadable invocation (from memory while the file is unchanged),
+//! so a room the session creates or joins after it started, or a relay the
+//! person registers meanwhile, is routed from the next invocation on
+//! ([`tilo_relay::offload::RoomOffload`]); the session's rooms at start get
+//! their route at once ([`tilo_relay::offload::home_relay`]). A room no
+//! registered relay retains runs its offloadable actions through the app's
+//! own handler, and the door is told why; [`OFFLOAD_ENV`] set to `off`
+//! means no route at all. Each route starts in the background on the
+//! process's app runtime ([`tilo_relay::offload::DeviceOffload`]) and
 //! answers "run here", with why, until it is up and whenever it cannot place
-//! a run elsewhere.
+//! a run elsewhere. The registry and the device's identity are read on the
+//! runtime's blocking pool, never on the thread that invokes.
 //!
 //! The route trusts the relay and the workers it places on by the person's
 //! device fleet (`FleetRevocations`), the revocations the rest of this
@@ -28,9 +34,11 @@
 //! document-media socket as the session ([`session_action_offload`]).
 
 use std::{
+    collections::HashMap,
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::SystemTime,
 };
 
 use tilo_actions::offload::ActionOffload;
@@ -38,8 +46,8 @@ use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_lock::MutexRecover as _;
 use tilo_relay::HomePeerRegistration;
 use tilo_relay::offload::{
-    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomMedia,
-    SessionMedia, home_relay,
+    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomMedia, RoomOffload,
+    RoomPlacements, RoomRelays, SessionMedia, home_relay, room_relays,
 };
 use tilo_user_identity::RevocationList;
 
@@ -52,12 +60,13 @@ pub const HOME_PEERS_ENV: &str = "TILO_HOME_PEERS_PATH";
 /// The largest registry read.
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 
-/// The route for offloadable invocations of `rooms` (the broker's cluster
-/// ids) on this device, over `store`, the content store the rooms' apps
-/// keep their document media in. `None` — every offloadable action runs
-/// here, exactly as without offload — when offload is turned off, no home
-/// relay of this device retains any of the rooms, or the device has no
-/// trusted identity in `rooms`' first room. Never blocks on the network.
+/// The route for offloadable invocations on this device, over `store`, the
+/// content store the rooms' apps keep their document media in: for `rooms`
+/// (the broker's cluster ids at start), whose route starts at once, and for
+/// every room the session has later, resolved when its actions are invoked.
+/// `None` — every offloadable action runs here, exactly as without offload —
+/// only when offload is turned off or there is no app runtime. Never blocks
+/// on the network.
 #[must_use]
 pub fn action_offload(
     rooms: &[&str],
@@ -89,13 +98,6 @@ fn action_offload_over(
         tracing::info!("offloadable actions run on this device: offload is turned off");
         return None;
     }
-    let config = match configured(rooms) {
-        Ok(config) => config?,
-        Err(error) => {
-            tracing::warn!(%error, "offloadable actions run on this device");
-            return None;
-        }
-    };
     let runtime = match tilo_rt::try_app() {
         Ok(runtime) => runtime.handle().clone(),
         Err(error) => {
@@ -103,7 +105,28 @@ fn action_offload_over(
             return None;
         }
     };
-    Some(DeviceOffload::start(config, media, &runtime))
+    let placements = Arc::new(RegistryPlacements::new(
+        registry_path(),
+        Box::new(session_identity),
+    ));
+    let starting = runtime.clone();
+    let offload = RoomOffload::new(
+        Arc::clone(&placements) as Arc<dyn RoomPlacements>,
+        Box::new(move |config| DeviceOffload::start(config, Arc::clone(&media), &starting)),
+        runtime,
+    );
+    match configured(rooms, &placements) {
+        Ok(Some(config)) => offload.hold(config),
+        Ok(None) => tracing::info!(
+            "no home relay retains the session's rooms: their offloadable actions run on this \
+             device until one is registered"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "the session's rooms get no offload route at start; each invocation tries again"
+        ),
+    }
+    Some(Arc::new(offload))
 }
 
 /// Whether `value` of [`OFFLOAD_ENV`] turns offload off.
@@ -116,40 +139,156 @@ fn disabled(value: Option<&str>) -> bool {
     })
 }
 
-/// The route's configuration for `rooms`, from the registry and this
-/// device's identity; `Ok(None)` when no home relay retains any of them.
-fn configured(rooms: &[&str]) -> io::Result<Option<DeviceOffloadConfig>> {
+/// The start route's configuration for `rooms`, from the registry and this
+/// device's identity in the first room; `Ok(None)` when no home relay
+/// retains any of them.
+fn configured(
+    rooms: &[&str],
+    placements: &RegistryPlacements,
+) -> io::Result<Option<DeviceOffloadConfig>> {
     let Some(&first) = rooms.first() else {
         return Ok(None);
     };
-    let registrations = read_registry(&registry_path())?;
+    let registrations = placements.registrations()?;
     if registrations.is_empty() {
         return Ok(None);
     }
-    let (device_signing_key, device_cert) =
-        tilo_identity_host::broker::trusted_current_device(first)?;
-    let user_public_key = device_cert.user_public_key;
-    let profile = tilo_identity_host::registry::selected_identity_profile(first)?
-        .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
-    let revocations: Arc<dyn DeviceRevocations> = Arc::new(FleetRevocations::new(
-        DeviceFleetStore::from_env()?,
-        profile.id,
-        user_public_key,
-    ));
-    Ok(
-        home_relay(&registrations, user_public_key, rooms.iter().copied()).map(|(relay, rooms)| {
-            DeviceOffloadConfig {
-                relay,
-                identity: OffloadIdentity {
-                    user_public_key,
-                    device_cert,
-                    device_signing_key,
-                    revocations,
-                },
-                rooms,
-            }
-        }),
+    let identity = placements.identity(first)?;
+    Ok(home_relay(
+        &registrations,
+        identity.user_public_key,
+        rooms.iter().copied(),
     )
+    .map(|(relay, rooms)| DeviceOffloadConfig {
+        relay,
+        identity,
+        rooms,
+    }))
+}
+
+/// How this device authenticates in a room: its trusted certificate and
+/// key, and whose device fleet carries the person's revocations.
+struct RoomIdentity {
+    device_signing_key: ed25519_dalek::SigningKey,
+    device_cert: tilo_user_identity::DeviceCert,
+    /// The selected identity whose device fleet carries the revocations.
+    identity_id: String,
+    /// Where that fleet is read from.
+    fleets: DeviceFleetStore,
+}
+
+/// This device's identity in `room`, as the rest of its trust reads it.
+fn session_identity(room: &str) -> io::Result<RoomIdentity> {
+    let (device_signing_key, device_cert) =
+        tilo_identity_host::broker::trusted_current_device(room)?;
+    let profile = tilo_identity_host::registry::selected_identity_profile(room)?
+        .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
+    Ok(RoomIdentity {
+        device_signing_key,
+        device_cert,
+        identity_id: profile.id,
+        fleets: DeviceFleetStore::from_env()?,
+    })
+}
+
+/// Reads this device's identity in a room: [`session_identity`] in a
+/// session.
+type IdentitySource = dyn Fn(&str) -> io::Result<RoomIdentity> + Send + Sync;
+
+/// Each selected identity's revocations, by its id and the person's key.
+type RevocationsByIdentity = HashMap<(String, [u8; 32]), Arc<FleetRevocations>>;
+
+/// The registry file's identity: its length and modification time.
+type RegistryStamp = (u64, Option<SystemTime>);
+
+/// Where the device's rooms are placed: the home-peer registry, read again
+/// whenever its file changed, and this device's identity in each room.
+struct RegistryPlacements {
+    path: PathBuf,
+    identity: Box<IdentitySource>,
+    /// The registry last read, by its file's stamp.
+    registry: Mutex<Option<(RegistryStamp, Arc<Vec<HomePeerRegistration>>)>>,
+    /// Each identity's revocations, so a fleet is verified once per change.
+    revocations: Mutex<RevocationsByIdentity>,
+}
+
+impl RegistryPlacements {
+    fn new(path: PathBuf, identity: Box<IdentitySource>) -> Self {
+        Self {
+            path,
+            identity,
+            registry: Mutex::default(),
+            revocations: Mutex::default(),
+        }
+    }
+
+    /// The registrations now: none when there is no registry.
+    fn registrations(&self) -> io::Result<Arc<Vec<HomePeerRegistration>>> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Arc::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let stamp = (metadata.len(), metadata.modified().ok());
+        if let Some((known, registrations)) = &*self.registry.lock_recover()
+            && *known == stamp
+        {
+            return Ok(Arc::clone(registrations));
+        }
+        let registrations = Arc::new(read_registry(&self.path)?);
+        *self.registry.lock_recover() = Some((stamp, Arc::clone(&registrations)));
+        Ok(registrations)
+    }
+
+    /// This device as it authenticates in `room`.
+    fn identity(&self, room: &str) -> io::Result<OffloadIdentity> {
+        let RoomIdentity {
+            device_signing_key,
+            device_cert,
+            identity_id,
+            fleets,
+        } = (self.identity)(room)?;
+        let user_public_key = device_cert.user_public_key;
+        let revocations = Arc::clone(
+            self.revocations
+                .lock_recover()
+                .entry((identity_id.clone(), user_public_key))
+                .or_insert_with(|| {
+                    Arc::new(FleetRevocations::new(fleets, identity_id, user_public_key))
+                }),
+        );
+        Ok(OffloadIdentity {
+            user_public_key,
+            device_cert,
+            device_signing_key,
+            revocations,
+        })
+    }
+}
+
+impl RoomPlacements for RegistryPlacements {
+    fn resolve(&self, room: &str) -> Result<Option<RoomRelays>, String> {
+        let registrations = self
+            .registrations()
+            .map_err(|error| format!("the home-peer registry is unreadable: {error}"))?;
+        if registrations.is_empty() {
+            return Ok(None);
+        }
+        let identity = self
+            .identity(room)
+            .map_err(|error| format!("no trusted identity in the room: {error}"))?;
+        Ok(
+            room_relays(&registrations, identity.user_public_key, room).map(
+                |(workspace_id, relays)| RoomRelays {
+                    identity,
+                    workspace_id,
+                    relays,
+                },
+            ),
+        )
+    }
 }
 
 /// The person's device revocations as this device's trust reads them: the

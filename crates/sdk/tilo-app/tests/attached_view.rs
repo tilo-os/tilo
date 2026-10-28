@@ -268,3 +268,223 @@ fn a_grant_of_one_action_reaches_that_action_only() {
     );
     assert_eq!(count(&view), 1);
 }
+
+/// A bench whose view sits whoever opens it down: the mistake the attached
+/// view refuses in a record its participant joined.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Bench {
+    pub seated: i64,
+}
+
+#[resource(kind = "test.bench", label = "Bench", app = "so.tilo.test-bench")]
+impl Bench {
+    /// Sit down.
+    #[action]
+    pub fn sit(&mut self) {
+        self.seated = self.seated.saturating_add(1);
+    }
+}
+
+pub struct BenchApp;
+
+impl ResourceApp for BenchApp {
+    type Resource = Bench;
+    const ID: &'static str = "so.tilo.test-bench";
+    const TITLE: &'static str = "Bench";
+
+    fn view(cx: &mut ViewCx<Bench>) -> Element {
+        cx.dispatcher().submit(Bench::SIT.invoke());
+        Box::new(cx.button("Sit", Bench::SIT.invoke()))
+    }
+
+    fn label(_: &Bench) -> String {
+        "Bench".into()
+    }
+}
+
+/// Only a record's creator writes its initial content: a view that writes
+/// as it opens a record its participant joined is refused, naming the app,
+/// instead of keeping a change no peer would ever be sent.
+#[test]
+fn a_view_that_writes_as_it_opens_a_joined_record_is_refused() {
+    let app = TestApp::<BenchApp>::new().unwrap();
+    let definition = definition::<BenchApp>();
+    let open = |created| {
+        AttachedView::open(
+            definition,
+            "test-workspace",
+            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            app.read_document(|doc| doc.clone().save()),
+            AGENT,
+            PermissionContext::permissive(),
+            created,
+        )
+    };
+    let Err(refusal) = open(false) else {
+        panic!("a joined bench opened although its view sat the agent down");
+    };
+    assert!(refusal.contains(BenchApp::ID), "{refusal}");
+    assert!(refusal.contains("`sit`"), "{refusal}");
+    assert!(refusal.contains("joined"), "{refusal}");
+
+    // The record's creator writes what it starts with.
+    assert!(open(true).is_ok());
+
+    // A view that writes nothing on open joins as before.
+    let tally = TestApp::<TallyApp>::new().unwrap();
+    assert!(attached(&tally, writer()).take_changes().is_none());
+}
+
+/// A ledger whose view looks up what is asked for off the UI thread, as a
+/// viewer reads the markup a file already carries, and records the answer
+/// once it lands.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Ledger {
+    pub asked: String,
+    pub answer: String,
+}
+
+#[resource(kind = "test.ledger", label = "Ledger", app = "so.tilo.test-ledger")]
+impl Ledger {
+    /// Ask for an entry.
+    #[action]
+    pub fn ask(&mut self, entry: String) {
+        self.asked = entry;
+    }
+
+    /// Record what looking an entry up answered.
+    #[action]
+    pub fn answer(&mut self, answer: String) {
+        self.answer = answer;
+    }
+}
+
+/// The ledger's view: asks a worker for each entry asked for, owing the
+/// window its reply, and records the reply in the frame after it lands.
+struct Lookup {
+    dispatcher: tilo_app::framework::Dispatcher<Ledger>,
+    asked: String,
+    replies: Option<std::sync::mpsc::Receiver<String>>,
+    rect: Rect,
+}
+
+impl Widget for Lookup {
+    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+        // An answer is taken up before anything is asked, so the answer to
+        // what this frame asks lands after it, in a frame of its own.
+        if let Some(answer) = self
+            .replies
+            .as_ref()
+            .and_then(|replies| replies.try_recv().ok())
+        {
+            self.replies = None;
+            self.dispatcher.submit(Ledger::ANSWER.with(answer));
+        }
+        let (doc, _) = tilo_app::doc::document_ref(state, path);
+        let Ok(ledger) = <Ledger as tilo_resource::Resource>::read(doc) else {
+            return;
+        };
+        if ledger.asked == self.asked {
+            return;
+        }
+        self.asked.clone_from(&ledger.asked);
+        let (reply, replies) = tilo_app::wake::waking_channel();
+        let owed = tilo_app::wake::WakeHandle::new().owe();
+        std::thread::spawn(move || {
+            let _ = reply.send(format!("{}: found", ledger.asked));
+            drop(owed);
+        });
+        self.replies = Some(replies);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut tilo_app::advanced::TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<tilo_app::advanced::NodeId, *mut dyn Widget>,
+    ) -> tilo_app::advanced::NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        _: &tilo_app::advanced::TaffyTree<()>,
+        _: tilo_app::advanced::NodeId,
+        origin: Point,
+    ) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "Lookup"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+pub struct LedgerApp;
+
+impl ResourceApp for LedgerApp {
+    type Resource = Ledger;
+    const ID: &'static str = "so.tilo.test-ledger";
+    const TITLE: &'static str = "Ledger";
+
+    fn view(cx: &mut ViewCx<Ledger>) -> Element {
+        Box::new(Lookup {
+            dispatcher: cx.dispatcher(),
+            asked: String::new(),
+            replies: None,
+            rect: Rect::ZERO,
+        })
+    }
+
+    fn label(_: &Ledger) -> String {
+        "Ledger".into()
+    }
+}
+
+/// An action answers once the work it caused in the app has landed: the
+/// reply a worker owed the view is taken up and its change made before the
+/// action answers, so the change is the action's, never the next one's.
+#[test]
+fn an_action_answers_once_the_work_it_caused_has_landed() {
+    let app = TestApp::<LedgerApp>::new().unwrap();
+    let definition = definition::<LedgerApp>();
+    let mut view = AttachedView::open(
+        definition,
+        "test-workspace",
+        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        app.read_document(|doc| doc.clone().save()),
+        AGENT,
+        PermissionContext::permissive(),
+        false,
+    )
+    .unwrap();
+    let answer = |view: &AttachedView| {
+        view.read(|doc| {
+            <Ledger as tilo_resource::Resource>::read(doc)
+                .unwrap()
+                .answer
+        })
+        .unwrap()
+    };
+    for entry in ["lamps", "chairs"] {
+        view.invoke_typed(&Ledger::ASK.with(entry), false).unwrap();
+        assert_eq!(answer(&view), format!("{entry}: found"));
+        let changed = view.take_changes();
+        assert!(changed.is_some(), "the ask and its answer leave together");
+        assert!(view.take_changes().is_none());
+    }
+    let did: Vec<String> = view
+        .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
+        .unwrap()
+        .into_iter()
+        .filter_map(|version| match version.context?.what? {
+            tilo_actions::Did::Verb(verb) => Some(verb.action.action),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(did, ["ask", "answer", "ask", "answer"]);
+}

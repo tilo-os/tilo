@@ -1,10 +1,10 @@
 //! The Monitor window's widgets.
 //!
 //! The window is one [`ui::widget::NavShell`]. Its content is the active tab:
-//! [`ProcessesPane`] (the summary tiles, the process filter and the process
-//! table) or [`ResourcesPane`] (the system dashboard). The selected process
-//! is the inspector ([`process_detail`]). [`crate::app::MonitorApp`] owns the
-//! model and the shared view state; the panes meet it in a [`Bridge`]: the
+//! `ProcessesPane` (the summary tiles and the process table, which the
+//! window bar's search narrows) or `ResourcesPane` (the system dashboard). The selected process
+//! is the inspector (`process_detail`). [`crate::app::MonitorApp`] owns the
+//! model and the shared view state; the panes meet it in a `Bridge`: the
 //! app publishes what they show, the panes queue what the person asked for,
 //! and the app turns each request into a view change or a document action.
 
@@ -19,17 +19,18 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
+use ui::fact::{Measure, Measured};
 use ui::format::memory as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use ui::widget::toolbar::Orientation;
+use ui::widget::primitives::{Fact, Facts};
 use ui::widget::{
-    AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, ModelPath, Property,
-    PropertyList, Row, Scrollable, SearchField, Section, StatGroup, StatTile, TaffyTreeExt,
-    Toolbar, Widget, layout_rect,
+    AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, Filterable, ModelPath,
+    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Widget,
+    layout_rect,
 };
 
 use crate::app::{SortKey, Tab};
@@ -75,9 +76,20 @@ impl Stat {
     fn label(self) -> &'static str {
         match self {
             Self::Cpu => "CPU",
-            Self::Memory => "Memory",
+            Self::Memory => "Memory in use",
             Self::Network => "Network",
             Self::Disk => "Disk",
+        }
+    }
+
+    /// What the tile's value counts, named so it cannot be confused with a
+    /// process row's different measure.
+    fn measure(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU load across all cores",
+            Self::Memory => "Memory in use on this device",
+            Self::Network => "Network throughput",
+            Self::Disk => "Disk throughput",
         }
     }
 
@@ -94,11 +106,11 @@ pub(crate) enum Cadence {
     Paused,
 }
 
-/// The sampling cadences offered in the header, in milliseconds.
+/// The sampling cadences the window bar offers, in milliseconds.
 pub(crate) const INTERVALS: [u64; 5] = [1000, 1500, 2000, 3000, 5000];
 
 impl Cadence {
-    /// Every choice, in the order the header's menu lists them.
+    /// Every choice, in the order the bar's menu lists them.
     pub(crate) fn all() -> Vec<Self> {
         INTERVALS
             .iter()
@@ -113,14 +125,6 @@ impl Cadence {
             Self::Paused => "Paused".to_owned(),
             Self::Every(1000) => "Every second".to_owned(),
             Self::Every(ms) => format!("Every {} seconds", seconds(ms)),
-        }
-    }
-
-    /// The choice on the header's button.
-    pub(crate) fn short_label(self) -> String {
-        match self {
-            Self::Paused => "Paused".to_owned(),
-            Self::Every(ms) => format!("Every {} s", seconds(ms)),
         }
     }
 }
@@ -149,8 +153,6 @@ pub(crate) enum Request {
     TreeMode(bool),
     SumChildren(bool),
     KernelThreads(bool),
-    /// The header's cadence button was pressed.
-    ChooseCadence,
     ShowStat(Stat),
     ContextMenu {
         pid: u32,
@@ -160,9 +162,7 @@ pub(crate) enum Request {
     },
     /// Sample the machine now: Refresh, or a retry of an unreadable list.
     Refresh,
-    /// The inspector's End process.
     End(u32),
-    /// The inspector's Kill process.
     Kill(u32),
     /// The inspector's End app, for the app the process belongs to.
     EndApp(u32),
@@ -259,38 +259,46 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     let tiles = Stat::ALL
         .iter()
         .map(|&stat| {
-            let (value, unit, samples) = match stat {
+            let (value, unit, samples, scale) = match stat {
                 Stat::Cpu => (
                     format!("{:.0}", metrics.cpu_overall()),
                     "%".to_owned(),
                     metrics.cpu_hist.as_slice().to_vec(),
+                    "0–100%".to_owned(),
                 ),
                 Stat::Memory => {
                     let (value, unit) = value_and_unit(&format_bytes(metrics.mem_used));
-                    (value, unit, metrics.mem_hist.as_slice().to_vec())
+                    (
+                        value,
+                        unit,
+                        metrics.mem_hist.as_slice().to_vec(),
+                        "0–100% of RAM".to_owned(),
+                    )
                 }
                 Stat::Network => {
-                    let (value, unit) = value_and_unit(&fmt_rate(metrics.net_rx + metrics.net_tx));
-                    let samples = metrics
+                    let samples: Vec<f32> = metrics
                         .net_rx_hist
                         .as_slice()
                         .iter()
                         .zip(metrics.net_tx_hist.as_slice())
                         .map(|(rx, tx)| rx + tx)
                         .collect();
-                    (value, unit, samples)
+                    let peak = samples.iter().copied().fold(1.0_f32, f32::max);
+                    let (value, unit) = value_and_unit(&fmt_rate(metrics.net_rx + metrics.net_tx));
+                    (value, unit, samples, format!("peak {}", fmt_rate(peak)))
                 }
                 Stat::Disk => {
-                    let (value, unit) =
-                        value_and_unit(&fmt_rate(metrics.disk_read + metrics.disk_write));
-                    let samples = metrics
+                    let samples: Vec<f32> = metrics
                         .disk_read_hist
                         .as_slice()
                         .iter()
                         .zip(metrics.disk_write_hist.as_slice())
                         .map(|(read, write)| read + write)
                         .collect();
-                    (value, unit, samples)
+                    let peak = samples.iter().copied().fold(1.0_f32, f32::max);
+                    let (value, unit) =
+                        value_and_unit(&fmt_rate(metrics.disk_read + metrics.disk_write));
+                    (value, unit, samples, format!("peak {}", fmt_rate(peak)))
                 }
             };
             let requests = Rc::clone(shared);
@@ -302,7 +310,43 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             if !unit.is_empty() {
                 tile = tile.unit(unit);
             }
-            Box::new(tile) as Element
+            let now = ui::time::wall();
+            let fact = match metrics.sampled_at {
+                Some(at) => Measured::known(
+                    Measure::new(stat.measure()),
+                    "1 sample",
+                    "this device",
+                    at,
+                    Some(ui::time::Duration::from_millis(
+                        u64::from(metrics.sample_interval_ms.max(1)) * 2,
+                    )),
+                ),
+                None => Measured::unknown(
+                    Measure::new(stat.measure()),
+                    "the system information service has not answered",
+                ),
+            };
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(tile))
+                    .push(Box::new(Facts::new(vec![
+                        // A fresh sample says where it came from; only a sample
+                        // old enough to mislead says how old it is. Four tiles
+                        // repeating "measured 0 s ago" is noise, and a number
+                        // nobody doubts does not need a timestamp.
+                        Fact::text(if fact.is_stale(now) {
+                            fact.caption(now)
+                        } else {
+                            fact.source().unwrap_or_default().to_owned()
+                        })
+                        .priority(3),
+                        Fact::text(metrics.history_period()).priority(2),
+                        Fact::text(scale).priority(1),
+                    ]))),
+            ) as Element
         })
         .collect();
     StatGroup::new(tiles)
@@ -312,11 +356,12 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TableShape {
     tree: bool,
+    /// Rows show their subtree's sum rather than the process alone.
+    sum: bool,
     /// A narrow window drops the thread and PID columns.
     compact: bool,
 }
 
-/// The process table for `shape`, and the sort key of each of its columns.
 fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, Vec<SortKey>) {
     let mut columns = vec![(
         SortKey::Name,
@@ -331,9 +376,17 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     ));
     columns.push((
         SortKey::Mem,
-        ColumnDef::new("memory", "Memory", ColumnWidth::Auto)
-            .with_kind(TextKind::Numeric)
-            .with_text(|row: &ProcessRow| format_bytes(row.mem_bytes)),
+        ColumnDef::new(
+            "memory",
+            if shape.sum {
+                "Memory (with children)"
+            } else {
+                "Memory (RSS)"
+            },
+            ColumnWidth::Auto,
+        )
+        .with_kind(TextKind::Numeric)
+        .with_text(|row: &ProcessRow| format_bytes(row.mem_bytes)),
     ));
     if !shape.compact {
         columns.push((
@@ -423,41 +476,6 @@ fn column_key(sort: SortKey) -> &'static str {
     }
 }
 
-/// The view toggles beside the filter.
-fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
-    let tree = Rc::clone(shared);
-    let sum = Rc::clone(shared);
-    let kernel = Rc::clone(shared);
-    let mut toolbar =
-        Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
-            tree.borrow_mut().push(Request::TreeMode(!options.tree));
-        });
-    let binding = shared.borrow().actions.as_ref().and_then(|actions| {
-        let flat = crate::resource::Monitor::paths().flat.set(options.tree);
-        actions.invocation(ui::tilo_resource::Invoke::edit(&flat).ok()?)
-    });
-    toolbar = match binding {
-        Some(binding) => toolbar.with_action(binding),
-        None => toolbar.with_view("monitor.tree-mode"),
-    };
-    if options.tree {
-        let summing = options.sum == SumMode::SumSubtree;
-        toolbar = toolbar
-            .push_toggle("Include children", summing, move || {
-                sum.borrow_mut().push(Request::SumChildren(!summing));
-            })
-            .with_view("monitor.sum-children");
-    }
-    toolbar
-        .push_separator()
-        .push_toggle("Kernel threads", options.kernel_threads, move || {
-            kernel
-                .borrow_mut()
-                .push(Request::KernelThreads(!options.kernel_threads));
-        })
-        .with_effect("monitor.kernel-threads")
-}
-
 /// One sentence and at most one action for each way the list is empty.
 fn empty_state(kind: Placeholder) -> EmptyState {
     match kind {
@@ -473,9 +491,7 @@ fn empty_state(kind: Placeholder) -> EmptyState {
             "The process list couldn't be read.",
         )
         .with_action("Try again"),
-        Placeholder::NoMatches => {
-            EmptyState::new("No processes match the filter").with_action("Clear filter")
-        }
+        Placeholder::NoMatches => EmptyState::new("No processes match the search"),
     }
 }
 
@@ -483,15 +499,13 @@ fn empty_state(kind: Placeholder) -> EmptyState {
 #[derive(Default)]
 struct Nodes {
     summary: Option<NodeId>,
-    band: Option<NodeId>,
-    field: Option<NodeId>,
-    toolbar: Option<NodeId>,
     body: Option<NodeId>,
     body_child: Option<NodeId>,
 }
 
-/// The Processes tab: the summary tiles, the filter with the view toggles,
-/// and the process table, or one empty state when there is nothing to list.
+/// The Processes tab: the summary tiles and the process table, or one empty
+/// state when there is nothing to list. The window bar's search narrows it
+/// ([`Filterable`]); its view options are the bar's.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout, structure and selection-reveal flags"
@@ -504,8 +518,6 @@ pub(crate) struct ProcessesPane {
     summary: Option<StatGroup>,
     /// The metrics changed since `summary` was built.
     summary_stale: bool,
-    field: SearchField,
-    toolbar: Toolbar,
     options: Option<ListOptions>,
     table: DataTable<ProcessRow>,
     sort_keys: Vec<SortKey>,
@@ -514,7 +526,6 @@ pub(crate) struct ProcessesPane {
     viewport: f64,
     row_height: f64,
     placeholder: Option<(Placeholder, EmptyState)>,
-    has_processes: bool,
     /// The row index the table's selection was last synchronised to.
     shown_selection: Option<usize>,
     adopted_selection: Option<usize>,
@@ -532,6 +543,7 @@ impl ProcessesPane {
     pub(crate) fn new(shared: Shared) -> Self {
         let shape = TableShape {
             tree: true,
+            sum: true,
             compact: false,
         };
         let (table, sort_keys) = process_table(shape, &shared);
@@ -541,10 +553,6 @@ impl ProcessesPane {
             seen_metrics: None,
             summary: None,
             summary_stale: true,
-            field: SearchField::filter()
-                .with_id("monitor.filter")
-                .with_placeholder("Filter processes"),
-            toolbar: Toolbar::new(Orientation::Horizontal),
             options: None,
             table,
             sort_keys,
@@ -552,7 +560,6 @@ impl ProcessesPane {
             viewport: 0.0,
             row_height: 0.0,
             placeholder: None,
-            has_processes: false,
             shown_selection: None,
             adopted_selection: None,
             reveal_selection: false,
@@ -585,10 +592,12 @@ impl ProcessesPane {
             && self.options != Some(options)
         {
             let tree_changed = self.options.is_none_or(|old| old.tree != options.tree);
+            let sum = options.tree && options.sum == SumMode::SumSubtree;
+            let sum_changed = self.shape.sum != sum;
             self.options = Some(options);
-            self.toolbar = view_toolbar(options, &self.shared);
-            if tree_changed {
+            if tree_changed || sum_changed {
                 self.shape.tree = options.tree;
+                self.shape.sum = sum;
                 self.rebuild_table();
             }
             self.show_sort(options);
@@ -606,21 +615,9 @@ impl ProcessesPane {
             self.reveal_selection = bridge.selected.is_some();
         }
 
-        if self.field.value() != bridge.filter {
-            self.field.set_query(&bridge.filter);
-        }
-        self.field.set_count(
-            (!bridge.filter.is_empty()).then(|| FilterCount::new(bridge.rows.len(), bridge.total)),
-        );
-
         let placeholder = bridge.placeholder;
         if self.placeholder.as_ref().map(|(kind, _)| *kind) != placeholder {
             self.placeholder = placeholder.map(|kind| (kind, empty_state(kind)));
-            self.structure_dirty = true;
-        }
-        let has_processes = bridge.total > 0;
-        if self.has_processes != has_processes {
-            self.has_processes = has_processes;
             self.structure_dirty = true;
         }
         self.layout_dirty = true;
@@ -723,13 +720,9 @@ impl ProcessesPane {
         bridge.push(Request::ContextMenu { pid, at, row });
     }
 
-    /// A pane `width` wide drops columns and stacks its filter.
+    /// A pane `width` wide drops columns.
     fn is_compact(&self, width: f64) -> bool {
         width > 0.0 && width < self.compact_below
-    }
-
-    fn shows_filters(&self) -> bool {
-        self.has_processes
     }
 
     fn body(&self) -> &dyn Widget {
@@ -746,47 +739,6 @@ impl ProcessesPane {
         }
     }
 
-    /// The filter beside the view toggles, or over them on a narrow pane.
-    fn build_filters(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        compact: bool,
-    ) -> NodeId {
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let field = self.field.build_layout(taffy, theme, node_map);
-        let toolbar = self.toolbar.build_layout(taffy, theme, node_map);
-        let (direction, align) = if compact {
-            (taffy::FlexDirection::Column, taffy::AlignItems::Stretch)
-        } else {
-            ui::widget::share_row(taffy, field, 1.0);
-            (taffy::FlexDirection::Row, taffy::AlignItems::Center)
-        };
-        let band = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: direction,
-                flex_shrink: 0.0,
-                align_items: Some(align),
-                gap: Size {
-                    width: length(rhythm.sibling),
-                    height: length(rhythm.related),
-                },
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            },
-            &[field, toolbar],
-        );
-        self.nodes.band = Some(band);
-        self.nodes.field = Some(field);
-        self.nodes.toolbar = Some(toolbar);
-        band
-    }
-
     /// Route an event to the table and adopt the selection it moved to.
     fn route_to_table(
         &mut self,
@@ -800,7 +752,25 @@ impl ProcessesPane {
     }
 }
 
+impl Filterable for ProcessesPane {
+    /// The window bar's search edited the query: ask the app for it.
+    fn set_filter(&mut self, query: &str) {
+        let mut bridge = self.shared.borrow_mut();
+        if bridge.filter != query {
+            bridge.push(Request::Filter(query.to_owned()));
+        }
+    }
+
+    /// "12 of 96" while the search narrows the list.
+    fn filter_count(&self) -> Option<FilterCount> {
+        let bridge = self.shared.borrow();
+        (!bridge.filter.is_empty()).then(|| FilterCount::new(bridge.rows.len(), bridge.total))
+    }
+}
+
 impl Widget for ProcessesPane {
+    ui::provides!(dyn Filterable);
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         for child in self.children_mut() {
@@ -847,9 +817,6 @@ impl Widget for ProcessesPane {
             let node = summary.build_layout(taffy, theme, node_map);
             self.nodes.summary = Some(node);
             children.push(node);
-        }
-        if self.shows_filters() {
-            children.push(self.build_filters(taffy, theme, node_map, compact));
         }
 
         let body_child = self.body_mut().build_layout(taffy, theme, node_map);
@@ -912,15 +879,6 @@ impl Widget for ProcessesPane {
         if let (Some(summary), Some(node)) = (&mut self.summary, self.nodes.summary) {
             summary.apply_layout(taffy, node, inner);
         }
-        if let Some(band) = self.nodes.band {
-            let band_origin = layout_rect(taffy, band, inner).origin();
-            if let Some(field) = self.nodes.field {
-                self.field.apply_layout(taffy, field, band_origin);
-            }
-            if let Some(toolbar) = self.nodes.toolbar {
-                self.toolbar.apply_layout(taffy, toolbar, band_origin);
-            }
-        }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
             let body_rect = layout_rect(taffy, body, inner);
             let body_origin = body_rect.origin();
@@ -967,12 +925,6 @@ impl Widget for ProcessesPane {
         if let Some(summary) = &mut self.summary {
             summary.draw(scene, transform, text_renderer, theme, presence);
         }
-        if self.shows_filters() {
-            self.field
-                .draw(scene, transform, text_renderer, theme, presence);
-            self.toolbar
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
         self.body_mut()
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -982,27 +934,17 @@ impl Widget for ProcessesPane {
             self.cursor = ctx.logical(position);
             // Every part follows the pointer, whichever one is under it.
             let mut ignored = false;
-            let nodes = [
-                self.nodes.toolbar,
-                self.nodes.field,
-                self.nodes.summary,
-                self.nodes.body_child,
-            ];
-            let shows_filters = self.shows_filters();
+            let nodes = [self.nodes.summary, self.nodes.body_child];
             let summary = self.summary.as_mut().map(|s| s as &mut dyn Widget);
             let body: &mut dyn Widget = match &mut self.placeholder {
                 Some((_, empty)) => empty,
                 None => &mut self.table,
             };
             let mut parts: Vec<(Option<NodeId>, &mut dyn Widget)> = Vec::new();
-            if shows_filters {
-                parts.push((nodes[0], &mut self.toolbar));
-                parts.push((nodes[1], &mut self.field));
-            }
             if let Some(summary) = summary {
-                parts.push((nodes[2], summary));
+                parts.push((nodes[0], summary));
             }
-            parts.push((nodes[3], body));
+            parts.push((nodes[1], body));
             for (node, part) in parts {
                 if let Some(node) = node {
                     let mut child = ctx.reborrow(ctx.path, node);
@@ -1011,25 +953,6 @@ impl Widget for ProcessesPane {
                 }
             }
             return;
-        }
-        if self.shows_filters() {
-            if let Some(toolbar) = self.nodes.toolbar {
-                self.toolbar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, toolbar));
-                if *ctx.handled {
-                    return;
-                }
-            }
-            if let Some(field) = self.nodes.field {
-                self.field
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, field));
-                if let Some(query) = self.field.take_dirty() {
-                    self.shared.borrow_mut().push(Request::Filter(query));
-                }
-                if *ctx.handled {
-                    return;
-                }
-            }
         }
         if let (Some(summary), Some(node)) = (&mut self.summary, self.nodes.summary) {
             summary.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -1040,14 +963,10 @@ impl Widget for ProcessesPane {
         let Some(child) = self.nodes.body_child else {
             return;
         };
-        if let Some((kind, empty)) = &mut self.placeholder {
+        if let Some((_, empty)) = &mut self.placeholder {
             empty.handle_event(event, &mut ctx.reborrow(ctx.path, child));
             if empty.take_action() {
-                let request = match kind {
-                    Placeholder::NoMatches => Request::Filter(String::new()),
-                    _ => Request::Refresh,
-                };
-                self.shared.borrow_mut().push(request);
+                self.shared.borrow_mut().push(Request::Refresh);
             }
         } else {
             self.route_to_table(event, ctx, child);
@@ -1059,16 +978,11 @@ impl Widget for ProcessesPane {
         if let Some(summary) = &self.summary {
             children.push(summary);
         }
-        if self.shows_filters() {
-            children.push(&self.field);
-            children.push(&self.toolbar);
-        }
         children.push(self.body());
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let shows_filters = self.shows_filters();
         let body: &mut dyn Widget = match &mut self.placeholder {
             Some((_, empty)) => empty,
             None => &mut self.table,
@@ -1076,10 +990,6 @@ impl Widget for ProcessesPane {
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if let Some(summary) = &mut self.summary {
             children.push(summary);
-        }
-        if shows_filters {
-            children.push(&mut self.field);
-            children.push(&mut self.toolbar);
         }
         children.push(body);
         children
@@ -1154,7 +1064,7 @@ fn level_gauge(label: impl Into<String>, reading: String, frac: f32, theme: &The
     Box::new(
         BarGauge::new(frac)
             .with_label(label, reading)
-            .with_color(theme.tokens.colors.intent.neutral_fill),
+            .with_color(theme.tokens.colors.intent.value_fill),
     )
 }
 
@@ -1188,6 +1098,10 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
         "Processor",
         vec![
             Box::new(cpu_chart),
+            Box::new(Facts::new(vec![
+                Fact::text("0–100%").priority(2),
+                Fact::text(metrics.history_period()).priority(1),
+            ])),
             Box::new(CardGrid::new(cores).with_card_width(CardWidth::Compact)),
         ],
     )
@@ -1226,6 +1140,10 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
                 100.0,
                 "100%",
             )),
+            Box::new(Facts::new(vec![
+                Fact::text("0–100% of RAM").priority(2),
+                Fact::text(metrics.history_period()).priority(1),
+            ])),
         ],
     )
 }
@@ -1244,6 +1162,7 @@ fn throughput_section(
     flows: &[Flow<'_>; 2],
     first_series: usize,
     theme: &Theme,
+    period: &str,
 ) -> Section {
     let peak = flows
         .iter()
@@ -1263,7 +1182,13 @@ fn throughput_section(
         .collect();
     Section::titled(
         title,
-        vec![Box::new(history_chart(series, max, &fmt_rate(max)))],
+        vec![
+            Box::new(history_chart(series, max, &fmt_rate(max))),
+            Box::new(Facts::new(vec![
+                Fact::text(format!("0–{}", fmt_rate(max))).priority(2),
+                Fact::text(period).priority(1),
+            ])),
+        ],
     )
 }
 
@@ -1314,6 +1239,7 @@ fn dashboard(
         ],
         2,
         theme,
+        &metrics.history_period(),
     );
     let disk = throughput_section(
         "Disk",
@@ -1331,6 +1257,7 @@ fn dashboard(
         ],
         4,
         theme,
+        &metrics.history_period(),
     );
     let mut sections = [
         (Stat::Cpu, processor_section(metrics, theme)),
@@ -1412,7 +1339,7 @@ impl ResourcesPane {
 
     fn rebuild(&mut self, theme: &Theme) {
         let colors = &theme.tokens.colors;
-        let key = (colors.presence.series(0), colors.intent.neutral_fill);
+        let key = (colors.presence.series(0), colors.intent.value_fill);
         if self.built_with == Some(key) && self.page.is_some() {
             return;
         }
@@ -1625,7 +1552,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
     let (memory, unit) = value_and_unit(&format_bytes(process.mem_bytes));
     let tiles = StatGroup::new(vec![
         Box::new(cpu),
-        Box::new(StatTile::new("Memory", memory).unit(unit)),
+        Box::new(StatTile::new("Memory (RSS)", memory).unit(unit)),
     ]);
 
     let mut properties = Vec::new();
@@ -1716,20 +1643,11 @@ mod tests {
 
     #[test]
     fn cadence_reads_in_words() {
-        let labels: Vec<(String, String)> = Cadence::all()
-            .into_iter()
-            .map(|cadence| (cadence.label(), cadence.short_label()))
-            .collect();
+        let labels: Vec<String> = Cadence::all().into_iter().map(Cadence::label).collect();
         assert_eq!(labels.len(), INTERVALS.len() + 1);
-        assert_eq!(
-            labels[0],
-            ("Every second".to_owned(), "Every 1 s".to_owned())
-        );
-        assert_eq!(
-            labels[1],
-            ("Every 1.5 seconds".to_owned(), "Every 1.5 s".to_owned())
-        );
-        assert_eq!(labels[5], ("Paused".to_owned(), "Paused".to_owned()));
+        assert_eq!(labels[0], "Every second");
+        assert_eq!(labels[1], "Every 1.5 seconds");
+        assert_eq!(labels[5], "Paused");
     }
 
     #[test]

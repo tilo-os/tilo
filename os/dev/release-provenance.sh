@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Emit the reproducible OS release's SLSA v1 provenance predicate. The caller
-# signs it as an in-toto attestation bound to RELEASE_DIGEST.
+# signs it as an in-toto attestation bound to RELEASE_DIGEST. SOURCE_REVISION is
+# the commit, or `{commit}` for the signing step to fill in (tools/ci/publish/
+# oci-attest.sh); the invocation is the commit's time, which orders releases.
 set -euo pipefail
 
 out="${1:-provenance.json}"
@@ -9,7 +11,9 @@ out="${1:-provenance.json}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
 : "${BASE_REF:?BASE_REF is required}"
 : "${RPMS_REF:?RPMS_REF is required}"
-: "${GITHUB_SHA:?GITHUB_SHA is required}"
+: "${SOURCE_REVISION:?SOURCE_REVISION is required}"
+invocation="$(git -C "$(dirname "$0")" log -1 --format=%ct HEAD)"
+[[ "$invocation" =~ ^[0-9]+$ ]] || { printf 'release provenance: no commit time\n' >&2; exit 1; }
 
 require_digest_ref() {
   local digest
@@ -113,12 +117,13 @@ printf '%s' "$release_children" | jq -e '
 }
 
 hardware_definition=""
-if [ "$hardware_profile" = orangepi-3b-v2-1 ]; then
+if [ "$hardware_profile" != generic ]; then
   hardware_definition="$(sha256sum "$(dirname "$0")/../hardware/profiles/$hardware_profile.json" | cut -d' ' -f1)"
 fi
 
 jq -n \
-  --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
+  --arg source "git+ssh://code.tilo.so/tilo/tilo@$SOURCE_REVISION" \
+  --arg invocation "$invocation" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
@@ -180,8 +185,8 @@ jq -n \
       )
     },
     runDetails: {
-      builder: {id: "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
-      metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
+      builder: {id: "https://code.tilo.so/tilo/t/os-release-v1"},
+      metadata: {invocationId: $invocation},
       byproducts: ([{
         name: "independent-rebuild",
         uri: "urn:tilo:verification:manifest-digest-equal"

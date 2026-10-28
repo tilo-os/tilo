@@ -1,4 +1,3 @@
-//! Tables use their complete content for production layout and painting.
 use std::fmt::Write as _;
 use ui::a11y::Role;
 use ui::headless::Framed;

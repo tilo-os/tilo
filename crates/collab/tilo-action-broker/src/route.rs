@@ -11,7 +11,7 @@ const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
 /// traffic, where every app in the cluster is a legitimate audience, and
 /// the Cap'n Proto transport, whose `joinChannel` surface has a channel
 /// id but no app identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this
     /// transport does not announce an app identity" — matched at
@@ -77,16 +77,16 @@ impl CrdtRoute {
 
     /// The channel this route names, as one string — the capnp
     /// transport subscribes by channel id. Encoding lives in
-    /// [`ui::collaboration::channel_key`] (shared with the SDK) so both
+    /// [`runtime_collab::route::channel_key`] (shared with the SDK) so both
     /// ends can't drift.
     pub fn channel_key(&self) -> String {
-        ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
+        runtime_collab::route::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
     /// Split a capnp `channelId` back into its route — the inverse of
     /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
-        let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
+        let (app_id, cluster_id, record_id) = runtime_collab::route::channel_key::parse(key);
         Self {
             app_id,
             cluster_id,
@@ -99,7 +99,7 @@ impl CrdtRoute {
     /// identity has not been minted yet). The nil case must be checked
     /// separately from empty — otherwise every workspace still carrying
     /// the sentinel would share one enormous room on every machine.
-    fn is_addressable(cluster_id: &str) -> bool {
+    pub(crate) fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
 

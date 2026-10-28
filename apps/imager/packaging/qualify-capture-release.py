@@ -17,6 +17,7 @@ import selectors
 import shutil
 import signal
 import stat
+import sys
 import subprocess
 import tempfile
 import time
@@ -99,11 +100,11 @@ BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'handoff_copy': '/usr/libexec/tilo-install-handoff-copy',
             'firstboot_files': '/usr/libexec/tilo-firstboot-files',
             'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract',
-            'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
-            'launcher': '/usr/bin/tilo-launcher',
-            'app_package': '/usr/bin/tilo-app-package',
-            'runtime_bundle': '/usr/bin/tilo-runtime-bundle', 'install': '/usr/bin/tilo-install',
-            'installer': '/usr/bin/tilo-installer'}
+            'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/libexec/tilo/tilo-control',
+            'launcher': '/usr/libexec/tilo/tilo-launcher',
+            'app_package': '/usr/libexec/tilo/tilo-app-package',
+            'runtime_bundle': '/usr/libexec/tilo/tilo-runtime-bundle', 'install': '/usr/libexec/tilo/tilo-install',
+            'installer': '/usr/libexec/tilo/tilo-installer'}
 
 
 def require(value, message):
@@ -496,7 +497,7 @@ def asset_mounts(assets):
         require(path.is_absolute() and '..' not in path.parts and ':' not in str(path)
                 and len(path.parts) > 2
                 and (path.parts[1] in ('tmp', 'var', 'home')
-                     or (path.is_relative_to('/srv/rcargo/tasks')
+                     or (path.is_relative_to('/srv/tilo/tasks')
                          and len(path.parts) > 4))
                 and not path.is_symlink(), 'public asset mount escapes input namespace')
         result.extend(['--volume', str(path) + ':' + str(path) + ':ro'])
@@ -530,10 +531,10 @@ def prepare_source(candidate):
             bound_file(path, inputs[relative])
     consumer = fixed_module(candidate / 'os/scripts/installer-receive-fixture/service_contract.py',
                             'fixed_service_graph')
-    selected = consumer.selected(Path('/'))
+    selected = consumer.selected(time.monotonic() + 60, sys.stderr)
     require(selected is not None, 'current receiving Browser/CEF graph is absent')
     subjects = document(candidate / 'subjects.json')
-    bound_file(selected[2], subjects['browser']['sha256'])
+    bound_file(Path(selected['browser']), subjects['browser']['sha256'])
     helper = fixed_module(candidate / 'apps/imager/packaging/service-source-assets.py', 'fixed_public_assets')
     helper.stage(document(candidate / 'source-assets.json'), candidate)
 

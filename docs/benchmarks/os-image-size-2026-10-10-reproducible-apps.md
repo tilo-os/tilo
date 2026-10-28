@@ -28,7 +28,7 @@ changes the image's build sources, so every build step runs again (through
 the compiler cache), as on any real commit. Updates are
 `python3 tools/perf/image_size.py --image NEW --update-from OLD --update-only`:
 the compressed layers of the new manifest the old one lacks. Raw output in
-`os-image-size-2026-10-10-reproducible-apps.json`.
+[`os-image-size-2026-10-10-reproducible-apps.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-image-size-2026-10-10-reproducible-apps.json).
 
 Round 1 is the first commit of the change (one app identity for dev images,
 `DEV_APP_PUBLISHER_IDENTITY`; the runtime signatures in a layer of their

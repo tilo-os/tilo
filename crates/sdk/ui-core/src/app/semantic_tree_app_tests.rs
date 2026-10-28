@@ -221,7 +221,9 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
                 &CounterAction::Bump,
             )
             .unwrap()
-            .with_contract(tilo_actions::ActionContract::default()),
+            .with_contract(tilo_actions::ActionContract::default())
+            // Pinging a service reaches outside the document.
+            .of_kind(tilo_actions::ActionKind::Outside),
         )
         .with_action(ActionSpec::prompted_param(
             "set-label",
@@ -357,7 +359,8 @@ impl Widget for CounterCard {
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
@@ -432,6 +435,9 @@ impl Widget for CounterCard {
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.replaced)
     }
+}
+
+impl crate::widget::ResourceOperations for CounterCard {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
@@ -480,6 +486,7 @@ impl Widget for CounterCard {
                 }),
         )
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -632,7 +639,11 @@ impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
-    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+    fn join_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::record::RecordKind,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
@@ -959,11 +970,11 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
-        // The person confirms in the host's own dialog: the action applies.
-        assert_eq!(
-            app.asking().map(|(_, text)| text).as_deref(),
-            Some("CONFIRM")
-        );
+        // The person confirms in the host's own dialog with its verb button;
+        // it asks the action's own question and never wants a typed phrase.
+        let question = app.asking().map(|(_, text)| text).unwrap_or_default();
+        assert!(question.ends_with('?'), "{question:?}");
+        assert!(!question.contains("CONFIRM"), "{question:?}");
         assert!(app.confirm_asked().is_some());
         assert!(app.asking().is_none(), "answered once");
         assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
@@ -1293,14 +1304,14 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `a_device_only_effect_runs_for_the_person_at_the_device_alone`.
+    // Case `an_own_device_effect_runs_for_the_person_at_the_device_alone`.
     {
         /// A typed effect vocabulary as an app declares it.
         #[derive(Clone, Debug, tilo_resource::Effect)]
         #[effect(operation = "test.counter")]
         enum Folder {
-            /// Copy a folder on this computer.
-            #[effect(device_only)]
+            /// Copy the folder to this computer's clipboard.
+            #[effect(own_device)]
             CopyLocalFolder,
             /// Count the copies.
             Count,
@@ -1322,7 +1333,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         };
         assert!(matches!(
             invoke(&mut app, "copy-local-folder", "person:guest"),
-            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "own_device"
         ));
         assert!(
             invoke(&mut app, "count", "person:guest").is_ok(),
@@ -1330,51 +1341,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
         let me = app.collaboration.local_author.0.clone();
         assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
-    }
-
-    // Case `directed_local_device_effect_cannot_run_for_a_remote_writer`.
-    {
-        let action = ActionSpec::operation(
-            "copy-private-folder",
-            "Copy private folder",
-            OperationKind::Effect,
-            COUNTER_TYPE,
-            &CounterAction::Bump,
-        )
-        .unwrap()
-        .with_contract(tilo_actions::ActionContract {
-            tags: vec!["tilo.local-device-only".into()],
-            ..tilo_actions::ActionContract::default()
-        });
-        let mut app = lazy_app(
-            Resource::new(
-                "test.private-folder",
-                "test.private-folder",
-                "Private folder",
-            )
-            .with_action(action),
-        );
-        let address =
-            tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
-        let remote = app.invoke_resource_action(
-            ResourceInvocation::new(&address, "agent:Scribe")
-                .broker_admitted(true)
-                .invocation(Some(tilo_actions::InvocationId::new())),
-        );
-        assert!(matches!(
-            remote,
-            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
-        ));
-
-        let actor = app.collaboration.local_author.0.clone();
-        assert!(
-            app.invoke_resource_action(
-                ResourceInvocation::new(&address, &actor)
-                    .broker_admitted(true)
-                    .invocation(Some(tilo_actions::InvocationId::new())),
-            )
-            .is_ok()
-        );
     }
 }
 
@@ -1448,10 +1414,12 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             };
             assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
             observed.enqueue("run");
-            *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
-                "reader",
-                collab_types::role::Role::Viewer,
-            );
+            binding
+                .permissions
+                .set(crate::permissions::PermissionContext::member(
+                    "reader",
+                    collab_types::role::Role::Viewer,
+                ));
             let before = owner
                 .records
                 .read(&binding.checkout.id, automerge::AutoCommit::base_heads)

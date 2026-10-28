@@ -5,7 +5,7 @@
 //! imager resource, never document actions, and their published rows and
 //! receipts stay path-free.
 
-use tilo_actions::{ActionSpec, ResourcePresentation};
+use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 
@@ -18,7 +18,7 @@ pub const IMPORT_ROW_ID: &str = "imager.import";
 /// ([`ImportProjection`]) as it stands afterwards; a job answers when its
 /// work settled.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.import", device_only)]
+#[effect(operation = "imager.import")]
 pub enum ImportEffect {
     /// Read current import status.
     ///
@@ -32,10 +32,10 @@ pub enum ImportEffect {
     #[effect(view, returns, kind = "read")]
     OpenStore,
     /// Choose source folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseSource,
     /// Choose destination folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseDestination,
     /// Clear folder selection.
     #[effect(returns, kind = "read")]
@@ -95,28 +95,18 @@ pub enum ImportEffect {
         folder_id: String,
     },
     /// Choose another destination.
-    #[effect(job, cancellable)]
+    #[effect(attended, job, cancellable)]
     ChooseFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
-    /// Use one-time Copy.
+    /// Choose how one saved folder comes over: copied once, or decided later.
     #[effect(returns)]
-    SetFolderCopy {
+    SetFolderMode {
         #[param("Id of the saved folder choice")]
         folder_id: String,
-    },
-    /// Decide later.
-    #[effect(returns)]
-    SetFolderLater {
-        #[param("Id of the saved folder choice")]
-        folder_id: String,
-    },
-    /// Use Connected folders.
-    #[effect(returns)]
-    SetFolderConnected {
-        #[param("Id of the saved folder choice")]
-        folder_id: String,
+        #[param("How the folder comes over: copy or later")]
+        mode: String,
     },
 }
 
@@ -286,13 +276,13 @@ const LABELS: &[(&str, &str)] = &[
         "choose-folder-destination",
         "imager-import-action-choose-folder-destination",
     ),
-    ("set-folder-copy", "imager-import-action-folder-copy"),
-    ("set-folder-later", "imager-import-action-folder-later"),
-    (
-        "set-folder-connected",
-        "imager-import-action-folder-connected",
-    ),
+    ("set-folder-mode", "imager-import-action-folder-mode"),
 ];
+
+/// The folder modes [`ImportEffect::SetFolderMode`] takes, as callers
+/// spell them.
+pub const FOLDER_COPY: &str = "copy";
+pub const FOLDER_LATER: &str = "later";
 
 /// The label of the effect `id` in the person's language.
 fn label(id: &str) -> String {
@@ -375,12 +365,6 @@ pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
             "later_all_unavailable",
             "imager-import-error-later-all-unavailable",
         ),
-        (
-            ImportEffect::SET_FOLDER_CONNECTED.id,
-            false,
-            "connected_unavailable",
-            "imager-import-error-connected-unavailable",
-        ),
     ]
     .into_iter()
     .filter(|(_, open, ..)| !open)
@@ -392,7 +376,7 @@ pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
 /// with what cannot run.
 #[must_use]
 pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
-    let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[]);
+    let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[], ImportEffect::kind());
     LABELS
         .iter()
         .map(|(id, key)| EffectStatus::labelled(effect(id), strings::t(key)))
@@ -405,7 +389,7 @@ pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
 /// `effect` bound to its row, offered when `available`.
 fn offer(effect: &ImportEffect, available: bool, code: &str, reason: &str) -> ActionSpec {
     let mut spec = effect.bound();
-    spec.label = label(effect.id());
+    spec.type_mut().label = label(effect.id());
     if available {
         spec
     } else {
@@ -520,30 +504,29 @@ fn folder_row(folder: &FolderProjection) -> LiveRow {
         "folder_picker_unavailable",
         "imager-import-error-picker-unavailable",
     ))
-    .operation(offer(
-        &ImportEffect::SetFolderCopy {
+    .operation({
+        let mut spec = ImportEffect::SetFolderMode {
             folder_id: folder_id(),
-        },
-        folder.mode_available,
-        "folder_mode_unavailable",
-        "imager-import-error-folder-mode-unavailable",
-    ))
-    .operation(offer(
-        &ImportEffect::SetFolderLater {
-            folder_id: folder_id(),
-        },
-        folder.mode_available,
-        "folder_mode_unavailable",
-        "imager-import-error-folder-mode-unavailable",
-    ))
-    .operation(offer(
-        &ImportEffect::SetFolderConnected {
-            folder_id: folder_id(),
-        },
-        false,
-        "connected_unavailable",
-        "imager-import-error-connected-unavailable",
-    ))
+            mode: String::new(),
+        }
+        .bound_asking_params(vec![
+            ActionParam::required_owned(
+                "mode",
+                ParamType::Text,
+                strings::t("imager-import-param-folder-mode"),
+            )
+            .with_choices([FOLDER_COPY, FOLDER_LATER]),
+        ]);
+        spec.type_mut().label = label(spec.id.as_str());
+        if folder.mode_available {
+            spec
+        } else {
+            spec.unavailable(
+                "folder_mode_unavailable",
+                strings::t("imager-import-error-folder-mode-unavailable"),
+            )
+        }
+    })
 }
 
 /// The imports on this computer as one live row beneath the imager

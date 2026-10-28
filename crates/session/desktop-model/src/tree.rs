@@ -98,18 +98,12 @@ impl DesktopTree {
     /// `serde_json` themselves: serde's derived code is generic over the
     /// input, and each crate and input kind instantiates its own copy of
     /// the whole tree's deserializer, about 200 KB each in the web bundle.
-    ///
-    /// # Errors
-    /// The value is not a desktop tree.
     pub fn from_json(value: serde_json::Value) -> serde_json::Result<Self> {
         serde_json::from_value(value)
     }
 
     /// Deserialize a tree field through [`Self::from_json`], for
     /// `#[serde(deserialize_with = "DesktopTree::deserialize_via_json")]`.
-    ///
-    /// # Errors
-    /// The input is not JSON or not a desktop tree.
     pub fn deserialize_via_json<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Self, D::Error> {
@@ -137,6 +131,17 @@ impl DesktopTree {
             .iter()
             .filter_map(|workspace| workspace.next_grant_expiry_after(now))
             .min()
+    }
+
+    /// The active workspace's selected strip: its recorded one while that
+    /// strip exists, else its first.
+    pub fn active_strip_id(&self) -> Option<StripId> {
+        let workspace = self.active_workspace()?;
+        self.active_strip
+            .get(&workspace.id)
+            .copied()
+            .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
+            .or_else(|| workspace.strips.first().map(|strip| strip.id))
     }
 
     pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {

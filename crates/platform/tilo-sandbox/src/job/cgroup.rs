@@ -47,7 +47,6 @@ pub struct Limits {
     /// admission counts against the budget. `memory_max` may be above it.
     /// Without one, the job's `memory_max` is counted.
     pub memory_reserved: Option<u64>,
-    /// `pids.max`.
     pub pids_max: Option<u64>,
     /// `cpu.weight`, 1–10000 (the kernel's default is 100): the job's share.
     pub cpu_weight: Option<u32>,
@@ -98,9 +97,6 @@ pub struct IoMax {
 
 impl IoMax {
     /// No limits yet on the whole disk holding `path`.
-    ///
-    /// # Errors
-    /// Returns why `path` or its device could not be inspected.
     pub fn for_path(path: &Path) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let dev = std::fs::metadata(path)?.dev();
@@ -222,7 +218,6 @@ pub struct Usage {
     pub cpu_usec: u64,
     /// `memory.peak`, page cache included.
     pub memory_peak: Option<u64>,
-    /// `memory.current`.
     pub memory_current: Option<u64>,
     /// Bytes written to disk (`io.stat` wbytes, every device).
     pub write_bytes: Option<u64>,
@@ -230,7 +225,6 @@ pub struct Usage {
     pub oom_kills: u64,
     /// `memory.events` `oom_group_kill`: whole-job kills (memory.oom.group).
     pub oom_group_kills: u64,
-    /// `pids.peak`.
     pub pids_peak: Option<u64>,
 }
 
@@ -288,14 +282,10 @@ impl JobCgroup {
 
     /// Kill every process in the cgroup (`cgroup.kill`): `setsid` daemons
     /// and double-forked servers included.
-    ///
-    /// # Errors
-    /// Returns why `cgroup.kill` could not be written.
     pub fn kill(&self) -> io::Result<()> {
         write_at(self.dir.as_fd(), "cgroup.kill", "1")
     }
 
-    /// The pids in the cgroup now.
     pub fn pids(&self) -> Vec<u32> {
         self.read("cgroup.procs")
             .unwrap_or_default()
@@ -313,9 +303,6 @@ impl Drop for JobCgroup {
 }
 
 /// Read a file beneath a directory descriptor.
-///
-/// # Errors
-/// Returns the error opening or reading gave.
 pub fn read_at(dir: BorrowedFd<'_>, file: &str) -> io::Result<String> {
     let mut f = open_at(dir, file, libc::O_RDONLY)?;
     let mut s = String::new();
@@ -324,9 +311,6 @@ pub fn read_at(dir: BorrowedFd<'_>, file: &str) -> io::Result<String> {
 }
 
 /// Write a file beneath a directory descriptor.
-///
-/// # Errors
-/// Returns the error opening or writing gave.
 pub fn write_at(dir: BorrowedFd<'_>, file: &str, content: &str) -> io::Result<()> {
     open_at(dir, file, libc::O_WRONLY)?.write_all(content.as_bytes())
 }
@@ -359,10 +343,6 @@ fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// Write `limits` into the cgroup at `dir`.
-///
-/// # Errors
-/// Returns the first limit the kernel refused.
 pub fn apply_limits(
     dir: &Path,
     limits: &Limits,
@@ -423,9 +403,6 @@ pub fn kill_and_remove(path: &Path) {
 
 /// The cgroup v2 directory of process `pid` (`/proc/<pid>/cgroup`'s `0::`
 /// line), under `mount`.
-///
-/// # Errors
-/// Returns why the process's cgroup could not be found.
 pub fn cgroup_of(pid: &str, mount: &Path) -> io::Result<PathBuf> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
     let rel = text
@@ -455,7 +432,6 @@ pub struct DirectOptions {
     pub root: Option<PathBuf>,
     /// The leaf the worker's processes move into.
     pub worker_leaf: String,
-    /// The parent of every job cgroup.
     pub jobs: String,
     /// Memory kept for the worker: `worker/memory.min`, and subtracted from
     /// the root's `memory.max` for the jobs' budget.
@@ -585,7 +561,6 @@ impl Direct {
         })
     }
 
-    /// Controllers each job cgroup has.
     pub fn controllers(&self) -> &[String] {
         &self.controllers
     }

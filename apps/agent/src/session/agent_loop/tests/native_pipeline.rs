@@ -1,46 +1,7 @@
-//! Native task steps: followed by their host's answers rather than a timer,
-//! and run alongside each other when the model marks them standalone —
-//! with the same rules as a Task Center run's.
+//! A run's steps: followed by their host's answers rather than a timer,
+//! and run alongside each other when the model marks them standalone.
 
 use super::*;
-
-/// A native workspace task's run (`native:` lease, a control frontier the
-/// cancellation poll answers with): its steps are native children, each
-/// re-asked by its stable id to be observed.
-fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
-    let control = runtime_collab::TaskRunControl {
-        version: 1,
-        task_id: "task:loop".into(),
-        run_epoch: 1,
-        from_revision: 0,
-        applied_revision: 0,
-        latest_revision: 0,
-        directions: Vec::new(),
-        has_more: false,
-    };
-    let mut f = fixture(
-        title,
-        World {
-            native_control: Some(control),
-            ..world
-        },
-        turns,
-    );
-    f.run.lease = "native:00000000000000000000000000000000:0".into();
-    f.run.action_context = serde_json::to_value(
-        tilo_actions::ActionContext::default()
-            .with_purpose(title)
-            .with_group(f.run.task_id.as_str(), title, "task"),
-    )
-    .unwrap();
-    super::super::super::validate_task_run(&f.run).unwrap();
-    f
-}
-
-/// A native run's terminal report.
-fn native_terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
-    legacy_terminal(sent)
-}
 
 /// The children the agent started, in order: one `InvokeTaskAction` each
 /// with no wait (a re-ask always asks to be held).
@@ -75,12 +36,12 @@ fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
 /// and the model reads their results in the order it wrote the calls.
 #[test]
 fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
-    let settle = Duration::from_millis(300);
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the standup change and start the agenda and the minutes",
         World {
             second_window: Some("doc-2"),
-            settle_after: Some(settle),
+            settle_after: Some(Duration::from_millis(10)),
+            settle_gate: 3,
             ..World::default()
         },
         vec![
@@ -115,7 +76,7 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
         assert_eq!(result["result"], "succeeded", "{id}: {result}");
     }
     assert_eq!(
-        native_terminal(&f.sent.borrow()),
+        terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Succeeded {
             message: "Posted and started both documents.".into()
         }
@@ -126,11 +87,11 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
 /// starts only after every running step has settled.
 #[test]
 fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
-    let settle = Duration::from_millis(150);
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post, write a heading, then type under it and confirm in Chat",
         World {
-            settle_after: Some(settle),
+            settle_after: Some(Duration::from_millis(10)),
+            settle_gate: 2,
             ..World::default()
         },
         vec![
@@ -196,10 +157,11 @@ fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
 /// it reads the run cancelled, and the run ends cancelled.
 #[test]
 fn cancelling_a_native_task_stops_every_step_in_flight() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change and start the agenda",
         World {
-            settle_after: Some(Duration::from_secs(20)),
+            // Longer than the test may run: the steps end cancelled.
+            settle_after: Some(tilo_test_env::hang_bound()),
             cancel_after_steps: Some(2),
             ..World::default()
         },
@@ -224,20 +186,14 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
             24,
         )],
     );
-    let began = ui::time::now();
     f.session.run_task(&f.run).unwrap();
-    assert!(
-        began.elapsed() < Duration::from_secs(10),
-        "cancelled, not waited out: {:?}",
-        began.elapsed()
-    );
     let world = f.world.borrow();
     assert_eq!(world.started.len(), 2);
     let started: HashSet<_> = children_started(&f.sent.borrow()).into_iter().collect();
     let cancelled: HashSet<_> = world.cancelled.iter().copied().collect();
     assert_eq!(cancelled, started, "every running child is cancelled");
     assert!(matches!(
-        native_terminal(&f.sent.borrow()),
+        terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Cancelled { .. }
     ));
 }
@@ -247,7 +203,7 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
 /// after a failure.
 #[test]
 fn a_refused_native_step_does_not_stop_the_others() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change and start the agenda",
         World {
             settle_after: Some(Duration::from_millis(100)),
@@ -313,10 +269,13 @@ fn a_refused_native_step_does_not_stop_the_others() {
 /// once, with the outcome, and no round trip comes back empty.
 #[test]
 fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change",
         World {
             settle_after: Some(Duration::from_millis(250)),
+            // However long the machine takes to get there, the re-ask is
+            // still held when the child settles.
+            reask_hold: ReaskHold::UntilNews,
             ..World::default()
         },
         vec![
@@ -352,12 +311,12 @@ fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
 /// agent then re-asks at the old cadence, never in a loop.
 #[test]
 fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
-    let settle = Duration::from_millis(250);
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change",
         World {
-            settle_after: Some(settle),
-            answers_reasks_at_once: true,
+            settle_after: Some(tilo_test_env::hang_bound()),
+            settles_at_reask: Some(4),
+            reask_hold: ReaskHold::AnswerAtOnce,
             ..World::default()
         },
         vec![
@@ -377,13 +336,20 @@ fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
     f.session.run_task(&f.run).unwrap();
     let world = f.world.borrow();
     assert_eq!(world.posts, ["Standup moved."]);
-    // One re-ask per 50 ms while the child runs, and the one that finds it
-    // settled; a loop would send thousands.
-    let most = usize::try_from(settle.as_millis() / 50).unwrap() + 3;
+    assert_eq!(world.observations, 4);
+    assert_eq!(world.idle_observations, 3);
+    // Each re-ask after an empty answer waits for the old cadence, counted
+    // from when the agent sent the one before (a moment before the host
+    // took it in); a loop would send the next at once.
+    let gaps: Vec<Duration> = world
+        .reasked_at
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
     assert!(
-        (2..=most).contains(&world.observations),
-        "{} re-asks in {settle:?}",
-        world.observations
+        gaps.iter()
+            .all(|gap| *gap >= crate::session::native_task::REASK_PACE / 2),
+        "re-asked {gaps:?} apart"
     );
 }
 
@@ -407,12 +373,14 @@ struct Measured {
 fn native_task_benchmark() {
     use std::fmt::Write as _;
     let settle = Duration::from_millis(100);
-    let reps: usize = std::env::var("TILO_AGENT_NATIVE_REPS")
+    // Measured only when asked for (the scheduled perf run): an ordinary
+    // run checks the plan runs either way, not how fast this machine is.
+    let measured: Option<usize> = std::env::var("TILO_AGENT_NATIVE_REPS")
         .ok()
-        .and_then(|reps| reps.parse().ok())
-        .unwrap_or(3);
+        .and_then(|reps| reps.parse().ok());
+    let reps = measured.unwrap_or(1);
     let run_once = |independent: bool| {
-        let mut f = native_run_fixture(
+        let mut f = fixture(
             "post the standup change and start the agenda and the minutes",
             World {
                 second_window: Some("doc-2"),
@@ -434,7 +402,7 @@ fn native_task_benchmark() {
         let world = f.world.borrow();
         assert_eq!(world.started.len(), 3);
         assert!(matches!(
-            native_terminal(&f.sent.borrow()),
+            terminal(&f.sent.borrow()),
             runtime_collab::TaskRunUpdate::Succeeded { .. }
         ));
         let idle = world.idle_observations + world.cancellation_checks;
@@ -482,10 +450,12 @@ fn native_task_benchmark() {
     // than three times it; alongside each other they need it once.
     let floor = settle.as_secs_f64() * 1000.0;
     assert!(slow >= 3.0 * floor, "sequential {slow:.1} ms");
-    assert!(
-        fast < 2.0 * floor,
-        "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
-    );
+    if measured.is_some() {
+        assert!(
+            fast < 2.0 * floor,
+            "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
+        );
+    }
 }
 
 /// The descriptor of Writer's `append-paragraph`, as the agent reads it.
@@ -503,7 +473,7 @@ fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
 /// tells the model what happened instead of planning the task over.
 #[test]
 fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World {
             awaiting: Some(("append-paragraph".into(), 1)),
@@ -530,14 +500,18 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
                 invocation,
                 action,
                 arguments,
-                wait: None,
+                wait,
                 ..
-            } => Some((*invocation, action.clone(), arguments.clone())),
+            } => Some((*invocation, action.clone(), arguments.clone(), *wait)),
             _ => None,
         })
         .collect();
     assert_eq!(asks.len(), 2, "asked, then asked again once: {asks:?}");
-    for (invocation, action, asked) in &asks {
+    assert!(
+        asks[1].3.is_some(),
+        "asked again to be held until the person answers"
+    );
+    for (invocation, action, asked, _) in &asks {
         assert_eq!(action, "append-paragraph");
         assert_eq!(asked, &arguments, "exactly the drafted arguments");
         assert_eq!(*invocation, asks[0].0, "one child, asked again by its id");
@@ -552,7 +526,7 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
     assert!(first.contains("has resumed at that step"), "{first}");
     assert!(first.contains("Append paragraph"), "{first}");
     assert_eq!(
-        native_terminal(&sent),
+        terminal(&sent),
         runtime_collab::TaskRunUpdate::Succeeded {
             message: "Added the closing line.".into()
         }
@@ -564,7 +538,7 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
 /// it rather than leaving it to the model.
 #[test]
 fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World {
             awaiting: Some(("append-paragraph".into(), 1)),
@@ -574,7 +548,11 @@ fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
     );
     let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
     let descriptor = drafted(&mut f);
-    let hex: String = DOC.bytes().map(|byte| format!("{byte:02x}")).collect();
+    let hex = DOC.bytes().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
     f.run.paused = Some(runtime_collab::TaskRunPausedStep {
         app: "so.tilo.word-processor".into(),
         resource: format!(
@@ -598,7 +576,7 @@ fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
 /// told what waits so that it asks for that step again.
 #[test]
 fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World::default(),
         vec![turn(&[finish("Waiting on the person.", true)], 24)],
@@ -627,7 +605,7 @@ fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
 #[test]
 fn a_native_child_id_names_its_request_not_its_position() {
     let ids = |requests: &[&str]| {
-        let mut f = native_run_fixture("ids", World::default(), Vec::new());
+        let mut f = fixture("ids", World::default(), Vec::new());
         f.session.native_task = Some(crate::session::native_task::NativeTaskState {
             run_id: f.run.run_id,
             task_id: f.run.task_id.clone(),

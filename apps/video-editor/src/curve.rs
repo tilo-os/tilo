@@ -489,7 +489,6 @@ mod tests {
 
     #[test]
     fn curve_bake_shapes_channels_master_and_mix() {
-        // Case `an_untouched_curve_is_the_identity_and_binds_no_table`.
         {
             let c = Curve::default();
             assert!(c.is_identity(), "a fresh curve changes nothing");
@@ -498,7 +497,6 @@ mod tests {
                 assert!((r - t).abs() < 1e-9 && (g - t).abs() < 1e-9 && (b - t).abs() < 1e-9);
             }
         }
-        // Case `the_identity_bake_is_a_straight_ramp`.
         {
             let lut = Curve::default().bake();
             assert_eq!(lut.len(), LUT_SIZE * 4);
@@ -509,7 +507,6 @@ mod tests {
                 assert_eq!(lut[i * 4 + 2], want, "entry {i} blue");
             }
         }
-        // Case `a_lifted_midpoint_raises_the_midtones_and_leaves_the_ends_alone`.
         {
             let mut c = Curve::default();
             c.master.set_point(0.5, 0.75);
@@ -528,7 +525,6 @@ mod tests {
             assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
             assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
         }
-        // Case `a_per_channel_curve_moves_only_that_channel`.
         {
             let mut c = Curve::default();
             c.red.set_point(0.5, 0.8);
@@ -538,7 +534,6 @@ mod tests {
             assert!((b - 0.5).abs() < 1e-9, "blue untouched: {b}");
             assert_eq!(c.shaped_channels(), vec![Channel::Red]);
         }
-        // Case `the_master_runs_after_the_channel_curve`.
         {
             // red: 0.5 -> 0.8; master: 0.8 -> 0.2. Composed one way the answer
             // is 0.2, the other way it is not — so this pins the order.
@@ -548,7 +543,6 @@ mod tests {
             let r = c.apply(0.5, 0.5, 0.5).0;
             assert!((r - 0.2).abs() < 1e-6, "master(red(x)), got {r}");
         }
-        // Case `mix_blends_the_shaped_curve_back_toward_the_identity`.
         {
             let mut c = Curve::default();
             c.master.set_point(0.5, 1.0);
@@ -559,7 +553,6 @@ mod tests {
             assert!(c.is_identity(), "mixed all the way out is a bypass");
             assert!((c.apply(0.5, 0.5, 0.5).0 - 0.5).abs() < 1e-9);
         }
-        // Case `mix_is_folded_into_the_bake_so_the_shader_needs_no_blend`.
         {
             let mut c = Curve::default();
             c.master.set_point(0.5, 1.0);
@@ -580,7 +573,6 @@ mod tests {
 
     #[test]
     fn curve_interpolation_is_monotone_and_exact_on_simple_splines() {
-        // Case `the_curve_never_overshoots_the_points_it_was_given`.
         {
             // A steep S is exactly what a Catmull-Rom spline overshoots on: the
             // segment past the last steep point bulges above 1.0 and clips into
@@ -596,7 +588,6 @@ mod tests {
                     "eval({t}) = {v} left the unit range"
                 );
             }
-            // Between two points the curve stays between their values.
             for i in 0..=200 {
                 let t = 0.25 + 0.5 * f64::from(i) / 200.0;
                 let v = c.master.eval(t);
@@ -606,7 +597,6 @@ mod tests {
                 );
             }
         }
-        // Case `a_flat_run_stays_flat`.
         {
             // Two points at the same height must not bow between them.
             let mut s = Spline::identity();
@@ -617,7 +607,6 @@ mod tests {
                 assert!((s.eval(t) - 0.6).abs() < 1e-9, "eval({t}) = {}", s.eval(t));
             }
         }
-        // Case `two_points_is_exactly_the_straight_line_between_them`.
         {
             let mut s = Spline {
                 points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
@@ -643,7 +632,6 @@ mod tests {
         reason = "the points are stored as given and read straight back"
     )]
     fn curve_point_editing_keeps_the_spline_valid() {
-        // Case `endpoints_hold_their_x_however_they_are_dragged`.
         {
             let mut s = Spline::identity();
             s.move_point(0, 0.4, 0.3);
@@ -653,7 +641,6 @@ mod tests {
             assert_eq!(s.points[1].x, 1.0);
             assert_eq!(s.points[1].y, 0.6);
         }
-        // Case `an_interior_point_cannot_be_dragged_past_its_neighbours`.
         {
             let mut s = Spline::identity();
             s.set_point(0.3, 0.3);
@@ -666,7 +653,6 @@ mod tests {
             let xs: Vec<f64> = s.points.iter().map(|p| p.x).collect();
             assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
         }
-        // Case `endpoints_can_never_be_removed`.
         {
             let mut s = Spline::identity();
             s.set_point(0.5, 0.7);
@@ -676,7 +662,6 @@ mod tests {
             assert!(s.remove_point(1), "an interior point is");
             assert!(s.is_identity(), "and the curve is back to the line");
         }
-        // Case `a_point_too_close_to_a_neighbour_is_refused_rather_than_stacked`.
         {
             let mut s = Spline::identity();
             s.set_point(0.5, 0.7);
@@ -688,7 +673,6 @@ mod tests {
             assert_eq!(s.set_point(0.5, 0.2), Some(1));
             assert_eq!(s.points[1].y, 0.2);
         }
-        // Case `a_malformed_spline_is_repaired_before_it_can_reach_the_bake`.
         {
             // Out of order, out of range, missing both endpoints, and a NaN.
             let bad = Spline {
@@ -713,7 +697,6 @@ mod tests {
                 assert!(s.eval(f64::from(i) / 100.0).is_finite());
             }
         }
-        // Case `point_near_finds_the_closest_within_tolerance`.
         {
             let mut s = Spline::identity();
             s.set_point(0.5, 0.5);
@@ -737,13 +720,11 @@ mod tests {
         reason = "the points are stored as given and read straight back"
     )]
     fn curve_names_and_json_round_trip_with_absent_field_defaults() {
-        // Case `channel_names_round_trip`.
         {
             for c in Channel::ALL {
                 assert_eq!(Channel::from_name(c.as_str()), c, "{c:?}");
             }
         }
-        // Case `a_curve_survives_a_json_round_trip_including_its_mix`.
         {
             let mut c = Curve::default();
             c.master.set_point(0.4, 0.6);
@@ -753,7 +734,6 @@ mod tests {
             let back: Curve = serde_json::from_str(&json).expect("deserialise");
             assert_eq!(back, c);
         }
-        // Case `a_document_that_predates_the_mix_field_reads_as_full_strength`.
         {
             // `mix` defaulting to 0.0 would silently bypass every curve written
             // before the field existed.

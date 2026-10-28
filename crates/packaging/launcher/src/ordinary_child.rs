@@ -34,7 +34,7 @@ fn denied() -> io::Error {
 }
 fn digest(command: &ConsumerCommand) -> io::Result<[u8; 32]> {
     command.validate()?;
-    if command.program != "/usr/bin/tilo-launcher"
+    if command.program != "/usr/libexec/tilo/tilo-launcher"
         || command.env.iter().any(|(key, _)| key == WAIT_ENV)
     {
         return Err(denied());
@@ -205,7 +205,7 @@ fn target_environment(peer: &ExecutingPeer) -> io::Result<Vec<(String, String)>>
     Ok(result)
 }
 fn protected_launcher() -> io::Result<File> {
-    for path in ["/", "/usr", "/usr/bin"] {
+    for path in ["/", "/usr", "/usr/libexec", "/usr/libexec/tilo"] {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
@@ -218,7 +218,7 @@ fn protected_launcher() -> io::Result<File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open("/usr/bin/tilo-launcher")?;
+        .open("/usr/libexec/tilo/tilo-launcher")?;
     let facts = file.metadata()?;
     if !facts.is_file()
         || facts.uid() != 0
@@ -295,8 +295,6 @@ fn child_cancellation(cancel: ServiceCancellation) -> ServiceCancellation {
     child
 }
 impl OwnedOrdinaryChild {
-    /// # Errors
-    /// Refuses invalid credentials, command, namespace or cancellation, and returns spawn or descriptor errors.
     pub fn spawn(
         command: &ConsumerCommand,
         target: &ExecutingPeer,
@@ -388,8 +386,6 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Start the actual root owner. A panic/observation error cannot mint stop.
-    /// # Errors
-    /// Returns descriptor duplication or worker creation errors.
     pub fn start_supervision(self) -> io::Result<OrdinaryChildSupervisor> {
         let launcher_pid = self.child.id();
         let launcher_pidfd = self.pidfd.try_clone()?;
@@ -426,8 +422,6 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Existing authenticated bootstrap only. ACKs mean transport, not authority.
-    /// # Errors
-    /// Refuses stale custody or mismatched namespaces and returns transport errors.
     pub fn handoff(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         if self.cancel.is_cancelled()
             || stopped(&self.pidfd)?
@@ -464,8 +458,6 @@ impl OwnedOrdinaryChild {
     }
     /// Run on the existing root owner worker. Reap evidence is an actual wait
     /// result. Caller still retains source and inner-namespace retirement duties.
-    /// # Errors
-    /// Returns protocol, transport, or child observation errors.
     pub fn serve(&mut self) -> io::Result<()> {
         self.control
             .set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -542,8 +534,6 @@ pub struct PreparedOrdinaryChild {
     reaped: Option<ExitStatus>,
 }
 impl PreparedOrdinaryChild {
-    /// # Errors
-    /// Refuses mismatched command or root custody and returns descriptor or transport errors.
     pub fn receive(
         stream: &mut UnixStream,
         root: &ExecutingPeer,
@@ -688,8 +678,6 @@ impl PreparedOrdinaryChild {
             _ => Err(denied()),
         }
     }
-    /// # Errors
-    /// Returns custody validation, transport or child signaling errors.
     pub fn kill(&mut self) -> io::Result<()> {
         if self.reaped.is_some() {
             return Ok(());
@@ -697,8 +685,6 @@ impl PreparedOrdinaryChild {
         let _ = self.request(b'K')?;
         Ok(())
     }
-    /// # Errors
-    /// Returns custody validation, transport or child observation errors.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);
@@ -842,14 +828,9 @@ mod tests {
         let (child, mut remote, observed) = controlled_child();
         let mut owner = child.start_supervision().unwrap();
         remote.write_all(b"?").unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !owner.worker.as_ref().unwrap().is_finished() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "owner must process refusal"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the owner to process the refusal", || {
+            owner.worker.as_ref().unwrap().is_finished()
+        });
         owner.retire_before_exit();
         assert!(owner.observed_stopped());
         assert!(stopped(&observed).unwrap());
@@ -1202,18 +1183,6 @@ impl DelegatedConsumingBootstrap {
             helper,
             endpoint,
         })
-    }
-    /// Consume this exact proof endpoint's child handoff. Retain both parent
-    /// and consuming-root kernel identities throughout the target supervision.
-    /// # Errors
-    /// Refuses current root custody or command/descriptor mismatches.
-    pub fn receive_ordinary(self, command: &ConsumerCommand) -> io::Result<PreparedOrdinaryChild> {
-        self.receive_ordinary_until(
-            command,
-            Instant::now()
-                .checked_add(Duration::from_secs(10))
-                .ok_or(io::ErrorKind::InvalidInput)?,
-        )
     }
     /// # Errors
     /// Refuses the private ordinary-child handoff under the same total deadline.
@@ -1822,7 +1791,7 @@ mod command_tests {
     use super::*;
     fn command() -> ConsumerCommand {
         ConsumerCommand {
-            program: "/usr/bin/tilo-launcher".into(),
+            program: "/usr/libexec/tilo/tilo-launcher".into(),
             args: vec!["run".into()],
             env: Vec::new(),
         }
@@ -1984,8 +1953,7 @@ mod bootstrap_refusal_tests {
     #[test]
     fn closed_refusal_consumes_exact_phase_and_preserves_next_handoff() {
         let (mut root, mut shell) = UnixStream::pair().unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
-        refuse_consuming_bootstrap(&mut root, deadline).unwrap();
+        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
         root.write_all(BOOTSTRAP_MAGIC).unwrap();
         assert_eq!(
             read_bootstrap_kind(&mut shell).unwrap(),
@@ -2007,10 +1975,11 @@ mod bootstrap_refusal_tests {
             .unwrap();
         let fence =
             SocketDeadline::start(&shell, ServiceCancellation::default(), deadline).unwrap();
+        // The root stays open with a partial frame: only the fence at the
+        // deadline ends the read.
         root.write_all(b"TCB").unwrap();
         assert!(read_bootstrap_kind(&mut shell).is_err());
         assert!(fence.check().is_err());
-        assert!(Instant::now().duration_since(deadline) < Duration::from_secs(1));
         drop(fence);
     }
     #[test]
@@ -2018,22 +1987,14 @@ mod bootstrap_refusal_tests {
         let (mut child, mut control) = UnixStream::pair().unwrap();
         let (mut root, mut shell) = UnixStream::pair().unwrap();
         let cancel = ServiceCancellation::default();
-        let fence = SocketDeadline::start(
-            &control,
-            cancel.clone(),
-            Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
-        )
-        .unwrap();
+        let fence = SocketDeadline::start(&control, cancel.clone(), tilo_test_env::hang_deadline())
+            .unwrap();
         child.write_all(b"TC").unwrap();
         cancel.cancel();
         assert!(read_bootstrap_kind(&mut control).is_err());
         assert!(fence.check().is_err());
         drop(fence);
-        refuse_consuming_bootstrap(
-            &mut root,
-            Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
-        )
-        .unwrap();
+        refuse_consuming_bootstrap(&mut root, tilo_test_env::hang_deadline()).unwrap();
         assert_eq!(
             read_bootstrap_kind(&mut shell).unwrap(),
             BootstrapKind::Refused

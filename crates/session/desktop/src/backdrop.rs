@@ -1,7 +1,7 @@
 //! Desktop backdrop widget — paints the desktop background behind all
 //! shell content: the wallpaper the host supplies, cover-fitted to each
 //! display on its own, or, with no wallpaper, a diagonal gradient across
-//! the theme's ground surface ([`ground_stops`]) under a tiled 64×64
+//! the theme's ground surface (`ground_stops`) under a tiled 64×64
 //! procedural noise overlay that breaks banding on the gradient.
 //!
 //! Structurally a thin `Container`-style wrapper around one optional

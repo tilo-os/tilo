@@ -19,6 +19,7 @@
 //! The list is a [`SuggestionList`] anchored at the `@`, painted in the
 //! window's top layer.
 
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -108,18 +109,20 @@ pub struct MentionQuery {
 const MAX_QUERY_LEN: usize = 40;
 
 /// The `@`-run ending at `caret` in `text`, if the caret is in one: an `@`
-/// that opens a word (at the start, or after whitespace), followed by at
-/// most [`MAX_QUERY_LEN`] bytes with no newline and no other `@`.
+/// that opens a word (at the start, after whitespace or after punctuation
+/// that is not part of a word), followed by at most `MAX_QUERY_LEN` bytes
+/// with no newline and no other `@`. An `@` inside a word — an email's
+/// `a@b` — opens nothing.
 #[must_use]
 pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let caret = text.floor_char_boundary(caret.min(text.len()));
     let head = text.get(..caret)?;
     let at = head.rfind('@')?;
-    let opens_word = head
-        .get(..at)?
-        .chars()
-        .next_back()
-        .is_none_or(char::is_whitespace);
+    let opens_word = head.get(..at)?.chars().next_back().is_none_or(|before| {
+        before.is_whitespace()
+            || (before.is_ascii_punctuation()
+                && !matches!(before, '@' | '_' | '.' | '%' | '+' | '-'))
+    });
     if !opens_word {
         return None;
     }
@@ -157,7 +160,7 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
         };
         ranked.push((rank, index, candidate));
     }
-    ranked.sort_by_key(|(rank, index, _)| (*rank, *index));
+    ranked.compact_sort_by_key(|(rank, index, _)| (*rank, *index));
     ranked
         .into_iter()
         .map(|(_, _, candidate)| candidate)
@@ -189,7 +192,7 @@ pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<
     }
     // By name, as a person scans a list of people; the id keeps two of one
     // name in a stable order.
-    out.sort_by(|a, b| {
+    out.compact_sort_by(|a, b| {
         a.name
             .to_lowercase()
             .cmp(&b.name.to_lowercase())
@@ -422,8 +425,19 @@ impl MentionPicker {
 }
 
 /// The row a candidate shows as: their avatar, their name and, for anyone
-/// who is not simply a person, what they are.
-fn suggestion(candidate: &MentionCandidate) -> Suggestion {
+/// who is not simply a person, what they are. Its value is the participant
+/// id, because a document's mention records who it is.
+pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
+    suggestion_with_value(candidate, candidate.id.clone())
+}
+
+/// The row a candidate shows as when accepting it writes prose: the value
+/// is the mention the text resolves (`@name`), not the participant id.
+pub(crate) fn mention_suggestion(candidate: &MentionCandidate) -> Suggestion {
+    suggestion_with_value(candidate, candidate.label())
+}
+
+fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggestion {
     let detail = match candidate.kind {
         ParticipantKind::Person => None,
         ParticipantKind::Agent => Some(crate::i18n!("widget-mention-agent")),
@@ -431,13 +445,11 @@ fn suggestion(candidate: &MentionCandidate) -> Suggestion {
         ParticipantKind::App => Some(crate::i18n!("widget-mention-app")),
         ParticipantKind::Bot => Some(crate::i18n!("widget-mention-bot")),
     };
-    let row = Suggestion::labelled(candidate.id.clone(), candidate.name.clone()).with_person(
-        SuggestionPerson {
-            identity: candidate.id.clone(),
-            color: candidate.color,
-            agent: candidate.kind != ParticipantKind::Person,
-        },
-    );
+    let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
+        identity: candidate.id.clone(),
+        color: candidate.color,
+        agent: candidate.kind != ParticipantKind::Person,
+    });
     match detail {
         Some(detail) => row.with_detail(detail),
         None => row,
@@ -503,5 +515,33 @@ mod tests {
         assert!(picker.is_open(), "a new @ opens it again");
         picker.follow(0, "hello @Tide", |at| at == 6, &room);
         assert!(!picker.is_open(), "a finished mention offers nothing");
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::permissions::UserId;
+
+    #[test]
+    fn the_room_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
+        let mut presence = crate::presence::PresenceCtx::empty();
+        presence
+            .names
+            .insert(UserId("u_ada".into()), "Ada Lovelace".into());
+        presence
+            .names
+            .insert(UserId("u_alan".into()), "Alan Turing".into());
+        let extra = vec![
+            MentionCandidate::new("u_ada", "Ada L.", false),
+            MentionCandidate::new("u_old", "Zoe Zebra", false),
+            MentionCandidate::new("u_blank", "   ", false),
+        ];
+        let merged = merged_roster(&presence, &extra);
+        let names: Vec<_> = merged
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        assert_eq!(names, ["Ada Lovelace", "Alan Turing", "Zoe Zebra"]);
     }
 }

@@ -26,9 +26,6 @@ pub struct RepoHosts {
 impl RepoHosts {
     /// Read `etc/yum.repos.d/*.repo` (and `etc/dnf/vars`, `etc/os-release`
     /// for the variables) under `runtime_root`, for `arch`.
-    ///
-    /// # Errors
-    /// Returns the error listing `etc/yum.repos.d`.
     pub fn read(runtime_root: &Path, arch: &str) -> std::io::Result<Self> {
         let vars = DnfVars::read(runtime_root, arch);
         let mut out = Self::default();

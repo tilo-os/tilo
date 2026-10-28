@@ -38,37 +38,30 @@ impl Resource for Document {
 }
 
 #[test]
-fn framework_edits_finish_before_observation_drain_and_refuse_before_mutation() {
+fn framework_edits_finish_before_observation_drain_and_a_full_queue_never_refuses_an_edit() {
     let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
     let mut doc = AutoCommit::new();
     let queue = ui_core::local_document_action::Queue::new();
     let _input = queue.enter("published-revision".into());
-    // No drain, admission or host response occurs between these real SDK edits.
-    let mut completed = 0;
+    // No drain, admission or host response occurs between these real SDK
+    // edits. Every one lands; those beyond the queue's room go unreported.
     for value in 0..=128 {
-        let heads = doc.get_heads();
-        if dispatcher
+        dispatcher
             .apply_now(&mut Edits::lend(&mut doc), &Put(value))
-            .is_err()
-        {
-            assert_eq!(doc.get_heads(), heads, "refusal precedes mutation");
-            break;
-        }
-        completed += 1;
+            .expect("an edit never waits for its report");
         assert_eq!(
             doc.get(ROOT, "value").unwrap().unwrap().0.as_u64(),
             Some(value)
         );
     }
-    // Either the byte budget or the count budget may be reached first.
-    assert!((2..=128).contains(&completed));
     assert_eq!(
-        doc.get(ROOT, "value").unwrap().unwrap().0.as_u64(),
-        Some(completed - 1)
+        queue.take_refusals().len(),
+        1,
+        "the edits the queue could not report are shown"
     );
-    assert_eq!(queue.take_refusals().len(), 1);
     let captures = queue.drain();
-    assert_eq!(u64::try_from(captures.len()).ok(), Some(completed));
+    // Either the byte budget or the count budget may be reached first.
+    assert!((2..=128).contains(&captures.len()));
     for capture in captures {
         assert_eq!(capture.mutation_hashes.len(), 1);
         assert_eq!(capture.published.unwrap().resource, "body");
@@ -79,7 +72,7 @@ fn framework_edits_finish_before_observation_drain_and_refuse_before_mutation() 
     assert_eq!(
         queue.drain().len(),
         1,
-        "released capacity permits the next edit"
+        "released capacity reports the next edit again"
     );
 }
 
@@ -165,4 +158,25 @@ fn standalone_immediate_dispatch_has_no_capture_encoding() {
     assert_eq!(invocation.action, tilo_resource::APPLY);
     assert_eq!(captures[0].mutation_hashes.len(), 1);
     assert!(queue.take_refusals().is_empty());
+}
+
+#[test]
+fn what_the_app_submits_on_its_own_reaches_the_host_as_the_apps() {
+    let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+    let invoke = || Invoke::<Document>::apply(&Put(1)).expect("the edit binds");
+    dispatcher.submit(invoke());
+    dispatcher.submit_on_its_own(invoke());
+    dispatcher.submit(invoke());
+    let origins = dispatcher
+        .core
+        .queue
+        .borrow()
+        .iter()
+        .map(|(_, origin)| *origin)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        origins,
+        [Origin::Person, Origin::App, Origin::Person],
+        "only what was submitted on its own is the app's, and the next submission is the person's again"
+    );
 }

@@ -62,13 +62,6 @@ class CollectionSourceTest(unittest.TestCase):
         self.write(".forgejo/workflows/release-apps.yml", "no input policy")
         self.assertEqual(self.check(self.base, self.base).returncode, 1)
 
-    def test_preflight_precedes_expensive_jobs(self):
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
-        plan = workflow.split("\n  plan:\n", 1)[1].split("\n  signing-preflight:\n", 1)[0]
-        self.assertIn("bash tools/ci/check_app_collection_source.sh", plan)
-        self.assertIn("github.event_name != 'workflow_call'", plan)
-        self.assertIn("persist-credentials: false", plan)
-
 
 if __name__ == "__main__":
     unittest.main()

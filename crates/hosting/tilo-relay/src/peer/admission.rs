@@ -441,7 +441,7 @@ pub(super) async fn enqueue_state_inner(
             timed_bytes,
         },
     };
-    let completion = Box::pin(owner.submit_lane_wait(
+    let completion = Box::pin(owner.submit_commit_wait(
         lane,
         charge,
         preparation,
@@ -567,11 +567,17 @@ async fn prepare_admission(
     // A change only the steward reads reaches no other session, live
     // or through a catch-up.
     let steward = steward_audience(&runtime, steward_only);
+    // A device's own change is not sent back to it. What the host commits
+    // itself (the governor's decisions, a room bot's writes) no session
+    // sent, so it reaches the host device's own session too: the room
+    // actions the host runs for members read through that session, and
+    // would otherwise never see a bot complete what a member started.
+    let host_commit = source.is_none();
     let sessions = runtime
         .subscribers
         .iter()
         .filter(|(key, sub)| {
-            **key != author
+            (**key != author || host_commit)
                 && !(role == crate::auth::PeerRole::PeerRelay
                     && sub.role == crate::auth::PeerRole::PeerRelay)
                 && steward
@@ -730,10 +736,21 @@ impl StateTurn {
             });
         if let Some((channel, seq)) = retention {
             test_point!(pause(state.store.root(), "state-persist"));
+            // A checkpoint may replace its lineage's generation whole, as
+            // listed: every record the owner's group holds is under its name
+            // first. A delta joins the group (`retained::SharedGroup`).
+            if seq.is_none() {
+                state.group.flush()?;
+            }
             let build = crate::timing::windowed("owner.commit.retain_start", || {
                 retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())
             })?
             .with_continuity(continuity.clone());
+            let build = if seq.is_some() {
+                build.deferring(state.group.records())?
+            } else {
+                build
+            };
             state.retention_scratch = Some(build.scratch().to_owned());
             self.retained_build = Some(build);
         } else {

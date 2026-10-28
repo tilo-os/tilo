@@ -13,11 +13,15 @@ use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
 use crate::app::catalog_resource_id;
+use crate::i18n::{t, t_args, text};
 use crate::resource::DbEffect;
 use crate::session::Session;
 use ui::lock::RwLockRecover as _;
 
-const KIND: &str = "Database";
+/// The group system search files this app's catalogue under.
+fn kind() -> String {
+    t("db-search-kind")
+}
 
 #[derive(Default)]
 struct IndexState {
@@ -37,11 +41,6 @@ pub struct DbSearchIndex {
 
 impl DbSearchIndex {
     /// Refresh the catalogue from the live session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when two rows of the snapshot name one resource. The
-    /// previous valid snapshot remains available.
     pub fn sync(&self, session: &Session) -> Result<(), String> {
         let revision = revision(session);
         let state = self.state.read_recover();
@@ -79,7 +78,7 @@ fn index_database_and_schema(
 ) {
     let connection_id = &connection.id.to_string();
     let database_name = if connection.database.is_empty() {
-        "Connected database".to_string()
+        t("db-search-connected-database")
     } else {
         connection.database.clone()
     };
@@ -95,7 +94,7 @@ fn index_database_and_schema(
         database,
         focus.id(),
         database_name.clone(),
-        hit(&database_name, &database_id).subtitled("Active database"),
+        hit(&database_name, &database_id).subtitled(t("db-search-active-database")),
     );
     for schema in &session.schema.schemas {
         let schema_id = catalog_resource_id("schema", &[connection_id, &schema.name]);
@@ -111,7 +110,10 @@ fn index_database_and_schema(
             schema_resource,
             focus.id(),
             schema.name.clone(),
-            hit(&schema.name, &schema_id).subtitled(format!("Schema in {database_name}")),
+            hit(&schema.name, &schema_id).subtitled(t_args(
+                "db-search-schema-in",
+                &[("database", text(&database_name))],
+            )),
         );
         for relation in &schema.tables {
             index_relation(connection.id, schema, relation, rows, resources);
@@ -160,9 +162,13 @@ fn index_relation(
             "column",
             &[connection_id, &schema.name, &relation.name, &column.name],
         );
-        let result = hit(&column.name, &column_id).subtitled(format!(
-            "{} in {}.{}",
-            column.decl_type, schema.name, relation.name
+        let result = hit(&column.name, &column_id).subtitled(t_args(
+            "db-search-column-in",
+            &[
+                ("type", text(&column.decl_type)),
+                ("schema", text(&schema.name)),
+                ("table", text(&relation.name)),
+            ],
         ));
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
@@ -214,7 +220,7 @@ fn index_current_result(
             result_resource,
             show.id(),
             format!("query result {}", result.message()),
-            hit("Current query result", &result_id).subtitled(result.message()),
+            hit(t("db-search-current-result"), &result_id).subtitled(result.message()),
         );
     }
 }
@@ -226,17 +232,21 @@ fn index_transactions(
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = Resource::new(&transaction_id, "database.transaction", "Transaction")
-        .with_action(begin.bound())
-        .with_action(DbEffect::Commit { connection }.bound())
-        .with_action(DbEffect::Rollback { connection }.bound());
+    let transaction = Resource::new(
+        &transaction_id,
+        "database.transaction",
+        t("db-search-transaction"),
+    )
+    .with_action(begin.bound())
+    .with_action(DbEffect::Commit { connection }.bound())
+    .with_action(DbEffect::Rollback { connection }.bound());
     index_resource(
         rows,
         resources,
         transaction,
         begin.id(),
         "transaction begin commit rollback",
-        hit("Transaction", &transaction_id).subtitled("Active database"),
+        hit(t("db-search-transaction"), &transaction_id).subtitled(t("db-search-active-database")),
     );
 }
 
@@ -250,7 +260,11 @@ fn index_query_history(
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
-        Resource::new(&history_id, "database.query-history", "Local query history"),
+        Resource::new(
+            &history_id,
+            "database.query-history",
+            t("db-search-query-history"),
+        ),
     );
     for entry in session
         .query_history
@@ -261,7 +275,13 @@ fn index_query_history(
             "query-history-entry",
             &[connection_id, &entry.generation.to_string()],
         );
-        let title = format!("Query {}: {}", entry.generation, entry.summary);
+        let title = t_args(
+            "db-search-query-entry",
+            &[
+                ("number", crate::i18n::count(entry.generation)),
+                ("summary", text(&entry.summary)),
+            ],
+        );
         let rerun = DbEffect::Rerun {
             connection: connection.id,
             generation: entry.generation,
@@ -274,7 +294,7 @@ fn index_query_history(
             history_entry,
             rerun.id(),
             format!("query {} {}", entry.generation, entry.summary),
-            hit(&title, &entry_id).subtitled("Local only — never shared with collaborators"),
+            hit(&title, &entry_id).subtitled(t("db-search-local-only")),
         );
     }
 }
@@ -355,7 +375,7 @@ impl DbSearchIndex {
 fn hit(title: impl Into<String>, id: &str) -> SearchEntry {
     SearchEntry::new(title, String::new())
         .anchored(id)
-        .grouped(KIND)
+        .grouped(kind())
 }
 
 fn index_resource(

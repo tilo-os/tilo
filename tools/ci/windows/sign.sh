@@ -35,30 +35,12 @@ if [ "$built" != "$packaged" ]; then
 fi
 
 # Both signatures are made as AWS_SIGNING_ROLE_ARN, whose trust policy admits only release
-# references: STS exchanges t's identity token (`id_token = ["sts.amazonaws.com"]`) for
-# credentials that last minutes, which jsign reads from the environment. No key is stored.
+# references (lib.sh aws_role), with credentials that last minutes, which jsign reads from the
+# environment. No key is stored.
 . "$repo/tools/ci/publish/lib.sh"
 : "${AWS_SIGNING_ROLE_ARN:?the AWS role to sign as}"
 [[ "${TILO_AUTHENTICODE_KMS_KEY:-}" =~ ^arn:aws:kms:([a-z0-9-]+): ]] || die 'TILO_AUTHENTICODE_KMS_KEY is not a KMS ARN'
-region="${BASH_REMATCH[1]}"
-sts="$(mktemp -d "$scratch/sts.XXXXXX")"
-trap 'rm -rf -- "$sts"' EXIT
-(umask 077 && id_token sts.amazonaws.com > "$sts/token")
-# The token goes in the request body from its file, never on a command line.
-curl --fail-with-body --silent --show-error --proto '=https' "https://sts.$region.amazonaws.com/" \
-  --data-urlencode Action=AssumeRoleWithWebIdentity --data-urlencode Version=2011-06-15 \
-  --data-urlencode "RoleArn=$AWS_SIGNING_ROLE_ARN" --data-urlencode DurationSeconds=900 \
-  --data-urlencode "RoleSessionName=tilo-t-$(printf '%.12s' "${T_COMMIT:-local}")" \
-  --data-urlencode "WebIdentityToken@$sts/token" > "$sts/reply.xml" \
-  || die "STS refused the identity token: $(sed -n 's:.*<Message>\(.*\)</Message>.*:\1:p' "$sts/reply.xml")"
-sts_field() { tr -d '\n' < "$sts/reply.xml" | sed -n "s:.*<$1>\([^<]*\)</$1>.*:\1:p"; }
-unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_SECURITY_TOKEN
-AWS_ACCESS_KEY_ID="$(sts_field AccessKeyId)"
-AWS_SECRET_ACCESS_KEY="$(sts_field SecretAccessKey)"
-AWS_SESSION_TOKEN="$(sts_field SessionToken)"
-[[ -n $AWS_ACCESS_KEY_ID && -n $AWS_SECRET_ACCESS_KEY && -n $AWS_SESSION_TOKEN ]] || die 'STS answered without credentials'
-export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-rm -rf -- "$sts"
+aws_role "$AWS_SIGNING_ROLE_ARN" "${BASH_REMATCH[1]}"
 
 bash "$repo/apps/imager/packaging/package-windows.sh" "$arch" "$build/imager.exe" "$out" \
   "bash $repo/tools/ci/windows/authenticode.sh"

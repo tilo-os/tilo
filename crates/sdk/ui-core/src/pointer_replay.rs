@@ -16,7 +16,7 @@
 //!
 //! The release half needs the press too. Every shared control that runs on
 //! a completed click (a button, a row, a disclosure, a copy action) keeps
-//! its press in a [`HeldPress`], which records what the control was when it
+//! its press in a `HeldPress`, which records what the control was when it
 //! took the press: a key naming it and where it was. A fresh control with
 //! the same key at the same place accepts the release that ends that press.
 //! The host forgets the press before every press and after every release
@@ -104,12 +104,16 @@ impl PointerReplay {
     }
 }
 
-/// Every widget's layout box in tree order. Two snapshots of one unchanged
-/// tree are equal exactly when no widget moved or resized.
+/// Every widget's layout box in tree order that a pointer can reach: in a
+/// long scrolled collection only the children near its view
+/// ([`crate::widget::Widget::for_each_child_in_clip`]), so the snapshot
+/// costs what is shown, not what is held. Two snapshots of one unchanged
+/// tree are equal exactly when no widget the pointer can reach moved or
+/// resized.
 pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
     fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<Rect>) {
         out.push(widget.get_rect());
-        widget.for_each_child(&mut |child| walk(child, out));
+        widget.for_each_child_in_clip(&mut |child| walk(child, out));
     }
     let mut out = Vec::new();
     walk(root, &mut out);
@@ -183,7 +187,6 @@ impl<T> Default for HeldPress<T> {
 }
 
 impl<T: Copy + PartialEq> HeldPress<T> {
-    /// A press landed on `at`.
     pub(crate) fn press(&mut self, at: PressAt<'_, T>) {
         record_press(at.key, at.rect);
         self.held = Some(at.target);

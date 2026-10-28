@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 pub enum ChangeKind {
     /// The path did not exist in the base.
     Added,
-    /// The path existed in the base and the layer wrote over it.
     Modified,
     /// The layer deleted a path that exists in the base. Recorded as an overlayfs whiteout;
     /// deleting the whiteout restores the base copy.
@@ -334,7 +333,6 @@ mod tests {
 
     #[test]
     fn diffs_tell_added_modified_and_deleted_paths_apart_by_base() {
-        // Phase `added_and_modified_are_told_apart_by_the_base`.
         {
             let d = scratch();
             let base = d.path().join("base");
@@ -360,7 +358,6 @@ mod tests {
             assert!(!by_path.contains_key(Path::new("/usr")));
             assert!(!by_path.contains_key(Path::new("/usr/bin")));
         }
-        // Phase `without_a_base_everything_reads_as_added`.
         {
             let d = scratch();
             let upper = d.path().join("upper");
@@ -391,7 +388,6 @@ mod tests {
                 diff.changes
             );
         }
-        // Phase `metadata_paths_are_matched_on_whole_components`.
         {
             // `/var/lib/dpkg-custom` is not dpkg's database and must stay visible.
             assert!(is_pkg_metadata(Path::new("/var/lib/dpkg/status")));
@@ -403,7 +399,6 @@ mod tests {
 
     #[test]
     fn package_bookkeeping_and_claimed_files_are_attributed_to_packages() {
-        // Phase `dpkg_receipts_become_a_package_list`.
         {
             let d = scratch();
             let upper = d.path().join("upper");
@@ -416,7 +411,6 @@ mod tests {
             let diff = compute(&upper, None).unwrap();
             assert_eq!(diff.packages["apt"], vec!["cowsay", "libfoo1"]);
         }
-        // Phase `package_bookkeeping_is_separated_from_real_changes`.
         {
             let d = scratch();
             let upper = d.path().join("upper");
@@ -432,7 +426,6 @@ mod tests {
             assert_eq!(substantive, vec![PathBuf::from("/usr/games/cowsay")]);
             assert_eq!(diff.explained_count(), 2);
         }
-        // Phase `files_a_package_claims_are_attributed_to_it_not_to_the_user`.
         {
             // The point of the whole exercise: nine packages' worth of files must not drown the one
             // config a person edited by hand.
@@ -461,7 +454,6 @@ mod tests {
             // Nothing is lost — the full change set is still there to be printed.
             assert_eq!(diff.changes.len(), 4);
         }
-        // Phase `a_deletion_is_shown_even_when_a_package_owns_the_path`.
         {
             // Deleting a file a package installed is the user's doing and the single most surprising
             // thing a layer can hide; ownership must not excuse it. (Constructed directly — a real

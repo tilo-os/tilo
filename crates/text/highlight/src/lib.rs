@@ -64,7 +64,6 @@ impl Span {
     }
 }
 
-/// One grammar of a [`Grammars`] set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Grammar(pub usize);
 

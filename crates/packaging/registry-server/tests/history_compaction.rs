@@ -115,7 +115,7 @@ fn registry(entries: usize) -> Registry {
 
 impl Registry {
     fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(args)
@@ -251,12 +251,13 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
     );
 
     // A rollback to an older signed snapshot is refused before the client
-    // ever sees the latest one.
+    // ever sees the latest one, and the refusal says it is behind.
     let latest = registry.storage.load_snapshot().unwrap().unwrap();
     registry.serve_raw(&signed[1]);
     assert!(matches!(
         native_sync(&config, native_dir.path()),
-        Err(RegistryError::Rollback)
+        Err(RegistryError::BehindAccepted { held_sequence, served_sequence })
+            if held_sequence == 3 && served_sequence == signed[1].sequence
     ));
 
     // So is a fork: another validly signed snapshot at the checkpoint.
@@ -279,7 +280,8 @@ fn a_client_synced_before_compaction_verifies_the_latest_and_still_rejects_rollb
     registry.serve_raw(&signed[2]);
     assert!(matches!(
         native_sync(&config, native_dir.path()),
-        Err(RegistryError::Rollback)
+        Err(RegistryError::BehindAccepted { held_sequence, served_sequence })
+            if held_sequence == last && served_sequence == signed[2].sequence
     ));
     let mut fork = latest.clone();
     fork.entries.pop();
@@ -327,7 +329,6 @@ fn snapshot_history_size_is_bounded() {
         assert_eq!(history.len(), published.min(SNAPSHOT_HISTORY_RETAINED));
         let bytes = registry.history_bytes();
         let retained = u64::try_from(SNAPSHOT_HISTORY_RETAINED).unwrap();
-        // Retained members plus the fixed-size compaction record.
         assert!(
             bytes <= retained * largest + 512,
             "{bytes} bytes of history after {published} publishes"

@@ -1,11 +1,12 @@
 messages-empty-heading = Your people, together
 messages-empty-hint = Add people in Contacts to start a conversation.
+messages-open-contacts = Open Contacts
+messages-open-contacts-description = Add the people you message in Contacts
 messages-choose-heading = Choose a person
 messages-choose-hint = Your conversations stay separate for each service and account.
 messages-people = People
 messages-back = Back to people
 messages-route = Message using
-messages-route-placeholder = Choose a service and account
 messages-tilo = Tilo
 messages-whatsapp = WhatsApp
 messages-signal = Signal
@@ -37,7 +38,9 @@ messages-server-acknowledged = Accepted by service
 messages-delivered = Delivered to recipient
 messages-read = Read by recipient
 messages-uncertain = Send status uncertain
-messages-more-history = Showing recent messages
+messages-load-older = Load older messages
+messages-loading-older = Loading older messages…
+messages-history-start = This is the start of the conversation.
 messages-list-people = List people
 messages-list-routes = List messaging choices
 
@@ -92,7 +95,7 @@ messages-whatsapp-storage-explanation = Review private encrypted storage access 
 messages-first-tilo = Use my Tilo identity
 messages-setup-link-heading = Link an account
 messages-setup-your-accounts = Your accounts
-messages-setup-service-missing = Messaging isn't running on this device, so no account can be linked right now.
+messages-setup-service-missing = Messaging isn't running here, so no account can be linked. Linking WhatsApp, Signal or a Tilo identity needs the messaging service a Tilo computer runs; a browser has none.
 messages-first-whatsapp-hint = Scan a code with WhatsApp on your phone
 messages-first-signal-hint = Scan a code with Signal on your phone
 messages-first-tilo-hint = Message people who use Tilo, with no other account
@@ -101,6 +104,7 @@ messages-first-account-prepare = Set up a private Messages account
 messages-list-groups = List private groups
 messages-read-group-membership = Read group membership
 messages-close-groups = Close groups
+messages-groups = Private groups
 messages-refresh-group-membership = Refresh membership
 messages-account-groups = WhatsApp groups for { $account }
 messages-groups-unavailable = Group membership is unavailable for this account.
@@ -118,3 +122,65 @@ messages-group-remove = Remove reviewed member
 messages-group-leave = Leave this group
 messages-group-add-choice = Add { $person } using { $route }
 messages-group-remove-choice = Remove { $member }
+
+## History: what each change did, by verb and by field
+
+# The conversations kept in the record.
+messages-deliver-message = Delivered a message from { $from }
+messages-send-message = Queued a message to { $to }
+messages-reply = Queued a reply
+
+# The people in Contacts and the service accounts Messages reaches them on.
+messages-project-contact = Added { $item } to your contacts
+messages-remove-contact = Removed the contact { $item }
+messages-confirm-endpoint = Linked the { $service } address { $recipient } for { $item }
+messages-confirm-account = Linked the { $service } account { $recipient } to { $item }
+messages-replace-endpoint = Replaced the { $service } address for { $item } with { $recipient }
+messages-replace-account = Replaced the { $service } account for { $item } with { $recipient }
+messages-project-phones = Changed the phone numbers of { $item }
+messages-project-emails = Changed the email addresses of { $item }
+messages-project-contacts = Changed your contacts
+messages-forget-endpoint = Unlinked an address from { $item }
+
+# The service accounts a person adds, removes and switches between.
+messages-publish-browser-identity = Added the account { $item } for use in this browser
+messages-save-account = Saved the account { $item }
+messages-publish-signal-account = Added the Signal account { $item }
+messages-publish-sms-account = Added the SMS account { $item }
+messages-publish-whatsapp-account = Added the WhatsApp account { $item }
+messages-publish-tilo-account = Added the Tilo account { $item }
+messages-remove-account = Removed the account { $item }
+messages-set-active-account = Switched to another account
+
+# The drafts a person has not sent yet.
+messages-keep-draft = Kept a draft
+messages-drop-draft = Discarded a draft
+
+# A field of an entry, and what the entry is called: the words say what
+# changed it, so they read on their own.
+messages-message-from = A message from { $item }
+messages-message-to = Who a message is for
+messages-message-body = What a message says
+messages-message-date = When a message was sent
+messages-message-at-ms = When a message was sent
+messages-message-outgoing = Whether a message was written here
+messages-message-queued = Whether a message is waiting to be sent
+messages-person-label = The name of { $item }
+messages-person-removed = Whether { $item } is in your contacts
+messages-person-phones = The phone numbers of { $item }
+messages-person-emails = The email addresses of { $item }
+messages-person-photo = The photo of { $item }
+messages-endpoint-service = The service { $item } is reached on
+messages-endpoint-recipient = The address { $item } is reached at
+messages-endpoint-scope = The account { $item } is reached through
+messages-endpoint-revision = The linked identity of { $item }
+messages-endpoint-removed = Whether { $item } is still linked
+messages-person-account-type-id = The kind of the account { $item }
+messages-person-account-display-name = The name of the account { $item }
+messages-person-account-config = The connection settings of { $item }
+messages-person-account-enabled = Whether { $item } is in use
+messages-person-account-tint = The colour of { $item }
+messages-person-accounts-active = The account in use for a service
+messages-message-drafts-drafts = The unsent words kept for each conversation
+
+messages-conversation-with = Conversation with {$person}

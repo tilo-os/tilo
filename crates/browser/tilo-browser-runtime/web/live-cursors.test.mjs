@@ -1,20 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {CHAT_FADE_MS, CHAT_LINGER_MS, REACTION_MS, chatOpacity, createLiveCursors, placePointer, publishedPointer, SETTLE_MS} from './live-cursors.mjs';
+import {CHAT_FADE_MS, CHAT_LINGER_MS, POINTER_STALE_MS, REACTION_MS, chatOpacity, createLiveCursors, reactionAt, SETTLE_MS} from './live-cursors.mjs';
 
-function element() {
+function surfaceElement() {
   const listeners = new Map();
-  const node = {
-    children: [], style: {}, dataset: {}, parent: null, textContent: '',
-    setAttribute() {},
-    append(child) { child.parent = node; node.children.push(child); },
-    remove() { if (node.parent) node.parent.children = node.parent.children.filter(c => c !== node); node.parent = null; },
+  return {
     addEventListener(type, fn) { listeners.set(type, fn); },
     removeEventListener(type) { listeners.delete(type); },
     dispatch(type, event) { listeners.get(type)?.(event); },
     getBoundingClientRect: () => ({left: 10, top: 20}),
   };
-  return node;
 }
 
 function fakeLayer() {
@@ -40,156 +35,137 @@ function frames() {
   };
 }
 
-test('publishes the local pointer relative to the surface and clears it on leave', () => {
-  const surface = element();
+function timers() {
+  const pending = new Map();
+  let next = 0;
+  return {
+    set: (fn, delay) => { pending.set(++next, {fn, delay}); return next; },
+    clear: handle => pending.delete(handle),
+    fire() { const current = [...pending.values()]; pending.clear(); for (const {fn} of current) fn(); },
+    get delays() { return [...pending.values()].map(entry => entry.delay); },
+  };
+}
+
+/** Live cursors over a fake surface, handing what they draw to `drawn`. */
+function mount({clock = () => 0, ...options} = {}) {
+  const surface = surfaceElement();
   const layer = fakeLayer();
   const f = frames();
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => 0, requestFrame: f.request, cancelFrame: f.cancel});
+  const t = timers();
+  const drawn = [];
+  const cursors = createLiveCursors({
+    layer, surface, setPointers: pointers => drawn.push(pointers), now: clock,
+    requestFrame: f.request, cancelFrame: f.cancel, setTimer: t.set, clearTimer: t.clear, ...options,
+  });
+  return {surface, layer, f, t, drawn, cursors, last: () => drawn.at(-1) ?? []};
+}
+
+test('publishes the local pointer relative to what it is over, and clears it on leave', () => {
+  // The runtime names what is under a surface point (`pointer_anchor`).
+  const asked = [];
+  const anchor = (x, y) => {
+    asked.push([x, y]);
+    return x < 200 ? {strip: '7', at: [x + 300, y - 40]} : {window: {app: 'so.tilo.notes', record: 'note-1'}, at: [x - 200, y - 100]};
+  };
+  const {surface, layer, cursors} = mount({anchor});
   surface.dispatch('pointermove', {clientX: 110, clientY: 70});
-  surface.dispatch('pointerleave', {});
-  assert.deepEqual(layer.published, [{pointer: [100, 50]}, {pointer: null}]);
-  cursors.close();
-});
-
-test('a pointer over the focused window leaves relative to it, as receivers place it', () => {
-  const windows = [{app: 'so.tilo.notes', record: 'note-1', rect: [200, 100, 600, 400]}];
-  const focus = {app: 'so.tilo.notes', record: 'note-1'};
-  assert.deepEqual(publishedPointer([250, 130], focus, windows), [50, 30]);
-  assert.deepEqual(placePointer(publishedPointer([250, 130], focus, windows), focus, windows), [250, 130]);
-  assert.deepEqual(publishedPointer([250, 130], {app: 'so.tilo.browser-desktop', record: 'desktop'}, windows), [250, 130]);
-  assert.deepEqual(publishedPointer([250, 130], null, windows), [250, 130]);
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, windows: () => windows, localFocus: () => focus, now: () => 0, requestFrame: f.request, cancelFrame: f.cancel});
   surface.dispatch('pointermove', {clientX: 260, clientY: 150});
-  assert.deepEqual(layer.published, [{pointer: [50, 30]}]);
+  surface.dispatch('pointerleave', {});
+  assert.deepEqual(asked, [[100, 50], [250, 130]], 'in surface pixels');
+  assert.deepEqual(layer.published, [
+    {pointer: {strip: '7', at: [400, 10]}},
+    {pointer: {window: {app: 'so.tilo.notes', record: 'note-1'}, at: [50, 30]}},
+    {pointer: null},
+  ]);
   cursors.close();
 });
 
-test('draws remote pointers and stops requesting frames once the room is idle', () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
+test('a pointer over nothing the runtime names is not published as a point', () => {
+  const {surface, layer, cursors} = mount();
+  surface.dispatch('pointermove', {clientX: 110, clientY: 70});
+  assert.deepEqual(layer.published, [{pointer: null}]);
+  cursors.close();
+});
+
+test('hands the runtime remote pointers to draw and stops requesting frames once the room is idle', () => {
   let clock = 0;
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => clock, requestFrame: f.request, cancelFrame: f.cancel});
+  const {layer, f, drawn, cursors, last} = mount({clock: () => clock});
   f.run();
   assert.equal(f.pending, 0, 'an idle room requests no frames');
+  assert.equal(drawn.length, 0, 'nothing to draw is not handed over');
 
-  layer.remotes = [{publisher: 'aaaaaaaaaaaa', pointer: [5, 6], stale: false}];
+  layer.remotes = [{publisher: 'aaaaaaaaaaaa', pointer: {strip: '1', at: [5, 6]}, stale: false, receivedAtMs: 0, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9'}}];
   layer.emit('presence', {});
   f.run();
+  assert.deepEqual(last(), [{publisher: 'aaaaaaaaaaaa', pointer: {strip: '1', at: [5, 6]}, name: 'Ada'}], 'the runtime places it in this layout and colours it as the room does');
   assert.deepEqual(cursors.shown(), ['aaaaaaaaaaaa']);
-  const overlay = surface.children[0];
-  assert.equal(overlay.children[0].style.transform, 'translate(5px,6px)');
   assert.equal(f.pending, 1, 'keeps sampling while the pointer may move');
 
   clock = SETTLE_MS + 1;
   f.run();
   assert.equal(f.pending, 0, 'settles after the newest frame');
+  assert.equal(drawn.length, 1, 'an unchanged set is not handed over again');
 
+  // The member left: the layer drops its state and says so.
+  layer.remotes = [];
   layer.emit('member', {publisher: 'aaaaaaaaaaaa', active: false});
-  assert.deepEqual(cursors.shown(), []);
+  f.run();
+  assert.deepEqual(last(), [], 'gone at once');
   cursors.close();
-  assert.equal(surface.children.length, 0);
+});
+
+test("a pointer whose publisher went silent is taken down even when no frame arrives", () => {
+  let clock = 1000;
+  const {layer, f, t, cursors, last} = mount({clock: () => clock});
+  layer.remotes = [{publisher: 'gone', pointer: {strip: '1', at: [5, 6]}, stale: false, receivedAtMs: 1000}];
+  layer.emit('presence', {});
+  f.run();
+  assert.deepEqual(cursors.shown(), ['gone']);
+  assert.deepEqual(t.delays, [POINTER_STALE_MS + 1], 'a timer waits for its silence');
+  // Its page closed without a word: nothing more arrives.
+  clock = 1000 + POINTER_STALE_MS + 1;
+  t.fire();
+  f.run();
+  assert.deepEqual(last(), []);
+  assert.ok(POINTER_STALE_MS < 5000, 'well before anyone would wonder whether they are still there');
+  cursors.close();
 });
 
 test('marks agents apart and shows what they are doing', () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => 0, requestFrame: f.request, cancelFrame: f.cancel});
+  const {layer, f, cursors, last} = mount();
   layer.remotes = [
-    {publisher: 'aaaaaaaaaaaa', pointer: [5, 6], stale: false, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
-    {publisher: 'bbbbbbbbbbbb', pointer: [220, 47], stale: false, participant: {kind: 'agent', label: 'Writer', color: '#7c3aed', activity: 'New note · Notes'}},
+    {publisher: 'aaaaaaaaaaaa', pointer: {strip: '1', at: [5, 6]}, stale: false, receivedAtMs: 0, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: 'ignored'}},
+    {publisher: 'bbbbbbbbbbbb', pointer: {strip: '1', at: [220, 47]}, stale: false, receivedAtMs: 0, participant: {kind: 'agent', label: 'Writer', color: '#7c3aed', activity: 'New note · Notes'}},
   ];
   layer.emit('presence', {});
   f.run();
-  const [person, agent] = surface.children[0].children;
-  assert.equal(person.textContent, 'Ada');
-  assert.equal(person.dataset.kind, 'person');
-  assert.equal(agent.textContent, 'Writer · New note · Notes');
-  assert.equal(agent.dataset.kind, 'agent');
-  assert.match(agent.style.cssText, /#7c3aed/);
-  assert.match(agent.style.cssText, /box-shadow/);
-  assert.equal(agent.style.transform, 'translate(220px,47px)');
-
-  layer.remotes[1] = {...layer.remotes[1], pointer: [900, 400], participant: {...layer.remotes[1].participant, activity: 'New sheet · Workbook'}};
-  layer.emit('presence', {});
-  f.run();
-  assert.equal(agent.textContent, 'Writer · New sheet · Workbook', 'the activity follows the agent');
-  assert.equal(agent.style.transform, 'translate(900px,400px)', 'the marker moves between controls');
-  cursors.close();
-});
-
-test('a focused pointer is drawn inside the window of its record', () => {
-  const windows = [
-    {app: 'so.tilo.notes', record: 'uuid:notes', rect: [0, 40, 400, 600]},
-    {app: 'so.tilo.sheets', record: 'uuid:sheets', rect: [400, 40, 1000, 600]},
-  ];
-  assert.deepEqual(placePointer([30, 20], {app: 'so.tilo.sheets', record: 'uuid:sheets'}, windows), [430, 60]);
-  assert.deepEqual(placePointer([900, 20], {app: 'so.tilo.notes', record: 'uuid:notes'}, windows), [399, 60], 'kept within the window');
-  assert.equal(placePointer([30, 20], {app: 'so.tilo.notes', record: 'uuid:other'}, windows), null, 'hidden while no window shows its record');
-  assert.deepEqual(placePointer([30, 20], null, windows), [30, 20], 'an unfocused pointer is in surface coordinates');
-  assert.deepEqual(placePointer([30, 20], {app: 'a', record: 'r'}, undefined), [30, 20], 'a single application has no windows');
-  assert.deepEqual(placePointer([30, 20], {app: 'so.tilo.browser-desktop', record: 'desktop'}, windows), [30, 20], 'a member focused on the desktop points in surface coordinates');
-});
-
-test('an app\'s room record is told apart by its app', () => {
-  // The live layer names an app's room record '' whichever app it is.
-  const windows = [
-    {app: 'so.tilo.notes', record: '', rect: [0, 40, 400, 600]},
-    {app: 'so.tilo.chat', record: '', rect: [400, 40, 1000, 600]},
-  ];
-  const chat = {app: 'so.tilo.chat', record: ''};
-  assert.deepEqual(publishedPointer([450, 100], chat, windows), [50, 60]);
-  assert.deepEqual(placePointer([50, 60], chat, windows), [450, 100]);
-  assert.equal(placePointer([50, 60], {app: 'so.tilo.sheets', record: ''}, windows), null);
-});
-
-test('a focused pointer is drawn as a marker inside its window', () => {
-  const windows = [
-    {app: 'so.tilo.notes', record: 'uuid:notes', rect: [0, 40, 400, 600]},
-    {app: 'so.tilo.sheets', record: 'uuid:sheets', rect: [400, 40, 1000, 600]},
-  ];
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => 0, requestFrame: f.request, cancelFrame: f.cancel, windows: () => windows});
-  layer.remotes = [
-    {publisher: 'agent', pointer: [30, 20], focus: {app: 'so.tilo.sheets', record: 'uuid:sheets'}, participant: {kind: 'agent', label: 'Writer', color: '#db2777'}, stale: false},
-    {publisher: 'away', pointer: [5, 5], focus: {app: 'so.tilo.slides', record: 'uuid:elsewhere'}, stale: false},
-  ];
-  layer.emit('presence', {});
-  f.run();
-  assert.deepEqual(cursors.shown(), ['agent']);
-  assert.equal(surface.children[0].children[0].style.transform, 'translate(430px,60px)');
+  assert.deepEqual(last(), [
+    {publisher: 'aaaaaaaaaaaa', pointer: {strip: '1', at: [5, 6]}, name: 'Ada'},
+    {publisher: 'bbbbbbbbbbbb', pointer: {strip: '1', at: [220, 47]}, name: 'Writer', agent: true, activity: 'New note · Notes'},
+  ]);
   cursors.close();
 });
 
 test("a member's cursor chat shows beside its pointer while typed and fades after it is sent", () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
   let clock = 0;
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => clock, requestFrame: f.request, cancelFrame: f.cancel});
+  const {layer, f, cursors, last} = mount({clock: () => clock});
   const ada = 'aaaaaaaaaaaa';
-  const remote = (chat, chatSentAt = null) => ({publisher: ada, pointer: [40, 50], stale: false, participant: {kind: 'person', label: 'Ada', color: '#2a7de1'}, chat, chatSentAt});
+  const remote = (chat, chatSentAt = null) => ({publisher: ada, pointer: {strip: '1', at: [40, 50]}, stale: false, receivedAtMs: clock, participant: {kind: 'person', label: 'Ada'}, chat, chatSentAt});
 
   layer.remotes = [remote({text: 'hello th', sent: false})];
   layer.emit('presence', {});
   f.run();
   assert.deepEqual(cursors.chats(), [[ada, 'hello th']], 'shown live while typed');
-  const typed = surface.children[0].children.find(node => node.className === 'tilo-live-chat');
-  assert.equal(typed.style.opacity, '1');
-  assert.match(typed.style.cssText, /#2a7de1/, 'in the member’s colour');
+  assert.deepEqual(last()[0].chat, {text: 'hello th', typing: true, opacity: 1});
 
-  layer.remotes = [remote({text: 'hello there', sent: true}, 0)];
   clock = CHAT_LINGER_MS - CHAT_FADE_MS / 2;
+  layer.remotes = [remote({text: 'hello there', sent: true}, 0)];
   layer.emit('presence', {});
   f.run();
   assert.deepEqual(cursors.chats(), [[ada, 'hello there']], 'kept after it is sent');
-  assert.ok(Number(typed.style.opacity) < 1 && Number(typed.style.opacity) > 0, 'and fading at the end');
+  const {opacity, typing} = last()[0].chat;
+  assert.equal(typing, false);
+  assert.ok(opacity < 1 && opacity > 0, 'and fading at the end');
   assert.ok(f.pending > 0, 'frames continue while it fades');
 
   clock = CHAT_LINGER_MS;
@@ -199,26 +175,29 @@ test("a member's cursor chat shows beside its pointer while typed and fades afte
 });
 
 test('a reaction floats up from the pointer once and is gone after its life', () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
   let clock = 1000;
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => clock, requestFrame: f.request, cancelFrame: f.cancel});
-  layer.remotes = [{publisher: 'bbbbbbbbbbbb', pointer: [40, 50], stale: false, reaction: {seq: 1, emoji: '\u{1f389}', at: 1000}}];
+  const {layer, f, cursors, last} = mount({clock: () => clock});
+  layer.remotes = [{publisher: 'bbbbbbbbbbbb', pointer: {strip: '1', at: [40, 50]}, stale: false, receivedAtMs: 1000, reaction: {seq: 1, emoji: '\u{1f389}', at: 1000}}];
   layer.emit('presence', {});
   f.run();
-  const shown = () => surface.children[0].children.filter(node => node.className === 'tilo-live-reaction');
-  assert.equal(shown().length, 1);
-  assert.equal(shown()[0].textContent, '\u{1f389}');
-  const start = shown()[0].style.transform;
+  assert.deepEqual(last()[0].reaction, {emoji: '\u{1f389}', rise: 0, opacity: 1});
   clock = 1000 + REACTION_MS / 2;
   f.run();
-  assert.notEqual(shown()[0].style.transform, start, 'it rises');
+  assert.ok(last()[0].reaction.rise > 0, 'it rises');
   clock = 1000 + REACTION_MS;
   f.run();
-  assert.equal(shown().length, 0);
+  assert.equal(last()[0].reaction, undefined);
   assert.equal(f.pending, 0, 'and the room is idle again');
   cursors.close();
+});
+
+test('closing takes every pointer down', () => {
+  const {layer, f, cursors, last} = mount();
+  layer.remotes = [{publisher: 'a', pointer: {strip: '1', at: [1, 2]}, stale: false, receivedAtMs: 0}];
+  layer.emit('presence', {});
+  f.run();
+  cursors.close();
+  assert.deepEqual(last(), []);
 });
 
 test('chat opacity: typed shows, empty does not, sent lingers then fades', () => {
@@ -227,4 +206,11 @@ test('chat opacity: typed shows, empty does not, sent lingers then fades', () =>
   assert.equal(chatOpacity({text: 'hi', sent: false}, null, 99999), 1);
   assert.equal(chatOpacity({text: 'hi', sent: true}, 100, 100), 1);
   assert.equal(chatOpacity({text: 'hi', sent: true}, 100, 100 + CHAT_LINGER_MS), 0);
+});
+
+test('a reaction is shown only during its life', () => {
+  assert.equal(reactionAt(null, 0), null);
+  assert.equal(reactionAt({emoji: 'x', at: 10}, 5), null);
+  assert.equal(reactionAt({emoji: 'x', at: 10}, 10 + REACTION_MS), null);
+  assert.equal(reactionAt({emoji: 'x', at: 10}, 10 + REACTION_MS * 0.75).opacity, 0.5);
 });

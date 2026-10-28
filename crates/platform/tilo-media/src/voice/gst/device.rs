@@ -1,5 +1,5 @@
 //! Bounded device state transitions. No driver state wait runs on a caller.
-use super::{AudioError, CAPTURE_STARTUP_TIMEOUT, RunningPipeline, check_bus, gst};
+use super::{AudioError, RunningPipeline, check_bus, gst};
 use gst::prelude::*;
 use std::{
     os::fd::{AsRawFd, OwnedFd},
@@ -40,7 +40,10 @@ struct State {
     ready: AtomicBool,
     finished: AtomicBool,
     failure: AtomicU8,
-    started: Instant,
+    /// When the worker began the Playing transition: the startup deadline
+    /// measures the device from there, not the wait for the worker to run.
+    started: OnceLock<Instant>,
+    startup_deadline: Option<Duration>,
     remote_fd: Option<OwnedFd>,
     guard: Option<Guard>,
     thread: OnceLock<Thread>,
@@ -74,6 +77,12 @@ impl CaptureStop {
         self.0.failure.store(1, Ordering::Release);
         self.stop();
     }
+    fn startup_deadline_passed(&self, now: Instant) -> bool {
+        self.0
+            .startup_deadline
+            .zip(self.0.started.get())
+            .is_some_and(|(deadline, started)| now.saturating_duration_since(*started) >= deadline)
+    }
     fn allowed(&self) -> bool {
         self.current() && self.0.guard.as_ref().is_none_or(|guard| guard())
     }
@@ -103,7 +112,7 @@ fn registry() -> Result<&'static Registry, AudioError> {
                                 if !stop.allowed() {
                                     stop.stop();
                                 } else if !stop.0.ready.load(Ordering::Acquire)
-                                    && stop.0.started.elapsed() >= CAPTURE_STARTUP_TIMEOUT
+                                    && stop.startup_deadline_passed(Instant::now())
                                 {
                                     stop.fail();
                                 }
@@ -125,8 +134,12 @@ pub(super) struct DevicePipeline {
     stop: CaptureStop,
 }
 impl DevicePipeline {
+    /// `startup_deadline` revokes a device that is not ready in time. It is
+    /// wall-clock, so it also fires on a pipeline that is only starved of
+    /// CPU: give one only where a driver can hold the transition.
     pub(super) fn start(
         pipeline: gst::Pipeline,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
         guard: Option<Guard>,
         needs_sample: bool,
@@ -138,7 +151,8 @@ impl DevicePipeline {
             ready: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failure: AtomicU8::new(0),
-            started: Instant::now(),
+            started: OnceLock::new(),
+            startup_deadline,
             remote_fd,
             guard,
             thread: OnceLock::new(),
@@ -161,6 +175,7 @@ impl DevicePipeline {
             .spawn(move || {
                 let pipeline = RunningPipeline(worker_pipeline);
                 if worker_stop.allowed() {
+                    let _ = worker_stop.0.started.set(Instant::now());
                     tracing::debug!(
                         capture = needs_sample,
                         "native voice device transition started"
@@ -224,8 +239,10 @@ impl DevicePipeline {
     pub(super) fn failure(&self) -> Option<AudioError> {
         (self.stop.0.failure.load(Ordering::Acquire) != 0).then_some(AudioError::DeviceLost)
     }
-    pub(super) fn started_at(&self) -> Instant {
-        self.stop.0.started
+    /// Whether the startup deadline had passed at `now` without the device
+    /// becoming ready.
+    pub(super) fn startup_expired(&self, now: Instant) -> bool {
+        !self.ready() && self.stop.startup_deadline_passed(now)
     }
     pub(super) fn stop(&self) {
         self.stop.stop();

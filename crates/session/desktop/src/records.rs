@@ -16,9 +16,6 @@ pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
 
 /// Called only by the action that minted this new tab identity, before its
 /// first widget-tree rebuild. Never infer creation from an absent record.
-///
-/// # Errors
-/// Returns transient loan contention or a definite creation/storage refusal.
 pub fn create_scratch_tab_record(
     store: &RecordStore,
     tab_id: u64,

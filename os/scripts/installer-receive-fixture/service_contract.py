@@ -88,38 +88,17 @@ RECEIVING_DEPENDENCIES = tuple(
     for name in ('source', 'owned_gpt', 'bounded_native', 'flatpak_material', 'source_sessions'))
 
 
-def selected(root):
-    """The signed receiving Browser and CEF runtime in the canonical image store."""
-    registry = root / 'usr/share/tilo-apps/registry.toml'
-    if not registry.exists():
-        return None
-    entries = tomllib.loads(registry.read_text()).get('entry', [])
-    browser = [entry for entry in entries if entry.get('id') == 'so.tilo.browser']
-    require(len(browser) <= 1, 'ambiguous receiving Browser package')
-    if not browser:
-        return None
-    row = browser[0]
-    require(all(type(row.get(name)) is str and re.fullmatch('[0-9a-f]{64}', row[name])
-                for name in ('package_id_hex', 'publisher_key_hex')),
-            'Browser package has no signed identity')
-    payload = '/usr/share/tilo-apps/pkgs/' + row['package_id_hex']
-    metadata = payload + '.pkg/manifest.toml'
-    require(row.get('payload_root') == payload and row.get('manifest_path') == metadata,
-            'Browser package does not use the canonical image store')
-    manifest = tomllib.loads((root / metadata.removeprefix('/')).read_text())
-    package = manifest.get('package', {})
-    require(package.get('id') == 'so.tilo.browser', 'receiving manifest is not Browser')
-    engines = [value.removeprefix('tilo-runtime/') for value in package.get('optional-runtimes', [])
-               if isinstance(value, str) and value.startswith('tilo-runtime/') and value.endswith('-chromium')]
-    require(len(engines) == 1, 'Browser must name one exact receiving CEF runtime')
-    version = engines[0]
-    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,255}', version), 'unsafe receiving CEF version')
-    bundle = root / 'usr/lib/tilo-runtime' / version
-    if not bundle.exists():
-        return None
-    require(manifest.get('entrypoint', {}).get('bin') == 'bin/browser',
-            'receiving Browser executable differs from canonical entrypoint')
-    return row, package, root / payload.removeprefix('/') / 'bin/browser', version, bundle
+PREPARED = '/usr/libexec/tilo-prepared-setup'
+
+
+def selected(deadline, log):
+    """The signed receiving Browser and CEF runtime in the canonical image store, as the
+    installed producer selects and verifies them (crates/platform/imager-backend), or None."""
+    value = json.loads(bounded_command([PREPARED, '--receiving-browser'], deadline, log, maximum=64 * 1024))
+    require(value is None or (type(value) is dict and set(value) == {
+        'package_id_hex', 'publisher_key_hex', 'runtime', 'browser', 'version', 'bundle'}),
+        'receiving Browser selection differs')
+    return value
 
 
 def route_artifacts(root, shell_path, digest, regular):
@@ -203,16 +182,16 @@ def admit_request(raw, candidate, hash_file, log, deadline):
     facts = route_artifacts(Path('/'), request['shell_path'], digest, regular)
     require(all(request[name] == item for name, item in facts.items()),
             'actual installed Shell/Python/receiver differs from bound request')
-    receiving = selected(Path('/'))
+    receiving = selected(deadline, log)
     require(receiving is not None, 'actual signed receiving Browser/CEF is absent')
-    row, package, browser, version, cef = receiving
-    require(row['package_id_hex'] == request['browser_package_hash']
-            and row['publisher_key_hex'] == request['browser_publisher']
-            and version == request['cef_runtime_version']
-            and package.get('runtime') == 'tilo-runtime/' + request['sdk_runtime_version'],
+    require(receiving['package_id_hex'] == request['browser_package_hash']
+            and receiving['publisher_key_hex'] == request['browser_publisher']
+            and receiving['version'] == request['cef_runtime_version']
+            and receiving['runtime'] == 'tilo-runtime/' + request['sdk_runtime_version'],
             'selected signed receiving graph differs from request')
+    browser, cef = Path(receiving['browser']), Path(receiving['bundle'])
     bounded_command(['/usr/bin/env', 'TILO_APPS_DATA_DIR=/usr/share/tilo-apps',
-                     '/usr/bin/tilo-install', 'verify', 'so.tilo.browser'], deadline, log)
+                     '/usr/libexec/tilo/tilo-install', 'verify', 'so.tilo.browser'], deadline, log)
     for kind, bundle, publisher in (
             ('cef', cef, request['cef_runtime_publisher']),
             ('sdk', Path('/usr/lib/tilo-runtime') / request['sdk_runtime_version'], None)):
@@ -224,7 +203,7 @@ def admit_request(raw, candidate, hash_file, log, deadline):
             regular(chosen, 1024)
             publisher = chosen.read_text().strip()
             require(re.fullmatch('[0-9a-f]{64}', publisher), 'installed SDK publisher differs')
-        bounded_command(['/usr/bin/tilo-runtime-bundle', 'verify', str(bundle),
+        bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'verify', str(bundle),
                          '--require-publisher', publisher, '--require-signature',
                          '--require-arch', os.uname().machine], deadline, log)
         metadata = bundle / 'bundle.toml'
@@ -281,7 +260,7 @@ def install_native_scope(request, phase, actor, log, *, authenticated=None):
                               Path('/owned/candidate'), hash_file, log, time.monotonic() + 90)
     actor = Path(actor)
     expected = (Path('/run/tilo-source-public/host/bin/tilo-imager') if phase == 'source'
-                else Path('/usr/libexec/tilo-prepared-setup'))
+                else Path(PREPARED))
     require(actor == expected, 'native scope actor is not the fixed candidate role')
     for edge in (actor, *actor.parents):
         info = edge.lstat()

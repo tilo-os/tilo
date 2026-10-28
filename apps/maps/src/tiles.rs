@@ -26,6 +26,8 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use ui::time::Instant;
@@ -76,7 +78,7 @@ struct FailedFetch {
 
 /// The OpenStreetMap Standard raster, used under the OSMF Tile Usage Policy
 /// (<https://operations.osmfoundation.org/policies/tiles/>): an identifying
-/// [`USER_AGENT`], attribution visible on the map, a persistent local cache, and
+/// `USER_AGENT`, attribution visible on the map, a persistent local cache, and
 /// no bulk download or prefetch — so offline areas are refused
 /// ([`TileLayer::allows_prefetch`]). The host must stay in the manifest's
 /// `[sandbox] net` allowlist.
@@ -237,6 +239,8 @@ pub struct DownloadProgress {
     pub total: u32,
     pub done: u32,
     pub failed: u32,
+    /// The person stopped it: what arrived stays, the rest is not fetched.
+    pub stopped: bool,
 }
 
 impl DownloadProgress {
@@ -270,13 +274,15 @@ pub struct TileLayer {
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
     done_rx: Option<Receiver<Done>>,
+    /// Where no worker thread can run (a browser page), tiles are fetched as
+    /// tasks on the app runtime instead and arrive on the same channel.
+    tasks: Option<TaskFetcher>,
     /// Wakes the app when the worker delivers, so an in-flight fetch needs no
     /// frame loop polling for it.
     wake: ui::wake::WakeHandle,
     /// The active basemap style: the tone the worker decodes tiles into, so the
     /// resident tiles always match the theme.
     style: TileStyle,
-    /// The tile server the worker fetches from.
     base_url: String,
     /// Whether the tile server's terms permit fetching tiles nobody is viewing
     /// (offline areas). [`TILE_SERVER`]'s do not.
@@ -291,6 +297,10 @@ pub struct TileLayer {
     cache_dir: PathBuf,
     /// Live offline-download progress.
     progress: DownloadProgress,
+    /// Set by [`Self::stop_download`], read by the worker before each tile it
+    /// would fetch: a download of a whole region is hundreds of tiles, and
+    /// picking the wrong city must not mean waiting them all out.
+    stop: Arc<AtomicBool>,
 }
 
 impl TileLayer {
@@ -342,16 +352,32 @@ impl TileLayer {
     fn respawn_worker(&mut self) {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
+        self.tasks = None;
+        // Where no thread may block on a fetch (a browser page) there is no
+        // worker: each tile is a task on the app runtime instead.
+        if !ui::rt::available(ui::rt::Feature::BlockOn) {
+            self.job_tx = None;
+            self.tasks = TaskFetcher::new(done_tx, self.wake.clone(), &self.base_url, self.style);
+            self.done_rx = self.tasks.is_some().then_some(done_rx);
+            return;
+        }
         let dir = self.cache_dir.clone();
         let base_url = self.base_url.clone();
         let style = self.style;
         let wake = self.wake.clone();
+        let stop = Arc::clone(&self.stop);
         let spawned = ui::rt::spawn_thread("maps-tiles", move || {
-            worker(&job_rx, &done_tx, &wake, &dir, &base_url, style);
+            worker(&job_rx, &done_tx, &wake, &dir, &base_url, style, &stop);
         })
         .is_ok();
         self.job_tx = spawned.then_some(job_tx);
         self.done_rx = spawned.then_some(done_rx);
+    }
+
+    /// Whether this layer can fetch imagery at all: an inert layer, or one
+    /// whose worker could not start, only shows what is already resident.
+    pub fn can_fetch(&self) -> bool {
+        self.job_tx.is_some() || self.tasks.is_some()
     }
 
     /// Point the layer at the basemap `style` for the active theme. A no-op when
@@ -391,6 +417,7 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
+            tasks: None,
             wake: ui::wake::WakeHandle::new(),
             style: TileStyle::Light,
             base_url: TILE_SERVER.to_string(),
@@ -398,6 +425,7 @@ impl TileLayer {
             cache_root: None,
             cache_dir,
             progress: DownloadProgress::default(),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -569,6 +597,9 @@ impl TileLayer {
             && tx.send(Job::Fetch(id)).is_ok()
         {
             self.inflight.insert(id);
+        } else if let Some(tasks) = &self.tasks {
+            tasks.fetch(id);
+            self.inflight.insert(id);
         }
     }
 
@@ -629,10 +660,12 @@ impl TileLayer {
         }
         let ids = region.tiles_in_range(z0, z1);
         let total = ids.len() as u32;
+        self.stop.store(false, Ordering::Relaxed);
         self.progress = DownloadProgress {
             total,
             done: 0,
             failed: 0,
+            stopped: false,
         };
         if let Some(tx) = &self.job_tx {
             for id in ids {
@@ -643,6 +676,21 @@ impl TileLayer {
             self.progress.done = total;
         }
         total
+    }
+
+    /// Stop the download in progress: the worker fetches nothing more, and the
+    /// progress reads as what arrived before the person stopped it. The tiles
+    /// already on disk stay, and the region keeps them.
+    ///
+    /// Returns whether there was a download to stop.
+    pub fn stop_download(&mut self) -> bool {
+        if !self.progress.is_active() {
+            return false;
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        self.progress.done = self.progress.total;
+        self.progress.stopped = true;
+        true
     }
 
     /// Estimate how many tiles a download of `region` across `z0..=z1` covers,
@@ -696,12 +744,10 @@ impl TileLayer {
         dir_size(self.cache_root.as_deref().unwrap_or(&self.cache_dir))
     }
 
-    // --- internal ----------------------------------------------------------
     fn insert(&mut self, id: TileId, tile: DecodedTile) {
         self.mem.put(id, tile);
     }
 
-    // --- test hooks --------------------------------------------------------
     /// A live layer whose worker fetches from `base_url` instead of the public
     /// OSM server — so a test can drive the real fetch→fail→negative-cache path
     /// against a local (closed-port) endpoint without any external traffic.
@@ -748,7 +794,7 @@ impl TileLayer {
     fn is_backing_off(&self, id: TileId) -> bool {
         self.failed
             .get(&id)
-            .is_some_and(|f| Instant::now() < f.retry_at)
+            .is_some_and(|f| ui::time::now() < f.retry_at)
     }
 }
 
@@ -816,6 +862,7 @@ fn worker(
     cache_dir: &std::path::Path,
     base_url: &str,
     style: TileStyle,
+    stop: &AtomicBool,
 ) {
     let client = match tilo_net::Client::builder()
         .user_agent(USER_AGENT)
@@ -842,6 +889,11 @@ fn worker(
                 wake.wake();
             }
             Job::Download(id) => {
+                // Stopped: leave the rest of the region unfetched. What already
+                // arrived stays on disk and in the region's record.
+                if stop.load(Ordering::Relaxed) {
+                    continue;
+                }
                 // For downloads we only need the bytes on disk; decoding is the
                 // live path's concern. Skip if already cached.
                 let path = cache_dir.join(id.cache_rel());
@@ -885,6 +937,65 @@ fn load_tile(
     Ok(decoded)
 }
 
+/// Fetches tiles as tasks on the app runtime, for a target with no worker
+/// thread: a browser page, whose one thread may never block on a fetch.
+#[derive(Clone)]
+struct TaskFetcher {
+    client: tilo_net::Client,
+    done: Sender<Done>,
+    wake: ui::wake::WakeHandle,
+    base_url: String,
+    style: TileStyle,
+}
+
+impl TaskFetcher {
+    fn new(
+        done: Sender<Done>,
+        wake: ui::wake::WakeHandle,
+        base_url: &str,
+        style: TileStyle,
+    ) -> Option<Self> {
+        ui::rt::try_app().ok()?;
+        let client = tilo_net::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .inspect_err(|e| tracing::warn!("maps tile HTTP client failed to build: {e}"))
+            .ok()?;
+        Some(Self {
+            client,
+            done,
+            wake,
+            base_url: base_url.to_string(),
+            style,
+        })
+    }
+
+    fn fetch(&self, id: TileId) {
+        let fetcher = self.clone();
+        let Ok(runtime) = ui::rt::try_app() else {
+            return;
+        };
+        drop(runtime.spawn(async move {
+            let rgba = fetch_tile_bytes(&fetcher.client, &fetcher.base_url, id)
+                .await
+                .and_then(|bytes| {
+                    decode_png(&bytes).map_err(|e| {
+                        tracing::warn!("maps tile {id:?} does not decode as PNG: {e}");
+                        TileFault::Rejected
+                    })
+                })
+                .map(|(mut rgba, w, h)| {
+                    fetcher.style.retone(&mut rgba);
+                    (rgba, w, h)
+                });
+            if fetcher.done.send(Done::Tile { id, rgba }).is_ok() {
+                fetcher.wake.wake();
+            }
+        }));
+    }
+}
+
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
 fn fetch_to_disk(
     client: Option<&tilo_net::Client>,
@@ -913,33 +1024,41 @@ fn fetch_tile(
     let client = client.ok_or(TileFault::Unreachable)?;
     // The worker thread owns no runtime; each tile waits on the app's.
     ui::rt::app()
-        .block_on(async {
-            let resp = client
-                .get(id.url(base_url))
-                .send()
-                .await
-                .map_err(|_| TileFault::Unreachable)?;
-            let status = resp.status();
-            if !status.is_success() {
-                tracing::warn!("maps tile server answered {status} for {id:?}");
-                return Err(TileFault::Rejected);
-            }
-            let content_type = resp
-                .headers()
-                .get(tilo_net::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            if !content_type.starts_with("image/png") {
-                tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
-                return Err(TileFault::Rejected);
-            }
-            resp.bytes()
-                .await
-                .map(|bytes| bytes.to_vec())
-                .map_err(|_| TileFault::Unreachable)
-        })
+        .block_on(fetch_tile_bytes(client, base_url, id))
         .map_err(|_| TileFault::Unreachable)?
+}
+
+/// The fetch itself, for the worker (which waits on it) and for runtime
+/// tasks (which await it).
+async fn fetch_tile_bytes(
+    client: &tilo_net::Client,
+    base_url: &str,
+    id: TileId,
+) -> Result<Vec<u8>, TileFault> {
+    let resp = client
+        .get(id.url(base_url))
+        .send()
+        .await
+        .map_err(|_| TileFault::Unreachable)?;
+    let status = resp.status();
+    if !status.is_success() {
+        tracing::warn!("maps tile server answered {status} for {id:?}");
+        return Err(TileFault::Rejected);
+    }
+    let content_type = resp
+        .headers()
+        .get(tilo_net::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    if !content_type.starts_with("image/png") {
+        tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
+        return Err(TileFault::Rejected);
+    }
+    resp.bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|_| TileFault::Unreachable)
 }
 
 /// The on-disk tile cache rooted at `root`.
@@ -1154,7 +1273,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn tile_addressing_decoding_and_label_free_styles() {
-        // Phase `tile_zoom_rounds_and_clamps`.
         {
             assert_eq!(TileLayer::tile_zoom(14.4), 14);
             assert_eq!(TileLayer::tile_zoom(14.6), 15);
@@ -1162,7 +1280,6 @@ mod tests {
             assert_eq!(TileLayer::tile_zoom(99.0), 19);
         }
 
-        // Phase `parent_walks_up_the_pyramid`.
         {
             let t = TileId::new(14, 8800, 5680);
             let p = t.parent().unwrap();
@@ -1170,7 +1287,6 @@ mod tests {
             assert!(TileId::new(0, 0, 0).parent().is_none());
         }
 
-        // Phase `visible_tiles_cover_viewport_and_are_in_range`.
         {
             let center = LatLon::new(48.1371, 11.5754);
             let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -1190,13 +1306,11 @@ mod tests {
             assert!(covers_center);
         }
 
-        // Phase `geobounds_tile_count_grows_with_zoom`.
         {
             let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
             let small = b.tiles_in_range(12, 12).len();
             let big = b.tiles_in_range(12, 14).len();
             assert!(big > small);
-            // Range is inclusive and non-empty.
             assert!(small >= 1);
         }
 
@@ -1301,8 +1415,6 @@ mod tests {
         }
     }
 
-    // --- Non-blocking guarantees -------------------------------------------
-
     /// Encode a solid-colour RGBA tile to PNG bytes (so a test can seed the
     /// on-disk cache without any network).
     fn solid_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
@@ -1344,29 +1456,20 @@ mod tests {
         // Phase `request_returns_immediately_results_arrive_via_channel`.
         // `request()` must return *immediately* (no blocking on I/O or decode) and
         // the decoded tile must arrive asynchronously via `drain()`. This is the
-        // core non-blocking guarantee that makes zoom/pan smooth.
+        // core non-blocking guarantee that makes zoom/pan smooth. The tile server
+        // holds its answer until released, so `request()` returning at all proves
+        // it never waits on the fetch.
         {
             let cache = temp_cache();
             let id = TileId::new(14, 8800, 5680);
-            // Seed the on-disk cache so the worker never needs the network.
-            let path = cache.join(id.cache_rel());
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, solid_png(256, 256, [10, 20, 30, 255])).unwrap();
+            let server = HeldServer::png(solid_png(256, 256, [10, 20, 30, 255]));
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
 
-            let mut layer = TileLayer::with_cache_dir(cache.clone());
-
-            // The request call itself must be effectively instant — assert it does
-            // not perform the (slow) decode synchronously.
-            let t0 = std::time::Instant::now();
             layer.request(id);
-            assert!(
-                t0.elapsed() < std::time::Duration::from_millis(20),
-                "request() blocked for {:?} — it must not fetch/decode on the caller",
-                t0.elapsed()
-            );
-            // Immediately after requesting, the tile is in-flight, NOT resident.
+            // Returned while the server still holds the tile: in flight, NOT resident.
             assert!(layer.is_inflight(id));
             assert!(layer.get(id).is_none());
+            server.release();
 
             // Poll drain() until the worker delivers the decoded tile.
             let mut got = false;
@@ -1399,10 +1502,8 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir(cache.clone());
             layer.request(id);
             assert!(layer.is_inflight(id));
-            // Requesting again while in-flight changes nothing and does not block.
-            let t0 = std::time::Instant::now();
+            // Requesting again while in-flight changes nothing.
             layer.request(id);
-            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
 
             let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline && layer.get(id).is_none() {
@@ -1423,10 +1524,8 @@ mod tests {
         {
             let mut layer = TileLayer::offline();
             let id = TileId::new(14, 100, 100);
-            let t0 = std::time::Instant::now();
             layer.request(id);
             layer.drain();
-            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
             assert!(!layer.is_inflight(id));
             assert!(layer.get(id).is_none());
             assert!(!layer.has_inflight());
@@ -1475,13 +1574,7 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
 
             let est = TileLayer::estimate_download(bounds, z0, z1);
-            let t0 = std::time::Instant::now();
             let queued = layer.start_download(bounds, z0, z1);
-            assert!(
-                t0.elapsed() < std::time::Duration::from_millis(50),
-                "start_download blocked for {:?}",
-                t0.elapsed()
-            );
             assert_eq!(queued, est);
             assert!(queued > 1);
             assert!(layer.progress().is_active() || est == 0);
@@ -1509,21 +1602,26 @@ mod tests {
         // then asserts the exact `z/x/y.png` files exist on disk.
         {
             let cache = temp_cache();
-            let base = serve_png(solid_png(256, 256, [30, 60, 90, 255]));
-            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+            let server = HeldServer::png(solid_png(256, 256, [30, 60, 90, 255]));
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), server.base.clone());
 
             // A small area across two zooms → a handful of real tiles.
             let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
             let (z0, z1) = (13u8, 14u8);
             let ids = bounds.tiles_in_range(z0, z1);
             assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
-            // None are on disk yet.
             for id in &ids {
                 assert!(!cache.join(id.cache_rel()).exists());
             }
 
+            // `start_download` returns while the server still holds every tile:
+            // it only enqueues, never fetches on the caller.
             let queued = layer.start_download(bounds, z0, z1);
             assert_eq!(queued, ids.len() as u32);
+            layer.drain();
+            assert!(layer.progress().is_active());
+            assert_eq!(layer.progress().done, 0);
+            server.release();
 
             let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
@@ -1561,7 +1659,6 @@ mod tests {
         {
             let cache = temp_cache();
             let id = TileId::new(16, 35210, 22696);
-            // Persist the tile as if a prior download had written it.
             let path = cache.join(id.cache_rel());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
@@ -1616,8 +1713,6 @@ mod tests {
         }
     }
 
-    // --- Failed-tile negative cache ----------------------------------------
-
     /// A closed local port: connecting is refused immediately, so a fetch fails
     /// fast and hermetically — no external server is ever contacted.
     fn closed_local_base() -> String {
@@ -1636,7 +1731,9 @@ mod tests {
         // enqueue new work or mark the tile in-flight. This is what stops the
         // per-frame refetch spin and the tile-server hammering. Exercises the full
         // production path: request → worker → HTTP failure → drain → suppression.
-        {
+        // The monotonic clock is pinned for the phase, so the 2 s backoff cannot
+        // lapse between the failure and the re-request on a loaded machine.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
             let cache = temp_cache();
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
             let id = TileId::new(14, 8801, 5681);
@@ -1681,7 +1778,7 @@ mod tests {
             );
 
             let _ = std::fs::remove_dir_all(&cache);
-        }
+        });
 
         // Phase `failure_backoff_grows_and_clears_on_success`.
         // The backoff grows exponentially (bounded) across consecutive failures so
@@ -1725,13 +1822,6 @@ mod tests {
 
     // --- Label-free base style + offline region download -------------------
 
-    /// A one-shot local HTTP/1.1 server that answers every request with the
-    /// same PNG bytes, so the *real* fetch→decode→persist path can be exercised
-    /// hermetically (no external server). Returns the base URL.
-    fn serve_png(png: Vec<u8>) -> String {
-        serve("200 OK", "image/png", png)
-    }
-
     /// A local HTTP/1.1 server answering every request with `status`,
     /// `content_type` and `body`. Returns the base URL.
     fn serve(status: &'static str, content_type: &'static str, body: Vec<u8>) -> String {
@@ -1754,6 +1844,55 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{port}")
+    }
+
+    /// A local HTTP/1.1 server that serves `body` as a PNG to every request,
+    /// but only once [`HeldServer::release`] is called. While it holds, any
+    /// caller still waiting on a fetch is visibly stuck.
+    struct HeldServer {
+        base: String,
+        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl HeldServer {
+        fn png(body: Vec<u8>) -> Self {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let gate =
+                std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let server_gate = gate.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf);
+                    let (released, wake) = &*server_gate;
+                    let mut open = released.lock().unwrap();
+                    while !*open {
+                        open = wake.wait(open).unwrap();
+                    }
+                    drop(open);
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                }
+            });
+            Self {
+                base: format!("http://127.0.0.1:{port}"),
+                gate,
+            }
+        }
+
+        fn release(&self) {
+            let (released, wake) = &*self.gate;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
     }
 
     /// Request `id` and pump `drain` until the worker answers.

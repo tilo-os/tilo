@@ -92,14 +92,14 @@ digits, - or _) and a \"step\" kind: \"invoke\" with \"action\" (the listed acti
 \"cond\": {\"truthy\": binding} or {\"equals\": {\"left\", \"right\"}}, \"then\" and \"else\" \
 step lists; \"for_each\" with \"items\" binding, \"item\" variable name and \"body\"; \
 \"set_var\" with \"name\" and \"value\"; \"ask\" with \"param\": {\"name\", \"ty\", \
-\"required\", \"description\"}; \"ai\" with \"transform\" (\"summarise\", {\"classify\": \
-{\"choices\"}}, {\"extract\": {\"schema\"}} or {\"freeform\": {\"prompt\"}}) and \"input\" \
-binding. A binding is {\"literal\": value}, {\"input\": name}, {\"var\": name}, \
+\"required\", \"description\"}; \"ai\" with \"prompt\" (what to do), an optional \
+\"input\" binding (the step before it when absent) and an optional \"output\" JSON Schema \
+the answer must satisfy; \"task\" with \"instruction\", an optional \"allow\" list of grant \
+rules and an optional \"output\" JSON Schema. A binding is {\"literal\": value}, {\"input\": name}, {\"var\": name}, \
 {\"step_output\": {\"step\": id, \"pointer\": \"/field\"}} or {\"template\": \"text with \
 {{input.x}}, {{var.x}} or {{step.id/field}}\"}. Bind every required parameter with a value of \
 its type. Do not invent actions. The person asked for:\n";
 
-/// The arguments of the drafting invocation for `description`.
 #[must_use]
 pub fn arguments(description: &str, catalog: &ActionCatalog) -> Map<String, Value> {
     let description: String = description.chars().take(MAX_DESCRIPTION).collect();
@@ -128,10 +128,6 @@ pub struct Drafted {
 /// Turn the agent's answer into a draft to offer: parse it, give it an id no
 /// saved shortcut has, drop anything that would carry authority, and check
 /// it with the least grant its steps need.
-///
-/// # Errors
-///
-/// Why the answer is not a shortcut at all.
 pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Result<Drafted, String> {
     let mut object = match value {
         Value::Object(object) => object,

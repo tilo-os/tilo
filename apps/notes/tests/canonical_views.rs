@@ -160,7 +160,7 @@ fn payload(
     scroll: f64,
 ) -> ui::application_view::ApplicationLocalView {
     ui::application_view::ApplicationLocalView {
-        app_id: notes::definition().app_id.into(), version: 1,
+        app_id: notes::definition().app_id().into(), version: 1,
         payload: serde_json::to_vec(&serde_json::json!({
             "selected_page": page, "active_tag": null, "drawer_open": false,
             "expanded_pages": [], "editor_scroll": scroll, "focus": focus,
@@ -448,7 +448,6 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                 1,
                 "the owned edit records who wrote it in the same change"
             );
-            // History names the note's body and the edits it took.
             let labels = changes
                 .iter()
                 .map(|change| {
@@ -655,7 +654,6 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         );
         let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.type_text("f");
-        // Closing ends the typed word's step.
         close_driver(&mut a);
         assert_eq!(revision(&f, &checkout), before.3 + 1);
         f.records
@@ -778,7 +776,6 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             .with(&checkout.id, |doc| {
                 let (_, pages) = doc.get(automerge::ROOT, "pages").unwrap().unwrap();
                 let (_, item) = doc.get(&pages, f.root.to_string()).unwrap().unwrap();
-                // A collection keeps each item's fields under `v`.
                 let (_, page) = doc.get(&item, "v").unwrap().unwrap();
                 (read::page_block_snapshots(doc, f.root)[0].0.clone(), page)
             })

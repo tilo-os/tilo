@@ -40,9 +40,7 @@ const MAX_PACKAGE_BYTES: usize = 256;
 /// One member, as their builds run.
 #[derive(Clone, Debug)]
 pub struct MemberRun {
-    /// Their area.
     pub area: MemberArea,
-    /// Their uid, when members are separated by uid.
     pub uid: Option<u32>,
     /// Their cgroup, when the worker has a delegated one.
     pub cgroup: Option<PathBuf>,
@@ -92,7 +90,6 @@ pub trait MemberBuild: Send + Sync + 'static {
 /// [`MemberBuild`] by running `tilo-env-tools build-for` as the member.
 #[derive(Clone, Debug)]
 pub struct EnvToolsBuild {
-    /// The `tilo-env-tools` binary.
     pub binary: PathBuf,
 }
 
@@ -183,7 +180,6 @@ pub struct ToolBuildService {
 }
 
 impl ToolBuildService {
-    /// Builds run by `builds`, signed by `key`.
     #[must_use]
     pub fn new(key: ed25519_dalek::SigningKey, builds: Arc<dyn MemberBuild>) -> Self {
         Self {
@@ -270,10 +266,6 @@ impl ToolBuildService {
 
     /// Build, check and sign `request` for `member`; the signed image is on
     /// the member's shelf.
-    ///
-    /// # Errors
-    ///
-    /// Why there is no tool, for the member's shell.
     pub fn build_blocking(
         &self,
         member: &MemberRun,

@@ -29,6 +29,7 @@ flatpak its flatpak-bisect and flatpak-coredumpctl tools are Python
 libwacom its libwacom-update-db tool is Python
 gstreamer1 its gst-plugins-doc-cache-generator helper is Python
 samba-common-tools its samba-log-parser tool is Python
+sos the support-report tool the base ships, kept on purpose (os/Containerfile), is Python
 libcap-ng-python3 Python bindings required by the packages above
 systemd-ukify ukify, the UKI builder, is Python'
 

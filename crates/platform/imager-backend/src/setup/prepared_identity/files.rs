@@ -4,18 +4,29 @@ use std::{io, path::Path, sync::Arc};
 
 pub fn ensure_private_tree(path: &std::path::Path) -> std::io::Result<Arc<PinnedDirectory>> {
     super::require_supported()?;
+    let open_existing = || {
+        let pin = PinnedDirectory::open_absolute(path)?;
+        pin.validate_destination()?;
+        Ok(pin)
+    };
     match std::fs::symlink_metadata(path) {
-        Ok(_) => {
-            let pin = PinnedDirectory::open_absolute(path)?;
-            pin.validate_destination()?;
-            Ok(pin)
-        }
+        Ok(_) => open_existing(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let parent = path.parent().ok_or(error)?;
             let parent = ensure_private_tree(parent)?;
-            let child = parent.create_child(path.file_name().ok_or_else(|| {
+            let child = match parent.create_child(path.file_name().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
-            })?)?;
+            })?) {
+                Ok(child) => child,
+                // Another worker of this installer (e.g. the startup draft
+                // review beside identity preparation) created it between the
+                // lookup and mkdir. Adopt it only through the same checks an
+                // existing directory gets.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return open_existing();
+                }
+                Err(error) => return Err(error),
+            };
             migration_durability::sync_directory(&child.file)?;
             migration_durability::sync_directory(&parent.file)?;
             Ok(child)
@@ -64,4 +75,32 @@ pub fn read_avatar(path: &Path) -> io::Result<Vec<u8>> {
 #[cfg(not(unix))]
 pub fn read_avatar(_path: &Path) -> io::Result<Vec<u8>> {
     Err(super::unsupported())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn concurrent_workers_share_one_new_private_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target = root.join("state/tilo/installer/preparations");
+        let start = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        super::ensure_private_tree(&target).map(|_| ())
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
+        });
+        assert!(std::fs::symlink_metadata(&target).unwrap().is_dir());
+    }
 }

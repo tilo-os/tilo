@@ -328,9 +328,9 @@ impl ComponentNodes {
     /// rebuild records them. Returns whether its children changed.
     fn keep_head(&mut self, id: &SemanticId, last: &SharedResource, next: &SharedResource) -> bool {
         for spec in &next.head().actions {
-            if let ActionInput::Prompted { build, .. } = &spec.input {
+            if let ActionInput::Prompted { .. } = spec.input() {
                 self.prompted
-                    .insert((id.clone(), spec.id.clone()), build.clone());
+                    .insert((id.clone(), spec.id.clone()), spec.clone());
             }
         }
         if last.children().ptr_eq(next.children()) {
@@ -523,11 +523,14 @@ pub(super) fn resource_semantic_node(
 /// node ([`resource_action`]): the same id, label and input. A deferred
 /// action's address is its resource's id and its own, both the same here.
 fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
-    let same_input = match (&action.kind, &spec.input) {
-        (SemanticActionKind::App(encoded), ActionInput::Immediate(next)) => {
+    let same_input = match (&action.kind, spec.input()) {
+        (SemanticActionKind::App(encoded), ActionInput::Immediate(Some(next))) => {
             encoded == next.as_ref()
         }
-        (SemanticActionKind::AppDeferred { .. }, ActionInput::Deferred { .. }) => true,
+        (
+            SemanticActionKind::AppDeferred { .. },
+            ActionInput::Deferred { .. } | ActionInput::Immediate(None),
+        ) => true,
         (
             SemanticActionKind::AppPrompted {
                 prompt,
@@ -540,7 +543,7 @@ fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
                 collects: next_collects,
                 ..
             },
-        ) => prompt == next_prompt && placeholder == next_placeholder && collects == next_collects,
+        ) => prompt == next_prompt && placeholder == next_placeholder && *collects == next_collects,
         _ => false,
     };
     // The action is named by the spec's id.
@@ -554,22 +557,25 @@ fn resource_action(
     spec: &ActionSpec,
     prompted: &mut PromptedMap,
 ) -> SemanticAction {
-    let kind = match &spec.input {
-        ActionInput::Immediate(enc) => SemanticActionKind::App(enc.as_ref().clone()),
-        ActionInput::Deferred { .. } => SemanticActionKind::AppDeferred {
-            address: tilo_actions::ActionAddress::new(resource, &spec.id),
-        },
+    let kind = match spec.input() {
+        ActionInput::Immediate(Some(enc)) => SemanticActionKind::App(enc.as_ref().clone()),
+        // Encoded for its target when it fires, resolved by address as a
+        // deferred one is: the tree holds no bytes per item.
+        ActionInput::Immediate(None) | ActionInput::Deferred { .. } => {
+            SemanticActionKind::AppDeferred {
+                address: tilo_actions::ActionAddress::new(resource, &spec.id),
+            }
+        }
         ActionInput::Prompted {
             prompt,
             placeholder,
             collects,
-            build,
         } => {
-            prompted.insert((node_id.clone(), spec.id.clone()), build.clone());
+            prompted.insert((node_id.clone(), spec.id.clone()), spec.clone());
             SemanticActionKind::AppPrompted {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: *collects,
+                prompt: prompt.to_owned(),
+                placeholder: placeholder.to_owned(),
+                collects,
             }
         }
     };

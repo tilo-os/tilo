@@ -66,12 +66,12 @@ pub enum OutEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarTransfer {
     ImportMarkdown,
+    ImportNotion,
     CopyLink(PageId),
     ExportMarkdown(PageId),
     InsertImage(PageId),
 }
 
-/// The tree type the sidebar hosts.
 pub type PageTreeView = TreeView<(), PageTree>;
 
 /// The hidden root every top-level page hangs from.
@@ -116,6 +116,11 @@ fn empty_area_items() -> Vec<MenuItem> {
     vec![
         MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
         MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
+        MenuItem::icon_action(
+            Icon::CloudDownload,
+            ui::i18n!("notes-notion-menu-import"),
+            || {},
+        ),
     ]
 }
 
@@ -380,7 +385,6 @@ impl PageSidebar {
         let on_row_action = (Rc::clone(&outbox), Rc::clone(&keys));
         let on_menu = (Rc::clone(&outbox), Rc::clone(&keys));
         let tree = TreeView::from_model(model)
-            .with_id("page_tree")
             .with_accessible_name(ui::i18n!("notes-title"))
             .hide_root()
             .fill()
@@ -427,7 +431,9 @@ impl PageSidebar {
                     true
                 },
             )
-            .on_select(move |key| push_for(&on_select.0, &on_select.1, key, OutEvent::Select))
+            .on_view("page_tree", move |key| {
+                push_for(&on_select.0, &on_select.1, key, OutEvent::Select);
+            })
             .on_rename(move |key, new_title| {
                 push_for(&on_rename.0, &on_rename.1, key, |id| OutEvent::Rename {
                     id,
@@ -449,6 +455,7 @@ impl PageSidebar {
                     (None, _) => match index {
                         0 => outbox.events.push(OutEvent::CreateChild { parent: None }),
                         1 => outbox.transfer = Some(SidebarTransfer::ImportMarkdown),
+                        2 => outbox.transfer = Some(SidebarTransfer::ImportNotion),
                         _ => {}
                     },
                     (Some(key), Some(page)) => match index {
@@ -872,8 +879,9 @@ mod tests {
 
     #[test]
     fn sidebar_drag_and_scroll_reveal_hidden_targets() {
+        use ui::time::testing::with_monotonic_time;
         eprintln!("phase dragging_over_collapsed_branch_springs_it_open_after_dwell");
-        {
+        with_monotonic_time(ui::time::now(), || {
             let mut ws = Workspace::new();
             let target = ws.create_page(None);
             let _child = ws.create_page(Some(target));
@@ -899,13 +907,13 @@ mod tests {
             let doc = AutoCommit::new();
             tree.update(&doc, &ObjId::Root);
             assert!(!tree.is_expanded(target_key), "no spring before the dwell");
-            std::thread::sleep(std::time::Duration::from_millis(700));
-            tree.update(&doc, &ObjId::Root);
+            let dwelt = ui::time::now() + std::time::Duration::from_millis(700);
+            with_monotonic_time(dwelt, || tree.update(&doc, &ObjId::Root));
             assert!(tree.is_expanded(target_key), "the dwell opens the branch");
-        }
+        });
 
         eprintln!("phase dragging_in_bottom_edge_band_autoscrolls_toward_hidden_targets");
-        {
+        with_monotonic_time(ui::time::now(), || {
             let mut workspace = Workspace::new();
             for _ in 0..30 {
                 workspace.create_page(None);
@@ -920,13 +928,13 @@ mod tests {
             assert!(tree.is_dragging());
             let doc = AutoCommit::new();
             tree.update(&doc, &ObjId::Root);
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            tree.update(&doc, &ObjId::Root);
+            let later = ui::time::now() + std::time::Duration::from_millis(30);
+            with_monotonic_time(later, || tree.update(&doc, &ObjId::Root));
             assert!(
                 tree.scroll_offset() > 0.0,
                 "edge dragging reveals lower drop targets without ending the gesture"
             );
-        }
+        });
 
         eprintln!("phase large_tree_scroll_is_clamped_and_keyboard_reveals_the_selection");
         {

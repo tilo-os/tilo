@@ -13,7 +13,7 @@
 //! socket; this crate stays free of the compositor.
 
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -119,7 +119,7 @@ impl Geometry {
 }
 
 /// One canonical action.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Action {
     pub action: String,
@@ -158,10 +158,9 @@ pub struct Action {
 }
 
 /// A pen's tip pressure along a stroke, each value `0.0..=1.0`.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum Pressure {
-    /// The same pressure all along.
     Constant(f64),
     /// Pressures spread evenly from the stroke's start to its end.
     Along(Vec<f64>),
@@ -189,10 +188,6 @@ pub struct Frame {
 
 impl Computer {
     /// The computer named by the environment, if any.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a relative socket path and scratch-directory creation errors.
     pub fn from_env(profile: &Path) -> io::Result<Option<Self>> {
         let Some(socket) = std::env::var_os(CONTROL_ENV) else {
             return Ok(None);

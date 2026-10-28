@@ -122,7 +122,10 @@ pub(super) enum LinkStep {
     Up,
     /// The link did not come up. The output is being switched off.
     Failed,
-    /// The output is off.
+    /// The link did not come up, and the wake this output is in may redo
+    /// its modeset once: the CRTC is switched off, then modeset from
+    /// scratch ([`super::wake_check`]).
+    Redone,
     Off,
 }
 
@@ -163,6 +166,14 @@ pub(super) struct OutputLink {
     /// The output is proven up and presents.
     up: bool,
     failure: Option<LinkFailure>,
+    /// The wake the output is in may redo its modeset once when no vblank
+    /// follows it, instead of failing the output.
+    redo_owed: bool,
+    /// The CRTC is to be switched off on the way to a full modeset: the
+    /// redo of a wake's modeset. Re-lighting a CRTC the kernel still holds
+    /// active with the same mode changes nothing; from off it retrains the
+    /// link and re-enables the panel.
+    remodeset: bool,
 }
 
 impl OutputLink {
@@ -177,6 +188,8 @@ impl OutputLink {
             proof: Proof::Idle,
             up: false,
             failure: None,
+            redo_owed: false,
+            remodeset: false,
         }
     }
 
@@ -198,6 +211,11 @@ impl OutputLink {
         self.failure.as_ref()
     }
 
+    /// The output is wanted lit.
+    pub(super) fn wanted_on(&self) -> bool {
+        self.wanted == Power::On
+    }
+
     /// Want the output on or off, and commit that when nothing is in the way.
     /// `flip_unread`: a flip the presenter queued has not had its event read.
     pub(super) fn want(&mut self, power: Power, device: &impl LinkDevice, flip_unread: bool) {
@@ -209,11 +227,39 @@ impl OutputLink {
         self.advance(device, flip_unread);
     }
 
-    /// Another DRM master had the CRTC: the next `On` modesets it from
-    /// scratch.
+    /// Another DRM master had the CRTC, or the machine slept: the next `On`
+    /// modesets it from scratch. The device was powered down or handed
+    /// away and back, which is a real change: a link that failed before is
+    /// tried again.
     pub(super) fn resume(&mut self, device: &impl LinkDevice, flip_unread: bool) {
+        self.failure = None;
         self.full = true;
         self.committed = Power::Off;
+        self.up = false;
+        self.proof = Proof::Idle;
+        self.advance(device, flip_unread);
+    }
+
+    /// Let the wake the output is entering redo its modeset once when no
+    /// vblank follows it ([`LinkStep::Redone`]).
+    pub(super) fn arm_wake_redo(&mut self) {
+        self.redo_owed = true;
+    }
+
+    /// The wake is over: a later missing vblank fails the output.
+    pub(super) fn disarm_wake_redo(&mut self) {
+        self.redo_owed = false;
+    }
+
+    /// Redo the modeset from the CRTC switched off: the wake's one recovery
+    /// when the link came up but the output is still not lit (its CRTC
+    /// reads back inactive, its panel's backlight stayed blanked).
+    pub(super) fn redo(&mut self, device: &impl LinkDevice, flip_unread: bool) {
+        if self.failure.is_some() {
+            return;
+        }
+        self.redo_owed = false;
+        self.remodeset = true;
         self.up = false;
         self.proof = Proof::Idle;
         self.advance(device, flip_unread);
@@ -224,6 +270,9 @@ impl OutputLink {
         if self.failure.is_some() {
             // A failed output only ever goes off.
             return (self.committed == Power::On).then_some(LinkChange::Off);
+        }
+        if self.remodeset && self.committed == Power::On {
+            return Some(LinkChange::Off);
         }
         match (self.wanted, self.committed) {
             (Power::On, Power::Off) => Some(LinkChange::On { full: self.full }),
@@ -257,6 +306,7 @@ impl OutputLink {
                     LinkChange::Off => {
                         self.committed = Power::Off;
                         self.up = false;
+                        self.end_remodeset_off();
                     }
                 }
             }
@@ -275,8 +325,17 @@ impl OutputLink {
                     tracing::warn!(%error, "DRM scanout: switching the output off was refused");
                     // Retrying a refused commit every frame would be a loop.
                     self.committed = Power::Off;
+                    self.end_remodeset_off();
                 }
             },
+        }
+    }
+
+    /// The off half of a redone modeset is committed: the on half routes
+    /// the connector and sets the mode afresh.
+    fn end_remodeset_off(&mut self) {
+        if std::mem::take(&mut self.remodeset) {
+            self.full = true;
         }
     }
 
@@ -299,7 +358,10 @@ impl OutputLink {
             }
             (Power::On, Proof::Awaiting(seen)) => {
                 self.proof = Proof::Idle;
-                if frame == seen {
+                if frame == seen && std::mem::take(&mut self.redo_owed) {
+                    self.remodeset = true;
+                    LinkStep::Redone
+                } else if frame == seen {
                     self.failure = Some(LinkFailure::NoVblank);
                     LinkStep::Failed
                 } else {
@@ -598,11 +660,9 @@ mod tests {
         );
         assert!(!link.presentable());
 
-        // The probe lands on the next vblank.
         assert_eq!(link.complete(101, &crtc), Completion::Link(LinkStep::Up));
         assert!(link.presentable());
         assert!(!link.busy());
-        // Later events are the presenter's flips.
         assert_eq!(link.complete(102, &crtc), Completion::Flip);
     }
 
@@ -774,6 +834,91 @@ mod tests {
         assert_eq!(dp.commits.borrow().len(), 3, "on, probe, off: then nothing");
         assert!(panel_link.presentable());
         assert_eq!(panel.commits.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_wake_redoes_a_modeset_no_vblank_followed_once_from_the_crtc_switched_off() {
+        // The panel after a resume: the modeset's event came, the probe's
+        // event carried the same vblank count.
+        let crtc = counting(7);
+        let mut link = OutputLink::new();
+        link.arm_wake_redo();
+        link.service(&crtc, false);
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Pending));
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Redone));
+        assert_eq!(link.failure(), None, "the output is not failed yet");
+        assert!(!link.presentable());
+        assert_eq!(
+            *crtc.commits.borrow(),
+            [
+                LinkChange::On { full: true },
+                LinkChange::Probe,
+                LinkChange::Off
+            ],
+            "the CRTC is switched off first"
+        );
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Off));
+        assert_eq!(
+            crtc.commits.borrow().last(),
+            Some(&LinkChange::On { full: true }),
+            "then modeset from scratch"
+        );
+        crtc.vblank.set(Some(8));
+        assert_eq!(link.complete(8, &crtc), Completion::Link(LinkStep::Pending));
+        assert_eq!(link.complete(9, &crtc), Completion::Link(LinkStep::Up));
+        assert!(link.presentable());
+    }
+
+    #[test]
+    fn a_second_missing_vblank_in_the_same_wake_fails_the_output() {
+        let crtc = counting(7);
+        let mut link = OutputLink::new();
+        link.arm_wake_redo();
+        link.service(&crtc, false);
+        link.complete(7, &crtc);
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Redone));
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Off));
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Pending));
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Failed));
+        assert_eq!(link.failure(), Some(&LinkFailure::NoVblank));
+        assert_eq!(
+            crtc.commits.borrow().len(),
+            6,
+            "on, probe, off, on, probe, off: then nothing"
+        );
+    }
+
+    #[test]
+    fn a_lit_output_whose_wake_is_not_lit_redoes_its_modeset_from_off() {
+        let crtc = counting(20);
+        let mut link = OutputLink::new();
+        link.service(&crtc, false);
+        link.complete(20, &crtc);
+        assert_eq!(link.complete(21, &crtc), Completion::Link(LinkStep::Up));
+        link.redo(&crtc, false);
+        assert!(!link.presentable());
+        assert_eq!(crtc.commits.borrow().last(), Some(&LinkChange::Off));
+        assert_eq!(link.complete(22, &crtc), Completion::Link(LinkStep::Off));
+        assert_eq!(
+            crtc.commits.borrow().last(),
+            Some(&LinkChange::On { full: true })
+        );
+    }
+
+    #[test]
+    fn a_resume_tries_a_failed_link_again() {
+        let crtc = counting(7);
+        let mut link = OutputLink::new();
+        link.service(&crtc, false);
+        link.complete(7, &crtc);
+        assert_eq!(link.complete(7, &crtc), Completion::Link(LinkStep::Failed));
+        link.complete(7, &crtc);
+        link.resume(&crtc, false);
+        assert_eq!(link.failure(), None);
+        assert_eq!(
+            crtc.commits.borrow().last(),
+            Some(&LinkChange::On { full: true })
+        );
     }
 
     #[test]

@@ -40,6 +40,12 @@ use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout};
 /// keeps the inner loop cheap.
 const RESAMPLE_N: usize = 32;
 
+#[cfg(test)]
+thread_local! {
+    /// Dictionary words whose shape a decode on this thread scored.
+    static SHAPES_SCORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A decoded swipe candidate: the word plus a score in `0.0..=1.0` (higher is
 /// better).
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +287,8 @@ impl SwipeModel for GeometricSwipeModel {
                 continue;
             }
             let ideal_rs = resample(&ideal, RESAMPLE_N);
+            #[cfg(test)]
+            SHAPES_SCORED.with(|count| count.set(count.get() + 1));
 
             // Shape distance: mean point distance, normalised by the user
             // path's bounding diagonal so longer swipes aren't penalised.
@@ -347,8 +355,6 @@ fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
     }
     index
 }
-
-// --- geometry helpers -----------------------------------------------------
 
 /// Map each single-letter `Char` key to the centre of its rect.
 fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMap<char, Point> {
@@ -762,7 +768,6 @@ mod tests {
                 Point::new(100.5, 101.0),
             ];
             assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-            // A drag across several keys.
             let drag = vec![
                 Point::new(0.0, 100.0),
                 Point::new(200.0, 100.0),
@@ -786,23 +791,111 @@ mod tests {
     }
 
     #[test]
-    // The budget is a property of the shipping build. A debug build runs this
-    // an order of magnitude slower, so the gate there measures the compiler,
-    // not the decoder — it only ever caught the machine being busy. Decode
-    // correctness is covered by the tests above, in every build.
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "wall-clock budget only means something in a release build; run with --release"
-    )]
-    fn decode_is_fast_enough() {
-        // A full decode over the embedded dictionary against the 30 ms budget,
-        // with headroom so only a real regression trips it.
+    fn a_decode_scores_only_words_its_endpoints_allow() {
+        let (layout, geom) = qwerty_geom();
+        let model = GeometricSwipeModel::english();
+        let path = path_through("keyboard", &geom, &layout);
+        SHAPES_SCORED.with(|count| count.set(0));
+        let top = model.decode_top(&path, &geom, &layout, 8);
+        let scored = SHAPES_SCORED.with(std::cell::Cell::get);
+        assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
+        let words = model.dictionary().len();
+        assert!(
+            scored * 4 < words,
+            "the endpoint index prunes the dictionary: {scored} of {words} words scored"
+        );
+    }
+
+    /// Held-out swipes from FUTO's swipe.futo.org dataset (MIT, see
+    /// `tests/data/README.md`), one `word<TAB>x,y x,y ...` per line in
+    /// hundredths of a key unit (x: tenths of the key area's width, y: rows).
+    /// Never fit constants on it; `swipe_tune.txt` holds other contributors'
+    /// swipes for that.
+    const FUTO_EVAL: &str = include_str!("../tests/data/swipe_eval.txt");
+
+    /// The key area the fixtures are decoded on: the dataset's most common
+    /// canvas (406 px wide, 170 px for three letter rows) plus the function
+    /// row.
+    const FUTO_AREA: Rect = Rect::new(0.0, 0.0, 406.0, 227.0);
+
+    /// Held-out accuracy floors over all 1500 swipes of `swipe_eval.txt`
+    /// (89.3% / 96.7%). Raise them when the decoder improves.
+    const FLOOR_TOP1: usize = 1339;
+    const FLOOR_TOP3: usize = 1451;
+
+    fn futo_swipes(fixture: &str) -> Vec<(&str, Vec<Point>)> {
+        let (sx, sy) = (FUTO_AREA.width() / 1000.0, FUTO_AREA.height() / 400.0);
+        fixture
+            .lines()
+            .map(|line| {
+                let (word, coords) = line.split_once('\t').expect("word<TAB>path");
+                let path = coords
+                    .split(' ')
+                    .map(|xy| {
+                        let (x, y) = xy.split_once(',').expect("x,y");
+                        let x: f64 = x.parse().expect("x");
+                        let y: f64 = y.parse().expect("y");
+                        Point::new(x * sx, y * sy)
+                    })
+                    .collect();
+                (word, path)
+            })
+            .collect()
+    }
+
+    /// Swipes whose word ranks first and within the top three, decoded in
+    /// parallel.
+    fn hits(model: &GeometricSwipeModel, swipes: &[(&str, Vec<Point>)]) -> (usize, usize) {
+        let layout = KeyboardLayout::qwerty();
+        let geom = key_rects(&layout, FUTO_AREA, ShiftState::Off);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(32));
+        let chunk = swipes.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            // Spawn every worker before joining any, so they run together.
+            let mut workers = Vec::new();
+            for part in swipes.chunks(chunk) {
+                let (layout, geom) = (&layout, &geom);
+                workers.push(scope.spawn(move || {
+                    let (mut top1, mut top3) = (0, 0);
+                    for (word, path) in part {
+                        let top = model.decode_top(path, geom, layout, 3);
+                        match top.iter().position(|c| c.word == *word) {
+                            Some(0) => (top1, top3) = (top1 + 1, top3 + 1),
+                            Some(_) => top3 += 1,
+                            None => {}
+                        }
+                    }
+                    (top1, top3)
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|w| w.join().expect("decode worker"))
+                .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+        })
+    }
+
+    #[test]
+    fn futo_held_out_accuracy() {
+        let swipes = futo_swipes(FUTO_EVAL);
+        let (top1, top3) = hits(&GeometricSwipeModel::english(), &swipes);
+        let n = swipes.len();
+        eprintln!("held-out swipes: n={n} top-1={top1} top-3={top3}");
+        assert!(
+            top1 >= FLOOR_TOP1 && top3 >= FLOOR_TOP3,
+            "swipe accuracy regressed: top-1 {top1}, top-3 {top3} of {n}, floors {FLOOR_TOP1}/{FLOOR_TOP3}"
+        );
+    }
+
+    #[test]
+    #[ignore = "measurement; run with --release --ignored --nocapture"]
+    fn decode_time() {
+        // The budget is 30 ms per decode in a release build.
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
         let t0 = ui::time::now();
         let _ = model.decode_top(&path, &geom, &layout, 8);
-        let dt = t0.elapsed();
-        assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");
+        println!("swipe decode of \"keyboard\": {:?}", t0.elapsed());
     }
 }

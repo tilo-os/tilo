@@ -37,6 +37,8 @@ pub struct FrozenRootPreview {
     view: PreviewView,
     /// The live window's bar presents search: the root's header is told so.
     window_search: bool,
+    /// The live window's presentation was handed to the root.
+    presented: bool,
 }
 
 impl FrozenRootPreview {
@@ -50,6 +52,7 @@ impl FrozenRootPreview {
             bounds: Rect::ZERO,
             view: PreviewView::default(),
             window_search: false,
+            presented: false,
         }
     }
 
@@ -85,6 +88,14 @@ impl HistoryPreview for FrozenRootPreview {
         );
         let mut frame = crate::launch::ShotFrame::new(size, theme.clone());
         if let Some(doc) = self.doc.take() {
+            // The version opens as the live window shows its record (its
+            // mode, the open item), drawn by the same view.
+            if !self.presented
+                && let Some(local) = &self.view.application
+            {
+                self.presented = true;
+                super::capability::adopt_presentation(self.root.as_mut(), local, &doc);
+            }
             frame = frame.with_state(crate::State::from_doc(doc));
         }
         // The view is measured by the renderer that draws it — the live

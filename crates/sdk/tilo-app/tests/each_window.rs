@@ -128,6 +128,25 @@ fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
     ])
 }
 
+/// The same list outside a scroll view: nothing clips it, so every row is
+/// mounted.
+struct ShownWindow;
+
+impl ResourceApp for ShownWindow {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-window-shown-checklist";
+    const TITLE: &'static str = "Checklist";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        let rows = cx.each(|list| &list.tasks, |row| task_row(row));
+        Box::new(Column::new().push(Box::new(rows)))
+    }
+}
+
 /// The same list, whose rows each bind an edit into the published tree:
 /// the last task's row offers `finish-last`.
 struct BindingWindow;
@@ -194,7 +213,7 @@ fn list_items<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn task_id(app: &TestApp<Window>, index: usize) -> Id {
+fn task_id<A: ResourceApp<Resource = Checklist>>(app: &TestApp<A>, index: usize) -> Id {
     app.state().tasks.ids().nth(index).cloned().unwrap()
 }
 
@@ -265,7 +284,7 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
     assert!(app.state().tasks.get(&far).unwrap().done);
 }
 
-fn mounted(app: &mut TestApp<Window>, id: &Id) -> bool {
+fn mounted<A: ResourceApp>(app: &mut TestApp<A>, id: &Id) -> bool {
     app.harness().targets().contains_key(&control(id))
 }
 
@@ -343,6 +362,151 @@ fn adding_an_item_away_from_the_view_keeps_the_window_tree() {
     let total = usize::try_from(TASKS).unwrap().saturating_add(1);
     assert_eq!(items.len(), before, "no row mounted or dropped");
     assert!(items.iter().all(|&(_, size)| size == total), "{items:?}");
+}
+
+/// What assistive technology reads of the window: each node's role, name
+/// and place in its set, in a stable order.
+fn read_rows<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<String> {
+    let mut read = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .map(|(_, node)| {
+            format!(
+                "{:?} {:?} {:?}/{:?}",
+                node.role(),
+                node.label(),
+                node.position_in_set(),
+                node.size_of_set()
+            )
+        })
+        .collect::<Vec<_>>();
+    read.sort();
+    read
+}
+
+#[test]
+fn adding_an_item_to_a_list_showing_every_row_mounts_its_row_in_place() {
+    let mut app = TestApp::<ShownWindow>::for_person("ada").unwrap();
+    app.call("seed", serde_json::json!({ "count": 40 }))
+        .unwrap();
+    app.harness().relayout();
+    let nodes = app.harness().layout_node_ids();
+    let rebuilt = app.harness().rebuilt_frames();
+
+    app.call("seed", serde_json::json!({ "count": 1 })).unwrap();
+    app.harness().relayout();
+
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "the row is mounted into the window's tree, which is not rebuilt"
+    );
+    let after = app.harness().layout_node_ids();
+    assert!(
+        nodes.iter().all(|node| after.contains(node)) && after.len() > nodes.len(),
+        "every node the window had stays, beside the new row's"
+    );
+    let added = task_id(&app, 40);
+    assert!(mounted(&mut app, &added), "the new row is mounted");
+    app.harness()
+        .verify_retained_geometry()
+        .expect("the window laid out in place as a full relayout lays it out");
+    let read = read_rows(&mut app);
+    app.harness().set_full_relayout(Some(true));
+    app.harness().relayout();
+    app.harness().set_full_relayout(None);
+    assert_eq!(
+        read,
+        read_rows(&mut app),
+        "assistive technology reads what a full relayout shows"
+    );
+
+    app.harness().click_named(&control(&added)).unwrap();
+    app.harness().relayout();
+    assert!(
+        app.state().tasks.get(&added).unwrap().done,
+        "the mounted row's checkbox acts on its item"
+    );
+}
+
+/// A host's region of 1280 × 800 logical pixels.
+struct Region;
+
+impl tilo_app::app::AppSurface for Region {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> tilo_app::winit::dpi::PhysicalSize<u32> {
+        tilo_app::winit::dpi::PhysicalSize::new(1280, 800)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _: tilo_app::winit::window::CursorIcon) {}
+}
+
+/// Frames of a live window until it is at rest, and its accessibility tree.
+fn host_frame(app: &mut tilo_app::App) {
+    for _ in 0..4 {
+        let mut scene = tilo_app::advanced::Scene::new();
+        if !app.surface_frame(&Region, &mut scene) || !app.unsettled() {
+            break;
+        }
+    }
+    let _ = app.refresh_semantic_tree();
+}
+
+/// Each checkbox of a live window, with where it is.
+fn checkboxes(app: &tilo_app::App) -> Vec<String> {
+    app.semantic_tree()
+        .iter()
+        .filter(|node| node.role == tilo_app::a11y::Role::Checkbox)
+        .map(|node| format!("{:?} {:?}", node.name, node.bounds))
+        .collect()
+}
+
+#[test]
+fn a_live_window_mounts_an_added_row_in_place() {
+    use tilo_app::framework::testing::drive_live_window;
+    fn seed(app: &mut tilo_app::App, count: u32) {
+        let arguments = serde_json::json!({ "count": count })
+            .as_object()
+            .cloned()
+            .unwrap();
+        app.invoke_local_resource_action(
+            &tilo_actions::ActionAddress::new("test.window-checklist", "seed"),
+            &arguments,
+        )
+        .unwrap();
+    }
+    let mut shown = Vec::new();
+    drive_live_window::<ShownWindow, _>(|app| {
+        app.init_layout();
+        host_frame(app);
+        seed(app, 12);
+        host_frame(app);
+        assert_eq!(checkboxes(app).len(), 12);
+        let (rebuilds, remounts) = app.layout_tree_changes();
+
+        seed(app, 1);
+        host_frame(app);
+
+        shown = checkboxes(app);
+        assert_eq!(shown.len(), 13, "the added row is shown");
+        let (rebuilt, remounted) = app.layout_tree_changes();
+        assert_eq!(rebuilt, rebuilds, "the window's layout tree is kept");
+        assert!(remounted > remounts, "the row was mounted into it");
+    })
+    .unwrap();
+    // What the window shows is what a window that built its tree with every
+    // row shows.
+    drive_live_window::<ShownWindow, _>(|app| {
+        seed(app, 12);
+        seed(app, 1);
+        app.init_layout();
+        host_frame(app);
+        assert_eq!(checkboxes(app), shown);
+    })
+    .unwrap();
 }
 
 #[test]

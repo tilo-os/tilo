@@ -21,7 +21,7 @@ const SELECTOR: &str = "setup::home_capture::transport::native_inputs::mounted_i
 struct Owned(Child);
 impl Owned {
     fn finish(&mut self) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = self.0.try_wait().unwrap() {
                 assert!(status.success());
@@ -127,10 +127,10 @@ fn mounted_input_fixture_child() {
         )
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     control
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let source = std::path::PathBuf::from(std::env::var_os("TILO_MOUNTED_INPUT_SOURCE").unwrap());
     if role == "late-broker" {
@@ -204,7 +204,7 @@ fn actual_mounted_inputs_refuse_wrong_tag_writable_missing_kind_and_retired_peer
         let (host, app) = UnixStream::pair().unwrap();
         let (mut control, child_control) = UnixStream::pair().unwrap();
         control
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut child = spawn(role, &app, &child_control, &source, 1000);
         drop((app, child_control));
@@ -232,10 +232,10 @@ fn actual_late_descriptor_ack_after_root_retirement_refuses_sender_success() {
     let (mut broker_control, broker_child_control) = UnixStream::pair().unwrap();
     let (mut sender_control, sender_child_control) = UnixStream::pair().unwrap();
     broker_control
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     sender_control
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut sender = spawn("late-sender", &app, &sender_child_control, &source, 1000);
     let mut broker = spawn("late-broker", &host, &broker_child_control, &source, 0);

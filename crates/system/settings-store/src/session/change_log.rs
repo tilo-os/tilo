@@ -2,7 +2,8 @@
 //!
 //! Every leaf a session write changes is appended as one JSON line to
 //! `records/changes.jsonl`, with the value before and after and the
-//! [`ChangeOrigin`] the writer gave. A write another process made to the
+//! [`ChangeOrigin`] the writer gave, including the action that invoked the
+//! change's own (`invoked_by`) when one did. A write another process made to the
 //! copy has no origin (`"via": "copy"`). The log is the answer to "who
 //! changed this" and the input a system undo needs; it is not the stored
 //! truth, so a log that cannot be written never refuses a change.
@@ -56,6 +57,7 @@ pub(super) fn append(path: &Path, changes: &[LeafChange], origin: Option<&Change
             "after": change.after,
             "action": origin.action,
             "principal": origin.principal,
+            "invoked_by": origin.invoked_by,
             "via": via,
         });
         lines.push_str(&line.to_string());

@@ -7,8 +7,7 @@
 #   tools/ci/standalone-app.sh [--bootstrap] [--git URL] [--branch NAME | --rev SHA]
 #
 # --bootstrap first installs gcc, Python 3 and rustup's default profile into a bare
-# Fedora, and a font once `check` has asked for one. That is how
-# .forgejo/workflows/standalone-app.yml runs it:
+# Fedora, and a font once `check` has asked for one. Run it so in a bare Fedora:
 #
 #   podman run --rm -i registry.fedoraproject.org/fedora:44 \
 #     bash -s -- --bootstrap --branch main < tools/ci/standalone-app.sh

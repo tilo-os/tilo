@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 import tempfile
+import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -147,11 +148,40 @@ class DesktopCatalogReleaseTests(unittest.TestCase):
             self.assertIn("--copy-to apps/imager/desktop-catalog.json", block)
             self.assertIn("--source ", block)
             self.assertLess(block.index("desktop-catalog-release.py consume"), block.index("package-host."))
-        desktop = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text().split("\n  release:\n", 1)[1]
-        self.assertIn("needs: [validate, package, sign-rpm, host-session-e2e]", desktop)
-        session = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
-        self.assertIn('"artifacts": artifacts', session)
-        self.assertIn('"sha256": digest.hexdigest()', session)
+
+    def test_published_desktop_packages_carry_their_login_test_and_its_exact_bytes(self):
+        checks = {check["name"]: check
+                  for matrix in tomllib.loads((ROOT / "tools/ci/products.toml").read_text())["matrix"]
+                  for check in matrix["check"]}
+        self.assertIn("host-session-e2e", checks["publish-desktop-payload"]["needs"])
+        session = checks["host-session-e2e"]
+        self.assertEqual(["desktop-package-amd64"], session["needs"])
+        self.assertIn("run.py source --rpms \"$rpms\" --producer desktop-package-amd64", session["run"])
+        self.assertLess(session["run"].index("run.py source"), session["run"].index("run.py test"))
+        self.assertIn("target/host-session-e2e/**", session["outputs"])
+        spec = importlib.util.spec_from_file_location("vm_e2e", ROOT / "dist/session/vm-e2e/run.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        with tempfile.TemporaryDirectory() as temporary:
+            rpms = Path(temporary)
+            packages = {"tilo-session-1.x86_64.rpm": b"session", "tilo-session-apps-1.x86_64.rpm": b"apps"}
+            for name, content in packages.items():
+                (rpms / name).write_bytes(content)
+            (rpms / "failed-rpms").mkdir()
+            (rpms / "failed-rpms/tilo-session-0.x86_64.rpm").write_bytes(b"failed")
+            with patch.dict("os.environ", {"T_COMMIT": "a" * 40, "T_REF": "stable"}):
+                harness.record_source(rpms, "desktop-package-amd64")
+            source = json.loads((rpms / "source.json").read_text())
+            self.assertEqual(sorted(packages), source["rpms"])
+            self.assertEqual({name: {"byte_size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                              for name, content in packages.items()}, source["artifacts"])
+            self.assertEqual(("a" * 40, "stable", "desktop-package-amd64"),
+                             (source["commit"], source["ref"], source["producer"]))
+            self.assertEqual("none", source["release_signing_claim"])
+            for name in packages:
+                (rpms / name).unlink()
+            with self.assertRaises(harness.Fail):
+                harness.record_source(rpms, "desktop-package-amd64")
 
 
 if __name__ == "__main__":

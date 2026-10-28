@@ -68,8 +68,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// Validate the private profile before any startup side effects.
-/// # Errors
-/// Rejects public directories, symlinks, foreign ownership or creation errors.
 pub fn validate_profile(profile: &Path) -> io::Result<()> {
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
@@ -288,8 +286,6 @@ pub(crate) trait StartingProcess {
     /// The ready answer, once the process gives one.
     fn ready(&mut self) -> Option<Self::Ready>;
     /// How the process ended, if it already has.
-    /// # Errors
-    /// Returns failures to query the process.
     fn exited(&mut self) -> io::Result<Option<String>>;
     fn observe(&mut self) -> Observation;
     /// End a process that will not become ready.
@@ -297,11 +293,19 @@ pub(crate) trait StartingProcess {
     /// Where to look next, with the process's most recent output and, while
     /// it still runs, what it is blocked on.
     fn diagnostics(&self) -> String;
+    /// The time the wait measures stalls and its cap against.
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    /// Wait `poll` before looking at the process again.
+    fn pause(&mut self, poll: Duration) {
+        std::thread::sleep(poll);
+    }
 }
 
 /// When each progress signal last changed, for the error that names which
 /// of them went quiet.
-fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> String {
+fn signal_report(observation: &Observation, changed: &[Option<Instant>], now: Instant) -> String {
     observation
         .signals
         .iter()
@@ -309,7 +313,7 @@ fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> Stri
         .map(|((name, value), changed)| match (value, changed) {
             (_, Some(at)) => format!(
                 "{name} last changed {:.1} s ago",
-                at.elapsed().as_secs_f32()
+                now.saturating_duration_since(*at).as_secs_f32()
             ),
             (None, None) => format!("{name} unreadable"),
             (Some(_), None) => format!("{name} unchanged since launch"),
@@ -320,14 +324,11 @@ fn signal_report(observation: &Observation, changed: &[Option<Instant>]) -> Stri
 
 /// Wait until `process` is ready, failing as soon as it exits, stalls or
 /// exceeds the absolute cap.
-/// # Errors
-/// Names the stage the process reached, when each progress signal last
-/// changed, and the process's diagnostics.
 pub(crate) fn wait_until_ready<P: StartingProcess>(
     process: &mut P,
     limits: StartupLimits,
 ) -> io::Result<P::Ready> {
-    let started = Instant::now();
+    let started = process.now();
     let mut last = process.observe();
     let mut changed = vec![None; last.signals.len()];
     let mut last_progress = started;
@@ -335,16 +336,17 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
         if let Some(ready) = process.ready() {
             return Ok(ready);
         }
-        let now = process.observe();
-        for (index, (signal, value)) in now.signals.iter().enumerate() {
+        let observed = process.observe();
+        let now = process.now();
+        for (index, (signal, value)) in observed.signals.iter().enumerate() {
             if last.signals.get(index) != Some(&(*signal, *value)) {
-                last_progress = Instant::now();
+                last_progress = now;
                 if let Some(slot) = changed.get_mut(index) {
-                    *slot = Some(last_progress);
+                    *slot = Some(now);
                 }
             }
         }
-        last = now;
+        last = observed;
         if let Some(status) = process.exited()? {
             return Err(io::Error::other(format!(
                 "native runtime exited while {} ({status}); {}",
@@ -352,22 +354,22 @@ pub(crate) fn wait_until_ready<P: StartingProcess>(
                 process.diagnostics()
             )));
         }
-        let failure = if last_progress.elapsed() >= limits.stall {
+        let failure = if now.saturating_duration_since(last_progress) >= limits.stall {
             format!(
                 "native runtime stalled while {}: no progress for {} s ({})",
                 last.stage,
                 limits.stall.as_secs_f32(),
-                signal_report(&last, &changed)
+                signal_report(&last, &changed, now)
             )
-        } else if started.elapsed() >= limits.cap {
+        } else if now.saturating_duration_since(started) >= limits.cap {
             format!(
                 "native runtime did not become ready within {} s (still {}; {})",
                 limits.cap.as_secs_f32(),
                 last.stage,
-                signal_report(&last, &changed)
+                signal_report(&last, &changed, now)
             )
         } else {
-            std::thread::sleep(limits.poll);
+            process.pause(limits.poll);
             continue;
         };
         // What it is blocked on is only visible while it still runs.
@@ -396,7 +398,6 @@ const TREE_LIMIT: usize = 256;
 #[cfg(target_os = "linux")]
 const PROCESS_SCAN_LIMIT: usize = 8192;
 
-/// The daemon's side of [`STAGES_FILE`].
 struct StartupStages(std::fs::File);
 
 impl StartupStages {
@@ -709,8 +710,6 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 
 /// Start one production Session. The executable prepares its profile environment
 /// before entering this function; reusable serving code never mutates it.
-/// # Errors
-/// Returns profile ownership, service startup, socket or worker-spawn errors.
 pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     serve_profile::<S>(
         profile,
@@ -757,6 +756,10 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         .transpose()?;
     let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
+    // Tasks learned in legacy apps live in the profile beside everything else
+    // this device keeps, so a connection that learns one leaves it for the
+    // next run.
+    let adapters = Some(Arc::new(crate::adapters::Adapters::in_profile(profile)));
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
@@ -798,6 +801,7 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         session_factory: session.mcp_session_factory(session.room())?,
         status,
         computer,
+        adapters,
         joiner: session.joiner(),
         search,
         media: session.media(),
@@ -810,6 +814,8 @@ struct Endpoint<H> {
     session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
+    /// Tasks learned in legacy apps, which every connection can replay.
+    adapters: Option<Arc<crate::adapters::Adapters>>,
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
@@ -830,6 +836,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
             let computer = self.computer.clone();
+            let adapters = self.adapters.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
@@ -841,7 +848,12 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .spawn(move || {
                     let _slot = slot;
                     let server = match factory() {
-                        Ok(server) => Arc::new(server.with_computer(computer).with_media(media)),
+                        Ok(server) => Arc::new(
+                            server
+                                .with_computer(computer)
+                                .with_adapters(adapters)
+                                .with_media(media),
+                        ),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
@@ -958,8 +970,6 @@ fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
 
 /// Join the room `invitation` names, through the running daemon, and print
 /// the joined room's id.
-/// # Errors
-/// Returns startup or transport errors, or why the daemon did not join.
 pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     ensure_running(profile)?;
     let mut stream = UnixStream::connect(profile.join("native.sock"))?;
@@ -994,9 +1004,6 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 /// runtime; elsewhere, or when `standalone`, the persistent daemon of
 /// `profile`, started when none runs. EOF closes only this client's
 /// connection; neither applications nor the daemon are owned here.
-/// # Errors
-/// Returns bounded startup, transport, thread-spawn or stdio errors, and a
-/// Tilo login's missing or silent agent door.
 pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
     let route = crate::session_door::route(
         standalone,
@@ -1052,8 +1059,6 @@ pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Re
 }
 
 /// Attach connected service descriptors and replace this host with the app.
-/// # Errors
-/// Returns startup, handshake or exec errors without running disconnected.
 pub fn run_app(
     profile: &Path,
     app_id: &str,

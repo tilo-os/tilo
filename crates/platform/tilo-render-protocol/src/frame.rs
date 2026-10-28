@@ -29,7 +29,7 @@
 //!   placeholder image the scene draws, where, how blurred, and the scene
 //!   composed below it.
 
-use crate::bytes::{Reader, Writer, pad4};
+use crate::bytes::{Reader, Writer};
 use crate::scene::{self, ResourceIds, Resources};
 use crate::validate::{SceneCost, validate};
 use crate::{ImageId, LayerId, Limits, SurfaceId, WireError};
@@ -84,7 +84,6 @@ pub struct ScrollCopy {
 /// What a frame does to one layer.
 #[derive(Clone)]
 pub enum LayerChange {
-    /// New content.
     Content(Box<Encoding>),
     /// The content stays; the properties change.
     Keep,
@@ -92,7 +91,6 @@ pub enum LayerChange {
     Remove,
 }
 
-/// A layer as a frame names it.
 #[derive(Clone)]
 pub struct LayerUpdate {
     pub id: LayerId,
@@ -204,10 +202,6 @@ impl<'a> FrameWriter<'a> {
     }
 
     /// The rectangles that changed.
-    ///
-    /// # Errors
-    ///
-    /// When the list does not fit the wire.
     pub fn damage(&mut self, rects: &[Rect]) -> Result<(), WireError> {
         if rects.is_empty() {
             return Ok(());
@@ -224,10 +218,6 @@ impl<'a> FrameWriter<'a> {
     }
 
     /// The copies a scroll keeps, in order.
-    ///
-    /// # Errors
-    ///
-    /// When the list does not fit the wire.
     pub fn scroll_copies(&mut self, copies: &[ScrollCopy]) -> Result<(), WireError> {
         if copies.is_empty() {
             return Ok(());
@@ -313,10 +303,6 @@ impl<'a> FrameWriter<'a> {
     }
 
     /// The order layers draw in, bottom first.
-    ///
-    /// # Errors
-    ///
-    /// When the list does not fit the wire.
     pub fn order(&mut self, order: &[LayerId]) -> Result<(), WireError> {
         self.section(SECTION_ORDER, |w| {
             w.count(order.len())?;
@@ -353,10 +339,6 @@ impl<'a> FrameWriter<'a> {
 
     /// A section of a kind this crate does not write (a later step's), as
     /// raw bytes.
-    ///
-    /// # Errors
-    ///
-    /// When the payload does not fit the wire.
     pub fn raw_section(
         &mut self,
         kind: u16,
@@ -373,10 +355,6 @@ impl<'a> FrameWriter<'a> {
     }
 
     /// Close the record and return its length.
-    ///
-    /// # Errors
-    ///
-    /// When the record is longer than the wire can say.
     pub fn finish(self) -> Result<usize, WireError> {
         let length = self
             .out
@@ -648,12 +626,4 @@ fn read_backdrop(
         },
         cost,
     ))
-}
-
-/// Bytes a section of `payload` bytes takes in a record.
-#[must_use]
-pub fn section_bytes(payload: usize) -> usize {
-    8_usize
-        .saturating_add(payload)
-        .saturating_add(pad4(payload))
 }

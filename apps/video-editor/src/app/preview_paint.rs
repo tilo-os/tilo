@@ -7,7 +7,7 @@ use super::*;
 impl VideoEditorApp {
     #[expect(
         clippy::too_many_lines,
-        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays, readouts"
+        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays"
     )]
     pub(super) fn draw_preview(
         &self,
@@ -61,7 +61,11 @@ impl VideoEditorApp {
             }
             _ => false,
         };
-        if !showed_real {
+        // No clip under the playhead: whatever was composited is the bare
+        // letterbox, so it says so, as it does when nothing was.
+        let between_clips = !self.project.clips.is_empty()
+            && self.project.top_video_clip_at(self.playhead).is_none();
+        if !showed_real || between_clips {
             // Nothing was composited, so there is no picture. Say why in
             // words on the letterbox, in the media inks — text only, never an
             // invented picture or a glyph that looks like a control.
@@ -75,20 +79,15 @@ impl VideoEditorApp {
                 // Not an empty state — a capability the box does not have.
                 // Same treatment, different words, and it must not suggest
                 // there is anything to do about it here.
-                (
-                    "Preview needs a GPU adapter",
-                    "The timeline and export still work",
-                )
+                preview_unavailable_words()
             };
             let title_style = theme.text(TextRole::Body).strong();
             let hint_style = theme.text(TextRole::Caption);
             let th = line_height(tr, &title_style);
-            let hh = if hint.is_empty() {
-                -S1
-            } else {
-                line_height(tr, &hint_style)
-            };
-            let top = canvas.center().y - (th + S1 + hh) / 2.0;
+            // The hint asks for a step, so it carries the button for it.
+            let offer = title == PREVIEW_EMPTY_TITLE && self.preview_offers_go_to_clip();
+            let (top, go_to_clip) =
+                Self::preview_hint_stack(canvas, tr, theme, !hint.is_empty(), offer);
             let room = (canvas.width() - S6) as f32;
             let title = elide_at(title, room, &title_style, tr);
             let hint = elide_at(hint, room, &hint_style, tr);
@@ -114,34 +113,12 @@ impl VideoEditorApp {
                 canvas.center().x - hw / 2.0,
                 top + th + S1,
             );
-        }
-        // HUD overlays: the playhead's time, and nothing else, on the floating
-        // material over the picture so it reads over a bright frame as well
-        // as a dark one.
-        let hud = theme.on_ground(ui::chrome::panel_ground(theme));
-        let tc = timecode(self.playhead, self.project.fps);
-        let tc_style = theme.text(TextRole::Label).numeric();
-        let tcw = text_width(tr, &tc, &tc_style);
-        let tch = line_height(tr, &tc_style);
-        let tc_chip = Rect::new(
-            canvas.x0 + S2,
-            canvas.y0 + S2,
-            canvas.x0 + S2 + tcw + S4,
-            canvas.y0 + S2 + tch + S2,
-        );
-        if tc_chip.x1 < canvas.x1 && tc_chip.y1 < canvas.y1 {
-            ui::widget::floating_surface::paint(scene, tf, tc_chip, theme);
-            let top = text_baseline(tc_chip, &tc_style, tr);
-            text(
-                scene,
-                tr,
-                tf,
-                &tc,
-                &tc_style,
-                hud.text_primary,
-                tc_chip.x0 + S2,
-                top,
-            );
+            if let Some(button) = go_to_clip {
+                let face = ButtonFace::new(button, super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .control_size(ControlSize::Small)
+                    .hovered(button.contains(self.last_mouse));
+                Button::paint(scene, tf, tr, theme, &face);
+            }
         }
         // The clip under the playhead has no bytes on this device: say so on the
         // canvas, because the picture behind this line is a stand-in generated
@@ -155,6 +132,9 @@ impl VideoEditorApp {
                 None
             };
             if let Some(msg) = unusable {
+                // On the floating material over the picture, so it reads over
+                // a bright frame as well as a dark one.
+                let hud = theme.on_ground(ui::chrome::panel_ground(theme));
                 let style = theme.text(TextRole::Label);
                 let mw = text_width(tr, msg, &style);
                 let mh = line_height(tr, &style);
@@ -388,4 +368,13 @@ impl VideoEditorApp {
             TransportAction::ToEnd => (Icon::SkipForward, "Jump to end"),
         }
     }
+}
+
+/// What the picture says when this device cannot composite a preview: where
+/// the person is and what still works, never the graphics stack's terms.
+pub(crate) fn preview_unavailable_words() -> (&'static str, &'static str) {
+    (
+        "Preview isn't available here yet",
+        "Editing the timeline still works",
+    )
 }

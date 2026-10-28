@@ -67,6 +67,8 @@ pdf-writer = "0.15.0"
 flate2.workspace = true
 # Decodes images wrapped as pages — inside the sandboxed helper.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+# The helper lowers its own scheduling priority before confinement.
+libc.workspace = true
 
 [[example]]
 name = "gen_fixtures"
@@ -74,10 +76,7 @@ required-features = ["fixture-gen"]
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[target.'cfg(unix)'.dev-dependencies]
-# Signals the helper in the crash-recovery tests.
-libc.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

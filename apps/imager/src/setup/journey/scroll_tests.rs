@@ -1,4 +1,3 @@
-//! Exercise the real journey tree and host dispatch on an isolated headless profile.
 use super::*;
 use crate::resource::GuidedInstallerShell;
 use ui::framework::testing::TestApp;

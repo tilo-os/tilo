@@ -5,10 +5,18 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "action_proposal.rs"]
+pub mod action_proposal;
 #[path = "actors.rs"]
 pub mod actors;
+#[path = "add_item_work.rs"]
+pub mod add_item_work;
 #[path = "attached_view.rs"]
 pub mod attached_view;
+#[path = "chain_list.rs"]
+pub mod chain_list;
+#[path = "child_records.rs"]
+pub mod child_records;
 #[path = "child_resources.rs"]
 pub mod child_resources;
 #[path = "confirmation.rs"]
@@ -70,8 +78,18 @@ pub mod publication_per_keystroke;
 #[cfg(feature = "test-support")]
 #[path = "reactivity.rs"]
 pub mod reactivity;
+#[path = "record_reactions.rs"]
+pub mod record_reactions;
+#[path = "references.rs"]
+pub mod references;
+#[path = "render_anchor.rs"]
+pub mod render_anchor;
 #[path = "render_view.rs"]
 pub mod render_view;
+#[path = "replay.rs"]
+pub mod replay;
+#[path = "room_arrival.rs"]
+pub mod room_arrival;
 #[path = "scenarios.rs"]
 pub mod scenarios;
 #[path = "scroll_copy.rs"]
@@ -84,6 +102,8 @@ pub mod share_links;
 pub mod surface_report;
 #[path = "surface_semantics.rs"]
 pub mod surface_semantics;
+#[path = "type_history.rs"]
+pub mod type_history;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
 #[path = "unreadable.rs"]
@@ -92,3 +112,5 @@ pub mod unreadable;
 pub mod window_content;
 #[path = "window_view.rs"]
 pub mod window_view;
+#[path = "workspace_records.rs"]
+pub mod workspace_records;

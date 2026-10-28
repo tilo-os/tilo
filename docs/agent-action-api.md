@@ -130,7 +130,7 @@ as the lock screen; its acknowledgement does not prove authentication succeeded.
 Inspect `chrome.session_locked` and `chrome.lock_auth` in `state-dump` to observe
 completion. An incorrect credential leaves the session locked.
 
-The management transport `tilo-vm vm ssh` executes commands as root. When using
+The management transport `tilo device vm ssh` executes commands as root. When using
 that transport, run the control client as the actual session owner with
 `runuser -u OWNER --`, set that owner's `XDG_RUNTIME_DIR`, and keep the secret on
 stdin. Root itself does not pass the owner socket's peer checks. This unlocks an
@@ -167,12 +167,24 @@ tilo-control read so.tilo.notes notes.page:<id>    # {"title": …, "text": …,
 `read APP [ITEM]` finds the open app's `read` row among the `app-actions` the
 desktop lists and invokes it, so the caller needs no opaque id.
 
+A resource that declares `#[resource(facts = path)]` (`Resource::HAS_FACTS`,
+`Resource::facts`) is also published with the framework's `facts` view: what
+it holds as a compact summary of plain values, to check it against a request
+(a cut's shots with their source, in and out points and fades; a deck's slide
+titles and text), with no ids, so two answers compare field by field. With
+`version` it states the resource as of that version. An agent's host shows the
+facts of the records a task changed when it checks the task's work, with what
+changed since an earlier task exported one, and a planning model's `read_view`
+compares two answers of one read with `compare`. The video editor and Slides
+state facts; an agent's video export answers the facts of the cut it rendered
+and the version it rendered.
+
 The CLI teaches its own use: `tilo-control --help` leads with the action
 model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.
 
 `os/tests/installed-admin-actions.sh` proves this on a booted image in
-`build-image.yml`: after first login, over the admin's ssh and with no
+t's `os-acceptance-{arch}` check: after first login, over the admin's ssh and with no
 `TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
 back through `tilo-control windows`. It then creates a note through Notes' `new-page` action and reads it back through `read`.
 
@@ -586,8 +598,8 @@ edit) advertises an optional `confirm`: the app classifies each value, and a
 destructive one — deleting a clip — is refused with
 `action_confirmation_required` until it is resent with `confirm: true`.
 Input injection is not served; the surface is semantic only.
-`tilo-vm scenario install` drives the installer this way end to end
-(`tilo-vm guide scenarios`).
+`tilo device scenario install` drives the installer this way end to end
+(`tilo device guide scenarios`).
 
 The greeter publishes `sign-in@greeter`, account and session selection, and
 the available fingerprint action. Sign-in uses the existing greetd/PAM
@@ -596,6 +608,11 @@ is `Secret`. Use `actions invoke greeter sign-in@greeter --args-stdin` with
 a private JSON object on standard input, rather than placing a credential
 in the command line. An accepted invocation means the attempt started;
 `state-dump` reports authentication progress and the mapped result.
+
+The sign-in screen's own controls are actions too, available even while an
+attempt runs: `suspend@greeter`, `reboot@greeter` and `power-off@greeter`,
+and `larger-text@greeter`, `high-contrast@greeter` and
+`screen-reader@greeter`, each with a required boolean `enabled`.
 
 For a bounded timing measurement, `configure-session-diagnostics@greeter`
 configures this greeter's next ordinary sign-in with four required booleans:
@@ -634,6 +651,33 @@ application's declared product function. The agent does not inspect a document
 and guess which bytes it represents. Missing content, the wrong resource kind,
 or more than one content result stops the sequence rather than selecting one.
 
+### Large payloads travel by reference
+
+Actions carry intent and references; bytes travel by session transport into
+the content store. Inline arguments stay small (32 KiB through an action
+directory, 1 MiB per MCP request), and no cap is raised to fit a payload.
+Instead a client puts the bytes into the device content store for the room it
+acts in, in chunks over its session, and passes the `tilo.content:<hash>` it
+gets back:
+
+- Every byte parameter (`Vec<u8>`, or a list of them) takes either its bytes
+  inline, as an array of integers, or such a reference. Its schema says both
+  (`oneOf`), the reference marked as content.
+- The app resolves the reference where the action is built, through its
+  window's content store, before the action runs. The action records the
+  bytes it was built with, so its replay reads no reference.
+- A hash is never a capability by itself. Only a store that answers for one
+  room resolves a reference: the device store reads through the window's
+  room scope and serves an address only when that room references it
+  (`tilo/media/v1/<room>/<hash>`). A reference to content from another room,
+  a file, or anywhere else on the machine is refused as not readable in this
+  room. A store that is not a room's (a page's files, a directory store)
+  resolves no reference.
+- Putting content needs the right to add content to the room, decided like
+  any action at its own node (content uploads in this room). A put is
+  invisible to everyone until an action at its own node references it; the
+  put governs storage only, never authority over a document.
+
 This hand-off is deliberately not a workflow language: there are no named
 variables, JSONPath expressions, graphs or implicit reuse of an older result.
 The narrow one-step hand-off is enough to express a cross-app operation such as
@@ -645,6 +689,35 @@ Saved, multi-step pipelines are shortcuts (`crates/collab/automation`,
 save time against the same descriptors this API enumerates and run through
 the same `ActionHost` door as the invoking person, inside the shortcut's own
 grant.
+
+## Values the host fills in, and items addressed by key
+
+A room's agents (`crates/agent/agent-participant`) take figures and positions
+off the model, for every app and with no app code:
+
+- **Quoted and computed values.** Any argument of a planned step may quote a
+  value as `{{<app>:<record>/<read>#/json/pointer}}` (any read or view the
+  agent may run, the record picked as for a step naming none when `:<record>`
+  is left out), `{{Sheet1!B2}}` or `{{'Q3 Budget'!C7:C9}}` (a workbook's
+  `read` of those cells, the one alias), or compute one as `{{= expr }}`:
+  arithmetic, `sum`, `avg`, `min`, `max`, `round`, `abs`, `%`, and dates
+  (`workday(date, n)`, `add_days`, `days_between`, `networkdays`), with
+  references as operands. `|$`, `|%`, `|0.00` and `|long` format. The host
+  fills them in just before the step runs (`src/values.rs`): one that is a
+  whole argument keeps its type, one inside text is written out, and one that
+  names nothing or cannot be computed fails the step with the reference
+  named, which the task's repair plans around. The action log records the
+  values; the plan log keeps what the model wrote.
+- **Keyed collection edits.** Every `#[resource]` collection's field edit
+  takes `upsert-item {match: {field: value}, value}`: it updates the one item
+  whose fields hold `match` (text compared ignoring case and spacing, numbers
+  by value), else appends one, refuses when two items match, and resolves
+  against the merged document when it applies, so an agent never writes "the
+  third row" that someone else's insert has moved. `insert-item` and
+  `move-to` place by `at: "end" | {"after": id} | {"before": id}` as well as
+  by position. A sheet's rows are cells rather than items, so Sheets answers
+  the same `upsert-item {match, value}` on each sheet by its header row; it is
+  the one adapter, kept in the app.
 
 ## AI transforms
 
@@ -859,7 +932,7 @@ recorded by these timing options.
 Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
 `settings.account:<id>` row while the cloud account service lists that account
 as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
-them. They are device-only jobs: the effect answers once the service has
+them. They are outside-effect jobs: the effect answers once the service has
 accepted the request, and the account's health still arrives through the
 account status store. `sync-now` cuts a failure back-off short and runs a pass
 (an account whose mount could not start is tried again); a pause stops

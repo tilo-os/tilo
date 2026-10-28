@@ -165,10 +165,6 @@ pub struct ContentRevisionV1 {
 
 impl ContentRevisionV1 {
     /// Validate version, identity, and immutable revision identifiers.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] when a version is unsupported or an ID is nil.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != CONTENT_REVISION_VERSION {
             return Err(FileRecordError::UnsupportedContentRevisionVersion(
@@ -224,10 +220,6 @@ pub struct FileBindingV1 {
 
 impl FileBindingV1 {
     /// Validate the structural binding and its bounded exact-byte name.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported, nil, cyclic, or invalid bindings.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != FILE_BINDING_VERSION {
             return Err(FileRecordError::UnsupportedBindingVersion(
@@ -298,10 +290,6 @@ pub struct FilePropertiesV1 {
 
 impl FilePropertiesV1 {
     /// Validate all bounds in this replicated rich-properties record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported, empty, inconsistent, or oversized values.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != FILE_PROPERTIES_VERSION {
             return Err(FileRecordError::UnsupportedPropertiesVersion(
@@ -466,10 +454,6 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
 
 impl FileMetadataV1 {
     /// Validate the metadata schema and every bounded nested value.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported or out-of-bounds metadata.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if !matches!(
             self.schema_version,
@@ -562,10 +546,6 @@ impl FileMutationParticipant {
     }
 
     /// Compute the canonical digest binding this participant's proposed projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical serialization fails.
     pub fn computed_projection_hash(&self) -> Result<ContentHash, CanonicalError> {
         let bytes = canonical_bytes(&self.projection_view())?;
         Ok(ContentHash(Sha256::digest(bytes).into()))
@@ -741,11 +721,6 @@ struct TransactionSigningView<'a> {
 
 impl FileMutationTransactionManifest {
     /// Validate the complete, operation-specific atomic transaction manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] when its scope, ordering, participants, or
-    /// operation-specific invariants are invalid.
     #[allow(
         clippy::too_many_lines,
         reason = "keeping the mutually exclusive signed operation variants in one validator makes their complete invariants auditable"
@@ -1055,11 +1030,6 @@ impl FileMutationTransaction {
     }
 
     /// Validate and sign an atomic file-mutation transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid manifest, mismatched device key, or
-    /// canonical signing failure.
     pub fn signed(
         manifest: FileMutationTransactionManifest,
         signing_key: &ed25519_dalek::SigningKey,
@@ -1077,10 +1047,6 @@ impl FileMutationTransaction {
     }
 
     /// Validate the manifest and verify its device signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when manifest validation or signature verification fails.
     pub fn verify(&self) -> Result<(), FileMutationTransactionError> {
         self.manifest.validate()?;
         verify_event(
@@ -1092,10 +1058,6 @@ impl FileMutationTransaction {
     }
 
     /// Return the canonical wire bytes for this signed transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -1130,10 +1092,6 @@ pub struct FileVersionV1 {
 
 impl FileVersionV1 {
     /// Validate bounded, acyclic parent references.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for too many parents or self-parenting.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.parents.len() > MAX_VERSION_PARENTS {
             return Err(FileRecordError::TooManyParents);
@@ -1143,6 +1101,69 @@ impl FileVersionV1 {
         }
         Ok(())
     }
+}
+
+/// Most bytes an attribution's actor or label carries.
+pub const MAX_ATTRIBUTION_TEXT_BYTES: usize = 128;
+
+/// Who caused a version when it was not the signing person themselves: a
+/// delegated agent that acted for that person through their session. The
+/// person it acted for is always the version's own `actor.person`, so an
+/// attribution can never name anybody else. The signing device's session
+/// took the agent from its authenticated action context, never from an app,
+/// and the device signature covers it ([`FileVersionAttributionV1`]).
+/// Presentation only: it grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileAttributionV1 {
+    /// The acting agent's principal, `agent:<id>`.
+    pub actor: String,
+    /// How the agent is shown.
+    pub label: String,
+    /// The agent's presence colour, sRGB.
+    pub color: [u8; 3],
+}
+
+impl FileAttributionV1 {
+    /// The agent's id: its principal without the `agent:` namespace.
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.actor.strip_prefix("agent:")
+    }
+
+    /// Validate a bounded, presentable agent attribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileRecordError::InvalidAttribution`] unless the actor is an
+    /// `agent:<id>` principal and both it and the label are non-empty,
+    /// bounded and free of control characters.
+    pub fn validate(&self) -> Result<(), FileRecordError> {
+        let presentable = |text: &str| {
+            !text.trim().is_empty()
+                && text.len() <= MAX_ATTRIBUTION_TEXT_BYTES
+                && !text.chars().any(char::is_control)
+        };
+        if self
+            .agent_id()
+            .is_some_and(|id| presentable(id) && id.trim() == id)
+            && presentable(&self.actor)
+            && presentable(&self.label)
+        {
+            Ok(())
+        } else {
+            Err(FileRecordError::InvalidAttribution)
+        }
+    }
+}
+
+/// The attribution of one version of a record, as the version's own signing
+/// device recorded it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileVersionAttributionV1 {
+    pub version_id: FileVersionId,
+    pub attribution: FileAttributionV1,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1164,10 +1185,6 @@ pub struct FileConflictV1 {
 
 impl FileConflictV1 {
     /// Validate the bounded conflict membership and status/resolution pairing.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for invalid membership or lifecycle state.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.versions.len() < 2 {
             return Err(FileRecordError::ConflictNeedsTwoVersions);
@@ -1379,6 +1396,8 @@ pub enum FileRecordError {
     OpenConflictHasResolution,
     #[error("a resolved conflict requires a resolution")]
     ResolvedConflictNeedsResolution,
+    #[error("a version attribution must name a presentable agent")]
+    InvalidAttribution,
 }
 
 #[cfg(test)]

@@ -47,9 +47,6 @@ pub struct Placed {
 impl Placed {
     /// Record where `staged`'s `etc/` and `var/` trees land under `etc` and
     /// `var`.
-    ///
-    /// # Errors
-    /// Returns source inventory or destination metadata errors.
     pub fn before_copy(staged: &Path, etc: &Path, var: &Path) -> io::Result<Self> {
         Ok(Self {
             etc: landing_paths(&staged.join("etc"), etc)?,
@@ -88,12 +85,6 @@ fn landing_paths(from: &Path, to: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Apply the owner SSH request and the home files to the disk's account and
 /// label everything placed.
-///
-/// # Errors
-///
-/// Returns an error when the request needs an account the disk does not
-/// have exactly one of, the image has no OpenSSH server, a path on the disk
-/// is a link where a directory or file belongs, or labelling fails.
 pub fn finish(
     etc: &Path,
     var: &Path,

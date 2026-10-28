@@ -196,6 +196,35 @@ export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},
  * all scale with it). */
 export const MAX_TEXT_INSERT=1_000_000;
 export function oversizedInsert(text){return typeof text==='string'&&text.length>MAX_TEXT_INSERT;}
+/** Picture types a paste hands an app, as `tilo_clipboard::PASTED_IMAGE_TYPES`. */
+const PASTED_PICTURES=['image/png','image/jpeg','image/webp'];
+/** Largest picture a paste hands over (`MAX_PASTED_IMAGE_BYTES`). */
+export const MAX_PASTED_PICTURE=32*1024*1024;
+/** Largest file and most files one drop hands over (`drop_files`). */
+export const MAX_DROPPED_FILE=64*1024*1024;
+export const MAX_DROPPED_FILES=16;
+/** The picture file a paste's `DataTransfer` carries (a screenshot, an image
+ * copied in another app), or `null`. Its bytes can only be read after the
+ * event, so the page reads them and dispatches the paste again with them. */
+export function pastedPicture(data){
+  return [...(data?.files??[])].find(file=>PASTED_PICTURES.includes(file.type)&&file.size<=MAX_PASTED_PICTURE)??null;
+}
+/** Whether a drag over the page carries files to drop. */
+export function draggingFiles(data){return [...(data?.types??[])].includes('Files');}
+/** The files of a drop as `drop_files` takes them: `[{name, type, bytes}]`
+ * for at most {@link MAX_DROPPED_FILES}, each read. A file over
+ * {@link MAX_DROPPED_FILE} is `{name, size, unread:'tooLarge'}`, its contents
+ * never read, and one more past the most a drop takes is
+ * `{name, size, unread:'tooMany'}`, so the app can say why it took none. */
+export async function droppedFiles(data){
+  const files=[...(data?.files??[])];
+  const unread=(file,why)=>({name:file.name,type:file.type,size:file.size,unread:why});
+  const handed=files.slice(0,MAX_DROPPED_FILES).map(async file=>file.size>MAX_DROPPED_FILE
+    ?unread(file,'tooLarge')
+    :{name:file.name,type:file.type,bytes:new Uint8Array(await file.arrayBuffer())});
+  const extra=files.length>MAX_DROPPED_FILES?[unread(files[MAX_DROPPED_FILES],'tooMany')]:[];
+  return [...await Promise.all(handed),...extra];
+}
 export function beforeInputRoute(event,composing) {
   if(composing||event.isComposing)return {kind:'ignore'};
   if(['insertFromPaste','insertCompositionText'].includes(event.inputType))return {kind:'handled-elsewhere'};
@@ -252,6 +281,33 @@ export function applyEditorHints(editor,hints){
 export function retainStatus(previous,next){return {...previous,...next};}
 export function retainedWidget(state){return state?.semantics?.root?.widget;}
 
+/** How long a page status stays visible: the toolkit's notice lifetime. */
+export const HOST_STATUS_LIFETIME_MS=4000;
+// Clear of the screen's own lower-left corner: the home indicator or a
+// rounded corner on a phone, and nothing on a desktop.
+const HOST_STATUS_SHOWN='position:absolute;bottom:calc(12px + env(safe-area-inset-bottom));left:calc(12px + env(safe-area-inset-left));max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+const HOST_STATUS_SPOKEN='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);pointer-events:none';
+/** The page's status line over the canvas. It belongs to no window, so it
+ * may only flash briefly: every message hides after `lifetime`, and a status
+ * repeated with each frame (the same words again) is not shown again. A
+ * message the app already shows in its own window (a finished copy) is only
+ * spoken, never painted over whatever window sits under the page's corner. */
+export function createHostStatus(element,{lifetime=HOST_STATUS_LIFETIME_MS,setTimer=setTimeout,clearTimer=clearTimeout}={}){
+  let last,timer;
+  element.style.cssText=`display:none;${HOST_STATUS_SHOWN}`;
+  function hide(){if(timer!==undefined)clearTimer(timer);timer=undefined;element.style.cssText=`display:none;${HOST_STATUS_SHOWN}`;element.textContent='';}
+  return {
+    /** `again`: a new event with the same words (a second copy) shows again. */
+    show(text,{spoken=false,again=false}={}){
+      if(!again&&text===last)return;
+      last=text;if(timer!==undefined)clearTimer(timer);
+      element.style.cssText=`display:block;${spoken?HOST_STATUS_SPOKEN:HOST_STATUS_SHOWN}`;
+      element.textContent=text;timer=setTimer(hide,lifetime);
+    },
+    hide,
+  };
+}
+
 /** A capability belongs to one mount and one authoritative runtime input sequence. */
 export function createInputScope({read,active,onChange=()=>{}}) {
   let mount={},previous;
@@ -296,5 +352,53 @@ export function createCompositionSession({scope,send,clear}) {
     update(text){if(valid())send('preedit',text);},
     end(text){if(!valid()){clear();return false;}send('preedit','');send('commit',text);session=null;canceled=true;clear();return true;},
     blocks(event){valid();return canceled||Boolean(session)||event.isComposing||event.inputType==='insertCompositionText';},
+  };
+}
+
+/** A phone's or a tablet's soft keyboard is not a layer over the page: the
+ * browser shrinks what the page can see to the viewport above the keyboard
+ * (`interactive-widget=resizes-content`, index.html), so the mount's surface
+ * is sized to what is left.
+ *
+ * While a field of the desktop has focus the keys are up, and the desktop
+ * fills that space as it fills the screen otherwise. Once the keys go — a tap
+ * on the desktop itself, a window opened somewhere else — the browser may
+ * keep the shrunk viewport for the moment it takes the keyboard to animate
+ * away, and growing the desktop back inside it would leave a band of page
+ * under the desktop for a frame. So the page's own edges (what a soft
+ * keyboard took, and nothing else) are measured as the surface sits with a
+ * field focused, and kept while the screen fills edge to edge, from the
+ * screen's edges, cut by a notch or a rounded corner like any other
+ * full-screen view (`env(safe-area-inset-*)`).
+ *
+ * Returns whether the surface fills the screen; its own element is the
+ * canvas unless one is given. */
+export function createScreenFill(surface,{canvas=surface,observe=globalThis.ResizeObserver}={}) {
+  const edges=['top','right','bottom','left'];
+  const openInsets={top:0,right:0,bottom:0,left:0};
+  let filling=true;
+  // Written as properties, not through `setProperty`: every browser keeps
+  // them, and a mount need not be given a style that has it.
+  const paint=()=>{
+    for(const node of new Set([surface,canvas])){
+      for(const edge of edges)node.style[edge]=filling?`env(safe-area-inset-${edge})`:`${openInsets[edge]}px`;
+      node.style.boxSizing=filling?'border-box':'';
+    }
+  };
+  if(observe){
+    new observe(entries=>{
+      const box=entries[entries.length-1]?.contentRect;
+      if(!box||filling)return;
+      const {width,height}=surface.getBoundingClientRect();
+      openInsets.top=Math.max(0,Math.round(box.top));
+      openInsets.left=Math.max(0,Math.round(box.left));
+      openInsets.right=Math.max(0,Math.round(width-box.right));
+      openInsets.bottom=Math.max(0,Math.round(height-box.bottom));
+    }).observe(surface);
+  }
+  paint();
+  return function fill(next){
+    if(next===filling)return;
+    filling=next;paint();
   };
 }

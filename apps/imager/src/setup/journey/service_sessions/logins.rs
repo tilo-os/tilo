@@ -96,8 +96,7 @@ impl Selection {
     pub(in crate::setup::journey) fn logins_view(
         &self,
         enabled: bool,
-        bindings: impl Fn(String, Service, bool) + 'static + Clone,
-        groups: impl Fn(String, bool) + 'static + Clone,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
         expand: impl Fn(String, bool) + 'static + Clone,
     ) -> Element {
         if !enabled {
@@ -140,8 +139,8 @@ impl Selection {
             let mut items: Vec<Element> = Vec::new();
             let chosen = ui::LocalState::new(count > 0 && selected == count);
             let id = source.id.clone();
-            let change = groups.clone();
-            let selection: Element = Box::new(
+            let selection: Element = Box::new(super::super::bound(
+                actions,
                 Checkbox::from_state(&chosen)
                     .indeterminate(selected > 0 && selected < count)
                     .with_enabled(count > 0)
@@ -153,9 +152,10 @@ impl Selection {
                             "installer-logins-select-group",
                             &[("count", summary.clone().into())],
                         )
-                    })
-                    .on_change(move |included| change(id.clone(), included)),
-            );
+                    }),
+                super::super::InstallerPreviewEffect::SET_PREVIEW_SERVICE_SESSION_GROUP
+                    .map(move |included: bool| (id.clone(), included)),
+            ));
             for (_, service, presence) in detected {
                 let label = super::super::t(match service {
                     Service::Slack => "installer-service-slack-label",
@@ -178,17 +178,19 @@ impl Selection {
                     ui::LocalState::new(self.included.contains(&(source.id.clone(), *service)));
                 let id = source.id.clone();
                 let service = *service;
-                let change = bindings.clone();
-                items.push(Box::new(
+                items.push(Box::new(super::super::bound(
+                    actions,
                     Checkbox::from_state(&chosen)
                         .with_id(&format!(
                             "installer.session.{}.{}",
                             service.as_str(),
                             source.id
                         ))
-                        .with_label(label)
-                        .on_change(move |included| change(id.clone(), service, included)),
-                ));
+                        .with_label(label),
+                    super::super::InstallerPreviewEffect::SET_PREVIEW_SERVICE_SESSION.map(
+                        move |included: bool| (id.clone(), service.as_str().to_owned(), included),
+                    ),
+                )));
             }
             // Only registry-owned product names choose bundled artwork. Unknown
             // sources remain honest: no guessed browser, path, or account name.

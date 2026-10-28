@@ -518,7 +518,7 @@ pub(super) fn files_grants(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == workspace_id)
+        .find(|workspace| workspace.room().to_string() == workspace_id)
         .and_then(|workspace| workspace.app_grants_snapshot().remove(FILES_APP_ID))
         .unwrap_or_default()
 }

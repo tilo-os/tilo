@@ -34,39 +34,5 @@ mod sys;
 #[cfg(windows)]
 pub use adapter::{WindowsPlatform, probe_facts};
 
-use super::plan::FirmwareFacts;
-use super::platform::{IoResult, Platform};
-
-/// Fill `BootCurrent`, `BootOrder` and `BootNext` from live firmware through
-/// `platform` (on Windows: the elevated [`WindowsPlatform`]), keeping
-/// `uefi`/`secure_boot` from `base`. The helper uses this for
-/// `original_firmware` and the `boot-next-busy` check; the reviewed basis
-/// always carries these fields empty on Windows ([`facts::basis_firmware`]).
-pub fn live_firmware_facts<P: Platform + ?Sized>(
-    platform: &P,
-    base: &FirmwareFacts,
-) -> IoResult<FirmwareFacts> {
-    let boot_current = platform
-        .get_efi_var("BootCurrent")?
-        .map(|bytes| ops::decode_boot_number(&bytes))
-        .transpose()?;
-    let boot_order = platform
-        .get_efi_var("BootOrder")?
-        .map(|bytes| ops::decode_boot_order(&bytes))
-        .transpose()?
-        .unwrap_or_default();
-    let boot_next = platform
-        .get_efi_var("BootNext")?
-        .map(|bytes| ops::decode_boot_number(&bytes))
-        .transpose()?;
-    Ok(FirmwareFacts {
-        uefi: base.uefi,
-        secure_boot: base.secure_boot,
-        boot_current,
-        boot_order,
-        boot_next,
-    })
-}
-
 #[cfg(test)]
 mod tests;

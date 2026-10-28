@@ -45,6 +45,64 @@ pub(crate) fn find_pages(pages: &[PageMeta], title: &str) -> serde_json::Value {
     })
 }
 
+/// The note titled `title`: the exact title first, else the one equal
+/// ignoring case. Agents name notes by the titles a read showed them.
+///
+/// # Errors
+/// Returns that no note, or several, carry the title.
+pub(crate) fn page_titled(pages: &[PageMeta], title: &str) -> Result<PageId, String> {
+    let wanted = title.trim();
+    if let Some(page) = pages.iter().find(|page| page.title == wanted) {
+        return Ok(page.id);
+    }
+    let folded = wanted.to_lowercase();
+    let mut alike = pages
+        .iter()
+        .filter(|page| page.title.trim().to_lowercase() == folded);
+    match (alike.next(), alike.next()) {
+        (Some(page), None) => Ok(page.id),
+        (Some(_), Some(_)) => Err(format!(
+            "several notes are titled \u{201c}{wanted}\u{201d}: give its exact title"
+        )),
+        (None, _) => Err(format!(
+            "no note is titled \u{201c}{wanted}\u{201d}; read the notebook for the notes it holds"
+        )),
+    }
+}
+
+/// Every note as one Markdown file, in notebook order: each note's title a
+/// heading one level deeper than its parent's (at most six), its body
+/// beneath.
+pub(crate) fn notebook_markdown(workspace: &crate::Workspace) -> String {
+    fn walk(
+        workspace: &crate::Workspace,
+        parent: Option<PageId>,
+        depth: usize,
+        out: &mut Vec<String>,
+    ) {
+        for page in workspace
+            .data
+            .pages
+            .iter()
+            .filter(|page| page.parent == parent)
+        {
+            let title = page.title.trim();
+            let mut section = format!("{} {title}\n", "#".repeat(depth.min(6)));
+            let body = page_markdown(workspace, page.id);
+            if !body.trim().is_empty() {
+                section.push('\n');
+                section.push_str(body.trim_end());
+                section.push('\n');
+            }
+            out.push(section);
+            walk(workspace, Some(page.id), depth + 1, out);
+        }
+    }
+    let mut sections = Vec::new();
+    walk(workspace, None, 1, &mut sections);
+    sections.join("\n")
+}
+
 /// The blocks whose text holds `text`, ignoring case, in `page` or every
 /// note: `{matches: [{page, title, block, text}]}`, with each block's id as
 /// the note's read shows it.
@@ -110,7 +168,6 @@ pub fn page_of_body_resource(id: &str) -> Option<PageId> {
 /// The key [`Page::body`] is stored under.
 const BODY_KEY: &str = "body";
 
-/// The resource a tag is published as.
 #[must_use]
 pub fn tag_resource_id(tag: TagId) -> String {
     items::item_resource_id::<Notebook>("tags", &page_id(tag))
@@ -182,7 +239,6 @@ pub fn set_mark_action(
     edit_body_action(page, notebook::mark_op(block, range, mark))
 }
 
-/// Replace `page`'s body with `blocks`.
 #[must_use]
 pub fn write_body_action(page: PageId, blocks: &[BlockContent]) -> Action {
     edit_body_action(page, notebook::clips_op(blocks))
@@ -338,6 +394,26 @@ pub enum InlineMark {
     Mention {
         id: String,
     },
+    /// A link to a resource of this desktop, by the `tilo://open#…` address
+    /// it is written as: activating it opens the resource in its own app.
+    ///
+    /// Kept last: a stored mark names its variant by position, so a new one
+    /// goes at the end or old bytes read as another kind of mark. It sorts
+    /// beside the other links through [`InlineMarkSpan`]'s own ordering.
+    ResourceLink {
+        href: String,
+    },
+}
+
+/// What a `tilo://open#…` address names, as a resource's kind and id, taken
+/// from the link's own route so a hand-written and a machine-written address
+/// read the same. `None` for any other text — a web address, a broken link —
+/// which a note links as a plain URL.
+pub fn resource_address_in(href: &str) -> Option<ui::tilo_reference::link::ResourceAddress> {
+    ui::tilo_reference::link::Link::parse_native(href)
+        .ok()?
+        .target
+        .resource
 }
 
 /// A half-open UTF-8 byte range with one inline mark.
@@ -363,6 +439,7 @@ impl InlineMarkSpan {
                 page: page.to_string(),
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
+            Mark::ResourceLink(href) => InlineMark::ResourceLink { href: href.clone() },
             Mark::Mention(id) => InlineMark::Mention { id: id.clone() },
         };
         Self {
@@ -373,19 +450,21 @@ impl InlineMarkSpan {
     }
 
     pub fn to_ui(&self) -> Option<MarkSpan> {
-        let mark = match &self.mark {
-            InlineMark::Bold => Mark::Bold,
-            InlineMark::Italic => Mark::Italic,
-            InlineMark::Code => Mark::Code,
-            InlineMark::Underline => Mark::Underline,
-            InlineMark::Strikethrough => Mark::Strikethrough,
-            InlineMark::Link { page } => Mark::Link(page.parse().ok()?),
-            InlineMark::Transclusion { page } => Mark::Transclusion(page.parse().ok()?),
-            InlineMark::ExternalLink { url } => {
-                crate::markdown::safe_external_url(url).then(|| Mark::ExternalLink(url.clone()))?
-            }
-            InlineMark::Mention { id } => Mark::Mention(id.clone()),
-        };
+        let mark =
+            match &self.mark {
+                InlineMark::Bold => Mark::Bold,
+                InlineMark::Italic => Mark::Italic,
+                InlineMark::Code => Mark::Code,
+                InlineMark::Underline => Mark::Underline,
+                InlineMark::Strikethrough => Mark::Strikethrough,
+                InlineMark::Link { page } => Mark::Link(page.parse().ok()?),
+                InlineMark::Transclusion { page } => Mark::Transclusion(page.parse().ok()?),
+                InlineMark::ExternalLink { url } => crate::markdown::safe_external_url(url)
+                    .then(|| Mark::ExternalLink(url.clone()))?,
+                InlineMark::ResourceLink { href } => tilo_rich_text::is_resource_link(href)
+                    .then(|| Mark::ResourceLink(href.clone()))?,
+                InlineMark::Mention { id } => Mark::Mention(id.clone()),
+            };
         Some(MarkSpan::new(self.start..self.end, mark))
     }
 
@@ -398,7 +477,7 @@ impl InlineMarkSpan {
             InlineMark::Code => 4,
             InlineMark::Link { .. } => 5,
             InlineMark::Transclusion { .. } => 6,
-            InlineMark::ExternalLink { .. } => 7,
+            InlineMark::ExternalLink { .. } | InlineMark::ResourceLink { .. } => 7,
             InlineMark::Mention { .. } => 8,
         }
     }

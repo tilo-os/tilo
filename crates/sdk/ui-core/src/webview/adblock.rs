@@ -56,7 +56,6 @@ pub type CompileFn = fn(&[&str], usize) -> Result<ChunkedFilter, AdblockError>;
 /// The entry `libtilo_adblock_engine.so` exports, returning its [`CompileFn`].
 pub type EngineEntry = fn() -> CompileFn;
 
-/// The engine library and its entry.
 pub const ENGINE_LIBRARY: &str = "libtilo_adblock_engine.so";
 pub const ENGINE_ENTRY: &str = "tilo_adblock_engine_entry";
 

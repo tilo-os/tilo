@@ -35,7 +35,7 @@ pub fn capture_error_message(error: &str) -> &'static str {
         || error.contains("cannot connect")
         || error.contains("could not start scanner")
     {
-        "Camera cannot reach this scanner. Check its connection, then choose it again."
+        "Camera cannot reach this scanner. Check its connection, then try again."
     } else {
         "The page could not be scanned. Check the scanner and try again."
     }
@@ -87,11 +87,6 @@ impl Page {
 
     /// Replaces the crop rectangle and invalidates recognition derived from
     /// the previous image bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the crop is empty, overflows, or lies outside
-    /// the captured page.
     pub fn set_crop(&mut self, crop: Crop) -> Result<(), &'static str> {
         if crop.width == 0
             || crop.height == 0
@@ -143,11 +138,6 @@ impl Page {
     }
 
     /// Applies shared crop-editor coordinates to this page.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the converted pixel crop is not valid for the
-    /// captured page.
     pub fn set_normalized_crop(&mut self, selection: CropSelection) -> Result<(), &'static str> {
         let width = self.original.width();
         let height = self.original.height();
@@ -237,7 +227,6 @@ mod tests {
 
     #[test]
     fn capture_errors_become_actionable_without_leaking_backend_output() {
-        // Phase `capture_errors_become_actionable_without_leaking_backend_output`.
         {
             assert_eq!(
                 capture_error_message("scanimage: open of device failed: Device busy"),
@@ -264,7 +253,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn page_edits_invalidate_stale_ocr_and_export_a_searchable_pdf() {
-        // Phase `editing_a_page_invalidates_only_its_ocr`.
         {
             let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
             page.ocr = Some(Document {
@@ -280,7 +268,6 @@ mod tests {
             .unwrap();
             assert!(page.ocr.is_none());
         }
-        // Phase `rotation_is_reversible_and_invalidates_stale_ocr`.
         {
             let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
             page.ocr = Some(Document {
@@ -299,7 +286,6 @@ mod tests {
             }
             assert_eq!(page.rotation, Rotation::None);
         }
-        // Phase `normalized_crop_round_trips_through_shared_editor_coordinates`.
         {
             let mut page = Page::new(DynamicImage::new_rgb8(200, 100));
             page.set_normalized_crop(CropSelection {
@@ -323,7 +309,6 @@ mod tests {
             assert!((selection.left - 0.1).abs() < f64::EPSILON);
             assert!((selection.bottom - 0.8).abs() < f64::EPSILON);
         }
-        // Phase `pages_can_be_reordered_after_capture`.
         {
             let mut scan = ScanSession::default();
             scan.add_page(DynamicImage::new_rgb8(10, 20));
@@ -331,7 +316,6 @@ mod tests {
             assert!(scan.move_page(1, 0));
             assert_eq!(scan.pages[0].rendered().width(), 30);
         }
-        // Phase `searchable_pdf_preserves_page_order_and_recognized_text`.
         {
             let mut scan = ScanSession::default();
             scan.add_page(DynamicImage::new_rgb8(2, 1));

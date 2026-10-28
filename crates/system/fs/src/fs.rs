@@ -36,7 +36,7 @@ use fuser::{
 use libc::{
     EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
@@ -450,7 +450,6 @@ mod staging_limit_tests {
         fs.write_buffer(b, 0, b"b").unwrap();
         fs.truncate_inode(b, offset).unwrap();
         assert_eq!(fs.staged_len(b), Some(offset));
-        // A stage-directory failure during create uses the protected memory backing.
         std::fs::remove_dir_all(fs.stage_dir.as_ref().unwrap()).unwrap();
         fs.buffers().insert(c, fs.empty_stage(false).shared());
         assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
@@ -525,6 +524,10 @@ struct PinnedHydrationTask {
     /// full namespace walk per event.
     wake: tokio::sync::watch::Sender<u64>,
     task: tokio::task::JoinHandle<()>,
+    /// How many times the worker has come back to wait, each pass or
+    /// skipped tick done, for a test to count them.
+    #[cfg(test)]
+    turns: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for PinnedHydrationTask {
@@ -639,6 +642,7 @@ mod history_jobs;
 #[path = "history_read.rs"]
 mod history_read;
 pub mod native_ops;
+mod unavailable;
 mod write_stage;
 use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
@@ -715,6 +719,8 @@ pub struct QuickFS {
     /// Durable local pin/replica/transfer registry. The FUSE path only reads
     /// its in-memory state; persistence happens at mutation points.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
+    /// Files reads found whole, written to `availability` together.
+    stored_writes: Arc<unavailable::StoredWrites>,
     /// One bounded worker owns automatic hydration for durable file/folder
     /// pins. It is woken by policy changes and also reconciles periodically so
     /// later descendants and later immutable versions inherit the promise.
@@ -731,6 +737,9 @@ pub struct QuickFS {
     )>,
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
+    /// Which agent the desktop session says caused the writes to some paths
+    /// ([`crate::write_attribution`]).
+    write_attributions: Option<Arc<crate::write_attribution::WriteAttributions>>,
     replacement_transactions: Option<ReplacementTransactionRuntime>,
     /// Downloads behind restores and conflict resolutions whose content is
     /// not local yet, so no FUSE worker waits for them.
@@ -751,6 +760,9 @@ pub struct QuickFS {
     /// blessed into their certified actor's signed history.
     allow_legacy_record_migration: bool,
     share_control_path: Option<std::path::PathBuf>,
+    /// Tells inotify of the changes the kernel did not make
+    /// ([`crate::change_signal`]); `None` leaves watchers to poll.
+    change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
     /// Test-only: make content commits of one inode fail with an errno.
     #[cfg(test)]
     commit_fault: Mutex<Option<(u64, i32)>>,
@@ -794,11 +806,13 @@ impl QuickFS {
             enforcement: None,
             thumbs: None,
             availability: None,
+            stored_writes: Arc::default(),
             pinned_hydration: None,
             eviction_queue: None,
             share_authority: None,
             history: None,
             record_publisher: None,
+            write_attributions: None,
             replacement_transactions: None,
             history_jobs: history_jobs::HistoryJobs::default(),
             checked_history_workspace: None,
@@ -808,6 +822,7 @@ impl QuickFS {
             held_deltas: Mutex::new(Vec::new()),
             allow_legacy_record_migration: true,
             share_control_path: None,
+            change_signal: None,
             #[cfg(test)]
             commit_fault: Mutex::new(None),
             #[cfg(test)]
@@ -1134,7 +1149,6 @@ impl QuickFS {
         }
     }
 
-    /// The stage of `ino`, if it has one.
     fn stage(&self, ino: u64) -> Option<SharedStage> {
         self.buffers().get(&ino).cloned()
     }
@@ -1636,23 +1650,42 @@ impl QuickFS {
     /// Answer a `read` whose bytes must come from a peer. The read still
     /// blocks its caller as POSIX expects, but no FUSE worker waits on the
     /// network, so a slow peer stalls only the readers of that file.
-    fn reply_remote(&self, hash: Hash, range: (u64, u64), nonblocking: bool, reply: ReplyData) {
+    fn reply_remote(
+        &self,
+        ino: u64,
+        hash: Hash,
+        range: (u64, u64),
+        nonblocking: bool,
+        reply: ReplyData,
+    ) {
         let (offset, size) = range;
         let hydrator = Arc::clone(&self.hydrator);
         let rt = hydrator.runtime_handle.clone();
+        let note = self.unavailable_note(ino, Some(hash));
         if nonblocking {
             // A non-blocking reader gets EAGAIN at once; the range keeps
             // hydrating so a retry finds it local.
             rt.spawn(async move {
-                if let Err(error) = hydrator.read(hash, offset, size).await {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
+                match hydrator.read(hash, offset, size).await {
+                    Ok(_) => {
+                        if let Some(note) = note {
+                            note.arrived().await;
+                        }
+                    }
+                    Err(error) => eprintln!("content hydration failed for {hash}: {error:#}"),
                 }
             });
             reply.error(to_errno(libc::EAGAIN));
             return;
         }
+        // The kernel holds the page locked while the read waits, so anyone
+        // else touching it waits too: the read fails at its bound rather
+        // than wait on a peer that went quiet, and the file's record says it
+        // is unavailable until bytes arrive, and stored once it is whole.
         rt.spawn(async move {
-            match hydrator.read(hash, offset, size).await {
+            let read = async move { hydrator.read(hash, offset, size).await };
+            let bound = crate::hydration::BLOCKED_READ_BOUND;
+            match unavailable::noted_bounded_read(bound, read, note).await {
                 Ok(data) => reply.data(&data),
                 Err(error) => {
                     eprintln!("content hydration failed for {hash}: {error:#}");
@@ -1660,6 +1693,38 @@ impl QuickFS {
                 }
             }
         });
+    }
+
+    /// Where a blocked read of `ino`'s bytes notes whether they arrived:
+    /// its availability record, when this mount keeps them. `hash` is the
+    /// committed content the read fetches, if it does: when it is the
+    /// file's current version, the record says the file is stored once
+    /// every byte of it is local.
+    fn unavailable_note(
+        &self,
+        ino: u64,
+        hash: Option<Hash>,
+    ) -> Option<unavailable::UnavailableNote> {
+        let registry = Arc::clone(self.availability.as_ref()?);
+        let (record_id, revision) = {
+            let ns = self.ns();
+            (ns.record_id_for(ino)?, ns.content_revision_for(ino))
+        };
+        let content = hash.zip(revision).and_then(|(hash, revision)| {
+            (revision.content_hash.map(|content| content.0) == Some(*hash.as_bytes())).then(|| {
+                unavailable::NotedContent {
+                    hydrator: Arc::clone(&self.hydrator),
+                    hash,
+                    version: revision.version_id,
+                    stored: Arc::clone(&self.stored_writes),
+                }
+            })
+        });
+        Some(unavailable::UnavailableNote {
+            registry,
+            record_id,
+            content,
+        })
     }
 
     /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer.
@@ -1672,8 +1737,11 @@ impl QuickFS {
             BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
                 let hydrator = Arc::clone(&self.hydrator);
                 let rt = hydrator.runtime_handle.clone();
+                let note = self.unavailable_note(ino, None);
                 rt.spawn(async move {
-                    match missing.finish(&hydrator).await {
+                    let read = async move { Ok(missing.finish(&hydrator).await?) };
+                    let bound = crate::hydration::BLOCKED_READ_BOUND;
+                    match unavailable::noted_bounded_read(bound, read, note).await {
                         Ok(bytes) => reply.data(&bytes),
                         Err(error) => {
                             eprintln!("content hydration for a staged read failed: {error:#}");
@@ -2206,12 +2274,18 @@ impl QuickFS {
         let mut acl_changes = enforcement
             .as_ref()
             .map(|(acl, _)| acl.subscribe_revision());
+        #[cfg(test)]
+        let worker_turns = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(test)]
+        let turns = Arc::clone(&worker_turns);
         let task = self.hydrator.runtime_handle.spawn(async move {
             let mut interval = tokio::time::interval(repair);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_inputs = None;
             let mut outcome = PinnedPassOutcome::default();
             loop {
+                #[cfg(test)]
+                turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let mut woken = outcome.more_due;
                 if !outcome.more_due {
                     let retry = outcome.next_retry_at_ms.map(retry_instant);
@@ -2253,7 +2327,12 @@ impl QuickFS {
                 last_inputs = Some(inputs);
             }
         });
-        self.pinned_hydration = Some(PinnedHydrationTask { wake, task });
+        self.pinned_hydration = Some(PinnedHydrationTask {
+            wake,
+            task,
+            #[cfg(test)]
+            turns: worker_turns,
+        });
         self
     }
 
@@ -2280,6 +2359,15 @@ impl QuickFS {
         self
     }
 
+    /// Answer and accept `signal`'s attribute, and tell it which directories
+    /// the kernel lists; its worker raises the signals once the mount is up
+    /// ([`crate::change_signal`]).
+    #[must_use]
+    pub fn with_change_signal(mut self, signal: Arc<crate::change_signal::ChangeSignal>) -> Self {
+        self.change_signal = Some(signal);
+        self
+    }
+
     /// Attach durable history and create a migration baseline for records
     /// that predate history support. Failure refuses the mount rather than
     /// silently running with an incomplete audit trail.
@@ -2299,12 +2387,67 @@ impl QuickFS {
         Ok(self)
     }
 
+    /// Attribute this mount's versions of the paths the desktop session
+    /// leases to the agent each lease names ([`crate::write_attribution`]).
+    #[must_use]
+    pub fn with_write_attributions(
+        mut self,
+        attributions: Arc<crate::write_attribution::WriteAttributions>,
+    ) -> Self {
+        self.write_attributions = Some(attributions);
+        self
+    }
+
+    /// Record which agent caused this device's `version`, when a session
+    /// lease covers `path` (or, without one, the record's current path).
+    /// Signed by this device like the version itself. A failure leaves the
+    /// version the person's and never fails the write.
+    fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
+        let (Some(attributions), Some(publisher)) =
+            (&self.write_attributions, &self.record_publisher)
+        else {
+            return;
+        };
+        // Most writes happen with no lease at all: they cost no path lookup.
+        if attributions.is_idle() {
+            return;
+        }
+        let path = if let Some(path) = path {
+            Some(path.to_owned())
+        } else {
+            let namespace = self.ns();
+            namespace
+                .ino_for_record_id(version.record_id)
+                .and_then(|ino| namespace.path_for(ino))
+        };
+        let Some(attribution) = path.and_then(|path| attributions.for_path(&path)) else {
+            return;
+        };
+        if let Err(error) = publisher.attribute(version.record_id, version.id, &attribution) {
+            eprintln!(
+                "could not attribute version {:?} to {}: {error}",
+                version.id, attribution.actor
+            );
+        }
+    }
+
+    /// [`Self::attribute_version`] for each of a committed transaction's
+    /// versions.
+    fn attribute_versions(&self, versions: &[fs_protocol::FileVersionV1], path: Option<&str>) {
+        for version in versions {
+            self.attribute_version(version, path);
+        }
+    }
+
+    /// Whether the session leases any write attribution right now.
+    fn attributing(&self) -> bool {
+        self.write_attributions
+            .as_ref()
+            .is_some_and(|attributions| !attributions.is_idle())
+    }
+
     /// Attach the signed record publisher and backfill locally authored
     /// history that predates the record transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns a publisher error when backfill or projection rebuilding fails.
     pub fn with_record_publisher(
         mut self,
         publisher: Arc<crate::record_publisher::RecordPublisher>,
@@ -2712,6 +2855,7 @@ impl QuickFS {
                 }
             })?;
         }
+        self.attribute_version(&version, None);
         history.append(version)?;
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
@@ -3372,6 +3516,7 @@ impl QuickFS {
                 std::slice::from_ref(&resolved),
             )
             .map_err(|_| EIO)?;
+        self.attribute_version(&result_version, None);
         history.append(result_version).map_err(|_| EIO)?;
         history
             .resolve(record_id, conflict_id, resolution)
@@ -3638,6 +3783,13 @@ impl QuickFS {
             },
             participants: vec![participant],
         };
+        // Who caused these versions, when an agent did, is recorded once
+        // the transaction committed them.
+        let attributed: Vec<_> = manifest
+            .participants
+            .iter()
+            .map(|participant| participant.proposed_version.clone())
+            .collect();
         let sync = self.sync.clone();
         publisher
             .execute_replacement_transaction(
@@ -3653,7 +3805,9 @@ impl QuickFS {
                     Ok(())
                 },
             )
-            .map_err(|_| EIO)
+            .map_err(|_| EIO)?;
+        self.attribute_versions(&attributed, None);
+        Ok(())
     }
 
     // Keep the exact two-record replacement transaction in one auditable path.
@@ -3883,6 +4037,13 @@ impl QuickFS {
             },
             participants,
         };
+        // Who caused these versions, when an agent did, is recorded once
+        // the transaction committed them.
+        let attributed: Vec<_> = manifest
+            .participants
+            .iter()
+            .map(|participant| participant.proposed_version.clone())
+            .collect();
         let sync = self.sync.clone();
         publisher
             .execute_replacement_transaction(
@@ -3898,7 +4059,9 @@ impl QuickFS {
                     Ok(())
                 },
             )
-            .map_err(|_| EIO)
+            .map_err(|_| EIO)?;
+        self.attribute_versions(&attributed, None);
+        Ok(())
     }
 
     #[allow(
@@ -4098,7 +4261,7 @@ impl QuickFS {
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
                     record.transfer.last_error = Some(crate::availability::TransferError {
-                        message: "No available replica could provide this file".into(),
+                        message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
                         occurred_at_ms: now_ms(),
                     });
                     record.transfer.retry_count = 1;
@@ -4890,7 +5053,7 @@ impl QuickFS {
             };
             let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
-                path: Some(path),
+                path: Some(path.clone()),
                 kind: 2,
                 byte_len,
                 deleted: false,
@@ -4935,6 +5098,7 @@ impl QuickFS {
                     std::slice::from_ref(&version),
                 )
                 .map_err(|_| EIO)?;
+            self.attribute_version(&version, Some(&path));
             history.append(version).map_err(|_| EIO)?;
             let revision = publisher
                 .snapshot(record_id)
@@ -4988,7 +5152,7 @@ impl QuickFS {
             };
             let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
-                path: Some(path),
+                path: Some(path.clone()),
                 kind: 1,
                 byte_len: 0,
                 deleted: false,
@@ -5022,6 +5186,7 @@ impl QuickFS {
             publisher
                 .publish_structural_version(&version)
                 .map_err(|_| EIO)?;
+            self.attribute_version(&version, Some(&path));
             history.append(version).map_err(|_| EIO)?;
             let mut namespace = self.ns();
             if namespace.lookup_kind(parent, name).is_some() {
@@ -5330,6 +5495,23 @@ impl QuickFS {
             },
             participants,
         };
+        // Who caused these versions, when an agent did, is recorded once
+        // the transaction committed them.
+        let attributed: Vec<_> = manifest
+            .participants
+            .iter()
+            .map(|participant| participant.proposed_version.clone())
+            .collect();
+        // Both versions now name the destination: the moved record, and the
+        // one it replaced.
+        let destination = self
+            .attributing()
+            .then(|| {
+                self.ns()
+                    .path_for(new_parent)
+                    .map(|dir| child_path(&dir, new_name))
+            })
+            .flatten();
         let sync = self.sync.clone();
         publisher
             .execute_replacement_transaction(
@@ -5346,6 +5528,7 @@ impl QuickFS {
                 },
             )
             .map_err(|_| EIO)?;
+        self.attribute_versions(&attributed, destination.as_deref());
         Ok(Vec::new())
     }
 
@@ -5886,6 +6069,9 @@ async fn reconcile_pinned_hydration(
 ) -> PinnedPassOutcome {
     let has_pinned_policy = registry.lock_recover().has_pinned_policy();
     if !has_pinned_policy {
+        // Nothing is kept offline any more: what was goes back to the cache
+        // budget. An in-memory pass over the area, no namespace walk.
+        keep_offline_only(&hydrator, HashSet::new()).await;
         return PinnedPassOutcome::default();
     }
     let candidates = {
@@ -5920,6 +6106,17 @@ async fn reconcile_pinned_hydration(
             .cloned()
             .collect::<Vec<_>>()
     };
+    // The pins decide what the cache budget may take, before this pass
+    // fetches anything: a fetch counts against the budget when it ends, and
+    // a pinned download can run for hours, so a file already here when it
+    // was pinned is held from now on, not from the end of the pass. What no
+    // pin covers any more (unpinned, an earlier version, a deleted file) is
+    // cache again.
+    let kept = pinned_files
+        .iter()
+        .filter_map(|candidate| candidate.hash.map(|hash| *hash.as_bytes()))
+        .collect();
+    keep_offline_only(&hydrator, kept).await;
     let mut probes = HashMap::with_capacity(pinned_files.len());
     for candidate in &pinned_files {
         let Some(hash) = candidate.hash else {
@@ -5952,6 +6149,17 @@ async fn reconcile_pinned_hydration(
     }
     while in_flight.join_next().await.is_some() {}
     plan.outcome
+}
+
+/// Holds exactly the file-backed content in `kept` against the cache budget
+/// ([`crate::store::area::FileArea::keep_offline_only`]), off the async
+/// runtime's workers: it records every change it makes.
+async fn keep_offline_only(hydrator: &Hydrator, kept: HashSet<[u8; 32]>) {
+    let files = Arc::clone(hydrator.store.files());
+    let applied = tokio::task::spawn_blocking(move || files.keep_offline_only(&kept)).await;
+    if let Ok(Err(error)) = applied {
+        eprintln!("could not record which content is kept offline: {error}");
+    }
 }
 
 /// Run one member of a bounded scheduler batch.  All members observe the same
@@ -6015,7 +6223,7 @@ async fn hydrate_pinned_candidate(
             record.transfer.retry_at_ms =
                 Some(now_ms().saturating_add(delay.saturating_mul(1_000)));
             record.transfer.last_error = Some(crate::availability::TransferError {
-                message: "No available replica could provide this file".into(),
+                message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
                 occurred_at_ms: now_ms(),
             });
         }),
@@ -6215,6 +6423,9 @@ impl Filesystem for QuickFS {
             }
         }
         reply.ok();
+        if let Some(signal) = &self.change_signal {
+            signal.note_listed(ino.0);
+        }
         self.heuristics.on_readdir(ino.0);
     }
 
@@ -6254,6 +6465,9 @@ impl Filesystem for QuickFS {
             }
         }
         reply.ok();
+        if let Some(signal) = &self.change_signal {
+            signal.note_listed(ino.0);
+        }
         self.heuristics.on_readdir(ino.0);
     }
 
@@ -6327,6 +6541,7 @@ impl Filesystem for QuickFS {
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
             ReadPlan::Local(data) => reply.data(&data),
             ReadPlan::Remote(hash) => self.reply_remote(
+                ino.0,
                 hash,
                 (offset, u64::from(size)),
                 flags.0 & libc::O_NONBLOCK != 0,
@@ -6677,6 +6892,15 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         }
+        // The daemon's own change signal: it changes nothing, and is only
+        // ever raised by the daemon, which alone knows the token.
+        if name.to_str() == Some(tilo_files::native::CHANGE_SIGNAL_XATTR) {
+            match &self.change_signal {
+                Some(signal) if signal.accepts(value) => reply.ok(),
+                _ => reply.error(to_errno(libc::EPERM)),
+            }
+            return;
+        }
         if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR) {
             match self.checked_restore_xattr(ino.0, value) {
                 Ok(()) => reply.ok(),
@@ -6775,6 +6999,17 @@ impl Filesystem for QuickFS {
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
+            return;
+        }
+        if name.to_str() == Some(tilo_files::native::CHANGE_SIGNAL_XATTR) {
+            match self
+                .change_signal
+                .as_ref()
+                .and_then(|signal| signal.answer())
+            {
+                Some(live) => reply_xattr_bytes(reply, live, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
             return;
         }
         if let Some(name) = name
@@ -7156,6 +7391,9 @@ mod tests;
 
 #[cfg(test)]
 mod durability_tests;
+
+#[cfg(test)]
+mod write_attribution_tests;
 
 #[cfg(test)]
 mod prediction_tests;

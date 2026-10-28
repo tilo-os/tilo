@@ -1,0 +1,2 @@
+# Mail fixtures are messages as servers send them: bytes, not text to normalise.
+*.eml -text

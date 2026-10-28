@@ -280,11 +280,6 @@ impl LinuxPhysicalGamepadSource {
     /// codes are discarded inside this module and cannot cross the API.
     /// `SYN_DROPPED`, short reads, EOF and I/O errors fail closed so the
     /// caller can revoke the forwarding lease and neutralize the target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on lost kernel synchronization, disconnection, a
-    /// short event record, or another evdev read failure.
     pub fn drain(&mut self, limit: usize) -> io::Result<PhysicalGamepadDrain> {
         let mut events = Vec::with_capacity(limit.min(32));
         let mut consumed = 0;
@@ -606,7 +601,6 @@ mod tests {
             1
         );
         assert!(is_room_controller(&device(0x2008, JOYSTICK, 0o020_660)));
-        // Halves in the charging grip enumerate under the grip's product id.
         assert!(!is_room_controller(&device(
             JOYCON_GRIP_PRODUCT,
             HELD,
@@ -658,7 +652,6 @@ mod tests {
 
     #[test]
     fn physical_gamepads_classify_and_calibrate_into_the_fixed_schema() {
-        // Phase `udev_classification_requires_joystick_and_rejects_hybrid_input`.
         {
             assert!(is_exclusive_controller(
                 "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
@@ -676,7 +669,6 @@ mod tests {
                 )));
             }
         }
-        // Phase `stick_calibration_scales_asymmetrically_and_applies_deadzone`.
         {
             let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
                 .expect("valid calibration");
@@ -688,7 +680,6 @@ mod tests {
             assert!(axis.normalize(50) < 0);
             assert!(axis.normalize(200) > 0);
         }
-        // Phase `trigger_calibration_uses_zero_as_neutral`.
         {
             let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
                 .expect("valid calibration");
@@ -696,12 +687,10 @@ mod tests {
             assert_eq!(trigger.normalize(255), i16::MAX);
             assert!((16_300..=16_500).contains(&trigger.normalize(128)));
         }
-        // Phase `invalid_axis_calibration_fails_closed`.
         {
             assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
             assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
         }
-        // Phase `hats_are_clamped_to_fixed_typed_range`.
         {
             for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
                 let normalized = raw.signum() as i8;

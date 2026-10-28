@@ -182,7 +182,7 @@ impl ActionKind {
     pub fn label(self) -> &'static str {
         match self {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
-            ActionKind::Remove | ActionKind::FlatpakRemove => "Remove",
+            ActionKind::Remove | ActionKind::FlatpakRemove => "Uninstall",
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
             ActionKind::MarkInstalled => "Keep on device",
             ActionKind::Unmark => "Allow cleanup",
@@ -259,6 +259,11 @@ pub struct Listing {
     /// device (`network.http`, `files.open`, ...).
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The processors its source builds it for (`x86_64`, `aarch64`), as
+    /// Flathub names them; empty when the source does not say, which is
+    /// read as built for this device.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arches: Vec<String>,
 }
 
 /// One version the source knows about.
@@ -357,6 +362,41 @@ impl StoreItem {
         }
     }
 
+    /// Whether its source has no build of it for this device's processor:
+    /// Flathub lists it only for others (Steam is built for `x86_64` alone).
+    /// Such an app is still found, said to be unavailable here and why, and
+    /// never offered for installing. An installed app is plainly available.
+    pub fn not_built_for_this_device(&self) -> bool {
+        !self.installed.is_installed()
+            && !self.listing.arches.is_empty()
+            && !self
+                .listing
+                .arches
+                .iter()
+                .any(|arch| arch == std::env::consts::ARCH)
+    }
+
+    /// Why it is not available here, naming the processors it is built for
+    /// and this device's, in the person's words; `None` when it is.
+    pub fn not_built_for_this_device_reason(&self) -> Option<String> {
+        if !self.not_built_for_this_device() {
+            return None;
+        }
+        let processors = self
+            .listing
+            .arches
+            .iter()
+            .map(|arch| processor_name("store-processor", arch))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(ui::i18n!(
+            "store-not-for-this-device-reason",
+            "name" => self.name.clone(),
+            "processors" => processors,
+            "device" => processor_name("store-device-processor", std::env::consts::ARCH)
+        ))
+    }
+
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {
@@ -426,7 +466,10 @@ impl StoreItem {
     /// for Flatpak apps, whose install *is* the pin, and for bots and
     /// runtime components.
     pub fn pin_action(&self) -> Option<ActionKind> {
-        if self.bot.is_some() || ui::registry::is_runtime_package_id(&self.id) {
+        if self.bot.is_some()
+            || ui::registry::is_runtime_package_id(&self.id)
+            || ui::registry::is_language_pack_package_id(&self.id)
+        {
             return None;
         }
         match (&self.source, &self.installed) {
@@ -503,6 +546,10 @@ impl StoreItem {
                 "runtime_already_installed",
                 ui::i18n!("store-runtime-already-installed"),
             ))
+        } else if action == ActionKind::FlatpakInstall
+            && let Some(reason) = self.not_built_for_this_device_reason()
+        {
+            Some(("not_available_for_this_device", reason))
         } else if self.managed_by_device(action) {
             Some((
                 "device_managed_repository",
@@ -560,6 +607,17 @@ impl StoreItem {
         } else {
             u8::from(self.installed.is_installed())
         }
+    }
+}
+
+/// A processor architecture as people name it (`store-processor-x86_64`),
+/// or its technical name when no message names it.
+fn processor_name(prefix: &str, arch: &str) -> String {
+    let key = format!("{prefix}-{arch}");
+    if ui::i18n::I18nManager::has_message(&key) {
+        ui::i18n::I18nManager::lookup_plain(&key)
+    } else {
+        arch.to_owned()
     }
 }
 

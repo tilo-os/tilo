@@ -133,6 +133,24 @@ pub(super) fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> 
     out
 }
 
+/// The deepest widgets under `root` whose wake deadline is due: the ones a
+/// scheduled wake serves (`app::native_runner::frame_demand`).
+pub(super) fn waking_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
+    fn walk(widget: &dyn crate::widget::Widget, now: crate::time::Instant, out: &mut Vec<String>) {
+        if widget.next_wake_deadline().is_none_or(|due| due > now) {
+            return;
+        }
+        let before = out.len();
+        widget.for_each_child(&mut |child| walk(child, now, out));
+        if out.len() == before {
+            out.push(widget.name().to_owned());
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, crate::time::now(), &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,7 +176,6 @@ mod tests {
             assert_eq!(schedule.interval(), Duration::from_nanos(16_666_666));
         }
 
-        // Case `animation_schedule_repeated_callbacks_do_not_redraw_or_postpone_tick`.
         {
             let start = crate::time::now();
             let mut schedule = AnimationSchedule::default();
@@ -179,7 +196,6 @@ mod tests {
             );
         }
 
-        // Case `animation_schedule_idle_resets_and_reactivation_is_immediate`.
         {
             let start = crate::time::now();
             let mut schedule = AnimationSchedule::default();
@@ -198,7 +214,6 @@ mod tests {
             );
         }
 
-        // Case `frames_that_move_nothing_are_named_once_per_streak`.
         {
             let mut still = StillAnimation::default();
             for _ in 1..STILL_FRAMES {
@@ -213,7 +228,6 @@ mod tests {
             assert!(!still.frame(false, false));
         }
 
-        // Case `a_late_callback_paints_once_and_keeps_the_grid`.
         {
             let start = crate::time::now();
             let mut schedule = AnimationSchedule::default();

@@ -34,7 +34,6 @@ use smithay::utils::{Size, Transform};
 
 use super::backend::{Output, OutputId, OutputIdentity};
 
-/// One change to the advertised set.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GlobalChange {
     /// No global exists for this output yet — advertise one.
@@ -409,24 +408,20 @@ mod tests {
 
     #[test]
     fn output_globals_track_plugs_unplugs_and_in_place_updates() {
-        // Phase `the_first_sync_advertises_every_output`.
         {
             let desired = [out(0, (0, 0), (1920, 1080), 1.0)];
             assert_eq!(plan(&[], &desired), vec![GlobalChange::Create(OutputId(0))]);
         }
-        // Phase `an_unchanged_set_produces_no_wire_traffic`.
         {
             let o = out(0, (0, 0), (1920, 1080), 1.0);
             assert!(plan(&[advertised(&o)], std::slice::from_ref(&o)).is_empty());
         }
-        // Phase `plugging_in_a_monitor_creates_exactly_one_global`.
         {
             let laptop = out(0, (0, 0), (1920, 1080), 1.5);
             let external = out(1, (1920, 0), (2560, 1440), 1.0);
             let changes = plan(&[advertised(&laptop)], &[laptop.clone(), external]);
             assert_eq!(changes, vec![GlobalChange::Create(OutputId(1))]);
         }
-        // Phase `unplugging_a_monitor_destroys_exactly_its_global`.
         {
             let laptop = out(0, (0, 0), (1920, 1080), 1.5);
             let external = out(1, (1920, 0), (2560, 1440), 1.0);
@@ -436,7 +431,6 @@ mod tests {
             );
             assert_eq!(changes, vec![GlobalChange::Destroy(OutputId(1))]);
         }
-        // Phase `a_mode_change_updates_in_place_rather_than_replacing`.
         {
             // Replacing the global would tell every client the monitor
             // vanished and a different one appeared: `leave`, `enter`, and a
@@ -450,7 +444,6 @@ mod tests {
                 "a re-mode must not withdraw the output's identity"
             );
         }
-        // Phase `a_scale_change_updates_the_global`.
         {
             // Changing the display-scale setting has to reach clients, or a
             // HiDPI toolkit keeps rendering at the old factor.
@@ -461,7 +454,6 @@ mod tests {
                 vec![GlobalChange::Update(OutputId(0))]
             );
         }
-        // Phase `a_survivor_that_slid_left_is_updated`.
         {
             // Unplugging the *first* of two monitors re-packs the second to
             // the origin. Its global carries the position, so it has to move
@@ -546,7 +538,6 @@ mod tests {
 
     #[test]
     fn output_global_ordering_and_empty_sets() {
-        // Phase `destroys_come_after_creates_and_updates`.
         {
             // Applying the list in order must never leave two globals claiming
             // one identity, and must not tear an output down before its
@@ -571,7 +562,6 @@ mod tests {
                 "destroys must come last: {changes:?}"
             );
         }
-        // Phase `everything_unplugged_destroys_everything`.
         {
             let a = out(0, (0, 0), (1920, 1080), 1.0);
             let b = out(1, (1920, 0), (1280, 1024), 1.0);
@@ -583,7 +573,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_fresh_registry_advertises_nothing`.
         {
             let g = OutputGlobals::new();
             assert!(g.is_empty());

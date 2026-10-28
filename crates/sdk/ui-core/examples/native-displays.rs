@@ -5,7 +5,8 @@ use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::display_arrangement::{
-    ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
+    ArrangedDisplay, ArrangementGesture, DisplayArrangement, SharedDisplayState,
+    placement::Placement,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,7 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 movable: false,
             },
         ];
-        let canvas = DisplayArrangement::new(screens, Vec::new(), tilo_ui::LocalState::new(None));
+        let canvas = DisplayArrangement::new(
+            screens,
+            Vec::new(),
+            tilo_ui::LocalState::new(ArrangementGesture::default()),
+        );
         let frame =
             FrameHarness::new_with_theme(State::new(), Box::new(canvas), (1000, 320), theme);
         frame.render_png(&out.join(format!("{name}.png")));

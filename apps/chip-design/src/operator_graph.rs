@@ -147,7 +147,7 @@ impl Identified for OperatorNode {
 
 /// One stored connection from an output port to an input port. Concurrent
 /// connections merge per connection; the graph shown resolves them
-/// ([`OperatorState::resolve`]) and reports the ones that conflict.
+/// (`OperatorState::resolve`) and reports the ones that conflict.
 #[derive(
     Model, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]

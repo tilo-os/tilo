@@ -331,7 +331,6 @@ fn norm(snap: &DocSnapshot) -> Norm {
                 .iter()
                 .filter(|(k, _)| k.as_str() != "table" && !is_codec_private_attr(k))
                 .filter(|(k, v)| {
-                    // The final section properties are rebuilt around the header/footer.
                     !(k.as_str() == "xml"
                         && matches!(v, AttrVal::Str(x) if x.starts_with("<w:sectPr")))
                 })

@@ -88,7 +88,6 @@ pub enum Tier {
     Background,
 }
 
-/// The `oom_score_adj` of an app's `leaf` in `tier`.
 #[must_use]
 pub const fn oom_score_adj(tier: Tier, leaf: crate::app_cgroup::Leaf) -> i32 {
     let app = match tier {
@@ -265,15 +264,10 @@ pub fn session_scope_of(cgroup: &str) -> Option<String> {
 /// How the priority logic reaches systemd and the process table. Production
 /// uses [`BusctlControl`]; tests substitute a recorder.
 pub trait UnitControl: Send + 'static {
-    /// The app scope `pid` runs in, if any.
     fn app_scope_of_pid(&self, pid: u32) -> Option<String>;
     /// Whether the process still exists.
     fn pid_alive(&self, pid: u32) -> bool;
     /// Apply runtime properties to a user-manager unit.
-    ///
-    /// # Errors
-    ///
-    /// The manager's reason when it refuses or is unreachable.
     fn set_properties(&self, unit: &str, props: &[Property]) -> Result<(), String>;
     /// Put `unit` in `tier`: its [`tier_properties`] for a machine with
     /// `total` bytes of memory.
@@ -343,7 +337,6 @@ pub enum Event {
     /// The compositor started the launcher with this pid. Its scope is born
     /// in the foreground tier and is protected until its window appears.
     Launch(u32),
-    /// The launcher with this pid exited.
     Exited(u32),
     /// A toplevel of the client with this pid was created.
     Window(u32),
@@ -592,7 +585,6 @@ pub fn notify_launch(pid: u32) {
     send(Event::Launch(pid));
 }
 
-/// The launcher with `pid` exited.
 pub fn notify_launch_exited(pid: u32) {
     send(Event::Exited(pid));
 }
@@ -686,9 +678,9 @@ pub fn rtkit_args(pid: u32, tid: u64, priority: i32) -> Vec<String> {
 ///
 /// A realtime thread that spins starves everything below it, so the grant is
 /// bounded twice. `RLIMIT_RTTIME` makes the kernel send `SIGXCPU` once the
-/// thread has run [`RT_SOFT_LIMIT_US`] without blocking; the handler installed
+/// thread has run `RT_SOFT_LIMIT_US` without blocking; the handler installed
 /// here drops that thread back to `SCHED_OTHER` and logs it, so a spin costs
-/// latency, not the session. The hard limit, [`RT_HARD_LIMIT_US`] (the ceiling
+/// latency, not the session. The hard limit, `RT_HARD_LIMIT_US` (the ceiling
 /// `RealtimeKit` accepts), only matters if the handler cannot run: then the
 /// kernel kills the process rather than let the machine freeze.
 /// `TILO_PRESENT_RT=0` opts out.
@@ -700,6 +692,8 @@ pub fn request_realtime(priority: i32) {
     if !install_realtime_guard() {
         return;
     }
+    // Before the grant: an overrun's handler must find the thread.
+    register_realtime_thread();
     let param = libc::sched_param {
         sched_priority: priority,
     };
@@ -727,6 +721,36 @@ pub fn request_realtime(priority: i32) {
         });
 }
 
+/// Drop the calling thread out of a realtime policy `request_realtime` gave it,
+/// once it is known to do long CPU work: a present thread whose "GPU" turns out
+/// to be a CPU rasteriser (lavapipe, llvmpipe) rasterizes for far longer than
+/// a realtime thread may run, so it would only starve the rest of the session
+/// and run into `RLIMIT_RTTIME`. Does nothing on a thread that is not realtime.
+#[cfg(target_os = "linux")]
+pub fn leave_realtime(reason: &str) {
+    use std::sync::atomic::Ordering;
+    // SAFETY: plain syscall on the calling thread.
+    let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
+    if policy != libc::SCHED_RR && policy != libc::SCHED_FIFO {
+        return;
+    }
+    let param = libc::sched_param { sched_priority: 0 };
+    // SAFETY: plain syscall on a stack struct; pid 0 is the calling thread.
+    let left = unsafe {
+        libc::sched_setscheduler(
+            0,
+            libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK,
+            &raw const param,
+        )
+    } == 0;
+    // SAFETY: gettid takes no arguments.
+    let tid = unsafe { libc::gettid() };
+    for slot in &REALTIME_THREADS {
+        let _ = slot.compare_exchange(tid, 0, Ordering::Relaxed, Ordering::Relaxed);
+    }
+    eprintln!("tilo-priority: thread {tid} leaves realtime ({reason}): {left}");
+}
+
 /// Soft `RLIMIT_RTTIME`: far above any frame (a present thread blocks on the
 /// GPU and the display every few milliseconds), far below a visible stall.
 #[cfg(target_os = "linux")]
@@ -735,25 +759,86 @@ const RT_SOFT_LIMIT_US: libc::rlim_t = 50_000;
 #[cfg(target_os = "linux")]
 const RT_HARD_LIMIT_US: libc::rlim_t = 200_000;
 
+/// The `RLIMIT_RTTIME` a realtime grant runs under.
+#[cfg(target_os = "linux")]
+const RT_LIMIT: libc::rlimit = libc::rlimit {
+    rlim_cur: RT_SOFT_LIMIT_US,
+    rlim_max: RT_HARD_LIMIT_US,
+};
+
 /// Times the `SIGXCPU` handler dropped a thread out of realtime.
 #[cfg(target_os = "linux")]
 static RT_DEMOTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// `SIGXCPU` handler: the kernel signals the offending thread, so dropping
-/// the calling thread to `SCHED_OTHER` ends the spin's priority. Only
+/// Threads `request_realtime` gave (or asked) a realtime policy, by tid.
+#[cfg(target_os = "linux")]
+static REALTIME_THREADS: [std::sync::atomic::AtomicI32; 4] =
+    [const { std::sync::atomic::AtomicI32::new(0) }; 4];
+
+#[cfg(target_os = "linux")]
+fn register_realtime_thread() {
+    use std::sync::atomic::Ordering;
+    // SAFETY: gettid takes no arguments.
+    let tid = unsafe { libc::gettid() };
+    if REALTIME_THREADS
+        .iter()
+        .any(|slot| slot.load(Ordering::Relaxed) == tid)
+    {
+        return;
+    }
+    for slot in &REALTIME_THREADS {
+        if slot
+            .compare_exchange(0, tid, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+/// `SIGXCPU` handler. The kernel sends the signal to the whole process, so
+/// the thread running this need not be the one that overran (one with the
+/// signal blocked, inside a driver, passes it on): every thread that was made
+/// realtime is dropped to `SCHED_OTHER`, by tid, not just the caller. Only
 /// async-signal-safe calls. Reset-on-fork must stay set: the kernel refuses
 /// an unprivileged thread clearing it.
+///
+/// The kernel also moves the process's soft limit a second past the one just
+/// hit (`check_thread_timers`), which puts it above the hard limit: the next
+/// overrun would get no `SIGXCPU`, only the hard limit's `SIGKILL`, which the
+/// kernel logs only with `print_fatal_signals`, and the session would end.
+/// Putting the soft limit back keeps every overrun a demotion.
 #[cfg(target_os = "linux")]
 extern "C" fn on_realtime_overrun(_signal: libc::c_int) {
     const MESSAGE: &[u8] =
         b"tilo-priority: a realtime thread ran too long without blocking; demoted to SCHED_OTHER\n";
     let param = libc::sched_param { sched_priority: 0 };
-    // SAFETY: both are async-signal-safe plain syscalls on valid memory.
+    let limit = RT_LIMIT;
+    // SAFETY: plain syscalls on valid memory, all async-signal-safe: `prlimit64`
+    // is the raw system call, not a libc wrapper that could take a lock. A tid
+    // that has exited makes `sched_setscheduler` fail, which changes nothing.
     unsafe {
         libc::sched_setscheduler(
             0,
             libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK,
             &raw const param,
+        );
+        for slot in &REALTIME_THREADS {
+            let tid = slot.load(std::sync::atomic::Ordering::Relaxed);
+            if tid != 0 {
+                libc::sched_setscheduler(
+                    tid,
+                    libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK,
+                    &raw const param,
+                );
+            }
+        }
+        libc::syscall(
+            libc::SYS_prlimit64,
+            0,
+            libc::RLIMIT_RTTIME,
+            &raw const limit,
+            std::ptr::null_mut::<libc::rlimit>(),
         );
         libc::write(2, MESSAGE.as_ptr().cast(), MESSAGE.len());
     }
@@ -776,10 +861,7 @@ fn install_realtime_guard() -> bool {
         if !installed {
             return false;
         }
-        let limit = libc::rlimit {
-            rlim_cur: RT_SOFT_LIMIT_US,
-            rlim_max: RT_HARD_LIMIT_US,
-        };
+        let limit = RT_LIMIT;
         // SAFETY: plain syscall on a stack struct.
         unsafe { libc::setrlimit(libc::RLIMIT_RTTIME, &raw const limit) == 0 }
     })
@@ -931,10 +1013,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". When the
-    // kernel must choose, background apps go first, the focused app is
-    // protected, and the shell and compositor are never chosen.
     #[test]
     fn the_oom_killer_prefers_the_background_and_never_chooses_the_session() {
         use crate::app_cgroup::Leaf;
@@ -962,7 +1040,6 @@ mod tests {
                 assert!(adj >= FOREGROUND_OOM_SCORE_ADJ);
             }
         }
-        // The image gives the session its value.
         let unit =
             include_str!("../../../../os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf");
         assert!(
@@ -1073,10 +1150,8 @@ mod tests {
         // Coming back to what had focus at launch is not moving on.
         rig.send(&[Event::Focus(None), Event::Focus(Some(10)), Event::Settle]);
         assert_eq!(rig.boost.foreground(), [scope(10, "a"), scope(20, "b")]);
-        // The person goes to another window that was already there.
         rig.send(&[Event::Focus(Some(30))]);
         assert_eq!(rig.boost.foreground(), [scope(30, "c")]);
-        // The launch's own window now opening and taking focus boosts it afresh.
         rig.send(&[Event::Window(20), Event::Focus(Some(20)), Event::Settle]);
         assert_eq!(rig.boost.foreground(), [scope(20, "b")]);
     }
@@ -1140,6 +1215,73 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_thread_leaves_realtime_once_its_work_is_known_to_be_long() {
+        std::thread::spawn(|| {
+            let param = libc::sched_param {
+                sched_priority: PRESENT_RT_PRIORITY,
+            };
+            // SAFETY: plain syscall on this thread.
+            let granted = unsafe {
+                libc::sched_setscheduler(
+                    0,
+                    libc::SCHED_RR | libc::SCHED_RESET_ON_FORK,
+                    &raw const param,
+                )
+            } == 0;
+            leave_realtime("a CPU rasteriser");
+            // SAFETY: plain syscall.
+            let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
+            assert_eq!(policy, libc::SCHED_OTHER, "realtime was granted: {granted}");
+            // A thread that is not realtime is left as it is.
+            leave_realtime("a CPU rasteriser");
+        })
+        .join()
+        .expect("the thread runs");
+    }
+
+    /// The kernel's `SIGXCPU` goes to the whole process: a thread that is not
+    /// the realtime one may run the handler, and the realtime one must still
+    /// leave its policy, or it runs on to the hard limit's `SIGKILL`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_overrun_handled_on_another_thread_still_demotes_the_realtime_one() {
+        use std::sync::mpsc;
+        assert!(install_realtime_guard());
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let realtime = std::thread::spawn(move || {
+            register_realtime_thread();
+            let param = libc::sched_param {
+                sched_priority: PRESENT_RT_PRIORITY,
+            };
+            // SAFETY: plain syscall on this thread.
+            let granted = unsafe {
+                libc::sched_setscheduler(
+                    0,
+                    libc::SCHED_RR | libc::SCHED_RESET_ON_FORK,
+                    &raw const param,
+                )
+            } == 0;
+            ready_tx.send(granted).expect("the test waits");
+            go_rx.recv().expect("the test signals");
+            // SAFETY: plain syscall.
+            let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
+            (granted, policy)
+        });
+        ready_rx.recv().expect("the realtime thread starts");
+        // Delivered here, on the test's own thread, not the realtime one.
+        // SAFETY: signalling this very thread.
+        assert_eq!(
+            unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGXCPU) },
+            0
+        );
+        go_tx.send(()).expect("the realtime thread waits");
+        let (granted, policy) = realtime.join().expect("the process survives the signal");
+        assert_eq!(policy, libc::SCHED_OTHER, "realtime was granted: {granted}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn a_realtime_overrun_signal_drops_the_thread_to_the_normal_policy() {
         use std::sync::atomic::Ordering;
         assert!(install_realtime_guard());
@@ -1154,6 +1296,17 @@ mod tests {
         );
         assert!(limit.rlim_cur <= RT_SOFT_LIMIT_US && limit.rlim_cur < limit.rlim_max);
         assert!(limit.rlim_max <= RT_HARD_LIMIT_US);
+        // The kernel moves the soft limit up on each overrun; here, as far as an
+        // unprivileged process may: up to the hard limit.
+        let raised = libc::rlimit {
+            rlim_cur: limit.rlim_max,
+            rlim_max: limit.rlim_max,
+        };
+        // SAFETY: plain syscall on a stack struct.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_RTTIME, &raw const raised) },
+            0
+        );
         std::thread::spawn(|| {
             let before = RT_DEMOTIONS.load(Ordering::Relaxed);
             let param = libc::sched_param {
@@ -1184,6 +1337,15 @@ mod tests {
         })
         .join()
         .expect("the process survives the signal and the thread is demoted");
+        // SAFETY: plain syscall on a stack struct.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_RTTIME, &raw mut limit) },
+            0
+        );
+        assert_eq!(
+            limit.rlim_cur, RT_SOFT_LIMIT_US,
+            "the next overrun is signalled again, not killed at the hard limit"
+        );
     }
 
     #[test]
@@ -1195,7 +1357,6 @@ mod tests {
         );
         // The spawner is no app; it is not in app.slice's scopes either.
         assert_eq!(app_scope_of(&format!("0::{tree}/spawner\n")), None);
-        // Its tier lands in the cgroup's files.
         let dir = tempfile::tempdir().unwrap();
         for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
             std::fs::write(dir.path().join(file), "").unwrap();

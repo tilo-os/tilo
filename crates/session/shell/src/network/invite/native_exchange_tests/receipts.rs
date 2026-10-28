@@ -44,6 +44,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Authority {
     }
 }
 
+#[derive(Clone)]
 struct Governor {
     owner: NativeWorkspaceOwner,
     key: ed25519_dalek::SigningKey,
@@ -66,10 +67,27 @@ impl OwnerCommitService for Governor {
         request: OwnerCommitRequest,
         caller: DeviceCert,
     ) -> CommitFuture {
+        // As the session's own owner does, the commit waits for its disk on
+        // a blocking thread, never on the broker's loop awaiting it.
+        let governor = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || governor.commit_receipt(&request, &caller))
+                .await
+                .map_err(|_| "receipt governor ended without an outcome".to_string())?
+        })
+    }
+}
+
+impl Governor {
+    fn commit_receipt(
+        &self,
+        request: &OwnerCommitRequest,
+        caller: &DeviceCert,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         let result = (|| {
             let receipt = self.owner.commit_member_effect_receipt(
-                &request,
-                &caller,
+                request,
+                caller,
                 &self.certificate,
                 &self.key,
                 SystemTime::now(),
@@ -96,8 +114,8 @@ impl OwnerCommitService for Governor {
                     postcard::from_bytes(&frame).map_err(|error| error.to_string())?,
                 )?;
             }
-            state.refresh_checkpoint()?;
-            super::refresh::publish_committed(state, &self.publisher);
+            state.commit_changes()?;
+            super::refresh::publish_changes(state, &self.publisher);
             Ok(receipt)
         })();
         // The broker answers every refusal with one opaque code; keep the
@@ -105,7 +123,7 @@ impl OwnerCommitService for Governor {
         if let Err(error) = &result {
             eprintln!("receipt governor refused a member audit: {error}");
         }
-        Box::pin(async move { result })
+        result
     }
 }
 

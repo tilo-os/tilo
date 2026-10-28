@@ -239,7 +239,6 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     // Both devices dial the host, subscribe, and drain their initial Ready acks.
     let (a_client, b_client) = connect_and_subscribe(addr.clone(), &user, &a, &b, WS).await;
 
-    // ---- Live edit: A mutates its CRDT and publishes the delta. ----
     let mut doc_a = AutoCommit::new();
     doc_a.put(ROOT, "title", "hello from A").unwrap();
     let d1 = doc_a.save_incremental();
@@ -272,7 +271,6 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let ghost = tokio::time::timeout(Duration::from_millis(300), a_client.recv()).await;
     assert!(ghost.is_err(), "author must not receive its own delta");
 
-    // ---- Take B offline, deterministically. ----
     take_b_offline(&b_client, WS).await;
     drop(b_client); // B's device is now fully offline.
 
@@ -310,7 +308,6 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         "A's offline edit must be store-and-forwarded to disk for B"
     );
 
-    // ---- B reconnects and catches up. ----
     reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
 
     // Queue drains after delivery. The drain follows the delivered flush on

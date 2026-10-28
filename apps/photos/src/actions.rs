@@ -59,12 +59,12 @@ pub enum PhotosEffect {
     ManagePeopleRecognition,
     /// Enable private People recognition on this device. Changes no shared
     /// metadata and begins no scan.
-    #[effect(row, device_only)]
+    #[effect(row)]
     EnablePeopleRecognition,
     /// Scan local library for faces: the next bounded local batch, with the
     /// separately signed face model. Suggestions stay on this device until
     /// approved.
-    #[effect(row, job, cancellable, device_only)]
+    #[effect(row, job, cancellable)]
     AnalyzePeopleLibrary,
     /// Open photo analysis: local model availability, library coverage,
     /// progress and failures.
@@ -72,16 +72,16 @@ pub enum PhotosEffect {
     ViewLibraryAnalysis,
     /// Analyze unprocessed photographs on this device. Pixels stay local;
     /// each bounded result is shared with `SetImageAnalysis`.
-    #[effect(row, job, cancellable, device_only, sensitive)]
+    #[effect(row, job, cancellable, sensitive)]
     AnalyzeLibrary,
     /// Pause photo analysis after the photograph in progress.
-    #[effect(row, returns, device_only)]
+    #[effect(row, returns)]
     PauseLibraryAnalysis,
     /// Resume photo analysis without widening the queue.
-    #[effect(row, job, cancellable, device_only, sensitive)]
+    #[effect(row, job, cancellable, sensitive)]
     ResumeLibraryAnalysis,
     /// Retry failed photographs from the bounded failure report.
-    #[effect(row, job, cancellable, device_only, sensitive)]
+    #[effect(row, job, cancellable, sensitive)]
     RetryLibraryAnalysisFailures,
     /// View favorites: photographs marked as favorites in the shared library.
     #[effect(view, row)]
@@ -115,7 +115,7 @@ pub enum PhotosEffect {
     #[effect(view, row)]
     ViewPet { pet: String },
     /// Import photograph into the library and show it.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
     Import {
         #[param("Direct filesystem path; omit to use the system file picker")]
         path: Option<String>,
@@ -123,7 +123,7 @@ pub enum PhotosEffect {
     /// Import photo folder: recursively index a folder with bounded
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ImportDirectory {
         #[param("Authorised local folder path; omit to use the system folder picker")]
         path: Option<String>,
@@ -132,11 +132,11 @@ pub enum PhotosEffect {
     },
     /// Import Camera media: a verified Camera photograph whose bytes are on
     /// this device.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ImportCameraMedia { media_id: String, name: String },
     /// Reindex photo folder: refresh metadata re-read from a folder's files
     /// without overwriting deliberate organization.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ReindexDirectory {
         #[param("Explicit authorised local folder path")]
         path: String,
@@ -144,7 +144,6 @@ pub enum PhotosEffect {
         retain_exif_location: Option<bool>,
     },
     /// Copy photograph: the photograph this window shows, as edited.
-    #[effect(device_only)]
     Copy,
     /// Produce edited image content: render the photograph's crop and
     /// rotation, as they are now, into immutable PNG content.
@@ -173,20 +172,20 @@ pub enum PhotosEffect {
         photos: Vec<String>,
     },
     /// Save edited photograph: the photograph this window shows.
-    #[effect(job, device_only)]
+    #[effect(job)]
     Save {
         #[param("Direct filesystem path; omit for the suggested path beside the original")]
         path: Option<String>,
     },
     /// Recognize text locally and share only bounded text and provenance.
-    #[effect(job, cancellable, device_only, sensitive)]
+    #[effect(job, cancellable, sensitive)]
     AnalyzeText {
         resource_id: String,
         language: String,
     },
     /// Analyze image locally with the signed local model; share only the
     /// bounded result.
-    #[effect(job, cancellable, device_only, sensitive)]
+    #[effect(job, cancellable, sensitive)]
     AnalyzeImage { resource_id: String },
     /// Rotate left: turn the photograph this window shows a quarter turn
     /// anticlockwise.
@@ -199,11 +198,7 @@ pub enum PhotosEffect {
     /// Reset edits of the photograph this window shows.
     ResetShownEdits,
     /// Share the photograph this window shows: copy its portable address.
-    #[effect(device_only)]
     ShareShown,
-    /// More: the commands that do not fit a narrow toolbar.
-    #[effect(view)]
-    ToggleMoreMenu,
     /// New album: start naming one and choosing its photographs.
     #[effect(view)]
     NewAlbum,
@@ -282,7 +277,6 @@ pub enum PhotosEffect {
     #[effect(view)]
     NextPlacesPage,
     /// Stop the folder import; photographs already imported are kept.
-    #[effect(device_only)]
     StopImport,
     /// Details of the folder import.
     #[effect(view)]
@@ -294,10 +288,8 @@ pub enum PhotosEffect {
     #[effect(view)]
     PeopleBack,
     /// Turn private People recognition on or off on this device.
-    #[effect(device_only)]
     TogglePeopleRecognition,
     /// Stop the People scan after the batch in progress.
-    #[effect(device_only)]
     CancelPeopleScan,
     /// View photos of an approved person.
     #[effect(view)]
@@ -318,13 +310,10 @@ pub enum PhotosEffect {
     /// Approve the suggestion reviewed: share its people label.
     ApproveSuggestion,
     /// Reject the suggestion reviewed on this device.
-    #[effect(device_only)]
     RejectSuggestion,
     /// Hide the suggestion reviewed on this device.
-    #[effect(device_only)]
     HideSuggestion,
     /// Restore the hidden suggestion reviewed.
-    #[effect(device_only)]
     RestoreSuggestion,
     /// Merge the suggestion reviewed into the approved `person`.
     MergeSuggestionWith { person: String },
@@ -338,7 +327,7 @@ pub enum PhotosEffect {
     #[effect(view)]
     DeleteLocalPeopleData,
     /// Confirm deleting this device's private People data.
-    #[effect(device_only, destructive)]
+    #[effect(destructive)]
     ConfirmDeleteLocalPeopleData,
 }
 
@@ -390,48 +379,72 @@ pub fn export_edited_content(
 /// addresses) from `store`: the local run of the offloadable
 /// `make-thumbnails`, byte for byte what the thumbnails package's
 /// `thumbnail-batch` entrypoint makes on another device. As there, content
-/// named twice is one input, and a batch with an input that is not an image
-/// makes nothing.
+/// named twice is one input, and a picture that is not an image makes no
+/// thumbnail of its own while the rest still do. Its failure is listed in
+/// the answer by the photograph the caller named, so the person can see
+/// which picture to look at.
 ///
 /// # Errors
 ///
-/// Names content that is not here or not an image, or a store failure.
+/// Names content that is not a photograph's content, or a store failure.
 pub fn make_thumbnails(
     photos: &[String],
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut inputs = Vec::with_capacity(photos.len());
+    // Each distinct content once, in the order the caller first named it
+    // (the entrypoint's order, so the offloaded run answers the same list),
+    // with that first name: what a failure is reported against.
+    let mut distinct_hashes = std::collections::BTreeSet::new();
+    let mut seen: Vec<(&str, &str)> = Vec::with_capacity(photos.len());
     for photo in photos {
         let hash = tilo_actions::content_hash(photo).unwrap_or(photo);
         if !crate::model::is_content_hash(hash) {
             return Err(format!("`{photo}` is not a photograph's content"));
         }
-        if seen.insert(hash) {
-            inputs.push(
-                store
-                    .read(hash)
-                    .ok_or_else(|| format!("the content {hash} is not on this device"))?,
-            );
+        if distinct_hashes.insert(hash) {
+            seen.push((hash, photo));
         }
     }
-    let thumbnails =
-        thumbnail::batch::thumbnail_batch(&inputs).map_err(|error| error.to_string())?;
-    let mut resources = Vec::with_capacity(thumbnails.len());
-    for bytes in thumbnails {
-        let hash = store.put(&bytes).map_err(|error| {
-            tracing::warn!(%error, "photos: could not store a thumbnail");
-            "a thumbnail could not be stored".to_string()
-        })?;
-        resources.push(
-            tilo_actions::content_resource(&hash)
-                .ok_or_else(|| "the content provider returned an invalid address".to_string())?,
-        );
+    let mut inputs = Vec::with_capacity(seen.len());
+    let mut missing = Vec::new();
+    for (hash, photo) in &seen {
+        match store.read(hash) {
+            Some(bytes) => inputs.push((*photo, bytes)),
+            None => missing.push(json_failure(photo, "is not on this device")),
+        }
+    }
+    let mut resources = Vec::with_capacity(inputs.len());
+    let mut failed = missing;
+    let distinct: Vec<Vec<u8>> = inputs.iter().map(|(_, bytes)| bytes.clone()).collect();
+    for ((photo, _), outcome) in inputs
+        .iter()
+        .zip(thumbnail::batch::thumbnail_batch(&distinct))
+    {
+        match outcome {
+            Ok(thumbnail) => {
+                let hash = store.put(&thumbnail).map_err(|error| {
+                    tracing::warn!(%error, "photos: could not store a thumbnail");
+                    "a thumbnail could not be stored".to_string()
+                })?;
+                resources.push(tilo_actions::content_resource(&hash).ok_or_else(|| {
+                    "the content provider returned an invalid address".to_string()
+                })?);
+            }
+            Err(error) => {
+                tracing::warn!(photo, %error, "photos: a picture made no thumbnail");
+                failed.push(json_failure(photo, "is not an image"));
+            }
+        }
     }
     Ok(tilo_actions::ActionOutput {
-        value: None,
+        value: (!failed.is_empty()).then(|| serde_json::json!({ "failed": failed })),
         resources,
     })
+}
+
+/// One picture that made no thumbnail, named as the caller named it.
+fn json_failure(photo: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({"photo": photo, "reason": reason})
 }
 
 /// The resource `kind` a library photograph publishes under: an item of

@@ -14,7 +14,6 @@ use tilo_action_policy::{ActionKind, TreePath};
 use super::room_gate::RoomAction;
 use tilo_lock::MutexRecover as _;
 
-/// Reading the room.
 fn read() -> RoomAction {
     (TreePath::root(), ActionKind::Read)
 }
@@ -170,6 +169,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: device_cert(),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
             None,
         ),
@@ -427,9 +427,11 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     };
 
     let room = RoomId::parse(ROOM).expect("room id");
-    let mut workspace =
-        crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
-    workspace.set_room(room);
+    let mut workspace = crate::shell::state::Workspace::in_room(
+        crate::shell::state::WorkspaceId(17),
+        room,
+        "Shared",
+    );
     workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
     workspace.admit(person.clone(), tilo_action_policy::Role::Viewer);
     let mut tree = WorkspaceTree::default();
@@ -449,6 +451,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(device_cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         },
     );
     assert!(
@@ -491,7 +494,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("workspace")
         .admit(person, tilo_action_policy::Role::Commenter);
     net.dispatch_neighbour_msg(ws, peer, None, false, document());

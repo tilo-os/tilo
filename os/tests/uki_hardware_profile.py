@@ -17,6 +17,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "os/dev"))
 from hardware_profile import DEFAULT_TARGET_IMGREF, install_update_origin
+from restart_fixture import restart_fixture
 
 
 def load(name, path):
@@ -37,18 +38,6 @@ def dtb_fixture():
     total = 56 + len(tree) + len(strings)
     return struct.pack(">10I", 0xD00DFEED, total, 56, 56 + len(tree), 40,
                        17, 16, 0, len(strings), len(tree)) + b"\0" * 16 + tree + strings
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class HardwareProfileTests(unittest.TestCase):
@@ -112,6 +101,9 @@ class HardwareProfileTests(unittest.TestCase):
             value["devicetree"] = None
             value.pop("wifi_wake_on_wlan")
             value.pop("internal_keyboards")
+            # No device tree reserves a ramoops region on such a board, so its
+            # panic record goes to an EFI variable.
+            value["crash_record"] = value["crash_record"] | {"storage": "efi-variable"}
             definition.write_text(json.dumps(value))
             self.data["id"] = value["id"]
             self.data["devicetree"] = self.data["devicetree_sha256"] = None

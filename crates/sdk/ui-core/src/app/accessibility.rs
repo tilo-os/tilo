@@ -9,7 +9,7 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     /// Apply a preference change a control asked for (see
-    /// [`Widget::take_accessibility_request`](crate::widget::Widget::take_accessibility_request)).
+    /// [`Widget::take_accessibility_request`]).
     /// Returns whether one was pending.
     pub fn apply_accessibility_request(&mut self) -> bool {
         let Some(request) = self.root_widget.take_accessibility_request() else {
@@ -139,6 +139,7 @@ impl App {
         let _entry = self.enter_wake_scope();
         match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
+                self.accessibility.parting_screen_reader = None;
                 self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
@@ -153,8 +154,110 @@ impl App {
         }
     }
 
+    /// Turn the screen reader on or off at `settings`' rate and voice, for a
+    /// host that keeps them itself: the login screen, from the device's
+    /// sign-in comforts.
+    pub fn apply_screen_reader_settings(
+        &mut self,
+        settings: &settings_store::accessibility::ScreenReaderSettings,
+    ) {
+        self.set_screen_reader_enabled(settings.enabled);
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+            reader.configure(settings);
+        }
+    }
+
     pub fn screen_reader_enabled(&self) -> bool {
         self.accessibility.screen_reader.is_some()
+    }
+
+    /// Let the host keep the screen reader state the chord sets (a login
+    /// screen keeps the device's, not a person's). Without one, the chord
+    /// writes the person's `accessibility.screen_reader` setting when this
+    /// window follows the settings file, so the chord and Settings agree.
+    pub fn on_screen_reader_chord(&mut self, observer: impl FnMut(bool) + 'static) {
+        self.accessibility.on_screen_reader_chord = Some(Box::new(observer));
+    }
+
+    /// Feed a key event to the screen reader chord. `true` when it toggled
+    /// the screen reader, which then consumes the event.
+    #[cfg(feature = "native")]
+    fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
+        use crate::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+        match event {
+            WindowEvent::Focused(false) => {
+                // Releases arrive at whoever has focus next.
+                self.accessibility.screen_reader_chord.reset();
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let toggled = self.accessibility.screen_reader_chord.key(ChordEvent {
+                    key: ChordKey::from_winit(key),
+                    modifiers: ChordModifiers::from_winit(self.input.modifiers.state()),
+                    pressed: key.state == winit::event::ElementState::Pressed,
+                    repeat: key.repeat,
+                    at: crate::time::now(),
+                });
+                if toggled {
+                    self.toggle_screen_reader_by_chord();
+                }
+                toggled
+            }
+            _ => false,
+        }
+    }
+
+    /// When the volume-key hold toggles the screen reader if both keys stay
+    /// down; the runner wakes then and calls [`Self::tick_screen_reader_chord`].
+    pub fn screen_reader_chord_deadline(&self) -> Option<crate::time::Instant> {
+        self.accessibility.screen_reader_chord.deadline()
+    }
+
+    /// Toggle the screen reader when the volume-key hold is due. `true` when
+    /// it toggled.
+    pub fn tick_screen_reader_chord(&mut self, now: crate::time::Instant) -> bool {
+        let toggled = self.accessibility.screen_reader_chord.tick(now);
+        if toggled {
+            self.toggle_screen_reader_by_chord();
+        }
+        toggled
+    }
+
+    /// Turn the screen reader on or off as the chord does, saying which.
+    /// Turning it off is heard too: the narrator that says so is kept, not
+    /// stopped, until the reader is turned on again.
+    pub fn toggle_screen_reader_by_chord(&mut self) {
+        let _entry = self.enter_wake_scope();
+        let on = !self.screen_reader_enabled();
+        if on {
+            // The new state first, then what has focus.
+            let mut reader = Self::configured_screen_reader();
+            reader.announce(
+                crate::screen_reader_chord::state_words(true),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = None;
+            self.accessibility.screen_reader = Some(reader);
+            self.announce_current_focus();
+        } else if let Some(mut reader) = self.accessibility.screen_reader.take() {
+            reader.announce(
+                crate::screen_reader_chord::state_words(false),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = Some(reader);
+            self.accessibility.live_region_last.clear();
+        }
+        self.accessibility.a11y.screen_reader = on;
+        if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
+            observer(on);
+        } else if self.watch_system_settings {
+            let origin = settings_store::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            if let Err(error) = settings_store::accessibility::SCREEN_READER.set_by(on, &origin) {
+                tracing::warn!(%error, "the screen reader chord could not save its setting");
+            }
+        }
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -296,7 +399,12 @@ impl App {
             });
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
-            self.focused_node = node;
+            // The trap takes the keyboard as it appears, so the owner is
+            // chosen here rather than by a Tab or a click. Tell it: a control
+            // that is not told publishes `focused: false` while the keyboard
+            // is on it, and a screen reader, an agent and `tilo-control` read
+            // focus from that node.
+            self.hand_focus_to(node);
             return;
         }
         if self.close_admission.dialog.is_none() {
@@ -304,7 +412,11 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if self.history.is_some() || restrictions.has_surfaces() {
+            if crate::focus_navigation::walks_layout_map(
+                self.root_widget.as_ref(),
+                self.history.is_some(),
+                &restrictions,
+            ) {
                 self.update_history_focus_order(&restrictions);
                 return;
             }
@@ -411,13 +523,21 @@ impl App {
         // The sweep follows every mapped node: forget widgets replaced since
         // the map was admitted first. Survivors keep what they queued for the
         // sweep after the next layout.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("history.forget");
         self.forget_replaced_widgets();
+        #[cfg(test)]
+        drop(probe);
+        let sweep = self.history_sweep_nodes();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("history.record");
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
                 &mut self.state,
                 std::ptr::from_mut(self.root_widget.as_mut()),
                 &self.layout.node_map,
+                sweep.nodes.iter().copied(),
                 &self.bindings,
                 &self.collaboration.local_author,
                 &self.permission_ctx,
@@ -426,30 +546,56 @@ impl App {
         // What the whole view says about history is read once per sweep, not
         // once per node (each read walks the tree, a bound status opens its
         // record): only a request taken in the sweep can change it.
+        #[cfg(test)]
+        drop(probe);
+        #[cfg(test)]
+        let _probe = crate::profiling::frame_probe::span("history.nodes");
         let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
         let mut local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
         let mut bound_statuses: Vec<(
             crate::bound_dispatch::CallbackBinding,
             crate::undo::UndoStatus,
         )> = Vec::new();
+        let mut history_exists: Option<bool> = None;
+        // The nodes the sweep skips are outside any bound component: what
+        // their status read did to the transaction is done once here.
+        if sweep.any_unbound {
+            self.keep_history_boundary(embedded, &mut history_exists);
+        }
         let mut visited = std::collections::HashSet::new();
-        for (&node, pointer) in &self.layout.node_map {
+        for &node in &sweep.nodes {
+            let Some(pointer) = self.layout.node_map.get(&node) else {
+                continue;
+            };
             // SAFETY: this layout is unchanged, so every node pointer is live.
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self.bindings.binding_for(node);
             // SAFETY: no target reference escapes and this layout is unchanged.
-            let request = unsafe {
+            let control = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| crate::undo::take_undo_request(widget),
+                    |widget| {
+                        crate::widget::capability::capability_mut::<dyn crate::undo::UndoControl>(
+                            widget,
+                        )
+                        .map(crate::undo::UndoControl::take_undo_request)
+                    },
                 )
             }
             .ok()
             .flatten();
+            // A node that neither shows nor asks for undo, outside any bound
+            // history, has nothing to take or to be told: only the boundary
+            // below applies to it.
+            if control.is_none() && binding.is_none() {
+                self.keep_history_boundary(embedded, &mut history_exists);
+                continue;
+            }
+            let request = control.flatten();
             if let Some(request) = request {
                 let entry = if let Some(binding) = &binding {
                     binding
@@ -485,19 +631,13 @@ impl App {
                 embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
                 local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
                 bound_statuses.clear();
+                history_exists = None;
             }
             // The former eager status read flushed open transactions whenever
-            // history existed. Preserve that boundary without deriving labels.
-            if binding.is_none()
-                && !embedded
-                && (self
-                    .state
-                    .can_undo_as(Some(&self.collaboration.local_author))
-                    || self
-                        .state
-                        .can_redo_as(Some(&self.collaboration.local_author)))
-            {
-                self.state.doc.get_heads();
+            // history existed. Preserve that boundary without deriving labels;
+            // whether history exists is read once until a request changes it.
+            if binding.is_none() {
+                self.keep_history_boundary(embedded, &mut history_exists);
             }
             // Bound histories intentionally keep completed-action labels warm
             // across pending edits and dynamically mounted controls.
@@ -545,7 +685,68 @@ impl App {
                 )
             };
         }
+        // A request taken above may have opened history the skipped nodes'
+        // status read would have closed the transaction on.
+        if sweep.any_unbound && history_exists.is_none() {
+            self.keep_history_boundary(embedded, &mut history_exists);
+        }
+        self.layout.history_nodes = sweep;
         changed
+    }
+
+    /// The mapped nodes the history sweep visits, found again when the map
+    /// was built and admitted anew (or emptied) since they were last found.
+    /// Taken out of the layout; the sweep puts them back.
+    fn history_sweep_nodes(&mut self) -> runtime::HistoryNodes {
+        let found_for = Some((self.layout.admissions, self.layout.node_map.len()));
+        let mut sweep = std::mem::take(&mut self.layout.history_nodes);
+        if sweep.found_for == found_for {
+            return sweep;
+        }
+        sweep.nodes.clear();
+        sweep.any_unbound = false;
+        for &node in self.layout.node_map.keys() {
+            sweep.any_unbound |= self.bindings.binding_ref(node).is_none();
+            // SAFETY: the admitted layout is unchanged and nothing escapes.
+            let takes_part = self.bindings.has_owner(node)
+                || unsafe {
+                    crate::bound_dispatch::inspect_bound_node(
+                        &self.bindings,
+                        &self.layout.node_map,
+                        node,
+                        |widget| {
+                            crate::widget::capability::capability::<dyn crate::undo::UndoControl>(
+                                widget,
+                            )
+                            .is_some()
+                                || crate::widget::capability::capability::<
+                                    dyn crate::undo::CommittedActions,
+                                >(widget)
+                                .is_some()
+                        },
+                    )
+                }
+                .unwrap_or(false);
+            if takes_part {
+                sweep.nodes.push(node);
+            }
+        }
+        sweep.found_for = found_for;
+        sweep
+    }
+
+    /// The transaction boundary a status read made when history exists:
+    /// read whether it does once, until a request changes it.
+    fn keep_history_boundary(&mut self, embedded: bool, history_exists: &mut Option<bool>) {
+        if embedded {
+            return;
+        }
+        let author = Some(&self.collaboration.local_author);
+        if *history_exists
+            .get_or_insert_with(|| self.state.can_undo_as(author) || self.state.can_redo_as(author))
+        {
+            self.state.doc.get_heads();
+        }
     }
 
     /// Finalize the document boundary for a handled native event. Shared host
@@ -565,10 +766,19 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        self.commit_action_with_invalidation(true);
+        self.commit_action_with(CommitKind::Action);
     }
 
-    fn commit_action_with_invalidation(&mut self, invalidate: bool) {
+    /// Commit after an input that only moved the view (a wheel or touchpad
+    /// pan): nothing in it can ask for undo or redo, so the history sweep,
+    /// which visits every mapped widget, is left to the next input that can
+    /// (what earlier input queued, its own sweep took).
+    #[cfg(feature = "native")]
+    pub(super) fn commit_view_change(&mut self) {
+        self.commit_action_with(CommitKind::ViewOnly);
+    }
+
+    fn commit_action_with(&mut self, commit: CommitKind) {
         if self.framework_input.get()
             || self
                 .history
@@ -577,7 +787,8 @@ impl App {
         {
             return;
         }
-        let history_changed = self.service_history();
+        let invalidate = commit == CommitKind::Action;
+        let history_changed = commit == CommitKind::Action && self.service_history();
         if history_changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -613,7 +824,35 @@ impl App {
         }
     }
 
-    fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+    /// Make `node` the owner and make sure its widget knows. The focus order
+    /// runs every layout, so this is also where a control that became the
+    /// owner without being told is repaired: a widget that answers
+    /// `focused: false` while the keyboard is on it leaves a screen reader, an
+    /// agent and `tilo-control` believing nothing is focused.
+    fn hand_focus_to(&mut self, node: Option<NodeId>) {
+        let Some(node) = node else {
+            self.set_focused_node(None);
+            return;
+        };
+        if let Some(old) = self.focused_node
+            && old != node
+        {
+            let _ = self.mutate_node(old, |widget| widget.set_focus(false));
+        }
+        let told = self
+            .inspect_node(node, |widget| widget.is_focused())
+            .unwrap_or(false);
+        if !told {
+            let _ = self.mutate_node(node, |widget| widget.set_focus(true));
+        }
+        if self.focused_node != Some(node) {
+            self.focused_node = Some(node);
+            self.layout.layout_dirty = true;
+            self.needs_sync = true;
+        }
+    }
+
+    pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         self.mark_semantic_tree_stale();
         self.suspend_history_focus(new_id);
         if new_id.is_some_and(|node| self.is_history_node(node)) {
@@ -655,11 +894,14 @@ impl App {
             .flatten()
     }
 
+    /// The focused field takes text only through deferred receipts, so
+    /// standard text input (and with it the on-screen keyboard) stays closed
+    /// until dictation admits it.
     #[cfg(feature = "native")]
-    fn focused_ime_requires_deferred_ack(&self) -> bool {
+    fn focused_ime_refuses_ordinary_commits(&self) -> bool {
         self.focused_node
             .and_then(|node| {
-                self.inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                self.inspect_node(node, |widget| widget.ime_refuses_ordinary_commits())
                     .ok()
             })
             .unwrap_or(false)
@@ -817,8 +1059,9 @@ impl App {
     }
 
     fn navigate_focus(&mut self, direction: Direction) {
+        let order = self.keyboard_travel_order();
         let Some(current_id) = self.focused_node else {
-            if let Some(&first) = self.focusable_order.first() {
+            if let Some(&first) = order.first() {
                 self.set_focused_node(Some(first));
             }
             return;
@@ -828,7 +1071,7 @@ impl App {
         };
         let best_candidate = crate::focus_navigation::next(
             (current_id, current_rect),
-            self.focusable_order.iter().filter_map(|&id| {
+            order.iter().filter_map(|&id| {
                 self.inspect_node(id, |widget| widget.get_rect())
                     .ok()
                     .map(|rect| (id, rect))
@@ -889,8 +1132,34 @@ impl App {
         false
     }
 
+    /// Where Tab and directional focus travel: the focus order, kept inside
+    /// the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap owns
+    /// the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
+        if self.accessibility.focus_trap_active {
+            return self.focusable_order.clone();
+        }
+        let scopes: Vec<taffy::NodeId> = self
+            .layout
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .collect();
+        crate::focus_navigation::within_keyboard_scope(
+            self.focusable_order.clone(),
+            &scopes,
+            &self.layout.taffy,
+        )
+    }
+
     fn focus_tab(&mut self, shift: bool) -> bool {
-        let len = self.focusable_order.len();
+        let order = self.keyboard_travel_order();
+        let len = order.len();
         if len == 0 {
             return false;
         }
@@ -899,18 +1168,17 @@ impl App {
         if self.input.tab_order_continues_in_host {
             let at = self
                 .focused_node
-                .and_then(|id| self.focusable_order.iter().position(|&n| n == id));
+                .and_then(|id| order.iter().position(|&n| n == id));
             if at == Some(if shift { 0 } else { len - 1 }) {
                 self.set_focused_node(None);
                 return false;
             }
         }
-        let Some(next_idx) =
-            crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
+        let Some(next_idx) = crate::focus_navigation::tab_index(&order, self.focused_node, shift)
         else {
             return false;
         };
-        if let Some(&id) = self.focusable_order.get(next_idx) {
+        if let Some(&id) = order.get(next_idx) {
             self.set_focused_node(Some(id));
         }
         true
@@ -920,6 +1188,8 @@ impl App {
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
+        // Bounds of every widget, also those far from any view.
+        self.place_all();
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
         if self
             .actions
@@ -1155,7 +1425,8 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),
@@ -1237,7 +1508,18 @@ impl App {
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                let rect = if synthetic {
+                // A widget reached through its painting ancestor is pressed
+                // where it stands.
+                let routed = semantic_target.as_deref().and_then(|target| {
+                    self.inspect_node(taffy_id, |widget| {
+                        crate::a11y_child_route::rect(widget, target)
+                    })
+                    .ok()
+                    .flatten()
+                });
+                let rect = if let Some(rect) = routed {
+                    rect
+                } else if synthetic {
                     self.inspect_node(taffy_id, |widget| {
                         widget.synthetic_accessibility_rect(&ordinal_path)
                     })
@@ -1263,7 +1545,7 @@ impl App {
     /// target has already resolved to this exact point; routing the usual
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
-    fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+    pub(super) fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
         self.mark_semantic_tree_stale();
         self.refresh_control_action_availability();
         if self.layout.root_node.is_none() {
@@ -1306,7 +1588,7 @@ impl App {
     ///
     /// A refresh after nothing the tree is read from changed (no input, no
     /// document or widget change, no layout, no focus move since the last
-    /// refresh: [`Self::mark_semantic_tree_stale`]) is that empty diff
+    /// refresh: `Self::mark_semantic_tree_stale`) is that empty diff
     /// without walking the widgets, so a frame that changed nothing costs
     /// the host's accessibility walk nothing. Any such change publishes on
     /// the refresh that follows it.
@@ -1393,6 +1675,7 @@ impl App {
     /// Walk the widgets and diff what they declare against the tree.
     fn rebuild_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
+        self.place_all();
         // Built from what is there now; a presentation the tracking does
         // not follow leaves it stale, so leaving it walks again.
         self.accessibility.semantic_tree_stale = self.semantic_tree_untracked();
@@ -1615,7 +1898,8 @@ impl App {
                                     root,
                                 )
                             } else {
-                                widget.perform_semantic_action(
+                                crate::a11y_child_route::perform(
+                                    widget,
                                     &semantic_target,
                                     &verb,
                                     &mut crate::widget::Edits::lend(doc),
@@ -1681,3 +1965,21 @@ impl App {
         Ok(true)
     }
 }
+
+/// The change origin the screen reader chord records in the settings file.
+const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
+
+/// What a handled input asks [`App::commit_action_with`] to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitKind {
+    /// Any input: sweep the widgets for history requests, commit, and
+    /// invalidate what the input may have changed.
+    Action,
+    /// An input that only moved the view.
+    #[cfg(feature = "native")]
+    ViewOnly,
+}
+
+#[cfg(test)]
+#[path = "history_sweep_tests.rs"]
+mod history_sweep_tests;

@@ -30,7 +30,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::app::{Core, Shared};
 use crate::model::{Article, Filter, Id, relative_time};
 
-/// The empty library's title.
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 
 /// One article row as last painted.
@@ -134,7 +133,6 @@ impl ListState {
         self.scroller.offset().y
     }
 
-    /// Back to the top of the list.
     pub(crate) fn scroll_to_top(&mut self) {
         self.scroller.set_offset(Vec2::ZERO);
     }
@@ -651,6 +649,11 @@ impl Widget for ListPane {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.follow();
+        // A glide after a flick moves the rows; the frame copies them as it
+        // does a wheel's scroll ([`Core::list_damage`]).
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            core.list.scroller.advance();
+        }
         self.empty
             .as_mut()
             .is_some_and(|(_, empty)| empty.update(state, path))

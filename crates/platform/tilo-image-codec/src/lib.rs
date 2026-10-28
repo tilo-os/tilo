@@ -33,10 +33,6 @@ pub enum DecodeError {
 }
 impl DecodeImage<'_> {
     /// Decode with the original native output semantics (dimension clamped to 1..=4096).
-    ///
-    /// # Errors
-    /// Returns an error for undecodable input or zero-sized output. Source
-    /// allocations are governed by the image library, not worker admission.
     pub fn decode_native(self) -> Result<DecodedImage, DecodeError> {
         let max_dimension = self.max_dimension.clamp(1, 4096);
         let img = image::load_from_memory(self.encoded).map_err(|_| DecodeError::InvalidImage)?;

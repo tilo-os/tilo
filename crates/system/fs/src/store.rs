@@ -173,6 +173,8 @@ pub struct ContentStore {
     deferred: std::sync::Mutex<(usize, bool)>,
     /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
     write_syncs: std::sync::atomic::AtomicU64,
+    /// Bytes read so far; see [`ContentStore::read_bytes`].
+    read_bytes: std::sync::atomic::AtomicU64,
     /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
     /// The directory of an ephemeral store's area, removed with it.
@@ -325,11 +327,6 @@ impl ContentStore {
     }
 
     /// Open a persistent store with background garbage collection enabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when configuration, directory creation or store
-    /// loading fails.
     pub async fn open_with_gc_interval(
         cache_dir: impl AsRef<Path>,
         gc_interval: Duration,
@@ -395,6 +392,7 @@ impl ContentStore {
             gc,
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
             runtime: Some(runtime),
@@ -403,10 +401,6 @@ impl ContentStore {
 
     /// An ephemeral store (tests, and as a fallback): loose blobs in memory,
     /// file-backed content in a temporary directory removed with the store.
-    ///
-    /// # Panics
-    ///
-    /// Panics when no temporary directory can be created.
     #[allow(
         clippy::expect_used,
         reason = "an ephemeral store without a temporary directory cannot hold content at all"
@@ -433,6 +427,7 @@ impl ContentStore {
             gc,
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
             runtime: None,
@@ -442,10 +437,6 @@ impl ContentStore {
     /// Shuts the store down and releases its databases, so the same
     /// directory can be opened again in this process while handles to this
     /// store remain; they fail from now on.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the blob store does not shut down cleanly.
     pub async fn shutdown(&self) -> Result<()> {
         let stopped = self.store().shutdown().await;
         self.files.close();
@@ -476,6 +467,7 @@ impl ContentStore {
             gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: Some(scratch),
             runtime: None,
@@ -518,6 +510,21 @@ impl ContentStore {
         self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// How many bytes reads of this store have taken so far: whole blobs
+    /// [`Self::local`] returned (cached or not), the verified leaves of
+    /// [`Self::read_blob_range`], and file-backed content. A ranged read pays
+    /// for its range, so a caller can check that it never loads whole blobs.
+    pub fn read_bytes(&self) -> u64 {
+        self.read_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(self.files.read_bytes())
+    }
+
+    fn note_read(&self, bytes: usize) {
+        self.read_bytes
+            .fetch_add(bytes as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
     /// database if a write inside the groups skipped it.
     ///
@@ -554,10 +561,6 @@ impl ContentStore {
     }
 
     /// Ingest bytes and return their blake3 content hash. Warms the cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying blob store fails to accept the data.
     pub async fn ingest(&self, data: impl Into<Bytes>) -> Result<Hash> {
         let _mutation = self.mutation.lock().await;
         let data = data.into();
@@ -568,10 +571,12 @@ impl ContentStore {
     /// file-backed chunk, which is checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
+            self.note_read(b.len());
             return Some(b);
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
+                self.note_read(b.len());
                 self.cache_insert(hash, b.clone());
                 Some(b)
             }
@@ -603,10 +608,6 @@ impl ContentStore {
     /// from collection by its temporary tag until the owned tag is in
     /// place, as for [`Self::ingest`]. A piece that is an error abandons the
     /// import and stores nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns the stream's error, or an error if the blob store fails.
     pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
     where
         S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
@@ -695,6 +696,7 @@ impl ContentStore {
         while let Some(item) = items.next().await {
             match item {
                 EncodedItem::Leaf(leaf) => {
+                    self.note_read(leaf.data.len());
                     content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
                 }
                 EncodedItem::Size(actual) if actual != size => return None,
@@ -726,10 +728,6 @@ impl ContentStore {
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying blob store fails to accept the data.
     pub async fn store_fetched(&self, hash: Hash, data: Bytes) -> Result<()> {
         let actual = Hash::new(&data);
         anyhow::ensure!(
@@ -748,10 +746,6 @@ impl ContentStore {
     /// a batch of small files costs one database sync instead of one per
     /// blob. Every blob is checked against its hash before anything is
     /// stored; a mismatch rejects the whole batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on a hash mismatch or when the blob store fails.
     pub async fn store_fetched_batch(&self, blobs: Vec<(Hash, Bytes)>) -> Result<()> {
         if blobs.is_empty() {
             return Ok(());
@@ -773,11 +767,6 @@ impl ContentStore {
     }
 
     /// Remove only selected physical blobs while preserving every other blob.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when backend enumeration, tagging, GC, or verification
-    /// fails.
     pub async fn evict_blobs(&self, selected: &HashSet<Hash>) -> Result<u64> {
         if selected.is_empty() {
             return Ok(0);
@@ -940,11 +929,6 @@ impl ContentStore {
     /// The lookup is bounded and fail-closed. It never returns paths or other
     /// records' metadata, and an unavailable/malformed live manifest prevents
     /// a partial authorization result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid limits or an incomplete/malformed bounded
-    /// live record graph.
     #[cfg(feature = "filesystem")]
     pub async fn live_record_ids_for_blob(
         &self,
@@ -1072,11 +1056,6 @@ impl ContentStore {
     /// Prove that an exact signed revision's manifest and every declared
     /// content chunk are complete in the persistent backend. Hot cache entries
     /// and partial blobs never satisfy this durability boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the revision is invalid or any declared payload is
-    /// missing, partial, malformed, or has the wrong length.
     #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
@@ -1140,11 +1119,6 @@ impl ContentStore {
     /// applications' tags and temporary transfer tags are never touched. A
     /// successful result proves only a durable GC handoff; use
     /// [`Self::observe_eviction_request`] for exact completion.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when fresh authorization, tag release, backend GC, or
-    /// durable observation fails.
     #[cfg(feature = "filesystem")]
     pub async fn release_eviction_to_backend_gc(
         &self,
@@ -1230,11 +1204,6 @@ impl ContentStore {
     /// Observe a durable eviction request against one coherent backend status
     /// sample. Completion is persisted only when every requested hash is
     /// `NotFound`; backend errors leave the queue unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request is unknown or backend status/queue
-    /// persistence fails.
     #[cfg(feature = "filesystem")]
     pub async fn observe_eviction_request(
         &self,
@@ -1377,15 +1346,24 @@ mod tests {
         let protect = config.add_protected.expect("a protect callback");
         let kept = Hash::new(b"kept");
 
+        // The callback decides before its first wait, so one poll shows
+        // whether it parked.
+        let parks = |pass: Pin<Box<dyn Future<Output = ProtectOutcome> + Send + Sync + '_>>| {
+            let mut pass = pass;
+            pass.as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        };
         let mut protected = HashSet::new();
-        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
-        assert!(pass.is_err(), "an unauthorized pass must stay parked");
+        assert!(
+            parks(protect(&mut protected)),
+            "an unauthorized pass must stay parked"
+        );
 
         // A live set before the store is ready still does not release a pass.
         gate.authorize(HashSet::from([kept]));
-        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
         assert!(
-            pass.is_err(),
+            parks(protect(&mut protected)),
             "a pass must not run before the store is ready"
         );
 
@@ -1397,18 +1375,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             gate.authorize(HashSet::from([kept]));
         };
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (outcome, ()) = tilo_test_env::within("authorizing to wake the parked pass", async {
             tokio::join!(parked, authorize)
         })
-        .await
-        .expect("authorizing wakes the parked pass");
+        .await;
         assert!(matches!(outcome, ProtectOutcome::Continue));
         assert_eq!(protected, HashSet::from([kept]));
     }
 
     #[tokio::test]
     async fn blobs_ingest_fetch_and_share_hashes_with_owned_tags() {
-        // Phase `ingest_roundtrips_locally`.
         {
             let store = ContentStore::memory();
             let data = Bytes::from_static(b"the quick brown fox");
@@ -1418,21 +1394,18 @@ mod tests {
             let got = store.local(hash).await.expect("bytes present locally");
             assert_eq!(got, data);
         }
-        // Phase `missing_hash_is_none`.
         {
             let store = ContentStore::memory();
             let absent = Hash::from([42u8; 32]);
             assert!(!store.has(absent).await);
             assert!(store.local(absent).await.is_none());
         }
-        // Phase `identical_bytes_share_a_hash`.
         {
             let store = ContentStore::memory();
             let a = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
             let b = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
             assert_eq!(a, b, "content addressing: same bytes -> same hash");
         }
-        // Phase `ingest_and_fetch_use_only_deterministic_owned_tags`.
         {
             let store = ContentStore::memory();
             let first = store.ingest(Bytes::from_static(b"ingested")).await.unwrap();
@@ -1461,7 +1434,6 @@ mod tests {
                 "temporary protection must be released after owned-tag promotion"
             );
         }
-        // Phase `fetched_hash_mismatch_does_not_persist_or_cache_bytes`.
         {
             let store = ContentStore::memory();
             let claimed = Hash::from([9; 32]);
@@ -1479,7 +1451,6 @@ mod tests {
 
     #[tokio::test]
     async fn persistent_stores_migrate_tags_evict_selectively_and_survive_restart() {
-        // Phase `persistent_selective_eviction_preserves_other_content_after_restart`.
         {
             let directory = tempfile::tempdir().unwrap();
             // Exceed the backend's inline threshold so this also exercises native
@@ -1515,7 +1486,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn backend_residency_and_manifests_decide_what_is_durable_or_evicted() {
-        // Phase `version_inspection_uses_backend_residency_and_exact_manifest`.
         {
             let store = ContentStore::memory();
             let data = vec![7u8; 100_000];
@@ -1545,7 +1515,6 @@ mod tests {
                 data.len() as u64
             );
         }
-        // Phase `durable_revision_rejects_a_complete_manifest_with_any_missing_chunk`.
         {
             let store = ContentStore::memory();
             let missing = iroh_blobs::Hash::new(b"not persisted");
@@ -1567,7 +1536,6 @@ mod tests {
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
         }
-        // Phase `eviction_observation_completes_only_for_backend_absence`.
         {
             use crate::eviction::{
                 EvictionMode, EvictionPlan, EvictionQueue, EvictionRequestState,
@@ -1626,7 +1594,6 @@ mod tests {
         reason = "multi-phase backend eviction lifecycle scenario"
     )]
     async fn backend_eviction_releases_only_owned_tags_for_fresh_roots() {
-        // Phase `queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed`.
         {
             use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
@@ -1782,7 +1749,6 @@ mod tests {
                 EvictionRequestState::Completed { .. }
             ));
         }
-        // Phase `backend_handoff_refuses_stale_shared_root_without_releasing_tag`.
         {
             use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
@@ -1860,7 +1826,11 @@ mod tests {
                     .await,
                 Err(StoreEvictionError::Authorization(_))
             ));
-            tokio::time::sleep(Duration::from_millis(35)).await;
+            // The GC sweeps only an authorized live set: none, none deleted.
+            assert!(
+                store.gc.snapshot().is_none(),
+                "a refused eviction authorized a sweep"
+            );
             assert!(store.has(hash).await);
             assert!(
                 store
@@ -1872,7 +1842,6 @@ mod tests {
                     .is_some()
             );
         }
-        // Phase `eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted`.
         {
             use crate::availability::{RecordAvailability, RecordKind};
             use crate::eviction::{
@@ -1978,7 +1947,6 @@ mod tests {
         reason = "every reverse-lookup source is one matrix"
     )]
     async fn blob_reverse_lookup_is_complete_bounded_and_fail_closed() {
-        // Phase `blob_reverse_lookup_covers_roots_chunks_thumbnails_and_live_records_only`.
         {
             let store = ContentStore::memory();
             let shared_chunk = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
@@ -2094,7 +2062,6 @@ mod tests {
             );
             assert_eq!(namespace.record_id_for(second), Some(second_record));
         }
-        // Phase `blob_reverse_lookup_is_bounded_and_fails_closed_on_missing_manifest`.
         {
             let store = ContentStore::memory();
             let missing = Hash::from([66; 32]);

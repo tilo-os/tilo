@@ -120,9 +120,56 @@ fn command(root: &PinnedDirectory, mode: Mode, exclusions: &[&Path]) -> Command 
     }
     cmd
 }
+/// The clock a transfer's watchdog reads: the machine's, or in tests one
+/// that moves only when the test moves it.
+#[derive(Clone)]
+enum Clock {
+    System,
+    #[cfg(test)]
+    Manual(std::sync::Arc<Mutex<Instant>>),
+}
+impl Clock {
+    fn now(&self) -> Instant {
+        match self {
+            Self::System => Instant::now(),
+            #[cfg(test)]
+            Self::Manual(at) => at.lock().map_or_else(|_| Instant::now(), |at| *at),
+        }
+    }
+}
+/// When the archive stream last moved, on the watchdog's clock.
+struct Progress {
+    last: Mutex<Instant>,
+    clock: Clock,
+}
+impl Progress {
+    fn new(clock: Clock) -> Self {
+        Self {
+            last: Mutex::new(clock.now()),
+            clock,
+        }
+    }
+    fn moved(&self) -> io::Result<()> {
+        *self
+            .last
+            .lock()
+            .map_err(|_| changed("Archive progress unavailable"))? = self.clock.now();
+        Ok(())
+    }
+    fn stalled(&self, limit: Duration) -> bool {
+        self.last.lock().map_or(true, |last| {
+            self.clock.now().saturating_duration_since(*last) > limit
+        })
+    }
+}
+/// How long the stream may stand still before the child is stopped.
+struct IdleLimit {
+    limit: Duration,
+    clock: Clock,
+}
 struct Flow<T> {
     inner: T,
-    progress: std::sync::Arc<Mutex<Instant>>,
+    progress: std::sync::Arc<Progress>,
 }
 impl<T: Read> Read for Flow<T> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -130,10 +177,7 @@ impl<T: Read> Read for Flow<T> {
         #[cfg(test)]
         observe(StreamEvent::Read(count));
         if count != 0 {
-            *self
-                .progress
-                .lock()
-                .map_err(|_| changed("Archive progress unavailable"))? = Instant::now();
+            self.progress.moved()?;
         }
         Ok(count)
     }
@@ -144,10 +188,7 @@ impl<T: Write> Write for Flow<T> {
         #[cfg(test)]
         observe(StreamEvent::Written(count));
         if count != 0 {
-            *self
-                .progress
-                .lock()
-                .map_err(|_| changed("Archive progress unavailable"))? = Instant::now();
+            self.progress.moved()?;
         }
         Ok(count)
     }
@@ -161,14 +202,17 @@ fn execute(
     mode: Mode,
     exclusions: &[&Path],
     cancel: &AtomicBool,
-    stream: impl FnOnce(&mut std::process::Child, std::sync::Arc<Mutex<Instant>>) -> io::Result<()>,
+    stream: impl FnOnce(&mut std::process::Child, std::sync::Arc<Progress>) -> io::Result<()>,
 ) -> io::Result<()> {
     execute_with_idle_limit(
         root,
         mode,
         exclusions,
         cancel,
-        Duration::from_secs(3600),
+        IdleLimit {
+            limit: Duration::from_secs(3600),
+            clock: Clock::System,
+        },
         stream,
     )
 }
@@ -177,8 +221,8 @@ fn execute_with_idle_limit(
     mode: Mode,
     exclusions: &[&Path],
     cancel: &AtomicBool,
-    idle_limit: Duration,
-    stream: impl FnOnce(&mut std::process::Child, std::sync::Arc<Mutex<Instant>>) -> io::Result<()>,
+    idle: IdleLimit,
+    stream: impl FnOnce(&mut std::process::Child, std::sync::Arc<Progress>) -> io::Result<()>,
 ) -> io::Result<()> {
     check_cancel(cancel)?;
     let mut child = command(root, mode, exclusions).spawn()?;
@@ -186,13 +230,11 @@ fn execute_with_idle_limit(
     #[cfg(test)]
     observe(StreamEvent::Spawned(pid));
     let done = AtomicBool::new(false);
-    let progress = std::sync::Arc::new(Mutex::new(Instant::now()));
+    let progress = std::sync::Arc::new(Progress::new(idle.clock.clone()));
     std::thread::scope(|scope| {
         let watchdog = scope.spawn(|| {
             while !done.load(Ordering::Relaxed) {
-                let stalled = progress
-                    .lock()
-                    .map_or(true, |updated| updated.elapsed() > idle_limit);
+                let stalled = progress.stalled(idle.limit);
                 if cancel.load(Ordering::Relaxed) || stalled {
                     // SAFETY: child was placed in a new process group before exec.
                     unsafe {
@@ -275,12 +317,27 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    struct SlowWriter(Vec<u8>);
+    /// A clock that moves only when the test moves it.
+    fn manual() -> (Clock, std::sync::Arc<Mutex<Instant>>) {
+        let at = std::sync::Arc::new(Mutex::new(Instant::now()));
+        (Clock::Manual(std::sync::Arc::clone(&at)), at)
+    }
+    fn advance(clock: &Mutex<Instant>, by: Duration) {
+        let mut at = clock.lock().unwrap();
+        *at += by;
+    }
+
+    /// Takes a while over every kilobyte, on the manual clock.
+    struct SlowWriter {
+        written: Vec<u8>,
+        clock: std::sync::Arc<Mutex<Instant>>,
+        per_write: Duration,
+    }
     impl Write for SlowWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            std::thread::sleep(Duration::from_millis(5));
+            advance(&self.clock, self.per_write);
             let count = bytes.len().min(1024);
-            self.0.extend_from_slice(
+            self.written.extend_from_slice(
                 bytes
                     .get(..count)
                     .ok_or_else(|| changed("Fixture stream missing"))?,
@@ -302,12 +359,14 @@ mod tests {
         std::fs::write(source.join("document"), &contents).unwrap();
         let pin = PinnedDirectory::open_absolute(&source).unwrap();
         let mut partial = Vec::new();
+        let (clock, time) = manual();
+        let limit = Duration::from_millis(100);
         let result = execute_with_idle_limit(
             &pin,
             Mode::Create { sparse: false },
             &[],
             &AtomicBool::new(false),
-            Duration::from_millis(100),
+            IdleLimit { limit, clock },
             |child, progress| {
                 let stdout = child
                     .stdout
@@ -321,8 +380,12 @@ mod tests {
                 output.read_exact(&mut first)?;
                 partial.extend_from_slice(&first);
                 // Backpressure leaves the actual GNU tar child blocked in its
-                // pipe. The real watchdog must terminate this stalled stream.
-                std::thread::sleep(Duration::from_millis(400));
+                // pipe. Past the idle limit the real watchdog must terminate
+                // this stalled stream.
+                advance(&time, limit * 4);
+                tilo_test_env::wait_until("the watchdog to stop the stalled child", || {
+                    child.try_wait().ok().flatten().is_some()
+                });
                 io::copy(&mut output, &mut partial)?;
                 Ok(())
             },
@@ -345,14 +408,23 @@ mod tests {
         std::fs::write(source.join("document"), &contents).unwrap();
         let pin = PinnedDirectory::open_absolute(&source).unwrap();
         let idle = Duration::from_millis(250);
-        let began = Instant::now();
-        let mut archive = SlowWriter(Vec::new());
+        let (clock, time) = manual();
+        let began = clock.now();
+        let mut archive = SlowWriter {
+            written: Vec::new(),
+            clock: std::sync::Arc::clone(&time),
+            // io::copy reads up to 8 KiB at a time: eight writes per read.
+            per_write: idle / 20,
+        };
         execute_with_idle_limit(
             &pin,
             Mode::Create { sparse: false },
             &[],
             &AtomicBool::new(false),
-            idle,
+            IdleLimit {
+                limit: idle,
+                clock: clock.clone(),
+            },
             |child, progress| {
                 let stdout = child
                     .stdout
@@ -370,7 +442,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            began.elapsed() > idle,
+            clock.now().saturating_duration_since(began) > idle,
             "actual export must exceed the old total-duration bound"
         );
         let target = scratch.path().join("target");
@@ -378,7 +450,7 @@ mod tests {
         let target = PinnedDirectory::open_absolute(&target).unwrap();
         extract(
             &target,
-            &mut io::Cursor::new(archive.0),
+            &mut io::Cursor::new(archive.written),
             &AtomicBool::new(false),
         )
         .unwrap();

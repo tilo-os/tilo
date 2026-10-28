@@ -245,6 +245,14 @@ def main(app_kind='scratchpad'):
                         and diagnostics_drained(lines,{r['cpu_frame_id'] for r in mapped})):
                     break
                 time.sleep(.05)
+        # The drain can finish in the instant between the app's last line and
+        # its own exit. An app that quits by itself right after its last frame
+        # failed the capture, so give such an exit time to show before taking
+        # the shutdown into our hands, where it would read as our SIGTERM.
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
         require_running(process)
         process.terminate()
         try: process.wait(timeout=10)

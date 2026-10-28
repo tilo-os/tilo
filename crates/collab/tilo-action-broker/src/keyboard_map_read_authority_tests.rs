@@ -30,13 +30,18 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witness() {
-    use std::{cell::RefCell, os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
+    use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::record::{RecordCheckout, RecordId, RecordOwners};
     tokio::task::LocalSet::new()
         .run_until(async {
+            // Every Settings entry point brings its parts together before a
+            // window opens (`ui::main!`'s init does for the app); the root
+            // definition mounts the core shell, which alone knows only
+            // Settings' own part and so would publish no area's rows.
+            settings::install();
             let directions = Arc::new(Mutex::new(Vec::new()));
             tracing::subscriber::set_global_default(KeyboardReadBridgeProbe(directions.clone())).unwrap();
             let env = Environment::with_owner_initializer(|path| {
@@ -46,7 +51,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     let mut document = automerge::AutoCommit::new();
                     assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, room, Some(room)));
                     Ok(vec![tilo_peer_state::SeedDocument {
-                        app_id: definition.app_id.into(), record_id: record.as_str().into(),
+                        app_id: definition.app_id().into(), record_id: record.as_str().into(),
                         kind: definition.record_kind.as_str().into(), bytes: document.save(),
                     }])
                 })
@@ -96,7 +101,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             cache
                 .hydrate(
                     StorageKey::Record {
-                        package: definition.app_id.into(),
+                        package: definition.app_id().into(),
                         workspace: env.route.cluster_id.clone(),
                         record: record.as_str().into(),
                     },
@@ -106,7 +111,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 .unwrap();
             let mut owners = RecordOwners::portable(cache.clone());
             let records = owners
-                .open(definition.app_id, &env.route.cluster_id)
+                .open(definition.app_id(), &env.route.cluster_id)
                 .unwrap();
             let views = Rc::new(
                 ui::application_view::InstanceViewStore::portable(cache, &env.route.cluster_id)
@@ -117,9 +122,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 reveal: None,
             };
             let principal = principal_id_for_root(env.cert.user_public_key);
-            let permissions = Rc::new(RefCell::new(
+            let permissions = ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
-            ));
+            );
             let context = HostContext::prepare(
                 definition,
                 HostContextInputs {

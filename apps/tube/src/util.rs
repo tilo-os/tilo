@@ -20,6 +20,17 @@ pub fn human_views(n: u64) -> String {
     )
 }
 
+/// The height a quality choice allows (`"480p"` is `Some(480)`), or `None`
+/// for `"auto"` and anything that is not a height: then the best available
+/// stream is the answer.
+pub fn quality_height(quality: &str) -> Option<u32> {
+    quality
+        .trim()
+        .strip_suffix('p')
+        .and_then(|height| height.parse().ok())
+        .filter(|height: &u32| *height > 0)
+}
+
 /// Seconds → `mm:ss` always two-field, used by the scrubber time labels.
 pub fn clock(secs: f64) -> String {
     // Clamped non-negative immediately above; truncating the fractional
@@ -36,6 +47,16 @@ pub fn clock(secs: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quality_label_is_the_height_a_source_must_not_exceed() {
+        assert_eq!(quality_height("720p"), Some(720));
+        assert_eq!(quality_height("1080p"), Some(1080));
+        assert_eq!(quality_height("480p"), Some(480));
+        // "auto" asks for the best the source has, not for a height.
+        assert_eq!(quality_height("auto"), None);
+        assert_eq!(quality_height(""), None);
+    }
 
     #[test]
     fn human_count_thresholds() {

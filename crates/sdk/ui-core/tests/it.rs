@@ -21,6 +21,8 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "accessibility_geometry.rs"]
+mod accessibility_geometry;
 #[cfg(unix)]
 #[path = "agent_edit_is_its_own_undo_boundary.rs"]
 mod agent_edit_is_its_own_undo_boundary;
@@ -71,6 +73,8 @@ mod fractional_scale_render;
 mod ghost_cursor_render_test;
 #[path = "group_row_visual_journey.rs"]
 mod group_row_visual_journey;
+#[path = "headless_app_test.rs"]
+mod headless_app_test;
 #[path = "host_entry_points.rs"]
 mod host_entry_points;
 #[path = "immersive_widget_geometry.rs"]
@@ -83,6 +87,8 @@ mod large_document_transfer;
 #[cfg(unix)]
 #[path = "large_frame_reassembly.rs"]
 mod large_frame_reassembly;
+#[path = "layout_walk_lists_each_child_once.rs"]
+mod layout_walk_lists_each_child_once;
 #[path = "link_popover_renders.rs"]
 mod link_popover_renders;
 #[cfg(unix)]
@@ -92,6 +98,8 @@ mod live_text_sync;
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
 mod menu_highlight_render;
+#[path = "menu_material_contrast.rs"]
+mod menu_material_contrast;
 #[path = "mouse_navigation_test.rs"]
 mod mouse_navigation_test;
 #[path = "multi_user_session.rs"]
@@ -100,6 +108,8 @@ mod multi_user_session;
 mod overlay_test;
 #[path = "permission_context.rs"]
 mod permission_context;
+#[path = "placed_pointers_test.rs"]
+mod placed_pointers_test;
 #[path = "presence_context.rs"]
 mod presence_context;
 #[path = "presence_experience_test.rs"]

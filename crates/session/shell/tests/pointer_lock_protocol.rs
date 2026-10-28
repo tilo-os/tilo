@@ -124,7 +124,6 @@ impl DerefMut for Harness {
 impl Harness {
     fn new() -> Self {
         let wl = wayland::Harness::new();
-        // The chrome reads the very tree protocol callbacks adopt into.
         let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
         Self { wl, fb }
     }

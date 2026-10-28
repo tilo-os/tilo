@@ -142,7 +142,6 @@ pub enum Envelope {
     /// 2. Fans it out to every other peer currently subscribed.
     /// 3. Queues it for every other member device that is offline.
     Delta {
-        /// Workspace id.
         workspace_id: u64,
         /// Author device pubkey (redundant with the peer's cert on
         /// this connection but included so a fan-out recipient can
@@ -164,7 +163,6 @@ pub enum Envelope {
     /// positions, "user is here" markers, typing indicators). Not
     /// persisted; if no subscribers exist, the relay drops it.
     Presence {
-        /// Workspace id.
         workspace_id: u64,
         /// Peer-defined presence payload. The relay never inspects
         /// the bytes.
@@ -176,7 +174,6 @@ pub enum Envelope {
     /// deltas the relay is about to flush from the peer's
     /// store-and-forward queue.
     Ready {
-        /// Workspace id.
         workspace_id: u64,
         /// Number of pending deltas queued for this peer that the
         /// relay is about to flush.
@@ -186,7 +183,6 @@ pub enum Envelope {
     /// The relay's response to a subscribe that failed — e.g.
     /// workspace not bound here, peer not a member.
     NotAuthorised {
-        /// Workspace id.
         workspace_id: u64,
         /// Human-readable reason (for tracing / logging).
         reason: String,
@@ -226,7 +222,6 @@ pub enum Envelope {
     /// authoritative doc converges the peer regardless of what the
     /// queue delivered — run on subscribe, periodically, or on demand.
     SyncRequest {
-        /// Workspace id.
         workspace_id: u64,
         /// Automerge change hashes the requester already has (its
         /// `get_heads()`), each a 32-byte hash. An empty vec means "I
@@ -240,7 +235,6 @@ pub enum Envelope {
     /// requester is already up to date, or the workspace is not
     /// materialized on this host (unpinned).
     SyncResponse {
-        /// Workspace id.
         workspace_id: u64,
         /// Concatenated Automerge changes the requester was missing.
         #[serde(with = "serde_bytes")]
@@ -277,7 +271,6 @@ pub enum Envelope {
     /// addressed device is not connected to this workspace, the envelope
     /// version is unknown, or nothing here serves apps.
     RemoteActionUndeliverable {
-        /// Workspace id of the undelivered envelope.
         workspace_id: u64,
         /// The device it was addressed to.
         to_device_public_key: [u8; 32],
@@ -292,7 +285,6 @@ pub enum Envelope {
     /// [`Envelope::CommitRefused`]. Only the author sees either answer, so
     /// peers that predate these variants never receive them.
     Commit {
-        /// Workspace id.
         workspace_id: u64,
         /// Author-chosen id echoed in the answer. Resending the same commit
         /// after a reconnect reuses it.
@@ -309,7 +301,6 @@ pub enum Envelope {
     /// The host persisted commit `op` of this connection. `seq` is the
     /// host's order for the workspace: later commits get larger values.
     Committed {
-        /// Workspace id.
         workspace_id: u64,
         /// The commit's id.
         op: [u8; 16],
@@ -320,7 +311,6 @@ pub enum Envelope {
     /// The host did not admit commit `op`. Nothing was persisted or fanned
     /// out.
     CommitRefused {
-        /// Workspace id.
         workspace_id: u64,
         /// The commit's id.
         op: [u8; 16],
@@ -348,7 +338,6 @@ pub enum Envelope {
     /// the authenticated connection, forwards it to the other live members
     /// and never stores it.
     Live {
-        /// Workspace id.
         workspace_id: u64,
         /// Publishing device, stamped by the host. Whatever a sender puts
         /// here is overwritten.
@@ -360,9 +349,7 @@ pub enum Envelope {
 
     /// A device joined (`active`) or left the workspace's live plane.
     LiveMember {
-        /// Workspace id.
         workspace_id: u64,
-        /// The device.
         device_public_key: [u8; 32],
         /// Whether it is now a live member.
         active: bool,
@@ -374,7 +361,6 @@ pub enum Envelope {
     /// position, and then follows the subscriber's durable deliveries with
     /// `Position`s. Sent only to a host that advertised resumable sessions.
     SubscribeFrom {
-        /// Workspace id.
         workspace_id: u64,
         /// The last position received for this workspace, if any.
         position: Option<Vec<u8>>,
@@ -384,9 +370,7 @@ pub enum Envelope {
     /// host-authenticated; present it to [`Envelope::SubscribeFrom`] after
     /// a reconnect. Only subscribers that used `SubscribeFrom` receive it.
     Position {
-        /// Workspace id.
         workspace_id: u64,
-        /// The position.
         position: Vec<u8>,
     },
 
@@ -402,7 +386,6 @@ pub enum Envelope {
     /// for a snapshot of it and a
     /// [`crate::compaction::CoverageStatement`]. Sent only to volunteers.
     CompactRequest {
-        /// Workspace id.
         workspace_id: u64,
         /// Echoed in the statement.
         request: [u8; 16],
@@ -417,7 +400,6 @@ pub enum Envelope {
     /// A member's answer to [`Envelope::CompactRequest`], sent after the
     /// snapshot's commits.
     Compacted {
-        /// Workspace id.
         workspace_id: u64,
         /// Encoded [`crate::compaction::CoverageStatement`].
         #[serde(with = "serde_bytes")]
@@ -434,7 +416,6 @@ pub enum Envelope {
     /// administrator. Answered with [`Envelope::VoiceCallResult`].
     /// Sent only to a host that advertised voice.
     VoiceCall {
-        /// Workspace id.
         workspace_id: u64,
         /// Caller-chosen id echoed in the answer.
         request: [u8; 16],
@@ -444,7 +425,6 @@ pub enum Envelope {
 
     /// The outcome of [`Envelope::VoiceCall`] `request`.
     VoiceCallResult {
-        /// Workspace id.
         workspace_id: u64,
         /// The request's id.
         request: [u8; 16],
@@ -457,9 +437,7 @@ pub enum Envelope {
     /// as its heartbeat. Requires an accepted `Subscribe`. Answered with
     /// [`Envelope::VoiceGranted`] or [`Envelope::VoiceRefused`].
     VoiceJoin {
-        /// Workspace id.
         workspace_id: u64,
-        /// The call.
         call: [u8; 32],
         /// The participation to continue; `None` joins afresh.
         participation: Option<[u8; 32]>,
@@ -469,17 +447,13 @@ pub enum Envelope {
     /// unasked when the call's roster or this participation's directions
     /// change.
     VoiceGranted {
-        /// Workspace id.
         workspace_id: u64,
-        /// The grant.
         grant: Box<crate::voice::VoiceGrant>,
     },
 
     /// The device may not be in the call (any more).
     VoiceRefused {
-        /// Workspace id.
         workspace_id: u64,
-        /// The call.
         call: [u8; 32],
         /// Human-readable reason.
         reason: String,
@@ -487,9 +461,7 @@ pub enum Envelope {
 
     /// Leave a call.
     VoiceLeave {
-        /// Workspace id.
         workspace_id: u64,
-        /// The call.
         call: [u8; 32],
         /// The participation that ends.
         participation: [u8; 32],
@@ -504,7 +476,6 @@ pub enum Envelope {
 
     /// A room's calls as its governance records them, with who is in each.
     VoiceCallList {
-        /// Workspace id.
         workspace_id: u64,
         /// The calls, or why the room has none to list.
         result: Result<Vec<crate::voice::CallSummary>, String>,
@@ -543,7 +514,6 @@ pub enum Envelope {
 
     /// The relay sent everything it retains of an opened record.
     RecordOpened {
-        /// Workspace id.
         workspace_id: u64,
         /// The record's retained channel.
         channel: [u8; 32],
@@ -556,11 +526,8 @@ pub enum Envelope {
     /// and tells the call's participants and the room's call list when it
     /// changed. Not answered.
     VoiceShow {
-        /// Workspace id.
         workspace_id: u64,
-        /// The call.
         call: [u8; 32],
-        /// The participation.
         participation: [u8; 32],
         /// What it shows.
         showing: crate::voice::Showing,
@@ -568,6 +535,51 @@ pub enum Envelope {
 }
 
 impl Envelope {
+    /// The variant's name, for logs: what a connection was doing, without
+    /// printing what it carried.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Subscribe { .. } => "Subscribe",
+            Self::Unsubscribe { .. } => "Unsubscribe",
+            Self::Delta { .. } => "Delta",
+            Self::Presence { .. } => "Presence",
+            Self::Ready { .. } => "Ready",
+            Self::NotAuthorised { .. } => "NotAuthorised",
+            Self::Ping => "Ping",
+            Self::Pong => "Pong",
+            Self::PeerRelayHello { .. } => "PeerRelayHello",
+            Self::SyncRequest { .. } => "SyncRequest",
+            Self::SyncResponse { .. } => "SyncResponse",
+            Self::RemoteAction { .. } => "RemoteAction",
+            Self::RemoteActionUndeliverable { .. } => "RemoteActionUndeliverable",
+            Self::Commit { .. } => "Commit",
+            Self::Committed { .. } => "Committed",
+            Self::CommitRefused { .. } => "CommitRefused",
+            Self::LiveJoin { .. } => "LiveJoin",
+            Self::LiveLeave { .. } => "LiveLeave",
+            Self::Live { .. } => "Live",
+            Self::LiveMember { .. } => "LiveMember",
+            Self::SubscribeFrom { .. } => "SubscribeFrom",
+            Self::Position { .. } => "Position",
+            Self::CompactVolunteer { .. } => "CompactVolunteer",
+            Self::CompactRequest { .. } => "CompactRequest",
+            Self::Compacted { .. } => "Compacted",
+            Self::VoiceCall { .. } => "VoiceCall",
+            Self::VoiceCallResult { .. } => "VoiceCallResult",
+            Self::VoiceJoin { .. } => "VoiceJoin",
+            Self::VoiceGranted { .. } => "VoiceGranted",
+            Self::VoiceRefused { .. } => "VoiceRefused",
+            Self::VoiceLeave { .. } => "VoiceLeave",
+            Self::VoiceCalls { .. } => "VoiceCalls",
+            Self::VoiceCallList { .. } => "VoiceCallList",
+            Self::RecordContent { .. } => "RecordContent",
+            Self::OpenRecord { .. } => "OpenRecord",
+            Self::RecordOpened { .. } => "RecordOpened",
+            Self::VoiceShow { .. } => "VoiceShow",
+        }
+    }
+
     /// The workspace (relay room) this envelope belongs to, or `None` for
     /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
     ///
@@ -701,7 +713,6 @@ mod tests {
 
     #[test]
     fn frozen_voice_envelope_bytes() {
-        // These exact discriminants and fields predate browser call listings.
         let cases = [
             (
                 Envelope::VoiceJoin {

@@ -25,10 +25,6 @@ pub struct OwnershipTransferProposalV1 {
 
 impl OwnershipTransferProposalV1 {
     /// Create and sign an exact-recipient proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn new(
         workspace: String,
         proposal_id: [u8; 32],
@@ -51,10 +47,6 @@ impl OwnershipTransferProposalV1 {
     }
 
     /// Canonical bytes covered by the owner's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.ownership-transfer.proposal.v1".as_slice(),
@@ -68,20 +60,12 @@ impl OwnershipTransferProposalV1 {
     }
 
     /// Digest binding acceptance and cancellation to this complete proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn digest(&self) -> Result<[u8; 32], CanonicalError> {
         let bytes = canonical_bytes(self)?;
         Ok(Sha256::digest(bytes).into())
     }
 
     /// Verify signer, version, distinct recipient, and expiry.
-    ///
-    /// # Errors
-    ///
-    /// Returns the precise malformed, expired, or signature failure.
     pub fn verify(&self, now_unix: u64) -> Result<(), OwnershipTransferError> {
         if self.version != OWNERSHIP_TRANSFER_VERSION {
             return Err(OwnershipTransferError::UnsupportedVersion);
@@ -109,10 +93,6 @@ pub struct OwnershipTransferAcceptanceV1 {
 
 impl OwnershipTransferAcceptanceV1 {
     /// Sign acceptance of one exact proposal as its named recipient.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn new(
         proposal: &OwnershipTransferProposalV1,
         accepted_unix: u64,
@@ -130,10 +110,6 @@ impl OwnershipTransferAcceptanceV1 {
     }
 
     /// Canonical bytes covered by the recipient's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.ownership-transfer.acceptance.v1".as_slice(),
@@ -145,10 +121,6 @@ impl OwnershipTransferAcceptanceV1 {
     }
 
     /// Verify exact proposal, recipient, time bounds, and signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns the precise proposal, expiry, encoding, or signature failure.
     pub fn verify(
         &self,
         proposal: &OwnershipTransferProposalV1,
@@ -181,10 +153,6 @@ pub struct OwnershipTransferCancellationV1 {
 
 impl OwnershipTransferCancellationV1 {
     /// Sign cancellation of one exact proposal as its current owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn new(
         proposal: &OwnershipTransferProposalV1,
         cancelled_unix: u64,
@@ -202,10 +170,6 @@ impl OwnershipTransferCancellationV1 {
     }
 
     /// Canonical bytes covered by the owner's cancellation signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.ownership-transfer.cancellation.v1".as_slice(),
@@ -217,10 +181,6 @@ impl OwnershipTransferCancellationV1 {
     }
 
     /// Verify the cancellation against the exact pending proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for mismatched records, encoding, or signature.
     pub fn verify(
         &self,
         proposal: &OwnershipTransferProposalV1,
@@ -250,10 +210,6 @@ impl OwnershipTransferAuditV1 {
     /// The owner's proposal signature is an explicit authorization for this
     /// automatic commit before expiry; the recipient signature binds the
     /// resulting commit to the same proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either signed record fails verification.
     pub fn new(
         proposal: OwnershipTransferProposalV1,
         acceptance: OwnershipTransferAcceptanceV1,
@@ -270,10 +226,6 @@ impl OwnershipTransferAuditV1 {
     }
 
     /// Canonical bytes retained as the immutable governance audit record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.ownership-transfer.commit.v1".as_slice(),
@@ -288,10 +240,6 @@ impl OwnershipTransferAuditV1 {
     /// incoming owner's acceptance. Their successful verification is the
     /// commit rule; cancellation and acceptance ordering is resolved by the
     /// durable workspace state transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns the precise acceptance, encoding, or signature failure.
     pub fn verify(&self) -> Result<(), OwnershipTransferError> {
         if self.version != OWNERSHIP_TRANSFER_VERSION {
             return Err(OwnershipTransferError::UnsupportedVersion);

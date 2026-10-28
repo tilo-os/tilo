@@ -14,9 +14,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use shell::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
 use shell::compositor::state::{ClientState, State};
-use shell::wayland::color_management::{ColorManagementSurfaceData, surface_current_colorimetry};
+use tilo_wayland_ext::color_management::{ColorManagementSurfaceData, surface_current_colorimetry};
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
@@ -449,7 +449,6 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
             "compositor's SurfaceData did not record the attached BT.2020/PQ image description"
         );
 
-        // SurfaceData is consumed indirectly via `surface_current_colorimetry`.
         let _ = std::marker::PhantomData::<ColorManagementSurfaceData>;
     }
 }

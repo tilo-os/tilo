@@ -15,6 +15,8 @@
 //! - [`end`]: ending a process without racing pid reuse;
 //! - [`hub`]: subscriptions, served by one thread that runs only while
 //!   someone subscribes;
+//! - [`storage`]: the machine's block devices and each drive's health,
+//!   answered once per request;
 //! - [`server`]: the session's socket, behind the launcher's handoff;
 //! - [`client`]: the app's side.
 //!
@@ -35,6 +37,7 @@ pub mod probe;
 pub mod protocol;
 #[cfg(unix)]
 pub mod server;
+pub mod storage;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;

@@ -111,7 +111,10 @@ impl Recovery {
                 now,
             )
             .unwrap();
-        let cp1 = owner.durable_bootstrap_messages(key, now, 1).unwrap();
+        let cp1 = owner
+            .publication_mut()
+            .durable_bootstrap_messages(key, now, 1)
+            .unwrap();
         let observer = owner.clone();
         let NeighbourMsg::AppDocument { envelope: op, .. } = &cp1[1] else {
             panic!()
@@ -134,7 +137,10 @@ impl Recovery {
         owner
             .admit_local_app_document("selector.app", "one", *op, now)
             .unwrap();
-        let cp2 = owner.durable_bootstrap_messages(key, now, 2).unwrap();
+        let cp2 = owner
+            .publication_mut()
+            .durable_bootstrap_messages(key, now, 2)
+            .unwrap();
         let mut b = automerge::AutoCommit::load(&baseline).unwrap();
         b.set_actor(automerge::ActorId::from(vec![72]));
         let heads = b.get_heads();
@@ -309,86 +315,129 @@ async fn recovery_serial_refused_cut_keeps_connection_and_protected_tail() {
     assert!(case.fixture.recipient_disconnected.try_recv().is_err());
 }
 
-#[tokio::test]
-async fn recovery_hydration_preserves_same_sender_replacement_lease() {
-    for count in [1, 2] {
-        Box::pin(hydration_replacement(count)).await;
+// Each case of the recovery tests below is a test of its own: a case takes
+// seconds of barriers on a busy CI disk, and one test looping over all of
+// them took minutes alone.
+mod recovery_hydration_preserves_same_sender_replacement_lease {
+    use super::hydration_replacement;
+
+    #[tokio::test]
+    async fn one_document_failing_after_current() {
+        Box::pin(hydration_replacement(1, true, true)).await;
+    }
+
+    #[tokio::test]
+    async fn one_document_reading() {
+        Box::pin(hydration_replacement(1, false, false)).await;
+    }
+
+    #[tokio::test]
+    async fn one_document_failing_its_read() {
+        Box::pin(hydration_replacement(1, true, false)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents_failing_after_current() {
+        Box::pin(hydration_replacement(2, true, true)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents_reading() {
+        Box::pin(hydration_replacement(2, false, false)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents_failing_their_read() {
+        Box::pin(hydration_replacement(2, true, false)).await;
     }
 }
-async fn hydration_replacement(count: usize) {
-    for (fail_after_prefix, before_result) in [(true, true), (false, false), (true, false)] {
-        let mut case = Box::pin(Recovery::with_document_count(count)).await;
-        case.prepare().await;
-        let operation = if before_result {
-            "shell-after-current"
-        } else {
-            "shell-recovery-read"
-        };
-        let (release, reached) =
-            crate::store::test_barrier::install(case.fixture.store.root(), operation);
-        case.complete().await;
-        tilo_test_env::within("the persistence hook to be reached", reached)
-            .await
+async fn hydration_replacement(count: usize, fail_after_prefix: bool, before_result: bool) {
+    let mut case = Box::pin(Recovery::with_document_count(count)).await;
+    case.prepare().await;
+    let operation = if before_result {
+        "shell-after-current"
+    } else {
+        "shell-recovery-read"
+    };
+    let (release, reached) =
+        crate::store::test_barrier::install(case.fixture.store.root(), operation);
+    case.complete().await;
+    tilo_test_env::within("the persistence hook to be reached", reached)
+        .await
+        .unwrap();
+    let first = if before_result {
+        assert!(case.fixture.recipient_rx.try_recv().is_err());
+        None
+    } else {
+        Some(
+            case.fixture
+                .recipient_rx
+                .try_recv()
+                .expect("first recovery frame queued"),
+        )
+    };
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (tx, mut rx) = mpsc::channel(32);
+    {
+        let mut runtime = case.fixture.workspace.lock().await;
+        let old = runtime
+            .state_sessions
+            .get_mut(&case.fixture.recipient.device_public_key)
             .unwrap();
-        let first = if before_result {
-            assert!(case.fixture.recipient_rx.try_recv().is_err());
-            None
-        } else {
-            Some(
-                case.fixture
-                    .recipient_rx
-                    .try_recv()
-                    .expect("first recovery frame queued"),
-            )
-        };
-        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let (tx, mut rx) = mpsc::channel(32);
-        {
-            let mut runtime = case.fixture.workspace.lock().await;
-            let old = runtime
-                .state_sessions
-                .get_mut(&case.fixture.recipient.device_public_key)
-                .unwrap();
-            old.live.store(false, std::sync::atomic::Ordering::SeqCst);
-            old.live = live.clone();
-            old.tx = tx;
-        }
-        let fault = fail_after_prefix
-            .then(|| crate::store::test_barrier::fail(case.fixture.store.root(), operation));
-        drop(release);
-        case.fixture.drained_wait().await;
-        drop(fault);
-        let mut wire = Vec::new();
-        if let Some(first) = first {
-            case.fixture.write(first, &mut wire).await;
-        }
-        assert!(
-            wire.is_empty(),
-            "stale queued prefix wrote into replacement"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "old recovery leaked remainder into same-sender replacement"
-        );
-        let runtime = case.fixture.workspace.lock().await;
-        assert!(
-            runtime
-                .state_sessions
-                .get(&case.fixture.recipient.device_public_key)
-                .is_some_and(|s| Arc::ptr_eq(&s.live, &live)),
-            "partial recovery fenced replacement lease"
-        );
-        assert!(live.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(case.fixture.recipient_disconnected.try_recv().is_err());
+        old.live.store(false, std::sync::atomic::Ordering::SeqCst);
+        old.live = live.clone();
+        old.tx = tx;
     }
+    let fault = fail_after_prefix
+        .then(|| crate::store::test_barrier::fail(case.fixture.store.root(), operation));
+    drop(release);
+    case.fixture.drained_wait().await;
+    drop(fault);
+    let mut wire = Vec::new();
+    if let Some(first) = first {
+        case.fixture.write(first, &mut wire).await;
+    }
+    assert!(
+        wire.is_empty(),
+        "stale queued prefix wrote into replacement"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "old recovery leaked remainder into same-sender replacement"
+    );
+    let runtime = case.fixture.workspace.lock().await;
+    assert!(
+        runtime
+            .state_sessions
+            .get(&case.fixture.recipient.device_public_key)
+            .is_some_and(|s| Arc::ptr_eq(&s.live, &live)),
+        "partial recovery fenced replacement lease"
+    );
+    assert!(live.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(case.fixture.recipient_disconnected.try_recv().is_err());
 }
 
-#[tokio::test]
-async fn recovery_partial_read_failure_fences_current_and_preserves_replay() {
-    for count in [1, 2] {
-        for invalidate_source in [false, true] {
-            Box::pin(partial_recovery_failure(invalidate_source, count)).await;
-        }
+mod recovery_partial_read_failure_fences_current_and_preserves_replay {
+    use super::partial_recovery_failure;
+
+    #[tokio::test]
+    async fn one_document_failing_its_read() {
+        Box::pin(partial_recovery_failure(false, 1)).await;
+    }
+
+    #[tokio::test]
+    async fn one_document_losing_its_source() {
+        Box::pin(partial_recovery_failure(true, 1)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents_failing_their_read() {
+        Box::pin(partial_recovery_failure(false, 2)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents_losing_their_source() {
+        Box::pin(partial_recovery_failure(true, 2)).await;
     }
 }
 async fn partial_recovery_failure(invalidate_source: bool, count: usize) {
@@ -438,10 +487,15 @@ async fn partial_recovery_failure(invalidate_source: bool, count: usize) {
     case.prove(&frames);
 }
 
-#[tokio::test]
-async fn recovery_cursor_holds_owner_until_done_and_queued_payloads_survive_gc() {
-    for count in [1, 2] {
-        Box::pin(recovery_gc(count)).await;
+mod recovery_cursor_holds_owner_until_done_and_queued_payloads_survive_gc {
+    #[tokio::test]
+    async fn one_document() {
+        Box::pin(super::recovery_gc(1)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents() {
+        Box::pin(super::recovery_gc(2)).await;
     }
 }
 async fn recovery_gc(count: usize) {
@@ -517,10 +571,15 @@ async fn recovery_gc(count: usize) {
     assert!(case.fixture.recipient_disconnected.try_recv().is_err());
 }
 
-#[tokio::test]
-async fn recovery_active_replay_pending_precedes_ready_and_later_live() {
-    for count in [1, 2] {
-        Box::pin(active_recovery(count)).await;
+mod recovery_active_replay_pending_precedes_ready_and_later_live {
+    #[tokio::test]
+    async fn one_document() {
+        Box::pin(super::active_recovery(1)).await;
+    }
+
+    #[tokio::test]
+    async fn two_documents() {
+        Box::pin(super::active_recovery(2)).await;
     }
 }
 async fn active_recovery(count: usize) {

@@ -69,19 +69,11 @@ pub enum RecordAccessRegistryError {
 
 impl RecordAccessRegistry {
     /// Construct a registry using the system monotonic clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when capacity or TTL lies outside its configured bound.
     pub fn new(capacity: usize, ttl_ms: u64) -> Result<Self, RecordAccessRegistryError> {
         Self::with_clock(capacity, ttl_ms, Arc::new(MonotonicClock))
     }
 
     /// Construct a registry using an injected monotonic clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when capacity or TTL lies outside its configured bound.
     pub fn with_clock(
         capacity: usize,
         ttl_ms: u64,
@@ -393,7 +385,6 @@ mod tests {
 
     #[test]
     fn record_lookups_return_exact_records_only_to_the_current_bound_subject() {
-        // Phase `exact_records_are_returned_never_hash_authority`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(4, 1_000);
@@ -410,7 +401,6 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
-        // Phase `grant_and_device_revocation_apply_on_next_lookup`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(4, 1_000);
@@ -432,7 +422,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `wrong_device_or_person_gets_no_records`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(2, 1_000);
@@ -457,7 +446,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `device_only_lookup_recovers_person_from_session_and_rechecks_revocation`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(2, 1_000);
@@ -487,7 +475,6 @@ mod tests {
 
     #[test]
     fn the_session_registry_is_bounded_expiring_and_validated() {
-        // Phase `bound_evicts_oldest_session_deterministically`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(2, 1_000);
@@ -504,7 +491,6 @@ mod tests {
             assert!(readable.contains(&second));
             assert!(readable.contains(&third));
         }
-        // Phase `registry_expiry_is_independent_and_fail_closed`.
         {
             let fixture = Fixture::new();
             let registry = fixture.registry(2, 50);
@@ -517,7 +503,6 @@ mod tests {
             );
             assert!(registry.is_empty());
         }
-        // Phase `concurrent_registration_and_lookup_never_exceeds_bound`.
         {
             let fixture = Arc::new(Fixture::new());
             let registry = fixture.registry(8, 1_000);
@@ -541,7 +526,6 @@ mod tests {
                     <= 8
             );
         }
-        // Phase `invalid_limits_are_rejected`.
         {
             assert!(matches!(
                 RecordAccessRegistry::new(0, 1),

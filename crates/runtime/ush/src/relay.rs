@@ -46,7 +46,7 @@ pub struct RelayPeer {
     #[serde(skip)]
     pub address: Option<String>,
     /// Whether the relay last said a worker runs environment sessions:
-    /// its newest answer ([`relay_offers`]), else its registration.
+    /// its newest answer ([`load_offers`]), else its registration.
     #[serde(skip)]
     pub runs_environments: bool,
     /// When this device last asked the relay, Unix milliseconds; 0 when it
@@ -101,12 +101,8 @@ pub fn relays(identity: &IdentityPaths) -> Vec<RelayPeer> {
     relays_with_offers(&path, &user, &offers)
 }
 
-/// [`relays`] from one registry file, for `user`.
-pub fn relays_in(path: &Path, user: &[u8; 32]) -> Vec<RelayPeer> {
-    relays_with_offers(path, user, &tilo_relay_protocol::RelayOffers::new())
-}
-
-/// [`relays_in`], with what the relays said since they were registered.
+/// [`relays`] from one registry file, for `user`, with what the relays said
+/// since they were registered.
 pub fn relays_with_offers(
     path: &Path,
     user: &[u8; 32],
@@ -322,7 +318,6 @@ pub fn bridge_command(
     cmd
 }
 
-/// One status line from the bridge.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BridgeStatus {
@@ -339,17 +334,18 @@ pub enum BridgeStatus {
         images: std::collections::BTreeMap<String, String>,
     },
     Ended {
+        /// The guest's exit code, when it exited.
         #[serde(default)]
         code: Option<i32>,
         #[serde(default)]
         reason: Option<String>,
+        /// Another terminal took the session over; it runs on there.
+        #[serde(default)]
+        superseded: bool,
     },
 }
 
 /// A pipe whose write end the bridge gets as descriptor 3.
-///
-/// # Errors
-/// Returns the pipe's creation error.
 pub fn status_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: `fds` holds the two descriptors pipe2 creates.
@@ -443,7 +439,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let relays = relays_in(&path, &me);
+        let relays = relays_with_offers(&path, &me, &tilo_relay_protocol::RelayOffers::new());
         assert_eq!(relays.len(), 2);
         let home = relays.iter().find(|peer| peer.label == "Home").unwrap();
         assert_eq!(home.relay, relay);
@@ -456,7 +452,14 @@ mod tests {
             .collect();
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].label, "Home");
-        assert!(relays_in(&dir.path().join("absent.json"), &me).is_empty());
+        assert!(
+            relays_with_offers(
+                &dir.path().join("absent.json"),
+                &me,
+                &tilo_relay_protocol::RelayOffers::new(),
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -498,22 +501,34 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let slow = dir.path().join("slow-asker");
-        std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
-        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let started = std::time::Instant::now();
-        assert!(ask_in_background(
+        let release = dir.path().join("release");
+        // The relays answer only once the test releases them.
+        std::fs::write(
             &slow,
-            dir.path(),
-            &dir.path().join("offers.json")
-        ));
+            format!(
+                "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+                release.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (answering, answer) = std::sync::mpsc::channel();
+        let (asker, root) = (slow.clone(), dir.path().to_path_buf());
+        std::thread::spawn(move || {
+            let _ = answering.send(ask_in_background(&asker, &root, &root.join("offers.json")));
+        });
         assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "the list is answered without waiting for the relays"
+            tilo_test_env::recv(
+                "the list to be answered without waiting for the relays",
+                &answer
+            ),
+            "the first ask starts"
         );
         assert!(
             !ask_in_background(&slow, dir.path(), &dir.path().join("offers.json")),
             "one ask at a time"
         );
+        std::fs::write(&release, b"").unwrap();
     }
 
     #[test]
@@ -566,7 +581,7 @@ mod tests {
         .unwrap();
         let mut reader = StatusReader::new(read);
         assert_eq!(
-            reader.next(Some(Duration::from_secs(1))),
+            reader.next(Some(tilo_test_env::hang_bound())),
             Some(BridgeStatus::Session {
                 session: "00ff".into(),
                 resumed: false

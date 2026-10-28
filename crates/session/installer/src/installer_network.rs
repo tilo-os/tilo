@@ -247,12 +247,6 @@ impl InstallerNetwork {
     /// Validate and start a Wi-Fi connection. The password is moved into a
     /// zeroizing buffer before the worker is launched and never appears in
     /// argv or an external-event payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if another network operation is active, no visible
-    /// network is selected, the selected network is already connected, or a
-    /// secured network has no password.
     pub fn start_connect(
         &mut self,
         password: Zeroizing<String>,
@@ -405,7 +399,6 @@ mod tests {
 
     #[test]
     fn network_snapshot_orders_networks_and_guides_offline_installs() {
-        // Phase `snapshot_keeps_wifi_when_connectivity_check_fails`.
         {
             let backend = FakeBackend {
                 connectivity: Err("check disabled".to_string()),
@@ -421,7 +414,6 @@ mod tests {
             );
             assert!(snapshot.guidance().contains("could not be confirmed"));
         }
-        // Phase `portal_uri_is_requested_only_for_portal_state`.
         {
             let backend = FakeBackend {
                 connectivity: Ok(ConnectivityState::Portal),
@@ -435,7 +427,6 @@ mod tests {
             );
             assert!(snapshot.guidance().contains("sign-in page"));
         }
-        // Phase `networks_sort_connected_then_by_signal`.
         {
             let mut networks = vec![
                 wifi("Weak", 1, true, false),
@@ -449,7 +440,6 @@ mod tests {
                 .collect();
             assert_eq!(names, vec!["Connected", "Strong", "Weak"]);
         }
-        // Phase `offline_guidance_explicitly_preserves_install`.
         {
             let backend = FakeBackend {
                 connectivity: Ok(ConnectivityState::Offline),

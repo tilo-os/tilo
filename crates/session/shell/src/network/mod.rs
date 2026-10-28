@@ -2,6 +2,7 @@ pub mod actor;
 pub(crate) mod agent_questions;
 pub mod behaviour;
 pub mod encoder;
+pub mod governor_join;
 pub mod hub;
 pub mod identity;
 pub mod input_firewall;
@@ -10,9 +11,10 @@ pub mod media_caps;
 pub(crate) mod native_media;
 pub mod private_messages;
 pub mod protocol;
+pub(crate) mod sealed_picture;
 pub use tilo_endpoint_reachability as reachability;
 pub mod replica;
-pub mod streaming;
+mod streaming;
 pub mod surface_stream;
 pub mod wire_record;
 pub mod workspace_control;
@@ -27,9 +29,6 @@ pub use invite::{PeerInviteToken, accept_invite_into, make_invite_token, validat
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
 pub use reachability::Reachability;
 pub use replica::WorkspaceTreeReplica;
-pub use streaming::{
-    InputEvent, RemoteAction, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle,
-};
 pub use workspace_control::{
     WorkspaceControlCloseReason, WorkspaceControlSession, WorkspaceControlStatus,
     WorkspaceControlUpdate,

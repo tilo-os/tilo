@@ -20,7 +20,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-firstboot-files");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-firstboot-files")
+}
 const SOURCE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../os/usr/libexec/tilo-firstboot-user"
@@ -94,8 +96,6 @@ fn script(replacements: &[(&str, String, usize)]) -> String {
     source
 }
 
-// ---- Interruption and retry ------------------------------------------------
-
 /// What the transaction stubs share: the fixture root, the failure the case
 /// injects, and the checks that delivery only ever runs on a locked, expired
 /// account. A failing stub can also signal the script, as systemd would.
@@ -126,7 +126,6 @@ after() {
 "#;
 
 const TRANSACTION_TOOLS: &[(&str, &str)] = &[
-    ("sync", r#"fail intent-sync; exec /usr/bin/sync "$@""#),
     ("id", r#"[ -e "$r/shadow" ]"#),
     (
         "stat",
@@ -202,10 +201,20 @@ impl Transaction {
             );
         }
         attesting_helper(r);
+        // The built helper, unless the case fails the intent's publication,
+        // whose syncs are what make the intent durable.
+        write_tool(
+            r,
+            "files-helper",
+            &format!(
+                "{TRANSACTION_COMMON}[ \"$1\" != intent ] || fail intent\nexec {:?} \"$@\"",
+                helper().display().to_string()
+            ),
+        );
         let display = |path: &str| r.join(path).display().to_string();
         let source = script(&[
-            ("/etc/tilo", display("etc"), 9),
-            ("/var/lib/tilo", display("state"), 12),
+            ("/etc/tilo", display("etc"), 10),
+            ("/var/lib/tilo", display("state"), 17),
             ("/var/home", display("home"), 2),
             (
                 r#""/home/$user""#,
@@ -217,7 +226,11 @@ impl Transaction {
                 format!("seed_helper={}", display("attesting-seeds")),
                 1,
             ),
-            (HELPER_LINE, format!(r#"FILES_HELPER="{HELPER}""#), 1),
+            (
+                HELPER_LINE,
+                format!(r#"FILES_HELPER="{}""#, display("files-helper")),
+                1,
+            ),
         ]);
         fs::write(r.join("firstboot"), source).unwrap();
         fixture
@@ -318,7 +331,6 @@ fn every_failed_delivery_is_locked_and_retryable() {
         );
         assert!(!t.credential().exists(), "{stage}");
         assert!(!t.path("etc/install-user.transaction").exists(), "{stage}");
-        // Reset just this completed synthetic transaction for the next case.
         fs::remove_file(t.path("shadow")).unwrap();
         fs::remove_file(t.path("expiry")).unwrap();
         t.seed();
@@ -409,7 +421,7 @@ fn intent_does_not_adopt_wrong_shadow() {
 #[test]
 fn intent_is_durable_before_account_creation() {
     let t = Transaction::new();
-    assert!(!t.boot("intent-sync").status.success());
+    assert!(!t.boot("intent").status.success());
     assert!(!t.path("shadow").exists());
     assert!(t.credential().exists());
     assert!(t.boot("").status.success());
@@ -490,8 +502,6 @@ fn home_symlink_cannot_unlock_or_modify_outside() {
     assert_eq!(t.read("expiry"), "1970-01-02");
 }
 
-// ---- Credential transport --------------------------------------------------
-
 /// Only the credential-file ownership view is mocked; the production parser,
 /// account creation branches and cleanup run unchanged.
 const TRANSPORT_TOOLS: &[(&str, &str)] = &[
@@ -566,7 +576,11 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
             format!(r#""{r}/var-home/$user""#),
             2,
         ),
-        (HELPER_LINE, format!(r#"FILES_HELPER="{HELPER}""#), 1),
+        (
+            HELPER_LINE,
+            format!(r#"FILES_HELPER="{}""#, helper().display()),
+            1,
+        ),
         (
             "seed_helper=/etc/tilo/firstboot-home-seeds",
             format!("seed_helper={r}/attesting-seeds"),

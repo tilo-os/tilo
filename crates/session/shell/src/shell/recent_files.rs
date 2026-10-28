@@ -167,10 +167,6 @@ pub fn mime_type(path: &Path) -> String {
 
 /// Add `path` to the bookmark file `xbel`, stamped `now`. Does nothing for a
 /// path [`is_publishable`] refuses.
-///
-/// # Errors
-///
-/// Returns the I/O error that prevented the file from being replaced.
 pub fn record(xbel: &Path, home: &Path, path: &Path, now: &str) -> std::io::Result<bool> {
     if !is_publishable(path, home) {
         return Ok(false);

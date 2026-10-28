@@ -11,6 +11,8 @@ fn sample() -> Plan {
             accounts: false,
         },
         home_policy: HomePolicy::Copy,
+        home_exclusions: Vec::new(),
+        deferred_handoff: None,
         home: Home {
             volume: SourceVolume {
                 disk_guid: "11111111-1111-4111-8111-111111111111".into(),
@@ -57,4 +59,48 @@ fn native_application_inventory_is_not_silently_accepted() {
     plan.categories.flatpak = true;
     plan.flatpak_inventory = Some(serde_json::json!({}));
     assert_eq!(plan.bytes().unwrap_err().kind(), io::ErrorKind::Unsupported);
+}
+
+#[test]
+fn deferred_handoff_keeps_released_plans_and_binds_the_same_uid_1000_source() {
+    let mut plan = sample();
+    let released = plan.bytes().unwrap();
+    assert!(
+        !serde_json::from_slice::<serde_json::Value>(&released)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("deferred_handoff")
+    );
+    let base = plan.base_digest().unwrap();
+    plan.attach_deferred_handoff(DeferredHandoff {
+        schema: 1,
+        original_uid: DEFERRED_ORIGINAL_UID,
+        journal_sha256: [7; 32],
+    })
+    .unwrap();
+    assert_eq!(plan.base_digest().unwrap(), base);
+    let parsed = Plan::parse(&plan.bytes().unwrap()).unwrap();
+    assert_eq!(parsed.deferred_handoff, plan.deferred_handoff);
+    for handoff in [
+        DeferredHandoff {
+            schema: 2,
+            original_uid: DEFERRED_ORIGINAL_UID,
+            journal_sha256: [7; 32],
+        },
+        DeferredHandoff {
+            schema: 1,
+            original_uid: 1001,
+            journal_sha256: [7; 32],
+        },
+        DeferredHandoff {
+            schema: 1,
+            original_uid: DEFERRED_ORIGINAL_UID,
+            journal_sha256: [0; 32],
+        },
+    ] {
+        let mut bad = sample();
+        bad.deferred_handoff = Some(handoff);
+        assert!(bad.bytes().is_err());
+    }
 }

@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const SERVICE: &str = env!("CARGO_BIN_EXE_tilo-secret-service");
+fn service() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-secret-service")
+}
 const NAME: &str = "org.freedesktop.secrets";
 
 /// A private session bus and the directories every client of it uses.
@@ -103,14 +105,14 @@ impl Session {
 
     fn start_service(&mut self) {
         let service = self
-            .command(SERVICE)
+            .command(service())
             .args(["serve", "--identity-root"])
             .arg(self.path("identity"))
             .stdout(Stdio::null())
             .spawn()
             .expect("the service binary starts");
         self.service = Some(service);
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let owned = self
                 .command("busctl")

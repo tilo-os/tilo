@@ -114,6 +114,31 @@ class AppCapabilitiesTests(unittest.TestCase):
             self.problems(), ["apps/camera/tilo-app.toml: `network.htp` is not a Tilo capability"]
         )
 
+    def test_the_system_information_service_is_processes_only_for_its_process_list(self):
+        service = 'tilo-system-info = { path = "../../crates/platform/tilo-system-info" }\n'
+        self.app(
+            "disks",
+            "pub fn read(c: &Client) { let _ = c.storage(); }\n",
+            dependencies=UI + service,
+        )
+        self.app(
+            "monitor",
+            """\
+            use tilo_system_info::protocol::{ProcessStats, Snapshot};
+            pub fn rows(s: &Snapshot) -> &[ProcessStats] { &s.processes }
+            """,
+            dependencies=UI + service,
+        )
+        self.app(
+            "reaper",
+            "pub fn end(c: &Client) { let _ = c.end_process(1, 2, false); }\n",
+            dependencies=UI + service,
+        )
+        apps = self.audit()
+        self.assertEqual(set(apps["disks"].uses), {"system-info"})
+        self.assertEqual(set(apps["monitor"].uses), {"system-info", "processes"})
+        self.assertEqual(set(apps["reaper"].uses), {"system-info", "processes"})
+
     def test_the_table_names_only_tilo_caps_capabilities(self):
         table = capabilities.tomllib.loads((REPO / capabilities.TABLE).read_text())
         self.assertLessEqual(set(table["uses"]), capabilities.vocabulary(REPO))

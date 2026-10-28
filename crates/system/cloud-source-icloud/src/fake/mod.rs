@@ -78,7 +78,6 @@ pub struct Options {
     /// The account has trusted Apple devices (codes are pushed); without,
     /// codes go by SMS.
     pub trusted_devices: bool,
-    /// Advanced Data Protection is on.
     pub advanced_data_protection: bool,
     /// Accepted codes are answered 409 with a session token, as idmsa has
     /// done since mid-2026.
@@ -396,7 +395,6 @@ fn take_fault(state: &mut State) -> Option<Reply> {
     }
 }
 
-/// The value of cookie `name` in a request.
 fn cookie(request: &Request, name: &str) -> Option<String> {
     let header = request.header("cookie")?;
     crate::http::Cookies::from_header(header)

@@ -50,23 +50,6 @@ fn sync(app: &mut Framed<SettingsApp>) {
     app.sync(&state.doc, &state.root);
 }
 
-/// Navigate to `target` by clicking its sidebar row through the production
-/// path, then rebuild + re-lay-out as the host does.
-fn navigate(app: &mut Framed<SettingsApp>, target: Category) {
-    let row = crate::support::nav_row(&**app, &target.label())
-        .unwrap_or_else(|| panic!("no sidebar row for {target:?}"))
-        .rect;
-    assert!(
-        row.y0 >= 0.0 && row.y1 <= f64::from(H),
-        "navigation fixture must show {target:?}: {row:?}"
-    );
-    click_at(app, row.center());
-    sync(app);
-    assert_eq!(app.selected(), target, "click navigated to {target:?}");
-    let _ = app.take_structure_dirty();
-    relayout(app, (W, H));
-}
-
 /// The back button returns to the list and the Wi-Fi toggle stays pane-local.
 #[test]
 fn back_button_and_wifi_toggle_drive_pane_state() {
@@ -78,10 +61,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         const NH: f32 = 820.0;
         let config = crate::support::ScratchConfig::new();
         // Start drilled into a category's content screen (narrow layout).
-        let app = config
-            .app()
-            .with_category(Category::Network)
-            .with_width_hint(NW);
+        let app = config.app().with_category(Category::Network);
         let mut app = lay_out_at(app, NW, NH);
         sync(&mut app);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");
@@ -115,7 +95,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
     {
         let config = crate::support::ScratchConfig::new();
         let mut app = lay_out_at(config.app(), W, H);
-        navigate(&mut app, Category::Network);
+        assert_eq!(app.selected(), Category::Network, "opens on Network");
         let heads = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
         sync(&mut app);
         assert_eq!(
@@ -127,26 +107,34 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
 
 /// Every category is reachable by a real click and renders a non-empty
 /// content pane — the per-panel navigation guard. (Complements
-/// `category_nav.rs`'s deeper per-panel assertions; here we additionally
-/// confirm the primary CRDT key each interactive pane seeds is present.)
+/// `category_nav.rs`'s deeper per-panel assertions.) Panes render from their
+/// models and never write the window's record.
 #[test]
-fn all_panels_navigate_and_seed_their_controls() {
-    let config = crate::support::ScratchConfig::new();
+fn all_panels_navigate_and_leave_the_record_alone() {
     for &target in Category::ALL {
-        let mut app = lay_out_at(config.app(), W, H);
         if target == Category::DEFAULT {
             continue;
         }
-        navigate(&mut app, target);
-        // The pane rebuilt by navigate's final layout seeds on its next
-        // sync; run one so the seed lands before we assert on it.
-        let heads_before_idle_sync = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
-        sync(&mut app);
-        // Panes render from their models and never write the document.
+        let mut app = crate::support::window((1200, 1800));
+        let row = crate::support::window_row(&mut app, &target.label())
+            .unwrap_or_else(|| panic!("no sidebar row for {target:?}"))
+            .rect;
+        assert!(
+            row.y0 >= 0.0 && row.y1 <= f64::from(H),
+            "navigation fixture must show {target:?}: {row:?}"
+        );
+        crate::support::click_category(&mut app, target);
         assert_eq!(
-            Framed::harness_mut(&mut app).state_mut().doc.get_heads(),
-            heads_before_idle_sync,
-            "{target:?} idle sync must leave the collaborative document unchanged"
+            crate::support::selected(&mut app),
+            target,
+            "click navigated to {target:?}"
+        );
+        let heads = app.read_document(ui::tilo_resource::heads_of);
+        app.settle();
+        assert_eq!(
+            app.read_document(ui::tilo_resource::heads_of),
+            heads,
+            "{target:?} idle frames must leave the record unchanged"
         );
     }
 }

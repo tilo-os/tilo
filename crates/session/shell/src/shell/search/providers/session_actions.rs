@@ -17,11 +17,17 @@ use ui::search::FieldWeight;
 pub const PROVIDER_ID: &str = "session";
 pub const LOGOUT_ID: &str = "logout";
 
+/// The catalogue message listing the other words people use for Log out.
+const LOGOUT_KEYWORDS: &str = "search-kw-session-logout";
+
 /// The power flyout's other rows, by action id: they share its labels, and
-/// the host's session executor runs them from the chrome queue.
+/// the host's session executor runs them from the chrome queue. Each names
+/// its title, its detail and the message listing the other words people
+/// use for it ("power off", "turn off" for Shut down).
 type QueuedAction = (
     &'static str,
     os_actions::SessionAction,
+    &'static str,
     &'static str,
     &'static str,
 );
@@ -32,30 +38,35 @@ const QUEUED_ACTIONS: [QueuedAction; 5] = [
         os_actions::SessionAction::Lock,
         "power-lock",
         "power-lock-detail",
+        "search-kw-session-lock",
     ),
     (
         "switch-user",
         os_actions::SessionAction::SwitchUser,
         "power-switch-user",
         "power-switch-user-detail",
+        "search-kw-session-switch-user",
     ),
     (
         "suspend",
         os_actions::SessionAction::Suspend,
         "power-suspend",
         "power-suspend-detail",
+        "search-kw-session-suspend",
     ),
     (
         "restart",
         os_actions::SessionAction::Restart,
         "power-restart",
         "power-restart-detail",
+        "search-kw-session-restart",
     ),
     (
         "shut-down",
         os_actions::SessionAction::ShutDown,
         "power-shut-down",
         "power-shut-down-detail",
+        "search-kw-session-shut-down",
     ),
 ];
 
@@ -103,7 +114,6 @@ impl SessionActionPolicy {
         self.user_switching.set(supported);
     }
 
-    /// Whether this session offers `action` at all.
     pub fn offers(&self, action: os_actions::SessionAction) -> bool {
         use os_actions::SessionAction::{Restart, ShutDown, Suspend, SwitchUser};
         match action {
@@ -124,10 +134,6 @@ impl SessionActionPolicy {
     }
 
     /// Refuse inhibited actions before publishing an edge or touching the OS.
-    ///
-    /// # Errors
-    ///
-    /// The user-facing reason when a portal inhibitor blocks `action`.
     pub fn admit(&self, action: os_actions::SessionAction) -> Result<(), String> {
         if self.detached_from_host.get() && !self.offers(action) {
             return Err(t("search-session-not-offered"));
@@ -210,7 +216,8 @@ fn logout_contract() -> tilo_actions::ActionContract {
 /// What a tier earns for a session row. Lock, restart and shut down end
 /// what the person is doing, so they come up only for their name, or for a
 /// word they are known by typed from its start: never because a keyword is
-/// misspelt into something else, or holds the query in the middle.
+/// misspelt into something else, or holds the query in the middle. A word
+/// typed whole ranks as an action's does ([`ui::search::system::action_ranks`]).
 fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32> {
     use ui::search::MatchTier;
     if weight == FieldWeight::KEYWORD
@@ -221,7 +228,7 @@ fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32
     {
         return None;
     }
-    tier.rank_in(weight)
+    ui::search::system::action_ranks(tier, weight)
 }
 
 pub struct SessionActionsProvider {
@@ -304,22 +311,42 @@ impl SessionActionsProvider {
                         FieldWeight::SUBTITLE,
                     ),
                 ];
-                // Lock, restart, shut down: the other words for each, in
-                // every language.
+                // Lock, restart, shut down: the other words each declares,
+                // in every language.
                 fields.extend(
-                    crate::shell::i18n::words_in_every_locale(&format!(
-                        "{}session-{}",
-                        crate::shell::i18n::KEYWORD_PREFIX,
-                        row.id
-                    ))
-                    .into_iter()
-                    .map(|word| (word, FieldWeight::KEYWORD)),
+                    session_keywords(&row.id)
+                        .map(crate::shell::i18n::words_in_every_locale)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|word| (word, FieldWeight::KEYWORD)),
                 );
                 fields
             })
             .collect();
         Built { from, rows, fields }
     }
+}
+
+/// The message a session row declares its other words in.
+fn session_keywords(id: &str) -> Option<&'static str> {
+    if id == LOGOUT_ID {
+        return Some(LOGOUT_KEYWORDS);
+    }
+    QUEUED_ACTIONS
+        .iter()
+        .find(|entry| entry.0 == id)
+        .map(|entry| entry.4)
+}
+
+/// Every session action's id and the message it declares its other words
+/// in, for the check that each declares some.
+#[cfg(test)]
+pub(crate) fn declared_keywords() -> Vec<(&'static str, &'static str)> {
+    QUEUED_ACTIONS
+        .iter()
+        .map(|entry| (entry.0, entry.4))
+        .chain([(LOGOUT_ID, LOGOUT_KEYWORDS)])
+        .collect()
 }
 
 impl SearchProvider for SessionActionsProvider {
@@ -389,7 +416,7 @@ fn confirmation_params(contract: &tilo_actions::ActionContract) -> Vec<ActionPar
 
 impl SessionActionsProvider {
     fn queued_result(&self, entry: QueuedAction) -> SearchResult {
-        let (id, action, title_key, detail_key) = entry;
+        let (id, action, title_key, detail_key, _) = entry;
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
@@ -414,6 +441,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -440,6 +468,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -449,12 +478,10 @@ fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
     if chrome.session_locked() {
         return false;
     }
-    let Ok(store) = crate::shell::identity_provisioning::DiskIdentityStore::from_env() else {
-        return false;
-    };
-    store.path().parent().is_some_and(|path| {
-        crate::compositor::admin_control::authentication_session_decision(path).is_ok()
-    })
+    // Listing the actions runs on the compositor's loop: the session keeps
+    // the answer current on a worker.
+    crate::watched_identity::device_admin()
+        .unwrap_or_else(crate::watched_identity::read_device_admin)
 }
 #[cfg(target_os = "linux")]
 fn retirement_result() -> SearchResult {
@@ -507,6 +534,7 @@ fn retirement_result() -> SearchResult {
             })
         })),
         on_begin_invoke: None,
+        resource: None,
     }
 }
 
@@ -541,7 +569,6 @@ mod tests {
 
     #[test]
     fn every_power_flyout_row_is_a_typed_action_queued_for_the_session_executor() {
-        // Phase `each_row_is_exactly_addressable_with_a_contract_matching_its_risk`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -563,7 +590,6 @@ mod tests {
             }
         }
 
-        // Phase `switch_user_is_offered_only_where_the_display_manager_supports_it`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -581,7 +607,6 @@ mod tests {
             );
         }
 
-        // Phase `a_session_detached_from_the_host_never_offers_its_power`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -618,7 +643,6 @@ mod tests {
 
     #[test]
     fn invoking_a_session_action_queues_it_and_honours_inhibits() {
-        // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -665,7 +689,6 @@ mod tests {
             );
         }
 
-        // Phase `an_inhibited_action_is_refused_before_it_is_queued`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
@@ -764,7 +787,6 @@ mod tests {
 
     #[test]
     fn logout_is_addressable_confirmed_and_inhibited_only_like_the_power_menu() {
-        // Phase `logout_is_exactly_addressable_and_declares_destructive_confirmation`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let mut registry = SearchRegistry::new();
@@ -803,7 +825,6 @@ mod tests {
             );
         }
 
-        // Phase `typed_logout_policy_refuses_the_same_portal_inhibitor_as_the_power_menu`.
         {
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
             let _hold = inhibitors.acquire_for(
@@ -823,7 +844,6 @@ mod tests {
             );
         }
 
-        // Phase `logout_inhibitor_does_not_block_unrelated_session_actions`.
         {
             let inhibitors = tilo_power_mgmt::InhibitRegistry::new();
             let _hold = inhibitors.acquire_for(

@@ -12,18 +12,28 @@
 
 pub mod access_keys;
 mod client_scanout;
+mod cpu_layers;
 pub mod cpu_present;
 mod cursor_plane;
 pub mod devices;
+#[cfg(test)]
+mod direct_eligibility;
 mod direct_retry;
 pub mod gestures;
+mod gl_compose;
+mod gl_present;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
+#[cfg(test)]
+mod lock_wait;
 mod output_link;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
+mod phase_window;
+mod present_frame;
+mod retained_canvas;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -31,6 +41,7 @@ pub mod seat_diag;
 pub mod session;
 mod tablet;
 mod topology;
+pub mod wake_check;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -38,6 +49,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use vello::Scene;
+
+use phase_window::PhaseWindow;
 
 use paint::{
     SceneDamage, SubrectSource, copy_rgba_subrect, encode_subrect_rgba_to_xbgr2101010_transformed,
@@ -528,7 +541,7 @@ const WARM_DEADLINE: Duration = Duration::from_secs(10);
 
 /// What the frame that just submitted does about one direct output's pending page flip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FlipWait {
+pub(super) enum FlipWait {
     /// The output paces the loop: the frame completes when its flip retires.
     Await,
     /// A slower output: its flip retires through a later frame's drain, and until then
@@ -662,7 +675,7 @@ fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectEligibility<'a> {
+pub(super) struct DirectEligibility<'a> {
     hardware_cursor: bool,
     event_pageflips: bool,
     renderer_pci: &'a str,
@@ -675,7 +688,7 @@ struct DirectEligibility<'a> {
 /// A rotated output is eligible: its final pass turns the frame on the GPU
 /// (`shell::render::orientation`). So is an ICC-profiled one: the same pass maps it through
 /// the profile (`shell::render::icc_lut`).
-fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
+pub(super) fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
     if !input.hardware_cursor {
         return Some("hardware cursor plane is unavailable");
     }
@@ -690,46 +703,6 @@ fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str
         return Some("renderer and scanout use different GPUs");
     }
     None
-}
-
-#[derive(Debug)]
-struct PhaseWindow {
-    started: Instant,
-    frames: u64,
-    direct_frames: u64,
-    direct_dropped: u64,
-    flip_completions: u64,
-    submit_us: u128,
-    gpu_readback_map_us: u128,
-    settle_us: u128,
-    cpu_swizzle_us: u128,
-    backdrop_us: u128,
-    /// Render-thread time from a direct frame's start to its completed GPU
-    /// work, summed and at most, over the window's direct frames.
-    direct_us: u128,
-    max_direct_us: u128,
-    /// Direct frames the renderer repaired sparsely rather than in full.
-    direct_sparse_frames: u64,
-    /// Frames an output showed by flipping a fullscreen client's own buffer,
-    /// rendering nothing.
-    client_scanout_frames: u64,
-    readback_bytes: u64,
-    output_bytes: u64,
-    /// Passes the readback presenter made over an output's pixels on the CPU (rotate and
-    /// swizzle or PQ-encode, ICC copy, qcms), summed over the window's frames and outputs.
-    /// Zero while every output renders direct.
-    cpu_pixel_passes: u64,
-    /// Wall time around the complete renderer bridge call. This remains
-    /// available when a failed/timed-out paint cannot publish its detailed
-    /// Vello phase record.
-    bridge_us: u128,
-    /// Wall time after the bridge returns until the scanout submission path
-    /// completes (dumb-buffer cursor work, dirtyfb/page-flip included).
-    scanout_us: u128,
-    /// Legacy readback attempts which returned without detailed bridge phase
-    /// timing. They are still frames attempted by the physical presenter and
-    /// must not disappear from a performance incident report.
-    unprofiled_frames: u64,
 }
 
 impl Default for PhaseWindow {
@@ -878,271 +851,6 @@ struct PhaseSummaryFields {
     cpu_pixel_passes: u64,
 }
 
-#[cfg(test)]
-mod phase_window_tests {
-    use super::*;
-
-    fn timing(value: u64) -> paint::BridgePhaseTiming {
-        paint::BridgePhaseTiming {
-            submit_us: u128::from(value),
-            completed_readback_map_us: u128::from(value.saturating_mul(2)),
-            settle_us: u128::from(value.saturating_mul(3)),
-            cpu_copy_swizzle_us: u128::from(value.saturating_mul(4)),
-            readback_bytes: value.saturating_mul(5),
-            cpu_output_bytes: value.saturating_mul(6),
-            backdrop_us: u128::from(value.saturating_mul(7)),
-        }
-    }
-
-    #[test]
-    fn phase_window_accumulates_and_records_every_frame_outcome() {
-        // Phase `phase_window_accumulates_completed_frame_costs`.
-        {
-            let mut window = PhaseWindow::default();
-            window.record(timing(2));
-            window.record(timing(3));
-
-            assert_eq!(window.frames, 2);
-            assert_eq!(window.direct_frames, 0);
-            assert_eq!(window.direct_dropped, 0);
-            assert_eq!(window.flip_completions, 0);
-            assert_eq!(window.submit_us, 5);
-            assert_eq!(window.gpu_readback_map_us, 10);
-            assert_eq!(window.settle_us, 15);
-            assert_eq!(window.cpu_swizzle_us, 20);
-            assert_eq!(window.backdrop_us, 35);
-            assert_eq!(window.readback_bytes, 25);
-            assert_eq!(window.output_bytes, 30);
-            assert_eq!(window.bridge_us, 0);
-            assert_eq!(window.scanout_us, 0);
-            assert_eq!(window.unprofiled_frames, 0);
-        }
-        // Phase `phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing`.
-        {
-            let mut window = PhaseWindow::default();
-            window.record_legacy_attempt(None, 41, 7);
-            window.record_legacy_attempt(Some(timing(2)), 23, 5);
-
-            assert_eq!(window.frames, 2);
-            assert_eq!(window.unprofiled_frames, 1);
-            assert_eq!(window.bridge_us, 64);
-            assert_eq!(window.scanout_us, 12);
-            assert_eq!(window.submit_us, 2);
-            assert_eq!(window.gpu_readback_map_us, 4);
-            let summary = window.summary_fields(window.started + Duration::from_micros(99));
-            assert_eq!(summary.frames, 2);
-            assert_eq!(summary.unprofiled_frames, 1);
-            assert_eq!(summary.bridge_us, 64);
-            assert_eq!(summary.scanout_us, 12);
-            assert_eq!(summary.window_us, 99);
-        }
-        // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
-        {
-            let mut window = PhaseWindow::default();
-            window.accumulate(paint::BridgePhaseTiming {
-                submit_us: 2,
-                completed_readback_map_us: 4,
-                settle_us: 6,
-                backdrop_us: 14,
-                ..Default::default()
-            });
-            window.record_direct_frame(7_000, false);
-            window.record_direct_frame(3_000, true);
-            window.record_direct_drop();
-            window.record_flip_completions(2);
-
-            assert_eq!(window.frames, 2);
-            assert_eq!(window.direct_frames, 2);
-            assert_eq!(window.submit_us, 2);
-            assert_eq!(window.gpu_readback_map_us, 4);
-            assert_eq!(window.settle_us, 6);
-            assert_eq!(window.backdrop_us, 14);
-            assert_eq!(window.direct_us, 10_000);
-            assert_eq!(window.max_direct_us, 7_000);
-            assert_eq!(window.direct_sparse_frames, 1);
-            assert_eq!(window.direct_dropped, 1);
-            assert_eq!(window.flip_completions, 2);
-            assert_eq!(window.readback_bytes, 0);
-            assert_eq!(window.output_bytes, 0);
-        }
-        // Phase `two_direct_outputs_are_one_frame`.
-        {
-            let mut window = PhaseWindow::default();
-            let mut frame = DirectFrame::default();
-            frame.add(4_000, true);
-            frame.add(5_000, false);
-            frame.record(&mut window);
-            let mut sparse = DirectFrame::default();
-            sparse.add(1_000, true);
-            sparse.add(2_000, true);
-            sparse.record(&mut window);
-            DirectFrame::default().record(&mut window);
-
-            assert_eq!(window.frames, 2, "each frame counts once, not per output");
-            assert_eq!(window.direct_frames, 2);
-            assert_eq!(window.direct_us, 12_000);
-            assert_eq!(window.max_direct_us, 9_000);
-            assert_eq!(
-                window.direct_sparse_frames, 1,
-                "a frame is sparse only when every output repaired damage only"
-            );
-        }
-    }
-
-    #[test]
-    fn phase_window_flush_timing_and_reset() {
-        // Phase `phase_window_is_due_only_after_the_bounded_interval`.
-        {
-            let mut window = PhaseWindow::default();
-            let started = Instant::now();
-            window.started = started;
-
-            let just_before = (started + PHASE_WINDOW_INTERVAL)
-                .checked_sub(Duration::from_nanos(1))
-                .unwrap();
-            assert!(!window.due(just_before));
-            assert!(window.due(started + PHASE_WINDOW_INTERVAL));
-        }
-        // Phase `explicit_profiling_flushes_the_first_observation_without_a_later_frame`.
-        {
-            let mut window = PhaseWindow::default();
-            let started = Instant::now();
-            window.started = started;
-
-            assert!(!window.should_emit(started + Duration::from_millis(1), true));
-            window.record_legacy_attempt(None, 41, 7);
-            assert!(window.should_emit(started + Duration::from_millis(1), true));
-            assert!(!window.should_emit(started + Duration::from_millis(1), false));
-            assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
-        }
-        // Phase `profiling_keeps_direct_drops_and_completions_visible_without_a_frame`.
-        {
-            let mut window = PhaseWindow::default();
-            let now = Instant::now();
-            window.started = now;
-            window.record_direct_drop();
-            window.record_flip_completions(1);
-
-            assert!(window.should_emit(now, true));
-        }
-        // Phase `phase_window_reset_discards_the_previous_sample_without_moving_its_clock`.
-        {
-            let mut window = PhaseWindow::default();
-            window.record(timing(7));
-            let now = Instant::now();
-            window.reset(now);
-
-            assert_eq!(window.started, now);
-            assert_eq!(window.frames, 0);
-            assert_eq!(window.direct_frames, 0);
-            assert_eq!(window.direct_dropped, 0);
-            assert_eq!(window.flip_completions, 0);
-            assert_eq!(window.submit_us, 0);
-            assert_eq!(window.gpu_readback_map_us, 0);
-            assert_eq!(window.settle_us, 0);
-            assert_eq!(window.cpu_swizzle_us, 0);
-            assert_eq!(window.readback_bytes, 0);
-            assert_eq!(window.output_bytes, 0);
-            assert_eq!(window.bridge_us, 0);
-            assert_eq!(window.scanout_us, 0);
-            assert_eq!(window.unprofiled_frames, 0);
-        }
-    }
-}
-
-#[cfg(test)]
-mod direct_eligibility_tests {
-    use super::*;
-
-    fn eligible() -> DirectEligibility<'static> {
-        DirectEligibility {
-            hardware_cursor: true,
-            event_pageflips: true,
-            renderer_pci: "0000:66:00.0",
-            renderer_drm_matches: false,
-            drm_bus_id: Some("pci:0000:66:00.0"),
-        }
-    }
-
-    #[test]
-    fn direct_eligibility_is_per_scanout() {
-        // Two outputs side by side: the plain one renders direct while its
-        // sibling without a cursor plane names its own reason. Neither is judged
-        // by the count of outputs it shares the desktop with.
-        let plain = eligible();
-        let software_cursor = DirectEligibility {
-            hardware_cursor: false,
-            ..eligible()
-        };
-        assert_eq!(direct_scanout_rejection(plain), None);
-        assert_eq!(
-            direct_scanout_rejection(software_cursor),
-            Some("hardware cursor plane is unavailable")
-        );
-    }
-
-    #[test]
-    fn direct_path_eligibility_requires_the_full_contract_and_proven_identity() {
-        // Phase `direct_path_requires_the_complete_safe_contract`.
-        assert_eq!(direct_scanout_rejection(eligible()), None);
-        for (rejected, reason) in [
-            (
-                DirectEligibility {
-                    hardware_cursor: false,
-                    ..eligible()
-                },
-                "hardware cursor plane is unavailable",
-            ),
-            (
-                DirectEligibility {
-                    event_pageflips: false,
-                    ..eligible()
-                },
-                "event-driven page flips are unavailable",
-            ),
-            (
-                DirectEligibility {
-                    drm_bus_id: Some("pci:0000:01:00.0"),
-                    ..eligible()
-                },
-                "renderer and scanout use different GPUs",
-            ),
-        ] {
-            assert_eq!(direct_scanout_rejection(rejected), Some(reason));
-        }
-        // Phase `drm_node_identity_can_prove_virtual_renderer_without_pci_identity`.
-        assert_eq!(
-            direct_scanout_rejection(DirectEligibility {
-                renderer_pci: "",
-                renderer_drm_matches: true,
-                drm_bus_id: None,
-                ..eligible()
-            }),
-            None
-        );
-        // Phase `matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id`.
-        assert_eq!(
-            direct_scanout_rejection(DirectEligibility {
-                renderer_pci: "0000:66:00.0",
-                renderer_drm_matches: true,
-                drm_bus_id: None,
-                ..eligible()
-            }),
-            None
-        );
-        // Phase `missing_renderer_identities_still_fail_closed`.
-        assert_eq!(
-            direct_scanout_rejection(DirectEligibility {
-                renderer_pci: "",
-                renderer_drm_matches: false,
-                drm_bus_id: None,
-                ..eligible()
-            }),
-            Some("renderer and scanout use different GPUs")
-        );
-    }
-}
-
 fn physical_flip_proof(
     retirement: scanout::DirectRetirement,
     events: &[smithay::reexports::drm::control::PageFlipEvent],
@@ -1160,466 +868,6 @@ fn physical_flip_proof(
     })
 }
 
-impl DrmPresenter {
-    /// The only way a frame reaches the scanouts from the render thread: every [`Presenter`]
-    /// entry point that presents lands here.
-    ///
-    /// The present gate is held for the whole frame, flip retirement included, so dropping
-    /// DRM master for a VT switch (`DrmDispatchState::perform(SessionAction::DropMaster)`)
-    /// waits until no output's page flip is queued or in flight. A `Pause` queued before
-    /// that drop is drained here under the same gate, so the frame after it paints nothing.
-    fn submit(
-        &mut self,
-        frame: ScanoutFrame<'_>,
-    ) -> Option<crate::shell::present::PhysicalPresentation> {
-        self.frame_phases = None;
-        self.display_timing = crate::shell::present::DisplayTiming::default();
-        self.flip_vblanks.clear();
-        if let Some(bridge) = &mut self.paint {
-            let _ = bridge.take_phase_timing();
-        }
-        self.pointer = *self.shared_pointer.lock_recover();
-        self.frame_owes = false;
-        let present_gate = self.present_gate.clone();
-        let _quiesced = quiesce_presentations(present_gate.as_ref());
-        self.drain_commands();
-        self.service_links();
-        let overlap = !self.blanked && !self.paused && self.overlap_eligible();
-        if self.owed.is_some() && (!overlap || frame.scanout.is_some()) {
-            // Leaving the overlapped mode, or a client buffer may take the CRTC (nothing
-            // renders that could overlap the wait): the owed flip retires first, as every
-            // flip did before frames overlapped.
-            self.collect_owed(DIRECT_RETIREMENT_TIMEOUT);
-        }
-        self.overlapping = overlap;
-        if self.blanked || self.paused {
-            return None;
-        }
-        if overlap {
-            return self.submit_overlapping(frame);
-        }
-        let before = self
-            .scanouts
-            .first()
-            .map(|entry| entry.scanout.flip_submission());
-        let sample = paint_scanouts(
-            &mut self.scanouts,
-            &self.outputs,
-            &mut self.paint,
-            &mut self.cpu,
-            self.pointer,
-            frame,
-            Some(&mut self.phase_window),
-        );
-        let flip_queued_at = sample.direct_queued.then(Instant::now);
-        let retirement_started = self.profile_phases.then(Instant::now);
-        let retirement_attempted = sample.direct_queued
-            || (self.scanouts.len() == 1
-                && self
-                    .scanouts
-                    .first()
-                    .map(|entry| entry.scanout.flip_submission())
-                    != before);
-        // A slower output's flip from an earlier frame is checked as well: one that is overdue
-        // is demoted even on a frame that queued nothing.
-        let physical = if sample.direct_queued || self.direct_flip_pending() {
-            self.retire_direct_flips()
-        } else if self.scanouts.len() == 1
-            && self
-                .scanouts
-                .first()
-                .map(|entry| entry.scanout.flip_submission())
-                != before
-        {
-            self.retire_physical_flip(0, DIRECT_RETIREMENT_TIMEOUT)
-        } else {
-            None
-        };
-        if let Some(started) = retirement_started {
-            self.frame_phases = self
-                .paint
-                .as_ref()
-                .and_then(paint::VelloDrmBridge::last_phase_timing)
-                .map(|paint| crate::shell::present::FramePhaseTiming {
-                    paint,
-                    kms_retirement_us: if retirement_attempted {
-                        started.elapsed().as_micros()
-                    } else {
-                        0
-                    },
-                });
-        }
-        self.display_timing = self.frame_display_timing(flip_queued_at);
-        self.emit_phase_profile(sample);
-        if let Some(bridge) = &mut self.paint {
-            let _ = bridge.take_phase_timing();
-        }
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
-        publish_client_planes(&mut self.scanouts, &self.client_planes);
-        physical
-    }
-
-    /// [`Self::submit`] for one vblank-paced output whose rendering overlaps the previous
-    /// frame's flip: render into the spare slot while that flip is pending, queue this frame
-    /// once it retired, and return without waiting for this frame's own flip, which the pipe
-    /// collects through [`Presenter::retire_owed`]. The GPU-completion wait stays: vello's
-    /// bump-allocator counters must be read back before a frame may be shown, and a legacy
-    /// page flip takes no in-fence (an atomic `IN_FENCE_FD` would need the atomic API and a
-    /// sync-file export wgpu does not offer).
-    fn submit_overlapping(
-        &mut self,
-        frame: ScanoutFrame<'_>,
-    ) -> Option<crate::shell::present::PhysicalPresentation> {
-        // The vblank may already have passed: retire the owed flip from its event, before
-        // the frame's own non-blocking drain consumes it without its timestamp.
-        self.collect_owed(Duration::ZERO);
-        for entry in &mut self.scanouts {
-            if let Some(targets) = entry.direct_targets.as_mut() {
-                targets.set_overlap(true);
-            }
-        }
-        let mut sample = paint_scanouts(
-            &mut self.scanouts,
-            &self.outputs,
-            &mut self.paint,
-            &mut self.cpu,
-            self.pointer,
-            frame,
-            Some(&mut self.phase_window),
-        );
-        let mut kms_wait_us = 0;
-        if let Some((output, render)) = sample.overlapped.take() {
-            let (queued, waited) = self.submit_overlapped(output, render);
-            sample.direct_queued |= queued;
-            kms_wait_us = waited;
-        }
-        for entry in &mut self.scanouts {
-            if let Some(targets) = entry.direct_targets.as_mut() {
-                targets.set_overlap(false);
-            }
-        }
-        if sample.direct_queued {
-            // An owed flip still unresolved here retired unseen: a newer one is queued.
-            if let Some(owed) = self.owed {
-                self.resolve_owed(owed, None);
-            }
-            self.owed = self.scanouts.first().map(|entry| OwedFlip {
-                device_id: entry.device_id,
-                crtc: entry.scanout.crtc(),
-                queued_at: Instant::now(),
-                submission: entry.scanout.flip_submission(),
-                interval: refresh_of(&self.outputs, entry.id)
-                    .and_then(|rate| 1_000_000_000_000_u64.checked_div(u64::from(rate)))
-                    .map(Duration::from_nanos),
-            });
-            self.frame_owes = self.owed.is_some();
-        }
-        if self.profile_phases {
-            self.frame_phases = self
-                .paint
-                .as_ref()
-                .and_then(paint::VelloDrmBridge::last_phase_timing)
-                .map(|paint| crate::shell::present::FramePhaseTiming {
-                    paint,
-                    // The render thread's wait for the previous flip, the part of KMS
-                    // retirement still on the critical path.
-                    kms_retirement_us: kms_wait_us,
-                });
-        }
-        // A frame that queued nothing (an unchanged frame) retires at once; the pipe
-        // holds it behind the owed flip it is shown with.
-        self.flip_vblanks.clear();
-        self.display_timing = self.frame_display_timing(None);
-        self.emit_phase_profile(sample);
-        if let Some(bridge) = &mut self.paint {
-            let _ = bridge.take_phase_timing();
-        }
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
-        None
-    }
-
-    /// Tighten `Presenter::present_frame`'s completion boundary to the KMS page-flip events of
-    /// the outputs that pace the loop: those at the fastest refresh (`flip_wait`).
-    /// `PresentPipe` only frees producer capacity after this method returns, so the loop
-    /// renders at the fastest output's rate. A slower output's flip is left pending and
-    /// retires through the next frame's non-blocking drain; until it has, that output skips
-    /// the frames it could not show (`DirectOutcome::Deferred`), so no output renders more
-    /// than once per its own vblank and no target KMS owns is rendered into. Waiting for
-    /// every pacing output, rather than the first, keeps one whose vblank trails another's
-    /// from dropping every other frame. Each gets the whole timeout, so one wedged output
-    /// cannot spend a healthy sibling's budget and demote it; a slow output whose flip is
-    /// overdue is demoted without a wait.
-    fn retire_direct_flips(&mut self) -> Option<crate::shell::present::PhysicalPresentation> {
-        let fastest = fastest_direct_refresh(&self.scanouts, &self.outputs);
-        let mut proof = None;
-        // Each pass retires or demotes one output; the bound is a backstop.
-        for _ in 0..self.scanouts.len() {
-            let now = Instant::now();
-            let Some((index, timeout)) =
-                self.scanouts.iter().enumerate().find_map(|(index, entry)| {
-                    let targets = entry.direct_targets.as_ref()?;
-                    let queued_at = targets.flip_queued_at()?;
-                    let wait = flip_wait(
-                        refresh_of(&self.outputs, entry.id),
-                        fastest,
-                        now.saturating_duration_since(queued_at),
-                    );
-                    match wait {
-                        FlipWait::Await => Some((index, DIRECT_RETIREMENT_TIMEOUT)),
-                        FlipWait::Overdue => Some((index, Duration::ZERO)),
-                        FlipWait::Leave => None,
-                    }
-                })
-            else {
-                break;
-            };
-            let retired = self.retire_physical_flip(index, timeout);
-            proof = proof.or(retired);
-        }
-        proof
-    }
-
-    /// Some direct output still waits for a page flip queued by an earlier frame.
-    fn direct_flip_pending(&self) -> bool {
-        self.scanouts.iter().any(|entry| {
-            entry
-                .direct_targets
-                .as_ref()
-                .is_some_and(scanout::DirectScanoutTargets::flip_pending)
-        })
-    }
-
-    /// Wait up to `timeout` for the page flip queued on `scanouts[index]`.
-    /// Every completion read on the way goes to the scanout it belongs to: the
-    /// card's sibling outputs share this event stream.
-    fn retire_physical_flip(
-        &mut self,
-        index: usize,
-        timeout: Duration,
-    ) -> Option<crate::shell::present::PhysicalPresentation> {
-        let (retirement, proof) = self.await_flip(index, timeout);
-        if retirement == scanout::DirectRetirement::TimedOut {
-            self.retire_timed_out(index);
-        }
-        proof
-    }
-
-    /// A flip on `scanouts[index]` did not retire in time: its completion can no
-    /// longer prove a frame, and a direct output goes to the readback presenter.
-    fn retire_timed_out(&mut self, index: usize) {
-        let Some(entry) = self.scanouts.get_mut(index) else {
-            return;
-        };
-        entry.scanout.invalidate_physical_feedback();
-        if entry.direct_targets.is_some() {
-            let hdr = entry
-                .direct_targets
-                .as_ref()
-                .is_some_and(|targets| targets.format().is_hdr());
-            demote_direct(
-                entry,
-                hdr,
-                "retire",
-                &format!(
-                    "page flip did not retire within {} ms",
-                    DIRECT_RETIREMENT_TIMEOUT.as_millis()
-                ),
-            );
-        }
-    }
-
-    /// Wait up to `timeout` for the page flip queued on `scanouts[index]`, recording
-    /// the vblank of every completion read on the way and routing each to the scanout
-    /// it belongs to. A timeout here is only an answer: [`Self::retire_physical_flip`]
-    /// decides what an overdue flip costs.
-    fn await_flip(
-        &mut self,
-        index: usize,
-        timeout: Duration,
-    ) -> (
-        scanout::DirectRetirement,
-        Option<crate::shell::present::PhysicalPresentation>,
-    ) {
-        let single_output = self.scanouts.len() == 1;
-        let Some(entry) = self.scanouts.get_mut(index) else {
-            return (scanout::DirectRetirement::TimedOut, None);
-        };
-        let (retirement, completions) = entry.scanout.wait_flip_completions(timeout);
-        // Every completion read here comes from this card's event stream. A
-        // driver without monotonic event stamps leaves the wakeup as the vblank.
-        let woke = Instant::now();
-        let monotonic = entry.scanout.monotonic_flip_timestamps();
-        let device_id = entry.device_id;
-        self.flip_vblanks
-            .extend(completions.iter().map(|event| FlipVblank {
-                device_id,
-                crtc: event.crtc,
-                at: if monotonic {
-                    scanout::instant_from_monotonic(event.duration)
-                } else {
-                    woke
-                },
-            }));
-        self.phase_window.record_flip_completions(completions.len());
-        let proof = physical_flip_proof(
-            retirement,
-            &completions,
-            entry.scanout.crtc(),
-            single_output && entry.scanout.can_prove_physical_flip(),
-        )
-        .map(|mut proof| {
-            proof.refresh = if entry.scanout.adaptive_sync_active() {
-                None
-            } else {
-                self.outputs
-                    .first()
-                    .and_then(|output| output.refresh_mhz)
-                    .and_then(|rate| 1_000_000_000_000_u64.checked_div(u64::from(rate)))
-                    .map(Duration::from_nanos)
-            };
-            proof
-        });
-        let completed: Vec<_> = completions
-            .iter()
-            .map(|event| (device_id, event.crtc, event.frame))
-            .collect();
-        route_flip_completions(&mut self.scanouts, &completed);
-        (retirement, proof)
-    }
-
-    fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
-        self.phase_window.cpu_pixel_passes = self
-            .phase_window
-            .cpu_pixel_passes
-            .saturating_add(sample.cpu_pixel_passes);
-        if sample.legacy_attempted {
-            let timing = self
-                .paint
-                .as_ref()
-                .and_then(paint::VelloDrmBridge::last_phase_timing);
-            self.phase_window
-                .record_legacy_attempt(timing, sample.bridge_us, sample.scanout_us);
-        }
-        let now = Instant::now();
-        // A production session reports bounded aggregates. Explicit profiling
-        // instead flushes every non-empty window immediately: if rendering
-        // stalls or becomes idle after one expensive frame, there may never be
-        // a later frame available to flush that evidence.
-        if self.phase_window.should_emit(now, self.profile_phases) {
-            let frames = self.phase_window.frames.max(1);
-            let summary = self.phase_window.summary_fields(now);
-            // The session's default subscriber passes only errors unless
-            // RUST_LOG says otherwise, so an info event never reaches the
-            // flight recorder. The runner captures stderr into that fsyncing
-            // record; keep the line machine-parseable.
-            eprintln!(
-                "frames={} direct_frames={} direct_dropped={} flip_completions={} \
-                 unprofiled_frames={} window_us={} avg_submit_us={} \
-                 avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
-                 avg_backdrop_us={} readback_bytes={} output_bytes={} cpu_pixel_passes={} \
-                 bridge_us={} scanout_us={} \
-                 avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
-                 client_scanout_frames={} direct_failures={} \
-                 direct_scanout_status={} direct_scanout_reason={:?} \
-                 DRM render phase summary",
-                summary.frames,
-                summary.direct_frames,
-                summary.direct_dropped,
-                summary.flip_completions,
-                summary.unprofiled_frames,
-                summary.window_us,
-                self.phase_window
-                    .submit_us
-                    .checked_div(u128::from(frames))
-                    .unwrap_or(0),
-                self.phase_window
-                    .gpu_readback_map_us
-                    .checked_div(u128::from(frames))
-                    .unwrap_or(0),
-                self.phase_window
-                    .settle_us
-                    .checked_div(u128::from(frames))
-                    .unwrap_or(0),
-                self.phase_window
-                    .cpu_swizzle_us
-                    .checked_div(u128::from(frames))
-                    .unwrap_or(0),
-                self.phase_window
-                    .backdrop_us
-                    .checked_div(u128::from(frames))
-                    .unwrap_or(0),
-                summary.readback_bytes,
-                summary.output_bytes,
-                summary.cpu_pixel_passes,
-                summary.bridge_us,
-                summary.scanout_us,
-                self.phase_window
-                    .direct_us
-                    .checked_div(u128::from(summary.direct_frames))
-                    .unwrap_or(0),
-                self.phase_window.max_direct_us,
-                self.phase_window.direct_sparse_frames,
-                self.phase_window.client_scanout_frames,
-                direct_failures(&self.scanouts),
-                direct_status(&self.scanouts),
-                direct_reason(&self.scanouts),
-            );
-            self.phase_window.reset(now);
-        }
-        if !self.profile_phases {
-            return;
-        }
-        let Some(timing) = self
-            .paint
-            .as_ref()
-            .and_then(paint::VelloDrmBridge::last_phase_timing)
-        else {
-            return;
-        };
-        self.profile_seq = self.profile_seq.saturating_add(1);
-        eprintln!(
-            "seq={} submit_us={} gpu_readback_map_us={} settle_us={} cpu_swizzle_us={} \
-             backdrop_us={} readback_bytes={} output_bytes={} DRM render frame phases",
-            self.profile_seq,
-            timing.submit_us,
-            timing.completed_readback_map_us,
-            timing.settle_us,
-            timing.cpu_copy_swizzle_us,
-            timing.backdrop_us,
-            timing.readback_bytes,
-            timing.cpu_output_bytes,
-        );
-    }
-
-    /// Apply every reconfiguration the loop thread has queued.
-    /// Move every output's link along ([`service_links`]).
-    fn service_links(&mut self) {
-        let completions = service_links(
-            &mut self.scanouts,
-            !self.paused,
-            &self.link_busy,
-            self.signal_reports.as_ref(),
-        );
-        self.phase_window.record_flip_completions(completions);
-    }
-
-    fn drain_commands(&mut self) {
-        let Some(rx) = self.commands.as_ref() else {
-            return;
-        };
-        let pending: Vec<ScanoutCommand> = rx.try_iter().collect();
-        for cmd in pending {
-            apply_scanout_command(
-                cmd,
-                &mut self.scanouts,
-                &mut self.outputs,
-                &mut self.paused,
-                &mut self.blanked,
-            );
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PaintScanoutSample {
     direct_queued: bool,
@@ -1635,7 +883,7 @@ struct PaintScanoutSample {
 
 /// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
 /// thread) and by [`DrmBackend`] itself for the inline path before the presenter splits off — one implementation, so hotplug behaves the same on either side.
-fn apply_scanout_command(
+pub(super) fn apply_scanout_command(
     cmd: ScanoutCommand,
     scanouts: &mut Vec<ScanoutEntry>,
     outputs: &mut Vec<Output>,
@@ -1698,18 +946,9 @@ fn apply_scanout_command(
             tracing::info!("DRM present: paused (the session no longer owns the CRTCs)");
         }
         ScanoutCommand::Resume { dpms_on } => {
-            for e in scanouts.iter_mut() {
-                e.scanout.restore();
-                e.set_power(dpms_on && !e.powered_off);
-                e.direct_targets = None;
-            }
+            wake_check::resume_scanouts(scanouts, dpms_on);
             *blanked = !dpms_on;
             *paused = false;
-            tracing::info!(
-                outputs = scanouts.len(),
-                dpms_on,
-                "DRM present: resumed after re-modesetting every output"
-            );
         }
         ScanoutCommand::SetCursorSize(size) => {
             for entry in scanouts.iter_mut() {
@@ -1739,6 +978,11 @@ fn apply_scanout_command(
         ScanoutCommand::SetSoftwareDim { output, light } => {
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
                 entry.set_software_dim(light);
+            }
+        }
+        ScanoutCommand::WakeFault(stage) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.inject_wake_fault(stage);
             }
         }
         ScanoutCommand::SetOutputPower { output, on } => {
@@ -1916,6 +1160,15 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
             // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
             // ordinary sessions emit only one aggregate every two seconds.
             bridge.set_phase_timing_enabled(true);
+            // The present thread asked for realtime before it knew what it renders on; a CPU
+            // "GPU" (lavapipe) rasterizes here for far longer than a realtime thread may run.
+            #[cfg(target_os = "linux")]
+            if bridge
+                .adapter_info()
+                .is_ok_and(|adapter| adapter.device_type == "Cpu")
+            {
+                ::launcher::priority::leave_realtime("the renderer is a CPU rasteriser");
+            }
             *paint = Some(bridge);
             true
         }
@@ -1979,6 +1232,7 @@ fn paint_scanouts(
     {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it.
+        crate::shell::heap_trim::log_milestone("renderer-first-frame");
         crate::shell::heap_trim::request();
     }
     if let Some(bridge) = paint.as_mut() {
@@ -2030,9 +1284,9 @@ fn paint_scanouts_with(
         readback_expected,
         scanouts.iter().filter(|entry| !entry.dark()).count(),
     );
-    if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
+    if paint::retire_lost_bridge(paint).is_some() {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
-        tracing::error!(%reason, "DRM backend: the renderer's GPU device was lost; opening a new one");
+        // The direct targets were the lost device's: scan out the last good front instead.
         for entry in scanouts
             .iter_mut()
             .filter(|entry| entry.direct_targets.is_some())
@@ -2040,7 +1294,6 @@ fn paint_scanouts_with(
             entry.scanout.restore_legacy_front();
             entry.direct_targets = None;
         }
-        *paint = None;
     }
     if !ensure_bridge(paint, target_size) {
         return PaintScanoutSample::default();
@@ -2360,13 +1613,12 @@ struct DirectRender {
     sparse: bool,
     revision: u64,
     render_attempts: usize,
-    /// It rendered into HDR targets.
     hdr: bool,
 }
 
 /// The direct renders of one frame, recorded as one frame however many outputs it took.
 #[derive(Default)]
-struct DirectFrame {
+pub(super) struct DirectFrame {
     outputs: usize,
     render_us: u128,
     sparse: bool,
@@ -2931,6 +2183,27 @@ fn paint_scanouts_cpu(
         previous_revision: damage.and_then(|damage| damage.previous_revision),
         regions: damage.and_then(|damage| damage.regions),
     };
+    // A frame drawn as layers is composited from the layers' own canvases
+    // where GLES presents; the screen canvas then waits for a frame that
+    // is not.
+    if single
+        && let Some(cache) = frame.layers
+        && let Some(entry) = scanouts.first_mut()
+        && !entry.dark()
+        && !entry.sync_hdr_readback()
+    {
+        renderer.start_frame(cpu_frame.revision, cpu_frame.previous_revision);
+        if gl_present::present(
+            entry,
+            renderer,
+            gl_present::Content::Layers(cache),
+            pointer,
+            CPU_FLIP_TIMEOUT,
+        ) {
+            renderer.finish_frame();
+            return;
+        }
+    }
     renderer.update(cpu_frame, target_size);
 
     if single
@@ -2938,6 +2211,16 @@ fn paint_scanouts_cpu(
         && !entry.dark()
         && !entry.sync_hdr_readback()
     {
+        if gl_present::present(
+            entry,
+            renderer,
+            gl_present::Content::Screen,
+            pointer,
+            CPU_FLIP_TIMEOUT,
+        ) {
+            renderer.finish_frame();
+            return;
+        }
         match entry.scanout.wait_cpu_flip(CPU_FLIP_TIMEOUT) {
             Ok((wait, latency)) => renderer.record_flip_wait(wait, latency),
             Err(wait) => {
@@ -3346,7 +2629,7 @@ fn output_local_clip(
 /// changing (`busy`), so that its card watch asks for a frame on the next
 /// event. Returns how many completions were read. `master`: the session
 /// holds the CRTCs, so commits may be made.
-fn service_links(
+pub(super) fn service_links(
     scanouts: &mut [ScanoutEntry],
     master: bool,
     busy: &std::sync::atomic::AtomicBool,
@@ -3403,7 +2686,7 @@ fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
 /// to: its link when it completes the link's own commit (a modeset or its
 /// vblank proof), else the direct targets' ring when the output renders
 /// direct, the dumb pair otherwise.
-fn route_flip_completions(
+pub(super) fn route_flip_completions(
     scanouts: &mut [ScanoutEntry],
     completed: &[(u64, smithay::reexports::drm::control::crtc::Handle, u32)],
 ) {
@@ -3533,17 +2816,7 @@ fn paint_one_scanout(
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
-    // An ICC profile describes the panel's SDR response; while the output
-    // runs in HDR the PQ encode replaces it. Software dimming the CRTC
-    // cannot carry is done on this copy too, before the profile.
-    let dim = e.final_pass_dim().filter(|_| !hdr);
-    if e.cpu_dim
-        .as_ref()
-        .map(crate::shell::software_dim::CpuDim::light)
-        != dim
-    {
-        e.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
-    }
+    let dim = e.sync_cpu_dim(hdr);
     let copied = (e.color_transform.is_some() || dim.is_some()) && !hdr;
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
         if copied {
@@ -3635,6 +2908,13 @@ fn paint_one_scanout(
 }
 
 impl Presenter for DrmPresenter {
+    /// The CPU renderer rasterizes on the presenting thread, often for longer
+    /// than a realtime thread may run without blocking: the kernel then ends
+    /// the whole session (`RLIMIT_RTTIME`).
+    fn realtime(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
     fn present(&mut self, scene: &Scene, _output: OutputId) {
         let _ = self.submit(ScanoutFrame::scene_only(scene));
     }
@@ -3810,7 +3090,15 @@ impl Backend for DrmBackend {
     /// The GPU presenter composites a lone unmagnified output's strip pans
     /// from retained layers (`RetainedGpuTarget::render_layers_until`).
     fn composites_strip_layers(&self) -> bool {
-        cpu_present::cpu_render_reason().is_none()
+        cpu_present::cpu_render_reason().is_none() || gl_present::available()
+    }
+
+    /// The CPU renderer composited with GLES keeps every layer in a canvas
+    /// of its own, strips in canvas coordinates
+    /// (`cpu_layers::CpuLayers`), so every frame comes as layers.
+    fn strip_layer_canvas(&self) -> Option<u32> {
+        (cpu_present::cpu_render_reason().is_some() && gl_present::available())
+            .then_some(cpu_layers::MAX_STRIP_CANVAS)
     }
 
     /// The GPU presenter moves pixels within its retained target before it
@@ -3934,6 +3222,18 @@ impl Backend for DrmBackend {
         self.inner.resume_from_sleep();
     }
 
+    fn note_wake(&mut self, reason: &'static str) {
+        self.inner.dispatch.note_wake(reason);
+    }
+
+    fn retry_failed_outputs(&mut self, reason: &'static str) -> bool {
+        self.inner.dispatch.retry_failed_outputs(reason)
+    }
+
+    fn inject_wake_fault(&mut self, stage: wake_check::WakeStage) -> Result<(), String> {
+        self.inner.dispatch.inject_wake_fault(stage)
+    }
+
     fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
         self.inner.set_fullscreen_output(output);
     }
@@ -3990,6 +3290,14 @@ impl Backend for DrmBackend {
 
     fn cancel_touch(&mut self) {
         self.inner.cancel_touch();
+    }
+
+    fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        self.inner.translate_key(keycode, pressed)
+    }
+
+    fn place_pointer(&mut self, x: f64, y: f64) {
+        self.inner.place_pointer(x, y);
     }
 
     fn switch_vt(&mut self, vt: i32) {
@@ -4113,7 +3421,6 @@ mod tests {
             vec![(100, 0), (200, 2)],
             "each card must drain its own shared event stream exactly once"
         );
-        // Phase `overlapping_crtcs_route_flip_completion_only_within_its_card`.
         {
             // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
             // it can in DRM. A completion from card 200 must not clear card 100's
@@ -4162,7 +3469,6 @@ mod tests {
             assert!(!paused, "and must start again when it gets them back");
             assert!(!blanked);
         }
-        // Phase `resuming_a_blanked_session_leaves_the_panels_off`.
         {
             // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4178,7 +3484,6 @@ mod tests {
             assert!(!paused, "the CRTCs are ours again");
             assert!(blanked, "but the panels stay off");
         }
-        // Phase `a_reconfigure_adopts_the_new_output_table`.
         {
             // The presenter sizes its paint target from this table (`bridge_extent`) and renders each output's view from its position, so adopting it is what makes an unplugged monitor stop being painted for.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4350,14 +3655,20 @@ mod tests {
                 .expect("the presenter holds the command receiver");
             let dropping_master = quiesce_presentations(Some(&gate));
             let (finished_tx, finished) = std::sync::mpsc::channel();
+            let (tid_tx, tid) = std::sync::mpsc::channel();
             let render_thread = std::thread::spawn(move || {
+                let _ = tid_tx.send(lock_wait::current_tid());
                 entry(&mut presenter);
                 let _ = finished_tx.send(());
                 presenter
             });
+            lock_wait::wait_until_blocked_on_a_lock(
+                tilo_test_env::recv("the render thread's id", &tid),
+                &format!("{name}'s render thread"),
+            );
             assert_eq!(
-                finished.recv_timeout(Duration::from_millis(100)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                finished.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty),
                 "{name} presented while DRM master was being dropped"
             );
             drop(dropping_master);
@@ -4598,7 +3909,6 @@ mod per_output_presentation_tests {
             head(1, (2560, 0), (1920, 1080), 60_000),
         ];
         let fastest = outputs.iter().filter_map(|output| output.refresh_mhz).max();
-        // Refresh periods in nanoseconds.
         let fast_period: u64 = 6_944_444;
         let slow_period: u64 = 16_666_667;
         let mut monitor = scanout::DirectScanoutState::new(0);
@@ -4630,7 +3940,6 @@ mod per_output_presentation_tests {
             } else {
                 slow_skips = slow_skips.saturating_add(1);
             }
-            // The frame retires once the outputs pacing the loop have flipped.
             assert_eq!(
                 flip_wait(refresh_of(&outputs, OutputId(0)), fastest, Duration::ZERO),
                 FlipWait::Await,

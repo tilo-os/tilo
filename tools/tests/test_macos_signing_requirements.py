@@ -10,6 +10,7 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import patch
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,7 +138,7 @@ class SignatureRequirementTests(unittest.TestCase):
         for requirement in requirements:
             # -t compiles/parses and displays the requirement without writing a file.
             result = subprocess.run(['/usr/bin/csreq', '-r', requirement, '-t'],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=HANG_BOUND)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('anchor apple generic', result.stdout)
             self.assertIn(IDENTITY['sha1'].lower(), result.stdout.lower())
@@ -170,14 +171,14 @@ class InterpreterPreflightTests(unittest.TestCase):
             self.skipTest('system Python is not installed')
         version = subprocess.run([str(executable), '-c',
                                   'import sys; print(sys.version_info[0], sys.version_info[1])'],
-                                 capture_output=True, text=True, timeout=10)
+                                 capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertEqual(version.returncode, 0, version.stderr)
         if tuple(map(int, version.stdout.split())) >= (3, 11):
             self.skipTest('system Python already meets the minimum version')
         for filename in ('collection.py', 'collection_staged_sign.py'):
             with self.subTest(filename=filename):
                 result = subprocess.run([str(executable), str(MACOS / filename), '--help'],
-                                        capture_output=True, text=True, timeout=10)
+                                        capture_output=True, text=True, timeout=HANG_BOUND)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('requires Python 3.11+', result.stderr)
                 self.assertIn('existing compatible interpreter', result.stderr)

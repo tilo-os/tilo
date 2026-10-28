@@ -1,5 +1,5 @@
 //! Shared, render-free mail state, owned by the app and borrowed by each of the
-//! three [`crate::pane::Pane`]s through an `Rc<RefCell<_>>`.
+//! three panes through an `Rc<RefCell<_>>`.
 //!
 //! The panes are siblings inside a [`ui::widget::NavShell`], so they can't call
 //! each other directly. Instead they mutate this shared state and raise
@@ -121,6 +121,22 @@ impl CtxAction {
     }
 }
 
+/// What the reader's menu offers on the open message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderChoice {
+    /// Open the link under the pointer in the Browser.
+    OpenLink(String),
+    /// Put the link's address on the clipboard.
+    CopyLink(String),
+    Copy,
+    /// Select the whole HTML body.
+    SelectAll,
+    /// Read an HTML message as its plain text.
+    ShowPlainText,
+    /// Read it as it was formatted again.
+    ShowFormatted,
+}
+
 /// A cross-pane effect a pane wants the app to perform after event routing.
 #[derive(Clone, Debug)]
 pub enum Intent {
@@ -148,9 +164,35 @@ pub enum Intent {
     OpenAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
+    /// Open a link of a message in the Browser: a web or mail address the
+    /// person followed.
+    OpenLink(String),
+    ReaderMenu(MessageId, Point, Vec<ReaderChoice>),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
+}
+
+/// A message waiting to leave in an account's outbox: who it goes to, what it
+/// says, the account that sends it, and why it has not gone — a server's
+/// refusal, in its own words, when one refused it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub account: String,
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    /// Why the send stopped; `None` while it still waits its turn.
+    pub reason: Option<String>,
+}
+
+impl QueuedMessage {
+    /// The line the outbox shows under the subject: the server's refusal, or
+    /// the fact that nothing has refused it yet.
+    pub fn state_line(&self) -> &str {
+        self.reason.as_deref().unwrap_or("Waiting to be sent")
+    }
 }
 
 /// A command from the window's chrome (the sidebar, the header toolbars):
@@ -159,16 +201,22 @@ pub enum Intent {
 pub enum Command {
     /// Browse explicit shared address-book recipient and sender choices.
     ContactRecipients,
-    /// Show `folder` of account `index`.
+    /// Show an account's outbox: the messages waiting to leave, and why any
+    /// of them did not.
+    OpenOutbox(usize),
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
-    /// Open the account sheet for an account (`None` adds one).
-    AccountSettings(Option<usize>),
+    /// Take the person to Settings' External Accounts, where accounts are
+    /// added, changed and removed; Mail keeps no account editor of its own.
+    AccountSettings,
     /// Start a new message.
     Compose,
-    /// Open the platform search, narrowed to the open folder.
-    OpenSearch,
+    /// Close the message being written; one with anything written in it
+    /// stays in Drafts.
+    CloseCompose,
+    /// Throw the message being written away, its draft with it.
+    DiscardCompose,
     /// Enter or leave selecting several messages.
     ToggleBulk,
     /// Select every message the list shows.
@@ -177,12 +225,12 @@ pub enum Command {
     Bulk(BulkAction),
     /// Apply an action to the open message.
     Message(CtxAction),
-    /// Offer every action on the open message in a menu.
-    MessageMenu,
+    /// Take the queued message `id` out of the outbox unsent.
+    CancelSend(String),
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
-/// context menu, setup sheet) which the app owns directly.
+/// context menu) which the app owns directly.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell-derived layout flags the app writes, focus/seed bookkeeping, and the repaint flag); grouping them would need a real design pass, left for a follow-up rather than forced here"
@@ -201,6 +249,13 @@ pub struct MailState {
     /// delete, or flag changes do replicate through the mailbox.
     pub bulk_selection: Vec<MessageId>,
     pub bulk_selecting: bool,
+    /// Select all is reading the rest of the folder from the server: the
+    /// rows that arrive join the selection, and an action waits until the
+    /// folder is whole rather than acting on the part of it this device
+    /// happened to hold.
+    pub selecting_all: bool,
+    /// The open folder has pages on the server this device has not read.
+    pub more_older: bool,
     /// The selected message was explicitly inspected rather than opened. This
     /// is transient presentation state (never collaborative data): it makes
     /// the no-side-effect mode visible in the reader and prevents the normal
@@ -212,6 +267,17 @@ pub struct MailState {
     pub status_undo: bool,
     /// The list shows every account's inbox at once.
     pub all_inboxes: bool,
+    /// The list and the reader show the open account's outbox rather than a
+    /// folder's messages.
+    pub outbox_open: bool,
+    /// The account whose outbox is open.
+    pub outbox_account: usize,
+    /// The messages waiting in every account's outbox, as the document holds
+    /// them, oldest first: what the outbox page lists, and how many each
+    /// account's sidebar row counts.
+    pub outbox: Vec<QueuedMessage>,
+    /// The queued message the outbox page has open.
+    pub outbox_selected: Option<String>,
     /// Why the active account cannot check mail, as last said; `None`
     /// while it works. A refresh that fails the same way says nothing new.
     pub sync_error: Option<String>,
@@ -219,12 +285,24 @@ pub struct MailState {
     /// wanted from the server.
     pub wants_older: std::cell::Cell<bool>,
     /// The open account's mail has not arrived yet: nothing is kept on this
-    /// device and its first fetch is running. The list shows the rows that
-    /// are coming, not an empty mailbox.
-    pub fetching_first: bool,
+    /// device and its first fetch is running, timed from when it began and
+    /// from the server it comes from. The list shows the rows that are
+    /// coming, not an empty mailbox.
+    pub first_fetch: Option<ui::arriving::ArrivalClock>,
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
+    /// The messages whose remote images the person loaded while this window
+    /// is open: one message's, not its sender's.
+    pub remote_messages: std::collections::HashSet<MessageId>,
+    /// The HTML messages the person reads as their plain text.
+    pub plain_text: std::collections::HashSet<MessageId>,
+    /// Where fetched mail is kept: the inline images of a message kept on
+    /// this device are read from it.
+    pub(crate) kept: crate::store::Store,
+    /// What the reader's menu asked of the open HTML body (copy, select
+    /// all), for the reader to carry out.
+    pub reader_requests: Vec<ReaderChoice>,
 
     /// The pictures beside senders: Contacts' and the person's own, never
     /// fetched from a picture service.
@@ -257,6 +335,73 @@ pub struct MailState {
 impl MailState {
     pub fn shared(state: MailState) -> Shared {
         Rc::new(RefCell::new(state))
+    }
+
+    /// Whether remote images show in `message`: the person loaded them for
+    /// it, or allowed them for its sender.
+    pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
+        self.remote_messages.contains(&message.id)
+            || self
+                .remote_senders
+                .contains(&message.from.email.to_ascii_lowercase())
+    }
+
+    /// Load the remote images of message `id`, and only its.
+    pub fn load_remote(&mut self, id: MessageId) {
+        self.remote_messages.insert(id);
+        self.dirty = true;
+    }
+
+    /// Load remote images in every message from the sender of `id`.
+    pub fn always_load_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.insert(sender);
+            self.dirty = true;
+        }
+    }
+
+    /// Stop loading remote images from the sender of `id`, this message's
+    /// included.
+    pub fn stop_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.remove(&sender);
+        }
+        self.remote_messages.remove(&id);
+        self.dirty = true;
+    }
+
+    /// The images `message`'s HTML shows in place, from memory or as kept
+    /// on this device.
+    pub fn inline_parts(
+        &self,
+        message: &crate::model::Message,
+    ) -> Vec<crate::html_mail::InlinePart> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                let id = attachment.inline_id.clone()?;
+                let bytes = if attachment.content.is_empty() && attachment.kept {
+                    self.kept.attachment(&message.account, message.id, index)?
+                } else {
+                    attachment.content.clone()
+                };
+                Some(crate::html_mail::InlinePart {
+                    id,
+                    mime: attachment.mime.clone(),
+                    bytes,
+                })
+            })
+            .collect()
     }
 
     /// The bundled sample mailbox and accounts, editing the document it is
@@ -312,14 +457,24 @@ impl MailState {
             selected: None,
             bulk_selection: Vec::new(),
             bulk_selecting: false,
+            selecting_all: false,
+            more_older: false,
             remote_senders: std::collections::BTreeSet::new(),
+            remote_messages: std::collections::HashSet::new(),
+            plain_text: std::collections::HashSet::new(),
+            kept: crate::store::Store::default(),
+            reader_requests: Vec::new(),
             inspection: None,
             status: None,
             status_undo: false,
             all_inboxes: false,
+            outbox_open: false,
+            outbox_account: 0,
+            outbox: Vec::new(),
+            outbox_selected: None,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
-            fetching_first: false,
+            first_fetch: None,
             avatars,
             narrow: false,
             detail_pushed: false,
@@ -447,8 +602,6 @@ impl MailState {
             .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
 
-    // ---- intents ----
-
     pub fn push_intent(&mut self, i: Intent) {
         self.intents.push(i);
         self.dirty = true;
@@ -466,8 +619,6 @@ impl MailState {
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
-
-    // ---- derived views ----
 
     pub fn current_threads(&self) -> Vec<Thread> {
         self.mailbox.threads_in(self.folder)
@@ -565,7 +716,82 @@ impl MailState {
     }
 
     /// Show every account's inbox in one list, newest first.
+    /// Show `account`'s outbox: the messages waiting to leave, and why any of
+    /// them did not.
+    pub fn open_outbox(&mut self, account: usize) {
+        self.set_active_account(account);
+        self.outbox_account = account;
+        self.outbox_open = true;
+        self.all_inboxes = false;
+        self.bulk_selecting = false;
+        self.selected = None;
+        self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        self.push_intent(Intent::ShowOverview);
+        self.dirty = true;
+    }
+
+    /// Leave the outbox for a folder.
+    pub fn close_outbox(&mut self) {
+        self.outbox_open = false;
+        self.outbox_selected = None;
+        self.dirty = true;
+    }
+
+    /// The queued messages the open account's outbox shows, oldest first.
+    pub fn queued(&self) -> Vec<&QueuedMessage> {
+        let email = self
+            .accounts
+            .accounts
+            .get(self.outbox_account)
+            .map_or_else(String::new, |account| account.config.email.clone());
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == email)
+            .collect()
+    }
+
+    /// How many messages `account` waits to send.
+    pub fn queued_count(&self, account: usize) -> usize {
+        let Some(account) = self.accounts.accounts.get(account) else {
+            return 0;
+        };
+        self.outbox
+            .iter()
+            .filter(|queued| queued.account == account.config.email)
+            .count()
+    }
+
+    /// The queued message the outbox page has open.
+    pub fn open_queued(&self) -> Option<&QueuedMessage> {
+        let id = self.outbox_selected.as_deref()?;
+        self.queued().into_iter().find(|queued| queued.id == id)
+    }
+
+    /// Open queued message `id`: the row's press.
+    pub fn select_queued(&mut self, id: &str) {
+        self.outbox_selected = Some(id.to_owned());
+        self.push_intent(Intent::ShowDetail);
+        self.dirty = true;
+    }
+
+    /// Take queued message `id` out of the outbox unsent: the `cancel-send`
+    /// verb, the same one an agent and the palette reach.
+    pub fn cancel_send(&mut self, doc: &mut ui::widget::Edits<'_>, id: &str) {
+        self.submit(
+            doc,
+            Mail::CANCEL_SEND.with(mailbox::CancelSend { id: id.to_owned() }),
+        );
+        self.outbox.retain(|queued| queued.id != id);
+        if self.outbox_selected.as_deref() == Some(id) {
+            self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
+        }
+        self.status = Some("Taken out of the outbox; nothing was sent".into());
+        self.dirty = true;
+    }
+
     pub fn open_all_inboxes(&mut self) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.all_inboxes = true;
         self.folder = Folder::Inbox;
         self.mailbox.set_account(AccountConfig::default());
@@ -599,6 +825,8 @@ impl MailState {
     }
 
     pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -615,6 +843,8 @@ impl MailState {
     /// Reveal a folder as local presentation state. Canonical resource `View`
     /// operations use this path, so navigation does not create a document edit.
     pub fn reveal_folder(&mut self, folder: Folder) {
+        self.close_outbox();
+        self.selecting_all = false;
         self.folder = folder;
         self.selected = self
             .current_threads()
@@ -647,9 +877,15 @@ impl MailState {
     /// local selection so a later accidental shortcut cannot act on messages
     /// the person no longer sees selected.
     pub fn set_bulk_selecting(&mut self, selecting: bool) {
+        // The outbox lists messages that have not left, not a folder's rows:
+        // there is nothing of a folder's to select while it shows.
+        if selecting && self.outbox_open {
+            return;
+        }
         self.bulk_selecting = selecting;
         if !selecting {
             self.bulk_selection.clear();
+            self.selecting_all = false;
         }
         self.dirty = true;
     }
@@ -679,14 +915,72 @@ impl MailState {
     /// cap. This is a selection operation only; no mailbox state changes until
     /// an explicit bulk action is chosen.
     pub fn select_all_visible(&mut self) {
+        if self.outbox_open {
+            return;
+        }
         self.bulk_selecting = true;
+        self.select_every_row_held();
+        self.dirty = true;
+    }
+
+    /// Every row the device holds, chosen.
+    fn select_every_row_held(&mut self) {
         self.bulk_selection = self
             .list_rows()
             .into_iter()
             .map(|(id, _)| id)
             .filter(|id| self.mailbox.get(*id).is_some())
             .collect();
+    }
+
+    /// Rows arrived while Select all is reading the folder: they are part of
+    /// "all" too, so they join the selection. Answers whether any did.
+    pub fn extend_selection(&mut self) -> bool {
+        if !self.selecting_all || !self.bulk_selecting {
+            return false;
+        }
+        let before = self.bulk_selection.len();
+        let held: Vec<MessageId> = self
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| self.mailbox.get(*id).is_some())
+            .collect();
+        for id in held {
+            if !self.bulk_selection.contains(&id) {
+                self.bulk_selection.push(id);
+            }
+        }
+        let grew = self.bulk_selection.len() != before;
+        self.dirty |= grew;
+        grew
+    }
+
+    /// The folder is whole: Select all has every message it holds.
+    pub fn finish_selection(&mut self, noun: &str) {
+        self.extend_selection();
+        self.selecting_all = false;
+        self.status = Some(format!(
+            "Selected all {} messages in {noun}",
+            self.selected_bulk_ids().len()
+        ));
+        self.status_undo = false;
         self.dirty = true;
+    }
+
+    /// Select all is still reading the folder, so an action would act on a
+    /// part of it: the action waits, and says so.
+    pub fn selection_still_arriving(&mut self) -> bool {
+        if !(self.selecting_all && self.more_older) {
+            return false;
+        }
+        self.status = Some(format!(
+            "Still reading this folder; {} selected so far",
+            self.selected_bulk_ids().len()
+        ));
+        self.status_undo = false;
+        self.dirty = true;
+        true
     }
 
     pub fn selected_bulk_ids(&self) -> Vec<MessageId> {
@@ -707,6 +1001,9 @@ impl MailState {
         doc: &mut ui::widget::Edits<'_>,
         action: BulkAction,
     ) -> usize {
+        if self.selection_still_arriving() {
+            return 0;
+        }
         let ids = self.selected_bulk_ids();
         if ids.is_empty() {
             return 0;
@@ -1042,6 +1339,76 @@ mod tests {
         ui::tilo_resource::history::versions(&mut doc.clone()).len()
     }
 
+    /// Select all reaches the folder's pages on the server, not just the one
+    /// this device holds: the rows that arrive join the selection, and an
+    /// action waits for the whole folder instead of acting on its first page
+    /// and reporting that as "all".
+    #[test]
+    fn select_all_waits_for_the_pages_that_are_still_arriving() {
+        let mut st = state();
+        let held = st.list_rows().len();
+        assert!(held > 0, "the sample inbox holds rows");
+        // What the app does on Select all when the folder has more: the rows
+        // held are chosen, and the rest of the folder is on its way.
+        st.select_all_visible();
+        st.more_older = true;
+        st.selecting_all = true;
+        assert!(st.selecting_all, "the rest of the folder is being read");
+        assert_eq!(st.selected_bulk_ids().len(), held);
+
+        let mut doc = crate::resource::TestMail::doc();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        assert_eq!(
+            st.apply_bulk_action(&mut edits, BulkAction::MarkRead),
+            0,
+            "a part of the folder is not the folder"
+        );
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Still reading this folder; {held} selected so far").as_str())
+        );
+
+        // The next page arrives: its rows are part of "all".
+        let mut arriving = st
+            .mailbox
+            .messages_in(Folder::Starred)
+            .into_iter()
+            .next()
+            .cloned()
+            .expect("a message outside the inbox");
+        arriving.folder = Folder::Inbox;
+        arriving.id = uuid::Uuid::new_v4();
+        arriving.subject = "A page that arrived while selecting".into();
+        arriving.timestamp_min += 1;
+        // Mail that is only here (the account the mailbox is open on shows
+        // it), and its own conversation rather than a reply into one held.
+        arriving.account = String::new();
+        arriving.in_reply_to = None;
+        arriving.rfc_message_id = None;
+        st.mailbox.insert(arriving);
+        let rows: Vec<MessageId> = st.list_rows().into_iter().map(|(id, _)| id).collect();
+        assert!(rows.len() > held, "the folder holds one more row");
+        assert!(st.extend_selection(), "the new rows joined the selection");
+        assert_eq!(
+            st.selected_bulk_ids().len(),
+            rows.len(),
+            "every row the device now holds is chosen"
+        );
+
+        // Nothing left to read: the selection is the folder.
+        st.more_older = false;
+        st.finish_selection("Inbox");
+        assert!(!st.selecting_all);
+        assert_eq!(st.selected_bulk_ids().len(), rows.len());
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Selected all {} messages in Inbox", rows.len()).as_str())
+        );
+
+        // And now an action takes the whole selection.
+        assert!(!st.selection_still_arriving());
+    }
+
     /// Fetched messages are recorded as a mail action whose server flags
     /// are content from outside: in the document, on nobody's undo stack.
     #[test]
@@ -1070,7 +1437,6 @@ mod tests {
 
     #[test]
     fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
-        // Phase `initial_reader_selection_is_read_state_neutral`.
         {
             let st = state();
             let selected = st
@@ -1084,7 +1450,6 @@ mod tests {
             );
         }
 
-        // Phase `arrow_browsing_previews_an_unread_message_without_a_read_action`.
         {
             let mut st = state();
             let rows = st.list_rows();
@@ -1107,7 +1472,6 @@ mod tests {
             assert_eq!(doc.get_heads(), heads_before);
         }
 
-        // Phase `reply_all_action_raises_distinct_reply_all_intent`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1228,7 +1592,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bulk_actions_are_bounded_canonical_and_never_partial() {
-        // Phase `bulk_archive_is_one_bounded_canonical_move_action_and_keeps_selection_local`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1272,7 +1635,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_marking_read_retains_the_local_selection_for_follow_up_triage`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1296,7 +1658,6 @@ mod tests {
             assert_eq!(st.selected_bulk_ids(), ids);
         }
 
-        // Phase `bulk_move_to_trash_never_purges_trash_rows_from_a_mixed_virtual_view`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1340,7 +1701,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_purge_refuses_mixed_or_stale_rows_without_a_partial_mutation`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();

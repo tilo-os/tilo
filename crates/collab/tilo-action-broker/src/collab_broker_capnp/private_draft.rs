@@ -15,8 +15,22 @@ pub(super) struct Entry {
     pub(super) expires: Instant,
     certificate: DeviceCert,
     origin: Origin,
-    worker: PrivateWorkerRegistration,
     draft: Draft,
+}
+
+/// The native Chat app this person has open in `workspace`: a worker on one
+/// of Chat's routes there, under this very device certificate. A draft is
+/// handed to the record its adopt action is delivered to, so any of them
+/// may adopt it.
+fn is_persons_chat(
+    worker: &PrivateWorkerRegistration,
+    workspace: &str,
+    certificate: &DeviceCert,
+) -> bool {
+    worker.route.app_id == "so.tilo.chat"
+        && worker.route.cluster_id == workspace
+        && worker.certificate.user_public_key == certificate.user_public_key
+        && worker.certificate.device_public_key == certificate.device_public_key
 }
 
 impl CapnpBrokerState {
@@ -35,30 +49,16 @@ impl CapnpBrokerState {
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {}
             Target::Person { .. } => return Err("invalid private draft target".into()),
         }
-        let worker = {
-            let workers = self
-                .host_workers
-                .lock()
-                .map_err(|_| "native Chat registry unavailable")?;
-            let mut matching = workers
-                .values()
-                .filter_map(|worker| worker.worker_registration.as_ref())
-                .filter(|worker| {
-                    worker.route.app_id == "so.tilo.chat"
-                        && worker.route.cluster_id == draft.workspace
-                        && worker.certificate.user_public_key == certificate.user_public_key
-                        && worker.certificate.device_public_key == certificate.device_public_key
-                });
-            let worker = matching
-                .next()
-                .ok_or("native Chat worker unavailable; open Chat and retry")?
-                .clone();
-            if matching.next().is_some() {
-                return Err("private draft requires one exact native Chat worker".into());
-            }
-            drop(workers);
-            worker
-        };
+        let chat_is_open = self
+            .host_workers
+            .lock()
+            .map_err(|_| "native Chat registry unavailable")?
+            .values()
+            .filter_map(|worker| worker.worker_registration.as_ref())
+            .any(|worker| is_persons_chat(worker, &draft.workspace, &certificate));
+        if !chat_is_open {
+            return Err("native Chat worker unavailable; open Chat and retry".into());
+        }
         let mut drafts = self
             .private_drafts
             .lock()
@@ -77,7 +77,6 @@ impl CapnpBrokerState {
                 expires,
                 certificate,
                 origin,
-                worker,
                 draft,
             },
         );
@@ -123,7 +122,7 @@ impl CapnpChannelHandle {
         };
         let actor = data.private_draft_caller(&self.state, peer, &worker, token)?;
         // Copy the origin callback out before revalidation: it consults broker state.
-        let (origin, certificate, bound_worker, draft, expires) = {
+        let (origin, certificate, draft, expires) = {
             let mut drafts = self
                 .state
                 .private_drafts
@@ -136,15 +135,16 @@ impl CapnpChannelHandle {
             let retained = (
                 entry.origin.clone(),
                 entry.certificate.clone(),
-                entry.worker.clone(),
                 entry.draft.clone(),
                 entry.expires,
             );
             drop(drafts);
             retained
         };
+        // The adopt action was delivered to this worker's own route (checked
+        // with the original invocation above): that record is the draft's.
         if actor != certificate
-            || worker != bound_worker
+            || !is_persons_chat(&worker, &draft.workspace, &certificate)
             || draft.workspace != self.route().cluster_id
             || origin()? != certificate
             || expires <= Instant::now()

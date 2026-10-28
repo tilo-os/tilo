@@ -47,7 +47,6 @@ use test_http::{Reply, Request, Responder};
 use crate::content_hash::content_hash;
 use crate::{DropboxConfig, Endpoints};
 
-/// The access token the fake accepts.
 pub const TOKEN: &str = "fake-dropbox-access-token";
 /// The account's own namespace.
 pub const HOME_NAMESPACE: &str = "2000";

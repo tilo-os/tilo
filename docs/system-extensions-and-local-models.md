@@ -114,6 +114,95 @@ the transaction. Cancellation stops at a safe boundary; retry reuses verified
 objects. Removal is confirmed, stops the model first, and deletes only objects
 whose content identity belongs exclusively to that model.
 
+## A person's own models
+
+The signed catalogue's recommendation is a starting point, not the only
+source of models. In Agent Models a person can search Hugging Face from the
+window bar's search (the pane draws no field: what is typed there queries the
+Hub, for GGUF or safetensors as the pane's format choice says), open any
+model by its id or link (`owner/name`, a model, tree, blob or resolve URL),
+including their own fine-tunes and private repositories, or add a GGUF file
+from the device. The model manager answers all of it; Settings only shows
+the answers and asks through typed effects (`search-hub-models`,
+`set-hub-format`, `show-hub-model`, `install-hub-model`, `add-model-file`), which agents reach
+through the same action system. A file from the device is chosen in the file
+chooser, which hands Settings the open file; Settings passes that handle on and
+the model service copies from it. Neither ever opens a path it was given.
+
+What a person sees before anything downloads, for every runnable variant of
+the model at the commit it resolved to:
+
+- the variant: one GGUF quantization (a single file, or its numbered shards)
+  for llama.cpp, or the safetensors snapshot (weights, config, tokenizer) for
+  vLLM;
+- its download size, and a fit rating from the trusted hardware probe:
+  whether it fits accelerator memory, shares accelerator and system memory,
+  runs from system memory on the processor, or does not fit (a variant that
+  does not fit cannot be downloaded);
+- its licence, read from the model card at that commit, with the licence
+  document to accept;
+- whether a signed runtime on this device serves its format yet. Without
+  one the model can still be downloaded; it starts once one ships.
+
+Gated models need their terms accepted on Hugging Face with the person's
+account, then download with that account's credential: a "Sign in with
+Hugging Face" (authorization code with PKCE through the system browser and a
+one-shot loopback redirect, or a device code entered on Hugging Face's page
+for a device without a browser, also `tilo-model-manager hub-sign-in`), or a
+pasted access token. Either is kept in the same vault entry
+(`ServiceCredentials`, bound to the model manager's purpose and the
+`https://huggingface.co` origin): Settings stores it, the model manager reads
+it, and it is never put on a command line, in state or in logs. The sign-in
+asks only for `openid profile gated-repos`; Settings shows the account and
+Sign out. The model manager renews a due sign-in with its refresh token and
+reports one it cannot renew as ended, which Settings shows as "sign in
+again".
+
+### Why weights may come from anywhere while runtimes may not
+
+A runtime is code: it parses weights, owns accelerator memory and opens a
+port. It stays a digest-pinned OCI image from the signed catalogue, started
+with an argument vector built only from typed, signed fields. Weights are data
+that this signed code reads, so a person can take them from wherever they
+choose without widening what runs on the machine:
+
+- only data formats are downloaded: GGUF files, and safetensors with their
+  JSON config and tokenizer files. Pickled checkpoints (`*.bin`, `*.pt`),
+  Python files and everything else in a repository are never fetched, and vLLM
+  is never told to trust remote code, so a repository cannot ship code that
+  runs;
+- every file is verified against the hash the Hub publishes for the pinned
+  commit before it enters the content-addressed store: the LFS SHA-256 of a
+  large file, the git blob id of a small one. What runs is exactly what the
+  person reviewed, even if the repository changes later;
+- the runtime sees the model read-only through one bind mount, rootless, and
+  answers only on a loopback port the manager allocates. Agents reach it
+  through the gateway like any other provider.
+
+The person takes on the model's behaviour and licence, which is why both are
+shown before the download, and why the acceptance is recorded against the
+exact commit and file list.
+
+### Storage and lifecycle
+
+A pick downloads in a durable background worker with the same resumable,
+byte-offset transfers and published progress as a catalogue release; a
+dropped connection resumes, and bytes that fail verification are discarded so
+the next try starts clean. Each verified file becomes the object
+`$XDG_DATA_HOME/tilo/models/sha256/<sha256>` on this device; the model is a
+directory under `snapshots/` assembled from hard links to those objects,
+named as in the repository so shards find each other, and put in place
+atomically. A GGUF file added from the device is copied and hashed into the
+same store, so changing or deleting the original changes nothing. `state.json`
+records each pick (repository, commit, files and their published hashes,
+licence) beside its lifecycle; another revision of an added model is added
+after removing the first. Removal stops the model, deletes its directory and
+every object no other model uses, and its unfinished partial files.
+
+Once installed, a pick is started like a catalogue model when a signed
+runtime for its format fits the hardware, and while it runs it is a model of
+the local provider profile that agents and Chat choose from.
+
 ## In-process models
 
 Some signed models are small enough to run on the CPU inside the per-user
@@ -156,7 +245,9 @@ unsupported combination cannot be forced through the UI.
 
 Settings is a client. It cannot download into system storage, invoke Podman,
 load modules, edit boot state, or construct commands. `tilo-model-manager`
-accepts only typed verbs and catalogue IDs. The privileged extension activator
+accepts only typed verbs with catalogue IDs, Hugging Face model references and
+variant names it resolves and verifies itself, or a GGUF file path it copies
+into its store. The privileged extension activator
 independently re-reads the signed catalogue, current image identity, and
 hardware facts before each state transition. Polkit authorizes the narrow
 management operation; it does not authorize a general command runner.

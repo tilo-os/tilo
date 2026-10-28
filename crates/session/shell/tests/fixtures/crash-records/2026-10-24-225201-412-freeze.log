@@ -1,0 +1,16 @@
+tilo desktop freeze
+===================
+timestamp: 2026-10-24-225201
+version:   0.1.0
+binary:    /usr/bin/tilo-shell
+build-id:  9f2c41d07be3a65e
+thread:    412
+stalled:   26.4 s
+outcome:   the compositor ended and the session returned to the login screen
+
+main loop hung: thread 412 (shell) slept 26.4 s in futex_wait
+thread 412 (shell)
+   0: std::sys::sync::mutex::futex::Mutex::lock_contended
+   1: shell::compositor::native::frame
+thread 415 (crash-notice)
+   0: std::thread::park

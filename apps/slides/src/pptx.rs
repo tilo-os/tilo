@@ -30,17 +30,18 @@ use tilo_content::ContentStore;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
+use crate::model::{
+    Background, Deck, DeckLook, Element, ElementKind, Layout, Palette, PaletteKind, Slide,
+    TextAlign,
+};
+use vello::peniko::Color;
 
 const EMU: f64 = 9_525.0;
 
 /// Serialise `deck` to the bytes of a `.pptx` package, bundling the pictures
 /// `content` holds for its image elements.
-///
-/// # Errors
-///
-/// Returns an error if the ZIP writer fails.
 pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
+    let shown = crate::render::shown_text_heights(deck);
     let mut pictures = Vec::<Picture>::new();
     for slide in &deck.slides {
         for el in &slide.elements {
@@ -84,7 +85,8 @@ pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8
     put("ppt/slideMasters/_rels/slideMaster1.xml.rels", MASTER_RELS)?;
     put("ppt/slideLayouts/slideLayout1.xml", LAYOUT)?;
     put("ppt/slideLayouts/_rels/slideLayout1.xml.rels", LAYOUT_RELS)?;
-    put("ppt/theme/theme1.xml", THEME)?;
+    let palette = Palette::resolve(deck.palette, deck.look);
+    put("ppt/theme/theme1.xml", &theme_xml(&palette))?;
     if has_notes {
         put("ppt/notesMasters/notesMaster1.xml", NOTES_MASTER)?;
         put(
@@ -99,7 +101,7 @@ pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8
             .collect();
         put(
             &format!("ppt/slides/slide{}.xml", idx + 1),
-            &slide_xml(slide, &used),
+            &slide_xml(slide, &palette, &used, &shown),
         )?;
         put(
             &format!("ppt/slides/_rels/slide{}.xml.rels", idx + 1),
@@ -126,10 +128,6 @@ pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8
 
 /// Parse the bytes of a `.pptx` package into a [`Deck`], storing its
 /// pictures in `content`.
-///
-/// # Errors
-///
-/// Returns an error if `bytes` isn't a readable, bounded presentation package.
 pub fn read_pptx(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = crate::odp::open_package(bytes)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
@@ -169,9 +167,14 @@ pub fn read_pptx(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> 
     if slides.is_empty() {
         slides.push(Slide::new(Layout::Blank));
     }
+    let (palette, look) = read_zip_text(&mut zip, "ppt/theme/theme1.xml").map_or_else(
+        || (PaletteKind::Indigo, DeckLook::default()),
+        |theme| deck_look_of(&theme),
+    );
     let deck = Deck {
         title,
-        palette: PaletteKind::Indigo,
+        palette,
+        look,
         slides,
     };
     crate::odp::validate_imported_deck(&deck)?;
@@ -185,8 +188,9 @@ struct Picture {
 }
 
 /// Write a Tilo palette role as DrawingML. Theme colours stay live when the
-/// presentation is opened in Office; literal picker colours stay literal.
-fn drawing_color(role: &str) -> String {
+/// presentation is opened in Office; literal picker colours stay literal,
+/// and so do the roles no scheme slot holds (white, the ink on the accent).
+fn drawing_color(role: &str, palette: &Palette) -> String {
     if let Some(hex) = role.strip_prefix('#') {
         if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             let rgb = std::str::from_utf8(hex.as_bytes().get(..6).unwrap_or_default())
@@ -203,11 +207,16 @@ fn drawing_color(role: &str) -> String {
             return format!(r#"<a:srgbClr val="{rgb}">{alpha_xml}</a:srgbClr>"#);
         }
     }
+    let literal = |color: Color| format!(r#"<a:srgbClr val="{}"/>"#, rgb(color));
     let scheme = match role {
-        "surface" | "on-accent" | "white" => "lt1",
+        // The deck names pure white itself: document content, not a theme colour.
+        "white" => return r#"<a:srgbClr val="FFFFFF"/>"#.to_owned(),
+        "on-accent" => return literal(palette.on_accent),
+        "surface" => "lt1",
         "surface-dim" => "lt2",
-        "deep" | "text" => "dk1",
+        "text" => "dk1",
         "text-dim" => "dk2",
+        "deep" => "accent6",
         "success" => "accent2",
         "warning" => "accent3",
         "danger" => "accent4",
@@ -219,11 +228,14 @@ fn drawing_color(role: &str) -> String {
     format!(r#"<a:schemeClr val="{scheme}"/>"#)
 }
 
-fn drawing_fill(role: &str) -> String {
+fn drawing_fill(role: &str, palette: &Palette) -> String {
     if role == "none" {
         "<a:noFill/>".into()
     } else {
-        format!("<a:solidFill>{}</a:solidFill>", drawing_color(role))
+        format!(
+            "<a:solidFill>{}</a:solidFill>",
+            drawing_color(role, palette)
+        )
     }
 }
 
@@ -231,7 +243,7 @@ fn drawing_fill(role: &str) -> String {
 /// The value deliberately stays theme-relative: an Accent or Deep slide still
 /// tracks the presentation theme when opened in PowerPoint instead of being
 /// flattened to a Tilo-specific RGB colour.
-fn drawing_slide_background(background: Background) -> String {
+fn drawing_slide_background(background: Background, palette: &Palette) -> String {
     let role = match background {
         Background::Surface => "surface",
         Background::Accent => "accent",
@@ -239,7 +251,7 @@ fn drawing_slide_background(background: Background) -> String {
     };
     format!(
         "<p:bg><p:bgPr>{}<a:effectLst/></p:bgPr></p:bg>",
-        drawing_fill(role)
+        drawing_fill(role, palette)
     )
 }
 
@@ -250,19 +262,21 @@ fn slide_background_from_color(e: &BytesStart<'_>) -> Option<Background> {
     (local(e.name().as_ref()) == b"schemeClr").then(|| match attr(e, b"val").as_str() {
         "lt1" => Some(Background::Surface),
         "accent1" => Some(Background::Accent),
-        "dk1" => Some(Background::Deep),
+        // `dk1` is where files written before the deep tone had its own
+        // slot kept it.
+        "accent6" | "dk1" => Some(Background::Deep),
         _ => None,
     })?
 }
 
-fn drawing_line(role: &str, width: f64) -> String {
+fn drawing_line(role: &str, width: f64, palette: &Palette) -> String {
     let width = (width.max(0.0) * EMU).round() as i64;
     if role == "none" || width == 0 {
         "<a:ln><a:noFill/></a:ln>".into()
     } else {
         format!(
             r#"<a:ln w="{width}"><a:solidFill>{}</a:solidFill></a:ln>"#,
-            drawing_color(role)
+            drawing_color(role, palette)
         )
     }
 }
@@ -294,8 +308,9 @@ fn set_pending_no_fill(c: &mut Pending, target: ColorTarget) {
 fn set_pending_color(c: &mut Pending, target: ColorTarget, e: &BytesStart<'_>) {
     let role = match local(e.name().as_ref()) {
         b"schemeClr" => match attr(e, b"val").as_str() {
-            "lt1" => "white".into(),
+            "lt1" => "surface".into(),
             "lt2" => "surface-dim".into(),
+            "accent6" => "deep".into(),
             "dk1" => "text".into(),
             "dk2" => "text-dim".into(),
             "accent2" => "success".into(),
@@ -322,11 +337,20 @@ fn set_pending_color(c: &mut Pending, target: ColorTarget, e: &BytesStart<'_>) {
     }
 }
 
-fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
+/// One slide's part. `shown` holds each text box's height as Slides shows
+/// it ([`crate::render::shown_text_heights`]): its frame here, with the box
+/// marked to fit its text, so a box its words outgrew is not cut short.
+fn slide_xml(
+    slide: &Slide,
+    palette: &Palette,
+    pictures: &[&Picture],
+    shown: &HashMap<String, f64>,
+) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>"#,
     );
-    s.push_str(&drawing_slide_background(slide.background));
+    s.push_str(&drawing_slide_background(slide.background, palette));
+    let on = palette.on(slide.background);
     s.push_str(r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>"#);
     for (i, el) in slide.z_sorted().into_iter().enumerate() {
         let id = i + 2;
@@ -339,6 +363,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                 }
             }
             ElementKind::Text => {
+                let h = emu(shown.get(&el.id).copied().unwrap_or(el.h));
                 let align = match el.align {
                     TextAlign::Center => "ctr",
                     TextAlign::Right => "r",
@@ -346,7 +371,16 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     TextAlign::Left => "l",
                 };
                 let size = (el.font_size * 100.0).round() as i64;
-                let color = drawing_color(&el.fill);
+                // The ink Slides draws the words in: the theme's text slot
+                // where that is it, else the ink itself, chosen against what
+                // the words stand on.
+                let ink = crate::render::text_ink(&on, slide, el);
+                let color = match el.fill.as_str() {
+                    "text" if ink == palette.text => drawing_color("text", palette),
+                    "text-dim" if ink == palette.text_dim => drawing_color("text-dim", palette),
+                    "text" | "text-dim" => format!(r#"<a:srgbClr val="{}"/>"#, rgb(ink)),
+                    role => drawing_color(role, palette),
+                };
                 let run = |text: &str, bold: bool, italic: bool| {
                     format!(
                         r#"<a:r><a:rPr lang="en-US" sz="{size}" b="{}" i="{}">{color}</a:rPr><a:t>{}</a:t></a:r>"#,
@@ -368,10 +402,24 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                                 .map(|(text, bold, italic)| run(text, bold, italic))
                                 .collect()
                         };
-                        format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#)
+                        // A list item carries its bullet or number, hung
+                        // in the margin as PowerPoint sets one.
+                        let marker = match block.kind {
+                            ui::widget::BlockKind::Bullet { .. } => Some(r#"<a:buChar char="•"/>"#),
+                            ui::widget::BlockKind::Numbered { .. } => {
+                                Some(r#"<a:buAutoNum type="arabicPeriod"/>"#)
+                            }
+                            _ => None,
+                        };
+                        match marker {
+                            Some(marker) => format!(
+                                r#"<a:p><a:pPr algn="{align}" marL="457200" indent="-342900">{marker}</a:pPr>{body}</a:p>"#
+                            ),
+                            None => format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#),
+                        }
                     })
                     .collect::<String>();
-                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
+                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr><a:spAutoFit/></a:bodyPr><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
                 let prst = match kind {
@@ -379,7 +427,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     ElementKind::Line => "line",
                     _ => "rect",
                 };
-                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{}{}</p:spPr></p:sp>"#, drawing_fill(&el.fill), drawing_line(&el.stroke, el.stroke_width)));
+                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{}{}</p:spPr></p:sp>"#, drawing_fill(&el.fill, palette), drawing_line(&el.stroke, el.stroke_width, palette)));
             }
         }
     }
@@ -569,6 +617,16 @@ fn parse_slide(
                         }
                         b"srgbClr" | b"schemeClr" => {
                             set_pending_color(c, color_target(in_text_style, in_line), &e);
+                        }
+                        // A paragraph's bullet or number makes it a list item.
+                        b"buChar" | b"buAutoNum" => {
+                            if let Some(block) = c.blocks.last_mut() {
+                                block.kind = if n == b"buChar" {
+                                    ui::widget::BlockKind::Bullet { indent: 0 }
+                                } else {
+                                    ui::widget::BlockKind::Numbered { indent: 0 }
+                                };
+                            }
                         }
                         b"noFill" => {
                             set_pending_no_fill(c, color_target(in_text_style, in_line));
@@ -928,7 +986,73 @@ const LAYOUT: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:sldLayout xmlns
 const LAYOUT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>"#;
 const NOTES_MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name=""><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/></p:notesMaster>"#;
 const NOTES_MASTER_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
-const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Tilo"><a:themeElements><a:clrScheme name="Tilo"><a:dk1><a:srgbClr val="1F2937"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="334155"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="5A60F0"/></a:accent1><a:accent2><a:srgbClr val="10B981"/></a:accent2><a:accent3><a:srgbClr val="F59E0B"/></a:accent3><a:accent4><a:srgbClr val="F43F5E"/></a:accent4><a:accent5><a:srgbClr val="0EA5E9"/></a:accent5><a:accent6><a:srgbClr val="8B5CF6"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="Tilo"><a:majorFont/><a:minorFont/></a:fontScheme><a:fmtScheme name="Tilo"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
+/// The presentation theme: the deck's own colours in its look, so the file
+/// shows the deck as every collaborator sees it. Slots: `lt1`/`lt2` the
+/// surfaces, `dk1`/`dk2` the inks on them, `accent1` the accent,
+/// `accent2`..`accent5` the status hues and `accent6` the deep tone.
+fn theme_xml(palette: &Palette) -> String {
+    let slot = |name: &str, color: Color| {
+        format!(r#"<a:{name}><a:srgbClr val="{}"/></a:{name}>"#, rgb(color))
+    };
+    let scheme = [
+        slot("dk1", palette.text),
+        slot("lt1", palette.surface),
+        slot("dk2", palette.text_dim),
+        slot("lt2", palette.surface_dim),
+        slot("accent1", palette.accent),
+        slot("accent2", palette.success),
+        slot("accent3", palette.warning),
+        slot("accent4", palette.danger),
+        slot("accent5", palette.info),
+        slot("accent6", palette.deep),
+    ]
+    .concat();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Tilo"><a:themeElements><a:clrScheme name="Tilo">{scheme}<a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="Tilo"><a:majorFont/><a:minorFont/></a:fontScheme><a:fmtScheme name="Tilo"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#
+    )
+}
+
+/// `color` as DrawingML's `RRGGBB`.
+fn rgb(color: Color) -> String {
+    ui::color::to_hex(color).trim_start_matches('#').to_owned()
+}
+
+/// The colour a theme names in scheme slot `slot` (`lt1`, `accent1`, …).
+fn scheme_color(theme: &str, slot: &str) -> Option<Color> {
+    let open = format!("<a:{slot}>");
+    let start = theme.find(&open)? + open.len();
+    let end = start + theme.get(start..)?.find(&format!("</a:{slot}>"))?;
+    let body = theme.get(start..end)?;
+    let value = |key: &str| {
+        let at = body.find(key)? + key.len();
+        body.get(at..at + 6)
+    };
+    ui::color::parse_hex(&format!(
+        "#{}",
+        value("srgbClr val=\"").or_else(|| value("lastClr=\""))?
+    ))
+}
+
+/// The palette and look a presentation's theme shows: a dark look where its
+/// light slot is the darker, and the Slides palette whose accent it carries.
+fn deck_look_of(theme: &str) -> (PaletteKind, DeckLook) {
+    let luminance = |color: Color| {
+        let c = color.to_rgba8();
+        u32::from(c.r) * 299 + u32::from(c.g) * 587 + u32::from(c.b) * 114
+    };
+    let look = match (scheme_color(theme, "lt1"), scheme_color(theme, "dk1")) {
+        (Some(light), Some(dark)) if luminance(light) < luminance(dark) => DeckLook::Dark,
+        _ => DeckLook::Light,
+    };
+    let palette = scheme_color(theme, "accent1")
+        .and_then(|accent| {
+            PaletteKind::ALL
+                .into_iter()
+                .find(|kind| rgb(Palette::resolve(*kind, look).accent) == rgb(accent))
+        })
+        .unwrap_or(PaletteKind::Indigo);
+    (palette, look)
+}
 
 #[cfg(test)]
 mod tests {
@@ -965,14 +1089,12 @@ mod tests {
         );
     }
 
-    /// PPTX round-trips core content, shape/text styling, theme backgrounds and pictures.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn pptx_round_trips_content_styles_backgrounds_and_pictures() {
-        // Case `round_trips_core_content`.
         {
             let content = ContentStore::memory();
             let mut s = Slide::new(Layout::Blank);
@@ -990,6 +1112,7 @@ mod tests {
             let d = Deck {
                 title: "Talk".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![s],
             };
             let b = write_pptx(&d, &content).unwrap();
@@ -1006,7 +1129,6 @@ mod tests {
             );
         }
 
-        // Case `round_trips_native_shape_and_text_styling`.
         {
             let content = ContentStore::memory();
             let mut slide = Slide::new(Layout::Blank);
@@ -1021,6 +1143,7 @@ mod tests {
             let deck = Deck {
                 title: "Style fidelity".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![slide],
             };
 
@@ -1033,7 +1156,6 @@ mod tests {
             assert_eq!(got.slides[0].elements[1].fill, "success");
         }
 
-        // Case `round_trips_theme_relative_slide_backgrounds`.
         {
             let content = ContentStore::memory();
             let mut accent = Slide::new(Layout::Blank);
@@ -1043,6 +1165,7 @@ mod tests {
             let deck = Deck {
                 title: "Background fidelity".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![accent, deep],
             };
 
@@ -1056,7 +1179,7 @@ mod tests {
                 "accent is a native theme background"
             );
             assert!(
-                deep_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"dk1\""),
+                deep_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"accent6\""),
                 "deep is a native theme background"
             );
 
@@ -1065,7 +1188,6 @@ mod tests {
             assert_eq!(got.slides[1].background, Background::Deep);
         }
 
-        // Case `bundles_local_picture`.
         {
             let content = ContentStore::memory();
             let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
@@ -1076,6 +1198,7 @@ mod tests {
             let d = Deck {
                 title: "Pictures".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![s],
             };
             let b = write_pptx(&d, &content).unwrap();
@@ -1093,7 +1216,6 @@ mod tests {
     /// Speaker notes, placeholder filtering, reserved characters and entity references.
     #[test]
     fn pptx_notes_and_text_escaping_round_trip() {
-        // Case `round_trips_speaker_notes_as_native_notes_slides`.
         {
             let content = ContentStore::memory();
             let mut with_notes = Slide::new(Layout::Blank);
@@ -1102,6 +1224,7 @@ mod tests {
             let deck = Deck {
                 title: "Notes fidelity".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![with_notes, without_notes],
             };
 
@@ -1129,7 +1252,6 @@ mod tests {
             assert!(got.slides[1].notes.is_empty());
         }
 
-        // Case `notes_import_ignores_non_body_placeholders`.
         {
             let notes = parse_notes(
                 r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
@@ -1137,7 +1259,6 @@ mod tests {
             assert_eq!(notes, "Keep this");
         }
 
-        // Case `round_trips_reserved_characters_in_title_text_and_notes`.
         {
             let content = ContentStore::memory();
             let mut slide = Slide::new(Layout::Blank);
@@ -1153,6 +1274,7 @@ mod tests {
             let deck = Deck {
                 title: "Q&A <live>".into(),
                 palette: PaletteKind::Indigo,
+                look: DeckLook::default(),
                 slides: vec![slide],
             };
             let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
@@ -1161,7 +1283,6 @@ mod tests {
             assert_eq!(got.slides[0].notes, "a < b && c > d");
         }
 
-        // Case `entity_and_character_references_resolve_in_notes_title_and_attributes`.
         {
             let notes = parse_notes(&format!(
                 r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#

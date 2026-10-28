@@ -5,9 +5,12 @@
 //! it once for every layer someone in the call shows (the relay asks the
 //! carrier for exactly those, `tilo_moq::client::Client::wanted_pictures`),
 //! hardware first, in H.264, which every participant (native and browser)
-//! decodes. A layer nobody shows is not encoded. A picture that stops
-//! changing (a still screen) is sent again as a keyframe every
-//! [`REPEAT`], so someone who starts showing it later sees it at once.
+//! decodes. A layer nobody shows is not encoded. Someone who starts
+//! showing a layer starts at a keyframe: the layer's standing one while the
+//! picture has not changed since, so a still screen costs no encode, or one
+//! encoded from the last frame at once.
+//! Each picture leaves sealed with the keys of the call's record
+//! ([`super::call_seal`]), which the relay does not hold.
 //!
 //! **Receiving.** The pictures of others the app shows arrive on the carrier
 //! and wait in the call's [`Inbox`] until the app collects them; a stream
@@ -29,8 +32,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_moq::client::{Client, ClientError};
 use tilo_moq::video::{Codec, Layer, Source, VideoObject};
 
-/// A still picture is sent again, as a keyframe, this often.
-pub(crate) const REPEAT: Duration = Duration::from_secs(2);
 /// Camera frames a second.
 pub(crate) const CAMERA_FPS: u32 = 30;
 /// The camera's capture size: the largest camera layer.
@@ -67,12 +68,14 @@ pub(crate) struct Feed {
 struct FeedState {
     frame: Option<Frame>,
     fresh: bool,
+    /// A new reader asks for a keyframe of the last frame.
+    asked: bool,
     stopped: bool,
 }
 enum Next {
     Fresh(Frame),
-    /// Nothing new for [`REPEAT`]: the last frame again.
-    Repeat(Frame),
+    /// No new frame, and a new reader asks for a keyframe: the last frame.
+    Asked(Frame),
     Stopped,
 }
 impl Feed {
@@ -89,49 +92,32 @@ impl Feed {
         state.frame = None;
         state.fresh = false;
     }
+    /// A layer gained a reader: the encoder answers with a keyframe even
+    /// while no new frame comes.
+    pub(crate) fn ask(&self) {
+        self.state.lock_recover().asked = true;
+        self.ready.notify_one();
+    }
     fn stop(&self) {
         self.state.lock_recover().stopped = true;
         self.ready.notify_one();
     }
     fn next(&self) -> Next {
         let mut state = self.state.lock_recover();
-        let deadline = Instant::now().checked_add(REPEAT);
         loop {
             if state.stopped {
                 return Next::Stopped;
             }
-            if state.fresh
-                && let Some(frame) = state.frame.clone()
-            {
-                state.fresh = false;
-                return Next::Fresh(frame);
-            }
-            let now = Instant::now();
-            let remaining =
-                deadline.map_or(REPEAT, |deadline| deadline.saturating_duration_since(now));
-            if remaining.is_zero() {
-                if let Some(frame) = state.frame.clone() {
-                    return Next::Repeat(frame);
+            if let Some(frame) = state.frame.clone() {
+                if state.fresh {
+                    state.fresh = false;
+                    state.asked = false;
+                    return Next::Fresh(frame);
                 }
-                return self.wait_fresh(state);
-            }
-            state = match self.ready.wait_timeout(state, remaining) {
-                Ok((state, _)) => state,
-                Err(poisoned) => poisoned.into_inner().0,
-            };
-        }
-    }
-    /// No frame at all yet: wait for one without a deadline.
-    fn wait_fresh(&self, mut state: std::sync::MutexGuard<'_, FeedState>) -> Next {
-        loop {
-            if state.stopped {
-                return Next::Stopped;
-            }
-            if state.fresh
-                && let Some(frame) = state.frame.clone()
-            {
-                state.fresh = false;
-                return Next::Fresh(frame);
+                if state.asked {
+                    state.asked = false;
+                    return Next::Asked(frame);
+                }
             }
             state = match self.ready.wait(state) {
                 Ok(state) => state,
@@ -244,7 +230,8 @@ fn even_rgba(width: u32, height: u32, rgba: Arc<[u8]>) -> Option<Frame> {
 }
 
 /// The carrier a call sends on now: it changes when the call reconnects.
-pub(crate) type CurrentClient = Arc<dyn Fn() -> Option<Arc<Client>> + Send + Sync>;
+pub(crate) type CurrentClient =
+    Arc<dyn Fn() -> Option<(Arc<Client>, Option<super::call_seal::Sealing>)> + Send + Sync>;
 
 /// Where a call's camera pictures come from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -323,6 +310,11 @@ pub(crate) struct Publisher {
     preview: Arc<Preview>,
 }
 impl Publisher {
+    /// A layer of this picture gained a reader, or lost its group: answer
+    /// with a keyframe even while the picture stands still.
+    pub(crate) fn ask_keyframe(&self) {
+        self.feed.ask();
+    }
     /// Start the camera and its encoder thread.
     pub(crate) fn camera(choice: &CameraChoice, current: CurrentClient) -> Result<Self, String> {
         let device = choice.device().ok_or("no camera")?;
@@ -428,6 +420,8 @@ struct LayerEncoder {
     /// The picture size it sends.
     output: (u16, u16),
     sequence: u64,
+    /// The newest unit while it is a keyframe: a new reader starts at it.
+    standing: Option<VideoObject>,
 }
 
 /// The largest size within `layer` that keeps `source`'s shape, even, and
@@ -442,12 +436,16 @@ pub(crate) fn fitted(
     } else if u64::from(width).saturating_mul(u64::from(box_height))
         >= u64::from(height).saturating_mul(u64::from(box_width))
     {
-        let scaled =
-            u64::from(height).saturating_mul(u64::from(box_width)) / u64::from(width.max(1));
+        let scaled = u64::from(height)
+            .saturating_mul(u64::from(box_width))
+            .checked_div(u64::from(width.max(1)))
+            .unwrap_or(0);
         (box_width, u32::try_from(scaled).unwrap_or(box_height))
     } else {
-        let scaled =
-            u64::from(width).saturating_mul(u64::from(box_height)) / u64::from(height.max(1));
+        let scaled = u64::from(width)
+            .saturating_mul(u64::from(box_height))
+            .checked_div(u64::from(height.max(1)))
+            .unwrap_or(0);
         (u32::try_from(scaled).unwrap_or(box_width), box_height)
     };
     ((w & !1).max(2), (h & !1).max(2))
@@ -471,6 +469,7 @@ impl LayerEncoder {
                 u16::try_from(height).map_err(|_| "picture too tall")?,
             ),
             sequence: 0,
+            standing: None,
         })
     }
 }
@@ -488,12 +487,13 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
     let mut carrier: Option<usize> = None;
     let mut refused: BTreeSet<Layer> = BTreeSet::new();
     loop {
-        let (frame, repeat) = match feed.next() {
+        let (frame, fresh) = match feed.next() {
             Next::Stopped => return,
-            Next::Fresh(frame) => (frame, false),
-            Next::Repeat(frame) => (frame, true),
+            Next::Fresh(frame) => (frame, true),
+            Next::Asked(frame) => (frame, false),
         };
-        let client = current();
+        let (client, sealing) = current().unzip();
+        let sealing = sealing.flatten();
         // A new carrier starts every layer over with a keyframe.
         let id = client.as_ref().map(|client| Arc::as_ptr(client) as usize);
         if carrier != id {
@@ -501,6 +501,14 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
             refused.clear();
             carrier = id;
         }
+        // Taken before the layers asked for are read, so each layer asked
+        // for a keyframe is among them and the keyframe goes out.
+        let asked: BTreeSet<Layer> = client
+            .as_ref()
+            .map(|client| client.take_picture_keyframes(source))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let remote: BTreeSet<Layer> = client
             .as_ref()
             .map(|client| {
@@ -539,16 +547,33 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
                 }
             }
         }
-        let at = if repeat {
-            Instant::now()
-        } else {
+        let at = if fresh {
             frame.captured_at
+        } else {
+            Instant::now()
         };
         let pts = at.saturating_duration_since(started);
         let timestamp_us = u64::try_from(pts.as_micros()).unwrap_or(u64::MAX);
         let mut unwanted = Vec::new();
         for (layer, encoder) in &mut encoders {
-            if repeat {
+            let send = |object: &VideoObject| {
+                let client = client.as_ref().filter(|_| remote.contains(layer))?;
+                // Until this device holds the call's keys nothing leaves it.
+                let sealed = sealing
+                    .as_ref()
+                    .and_then(|sealing| super::call_seal::seal(sealing, source, object))?;
+                Some(client.send_picture(source, &sealed))
+            };
+            if !fresh {
+                if !asked.contains(layer) {
+                    continue;
+                }
+                if let Some(standing) = &encoder.standing {
+                    let _ = send(standing);
+                    continue;
+                }
+            }
+            if asked.contains(layer) {
                 encoder.encoder.force_keyframe();
             }
             let units = match encoder
@@ -574,22 +599,21 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
                     payload: unit.data,
                 };
                 encoder.sequence = encoder.sequence.saturating_add(1);
+                encoder.standing = object.keyframe.then(|| object.clone());
                 if own == Some(*layer) {
                     preview.push(object.clone());
                 }
-                let Some(client) = client.as_ref().filter(|_| remote.contains(layer)) else {
-                    continue;
-                };
-                match client.send_picture(source, &object) {
-                    Ok(()) => {}
+                match send(&object) {
                     // Nobody shows this layer any more.
-                    Err(ClientError::Muted) if own != Some(*layer) => unwanted.push(*layer),
-                    Err(ClientError::Muted) => {}
-                    // The layer starts (again) at a keyframe.
-                    Err(ClientError::Expired | ClientError::Capacity) => {
-                        encoder.encoder.force_keyframe();
-                    }
-                    Err(error) => {
+                    Some(Err(ClientError::Muted)) if own != Some(*layer) => unwanted.push(*layer),
+                    // The carrier asks for a keyframe again
+                    // (`Client::take_picture_keyframes`).
+                    None
+                    | Some(
+                        Ok(())
+                        | Err(ClientError::Muted | ClientError::Expired | ClientError::Capacity),
+                    ) => {}
+                    Some(Err(error)) => {
                         tracing::debug!(?source, ?layer, ?error, "call picture not sent");
                     }
                 }

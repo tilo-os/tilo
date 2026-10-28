@@ -29,6 +29,7 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
                 label: "Notes".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
             Some(existing) => existing.tabs.push(entry),
@@ -199,7 +200,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> R
 
 /// Commit `message` as a page does, and the host's answer: `Ok` with its
 /// order, or why it refused.
-async fn commit(
+pub(super) async fn commit(
     client: &RelayClient,
     device: &TestDevice,
     workspace_id: u64,
@@ -494,5 +495,65 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         .await
         .unwrap();
     wait_for_windows(&relay, &room.room, &[]).await;
+    relay.shutdown().await;
+}
+
+/// What a guest's page asks the room to learn its person's role
+/// (`tilo_action_policy::roles::telling_nodes`) names the role the room
+/// admitted them with, in a public room too, so the page's apps let them
+/// write where the room would take it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
+    let alice = TestUser::fresh("Alice");
+    let ada = TestUser::fresh("Ada");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    admit(
+        &relay,
+        &laptop,
+        &room.room,
+        (&ada, &ada_browser),
+        MemberRole::Editor,
+        41,
+    )
+    .await;
+    let rooms = relay.rooms().unwrap();
+    rooms
+        .set_layout(
+            &room.room,
+            tilo_desktop_model::projection::RoomLayout::Personal,
+        )
+        .await
+        .unwrap();
+    let answered = |device: &TestDevice| {
+        let rooms = relay.rooms().unwrap();
+        let cert = device.cert.clone();
+        let room = room.room.clone();
+        async move {
+            let mut answers = [false; 3];
+            for (answer, node) in answers
+                .iter_mut()
+                .zip(tilo_action_policy::roles::telling_nodes(&room))
+            {
+                let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                    room: room.clone(),
+                    node: node.to_string(),
+                };
+                *answer = matches!(
+                    rooms.page_rooms(&cert, request).await,
+                    tilo_relay_protocol::rooms::RoomsReply::Permits(true)
+                );
+            }
+            tilo_action_policy::roles::role_answered(answers)
+        }
+    };
+    assert_eq!(
+        answered(&ada_browser).await,
+        tilo_action_policy::Role::Editor
+    );
     relay.shutdown().await;
 }

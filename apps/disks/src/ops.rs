@@ -1,21 +1,16 @@
 //! Real execution of disk operations — the app's **external side-effect
 //! boundary**.
 //!
-//! Mount / unmount / format / eject / benchmark are privileged, per-machine
-//! effects against real block devices (via udisks2 / polkit, or the CLI
-//! fallback). They change the running system, never the document, so they
-//! are effects ([`crate::resource::DisksEffect`]), not actions: the functions
-//! here take no document and cannot touch it.
+//! Mount / unmount / format / eject are privileged, per-machine effects
+//! against real block devices, made through udisks2 on the system bus, which
+//! has polkit authorise each one. They change the running system, never the
+//! document, so they are effects ([`crate::resource::DisksEffect`]), not
+//! actions: the functions here take no document and cannot touch it. The
+//! app starts no programs.
 //!
-//! Everything is *planned* as plain data first (a [`UdisksCall`] or an ordered
-//! list of [`CommandSpec`] fallbacks) so the construction is unit-testable
-//! without a system bus or root. Two execution layers back the plan:
-//!
-//!   1. **udisks2 over D-Bus** (feature `live`, via `zbus`) — the preferred
-//!      path for mount / unmount / format; it carries polkit authorisation.
-//!   2. **CLI fallback** — `udisksctl` first (still udisks2, still polkit),
-//!      then the raw `mount` / `umount` / `mkfs.<fstype>` tools, shelled out
-//!      through [`std::process::Command`].
+//! Each is *planned* as plain data first (a [`UdisksCall`]) so the
+//! construction is unit-testable without a system bus or root; the call is
+//! made only in a build with the `live` feature.
 //!
 //! Benchmark performs a genuine sequential-read + random-seek measurement on
 //! the block device.
@@ -25,8 +20,6 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::process::Command;
-use std::time::Duration;
 
 /// The privileged operations the app can perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +32,7 @@ pub enum Op {
 }
 
 use block_devices::udisks::{
-    IFACE_BLOCK, IFACE_FILESYSTEM as IFACE_FS, object_path as udisks_object_path,
+    IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM as IFACE_FS, object_path as udisks_object_path,
 };
 
 /// A fully-described udisks2 D-Bus method call. Kept as data so the object
@@ -48,6 +41,8 @@ use block_devices::udisks::{
 pub struct UdisksCall {
     /// Kernel device leaf name (`sdc1`) the call addresses.
     pub device: String,
+    /// The device's block object. A drive call reaches the drive through
+    /// it (`Block.Drive`).
     pub object_path: String,
     pub interface: &'static str,
     pub method: &'static str,
@@ -55,129 +50,41 @@ pub struct UdisksCall {
     pub fstype: String,
 }
 
-/// One shell fallback command.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandSpec {
-    pub program: String,
-    pub args: Vec<String>,
-}
-
-impl CommandSpec {
-    fn new(program: &str, args: &[&str]) -> Self {
-        CommandSpec {
-            program: program.to_string(),
-            args: args.iter().map(std::string::ToString::to_string).collect(),
+impl UdisksCall {
+    fn new(dev_leaf: &str, interface: &'static str, method: &'static str) -> Self {
+        UdisksCall {
+            device: dev_leaf.to_string(),
+            object_path: udisks_object_path(dev_leaf),
+            interface,
+            method,
+            fstype: String::new(),
         }
     }
 }
 
-// ---- D-Bus call plans --------------------------------------------------
-
 pub fn mount_call(dev_leaf: &str) -> UdisksCall {
-    UdisksCall {
-        device: dev_leaf.to_string(),
-        object_path: udisks_object_path(dev_leaf),
-        interface: IFACE_FS,
-        method: "Mount",
-        fstype: String::new(),
-    }
+    UdisksCall::new(dev_leaf, IFACE_FS, "Mount")
 }
 
 pub fn unmount_call(dev_leaf: &str) -> UdisksCall {
-    UdisksCall {
-        device: dev_leaf.to_string(),
-        object_path: udisks_object_path(dev_leaf),
-        interface: IFACE_FS,
-        method: "Unmount",
-        fstype: String::new(),
-    }
+    UdisksCall::new(dev_leaf, IFACE_FS, "Unmount")
 }
 
 pub fn format_call(dev_leaf: &str, fstype: &str) -> UdisksCall {
     UdisksCall {
-        device: dev_leaf.to_string(),
-        object_path: udisks_object_path(dev_leaf),
-        interface: IFACE_BLOCK,
-        method: "Format",
         fstype: fstype.to_string(),
+        ..UdisksCall::new(dev_leaf, IFACE_BLOCK, "Format")
     }
 }
 
-// ---- CLI fallback plans (tried in order) -------------------------------
-
-pub fn mount_cli(dev_leaf: &str) -> Vec<CommandSpec> {
-    let dev = format!("/dev/{dev_leaf}");
-    vec![
-        CommandSpec::new("udisksctl", &["mount", "-b", &dev]),
-        CommandSpec::new("mount", &[&dev]),
-    ]
+/// Eject: power off the drive the device is, so it can be pulled out.
+pub fn eject_call(dev_leaf: &str) -> UdisksCall {
+    UdisksCall::new(dev_leaf, IFACE_DRIVE, "PowerOff")
 }
 
-pub fn unmount_cli(dev_leaf: &str) -> Vec<CommandSpec> {
-    let dev = format!("/dev/{dev_leaf}");
-    vec![
-        CommandSpec::new("udisksctl", &["unmount", "-b", &dev]),
-        CommandSpec::new("umount", &[&dev]),
-    ]
-}
-
-pub fn format_cli(dev_leaf: &str, fstype: &str) -> Vec<CommandSpec> {
-    let dev = format!("/dev/{dev_leaf}");
-    let mkfs = format!("mkfs.{fstype}");
-    // `-F` forces past the "device in use / has a filesystem" guard on the
-    // ext* + vfat mkfs variants, matching what udisks does internally.
-    vec![CommandSpec::new(&mkfs, &["-F", &dev])]
-}
-
-pub fn eject_cli(dev_leaf: &str) -> Vec<CommandSpec> {
-    let dev = format!("/dev/{dev_leaf}");
-    vec![
-        CommandSpec::new("udisksctl", &["power-off", "-b", &dev]),
-        CommandSpec::new("eject", &[&dev]),
-    ]
-}
-
-// ---- execution ---------------------------------------------------------
-
-/// Run each command in turn, returning on the first success. A missing
-/// program (or a non-zero exit) falls through to the next candidate.
-///
-/// # Errors
-///
-/// Returns an error if all commands fail.
-pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
-    let mut last = String::from("no command available");
-    for spec in specs {
-        let mut command = Command::new(&spec.program);
-        command.args(&spec.args);
-        match bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(5 * 60))
-        {
-            Ok(out) if out.status.success() => {
-                return Ok(format!("{} succeeded", spec.program));
-            }
-            Ok(out) => {
-                let err = String::from_utf8_lossy(&out.stderr)
-                    .chars()
-                    .filter(|character| !character.is_control() || *character == ' ')
-                    .take(512)
-                    .collect::<String>();
-                last = format!("{} failed: {}", spec.program, err.trim());
-            }
-            Err(e) => {
-                last = format!("{}: {e}", spec.program);
-            }
-        }
-    }
-    Err(last)
-}
-
-/// Invoke a udisks2 method over the system bus. Only compiled with `live`.
-///
-/// # Errors
-///
-/// Returns an error if the D-Bus call fails or the operation returns an error.
+/// Make a udisks2 call over the system bus; polkit authorises it.
 #[cfg(feature = "live")]
-pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
+pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
     let udisks = block_devices::udisks::Udisks::system().map_err(|e| format!("system bus: {e}"))?;
     let device = call.device.as_str();
     // UDisks2 picks its defaults (auto mountpoint, default mkfs options),
@@ -186,11 +93,23 @@ pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
         "Mount" => udisks.mount(device).map(drop),
         "Unmount" => udisks.unmount(device),
         "Format" => udisks.format(device, &call.fstype),
+        "PowerOff" => udisks.power_off(device),
         other => return Err(format!("udisks2 {other}: unsupported call")),
     };
-    reply
-        .map(|()| format!("udisks2 {} ok", call.method))
-        .map_err(|e| format!("udisks2 {}: {e}", call.method))
+    reply.map_err(|e| format!("udisks2 {}: {e}", call.method))
+}
+
+/// A build without udisks2 changes no device.
+///
+/// # Errors
+///
+/// Always.
+#[cfg(not(feature = "live"))]
+pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
+    Err(format!(
+        "udisks2 {}: this build of Disks changes no devices",
+        call.method
+    ))
 }
 
 /// A real sequential-read + random-seek benchmark of a block device. Reads up
@@ -256,42 +175,24 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
     ))
 }
 
-/// Execute an operation for real. Tries udisks2 (D-Bus, when built with
-/// `live`) first, then the CLI chain. Returns a status message either way.
-///
-/// # Errors
-///
-/// Returns an error if the operation fails.
+/// Execute an operation for real, through udisks2. Returns a status
+/// message either way.
 pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, String> {
-    match op {
-        Op::Benchmark => benchmark(dev_leaf),
-        Op::Mount => {
-            #[cfg(feature = "live")]
-            if run_udisks(&mount_call(dev_leaf)).is_ok() {
-                return Ok(format!("Mounted /dev/{dev_leaf}"));
-            }
-            run_command_chain(&mount_cli(dev_leaf)).map(|_| format!("Mounted /dev/{dev_leaf}"))
-        }
-        Op::Unmount => {
-            #[cfg(feature = "live")]
-            if run_udisks(&unmount_call(dev_leaf)).is_ok() {
-                return Ok(format!("Unmounted /dev/{dev_leaf}"));
-            }
-            run_command_chain(&unmount_cli(dev_leaf)).map(|_| format!("Unmounted /dev/{dev_leaf}"))
-        }
+    let dev = format!("/dev/{dev_leaf}");
+    let (call, done) = match op {
+        Op::Benchmark => return benchmark(dev_leaf),
+        Op::Mount => (mount_call(dev_leaf), format!("Mounted {dev}")),
+        Op::Unmount => (unmount_call(dev_leaf), format!("Unmounted {dev}")),
         Op::Format => {
             let fs = fstype.unwrap_or("ext4");
-            #[cfg(feature = "live")]
-            if run_udisks(&format_call(dev_leaf, fs)).is_ok() {
-                return Ok(format!("Formatted /dev/{dev_leaf} as {fs}"));
-            }
-            run_command_chain(&format_cli(dev_leaf, fs))
-                .map(|_| format!("Formatted /dev/{dev_leaf} as {fs}"))
+            (
+                format_call(dev_leaf, fs),
+                format!("Formatted {dev} as {fs}"),
+            )
         }
-        Op::Eject => {
-            run_command_chain(&eject_cli(dev_leaf)).map(|_| format!("Ejected /dev/{dev_leaf}"))
-        }
-    }
+        Op::Eject => (eject_call(dev_leaf), format!("Ejected {dev}")),
+    };
+    run_udisks(&call).map(|()| done)
 }
 
 #[cfg(test)]
@@ -346,54 +247,27 @@ mod tests {
         assert!(error.contains("/dev/null"), "{error}");
     }
 
-    /// Mount/unmount/format target the right `UDisks2` D-Bus calls, fall back to udisksctl then raw tools, and a failed chain reports its last failure.
+    /// Every device operation is a udisks2 call, which polkit authorises:
+    /// the app starts no programs.
     #[test]
-    fn device_commands_target_udisks_then_cli_fallbacks() {
-        // --- phase: dbus_calls_target_the_right_interface_and_method ---
-        {
-            let m = mount_call("sdc1");
-            assert_eq!(m.interface, IFACE_FS);
-            assert_eq!(m.method, "Mount");
-            assert!(m.object_path.ends_with("/sdc1"));
+    fn device_operations_are_udisks_calls() {
+        let m = mount_call("sdc1");
+        assert_eq!(m.interface, IFACE_FS);
+        assert_eq!(m.method, "Mount");
+        assert!(m.object_path.ends_with("/sdc1"));
 
-            let u = unmount_call("sdc1");
-            assert_eq!(u.method, "Unmount");
-            assert_eq!(u.interface, IFACE_FS);
+        let u = unmount_call("sdc1");
+        assert_eq!(u.method, "Unmount");
+        assert_eq!(u.interface, IFACE_FS);
 
-            let f = format_call("sdc1", "ext4");
-            assert_eq!(f.interface, IFACE_BLOCK);
-            assert_eq!(f.method, "Format");
-            assert_eq!(f.fstype, "ext4");
-        }
+        let f = format_call("sdc1", "ext4");
+        assert_eq!(f.interface, IFACE_BLOCK);
+        assert_eq!(f.method, "Format");
+        assert_eq!(f.fstype, "ext4");
 
-        // --- phase: cli_fallbacks_prefer_udisksctl_then_raw_tools ---
-        {
-            let m = mount_cli("sdc1");
-            assert_eq!(m[0].program, "udisksctl");
-            assert_eq!(m[0].args, vec!["mount", "-b", "/dev/sdc1"]);
-            assert_eq!(m[1].program, "mount");
-            assert_eq!(m[1].args, vec!["/dev/sdc1"]);
-
-            let u = unmount_cli("sdc1");
-            assert_eq!(u[0].program, "udisksctl");
-            assert_eq!(u[0].args, vec!["unmount", "-b", "/dev/sdc1"]);
-            assert_eq!(u[1].program, "umount");
-
-            let f = format_cli("sdc1", "vfat");
-            assert_eq!(f[0].program, "mkfs.vfat");
-            assert_eq!(f[0].args, vec!["-F", "/dev/sdc1"]);
-        }
-
-        // --- phase: command_chain_reports_the_last_failure_when_nothing_runs ---
-        {
-            // Two programs that certainly do not exist → an Err carrying the last.
-            let specs = vec![
-                CommandSpec::new("tilo-no-such-tool-a", &["x"]),
-                CommandSpec::new("tilo-no-such-tool-b", &["y"]),
-            ];
-            let r = run_command_chain(&specs);
-            assert!(r.is_err());
-            assert!(r.unwrap_err().contains("tilo-no-such-tool-b"));
-        }
+        let e = eject_call("sdc");
+        assert_eq!(e.interface, IFACE_DRIVE);
+        assert_eq!(e.method, "PowerOff");
+        assert!(e.object_path.ends_with("/block_devices/sdc"));
     }
 }

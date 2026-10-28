@@ -403,6 +403,99 @@ fn comparing_outermost_parts_still_refuses_a_change_outside_them() {
     );
 }
 
+/// A lane part holding a window part, whose menu, when `open`, is a part of
+/// its own; `shown` leaves the window out altogether, as a row does for a
+/// window another surface draws.
+fn lane(shown: bool, open: bool) -> (Box<Scene>, SectionParts) {
+    const LANE: Rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+    section(move |scene| {
+        part(scene, PartKey::new("lane", 0_u64), vec![LANE], |scene| {
+            fill(scene, Affine::IDENTITY, LANE, Color::BLACK);
+            if shown {
+                part(scene, PartKey::new("window", 0_u64), vec![B], |scene| {
+                    fill(scene, Affine::IDENTITY, B, Color::WHITE);
+                    if open {
+                        part(scene, PartKey::new("menu", 0_u64), vec![B], |scene| {
+                            fill(scene, Affine::IDENTITY, B, Color::BLACK);
+                        });
+                    }
+                });
+            }
+        });
+        part(
+            scene,
+            PartKey::new("caret", 0_u64),
+            vec![A],
+            caret(Color::WHITE),
+        );
+    })
+}
+
+#[test]
+fn a_menu_deep_inside_damages_its_window_not_the_lane_around_it() {
+    let (closed, closed_parts) = lane(true, false);
+    let (open, open_parts) = lane(true, true);
+    assert_eq!(
+        damage(&closed, &closed_parts, &open, &open_parts),
+        Ok(vec![B])
+    );
+    assert_eq!(
+        damage(&open, &open_parts, &closed, &closed_parts),
+        Ok(vec![B])
+    );
+}
+
+#[test]
+fn a_window_a_lane_draws_again_damages_that_lane_alone() {
+    let (away, away_parts) = lane(false, false);
+    let (back, back_parts) = lane(true, false);
+    let lane_rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+    assert_eq!(
+        damage(&away, &away_parts, &back, &back_parts),
+        Ok(vec![lane_rect])
+    );
+    assert_eq!(
+        damage(&back, &back_parts, &away, &away_parts),
+        Ok(vec![lane_rect])
+    );
+}
+
+#[test]
+fn a_hint_cannot_vouch_for_parts_that_came_inside_it() {
+    let tile = Rect::new(100.0, 0.0, 140.0, 40.0);
+    let frame = |menu: bool, from: u64, to: u64| {
+        section(move |scene| {
+            part(scene, PartKey::new("lane", 0_u64), vec![tile], |scene| {
+                part(scene, PartKey::new("tile", 0_u64), vec![tile], |scene| {
+                    let hint = DamageHint {
+                        source: 7,
+                        from,
+                        to,
+                        placement: Affine::IDENTITY,
+                        rects: vec![Rect::new(100.0, 0.0, 110.0, 10.0)],
+                        copies: Vec::new(),
+                        earlier: Vec::new(),
+                    };
+                    hinted(scene, PartKey::new("app", 0_u64), Some(hint), |scene| {
+                        fill(scene, Affine::IDENTITY, tile, Color::BLACK);
+                        if menu {
+                            let menu = Rect::new(120.0, 20.0, 140.0, 40.0);
+                            part(scene, PartKey::new("menu", 0_u64), vec![menu], |scene| {
+                                fill(scene, Affine::IDENTITY, menu, Color::WHITE);
+                            });
+                        }
+                    });
+                });
+            })
+        })
+    };
+    let (old, old_parts) = frame(false, 0, 1);
+    let (new, new_parts) = frame(true, 1, 2);
+    // The app's hint follows on, but names only its caret: the menu that
+    // came is inside the tile, which is repainted whole.
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![tile]));
+}
+
 /// An embedded app's content placed at `offset` inside a tile part, its
 /// caret painted in `color`, with a hint from `source` that generation
 /// `from` → `to` changed the caret.
@@ -422,6 +515,7 @@ fn hinted_app(
                 placement,
                 rects: vec![placement.transform_rect_bbox(A)],
                 copies: Vec::new(),
+                earlier: Vec::new(),
             });
             hinted(scene, PartKey::new("app", 0_u64), hint, |scene| {
                 fill(
@@ -483,6 +577,7 @@ fn a_hinted_part_outside_every_bounded_part_is_not_proven_without_its_hint() {
         placement: Affine::IDENTITY,
         rects: vec![A],
         copies: Vec::new(),
+        earlier: Vec::new(),
     };
     let frame = |color: Color, hint: Option<DamageHint>| {
         section(move |scene| {
@@ -519,6 +614,7 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
                 placement: Affine::IDENTITY,
                 rects: vec![A],
                 copies: Vec::new(),
+                earlier: Vec::new(),
             };
             hinted(scene, PartKey::new("app", 0_u64), Some(hint), caret(color));
         });
@@ -536,4 +632,127 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
         damage(&old, &old_parts, &new, &new_parts),
         Ok(vec![Rect::new(100.0, 0.0, 110.0, 10.0)])
     );
+}
+
+/// Background, a layer around a clipped part at `A` and a part at `B` with
+/// a gradient and text, then a part at `C` whose layer the section pops.
+fn layered_desktop() -> (Box<Scene>, SectionParts) {
+    section(|scene| {
+        let all = Rect::new(0.0, 0.0, 200.0, 50.0);
+        fill(scene, Affine::IDENTITY, all, Color::BLACK);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::Mix::Normal,
+            0.8,
+            Affine::IDENTITY,
+            &all,
+        );
+        part(scene, PartKey::new("a", 1_u64), vec![A], |scene| {
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &A);
+            fill(scene, Affine::IDENTITY, A.inflate(4.0, 4.0), Color::WHITE);
+            scene.pop_layer();
+        });
+        part(scene, PartKey::new("b", 2_u64), vec![B], |scene| {
+            let gradient = Gradient::new_linear((100.0, 0.0), (110.0, 0.0))
+                .with_stops([Color::WHITE, Color::BLACK]);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, &gradient, None, &B);
+            TEXT.with(|text| {
+                text.borrow_mut().draw_text(
+                    scene,
+                    "caret",
+                    12.0,
+                    Color::WHITE,
+                    Affine::translate((100.0, 0.0)),
+                    None,
+                );
+            });
+        });
+        scene.pop_layer();
+        begin(scene, PartKey::new("open", 3_u64));
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &C);
+        fill(scene, Affine::IDENTITY, C, Color::WHITE);
+        end(scene, vec![C]);
+        scene.pop_layer();
+        fill(
+            scene,
+            Affine::IDENTITY,
+            Rect::new(60.0, 0.0, 70.0, 10.0),
+            Color::WHITE,
+        );
+    })
+}
+
+const C: Rect = Rect::new(20.0, 0.0, 30.0, 10.0);
+
+fn wants_b(bounds: &[Rect]) -> bool {
+    bounds.iter().any(|rect| rect.overlaps(B))
+}
+
+#[test]
+fn counting_a_scene_s_streams_gives_what_encoding_it_counted() {
+    let (scene, _) = layered_desktop();
+    let mut counted = scene.encoding().clone();
+    count_streams(&mut counted);
+    let encoded = scene.encoding();
+    assert_eq!(
+        (
+            counted.n_paths,
+            counted.n_path_segments,
+            counted.n_clips,
+            counted.n_open_clips
+        ),
+        (
+            encoded.n_paths,
+            encoded.n_path_segments,
+            encoded.n_clips,
+            encoded.n_open_clips
+        )
+    );
+}
+
+#[test]
+fn a_scene_culled_to_a_damage_leaves_out_only_parts_it_can_leave_out() {
+    let (scene, parts) = layered_desktop();
+    assert!(
+        culled(&scene, &parts, |_| true).is_none(),
+        "every part wanted leaves the scene as it is"
+    );
+    let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
+    let encoding = culled.encoding();
+    assert!(encoding.n_paths < scene.encoding().n_paths);
+    // The part whose layer the section pops stays, and its layer with it.
+    assert_eq!(encoding.n_clips, scene.encoding().n_clips - 2);
+    assert_eq!(encoding.n_open_clips, 0);
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn a_culled_scene_paints_what_the_whole_one_does_where_it_was_wanted() {
+    let (scene, parts) = layered_desktop();
+    let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
+    let (width, height) = (200_u32, 50_u32);
+    let render = |scene: &Scene| {
+        let mut pixels = vec![0_u8; (width * height * 4) as usize];
+        let mut target =
+            tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                .expect("a raster target");
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            Color::from_rgb8(20, 30, 40),
+        );
+        pixels
+    };
+    let (whole, part) = (render(&scene), render(&culled));
+    let row = |pixels: &[u8], y: u32| {
+        let at = ((y * width + 100) * 4) as usize;
+        pixels[at..at + 40].to_vec()
+    };
+    for y in 0..10 {
+        assert_eq!(row(&whole, y), row(&part, y), "row {y} inside B");
+    }
+    let at = |pixels: &[u8], x: u32| pixels[((5 * width + x) * 4) as usize..][..4].to_vec();
+    assert_ne!(at(&whole, 5), at(&part, 5), "the part at A was not drawn");
+    assert_eq!(at(&whole, 25), at(&part, 25), "the part at C was drawn");
 }

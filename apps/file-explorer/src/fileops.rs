@@ -110,8 +110,6 @@ impl FolderFailure {
     }
 }
 
-// --- trash ----------------------------------------------------------------
-
 pub use host_fs::trash::{is_trash_dir, trash_dir};
 
 /// Ensure the trash files directory exists, so opening an empty trash shows an
@@ -138,34 +136,18 @@ pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
 }
 
 /// Permanently remove everything in the trash. Returns how many items were purged.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// purging its items fails.
 pub fn empty_trash() -> Result<usize, String> {
     host_fs::trash::empty()
 }
 
 /// Restore the trashed items backing `entries` to their original locations.
 /// Returns how many were restored.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// restoring the matched items fails (e.g. the original location no longer
-/// exists).
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::restore(entries)
 }
 
 /// Permanently delete the trashed items backing `entries` (file + info).
 /// Returns how many were purged.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// purging the matched items fails.
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::purge(entries)
 }
@@ -224,11 +206,6 @@ fn suffixed_name(stem: &str, extension: Option<&str>, suffix: u32) -> String {
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
-///
-/// # Errors
-///
-/// Returns an error if `name` is empty, a path expression (`/`, `.` or `..`),
-/// or if creating the directory fails (e.g. `parent` is not writable).
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let name = match leaf_name(name) {
         Ok(name) => name,
@@ -241,12 +218,6 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Rename `path` to `new_name` within the same directory.
-///
-/// # Errors
-///
-/// Returns an error if `new_name` is empty or a path expression, if `path`
-/// has no parent directory, if a file already exists at the destination name,
-/// or if the OS rename fails.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_name = leaf_name(new_name)?;
     let parent = path
@@ -289,13 +260,18 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     host_fs::trash::delete(paths)
 }
 
-/// Recursively copy `src` into the directory `dest_dir`, choosing a
-/// non-colliding name. Returns the created destination path.
+/// Move `path` to the trash, returning the Trash entry it became when the
+/// host says ([`host_fs::trash::trash`]).
 ///
 /// # Errors
 ///
-/// Returns an error if `src` has no file name, or the recursive copy fails
-/// (a read/write/permission error partway through the tree).
+/// As [`delete_to_trash`].
+pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
+    host_fs::trash::trash(path)
+}
+
+/// Recursively copy `src` into the directory `dest_dir`, choosing a
+/// non-colliding name. Returns the created destination path.
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut NoopTransferObserver)
 }
@@ -303,9 +279,6 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
 /// Copy a mounted source into an independent, owner-writable local file.
 /// Permissions are applied to newly created files in private staging, never
 /// to the source or a published destination. Directories retain their modes.
-///
-/// # Errors
-/// Returns an error if staging, copying or publication fails.
 pub fn import_mounted_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut MountedImportObserver)
 }
@@ -342,9 +315,6 @@ pub use cap_std::fs::{Dir as SourceDirectory, OpenOptions as SourceOpenOptions};
 pub trait TransferObserver {
     /// Open a leaf of a retained source directory. A host may implement its
     /// platform's nonblocking open without putting platform flags in the app.
-    ///
-    /// # Errors
-    /// Returns a source opening or admission failure.
     fn open_source(
         &mut self,
         parent: &SourceDirectory,
@@ -405,9 +375,6 @@ pub trait TransferObserver {
     }
 
     /// Revalidate current authority before restoring a Cut source.
-    ///
-    /// # Errors
-    /// Refuses restoration when source or retained staging authority is lost.
     fn before_source_restore(&mut self, _source: &Path, _staged: &Path) -> std::io::Result<()> {
         Ok(())
     }
@@ -502,25 +469,7 @@ pub fn transfer_into_named_with(
     remove_source: bool,
     observer: &mut impl TransferObserver,
 ) -> Result<PathBuf, String> {
-    let mut components = Path::new(name).components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(crate::i18n::t("files-invalid-destination-name"));
-    }
-    ensure_destination_is_outside_source(src, dest_dir)?;
-    let source_parent = src
-        .parent()
-        .and_then(|parent| std::fs::canonicalize(parent).ok());
-    let destination_dir = std::fs::canonicalize(dest_dir).ok();
-    if remove_source && source_parent.is_some() && source_parent == destination_dir {
-        return Err("the item is already in this folder".into());
-    }
-
-    let names = DestinationNames::new(name);
-    // Preserve the existing diagnostic for an inaccessible destination before
-    // allocating staging storage beneath it.
-    inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
+    let names = admit_transfer(src, dest_dir, name, remove_source)?;
 
     if remove_source && observer.allow_direct_rename() {
         for suffix in 1..MAX_DESTINATION_SUFFIX {
@@ -543,12 +492,69 @@ pub fn transfer_into_named_with(
     observer
         .staged_source(&staging.path)
         .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+    finish_transfer(
+        src,
+        dest_dir,
+        &names,
+        remove_source,
+        &staging,
+        None,
+        observer,
+    )
+}
+
+/// Whether `src` may go to `dest_dir` as `name`: one leaf, not into itself,
+/// not a move into the folder it is already in, and a destination that can
+/// be inspected. The names it may be published under.
+fn admit_transfer(
+    src: &Path,
+    dest_dir: &Path,
+    name: &std::ffi::OsStr,
+    remove_source: bool,
+) -> Result<DestinationNames, String> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(crate::i18n::t("files-invalid-destination-name"));
+    }
+    ensure_destination_is_outside_source(src, dest_dir)?;
+    let source_parent = src
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    let destination_dir = std::fs::canonicalize(dest_dir).ok();
+    if remove_source && source_parent.is_some() && source_parent == destination_dir {
+        return Err("the item is already in this folder".into());
+    }
+    let names = DestinationNames::new(name);
+    // Preserve the existing diagnostic for an inaccessible destination before
+    // allocating staging storage beneath it.
+    inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
+    Ok(names)
+}
+
+/// The second half of a transfer whose copy is staged: for a move, sequester
+/// the source (at `quarantine` when the caller chose its hidden name) and
+/// remove it; then publish the copy under the first free name.
+fn finish_transfer(
+    src: &Path,
+    dest_dir: &Path,
+    names: &DestinationNames,
+    remove_source: bool,
+    staging: &StagingPath,
+    quarantine: Option<&Path>,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
     if remove_source {
         // From sequestration onward, unwinding must retain the complete copy:
         // the source may already be partially or wholly deleted. Normal error
         // and success paths explicitly restore or clean this container.
         staging.retain();
-        let quarantine = match quarantine_source(src, observer) {
+        let sequestered = match quarantine {
+            Some(path) => quarantine_source_at(src, path, observer),
+            None => quarantine_source(src, observer),
+        };
+        let quarantine = match sequestered {
             Ok(path) => path,
             Err(error) => return Err(staging.error_with_cleanup(error.to_string())),
         };
@@ -559,7 +565,7 @@ pub fn transfer_into_named_with(
             return Err(rollback_quarantined_source(
                 src,
                 &quarantine,
-                &staging,
+                staging,
                 observer,
                 error.to_string(),
             ));
@@ -570,14 +576,14 @@ pub fn transfer_into_named_with(
             return Err(restore_failed_cut(
                 src,
                 &quarantine,
-                &staging,
+                staging,
                 error.to_string(),
                 observer,
             ));
         }
     }
 
-    match publish_staging(&staging.path, dest_dir, &names, observer) {
+    match publish_staging(&staging.path, dest_dir, names, observer) {
         Ok(destination) => {
             staging.finish_success();
             Ok(destination)
@@ -585,11 +591,154 @@ pub fn transfer_into_named_with(
         Err(publish_error) if remove_source => Err(restore_failed_cut(
             src,
             Path::new(""),
-            &staging,
+            staging,
             publish_error,
             observer,
         )),
         Err(error) => Err(staging.error_with_cleanup(error)),
+    }
+}
+
+/// A private staging folder in a destination that a batch of transfers is
+/// copied into before any of them is published, so a host can make the
+/// whole batch durable at once. Each transfer is one leaf of the folder.
+/// Dropping the batch removes the folder once it is empty; a copy retained
+/// for a failed move's recovery keeps it.
+pub struct TransferBatch {
+    dest_dir: PathBuf,
+    container: PathBuf,
+    directory: cap_std::fs::Dir,
+    next: usize,
+}
+
+impl TransferBatch {
+    /// Create the batch's private staging folder in `dest_dir`.
+    ///
+    /// # Errors
+    /// The folder cannot be created or opened.
+    pub fn new(dest_dir: &Path) -> std::io::Result<Self> {
+        use cap_fs_ext::DirExt as _;
+
+        let receiving = cap_std::fs::Dir::open_ambient_dir(dest_dir, cap_std::ambient_authority())?;
+        for _ in 0..32 {
+            let container = dest_dir.join(format!(".tilo-transfer-{}", uuid::Uuid::new_v4()));
+            match host_fs::create_private_dir(&container) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+            let name = container.file_name().ok_or_else(|| {
+                std::io::Error::other("private transfer staging has no leaf name")
+            })?;
+            let directory = match receiving.open_dir_nofollow(name) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    let _ = std::fs::remove_dir(&container);
+                    return Err(error);
+                }
+            };
+            return Ok(Self {
+                dest_dir: dest_dir.to_path_buf(),
+                container,
+                directory,
+                next: 0,
+            });
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate private transfer staging",
+        ))
+    }
+
+    /// The batch's private staging folder.
+    #[must_use]
+    pub fn container(&self) -> &Path {
+        &self.container
+    }
+
+    /// Copy `src` into the batch, to be published as `name` (or the first
+    /// free numbered name). Nothing is synced: the host makes the batch
+    /// durable before finishing any of it. Moves always copy.
+    ///
+    /// # Errors
+    /// Refuses invalid names, lost authority and I/O failures; the partial
+    /// copy is removed.
+    pub fn stage(
+        &mut self,
+        src: &Path,
+        name: &std::ffi::OsStr,
+        remove_source: bool,
+        observer: &mut impl TransferObserver,
+    ) -> Result<StagedTransfer, String> {
+        let names = admit_transfer(src, &self.dest_dir, name, remove_source)?;
+        let leaf = self.next.to_string();
+        self.next = self.next.saturating_add(1);
+        let path = self.container.join(&leaf);
+        let staging = StagingPath {
+            container: path.clone(),
+            path,
+            retain: std::cell::Cell::new(false),
+        };
+        copy_tree_to_directory(src, &self.directory, Path::new(&leaf), observer)
+            .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+        observer
+            .staged_source(&staging.path)
+            .map_err(|error| staging.error_with_cleanup(error.to_string()))?;
+        Ok(StagedTransfer {
+            src: src.to_path_buf(),
+            dest_dir: self.dest_dir.clone(),
+            names,
+            remove_source,
+            staging,
+        })
+    }
+}
+
+impl Drop for TransferBatch {
+    fn drop(&mut self) {
+        // Only an empty folder goes: a retained recovery copy keeps it.
+        let _ = std::fs::remove_dir(&self.container);
+    }
+}
+
+/// One transfer of a [`TransferBatch`], copied and not yet published.
+/// Dropping it unfinished removes its copy.
+pub struct StagedTransfer {
+    src: PathBuf,
+    dest_dir: PathBuf,
+    names: DestinationNames,
+    remove_source: bool,
+    staging: StagingPath,
+}
+
+impl StagedTransfer {
+    /// The staged copy.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.staging.path
+    }
+
+    /// Publish the copy; for a move, first sequester the source at
+    /// `quarantine` (a hidden leaf of its folder the host has recorded) and
+    /// remove it, exactly as [`transfer_into_named_with`] does.
+    ///
+    /// # Errors
+    /// As [`transfer_into_named_with`]: a failed move restores its source
+    /// or retains its copy, and says which.
+    pub fn finish(
+        self,
+        quarantine: Option<&Path>,
+        observer: &mut impl TransferObserver,
+    ) -> Result<PathBuf, String> {
+        finish_transfer(
+            &self.src,
+            &self.dest_dir,
+            &self.names,
+            self.remove_source,
+            &self.staging,
+            quarantine,
+            observer,
+        )
     }
 }
 
@@ -610,6 +759,23 @@ fn quarantine_source(src: &Path, observer: &mut impl TransferObserver) -> std::i
         std::io::ErrorKind::AlreadyExists,
         "could not allocate private source quarantine",
     ))
+}
+
+/// [`quarantine_source`] to the hidden name `quarantine` the host chose and
+/// recorded before any destructive step.
+fn quarantine_source_at(
+    src: &Path,
+    quarantine: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<PathBuf> {
+    if quarantine.parent() != src.parent() {
+        return Err(std::io::Error::other(
+            "a source quarantine must be in the source's own folder",
+        ));
+    }
+    observer.before_source_quarantine(src, quarantine)?;
+    rename_noreplace(src, quarantine)?;
+    Ok(quarantine.to_path_buf())
 }
 
 fn rollback_quarantined_source(
@@ -1093,7 +1259,6 @@ mod tests {
             shown.chars().next().is_some_and(char::is_uppercase),
             "{shown}"
         );
-        // Files' own reasons are copy already.
         assert_eq!(
             readable_error("A file with that name already exists"),
             "A file with that name already exists"
@@ -1135,24 +1300,21 @@ mod tests {
             ensure_trash_dir().is_none(),
             "nonprivate Trash must be refused"
         );
-        #[cfg(not(target_os = "macos"))]
-        {
-            let source = trash.parent().expect("data directory").join("notes.txt");
-            fs::write(&source, b"keep private contents").expect("refused deletion source");
-            let error = delete_to_trash(std::slice::from_ref(&source))
-                .expect_err("deletion must refuse nonprivate Trash");
-            assert!(error.contains("not a private directory owned by this user"));
-            assert_eq!(
-                fs::read(&source).expect("source retained"),
-                b"keep private contents"
-            );
-            assert_eq!(
-                fs::read_dir(&files)
-                    .expect("no published private contents")
-                    .count(),
-                0
-            );
-        }
+        let source = trash.parent().expect("data directory").join("notes.txt");
+        fs::write(&source, b"keep private contents").expect("refused deletion source");
+        let error = delete_to_trash(std::slice::from_ref(&source))
+            .expect_err("deletion must refuse nonprivate Trash");
+        assert!(error.contains("not a private directory owned by this user"));
+        assert_eq!(
+            fs::read(&source).expect("source retained"),
+            b"keep private contents"
+        );
+        assert_eq!(
+            fs::read_dir(&files)
+                .expect("no published private contents")
+                .count(),
+            0
+        );
         for directory in [trash, files.as_path()] {
             assert_eq!(
                 fs::symlink_metadata(directory)
@@ -1164,7 +1326,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     #[test]
     fn legacy_delete_creates_owner_only_trash_metadata_and_payload_directories() {
         use std::os::unix::fs::MetadataExt as _;
@@ -1173,8 +1335,15 @@ mod tests {
         fs::write(&source, b"private notes").expect("source contents");
         delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
         assert!(!source.exists());
+        // Ask for the Trash root rather than assuming `$XDG_DATA_HOME`: macOS
+        // keeps it under `~/Library/Application Support`.
+        let files = trash_dir().expect("test Trash path");
+        let data = files
+            .parent()
+            .and_then(Path::parent)
+            .expect("data directory");
         for directory in ["Trash", "Trash/files", "Trash/info"] {
-            let path = home.data().join(directory);
+            let path = data.join(directory);
             let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
             assert!(metadata.is_dir());
             assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
@@ -1620,7 +1789,6 @@ mod tests {
         {
             let d = tmp();
             let root = d.path();
-            // Free name is returned verbatim.
             assert_eq!(
                 unique_destination(root, "a.txt").unwrap(),
                 root.join("a.txt")
@@ -1635,7 +1803,6 @@ mod tests {
                 unique_destination(root, "a.txt").unwrap(),
                 root.join("a 3.txt")
             );
-            // Extension-less names.
             fs::create_dir(root.join("folder")).unwrap();
             assert_eq!(
                 unique_destination(root, "folder").unwrap(),
@@ -1667,7 +1834,6 @@ mod tests {
             assert!(renamed.ends_with("new.txt"));
             assert!(!f.exists());
             assert!(renamed.exists());
-            // Collision is refused.
             fs::write(d.path().join("taken.txt"), b"x").unwrap();
             assert!(rename(&renamed, "taken.txt").is_err());
             assert!(rename(&renamed, "..").is_err());
@@ -1687,7 +1853,6 @@ mod tests {
             assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
             // Original still present (copy, not move).
             assert!(src.join("inner.txt").exists());
-            // A second copy into the same dir dedups the folder name.
             let copied2 = copy_into(&src, &destdir).unwrap();
             assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
         }

@@ -28,6 +28,8 @@ struct Device {
     /// Pictures waiting for the app.
     pictures: Mutex<Vec<Picture>>,
     arrived: Arc<tokio::sync::Notify>,
+    /// Whether the call plays silence, as last told.
+    deafened: AtomicBool,
 }
 struct BackendFixture(Arc<Device>);
 impl MediaSession for BackendFixture {
@@ -93,6 +95,9 @@ impl MediaSession for BackendFixture {
     fn show(&mut self, shown: Vec<Shown>) {
         *self.0.shown.lock().unwrap() = shown;
     }
+    fn set_deafened(&mut self, deafened: bool) {
+        self.0.deafened.store(deafened, Ordering::SeqCst);
+    }
     fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
         let pictures = std::mem::take(&mut *self.0.pictures.lock().unwrap());
         let cursor = after.saturating_add(u64::try_from(pictures.len()).unwrap());
@@ -143,7 +148,7 @@ impl Fixture {
             .desktop
             .workspaces
             .remove(0);
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let prompts = PromptQueueHandle::new(PromptResolver::Channel);
         let mut capture = CaptureBroker::new();
@@ -163,9 +168,6 @@ impl Fixture {
         assert!(service.install_consent(grants, prompts.clone()));
         let device = Arc::new(Device::default());
         assert!(service.install_factory(Arc::new(Factory(Arc::clone(&device)))));
-        // These cases drive the microphone by hand: the person here chose
-        // to join muted. Joining with it on has its own cases below.
-        service.preferences().remember(true);
         let caller = Caller {
             peer: 11,
             app: "so.tilo.chat".into(),
@@ -752,59 +754,124 @@ async fn pending_join_cannot_install_a_backend_after_leave() {
 }
 
 async fn settle(until: impl Fn() -> bool) -> bool {
-    for _ in 0..200 {
-        if until() {
-            return true;
+    let deadline = tilo_test_env::hang_deadline();
+    while !until() {
+        if Instant::now() >= deadline {
+            return false;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    until()
+    true
 }
 
 #[tokio::test]
-async fn joining_turns_the_microphone_on_asking_once_and_a_mute_is_remembered() {
+async fn joining_asks_nothing_and_the_first_unmute_asks_once_for_as_long_as_allowed() {
     let fixture = Fixture::new();
-    fixture.service.preferences().remember(false);
-    // Joining is being in the call with the microphone on: once the call is
-    // live, the normal permission prompt asks for it.
+    // Joining is listening, muted: no prompt, no capture.
     fixture.join().await;
-    assert!(
-        settle(|| fixture.prompts.queued_len() == 1).await,
-        "the join asks for the microphone"
-    );
-    let prompt = fixture.prompts.drain().pop().unwrap();
+    {
+        // Live, with nothing waiting on consent and no capture started.
+        let calls = fixture.service.0.calls.lock().unwrap();
+        let entry = calls.entries.get(&fixture.caller.key()).unwrap();
+        assert!(entry.pending.is_none() && entry.capture.is_none());
+    }
+    assert_eq!(fixture.prompts.queued_len(), 0, "joining asks for nothing");
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    assert!(fixture.command(Command::Status).muted);
+    // The first unmute asks; an allowance for the session covers the next
+    // unmute and the next call.
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
     prompt.reply.send(PromptOutcome::AllowAlways).unwrap();
     assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 1).await);
     assert!(!fixture.command(Command::Status).muted);
-    // The allowance covers the next join: no second prompt.
     fixture.command(Command::Leave);
     fixture.join().await;
+    assert!(
+        fixture.command(Command::Status).muted,
+        "every call starts muted"
+    );
+    fixture.command(Command::SetMuted { muted: false });
     assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
-    assert_eq!(fixture.prompts.queued_len(), 0);
-    // Muting is the person's choice, kept for the calls after this one.
-    fixture.command(Command::SetMuted { muted: true });
-    assert!(fixture.service.preferences().join_muted());
-    fixture.command(Command::Leave);
-    fixture.join().await;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 2);
-    assert!(fixture.command(Command::Status).muted);
+    assert_eq!(fixture.prompts.queued_len(), 0, "allowed: not asked again");
 }
 
 #[tokio::test]
-async fn a_microphone_allowed_once_is_asked_for_again_on_the_next_join() {
+async fn deafening_silences_the_call_and_mutes_and_undeafening_puts_the_microphone_back() {
     let fixture = Fixture::new();
-    fixture.service.preferences().remember(false);
     fixture.join().await;
-    assert!(settle(|| fixture.prompts.queued_len() == 1).await);
-    let prompt = fixture.prompts.drain().pop().unwrap();
-    prompt.reply.send(PromptOutcome::AllowOnce).unwrap();
-    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 1).await);
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
+    prompt.reply.send(PromptOutcome::AllowAlways).unwrap();
+    assert!(settle(|| fixture.command(Command::Status).capture_active).await);
+    let stops = fixture.device.stops.load(Ordering::SeqCst);
+    let deafened = fixture.command(Command::SetDeafened { deafened: true });
+    assert!(deafened.deafened && deafened.muted && !deafened.capture_active);
+    assert!(
+        fixture.device.deafened.load(Ordering::SeqCst),
+        "the call plays silence"
+    );
+    assert!(
+        fixture.device.stops.load(Ordering::SeqCst) > stops,
+        "the microphone stops"
+    );
+    // Unmuted before: unmuted again, under the same allowance.
+    let heard = fixture.command(Command::SetDeafened { deafened: false });
+    assert!(!heard.deafened);
+    assert!(!fixture.device.deafened.load(Ordering::SeqCst));
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
+    assert!(!fixture.command(Command::Status).muted);
+    // Muted before: muted after.
+    fixture.command(Command::SetMuted { muted: true });
+    fixture.command(Command::SetDeafened { deafened: true });
+    let heard = fixture.command(Command::SetDeafened { deafened: false });
+    assert!(!heard.deafened && heard.muted);
+    tokio::task::yield_now().await;
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 2);
+    // Unmuting while deafened hears the call again.
+    fixture.command(Command::SetDeafened { deafened: true });
+    fixture.command(Command::SetMuted { muted: false });
+    assert!(!fixture.device.deafened.load(Ordering::SeqCst));
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 3).await);
+    let status = fixture.command(Command::Status);
+    assert!(!status.deafened && !status.muted);
+    // A new call hears.
+    fixture.command(Command::SetDeafened { deafened: true });
+    fixture.command(Command::Leave);
+    assert!(!fixture.command(Command::Status).deafened);
+    fixture.join().await;
+    assert!(!fixture.command(Command::Status).deafened);
+}
+
+#[tokio::test]
+async fn a_refused_microphone_keeps_the_person_in_the_call_muted_and_says_why() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
+    prompt.reply.send(PromptOutcome::Deny).unwrap();
+    assert!(
+        settle(|| fixture.command(Command::Status).issue == Some(Issue::PermissionDenied)).await
+    );
+    let status = fixture.command(Command::Status);
+    assert_eq!(status.state, State::Live, "still in the call, listening");
+    assert!(status.muted && !status.capture_active);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    // Unmuting again asks again.
+    fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(fixture.prompts.queued_len(), 1);
+}
+
+#[tokio::test]
+async fn a_microphone_allowed_once_is_asked_for_again_on_the_next_unmute() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.approve_unmute().await;
     fixture.command(Command::Leave);
     fixture.join().await;
-    assert!(settle(|| fixture.prompts.queued_len() == 1).await);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(fixture.prompts.queued_len(), 1);
 }
 
 #[tokio::test]
@@ -833,12 +900,15 @@ async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_cha
         .watch(fixture.caller.clone(), seen.revision, route);
     tokio::pin!(held);
     fixture.tick();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut held)
-            .await
-            .is_err(),
-        "nothing changed: the watch is held"
-    );
+    // The tick ran to completion: polled again and again, the watch finds
+    // nothing changed and stays held.
+    for _ in 0..10 {
+        tokio::select! {
+            biased;
+            answered = &mut held => panic!("nothing changed, yet the watch answered: {answered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+    }
 
     // Ana talks: the next tick sees it and the held watch answers.
     let ana = "a".repeat(64);
@@ -848,9 +918,8 @@ async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_cha
         .speaking_revision
         .fetch_add(1, Ordering::SeqCst);
     fixture.tick();
-    let answered = tokio::time::timeout(Duration::from_secs(5), held)
+    let answered = tilo_test_env::within("the held watch to answer", held)
         .await
-        .expect("the watch answers")
         .unwrap();
     assert_eq!(answered.speaking, vec![ana]);
     assert_ne!(answered.revision, seen.revision);

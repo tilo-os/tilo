@@ -259,10 +259,14 @@ fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
 
 /// The native bar's two popovers, opened the way assistive technology and
 /// a press open them: the workspace name opens the workspace menu (the
-/// workspaces, the shell's workspace commands, the overview, a new desk),
+/// workspaces, the shell's workspace commands, the overview, a new strip),
 /// your own avatar opens your profile card, and opening one closes the
 /// other.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     use shell::shell::overlay_host::ShellOverlayHost;
     use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};
@@ -303,7 +307,7 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
         "Join a workspace…",
         "Workspace settings…",
         "Overview",
-        "New desk",
+        "New strip",
     ] {
         assert!(
             labels.iter().any(|label| label == row),
@@ -336,4 +340,50 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     frame.render_png(&out.join("profile-card.png"));
     frame.key("Escape");
     assert!(!frame.root::<ShellOverlayHost>().profile_card_open());
+}
+
+/// The shell drives through the same in-process driver an app does: a script
+/// of steps runs on the real chrome and answers the state it left behind.
+#[test]
+fn the_shell_drives_through_the_headless_app_driver() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    use ui::headless::{FrameHarness, SemanticAction, Step, drive};
+    use ui::{state::State, theme::Theme};
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    let mut frame = FrameHarness::for_root(State::new(), host, (1440, 900), Theme::dark());
+    // Opening the workspace menu is one step, and the drive names it exactly
+    // as the CLI would: no coordinates anywhere.
+    let outcome = drive(
+        &mut frame,
+        &[Step::Action(ui::headless::Action::Perform {
+            target: "topbar:workspace-settings".into(),
+            semantic_target: None,
+            action: SemanticAction::Activate,
+        })],
+    );
+    assert!(outcome.is_pass(), "{:?}", outcome.steps);
+    // The state the step left is answered as values rather than files: the
+    // widgets and their rects, the resources the shell publishes, the
+    // inspection tree, and the document as it stands.
+    assert!(
+        outcome
+            .targets
+            .iter()
+            .any(|(name, rect)| name.starts_with("ShellOverlayHost")
+                && rect[2] > 0.0
+                && rect[3] > 0.0),
+        "{:?}",
+        outcome.targets
+    );
+    assert!(!outcome.resources.is_empty());
+    assert!(outcome.inspection.is_object());
+    assert_eq!(outcome.document, serde_json::json!({}));
+    assert!(
+        frame
+            .root::<ShellOverlayHost>()
+            .workspace_menu_labels()
+            .is_some(),
+        "the step opened the workspace menu"
+    );
 }

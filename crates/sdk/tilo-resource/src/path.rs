@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collection::Id;
 use crate::model::Model;
+pub use crate::upsert::At;
 
 /// One step of a [`Path`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -210,8 +211,17 @@ impl<R, T> Path<R, T> {
     }
 }
 
-/// [`Edit::risk`] of the edit `op` at `path` in a record stored as `shape`.
-fn edit_risk(shape: crate::Shape, path: &[Segment], op: &EditOp) -> tilo_actions::RiskLevel {
+/// [`Edit::risk`] of the edit `op` at `path` in a record stored as `shape`:
+/// the field's [`Trust`](crate::Trust), or a removal's. `now` holds the
+/// values, as JSON text by dotted path, of the fields that weaken one way:
+/// a change of one the other way, or to a value as strong, is ordinary;
+/// without its value now, any change of it counts as weakening.
+pub(crate) fn edit_risk(
+    shape: crate::Shape,
+    path: &[Segment],
+    op: &EditOp,
+    now: Option<&[(String, String)]>,
+) -> tilo_actions::RiskLevel {
     use tilo_action_policy::edits::{EditStep, field_edit_asks};
     let mut steps: Vec<EditStep<'_>> = Vec::with_capacity(path.len());
     for segment in path {
@@ -220,9 +230,27 @@ fn edit_risk(shape: crate::Shape, path: &[Segment], op: &EditOp) -> tilo_actions
             Segment::Item(_) | Segment::Key(_) | Segment::Cell { .. } => EditStep::Item,
         });
     }
+    match shape.trust_at(path) {
+        crate::Trust::Ordinary => {}
+        crate::Trust::Weakens(weaker) => {
+            let at = tilo_action_policy::edits::dotted(&steps);
+            let weakens = match op {
+                EditOp::Set { value } => weaker.weakens(
+                    now.and_then(|now| now.iter().find(|(path, _)| *path == at))
+                        .map(|(_, now)| now.as_str()),
+                    &value.to_string(),
+                ),
+                _ => true,
+            };
+            if weakens {
+                return tilo_actions::RiskLevel::Privileged;
+            }
+        }
+        trust => return trust.risk(),
+    }
     let quiet = shape.quiet_removals();
     let quiet: Vec<&str> = quiet.iter().map(String::as_str).collect();
-    if field_edit_asks(op.name(), &steps, &quiet) {
+    if field_edit_asks(op.name(), &steps, &quiet, &[]) {
         tilo_actions::RiskLevel::Destructive
     } else {
         tilo_actions::RiskLevel::Low
@@ -577,7 +605,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     pub fn insert(&self, at: usize, value: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: None,
-            at,
+            at: At::Index(at),
             value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
@@ -587,7 +615,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     pub fn insert_as(&self, id: &Id, at: usize, value: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(id.clone()),
-            at,
+            at: At::Index(at),
             value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
@@ -601,7 +629,25 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     /// Move the item `id` to `at` (clamped to the end).
     #[must_use]
     pub fn move_to(&self, id: &Id, at: usize) -> Edit<R> {
-        self.edit(EditOp::MoveTo { id: id.clone(), at })
+        self.edit(EditOp::MoveTo {
+            id: id.clone(),
+            at: At::Index(at),
+        })
+    }
+
+    /// Update the one item whose fields hold `matching` with the fields of
+    /// `value`, else append `value` with them ([`EditOp::UpsertItem`]).
+    #[must_use]
+    pub fn upsert_by(
+        &self,
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+    ) -> Edit<R> {
+        self.edit(EditOp::UpsertItem {
+            matching,
+            value,
+            id: None,
+        })
     }
 }
 
@@ -685,6 +731,25 @@ impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static
     }
 }
 
+impl<R> Path<R, crate::Reactions> {
+    /// React with `emoji` (a Unicode emoji, or a workspace emoji as
+    /// `:name:`), as whoever invokes the edit.
+    #[must_use]
+    pub fn react(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::React {
+            emoji: emoji.into(),
+        })
+    }
+
+    /// Take back the invoker's reaction with `emoji`.
+    #[must_use]
+    pub fn unreact(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::Unreact {
+            emoji: emoji.into(),
+        })
+    }
+}
+
 /// What an [`Edit`] does at its path. Text positions count characters.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -719,8 +784,20 @@ pub enum EditOp {
     InsertItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<Id>,
-        at: usize,
+        at: At,
         value: serde_json::Value,
+    },
+    /// Update the one item of a collection whose fields hold `matching`
+    /// with the fields of `value`, else append `value` (with `matching`'s
+    /// fields) as a new item, under `id` when given. Resolved against the
+    /// document as it is when the edit applies; refused when more than one
+    /// item matches.
+    UpsertItem {
+        #[serde(rename = "match")]
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Id>,
     },
     /// Remove an item from a collection.
     RemoveItem {
@@ -729,7 +806,7 @@ pub enum EditOp {
     /// Move an item within a collection.
     MoveTo {
         id: Id,
-        at: usize,
+        at: At,
     },
     /// Remove an entry of a map.
     RemoveKey {
@@ -767,6 +844,15 @@ pub enum EditOp {
     /// Forget a settled outbox entry.
     Forget {
         id: Id,
+    },
+    /// React with `emoji` to what holds a [`Reactions`](crate::Reactions)
+    /// field, as whoever invokes the edit.
+    React {
+        emoji: String,
+    },
+    /// Take back the invoker's reaction with `emoji`.
+    Unreact {
+        emoji: String,
     },
     /// An edit of a type with its own vocabulary ([`Operations`]: rich text
     /// marks and blocks), in that type's JSON form.
@@ -815,15 +901,24 @@ enum EditOpWire {
     InsertItem {
         #[serde(default)]
         id: Option<Id>,
-        at: usize,
+        #[serde(default)]
+        at: At,
         value: serde_json::Value,
+    },
+    UpsertItem {
+        #[serde(rename = "match")]
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+        #[serde(default)]
+        id: Option<Id>,
     },
     RemoveItem {
         id: Id,
     },
     MoveTo {
         id: Id,
-        at: usize,
+        #[serde(default)]
+        at: At,
     },
     RemoveKey {
         key: String,
@@ -857,6 +952,12 @@ enum EditOpWire {
     Forget {
         id: Id,
     },
+    React {
+        emoji: String,
+    },
+    Unreact {
+        emoji: String,
+    },
     Rich {
         rich: serde_json::Value,
     },
@@ -872,6 +973,15 @@ impl From<EditOpWire> for EditOp {
             EditOpWire::Insert { value } => Self::Insert { value },
             EditOpWire::Remove { value } => Self::Remove { value },
             EditOpWire::InsertItem { id, at, value } => Self::InsertItem { id, at, value },
+            EditOpWire::UpsertItem {
+                matching,
+                value,
+                id,
+            } => Self::UpsertItem {
+                matching,
+                value,
+                id,
+            },
             EditOpWire::RemoveItem { id } => Self::RemoveItem { id },
             EditOpWire::MoveTo { id, at } => Self::MoveTo { id, at },
             EditOpWire::RemoveKey { key } => Self::RemoveKey { key },
@@ -882,6 +992,8 @@ impl From<EditOpWire> for EditOp {
             EditOpWire::RemoveColumn { id } => Self::RemoveColumn { id },
             EditOpWire::Settle { id, outcome } => Self::Settle { id, outcome },
             EditOpWire::Forget { id } => Self::Forget { id },
+            EditOpWire::React { emoji } => Self::React { emoji },
+            EditOpWire::Unreact { emoji } => Self::Unreact { emoji },
             EditOpWire::Rich { rich } => Self::Rich { rich },
         }
     }
@@ -916,6 +1028,7 @@ impl EditOp {
             Self::Insert { .. } => "insert",
             Self::Remove { .. } => "remove",
             Self::InsertItem { .. } => "insert-item",
+            Self::UpsertItem { .. } => "upsert-item",
             Self::RemoveItem { .. } => "remove-item",
             Self::MoveTo { .. } => "move-to",
             Self::RemoveKey { .. } => "remove-key",
@@ -926,6 +1039,8 @@ impl EditOp {
             Self::RemoveColumn { .. } => "remove-column",
             Self::Settle { .. } => "settle",
             Self::Forget { .. } => "forget",
+            Self::React { .. } => "react",
+            Self::Unreact { .. } => "unreact",
             Self::Rich { .. } => "rich",
         }
     }
@@ -989,53 +1104,67 @@ impl<R> Edit<R> {
         }
     }
 
+    /// The same edit of a record stored as `root`, which callers also call
+    /// by one of `names`: a path whose first field names no field of the
+    /// record but the record itself starts at the field after it. A record
+    /// read nests its fields under such a name (a timeline's `project`), and
+    /// callers send `project.name` back.
+    ///
+    /// # Errors
+    /// The path names the record and nothing in it, or a field in it that
+    /// is not ordinary: the refusal says where the path starts.
+    pub(crate) fn past_record_name(
+        self,
+        root: crate::Shape,
+        names: &[&str],
+    ) -> Result<Self, String> {
+        let fields = root.fields();
+        let Some((Segment::Field(head), rest)) = self.path.split_first() else {
+            return Ok(self);
+        };
+        if fields.iter().any(|field| field.key == head)
+            || !names.iter().any(|name| name.eq_ignore_ascii_case(head))
+        {
+            return Ok(self);
+        }
+        let Some(start) = rest.first() else {
+            let editable: Vec<&str> = fields
+                .iter()
+                .filter(|field| !field.readonly)
+                .map(|field| field.key)
+                .collect();
+            return Err(format!(
+                "`{head}` is the record itself, not one of its fields: start the path at the field to change, one of {}",
+                editable.join(", ")
+            ));
+        };
+        // A door decides whether an edit asks first from the path as sent,
+        // which names no field that exposes the person or weakens their
+        // security; an edit of such a field is sent again from the root.
+        if root.trust_at(rest) != crate::Trust::Ordinary {
+            return Err(format!(
+                "`{head}` is the record itself, not one of its fields: start the path at `{start}`"
+            ));
+        }
+        Ok(Self::new(rest.to_vec(), self.op))
+    }
+
     /// Whether `next`, by the same actor straight after `self`, continues
     /// the same gesture: one undo step. Setting one path again (dragging a
-    /// slider) and typing on at the end of the previous splice (a word)
-    /// continue; an edit in a type's own vocabulary continues as that type
+    /// slider), typing on at the end of the previous splice (a word) and a
+    /// text field's whole-text replacements that type or erase within one
+    /// word (`replace_continues`) continue; an edit in a type's own vocabulary continues as that type
     /// says ([`Operations::coalesces`]); anything else starts a new step.
     #[must_use]
     pub fn coalesces(&self, next: &Self) -> bool
     where
         R: Model,
     {
-        if self.path != next.path {
-            return false;
-        }
-        match (&self.op, &next.op) {
-            (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
-                R::op_coalesces(&self.path, previous, next).unwrap_or(false)
-            }
-            (EditOp::Set { .. }, EditOp::Set { .. })
-            | (EditOp::Replace { .. }, EditOp::Replace { .. })
-            | (EditOp::Add { .. }, EditOp::Add { .. }) => true,
-            (
-                EditOp::Splice {
-                    at, delete, insert, ..
-                },
-                EditOp::Splice {
-                    at: next_at,
-                    delete: next_delete,
-                    insert: next_insert,
-                },
-            ) => {
-                let typed = insert.chars().count();
-                // Typing on after the previous insertion, within one word:
-                // a space ends the word it follows, so undo takes back
-                // `world` and leaves `hello `.
-                let typing = *delete == 0
-                    && *next_delete == 0
-                    && !next_insert.is_empty()
-                    && *next_at == at.saturating_add(typed)
-                    && !insert.ends_with(char::is_whitespace);
-                // Deleting backwards from where the previous deletion was.
-                let erasing = insert.is_empty()
-                    && next_insert.is_empty()
-                    && next_at.saturating_add(*next_delete) == *at;
-                typing || erasing
-            }
-            _ => false,
-        }
+        edits_coalesce(
+            (&self.path, &self.op),
+            (&next.path, &next.op),
+            R::op_coalesces,
+        )
     }
 
     /// How much harm this edit can do: removing an item of a collection is
@@ -1046,7 +1175,7 @@ impl<R> Edit<R> {
     where
         R: Model,
     {
-        edit_risk(R::SHAPE, &self.path, &self.op)
+        edit_risk(R::SHAPE, &self.path, &self.op, None)
     }
 
     /// The node of the published tree this edit acts on, for deciding
@@ -1113,6 +1242,55 @@ impl<R> Edit<R> {
         R: crate::Fields,
     {
         R::edit_fields(doc, &automerge::ROOT, &self.path, &self.op, cx)
+    }
+}
+
+/// [`Edit::coalesces`] of the edit `previous` (its path and operation) and
+/// `next`, an edit in a type's own vocabulary continuing as `rich` says:
+/// compiled once rather than for every record type.
+#[inline(never)]
+fn edits_coalesce(
+    (previous_path, previous_op): (&[Segment], &EditOp),
+    (next_path, next_op): (&[Segment], &EditOp),
+    rich: fn(&[Segment], &serde_json::Value, &serde_json::Value) -> Option<bool>,
+) -> bool {
+    if previous_path != next_path {
+        return false;
+    }
+    match (previous_op, next_op) {
+        (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
+            rich(previous_path, previous, next).unwrap_or(false)
+        }
+        (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => true,
+        (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
+            replace_continues(previous, next)
+        }
+        (
+            EditOp::Splice {
+                at, delete, insert, ..
+            },
+            EditOp::Splice {
+                at: next_at,
+                delete: next_delete,
+                insert: next_insert,
+            },
+        ) => {
+            let typed = insert.chars().count();
+            // Typing on after the previous insertion, within one word:
+            // a space ends the word it follows, so undo takes back
+            // `world` and leaves `hello `.
+            let typing = *delete == 0
+                && *next_delete == 0
+                && !next_insert.is_empty()
+                && *next_at == at.saturating_add(typed)
+                && !insert.ends_with(char::is_whitespace);
+            // Deleting backwards from where the previous deletion was.
+            let erasing = insert.is_empty()
+                && next_insert.is_empty()
+                && next_at.saturating_add(*next_delete) == *at;
+            typing || erasing
+        }
+        _ => false,
     }
 }
 
@@ -1207,8 +1385,9 @@ fn edit_schema() -> serde_json::Value {
             },
             "op": {"type": "string", "enum": [
                 "set", "splice", "replace", "add", "insert", "remove", "insert-item",
-                "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
-                "insert-column", "remove-row", "remove-column", "settle", "rich",
+                "upsert-item", "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
+                "insert-column", "remove-row", "remove-column", "settle", "react", "unreact",
+                "rich",
             ]},
         },
         "required": ["path", "op"],
@@ -1230,4 +1409,40 @@ pub fn retyped_all<R>(edits: Vec<Edit<()>>) -> Vec<Edit<R>> {
 #[doc(hidden)]
 pub fn leaf<R, T>(path: Path<R, T>) -> Path<R, T> {
     path
+}
+
+/// Whether a text field's replacement of `previous` by `next` continues the
+/// same typing gesture, so the keystrokes of one word are one undo step as
+/// with splices: the one change between them is typing a single character
+/// on after a character that is not a space (a space ends the word it
+/// follows), or erasing. A paste or any larger change is a step of its own,
+/// so undo takes it back alone.
+fn replace_continues(previous: &str, next: &str) -> bool {
+    let prefix = previous
+        .chars()
+        .zip(next.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (before, after) = (previous.chars().count(), next.chars().count());
+    let room = before.min(after).saturating_sub(prefix);
+    let suffix = previous
+        .chars()
+        .rev()
+        .zip(next.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    let kept = prefix.saturating_add(suffix);
+    let deleted = before.saturating_sub(kept);
+    let inserted = after.saturating_sub(kept);
+    match (deleted, inserted) {
+        // Erasing: Backspace or Delete runs on through the word.
+        (1.., 0) => true,
+        // Typing one character on after a non-space.
+        (0, 1) => prefix
+            .checked_sub(1)
+            .and_then(|at| previous.chars().nth(at))
+            .is_some_and(|c| !c.is_whitespace()),
+        _ => false,
+    }
 }

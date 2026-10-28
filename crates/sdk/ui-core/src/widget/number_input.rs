@@ -140,7 +140,6 @@ fn round_to_i64(v: f64) -> i64 {
 /// One of a stepper's two buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepperPart {
-    /// The `−` button, at the leading end.
     Decrease,
     /// The `+` button, at the trailing end.
     Increase,
@@ -191,7 +190,6 @@ impl<'a> NumberStepperFace<'a> {
         self
     }
 
-    /// The control size the steppers and the value are set in.
     #[must_use]
     pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
         self.control_size = size;
@@ -220,7 +218,6 @@ impl<'a> NumberStepperFace<'a> {
         self
     }
 
-    /// The control's height in `theme`.
     #[must_use]
     pub fn height(size: crate::widget::ControlSize, theme: &Theme) -> f64 {
         size.height(theme)
@@ -731,9 +728,11 @@ impl NumberInput {
     }
 
     /// Move the value by `delta` (one stepper press / arrow), clamping.
-    /// Records a change + pending write when it actually moves.
+    /// Records a change + pending write when it actually moves. The sum is
+    /// the decimal the value and step make, so tenths stay tenths.
     fn step_by(&mut self, delta: f64) {
-        let next = (self.value + delta).clamp(self.min, self.max);
+        let next = crate::num::snap_decimal(self.value + delta, &[self.value, delta])
+            .clamp(self.min, self.max);
         if !next.is_nan() && next.total_cmp(&self.value).is_ne() {
             self.value = next;
             self.record_user_value(next);
@@ -1192,7 +1191,6 @@ mod tests {
 
     #[test]
     fn number_footprint_fits_large_text_and_widest_value_unless_manual() {
-        // Case `automatic_defaults_fit_large_text_and_keep_explicit_sizes`.
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -1250,7 +1248,6 @@ mod tests {
             }
         }
 
-        // Case `manual_allocation_overrides_automatic_number_footprint`.
         {
             let manual = crate::widget::Manual::new(|ctx| {
                 ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
@@ -1272,7 +1269,6 @@ mod tests {
             );
         }
 
-        // Case `steppers_are_square_icon_buttons_with_pointer_target_hits`.
         {
             let theme = Theme::dark();
             for compact in [false, true] {
@@ -1356,7 +1352,6 @@ mod tests {
 
     #[test]
     fn number_text_parses_and_formats_with_units_signs_and_precision() {
-        // Case `parse_leading_number_tolerates_units_and_signs`.
         {
             assert_eq!(parse_leading_number("16"), Some(16.0));
             assert_eq!(parse_leading_number("16 px"), Some(16.0));
@@ -1368,7 +1363,6 @@ mod tests {
             assert_eq!(parse_leading_number("."), None);
         }
 
-        // Case `format_value_respects_precision_and_suffix`.
         {
             let n = NumberInput::new(16.0).with_suffix("px");
             assert_eq!(n.format_value(), "16 px");
@@ -1378,8 +1372,6 @@ mod tests {
             assert_eq!(n.format_value(), "42");
         }
 
-        // Case `new_and_with_range_clamp_initial_value`.
-        // New clamps the initial value into range.
         {
             let n = NumberInput::new(500.0).with_range(8.0, 72.0);
             assert_eq!(n.value(), 72.0, "over-max initial value clamps to max");
@@ -1410,6 +1402,37 @@ mod tests {
     }
 
     #[test]
+    fn decimal_steps_land_on_the_value_shown_and_reach_the_ends() {
+        let mut n = NumberInput::new(0.0)
+            .with_range(0.0, 1.0)
+            .with_step(0.1)
+            .with_precision(1);
+        layout_at(&mut n, 0.0, 0.0);
+        n.field.set_focus(true);
+        for _ in 0..3 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+        }
+        assert_eq!(n.value(), 0.3, "three tenths up is 0.3");
+        assert_eq!(n.take_changed(), Some(0.3));
+        for _ in 0..3 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+        }
+        assert_eq!(n.value(), 0.0, "three tenths back down is the minimum");
+        assert_eq!(n.take_changed(), Some(0.0));
+        dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+        assert_eq!(
+            n.take_changed(),
+            None,
+            "a step past the minimum moves nothing"
+        );
+        for _ in 0..10 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+        }
+        assert_eq!(n.value(), 1.0, "ten tenths reach the maximum");
+        assert_eq!(n.field.value(), "1.0");
+    }
+
+    #[test]
     fn typed_values_commit_clamped_or_revert() {
         // Case `type_then_enter_parses_clamps_and_commits`.
         // Typing a value and committing with Enter parses, clamps and reports
@@ -1433,7 +1456,6 @@ mod tests {
                 "commit reports the clamped change"
             );
             assert_eq!(n.take_changed(), None, "take_changed drains");
-            // Display re-rendered to the canonical value + suffix.
             assert_eq!(n.field.value(), "72 px");
         }
 
@@ -1465,7 +1487,6 @@ mod tests {
             assert_eq!(n.take_changed(), None, "no change to report");
         }
 
-        // Case `blur_commits_the_typed_value_for_the_owner`.
         {
             let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
             layout_at(&mut n, 0.0, 0.0);
@@ -1541,7 +1562,6 @@ mod tests {
             assert_eq!(n.value(), 17.0, "arrows step a keyboard-focused field");
         }
 
-        // Case `disabled_field_rejects_input`.
         {
             let mut n = NumberInput::new(16.0)
                 .with_range(8.0, 72.0)
@@ -1576,7 +1596,6 @@ mod tests {
             assert_eq!(n.field.value(), "72");
         }
 
-        // Case `local_state_binding_is_two_way_across_number_inputs`.
         {
             use crate::a11y::Action;
 
@@ -1616,7 +1635,6 @@ mod tests {
 
     #[test]
     fn accessibility_reports_spinbutton_and_routes_value_actions() {
-        // Case `accessibility_reports_spinbutton_and_value`.
         {
             use crate::a11y::Role;
             let n = NumberInput::new(16.0).with_suffix("px");
@@ -1650,7 +1668,6 @@ mod tests {
             assert_eq!(n.value(), 72.0, "SetValue clamps");
         }
 
-        // Case `action_binding_owns_accessibility_value_changes`.
         {
             let mut number =
                 NumberInput::new(10.0).on_action(crate::widget::test_number_action_binding());

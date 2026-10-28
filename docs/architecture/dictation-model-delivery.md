@@ -11,7 +11,7 @@ The reviewed Nemotron Q8 object is 742090464 bytes (707.71 MiB), SHA-256
 Its upstream release is [NVIDIA's pinned model revision](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/tree/ea30d66debe3740a08b573244286791d423d6b3e),
 under the reviewed OpenMDW-1.1 terms. Native runtime/build pins and measurements
 are in `dictation-streaming-optimization.json`; vocabulary measurements are in
-`dictation-vocabulary-characterization.json`. Neither ledger is release authority.
+[`dictation-vocabulary-characterization.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-vocabulary-characterization.json). Neither ledger is release authority.
 
 `LocalModelService::fetch_verified` already supports large pinned artifacts:
 HTTPS-only transport, offset resume, exact signed size and SHA-256, a private
@@ -116,7 +116,7 @@ Ready/drafts/final and rawWER5.26% under the verified1.25GiBtransient scope.
 The worker peaks at870792KiBvirtual/354664KiBRSS; aggregate scope peak617578496B
 and zero high/max/OOM events. This is pressured-builder development evidence,
 not physical latency or native Nemotron acceptance. Original readiness and
-observation failures are preserved in `dictation-sealed-loading.json`; the
+observation failures are preserved in [`dictation-sealed-loading.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-sealed-loading.json); the
 pinned parser's exact-EOF probes are handled without accepting truncated fields.
 
 No automatic review has denied native backend implementation. Choosing and
@@ -178,7 +178,7 @@ A read-only `FS_IOC_MEASURE_VERITY` query on the existing 742090464-byte review
 object on the original review filesystem returned `ENOTTY` (25). That
 filesystem could not supply this witness; no mutation was attempted in that
 query. The existing btrfs filesystem subsequently resolved this limitation.
-`dictation-native-descriptor.json` records the adapter and storage evidence.
+[`dictation-native-descriptor.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-descriptor.json) records the adapter and storage evidence.
 The historical receipt remains unchanged; the successful btrfs qualification
 is recorded separately below.
 
@@ -224,7 +224,7 @@ events. Worker virtual peaks stayed below the 960 MiB guard. This does not prove
 physical 4–8 GiB/ARM behavior or cold-device IO isolation.
 
 Exact source/binary/dependency hashes, positive runs and retained failed launches
-are in `dictation-native-worker.json`. The immutable anchor fixes a failure found
+are in [`dictation-native-worker.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-worker.json). The immutable anchor fixes a failure found
 only by the actual worker: upstream routine buffer release precedes later lazy
 weight loading. The complete native format/runtime release, startup/formatting
 quality, broader natural speech and renderer-owned cancellation remain pending.
@@ -256,7 +256,7 @@ to 11.559 seconds. Capture-to-meaningful-stable timing stayed approximately
 matched privately; raw WER stayed 21.05% and 0% respectively. Thus the gain
 removes preparation work rather than shifting it to the first user draft.
 
-`dictation-native-startup.json` records exact before/after library hashes,
+[`dictation-native-startup.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-startup.json) records exact before/after library hashes,
 input hashes, strict scoring, retrospective prefix stability, scope events and
 memory. No max/OOM events or guard failures occurred. File-cache reclamation
 and pressured-builder timing remain recorded; these measurements do not
@@ -276,7 +276,7 @@ preserving its accuracy failure as a release limitation.
 The actual private worker now reports bounded verification and native preparation
 counters only under `--phase-review`. The public probe supplies PCM every20ms while
 inference is busy, matching the service's two-second initial draft and one-second
-repeat cadence. [The phase ledger](dictation-native-phases.json) separates owned-file
+repeat cadence. [The phase ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-phases.json) separates owned-file
 cache advice, fresh-worker cache repeat, resident-model repeat, and audio delivery
 to retrospectively stable text. Pipe-write timing does not measure microphone or
 hardware latency. `DONTNEED` advice does not establish physically cold storage.
@@ -323,7 +323,7 @@ incremental; production Whisper retains full context, including its separate
 minimum-audio guard against opening-word hallucinations. This integrates a bounded
 streaming cadence without selecting or installing the held native model.
 
-[Eight actual confined streams](dictation-native-cadence.json) compare existing
+[Eight actual confined streams](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-cadence.json) compare existing
 cadence, early cadence, supported context0, and the final Ready-driven policy.
 With context1 unchanged, earlier cadence reduced English first stable text from
 3221ms to1681ms and German meaningful stable text from6447ms to5671ms. The final
@@ -341,7 +341,7 @@ results improve draft delivery, not the remaining accuracy or full OS acceptance
 
 ## Situational development journeys
 
-[Four additional confined streams](dictation-native-situational.json) use the
+[Four additional confined streams](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-situational.json) use the
 final published worker with the same memory, deadline, sandbox and model-trust
 bounds. German seeded 10 dB noise delivered continuously every 20 ms retained
 3/18 raw errors and exactly identical final text across the old and Ready-driven
@@ -383,7 +383,7 @@ final or cancellation. The compositor uses a nonblocking lock attempt; it never
 waits for the recognition actor. Audio backpressure, deadlines, microphone consent,
 original-field ownership and dictionary revocation checks retain their guards.
 
-[The before/after ledger](dictation-preview-delivery.json) records the unchanged
+[The before/after ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-preview-delivery.json) records the unchanged
 production-publisher regression failing with Protocol before the fix, then passing
 with all six focused runtime tests. Two headless Wayland journeys also pass one
 corrected UTF-8/history commit and cancellation when field identity changes at
@@ -392,7 +392,7 @@ not establish physical microphone or full installed browser acceptance.
 
 ## Multilingual model-language correction
 
-[Three additional baseline-worker streams](dictation-native-multilingual.json)
+[Three additional baseline-worker streams](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-multilingual.json)
 completed the exposed Mandarin at 20/10 dB noise and fixed automatic French→Spanish
 journeys. Mandarin retained 2/23 raw character errors at both noise levels;
 meaningful stable text arrived at 3698/3754 ms. The assembled French→Spanish clip
@@ -429,7 +429,7 @@ held while renderer, production model admission and physical-device work continu
 
 The review worker now accepts the model's trained context3 as an explicit option;
 context1 remains the default. Development comparisons motivated a fixed paired
-validation of every reserved clip. The [configuration and decision thresholds](dictation-holdout-freeze.json)
+validation of every reserved clip. The [configuration and decision thresholds](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-holdout-freeze.json)
 were committed before decoding or scoring any reserved speech. All 32 cases ran
 with both contexts, alternating order, empty vocabulary and the same immutable
 model, native library, two-thread worker and confined fresh scope. The original
@@ -437,7 +437,7 @@ temporary builder container disappeared before exposure; reconstructing the
 pinned public corpus reproduced the exact frozen suite hash. No failed case was
 dropped, and no setting was tuned on the reserved references.
 
-The [64-run transcript-free ledger](dictation-native-holdout.json) passes every
+The [64-run transcript-free ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-native-holdout.json) passes every
 predeclared review criterion. Total worker CPU fell from300.22s to205.28s, a31.6%
 reduction. Clean non-Chinese word errors fell from49/392 to45/392; clean Mandarin
 character errors fell from21/104 to15/104. Synthetic-noise word errors fell

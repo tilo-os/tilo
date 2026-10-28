@@ -161,18 +161,26 @@ def build_disk(uki: Path, arch: str, work: Path) -> Path:
     return disk
 
 
+# How long QEMU may take to open its monitor: on a node whose disk is busy,
+# loading it and its firmware takes more than a few seconds.
+MONITOR_START_SECONDS = 120
+
+
 class Monitor:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, vm: subprocess.Popen):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(30)
-        for _ in range(100):
+        deadline = time.monotonic() + MONITOR_START_SECONDS
+        while True:
             try:
                 self.sock.connect(str(path))
                 break
             except OSError:
+                if vm.poll() is not None:
+                    fail(f"QEMU exited ({vm.returncode}) before its monitor came up")
+                if time.monotonic() > deadline:
+                    fail(f"QEMU monitor did not come up within {MONITOR_START_SECONDS}s")
                 time.sleep(0.1)
-        else:
-            fail("QEMU monitor did not come up")
         self.read()
 
     def read(self) -> str:
@@ -340,7 +348,7 @@ def main() -> int:
         problems: list[str] = []
         try:
             try:
-                monitor = Monitor(work / "mon.sock")
+                monitor = Monitor(work / "mon.sock", vm)
             except OSError as error:
                 vm.wait(timeout=10)
                 fail(f"QEMU exited ({vm.returncode}) before its monitor answered: {error}")

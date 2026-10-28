@@ -116,7 +116,6 @@ mod tests {
 
     #[test]
     fn window_icons_build_decode_or_refuse_their_source() {
-        // Case `default_icon_builds`.
         {
             assert!(
                 default_icon().is_some(),
@@ -124,7 +123,6 @@ mod tests {
             );
         }
 
-        // Case `default_icon_has_opaque_centre_and_clear_corner`.
         {
             const SIZE: u32 = 128;
             let rgba = render_default(SIZE);
@@ -140,7 +138,6 @@ mod tests {
             assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
         }
 
-        // Case `load_bytes_decodes_a_png`.
         {
             let mut buf = std::io::Cursor::new(Vec::new());
             let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
@@ -153,7 +150,6 @@ mod tests {
             );
         }
 
-        // Case `load_bytes_rejects_garbage`.
         {
             assert!(
                 load_bytes(b"not an image").is_none(),
@@ -161,7 +157,6 @@ mod tests {
             );
         }
 
-        // Case `load_path_of_missing_file_is_none`.
         {
             assert!(
                 load_path(std::path::Path::new("/nonexistent/tilo-icon.png")).is_none(),

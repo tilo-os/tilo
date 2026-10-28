@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 
 from .. import app_startup, core, gpu, records, session_unit
-from ..core import CheckFailed, Unobservable, check
+from ..core import CheckFailed, Skipped, Unobservable, check
 from ..vm import VmError, wait_until
 from .apps import _close, _lifecycle
 from .resources import shell_anon_mib, slope
@@ -44,7 +44,10 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Walks the app's tree in the guest, where each AT-SPI call is one local gdbus: from the
 # host every call would cross ssh. Prints one JSON object: the bus it read, whether the
-# root was there, and the names in the folder listing (None: no listing found).
+# root was there, and the names in the folder listing (None: no listing found). When it
+# finds no connection of the program it prints every connection instead, attributed to
+# its process, so the report separates "nothing published" from "published under a
+# process this reader does not recognise".
 ATSPI_PROBE = r'''
 import importlib.util, json, os, re, sys, time
 CLIENT = os.environ["TILO_ATSPI_CLIENT"]
@@ -63,8 +66,12 @@ except Exception as e:
     print(json.dumps({"error": error}))
     sys.exit(0)
 
-# AtspiRole's list. AccessKit has no role-name method; roles are numbers.
+# AtspiRole's list and table. AccessKit has no role-name method; roles are numbers. Files'
+# listing is the toolkit's file table (a row per entry, named for its file); a plain list
+# names its items the same way.
 ROLE_LIST = 31
+ROLE_TABLE = 55
+LISTING_ROLES = (ROLE_LIST, ROLE_TABLE)
 
 def text(reply):
     # gdbus quotes a string in single quotes, or double quotes when it holds one.
@@ -81,7 +88,7 @@ def walk(client, limit=800):
         name = text(client.property(path, "Name"))
         names.append(name)
         children = m.PATH_RE.findall(client.call(path, "org.a11y.atspi.Accessible.GetChildren"))
-        if name == list_name and client.role(path) == ROLE_LIST:
+        if name == list_name and client.role(path) in LISTING_ROLES:
             return names, [text(client.property(c, "Name")) for c in children]
         pending += [c for c in children if c not in seen]
     return names, None
@@ -97,7 +104,9 @@ def set_a11y(on):
               "org.a11y.Status", "IsEnabled", "b", "true" if on else "false", check=False)
 
 deadline = time.monotonic() + timeout
-last = {"error": f"no AT-SPI connection belongs to a {program} process"}
+found = None
+# Every connection the walk found on the last pass, whether it belonged to PROGRAM.
+clients = []
 try:
     address = m.atspi_address()
 except Exception as e:
@@ -117,20 +126,27 @@ def report(result):
         set_a11y(False)
     sys.exit(0)
 while True:
+    clients = []
     for bus, pid in m.bus_pids(address).items():
-        cmd = m.process_command(m.app_process(pid)).split()
-        if not cmd or cmd[0].rsplit("/", 1)[-1] != program:
-            continue
+        app = m.app_process(pid)
+        cmd = m.process_command(app).split()
+        own = bool(cmd) and cmd[0].rsplit("/", 1)[-1] == program
         try:
             names, entries = walk(m.AtspiClient(address, bus))
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "root": root_name in names, "entries": entries, "names": names[:20]}
         except Exception as e:
-            last = {"bus": bus, "error": f"walk failed: {e}"}
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "error": f"walk failed: {e}"}
+        clients.append(client)
+        if not own:
             continue
-        last = {"bus": bus, "root": root_name in names, "entries": entries, "names": names[:80]}
-        if last["root"] and entries:
-            report(last)
+        found = client
+        if found["root"] and entries:
+            report(found)
     if time.monotonic() >= deadline:
-        report(last)
+        report(found or {"error": f"no AT-SPI connection belongs to a {program} process",
+                         "clients": clients[:20]})
     time.sleep(0.5)
 '''
 
@@ -268,16 +284,25 @@ def _first_int(text: str) -> int | None:
     return next((int(w) for w in text.split() if w.isdigit()), None)
 
 
-def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S):
+def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S, log_from: int | None = None):
     """The startup marks of `app`'s first launch since `since_ms`, once they hold its
-    first presented frame (or whatever they hold after `wait_s`)."""
+    first presented frame (or whatever they hold after `wait_s`). With `log_from`, the
+    session log's line number before the launch, the wait is for the app's startup summary
+    (written right after its marks) or the compositor's first-frame line in the log,
+    returning the moment either is written."""
+    started = time.monotonic()
+    if log_from is not None:
+        core.wait_log_line(ctx, SESSION_LOG, log_from + 1, wait_s, f"APP-STARTUP app={re.escape(app)} ",
+                           f"first frame presented .*package_id={re.escape(app)} ")
     script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{app}/.local/state/startup-*.json; '
               'do [ -f "$f" ] || continue; printf "%s\\t" "$f"; tr -d "\\n" < "$f"; echo; done')
 
     def probe():
         m = parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
         return m if m and "first-frame-presented" in m["events"] else None
-    return wait_until(probe, wait_s, 1.0) or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
+    left = max(0.0, wait_s - (time.monotonic() - started))
+    return wait_until(probe, left, 0.25 if log_from is not None else 1.0) \
+        or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
 
 
 @check("A14", "apps", "Files draws its first frame within budget and lists the folder it opens on")
@@ -346,6 +371,9 @@ def files_start(ctx, res):
 
 @check("R05", "resources", "App windows render on the machine's GPU, not on a CPU fallback")
 def gpu_adapters(ctx, res):
+    if ctx.facts.get("software_rendering"):
+        raise Skipped("needs a GPU render node; this run renders in software")
+
     def read():
         out = ctx.vm.exec(gpu.PROBE, timeout=90, check=False)
         health_text, log = gpu.split_probe(out)
@@ -411,7 +439,9 @@ def _app_gone(ctx, app: str) -> dict | None:
         table = core.processes(ctx)
         return None if any(p["app"] == app for p in table["procs"].values()) else table
 
-    return wait_until(without_app, EXIT_WAIT_S, 1.0)
+    started = time.monotonic()
+    core.wait_app_exit(ctx, app, EXIT_WAIT_S)
+    return wait_until(without_app, max(0.0, EXIT_WAIT_S - (time.monotonic() - started)), 1.0)
 
 
 def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
@@ -429,7 +459,7 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
     log_lines, t0 = (numbers + [None, None])[:2]
     result = None
     if t0 is not None:
-        marks = _marks(ctx, t0, app, OPEN_WAIT_S)
+        marks = _marks(ctx, t0, app, OPEN_WAIT_S, log_from=log_lines)
         times = open_times(t0, marks)
         if times is not None:
             log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
@@ -474,6 +504,18 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
         if anon is not None:
             shell_anon.append(anon)
     return result
+
+
+def describe_before_main(medians: dict[str, float], n: int = 4) -> str:
+    """Where a warm open's time before the app's `main` went, by median, for a failure
+    text (a failed check keeps none of its files): the segments that add up to it, then
+    the slowest of the launcher's phases and of the compositor's dispatch phases."""
+    parts = [f"{name} {medians[name]} ms" for name in SEGMENTS if name in medians]
+    for prefix in ("launcher_phase.", "dispatch_phase."):
+        slowest = sorted(((v, k) for k, v in medians.items() if k.startswith(prefix)), reverse=True)[:n]
+        if slowest:
+            parts.append(f"{prefix.rstrip('.')}s " + ", ".join(f"{k[len(prefix):]} {v}" for v, k in slowest))
+    return "; ".join(parts) or "not split (no launcher marks)"
 
 
 # The segments of an open before the app's `main`, recorded as `app.open.<name>_ms.<app>`;
@@ -523,7 +565,7 @@ def warm_opens(ctx, res):
     launches = WARM_LAUNCHES
     ctx.reset()
     ctx.vm.input("move", str(next(_NUDGE)), "300")
-    problems, unobserved, summary = [], [], {}
+    problems, over, unobserved, summary = [], [], [], {}
     # The compositor's anonymous RSS after each open has closed, in order: what an open
     # and close leaves behind in it.
     shell_anon: list[float] = []
@@ -561,12 +603,13 @@ def warm_opens(ctx, res):
             unobserved.append(f"{app}: the session log holds no compositor launch timing for {untimed} "
                               f"of {len(results)} opens")
         if opens and median(opens) > budget:
-            problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
+            over.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
                             f"to its first frame, over its {budget} ms budget on {kind} rendering "
-                            f"(process start to first frame: median {median(starts)} ms)")
+                            f"(process start to first frame: median {median(starts)} ms; "
+                            f"before it: {describe_before_main(summary[app]['median_ms'])})")
         target = kpi_p95_target(f"app.open.warm_ms.{short}")
         if kind == "gpu" and opens and target is not None and p95(opens) > target:
-            problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
+            over.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
                             f"first frame on a GPU, over the KPI's {target:.0f} ms")
     # Then one app over and over, unmeasured: the session must outlive it and the app open
     # every time. Its RSS stays out of `shell_anon`, whose slope is a KPI over the series above.
@@ -593,9 +636,10 @@ def warm_opens(ctx, res):
         unobserved.append(f"the compositor's anonymous RSS was read after {len(shell_anon)} closes, "
                           "too few for its growth per open")
     if problems:
-        raise CheckFailed("; ".join(problems + unobserved))
+        raise CheckFailed("; ".join(problems + over + unobserved))
     if unobserved:
-        raise Unobservable("; ".join(unobserved))
+        raise Unobservable("; ".join(over + unobserved))
+    core.judge([], over)
 
 
 @check("A16", "apps", "Every Tilo app the run launched drew its first frame within its budget")
@@ -611,11 +655,26 @@ def every_launch(ctx, res):
     res.metrics.update(launches=len(startups), apps=apps, history_opens=opens)
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
-    problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
-    if "so.tilo.notes" not in apps:
-        problems.append("so.tilo.notes logged no APP-STARTUP line")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+    over = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    # A failed check keeps no files, so the slowest late launch's own phases go into the
+    # failure text: which marks the first frame waited on, and whether the window named
+    # its adapter (a launch with no adapter line is judged on the hardware budget).
+    late = [s for s in startups if s["total_ms"] > app_startup.budget_ms(s["app"], s["renderer"])]
+    if late:
+        slowest = max(late, key=lambda s: s["total_ms"])
+        unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
+                   if slowest["renderer"] == "unknown" else "")
+        over.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
+        # The broker's own account of that app's joins (`COLLAB-JOIN`): a join slower on the
+        # app's side than here waited for the broker's thread.
+        joins = [line[line.index("COLLAB-JOIN"):] for line in ctx.vm.exec(
+                     f'grep -a "COLLAB-JOIN channel=" "{core.SESSION_LOG}"; true', timeout=60,
+                     check=False).splitlines()
+                 if "COLLAB-JOIN" in line and slowest["app"] in line]
+        if joins:
+            over.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
+    problems = [] if "so.tilo.notes" in apps else ["so.tilo.notes logged no APP-STARTUP line"]
+    core.judge(problems, over)
     res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"
 
 
@@ -656,10 +715,17 @@ def files_after_session_crash(ctx, res):
     ctx.vm.root_exec(f"kill -SEGV {pids[0]}; sleep 0.5; kill -SEGV {pids[0]} 2>/dev/null; true")
 
     def answering():
+        # The next session answers when its state and its action listing both do: a
+        # session still starting answered the state dump and then closed the connection
+        # of the listing the reset below reads.
         try:
             fields = session_unit.show(ctx)
             moved = fields and fields.get("MainPID", "0") not in ("0", "", wrapper)
-            return ctx.vm.state() if moved else None
+            if not moved:
+                return None
+            state = ctx.vm.state()
+            ctx.vm.actions()
+            return state
         except VmError:
             return None
 

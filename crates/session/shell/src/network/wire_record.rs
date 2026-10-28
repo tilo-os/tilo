@@ -36,7 +36,6 @@ pub fn embeds_local_path(record_id: &str) -> bool {
     record_id.starts_with("file:") || record_id.contains("@file:")
 }
 
-/// Whether `record_id` is a sealed wire name.
 pub fn is_sealed(record_id: &str) -> bool {
     record_id.starts_with(SEALED_PREFIX)
 }
@@ -112,7 +111,6 @@ mod tests {
 
     #[test]
     fn wire_ids_are_sealed_per_room_and_routes_are_bounded() {
-        // Phase `path_bearing_ids_are_sealed_stably_and_per_room`.
         {
             let local = "file:/home/alice/Secret Plans/merger.odt";
             let wire = wire_record_id(ROOM, "so.tilo.writer", local);
@@ -128,7 +126,6 @@ mod tests {
             let derived = "derived:annotations@file:/home/alice/book.pdf";
             assert!(is_sealed(&wire_record_id(ROOM, "so.tilo.pdf", derived)));
         }
-        // Phase `ids_without_paths_travel_unchanged`.
         for id in [
             "",
             "uuid:1c2f",
@@ -137,7 +134,6 @@ mod tests {
         ] {
             assert_eq!(wire_record_id(ROOM, "app", id), id);
         }
-        // Phase `a_registered_route_resolves_and_an_unknown_sealed_id_does_not`.
         {
             let mut ids = WireRecordIds::default();
             let local = "file:/work/report.odt";
@@ -152,7 +148,6 @@ mod tests {
             let unknown = wire_record_id(ROOM, "app", "file:/elsewhere");
             assert_eq!(ids.resolve(ROOM, "app", &unknown), None);
         }
-        // Phase `remembered_routes_are_bounded`.
         {
             let mut ids = WireRecordIds::default();
             let first = ids.register(ROOM, "app", "file:/0");

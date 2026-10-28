@@ -35,9 +35,11 @@
 //! ```
 
 mod body;
+mod button_component;
 pub mod capability;
 pub mod index_publication;
 mod ordinals;
+mod preview;
 mod provider;
 mod query;
 pub mod rank;
@@ -48,6 +50,8 @@ mod row;
 pub mod testing;
 
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
+pub use button_component::{SearchButton, SearchButtonProps};
+pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
@@ -58,8 +62,8 @@ pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 pub use request::{
-    APP_SEARCH_BUTTON_ID, ScopeDecl, SearchOffer, SearchOpener, SearchRequest, SearchRequestScope,
-    open_search_binding, open_search_invocation, scope_contains, search_button,
+    APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
+    SearchRequestScope, open_search_binding, open_search_invocation, scope_contains, search_button,
 };
 pub(crate) use request::{search_address, search_resource};
 pub use row::SearchRow;

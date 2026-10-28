@@ -459,7 +459,7 @@ fn test_click_interaction_in_sandbox() {
     // shell/target and the sandbox reported the client missing — as "did not
     // become ready", with the real cause only in the app log. This is the path
     // cargo hands us for its own binary, so it survives any layout change.
-    let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
+    let client = tilo_test_env::package_binary!("click_test_client");
     let container = Container::new(
         client
             .parent()

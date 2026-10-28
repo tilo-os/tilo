@@ -1,4 +1,3 @@
-//! Actual signed empty native enrollment, owner publication, and journal recovery.
 use super::{
     BrokerChannels, CapnpBrokerState, DurableInvocation, FanoutState, HostServices,
     InvocationJournal, InvocationKey, PeerPublisher, VerifiedActionCaller, principal_id_for_root,
@@ -84,9 +83,11 @@ fn fixture() -> Fixture {
     );
     tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
     let room = tilo_joined_room::testing::ROOM;
-    let mut workspace =
-        crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Native recovery");
-    workspace.set_room(uuid::Uuid::parse_str(room).unwrap().into());
+    let mut workspace = crate::test_support::Workspace::in_room(
+        crate::test_support::WorkspaceId(1),
+        uuid::Uuid::parse_str(room).unwrap().into(),
+        "Native recovery",
+    );
     workspace.set_owner(principal_id_for_root(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -310,9 +311,7 @@ async fn prepared_effect_native_recovery_rechecks_authority_and_failed_custody()
         assert!(f.state.pending_invocations.lock().unwrap().is_empty());
         if scenario == "before" {
             assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(20), f.submitted.notified())
-                    .await
-                    .is_err(),
+                futures::FutureExt::now_or_never(f.submitted.notified()).is_none(),
                 "refused caller must not submit an inert receipt either"
             );
         }

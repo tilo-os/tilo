@@ -42,10 +42,6 @@ const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
 pub struct DeviceId(String);
 
 impl DeviceId {
-    /// # Errors
-    ///
-    /// Returns an error when the device identifier is empty, oversized, or
-    /// contains unsupported characters.
     pub fn new(value: impl Into<String>) -> Result<Self, ContinuityError> {
         let value = value.into();
         if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
@@ -135,10 +131,6 @@ pub enum LaunchIntent {
 }
 
 impl LaunchIntent {
-    /// # Errors
-    ///
-    /// Returns an error when `app_id` is not a valid application launch
-    /// target.
     pub fn app(app_id: impl Into<String>) -> Result<Self, ContinuityError> {
         let intent = Self::App {
             app_id: app_id.into(),
@@ -147,10 +139,6 @@ impl LaunchIntent {
         Ok(intent)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the record identifier or supplied hashes are
-    /// invalid for a file reference.
     pub fn file_reference(
         record_id: impl Into<String>,
         content_hash: Option<[u8; 32]>,
@@ -416,10 +404,6 @@ pub struct DeviceContinuationSnapshot {
 }
 
 impl DeviceContinuationSnapshot {
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot violates size, identity, or focus
-    /// invariants.
     pub fn new(
         device: DeviceId,
         counter: u64,
@@ -441,10 +425,6 @@ impl DeviceContinuationSnapshot {
         Ok(value)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when schema, device, size, workspace, or focus
-    /// invariants are violated.
     pub fn validate(&self) -> Result<(), ContinuityError> {
         if self.schema_version != CONTINUITY_SCHEMA_VERSION {
             return Err(ContinuityError::UnsupportedSchema(self.schema_version));
@@ -505,11 +485,6 @@ impl DeviceContinuationSnapshot {
     /// in its preceding snapshot but has now closed. Callers must advance the
     /// Lamport counter past every received checkpoint before constructing
     /// `self`, so the removal causally defeats the offer it observed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `previous` belongs to another device or the
-    /// resulting snapshot violates continuity invariants.
     pub fn record_closures_from(&mut self, previous: &Self) -> Result<(), ContinuityError> {
         if previous.device != self.device {
             return Err(ContinuityError::SnapshotStampDeviceMismatch);
@@ -590,7 +565,7 @@ impl DeviceContinuationSnapshot {
         for workspace in &tree.desktop.workspaces {
             // A local id is not usable on another device. Until a workspace
             // has its durable room id, keeping it local is the safe outcome.
-            if workspace.room.is_nil() {
+            if workspace.room().is_nil() {
                 continue;
             }
             let mut apps = Vec::new();
@@ -610,8 +585,7 @@ impl DeviceContinuationSnapshot {
                             .get(&tab.id)
                             .cloned()
                             .or_else(|| match &tab.tile {
-                                TileContent::WorkspaceActivity
-                                | TileContent::HostedWindow { .. } => None,
+                                TileContent::HostedWindow { .. } => None,
                                 TileContent::AppPlaceholder { kind, .. }
                                 | TileContent::Stub { kind, .. } => {
                                     LaunchIntent::app(kind.app_id()).ok()
@@ -646,7 +620,7 @@ impl DeviceContinuationSnapshot {
                         ) else {
                             continue;
                         };
-                        let resume = resume_for(workspace.room, app_instance_id, &launch);
+                        let resume = resume_for(workspace.room(), app_instance_id, &launch);
                         apps.push(AppInstanceState::new(
                             app_instance_id,
                             TabPlacement {
@@ -662,7 +636,7 @@ impl DeviceContinuationSnapshot {
                 }
             }
             workspaces.push(WorkspaceContinuation {
-                room: workspace.room,
+                room: workspace.room(),
                 apps,
             });
         }
@@ -1064,7 +1038,7 @@ fn focus_from_tree(
     workspaces: &[WorkspaceContinuation],
 ) -> Option<DeviceFocus> {
     let workspace = tree.desktop.active_workspace()?;
-    let room = workspace.room;
+    let room = workspace.room();
     let captured = workspaces.iter().find(|entry| entry.room == room)?;
     let strip_id = tree.desktop.active_strip.get(&workspace.id)?;
     let group_id = tree.desktop.active_group.get(strip_id)?;
@@ -1330,8 +1304,7 @@ mod tests {
             let strip_id = StripId(9);
             let group_id = 10;
             let room = room(ROOM_A);
-            let mut workspace = Workspace::new(workspace_id, "Reading");
-            workspace.set_room(room);
+            let mut workspace = Workspace::in_room(workspace_id, room, "Reading");
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
@@ -1345,6 +1318,7 @@ mod tests {
                                 kind: AppKind::Other("org.example.Reader".into()),
                                 label: "Reader".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: 12,
@@ -1353,6 +1327,7 @@ mod tests {
                                 app_id: "org.example.Foreign".into(),
                                 surface_id: 0xfeed_beef,
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: 11,
@@ -1405,8 +1380,7 @@ mod tests {
             let workspace_id = WorkspaceId(8);
             let strip_id = StripId(9);
             let room = room(ROOM_A);
-            let mut workspace = Workspace::new(workspace_id, "From another device");
-            workspace.set_room(room);
+            let mut workspace = Workspace::in_room(workspace_id, room, "From another device");
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Available elsewhere".into(),
@@ -1419,6 +1393,7 @@ mod tests {
                             kind: AppKind::FileExplorer,
                             label: "Available on another device".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 81,
                     width: WindowWidth::Normal,

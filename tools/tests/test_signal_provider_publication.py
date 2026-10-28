@@ -7,6 +7,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,7 +58,7 @@ class SignalProviderPublication(unittest.TestCase):
                     result = subprocess.run(['bash', str(ROOT / 'tools/apps/pack-runtime-package.sh'),
                                              str(bundle), 'so.tilo.runtime.signal', 'Signal runtime',
                                              '0.1.1', str(root / 'unused-key'), str(binaries), str(root / 'out')],
-                                            env=environment, capture_output=True, text=True, timeout=10)
+                                            env=environment, capture_output=True, text=True, timeout=HANG_BOUND)
                     if declaration == 'lib/lib64/ld-linux-x86-64.so.2\n':
                         self.assertEqual(result.returncode, 0, result.stderr)
                         manifest = tomllib.loads(captured.read_text())
@@ -116,7 +117,7 @@ class SignalProviderPublication(unittest.TestCase):
                     result = subprocess.run(['bash', str(ROOT / 'tools/apps/publish-runtime-package.sh'),
                                              str(package), 'x86_64', 'so.tilo.signal-provider',
                                              'fixture-provider', str(root / 'unused-metadata')],
-                                            env=environment, capture_output=True, text=True, timeout=10)
+                                            env=environment, capture_output=True, text=True, timeout=HANG_BOUND)
                     if runtime == exact:
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(calls.read_text(), 'catalogue read')

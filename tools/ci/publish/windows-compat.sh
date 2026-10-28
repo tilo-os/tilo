@@ -17,13 +17,6 @@ here=$(dirname -- "${BASH_SOURCE[0]}")
 . "$repo_root/os/base-snapshot.env"
 labels=(--label org.tilo.development-only=true)
 
-# The pinned external assets NAME... in a directory of their own, for --build-context.
-assets() {
-  local dir=$scratch/github-assets
-  TILO_GITHUB_ASSET_CACHE=$dir TILO_ASSET_STORE= bash "$repo_root/os/dev/cache-github-assets.sh" "$@" >&2
-  printf '%s' "$dir"
-}
-
 cmd=${1:?usage: windows-compat.sh fex-source|wine-tools|fex-buildroot|fex-x86-sdk ...}
 shift
 case $cmd in
@@ -45,7 +38,7 @@ case $cmd in
   fex-buildroot)
     out=${1:?usage: windows-compat.sh fex-buildroot OUT}
     [[ $(uname -m) == aarch64 ]] || die 'the FEX toolchain is built on aarch64'
-    dir=$(assets nasm-2.16.03.tar.xz)
+    dir=$(pinned_assets nasm-2.16.03.tar.xz)
     bash "$here/oci-build.sh" "$repo_root" os/Containerfile.fex-buildroot "$out" \
       --build-arg "BASE_REF=$BASE_REF" --build-arg "BUILD_JOBS=$(nproc)" \
       --build-context "github-assets=$dir" "${labels[@]}"

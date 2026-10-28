@@ -267,7 +267,7 @@ pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
 /// Whether a snapshot issued at `issued_at_unix` and expiring at
 /// `expires_at_unix` may be used at `now_unix`: issued no further ahead than
 /// the clock skew a verifier tolerates, and not yet expired. The only part
-/// of [`verify_snapshot`] and [`verify_compact_snapshot`] that depends on
+/// of [`verify_snapshot`] and [`verify_compact_snapshot`](crate::verify_compact_snapshot) that depends on
 /// the time, so a server that verified a snapshot once re-checks just this.
 #[must_use]
 pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_unix: u64) -> bool {
@@ -277,9 +277,6 @@ pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_uni
 /// Verify owner signature, freshness, structural bounds, publisher signatures,
 /// and owner authorization. A successful return is the proof behind the Store's
 /// "verified" badge.
-///
-/// # Errors
-/// Returns the precise freshness, shape, signature, or authorization failure.
 pub fn verify_snapshot(
     snapshot: &SignedRegistrySnapshot,
     pinned_owner_pubkey_hex: &str,
@@ -492,10 +489,6 @@ fn verify_channel_authorization_scope(
 }
 
 /// Verify a root-signed channel certificate before an online key is used.
-///
-/// # Errors
-/// Returns a key, signature, shape, scope, or freshness error when the
-/// authorization is not currently valid for this registry owner.
 pub fn verify_channel_authorization(
     authorization: &ChannelAuthorization,
     pinned_owner_pubkey_hex: &str,
@@ -686,7 +679,7 @@ mod tests {
                 Err(SnapshotError::OwnerSignature)
             );
             let mut added = with_bot(&plain);
-            added.owner_signature_hex = plain.owner_signature_hex.clone();
+            added.owner_signature_hex = plain.owner_signature_hex;
             assert_eq!(
                 verify_snapshot(&added, &owner_hex, 15),
                 Err(SnapshotError::OwnerSignature)
@@ -695,6 +688,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fail-closed test in phases, each tampering with a fresh snapshot"
+    )]
     fn snapshot_verification_fails_closed() {
         // phase: exact_snapshot_verifies_and_tamper_fails
         {
@@ -722,7 +719,6 @@ mod tests {
         }
         // phase: another_package_format_version_is_refused
         {
-            // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
             let (mut snapshot, owner) = fixture();
             let owner_hex = hex::encode(owner.verifying_key().to_bytes());
             for other in [0, 1, 2, 3, 4, 5] {

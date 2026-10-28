@@ -11,13 +11,14 @@
 //!
 //! Each monitor also keeps the modes and scales it has shown in a layout
 //! that was kept, so a display tool's change to something it has shown
-//! before can apply without asking.
+//! before can apply without asking, and the scale and rotation it was last
+//! shown at, which it keeps in a set of monitors never arranged before.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DisplayConfig, MonitorIdentity, OutputDescriptor, OutputMode};
+use super::{DisplayConfig, MonitorIdentity, OutputDescriptor, OutputMode, OutputTransform};
 
 /// One attached sink as set matching sees it.
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +118,19 @@ pub struct DisplayProfile {
 pub struct MonitorHistory {
     pub modes: Vec<OutputMode>,
     pub scales: Vec<f64>,
+    /// The scale and rotation it had in the most recently kept layout.
+    /// `None` in a file written before this was recorded.
+    pub last: Option<MonitorLast>,
+}
+
+/// The scale and rotation a monitor was shown at in the most recently kept
+/// layout: what it keeps when it joins a set of monitors never arranged
+/// before, so a 1.25x laptop panel stays at 1.25x the first time it is
+/// docked.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorLast {
+    pub scale: f64,
+    pub transform: OutputTransform,
 }
 
 impl MonitorHistory {
@@ -224,8 +238,19 @@ impl DisplayProfiles {
         self.monitors.get(set.members.get(connector)?)
     }
 
+    /// What each monitor attached in `set` was last shown at, keyed by where
+    /// it is attached now. Monitors never shown in a kept layout are absent.
+    pub fn last_shown_in(&self, set: &DisplaySet) -> BTreeMap<String, MonitorLast> {
+        set.members
+            .iter()
+            .filter_map(|(connector, token)| {
+                Some((connector.clone(), self.monitors.get(token)?.last?))
+            })
+            .collect()
+    }
+
     /// Remember `config` as the layout for `set`, and each enabled output's
-    /// mode and scale as shown by its monitor. Entries for outputs that are
+    /// mode, scale and rotation as shown by its monitor. Entries for outputs that are
     /// not part of the set are dropped: they describe another set.
     pub fn remember(&mut self, set: &DisplaySet, config: &DisplayConfig) {
         let mut kept = DisplayConfig::default();
@@ -234,10 +259,14 @@ impl DisplayProfiles {
                 continue;
             };
             if output.enabled {
-                self.monitors
-                    .entry(token.clone())
-                    .or_default()
-                    .note(output.mode, output.scale);
+                let history = self.monitors.entry(token.clone()).or_default();
+                history.note(output.mode, output.scale);
+                if output.scale.is_finite() && output.scale > 0.0 {
+                    history.last = Some(MonitorLast {
+                        scale: output.scale,
+                        transform: output.transform,
+                    });
+                }
             }
             kept.outputs.insert(connector.clone(), output.clone());
         }
@@ -248,6 +277,21 @@ impl DisplayProfiles {
                 config: kept,
             },
         );
+    }
+}
+
+impl DisplayConfig {
+    /// [`Self::load_effective`], together with what each attached monitor
+    /// was last shown at ([`DisplayProfiles::last_shown_in`]) — the scale
+    /// and rotation an output the configuration does not name keeps — from
+    /// one read of the saved layouts.
+    pub fn load_effective_remembering(set: &DisplaySet) -> (Self, BTreeMap<String, MonitorLast>) {
+        let profiles = DisplayProfiles::load();
+        let committed = profiles.layout_for(set).unwrap_or_default();
+        (
+            Self::effective_over(set, committed),
+            profiles.last_shown_in(set),
+        )
     }
 }
 
@@ -350,7 +394,6 @@ mod tests {
         let mut profiles = DisplayProfiles::default();
         profiles.remember(&saved_set, &config);
 
-        // The dock's MST ports enumerate the other way round next boot.
         let replugged = DisplaySet::of([
             attached("eDP-1", Some(&panel)),
             attached("DP-7", Some(&right)),
@@ -405,6 +448,78 @@ mod tests {
             profiles.history_for(&docked, "eDP-1").is_none(),
             "a screen that was off showed nothing"
         );
+    }
+
+    #[test]
+    fn a_monitor_keeps_its_scale_in_a_set_never_arranged() {
+        let panel = monitor("BOE", "NE135FBM-N41", "");
+        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+        let stranger = monitor("Samsung", "LS27A600U", "H4ZR");
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 1.25,
+                transform: OutputTransform::Rotate90,
+                ..OutputConfig::default()
+            },
+        );
+        config.outputs.insert("DP-2".into(), at(1024));
+        let mut profiles = DisplayProfiles::default();
+        profiles.remember(
+            &DisplaySet::of([
+                attached("eDP-1", Some(&panel)),
+                attached("DP-2", Some(&office)),
+            ]),
+            &config,
+        );
+        let panel_at_125 = MonitorLast {
+            scale: 1.25,
+            transform: OutputTransform::Rotate90,
+        };
+
+        let undocked = DisplaySet::of([attached("eDP-1", Some(&panel))]);
+        assert_eq!(profiles.layout_for(&undocked), None, "never arranged");
+        assert_eq!(
+            profiles.last_shown_in(&undocked),
+            BTreeMap::from([("eDP-1".to_owned(), panel_at_125)])
+        );
+
+        let elsewhere = DisplaySet::of([
+            attached("eDP-1", Some(&panel)),
+            attached("HDMI-A-1", Some(&stranger)),
+        ]);
+        assert_eq!(
+            profiles.last_shown_in(&elsewhere),
+            BTreeMap::from([("eDP-1".to_owned(), panel_at_125)]),
+            "a monitor never shown in a kept layout has nothing to keep"
+        );
+
+        // The most recent kept layout is the one a monitor remembers.
+        let mut alone = DisplayConfig::default();
+        alone
+            .outputs
+            .insert("eDP-1".into(), OutputConfig::at_scale(1.5));
+        profiles.remember(&undocked, &alone);
+        assert_eq!(
+            profiles.last_shown_in(&elsewhere)["eDP-1"],
+            MonitorLast {
+                scale: 1.5,
+                transform: OutputTransform::Normal,
+            }
+        );
+    }
+
+    #[test]
+    fn a_settings_file_from_before_the_last_scale_was_recorded_still_loads() {
+        let old: DisplayProfiles = serde_json::from_value(serde_json::json!({
+            "profiles": {},
+            "monitors": { "connector:Virtual-4": { "modes": [], "scales": [1.25] } }
+        }))
+        .expect("an old file loads");
+        let history = &old.monitors["connector:Virtual-4"];
+        assert!(history.has_scale(1.25));
+        assert_eq!(history.last, None);
     }
 
     #[test]

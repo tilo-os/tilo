@@ -41,6 +41,11 @@ fn test_path(name: &str) -> String {
 /// and report how it ended.
 fn app_whose_log_reader_left(role: &str, test_name: &str) -> ExitStatus {
     let exe = std::env::current_exe().expect("path to this test binary");
+    let (reader, writer) = std::io::pipe().expect("a pipe for the child's stderr");
+    // The compositor's relay stops reading. This is the moment that turns
+    // every later diagnostic in the child into a failed write; it happens
+    // before the child starts, so every write it makes meets it.
+    drop(reader);
     let mut child = Command::new(exe)
         .args([
             &test_path(test_name),
@@ -51,12 +56,9 @@ fn app_whose_log_reader_left(role: &str, test_name: &str) -> ExitStatus {
         ])
         .env(ROLE, role)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(writer)
         .spawn()
         .expect("spawn the child");
-    // The compositor's relay stops reading. This is the moment that turns
-    // every later diagnostic in the child into a failed write.
-    drop(child.stderr.take());
     child.wait().expect("wait for the child")
 }
 
@@ -77,7 +79,6 @@ fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
     // `panic = "abort"` is reproduced with a hook that aborts — without it
     // the child would exit 101 and the signal would go unasserted.
     std::panic::set_hook(Box::new(|_| std::process::abort()));
-    std::thread::sleep(std::time::Duration::from_millis(150));
     write();
     // Reached only if the write did not kill us.
     std::process::exit(0);

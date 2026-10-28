@@ -84,9 +84,10 @@ def check() -> int:
             stale = "its checked-in Cap'n Proto bindings were edited by hand"
         else:
             continue
-        failures.append(f"{entry['path']}: {stale}; run `{regenerate_command(entry)}`")
+        # The crate's findings name its manifest, the file that declares it.
+        failures.append(f"{entry['path']}/Cargo.toml: {stale}; run `{regenerate_command(entry)}`")
     for failure in failures:
-        print(failure, file=sys.stderr)
+        print(failure)
     return 1 if failures else 0
 
 

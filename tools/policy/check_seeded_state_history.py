@@ -162,11 +162,11 @@ def check(root: Path = ROOT) -> list[str]:
 def main() -> int:
     problems = check(ROOT)
     for problem in problems:
-        print(f"  {problem}")
+        print(problem)
     if problems:
-        print(f"State seeded once must keep loading in every shipped version ({POLICY}).")
+        print(f"State seeded once must keep loading in every shipped version ({POLICY}).", file=sys.stderr)
         return 1
-    print("Every copy-once seed keeps the versions upgraded machines still hold.")
+    print("Every copy-once seed keeps the versions upgraded machines still hold.", file=sys.stderr)
     return 0
 
 

@@ -156,7 +156,7 @@ fn local_tab(tree: &WorkspaceTree, room: RoomId, tab: TabId) -> Option<LocalTab>
     let workspace = desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)?;
+        .find(|workspace| workspace.room() == room)?;
     for strip in &workspace.strips {
         for group in &strip.window_groups {
             let Some(found) = group.tabs.iter().find(|candidate| candidate.id == tab) else {
@@ -306,6 +306,7 @@ mod tests {
                 label: title.into(),
                 note: String::new(),
             },
+            app_title: None,
         }
     }
 
@@ -340,7 +341,7 @@ mod tests {
     }
 
     fn room(tree: &WorkspaceTree) -> RoomId {
-        tree.desktop.workspaces[0].room
+        tree.desktop.workspaces[0].room()
     }
 
     fn snapshot(

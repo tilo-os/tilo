@@ -205,8 +205,6 @@ fn interrupted_readonly_merge_parent_is_restored_before_receipt_replay() {
         .unwrap();
     log.checkpoint(merged).unwrap();
     drop(log);
-    // Actual rename with the temporary owner-write bit still present models a
-    // crash after rename and before both mode restoration and move checkpoint.
     std::fs::set_permissions(
         quarantine.join(".config"),
         std::fs::Permissions::from_mode(0o755),

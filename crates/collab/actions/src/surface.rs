@@ -100,6 +100,24 @@ pub struct ParamSurface {
     pub schema: serde_json::Value,
 }
 
+/// Whether `ty`, a field's type as written (`Outbox<Upload>`,
+/// `tilo_resource::Outbox<Removal>`), is an outbox: what a change queues
+/// there reaches outside the record once delivered.
+#[must_use]
+pub fn is_outbox_type(ty: &str) -> bool {
+    let head = ty.split('<').next().unwrap_or_default().trim();
+    head.rsplit("::").next() == Some("Outbox") && ty.contains('<')
+}
+
+/// Whether `ty`, a field's type as written (`Reactions`,
+/// `ui::tilo_resource::Reactions`), is the framework's reactions: changed
+/// only by the react and unreact field edits, which store their invoker
+/// as the author, so a read-only item still takes them.
+#[must_use]
+pub fn is_reactions_type(ty: &str) -> bool {
+    ty.trim().rsplit("::").next() == Some("Reactions")
+}
+
 /// One stored field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldSurface {
@@ -166,12 +184,17 @@ impl Surface {
     }
 
     /// Whether the field at `path` offers edits: stored, and neither it nor
-    /// a field above it read-only.
+    /// a field above it read-only. Reactions are the exception: their only
+    /// edits record who invoked them, so they forge nothing a read-only
+    /// field protects, and the record refuses any other edit of them.
     #[must_use]
     pub fn editable(&self, path: &[PathStep]) -> bool {
         let Some(field) = self.field_at(path) else {
             return false;
         };
+        if is_reactions_type(&field.ty) {
+            return true;
+        }
         !self.fields.iter().any(|candidate| {
             candidate.readonly
                 && (field.path == candidate.path

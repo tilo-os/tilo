@@ -83,10 +83,6 @@ impl PortableHomeReview {
 
     /// Authenticate the declared full home using the separately authenticated
     /// prepared-setup grant. A mutable media receipt alone cannot declare it.
-    ///
-    /// # Errors
-    /// Refuses absent declarations, wrong purpose/binding, changed ciphertext,
-    /// inconsistent bounds or unsafe target grants. No home data is adopted here.
     pub fn review(
         grants: HomeImportGrants,
         setup: &PreparedSetupReview,

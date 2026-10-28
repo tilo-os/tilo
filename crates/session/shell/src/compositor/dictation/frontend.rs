@@ -348,7 +348,6 @@ mod tests {
             fixture.pump();
             std::fs::write(pid.with_extension("release"), b"release prerecorded peer").unwrap();
             let deadline = tilo_test_env::hang_deadline();
-            // Reap the real producer without consuming its queued Done reply.
             while !fixture
                 .state
                 .text_commit
@@ -588,7 +587,6 @@ mod tests {
                 events.extend(fixture.pump());
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            // Preserve the final across an additional native input turn.
             events.extend(fixture.pump());
             assert!(fixture.state.take_native_dictation_commit());
             fixture.display.flush_clients().unwrap();
@@ -689,6 +687,137 @@ mod tests {
         fixture.pump();
         assert!(!fixture.surface.is_consent());
         assert!(fixture.state.text_commit.dictation.recognition.is_none());
+    }
+
+    impl Fixture {
+        /// Move the native field's caret and wait until the compositor has
+        /// committed the new geometry for it.
+        fn move_caret(&mut self, x: u32) {
+            self.field.x = x;
+            let expected = i32::try_from(x).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                self.pump();
+                let mut observed = None;
+                self.state
+                    .seat
+                    .text_input()
+                    .with_active_text_input(|field, _| {
+                        observed = self.state.text_fields.cursor_rectangle(field);
+                    });
+                if observed.is_some_and(|rect| rect.0 == expected) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the moved caret must reach the compositor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_caret_and_layout_moves_keep_the_original_consent() {
+        let mut fixture = Fixture::new();
+        assert!(fixture.state.shell_field_active);
+        let id = fixture.consent();
+        // Typing reflow, a resized window or a rearranged layout move the
+        // caret of the same native field without changing its owner.
+        for x in [421, 380, 900, 420] {
+            fixture.move_caret(x);
+            assert!(fixture.surface.is_consent(), "caret move retired consent");
+            assert_eq!(fixture.surface.session(), Some(id));
+            fixture.state.check_dictation(id, Instant::now()).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_caret_move_keeps_the_draft_of_a_running_session() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture
+            .state
+            .update_dictation(id, "hello".into(), Instant::now())
+            .unwrap();
+        fixture.move_caret(500);
+        fixture.state.check_dictation(id, Instant::now()).unwrap();
+        assert_eq!(fixture.state.dictation_target_id(), Some(id));
+        assert_eq!(fixture.state.dictation_preview(id), Some("hello"));
+    }
+
+    #[test]
+    fn foreign_caret_move_still_retires_consent() {
+        // A foreign client has no native owner identity or edit stamp: a
+        // moved caret is the only evidence that its edit position changed.
+        let mut fixture = Fixture::new();
+        // Drive the same wire field as a foreign one throughout.
+        let tick = |fixture: &mut Fixture| {
+            fixture
+                .display
+                .dispatch_clients(&mut fixture.state)
+                .unwrap();
+            fixture.display.flush_clients().unwrap();
+            let _ = fixture.proxy.sync_for_field(
+                &mut fixture.state,
+                Some(fixture.field),
+                Some(NativeFieldId::Widget(42)),
+            );
+            fixture.state.shell_field_active = false;
+            service(
+                &mut fixture.state,
+                &mut fixture.surface,
+                Instant::now(),
+                false,
+                None,
+            );
+        };
+        fixture.surface.request_toggle();
+        let deadline = tilo_test_env::hang_deadline();
+        while !fixture.surface.is_consent() {
+            assert!(Instant::now() < deadline, "consent must appear");
+            tick(&mut fixture);
+        }
+        let id = fixture.surface.session().unwrap();
+        tick(&mut fixture);
+        fixture.state.check_dictation(id, Instant::now()).unwrap();
+        fixture.field.x += 1;
+        let deadline = tilo_test_env::hang_deadline();
+        while fixture.surface.is_consent() {
+            assert!(
+                Instant::now() < deadline,
+                "a moved foreign caret must retire consent"
+            );
+            tick(&mut fixture);
+        }
+        assert!(fixture.state.check_dictation(id, Instant::now()).is_err());
+    }
+
+    #[test]
+    fn switching_to_another_field_and_back_never_carries_consent() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        // Another window's field, even with identical geometry.
+        let _ = fixture.proxy.sync_for_field(
+            &mut fixture.state,
+            Some(fixture.field),
+            Some(NativeFieldId::Widget(43)),
+        );
+        assert!(fixture.state.check_dictation(id, Instant::now()).is_err());
+        fixture.pump();
+        assert!(!fixture.surface.is_consent());
+        assert!(fixture.state.dictation_target_id().is_none());
+        // Back on the original field the retired consent stays retired;
+        // a fresh request is needed.
+        fixture.pump();
+        assert!(fixture.state.check_dictation(id, Instant::now()).is_err());
+        assert!(
+            fixture
+                .surface
+                .session()
+                .is_none_or(|session| session != id)
+        );
+        let next = fixture.consent();
+        assert_ne!(next, id);
     }
 
     #[test]

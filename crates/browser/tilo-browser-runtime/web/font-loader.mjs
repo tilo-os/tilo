@@ -15,7 +15,7 @@ export function createFontLoader({
 }={}){
   const root=new URL(baseURL??import.meta.url);
   let manifestPending,parsed;
-  const loaded=new Map(),pending=new Map(),failures=new Map(),queue=[];
+  const loaded=new Map(),pending=new Map(),failures=new Map(),queue=[],digests=new WeakMap();
   let active=0;
 
   async function fetchRequired(url,options={}){
@@ -52,6 +52,7 @@ export function createFontLoader({
     if(bytes.byteLength!==asset.bytes)throw Object.assign(Error(`font asset size mismatch: ${asset.name}`),{fontIntegrity:true});
     const digest=hex(await crypto.subtle.digest('SHA-256',bytes));
     if(digest!==asset.sha256)throw Object.assign(Error(`font asset SHA-256 mismatch: ${asset.name}`),{fontIntegrity:true});
+    digests.set(bytes,digest);
     return bytes;
   }
   async function load(asset){
@@ -94,7 +95,11 @@ export function createFontLoader({
   }
   /** A demand for `name` now, without waiting out a failed fetch's backoff. */
   function retry(name){failures.delete(name);return request(name);}
-  return {manifest,startup,request,retry};
+  /** The SHA-256 (lowercase hex) this loader computed for bytes it returned.
+   * The runtime checks it against the digest compiled into its build rather
+   * than hashing the font again on the page's main thread. */
+  function digestOf(bytes){return digests.get(bytes);}
+  return {manifest,startup,request,retry,digestOf};
 }
 
 /** Couples optional completion to one live mount generation. */

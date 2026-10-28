@@ -1,39 +1,145 @@
 //! Memoising the scan.
 //!
-//! The palette queries the installed-application list on every
-//! keystroke, and a full scan is ~200 files on a normal desktop. That
-//! is cheap enough to do occasionally and far too expensive to do at
-//! 60 Hz, so the result is memoised — with two independent ways to
-//! notice it is stale:
+//! The palette queries the installed-application list on every keystroke,
+//! and the compositor's loop asks for it while it saves the desktop; a full
+//! scan is ~200 files on a normal desktop. The loop must never wait on the
+//! disk, not for the scan and not for a `stat` asking whether the scan is
+//! stale. So the scan is a [`Watched`] value: read once, then again on a
+//! worker whenever an application directory changes (an app installed or
+//! removed, an entry edited in place). A caller only ever takes the latest
+//! scan.
 //!
-//! - a short TTL, so an app installed in another terminal shows up
-//!   while the user is still typing its name; and
-//! - a **fingerprint** of the search directories' modification times,
-//!   checked when the TTL expires. Installing or removing an
-//!   application changes the mtime of the directory its `.desktop` file
-//!   lives in, so the common case — TTL expired, nothing installed
-//!   since — costs a handful of `stat` calls instead of a re-parse.
-//!
-//! The fingerprint is a heuristic and is only ever allowed to *skip*
-//! work, never to extend the answer's life: editing a file in place
-//! without touching its directory is missed by the fingerprint and
-//! caught by the next TTL expiry.
+//! An entry for a downloaded program ([`crate::downloaded`]) says whether
+//! its file is still there, and that file lives outside the application
+//! directories. So the folders on the way to each such file are watched
+//! too, for that one name: deleting, moving or renaming the file (or a
+//! folder above it) reads the scan again, and the entry shows the file is
+//! gone without anyone having to try to start it. Each scan hands every
+//! entry whose file is gone to the hook the session set with
+//! [`on_missing_program`], which can find the file again (Tilo's filesystem
+//! knows where a record moved) and point the entry at it.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
 
 use crate::scan::{Scan, scan_dirs};
+use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
 
-/// How long a scan is reused before the directories are re-examined.
-pub const SCAN_TTL: Duration = Duration::from_secs(5);
-
+/// The scan of one environment's application directories, kept current.
 struct Cached {
-    scan: Scan,
-    at: Instant,
-    fingerprint: Vec<(PathBuf, Option<SystemTime>)>,
+    dirs: Vec<PathBuf>,
+    desktop: Vec<String>,
+    scan: Watched<Scan>,
+    /// The downloaded programs' folders being watched, and their watches.
+    programs: std::sync::Arc<Mutex<ProgramWatches>>,
+}
+
+#[derive(Default)]
+struct ProgramWatches {
+    programs: Vec<PathBuf>,
+    _watches: Vec<tilo_files::native::ChangeWatch>,
+}
+
+/// Every folder between each program and the root, each with the one name
+/// in it that leads to the program.
+fn program_paths(scan: &Scan) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = scan
+        .entries
+        .iter()
+        .filter_map(|entry| entry.downloaded.as_ref())
+        .map(|downloaded| downloaded.program.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Watch the way to each downloaded program in `scan`, replacing the
+/// watches of a previous scan when the programs changed. A change re-reads
+/// the scan on the watch's thread.
+fn watch_programs(scan: &Scan, slot: &Mutex<ProgramWatches>) {
+    let programs = program_paths(scan);
+    let mut held = slot.lock_recover();
+    if held.programs == programs {
+        return;
+    }
+    let mut watches = Vec::new();
+    for program in &programs {
+        let mut child = program.as_path();
+        while let Some(parent) = child.parent() {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            let leads_to = child.to_path_buf();
+            let leaf = child == program.as_path();
+            // The program itself is read again when it is written; the directories on the
+            // way to it only matter when an entry on that way appears, goes or is renamed.
+            let watch = if leaf {
+                tilo_files::native::watch_changes(parent, move |path| path == leads_to, refresh)
+            } else {
+                tilo_files::native::watch_presence(parent, move |path| path == leads_to, refresh)
+            };
+            if let Ok(watch) = watch {
+                watches.push(watch);
+            }
+            if parent.parent().is_none() || Some(parent) == tilo_paths::home().as_deref() {
+                break;
+            }
+            child = parent;
+        }
+    }
+    *held = ProgramWatches {
+        programs,
+        _watches: watches,
+    };
+}
+
+/// Read the current scan again, on this thread, now: for a writer in this
+/// process that must see its own change (an entry it just wrote), and for a
+/// downloaded program's file that changed. Reads the disk; never call it on
+/// the compositor's loop.
+pub fn refresh() {
+    let scan = cell()
+        .lock_recover()
+        .as_ref()
+        .map(|cached| cached.scan.clone());
+    if let Some(scan) = scan {
+        scan.refresh();
+    }
+}
+
+/// Called with each downloaded program's entry whose file is gone, after
+/// every scan.
+type MissingHook = Box<dyn Fn(&crate::DesktopEntry) + Send + Sync>;
+
+fn missing_hook() -> &'static OnceLock<MissingHook> {
+    static HOOK: OnceLock<MissingHook> = OnceLock::new();
+    &HOOK
+}
+
+/// Have `hook` see each downloaded program's entry whose file is gone,
+/// after every scan, on the thread that scanned. It must not block: it
+/// hands the entry to a worker. Set once per process; a later call is
+/// ignored.
+pub fn on_missing_program(hook: impl Fn(&crate::DesktopEntry) + Send + Sync + 'static) {
+    let _ = missing_hook().set(Box::new(hook));
+}
+
+fn report_missing(scan: &Scan) {
+    let Some(hook) = missing_hook().get() else {
+        return;
+    };
+    for entry in &scan.entries {
+        if entry
+            .downloaded
+            .as_ref()
+            .is_some_and(|downloaded| !downloaded.present)
+        {
+            hook(entry);
+        }
+    }
 }
 
 fn cell() -> &'static Mutex<Option<Cached>> {
@@ -53,30 +159,56 @@ pub fn cached_scan() -> Scan {
 
 /// Generation and records observed under the same cache lock. Filling a cold
 /// cache is a valid snapshot, not an invalidation racing its read.
+///
+/// Only the first call for an environment scans on the calling thread (the
+/// session asks at startup); every later one returns the worker's latest
+/// scan without touching the disk.
 pub fn cached_scan_snapshot() -> (u64, Scan) {
     let dirs = crate::scan::application_dirs();
     let desktop = crate::scan::current_desktops();
     let mut guard = cell().lock_recover();
-
-    if let Some(cached) = guard.as_mut() {
-        if cached.at.elapsed() < SCAN_TTL {
-            return (REVISION.load(Ordering::Acquire), cached.scan.clone());
-        }
-        let fingerprint = fingerprint(&dirs);
-        if fingerprint == cached.fingerprint {
-            // Nothing was installed or removed. Push the deadline out
-            // rather than re-reading two hundred files.
-            cached.at = Instant::now();
-            return (REVISION.load(Ordering::Acquire), cached.scan.clone());
-        }
+    if let Some(cached) = guard.as_ref()
+        && cached.dirs == dirs
+        && cached.desktop == desktop
+    {
+        return (
+            REVISION.load(Ordering::Acquire),
+            (*cached.scan.get()).clone(),
+        );
     }
-
-    let fingerprint = fingerprint(&dirs);
-    let scan = scan_dirs(&dirs, &desktop);
+    let read_dirs = dirs.clone();
+    let read_desktop = desktop.clone();
+    let read = move || scan_dirs(&read_dirs, &read_desktop);
+    let Ok(watched) = Watched::start("desktop-entries", dirs.clone(), read) else {
+        // Unwatchable directories are scanned per call, never served stale.
+        *guard = None;
+        let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        return (generation, scan_dirs(&dirs, &desktop));
+    };
+    let programs = std::sync::Arc::new(Mutex::new(ProgramWatches::default()));
+    let follow = std::sync::Arc::clone(&programs);
+    watched.on_change(move || {
+        REVISION.fetch_add(1, Ordering::AcqRel);
+        // Looked up rather than captured: a captured handle would keep the
+        // value (and its worker) alive after the cache let go of it.
+        let current = cell()
+            .lock_recover()
+            .as_ref()
+            .filter(|cached| std::sync::Arc::ptr_eq(&cached.programs, &follow))
+            .map(|cached| cached.scan.get());
+        if let Some(scan) = current {
+            watch_programs(&scan, &follow);
+            report_missing(&scan);
+        }
+    });
+    let scan = (*watched.get()).clone();
+    watch_programs(&scan, &programs);
+    report_missing(&scan);
     *guard = Some(Cached {
-        scan: scan.clone(),
-        at: Instant::now(),
-        fingerprint,
+        dirs,
+        desktop,
+        scan: watched,
+        programs,
     });
     let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
     drop(guard);
@@ -89,9 +221,9 @@ pub fn cached_scan_generation() -> u64 {
     REVISION.load(Ordering::Relaxed)
 }
 
-/// Drop the memoised scan. Called after something is known to have
-/// changed — a Flatpak install finishing, say — and by tests, which
-/// share this process-wide state.
+/// Drop the memoised scan, so the next call scans again on its own thread.
+/// For tests, which share this process-wide state and change the
+/// environment under it; a live session follows its directories by itself.
 pub fn invalidate() {
     let mut guard = cell().lock_recover();
     *guard = None;
@@ -99,73 +231,28 @@ pub fn invalidate() {
     drop(guard);
 }
 
-fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
-    dirs.iter()
-        .map(|dir| {
-            let mtime = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
-            (dir.clone(), mtime)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cache_fingerprints_track_watched_directories_and_invalidation() {
-        // Phase `the_cache_is_warm_on_the_second_call_and_cold_after_invalidate`.
-        // Two calls in a row must not re-read the filesystem, and
-        // `invalidate` must undo that.
-        {
-            invalidate();
-            let (cold_generation, first) = cached_scan_snapshot();
-            assert_eq!(
-                cold_generation,
-                cached_scan_generation(),
-                "filling a cold cache produces a current snapshot"
-            );
-            let (warm_generation, second) = cached_scan_snapshot();
-            assert_eq!(warm_generation, cold_generation);
-            assert_eq!(
-                first.entries.len(),
-                second.entries.len(),
-                "a warm read returns the same list"
-            );
-            invalidate();
-            let third = cached_scan();
-            assert_eq!(first.entries.len(), third.entries.len());
-        }
-        // Phase `a_fingerprint_notices_a_new_entry_in_a_watched_directory`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let dirs = vec![tmp.path().to_path_buf()];
-            let before = fingerprint(&dirs);
-            // Some CI filesystems expose directory mtimes at coarse granularity.
-            // Keep mutating the directory until its timestamp advances, but put a
-            // firm bound on the retry: production deliberately remains one cheap
-            // `stat` per application directory and the TTL is its fallback.
-            let deadline = tilo_test_env::hang_deadline();
-            let mut attempt = 0u32;
-            loop {
-                std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();
-                let after = fingerprint(&dirs);
-                if after != before {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "directory mtime did not advance before the retry deadline"
-                );
-                attempt += 1;
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-        // Phase `a_missing_directory_fingerprints_as_absent_rather_than_failing`.
-        {
-            let fp = fingerprint(&[PathBuf::from("/nonexistent/tilo/applications")]);
-            assert_eq!(fp.len(), 1);
-            assert!(fp[0].1.is_none());
-        }
+    fn the_scan_is_warm_after_the_first_call_and_cold_after_invalidate() {
+        invalidate();
+        let (cold_generation, first) = cached_scan_snapshot();
+        assert_eq!(
+            cold_generation,
+            cached_scan_generation(),
+            "filling a cold cache produces a current snapshot"
+        );
+        let (warm_generation, second) = cached_scan_snapshot();
+        assert_eq!(warm_generation, cold_generation);
+        assert_eq!(
+            first.entries.len(),
+            second.entries.len(),
+            "a warm read returns the same list"
+        );
+        invalidate();
+        let third = cached_scan();
+        assert_eq!(first.entries.len(), third.entries.len());
     }
 }

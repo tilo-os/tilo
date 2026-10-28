@@ -4,8 +4,8 @@
 Each adapter reads what a benchmark already prints and emits records through
 `record.from_samples`. A benchmark that writes records itself needs no adapter.
 
-- `fs-gate LOG...`: the tilo-fs performance gate
-  (`crates/system/fs/tests/performance_gate.rs`, `TILO_FS_PERF_GATE=1`) prints
+- `fs-gate LOG...`: the tilo-fs latency benchmarks
+  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_GATE=1`) print
   `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
   test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
   shape in `MiB`. Each log is one run; repeated runs become the samples of
@@ -95,6 +95,13 @@ Each adapter reads what a benchmark already prints and emits records through
   guests' p99 join and chat delivery, the host's peak resident memory and its
   CPU during the hold. A run in which a guest failed or did not join is not a
   measurement and fails the adapter.
+- `room-degraded RUN_JSON...`: the three runs of
+  `room_capacity.py degraded` (one file per run, each holding the bench's
+  report), as `hosting.room.<kpi>.g<guests>.<kind>` — `plain` for the
+  reference run with nothing else on the machine, `throttled` for the run at
+  the declared capacity under stolen CPU and a slower link, `capped` for the
+  run past the room's guest cap. A run that failed or did not join is not a
+  measurement and fails the adapter.
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
@@ -109,7 +116,11 @@ Each adapter reads what a benchmark already prints and emits records through
   H.264 (`--codec vp9`) is its own series, its codec after the group
   (`stream.vp9.frame.latency`), so it never shares a baseline with H.264's.
   The report must name the env's renderer, commit and profile, and be
-  correct: an incorrect run is a failure, never a measurement.
+  correct: an incorrect run is a failure, never a measurement. A
+  qualification that names the browser it drove (`--platform safari`, which
+  Safari's WebDriver drives on a macOS host) must have streamed what it asked
+  for: over the HTTPS stream, since Safari has no WebTransport, and in the
+  codec it asked for.
 
 Usage:
 
@@ -595,6 +606,41 @@ def room_load(reports: list[dict[str, Any]], env: dict[str, Any]) -> list[record
             for kpi, (unit, read) in ROOM_LOAD_KPIS.items()]
 
 
+def room_degraded(runs: list[dict[str, Any]], env: dict[str, Any]) -> list[record.Record]:
+    """Records for the degraded probe's runs, one series per kind of run.
+
+    The three runs are not samples of one thing — one had nothing else on the
+    machine, one at the declared capacity, one past the cap — so each is its
+    own KPI at n=1, and the service level is the probe's verdict
+    (`room_capacity.py summarize --degraded`) rather than these numbers.
+    """
+    records: list[record.Record] = []
+    for run in runs:
+        report = run.get("report")
+        if not report:
+            raise ValueError(f"{run.get('name', 'a run')} has no report: {run.get('stopped') or run.get('exit')}")
+        guests = int(report["config"]["guests"])
+        failures = {**report.get("failures", {}), **report.get("spectators", {}).get("failures", {})}
+        if failures or int(report["joined"]) != guests or int(report["chat_rx"]) == 0:
+            raise ValueError(f"{run['name']}: {report['joined']} of {guests} guests joined, "
+                             f"{report['chat_rx']} chat changes delivered, failures {failures}")
+        # The degraded run is the one series a budget holds to the service level, so it is
+        # named for what makes it harder (`throttled`), not for the plan's label.
+        kind = "throttled" if run["kind"] == "degraded" else run["kind"]
+        meta = {**env.get("meta", {}), "guests": str(guests), "runs": "1", "kind": kind,
+                "room": run["name"], "rooms": str(report["config"]["rooms"]),
+                "host_threads": str(report["config"].get("host_threads") or "all"),
+                "machine_cores": str(report["host"]["machine_cores"])}
+        if "degraded" in run:
+            meta["stolen_cpu_percent"] = str(run["degraded"]["stolen_cpu_percent"])
+            meta["throttled_kbit_s"] = str(min(run["degraded"]["throttled_kbit_s"]))
+        base = {name: value for name, value in env.items() if name != "meta"}
+        for kpi, (unit, read) in ROOM_LOAD_KPIS.items():
+            records.append(record.from_samples(f"{kpi}.g{guests}.{kind}", unit, [read(report)],
+                                               meta=meta, **base))
+    return records
+
+
 # The browser runtime qualification's report samples (scripts/perf/browser_qualification.mjs)
 # and the KPI each becomes, with its unit.
 BROWSER_KPIS = {
@@ -701,6 +747,10 @@ def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Re
         raise ValueError(f"the report names codec {codec!r}")
     if session["codec"] != codec:
         raise ValueError(f"the session streamed {session['codec']}, not the requested {codec}")
+    # Safari has no WebTransport, so a run that names it took the HTTPS
+    # stream: a record claiming otherwise measured another browser.
+    if report.get("browser", {}).get("driver") == "webdriver" and report["workload"]["carrier"] != "https":
+        raise ValueError(f"the Safari run streamed over {report['workload']['carrier']}, not the HTTPS stream Safari takes")
     samples = report["samples"]
     missing = [field for field in STREAM_KPIS if not samples.get(field)]
     if missing:
@@ -765,6 +815,9 @@ def main(argv: list[str] | None = None) -> int:
     rooms = commands.add_parser("room-load", help="records from tilo-room-load bench reports")
     rooms.add_argument("--env-json", required=True, type=Path)
     rooms.add_argument("reports", nargs="+", type=Path)
+    degraded = commands.add_parser("room-degraded", help="records from the degraded room probe's runs")
+    degraded.add_argument("--env-json", required=True, type=Path)
+    degraded.add_argument("runs", nargs="+", type=Path)
     browser = commands.add_parser("browser-qualification",
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
@@ -788,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['collaborators_per_vm']} collaborators per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
+        elif args.command == "room-degraded":
+            records = room_degraded([json.loads(path.read_text(encoding="utf-8")) for path in args.runs], env)
         elif args.command == "room-load":
             records = room_load([json.loads(path.read_text(encoding="utf-8")) for path in args.reports], env)
         elif args.command == "fs-gate":

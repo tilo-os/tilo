@@ -14,7 +14,6 @@ use crate::model::LatLon;
 const TILE_SIZE: f64 = 256.0;
 const EARTH_RADIUS_M: f64 = 6_378_137.0;
 
-/// World-pixel size at `zoom`.
 fn world_size(zoom: f64) -> f64 {
     TILE_SIZE * 2f64.powf(zoom)
 }
@@ -33,7 +32,6 @@ pub fn lonlat_to_world(c: LatLon, zoom: f64) -> (f64, f64) {
     (x, y)
 }
 
-/// Inverse of [`lonlat_to_world`].
 pub fn world_to_lonlat(x: f64, y: f64, zoom: f64) -> LatLon {
     let size = world_size(zoom);
     let lon = x / size * 360.0 - 180.0;
@@ -299,26 +297,22 @@ mod tests {
 
     #[test]
     fn projection_distance_and_formatting() {
-        // Phase `project_unproject_roundtrip`.
         {
             let c = LatLon::new(48.1371, 11.5754);
             let proj = Projection::new(c, 14.0, Point::new(640.0, 400.0));
             let back = proj.unproject(proj.project(c));
             assert!((back.lat - c.lat).abs() < 1e-9);
             assert!((back.lon - c.lon).abs() < 1e-9);
-            // Centre projects to the viewport centre.
             let p = proj.project(c);
             assert!((p.x - 640.0).abs() < 1e-6 && (p.y - 400.0).abs() < 1e-6);
         }
 
-        // Phase `haversine_known_distance`.
         {
             // ~111 km between one degree of latitude.
             let d = haversine_m(LatLon::new(0.0, 0.0), LatLon::new(1.0, 0.0));
             assert!((d - 111_195.0).abs() < 500.0, "got {d}");
         }
 
-        // Phase `fmt_helpers`.
         {
             assert_eq!(fmt_distance(120.0), "120 m");
             assert_eq!(fmt_distance(1500.0), "1.5 km");
@@ -365,15 +359,12 @@ mod tests {
             assert!(out.len() < pts.len(), "collinear jitter still dropped");
             assert_eq!(out.first(), pts.first());
             assert_eq!(out.last(), pts.last());
-            // Every original point lies within tolerance of the simplified polyline.
             for p in &pts {
                 let d = min_dist_to_polyline(*p, &out);
                 assert!(d <= 3.5, "deviation {d:.2} m exceeds tolerance");
             }
         }
 
-        // Phase `simplify_handles_short_and_zero_tolerance`.
-        // Degenerate inputs pass through unchanged.
         {
             let two = vec![LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)];
             assert_eq!(

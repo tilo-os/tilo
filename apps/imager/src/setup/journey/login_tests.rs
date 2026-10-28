@@ -1,5 +1,3 @@
-//! Exercise the actual overview row and source-owned sign-in controls.
-
 #[test]
 fn current_website_signins_brand_pixels() {
     use super::super::visual_review_tests::evidence;
@@ -398,6 +396,7 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
         preview.dirty = true;
     })
     .unwrap();
+    super::super::visual_tests::scroll_into_view(&mut app, "installer.sessions.overview");
     app.harness()
         .click_named("installer.sessions.overview")
         .unwrap();
@@ -659,14 +658,7 @@ fn unselectable_login_group_is_disabled_and_does_not_dispatch() {
     assert_eq!(selection.detected.len(), 1);
     let id = selection.detected[0].0.clone();
     assert_eq!(selection.detected[0].2, Presence::NeedsAccess);
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let dispatched = calls.clone();
-    let view = selection.logins_view(
-        true,
-        |_, _, _| panic!("unsupported login must have no individual control"),
-        move |_, _| dispatched.set(dispatched.get() + 1),
-        |_, _| {},
-    );
+    let view = selection.logins_view(true, None, |_, _| {});
     let mut harness = ui::headless::FrameHarness::new(ui::State::new(), view, (1180, 820));
     let checkbox = harness
         .a11y_nodes()
@@ -688,7 +680,6 @@ fn unselectable_login_group_is_disabled_and_does_not_dispatch() {
     harness
         .click_named(&format!("installer.logins.group.{id}"))
         .unwrap();
-    assert_eq!(calls.get(), 0);
     for included in [true, false] {
         assert_eq!(selection.set_group(&id, included), Ok(false));
         assert!(selection.included.is_empty());
@@ -730,7 +721,7 @@ fn mixed_login_group_selects_only_eligible_children_and_keeps_reconnect_reason()
     assert!(selection.included.contains(&(id.clone(), Service::Discord)));
     assert!(!selection.included.contains(&(id.clone(), Service::Slack)));
     assert_eq!(selection.decided, vec![Service::Discord]);
-    let view = selection.logins_view(true, |_, _, _| {}, |_, _| {}, |_, _| {});
+    let view = selection.logins_view(true, None, |_, _| {});
     let harness = ui::headless::FrameHarness::new(ui::State::new(), view, (1180, 820));
     let inspection = harness.inspection_json().unwrap();
     assert!(inspection.contains("1 of 1 available sign-ins selected"));

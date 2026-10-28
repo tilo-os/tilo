@@ -51,6 +51,7 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
 
     let strip = Strip {
@@ -75,12 +76,10 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
             },
         ],
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else, including the workspace's durable collaboration room,
-        // comes from the builder, so a field added to `Workspace` does not break
-        // this fixture.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip];
+        workspace
     };
 
     let mut active_strip = HashMap::new();

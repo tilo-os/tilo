@@ -27,8 +27,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::environment_host::{
-    EnvironmentStreamError, LaunchError, MemberArea, MemberContext, MemberQuota, read_message,
-    write_message,
+    EnvironmentStreamError, LaunchError, MemberArea, MemberContext, MemberQuota, MessageReader,
+    read_message, write_message,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -131,10 +131,6 @@ impl LegacyWorker {
     }
 
     /// Serve one legacy stream the relay opened.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails or a frame is malformed.
     pub async fn serve<S, R>(
         &self,
         member: MemberIdentity,
@@ -224,6 +220,7 @@ where
         })
     };
     let mut receiving = true;
+    let mut receive = MessageReader::new(receive);
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -244,7 +241,7 @@ where
             _ = report.tick() => {
                 write_message(send, &usage(Instant::now(), &mut reported)).await?;
             }
-            incoming = read_message::<_, WindowInput>(receive), if receiving => {
+            incoming = receive.next::<WindowInput>(), if receiving => {
                 match incoming? {
                     // The relay stopped forwarding input; windows still flow.
                     None => receiving = false,
@@ -261,10 +258,6 @@ where
 
 /// Ask the relay to launch a legacy app for the member whose `session` this
 /// worker hosts.
-///
-/// # Errors
-///
-/// Returns an error when the stream to the relay fails.
 pub async fn request_legacy_launch(
     connection: &iroh::endpoint::Connection,
     workspace_id: u64,
@@ -358,7 +351,6 @@ mod tests {
         // A second app in the same VM is not a second VM.
         assert!(worker.admit(&alice, [2; 16], LegacyGuestOs::Linux));
         assert!(!worker.admit(&alice, [3; 16], LegacyGuestOs::Windows));
-        // Another member's quota is their own.
         assert!(worker.admit(&member(2), [4; 16], LegacyGuestOs::Windows));
         worker.release(&alice, &[1; 16]);
         worker.release(&alice, &[2; 16]);

@@ -285,7 +285,6 @@ mod tests {
     }
     #[test]
     fn inhibit_advertises_standard_scopes_and_close_releases_the_hold() {
-        // Phase `handle_close_releases_real_registry_hold`.
         {
             let registry = InhibitRegistry::new();
             let backend = InhibitBackend {
@@ -304,7 +303,6 @@ mod tests {
             assert!(backend.release_handle("/org/freedesktop/portal/desktop/request/x"));
             assert!(!registry.is_inhibited());
         }
-        // Phase `advertises_every_standard_inhibit_scope`.
         assert_eq!(SUPPORTED, LOGOUT | USER_SWITCH | SUSPEND | IDLE);
     }
 }

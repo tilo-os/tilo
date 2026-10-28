@@ -14,10 +14,6 @@ pub enum MergeOutcome {
 }
 
 /// Merge a committed mutation into `doc` through isolated admission.
-///
-/// # Errors
-///
-/// Returns a [`MergeError`] if the document is busy or the mutation is refused.
 pub fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,

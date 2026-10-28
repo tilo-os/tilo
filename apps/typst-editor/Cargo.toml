@@ -39,7 +39,9 @@ typst = "0.15"
 typst-render = "0.15"
 typst-pdf = "0.15"
 typst-layout = "0.15"
-tiny-skia = "0.12"
+# The page pipeline every page viewer draws through: render queue, bitmap
+# cache, tiles.
+tilo-page-raster = { path = "../../crates/sdk/tilo-page-raster" }
 comemo = "0.5"
 # Typst's bundled fonts: embedded natively, fetched from the host by a page.
 tilo-typst-fonts = { path = "../../crates/platform/tilo-typst-fonts" }
@@ -51,6 +53,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -35,9 +35,15 @@ for page, module in pages.items():
     if text.count(statement) != 1:
         sys.exit(f'{page}: expected one import of {module}')
     prefix = '../' if page.startswith('app/') else './'
+    text = text.replace(statement, f"from '{prefix}v/{version}/entry-page.mjs';")
+    # Files the page asks for before its modules run (`<link rel=preload>`,
+    # `<link rel=modulepreload>`) are in the versioned directory too.
+    for rel in ('preload', 'modulepreload'):
+        hint = f'<link rel="{rel}" href="{prefix}'
+        text = text.replace(hint, f'{hint}v/{version}/')
     target = site / page
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text.replace(statement, f"from '{prefix}v/{version}/entry-page.mjs';"))
+    target.write_text(text)
     # Only the top-level page is an entry; a copy under v/ would read the
     # wrong entry.json (its own directory's).
     (assets / page).unlink()

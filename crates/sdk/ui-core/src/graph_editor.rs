@@ -271,7 +271,6 @@ mod tests {
     }
     #[test]
     fn connections_refuse_cycles_and_invalid_targets_and_commit_requested_inputs() {
-        // Case `cycles_are_refused_without_mutating_the_graph`.
         {
             let mut g = Graph::default();
             for n in ["a", "b", "c"] {
@@ -283,7 +282,6 @@ mod tests {
             assert_eq!(g.edges.len(), 2);
         }
 
-        // Case `invalid_reconnection_restores_the_previous_edge`.
         {
             let mut graph = Graph::default();
             for id in ["source", "grade", "output"] {
@@ -300,7 +298,6 @@ mod tests {
             assert_eq!(graph.edges, before);
         }
 
-        // Case `keyboard_connection_targets_are_stable_and_compatible`.
         {
             let mut graph = Graph::default();
             for id in ["source", "first", "second"] {

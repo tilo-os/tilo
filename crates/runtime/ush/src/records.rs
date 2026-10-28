@@ -345,7 +345,6 @@ mod tests {
         );
 
         records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-        // An existing record resolves whatever the device's runtime is now.
         records.resolvable(None, &OneRuntime(None)).unwrap();
         assert!(matches!(
             records.resolvable(Some("work"), &OneRuntime(Some(image(1)))),

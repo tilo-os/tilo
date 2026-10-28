@@ -203,7 +203,10 @@ pub fn share_extents(a: &Path, b: &Path) -> Option<bool> {
     )
 }
 
-/// Whether the filesystem under `dir` can clone files at all.
+/// Whether the filesystem under `dir` can clone files and say which
+/// extents a clone shares. Overlayfs over XFS or Btrfs clones (it passes
+/// FICLONE down) but answers FIEMAP with EOPNOTSUPP, so whether a file
+/// shares extents cannot be observed there.
 pub fn reflinks_supported(dir: &Path) -> bool {
     let src = dir.join(".probe-src");
     let dst = dir.join(".probe-dst");
@@ -211,7 +214,7 @@ pub fn reflinks_supported(dir: &Path) -> bool {
     let ok = (|| {
         let from = std::fs::File::open(&src).ok()?;
         let to = std::fs::File::create(&dst).ok()?;
-        Some(ficlone(&to, &from))
+        Some(ficlone(&to, &from) && share_extents(&src, &dst).is_some())
     })()
     .unwrap_or(false);
     let _ = std::fs::remove_file(&src);

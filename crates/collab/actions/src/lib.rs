@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod adapter;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -146,11 +147,17 @@ pub mod remote;
 pub mod resource;
 pub mod schema;
 pub mod selection;
+pub mod selectors;
 pub mod surface;
 pub mod task_step;
 
 pub use action::{
-    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
+    undo_takes_back,
+};
+pub use adapter::{
+    ADAPTER_OPERATION_TYPE, ActionAdapter, AdapterAction, AdapterInvocation, Check, Implementation,
+    Layer, Observation, Skipped, Step, Undo,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
@@ -159,15 +166,17 @@ pub use content::{
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
-    MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
+    MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, COMPENSATED_UNDO_TAG,
-    ConfirmationPolicy, DOCUMENT_READ_TAG, ExecutionMode, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET,
-    INCOMING_MESSAGE_TAG, LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES,
-    MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
-    OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, Offload, PROGRAMMATIC_TAG, ResultSpec,
-    RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
+    AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
+    Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
+    ExecutionMode, HOST_RENDER_TAG, HOST_UNSUPPORTED_CODE, HOUSEKEEPING_TAG,
+    INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS,
+    MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
+    OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OWN_DEVICE_SCOPE, OWN_RECORD_SCOPE, Offload,
+    PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX, REQUIRES_NATIVE_PATHS_TAG, ResultSpec, RetryPolicy,
+    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -190,7 +199,7 @@ pub use interaction::{
     InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
     MAX_LABEL_BYTES, SemanticInteraction,
 };
-pub use key::ActionKey;
+pub use key::{ActionKey, CREATE_ACTION};
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
@@ -198,7 +207,9 @@ pub use outcome::{
 };
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
-    CONTENT_ANNOTATION, PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
+    CHOICE_LABELS_ANNOTATION, CONTENT_ANNOTATION, PEOPLE_ANNOTATION, PICK_ANNOTATION,
+    PLACE_ANNOTATION, ParamType, Pick, picked_resource_schema, place_schema,
+    resource_reference_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
@@ -207,11 +218,12 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
     reason = "existing app impls still name this trait until they publish through tilo_resource"
 )]
 pub use resource::{
-    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
-    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
+    ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
+    Resource, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten, listed_row,
+    listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -537,10 +549,8 @@ mod tests {
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
 
-        // A plays locally, producing an envelope to replicate.
         let env = apply_local(&mut a, &action, encoded).unwrap();
 
-        // B replays the envelope from the same base state.
         replay(&mut b, &env, &registry()).unwrap();
 
         // Identical *history*, not just identical materialized values.

@@ -1,8 +1,8 @@
 //! The serialisable shortcut program.
 //!
 //! Everything here is inert data: it can be stored, synced, diffed and shown
-//! in an editor without a host. Meaning comes from [`check`](crate::check),
-//! which types it against live descriptors, and [`run`](crate::run), which
+//! in an editor without a host. Meaning comes from [`check`](fn@crate::check),
+//! which types it against live descriptors, and [`run`](fn@crate::run), which
 //! executes it.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
+    AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
 };
 
 /// One saved shortcut.
@@ -31,6 +31,13 @@ pub struct Shortcut {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ActionParam>,
     pub steps: Vec<Step>,
+    /// How long one step may take before the run stops waiting for it, in
+    /// seconds. Absent, [`DEFAULT_STEP_TIMEOUT`](crate::run::DEFAULT_STEP_TIMEOUT)
+    /// applies. A run nobody is present at needs a bound: a step whose action
+    /// never answers would otherwise hold the run — and the one on its heels
+    /// — for ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_timeout_secs: Option<u64>,
     /// The value a finished run reports back to whoever started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Binding>,
@@ -65,18 +72,94 @@ impl Shortcut {
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
+    /// What the run does when the step does not succeed. Absent, the step
+    /// must succeed and the run stops at it
+    /// ([`StepPolicy::Fail`]).
+    #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
+    pub on_error: StepPolicy,
     #[serde(flatten)]
     pub kind: StepKind,
 }
 
 impl Step {
+    /// The step must succeed; when it does not, the run stops at it.
     #[must_use]
     pub fn new(id: impl Into<String>, kind: StepKind) -> Self {
         Self {
             id: id.into(),
+            on_error: StepPolicy::Fail,
             kind,
         }
     }
+
+    /// The step, under `on_error` instead of the default policy.
+    #[must_use]
+    pub fn with_policy(mut self, on_error: StepPolicy) -> Self {
+        self.on_error = on_error;
+        self
+    }
+}
+
+/// What a run does with a step that did not succeed.
+///
+/// Whatever the policy, a failure is recorded with the step and shown: a
+/// step that is retried, run into a fallback or passed over is never the
+/// same as one that worked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "on_error", rename_all = "snake_case")]
+pub enum StepPolicy {
+    /// Stop the run here.
+    #[default]
+    Fail,
+    /// Try the step again `attempts` times in all, waiting `backoff_ms`
+    /// before the second attempt and doubling the wait each time after it,
+    /// and stop the run if the last one fails too. A retry sends the same
+    /// [`InvocationId`](tilo_actions::outcome::InvocationId), so an action is
+    /// never applied twice.
+    Retry {
+        #[serde(default = "one")]
+        attempts: u32,
+        #[serde(default = "default_backoff_ms")]
+        backoff_ms: u64,
+    },
+    /// Run `steps` in this step's place, after it ran, instead of stopping
+    /// when it fails. The failed step's output stays unset, and the steps
+    /// that run here are recorded where they ran.
+    Fallback { steps: Vec<Step> },
+    /// Carry on with `value` as the step's output, if nothing it changed
+    /// can be taken back by simply not using it, and mark the run degraded.
+    Default { value: Binding },
+}
+
+impl StepPolicy {
+    #[must_use]
+    pub const fn is_fail(&self) -> bool {
+        matches!(self, Self::Fail)
+    }
+
+    /// How long the run waits before attempt `attempt` (the second one
+    /// being 2): `backoff_ms`, doubling each time, at most
+    /// [`MAX_BACKOFF_MS`](crate::run::MAX_BACKOFF_MS).
+    #[must_use]
+    pub fn wait_before(&self, attempt: u32) -> std::time::Duration {
+        match self {
+            Self::Retry { backoff_ms, .. } => {
+                let wait = backoff_ms
+                    .saturating_mul(1_u64 << attempt.saturating_sub(2).min(32))
+                    .clamp(1, crate::run::MAX_BACKOFF_MS);
+                std::time::Duration::from_millis(wait)
+            }
+            _ => std::time::Duration::ZERO,
+        }
+    }
+}
+
+fn one() -> u32 {
+    1
+}
+
+const fn default_backoff_ms() -> u64 {
+    crate::run::DEFAULT_BACKOFF_MS
 }
 
 /// What a step does.
@@ -117,16 +200,60 @@ pub enum StepKind {
     /// Ask the person running the shortcut for one value. The answer is this
     /// step's output. Unattended runs cannot ask and fail here.
     Ask { param: ActionParam },
-    /// Transform a value with the agent. Lowered to an invocation of the
-    /// agent's transform action for `transform`.
+    /// Answer `prompt` with the agent in one model call, as a value of
+    /// `output`. Lowered to an invocation of the agent's `freeform`
+    /// transform, whose result is held to the declared shape.
     Ai {
-        transform: AiTransform,
-        input: Binding,
+        prompt: String,
+        /// The JSON Schema the answer must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+        /// What the agent reads: text, a content address, or the description
+        /// of a resource it may open itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Binding>,
+    },
+    /// Start a task with the agent — a model-driven run of the actions the
+    /// person is offered — and wait for its typed summary.
+    Task {
+        /// What the task is to do, in the person's words.
+        instruction: String,
+        /// What the person can run it with: each one narrows the task's
+        /// authority below the run's, and never widens it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<Rule>,
+        /// The JSON Schema the summary must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
 fn default_item() -> String {
     "item".into()
+}
+
+impl StepKind {
+    /// The agent transform an AI or task step lowers to; `None` for a step
+    /// that does not ask the agent anything.
+    #[must_use]
+    pub fn ai_transform(&self) -> Option<AiTransform> {
+        Some(match self {
+            Self::Ai { prompt, output, .. } => AiTransform::Freeform {
+                prompt: prompt.clone(),
+                output: output.clone(),
+            },
+            Self::Task {
+                instruction,
+                allow,
+                output,
+            } => AiTransform::Task {
+                instruction: instruction.clone(),
+                allow: allow.clone(),
+                output: output.clone(),
+            },
+            _ => return None,
+        })
+    }
 }
 
 /// Which resource an invocation acts on.
@@ -165,6 +292,13 @@ pub enum Binding {
     /// `{{step.ID/json/pointer}}` placeholders. Strings are inserted as they
     /// are; other values as compact JSON.
     Template(String),
+    /// A JSON object of bound values, a member left out when its binding
+    /// has no value. A value built of parts shows its shape to whoever reads
+    /// the program: a field edit's path names the field it changes, so its
+    /// grant reaches that field only ([`crate::grant::edit_reach`]).
+    Object(BTreeMap<String, Binding>),
+    /// A JSON array of bound values, `null` where a binding has no value.
+    List(Vec<Binding>),
 }
 
 impl Binding {
@@ -217,9 +351,21 @@ pub enum AiTransform {
     Classify {
         choices: Vec<String>,
     },
-    /// Returns text answering `prompt`, itself a [`Binding::Template`].
+    /// Answers `prompt`, as text or as a value of `output`.
     Freeform {
         prompt: String,
+        /// The JSON Schema the answer must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+    },
+    /// Runs a whole task ([`StepKind::Task`]) and returns its summary.
+    Task {
+        instruction: String,
+        /// The task's authority, as the grant node of each action it may take.
+        allow: Vec<Rule>,
+        /// The JSON Schema the summary must satisfy; absent for text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -238,28 +384,51 @@ impl AiTransform {
             Self::Extract { .. } => AGENT_EXTRACT_ACTION,
             Self::Classify { .. } => AGENT_CLASSIFY_ACTION,
             Self::Freeform { .. } => AGENT_FREEFORM_ACTION,
+            Self::Task { .. } => AGENT_TASK_ACTION,
         }
     }
 
-    /// The arguments of the lowered invocation.
+    /// The JSON Schema the answer must satisfy, or `None` for text.
     #[must_use]
-    pub fn arguments(&self, input: &Binding) -> BTreeMap<String, Binding> {
-        let mut args = BTreeMap::new();
-        args.insert("input".to_string(), input.clone());
+    pub const fn output(&self) -> Option<&serde_json::Value> {
         match self {
-            Self::Summarise => {}
-            Self::Extract { schema } => {
-                args.insert("schema".into(), Binding::Literal(schema.clone()));
-            }
+            Self::Extract { schema } => Some(schema),
+            Self::Task { output, .. } | Self::Freeform { output, .. } => output.as_ref(),
+            Self::Summarise | Self::Classify { .. } => None,
+        }
+    }
+
+    /// The arguments of the lowered invocation. `input` is what the step
+    /// reads, when it reads anything.
+    #[must_use]
+    pub fn arguments(&self, input: Option<&Binding>) -> BTreeMap<String, Binding> {
+        // The declared shape is what the agent validates the answer against,
+        // so it travels as the step declared it.
+        let mut args = BTreeMap::new();
+        if let Some(output) = self.output() {
+            args.insert("schema".into(), Binding::Literal(output.clone()));
+        }
+        let text = |value: &str| Binding::Literal(serde_json::json!(value));
+        match self {
+            Self::Summarise | Self::Extract { .. } => {}
             Self::Classify { choices } => {
                 args.insert(
                     "choices".into(),
                     Binding::Literal(serde_json::json!(choices)),
                 );
             }
-            Self::Freeform { prompt } => {
-                args.insert("prompt".into(), Binding::Template(prompt.clone()));
+            Self::Freeform { prompt, .. } => {
+                args.insert("prompt".into(), text(prompt));
             }
+            Self::Task {
+                instruction, allow, ..
+            } => {
+                args.insert("instruction".into(), text(instruction));
+                args.insert("allow".into(), Binding::Literal(serde_json::json!(allow)));
+            }
+        }
+        if let Some(input) = input {
+            args.insert("input".into(), input.clone());
         }
         args
     }
@@ -270,7 +439,14 @@ impl AiTransform {
 // scalars: a condition is made of conditions, which a derived model cannot
 // describe, and each is written whole by the editor.
 #[cfg(feature = "model")]
-tilo_resource::value_model!(Selector, Binding, Condition, AiTransform, TriggerSpec);
+tilo_resource::value_model!(
+    Selector,
+    Binding,
+    Condition,
+    AiTransform,
+    TriggerSpec,
+    StepPolicy
+);
 
 /// What may start a shortcut. Data only: the session decides how to watch
 /// for each and starts an unattended run when one fires.
@@ -340,6 +516,14 @@ pub enum TriggerSpec {
         /// Equality on top-level payload fields.
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
+    },
+    /// An event an application declared next to its actions, e.g.
+    /// `mail.message`: published as a change to a record of kind
+    /// `<app_id>.<kind>.event`, whose arguments are the event's payload.
+    /// The payload is the typed input.
+    AppEvent {
+        app_id: String,
+        kind: String,
     },
     IncomingMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,9 +617,10 @@ impl TriggerSpec {
             Self::WorkspaceJoined { .. } => &WORKSPACE_PAYLOAD,
             Self::FileChanged { .. } => &FILE_PAYLOAD,
             Self::FocusMode { .. } => &FOCUS_PAYLOAD,
-            Self::RecordChanged { .. } | Self::Connector { .. } | Self::IncomingMessage { .. } => {
-                &EVENT_PAYLOAD
-            }
+            Self::RecordChanged { .. }
+            | Self::Connector { .. }
+            | Self::IncomingMessage { .. }
+            | Self::AppEvent { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }
@@ -454,6 +639,7 @@ impl TriggerSpec {
             Self::DeviceConnected { .. } => "device_connected",
             Self::RecordChanged { .. } => "record_changed",
             Self::Connector { .. } => "connector",
+            Self::AppEvent { .. } => "app_event",
             Self::IncomingMessage { .. } => "incoming_message",
             Self::NearbyDevice { .. } => "nearby_device",
         }
@@ -514,7 +700,6 @@ pub struct ScheduleClaim {
     pub trigger: usize,
     /// The fire time taken, in milliseconds since the Unix epoch.
     pub due_ms: i64,
-    /// The device that runs it.
     pub device: String,
 }
 
@@ -525,7 +710,6 @@ impl ScheduleClaim {
         format!("{}/{}", self.shortcut, self.trigger)
     }
 
-    /// Whether this claim supersedes `other` for the same schedule.
     #[must_use]
     pub fn supersedes(&self, other: &Self) -> bool {
         (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())

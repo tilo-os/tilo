@@ -82,3 +82,39 @@ fn gc_sweeps_tried_packages_but_never_pinned_or_shared_content() {
         assert!(store.sweep(0).unwrap().is_empty());
     }
 }
+
+/// The collection after an install keeps the app that install wrote: the
+/// person is about to open it. Larger than the cap on its own, it would
+/// otherwise be the last thing the sweep evicts, after every other app.
+#[test]
+fn the_collection_after_an_install_keeps_the_app_it_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(runtime_bundle::RUNTIME_DIR_ENV, dir.path().join("runtimes"));
+    let store = PackageStore::at(dir.path().join("apps"));
+    let catalog = package_store::Catalog::at(store.layout().root(), None);
+    let (used, _) = common::build_tapp_for("so.tilo.used-before", 24);
+    install_tapp(&store, &used, Pinning::Tried, None).unwrap();
+    store
+        .update_row("so.tilo.used-before", |row| row.last_used = 1_000)
+        .unwrap();
+    let (large, _) = common::build_tapp_for("so.tilo.just-installed", 96);
+    let installed = install_tapp(&store, &large, Pinning::Tried, None).unwrap();
+
+    app_host::service::collect_after_change(&store, &catalog, 60 * 1024, &[installed.id.as_str()]);
+
+    let registry = store.registry().unwrap();
+    assert!(
+        registry.find("so.tilo.used-before").is_none(),
+        "the app used before goes for size"
+    );
+    let kept = registry
+        .find("so.tilo.just-installed")
+        .expect("the app just installed stays");
+    assert!(
+        package_store::integrity::verify(kept, &kept.payload_root)
+            .unwrap()
+            .is_intact(),
+        "and opens whole"
+    );
+}

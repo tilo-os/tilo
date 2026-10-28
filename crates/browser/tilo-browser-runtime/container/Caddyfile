@@ -44,8 +44,11 @@
 	handle /v/* {
 		root * /srv/tilo-web
 		header Cache-Control "public, max-age=31536000, immutable"
+		# Brotli before zstd: browsers accept both, and at the image's
+		# settings brotli is 5 to 9% smaller (the start module is 5.36 MB as
+		# brotli, 5.78 MB as zstd), which a first visit downloads.
 		file_server {
-			precompressed zstd br
+			precompressed br zstd
 		}
 	}
 
@@ -53,7 +56,7 @@
 		root * /srv/tilo-web
 		header Cache-Control "no-cache"
 		file_server {
-			precompressed zstd br
+			precompressed br zstd
 		}
 	}
 

@@ -30,6 +30,7 @@ pub mod applications;
 pub mod bot_review;
 pub mod bundle_review;
 mod catalogue;
+mod metrics;
 pub mod moderation;
 pub mod moderation_api;
 pub mod serve;
@@ -94,11 +95,6 @@ pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<
 /// Same as [`bind_and_run`] but blocks the current tokio task
 /// on a ctrl-c so callers embedding the server can await
 /// shutdown.
-///
-/// # Errors
-///
-/// Returns an error if [`bind_and_run`] fails, or if installing the
-/// ctrl-c signal handler fails.
 pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()> {
     let _bound = bind_and_run(addr, state).await?;
     tokio::signal::ctrl_c().await?;

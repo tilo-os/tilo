@@ -1,6 +1,3 @@
-//! The device's desktop document records exactly what the tree holds, and
-//! each narrow edit mirrors the matching tree change.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -28,6 +25,7 @@ fn tab(id: u64) -> Tab {
             label: "App".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
@@ -45,8 +43,11 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 /// Workspace 1: strip 1 holds groups 10 [100, 101] and 11 [110]; strip 2
 /// holds group 20 [200].
 fn tree() -> DesktopTree {
-    let mut ws = Workspace::new(WorkspaceId(1), "Desk");
-    ws.set_room(RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap());
+    let mut ws = Workspace::in_room(
+        WorkspaceId(1),
+        RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap(),
+        "Desk",
+    );
     ws.set_owner("ada");
     let mut a = Strip::new(StripId(1), "A");
     a.window_groups = vec![group(10, &[100, 101]), group(11, &[110])];
@@ -102,7 +103,7 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         assert_eq!(back.active, tree.active);
         assert_eq!(layout(&back), layout(&tree));
         let ws = &back.workspaces[0];
-        assert_eq!(ws.room, tree.workspaces[0].room);
+        assert_eq!(ws.room(), tree.workspaces[0].room());
         assert_eq!(ws.owner().map(String::as_str), Some("ada"));
         assert_eq!(ws.sandbox, tree.workspaces[0].sandbox);
         let sorted = |policy: &tilo_action_policy::RoomPolicy| {
@@ -163,10 +164,9 @@ fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
 
     let rebuilt = read_back(&doc);
     let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
-    let mut expected = Workspace::new(id, "Research");
-    expected.set_room(room);
+    let mut expected = Workspace::in_room(id, room, "Research");
     expected.set_owner("ada");
-    assert_eq!(actual.room, room);
+    assert_eq!(actual.room(), room);
     assert_eq!(actual.policy, expected.policy);
 
     let revoked = expected.policy.grants[0].id.clone();
@@ -402,8 +402,11 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
 /// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].
 fn two_workspaces() -> DesktopTree {
     let mut desktop = tree();
-    let mut lab = Workspace::new(WorkspaceId(2), "Lab");
-    lab.set_room(RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap());
+    let mut lab = Workspace::in_room(
+        WorkspaceId(2),
+        RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap(),
+        "Lab",
+    );
     let mut strip = Strip::new(StripId(3), "C");
     strip.window_groups = vec![group(30, &[300])];
     lab.strips = vec![strip];

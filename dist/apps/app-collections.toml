@@ -56,3 +56,4 @@ store = ["runtime-engine"]
 # beside the runtime.
 chat = ["runtime-engine"]
 osk = ["runtime-engine"]
+notes = ["runtime-engine"]

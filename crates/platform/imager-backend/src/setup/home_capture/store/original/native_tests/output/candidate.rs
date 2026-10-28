@@ -113,7 +113,7 @@ pub(super) fn qualify() {
         (PRODUCER, None, 1024 * 1024)
     };
     let producer = protected(selected_producer, producer_bound, true);
-    let launcher = protected("/usr/bin/tilo-launcher", ARTIFACT_BOUND, true);
+    let launcher = protected("/usr/libexec/tilo/tilo-launcher", ARTIFACT_BOUND, true);
     let pins_file = protected(PINS, 16 * 1024, false);
     let pins: CaptureServicePins = serde_json::from_slice(&read(&pins_file, 16 * 1024)).unwrap();
     pins.validate().unwrap();

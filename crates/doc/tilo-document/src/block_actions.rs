@@ -18,6 +18,7 @@
 //! | `move-block` | `block`, `after`/`position` | a block's place |
 //! | `delete-blocks` | `blocks` | blocks |
 //! | `replace-body` | `markdown` | the whole body, kept block by block |
+//! | `replace-text` | `find`, `replace`, `all` | the text found, where it is |
 //!
 //! Each answers the ids it touched ([`changes_under`]), so its caller needs no
 //! second read.
@@ -36,7 +37,8 @@ use crate::block_edit::{BlockKind, BlockShape, NewBlock, Placement};
 use crate::block_markdown::{has_inline_markdown, render, short_ids};
 
 /// The ids of the declared actions that answer what they changed.
-pub const ANSWERING: [&str; 9] = [
+pub const ANSWERING: [&str; 10] = [
+    "replace-text",
     "insert-block",
     "insert-markdown",
     "set-block-text",
@@ -398,7 +400,33 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
             },
         )
         .describe("Replace the page body from Markdown as one undoable edit. Blocks whose line is unchanged, or whose ^id is kept, stay the same blocks (so their ids, history and collaborators' carets hold); only what differs is edited, inserted or removed. Answers the ids it touched.")
-        .answering(),
+                .answering(),
+        ActionDecl::new(
+            "replace-text",
+            "Find and replace",
+            vec![
+                text_param("find", "The exact text to find, within one paragraph, as the read shows it"),
+                ActionParam::required_owned(
+                    "replace",
+                    ParamType::Text,
+                    "The text that takes its place; empty deletes it",
+                ),
+                optional(
+                    "all",
+                    ParamType::Boolean,
+                    "Replace every occurrence; only the first when left out",
+                ),
+            ],
+            |args, _| {
+                Ok(RichTextAction::ReplaceText {
+                    find: args.text("find").ok_or("give the text to find")?.to_owned(),
+                    replace: args.text("replace").ok_or("give the replacement")?.to_owned(),
+                    all: args.boolean("all").unwrap_or(false),
+                })
+            },
+        )
+        .describe("Replace a phrase where it is in the page, the first occurrence or every one, keeping the rest of each paragraph, its marks and the other blocks. Refused, saying so, when the text is not in the page. Answers the ids of the blocks it changed.")
+.answering(),
     ]
 }
 
@@ -407,9 +435,6 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
 // ---------------------------------------------------------------------------
 
 /// The body of the rich text under `root` as Markdown with block ids.
-///
-/// # Errors
-/// Returns why `root` holds no rich text.
 pub fn read_markdown_under(doc: &AutoCommit, root: &ObjId) -> Result<String, String> {
     let c = tilo_doc::model::open(doc, root).map_err(|error| error.to_string())?;
     let blocks = tilo_doc::model::materialize_region(doc, &c, Region::Body);
@@ -419,9 +444,6 @@ pub fn read_markdown_under(doc: &AutoCommit, root: &ObjId) -> Result<String, Str
 
 /// What a read of the rich text under `root` answers: its Markdown with ids,
 /// or, naming `block`, that block's line.
-///
-/// # Errors
-/// Returns why `root` holds no rich text, or `block` no block.
 pub fn read_under(
     doc: &AutoCommit,
     root: &ObjId,
@@ -447,9 +469,6 @@ pub fn read_under(
 
 /// The blocks of the rich text under `root` whose text holds `text`, as
 /// `{block, text}` with each block's id as the read shows it.
-///
-/// # Errors
-/// Returns why `root` holds no rich text.
 pub fn find_under(
     doc: &AutoCommit,
     root: &ObjId,
@@ -615,7 +634,8 @@ pub fn action_result_under(
 }
 
 /// The [`RichTextAction`] variants the declared actions above build.
-const BLOCK_VARIANTS: [&str; 10] = [
+const BLOCK_VARIANTS: [&str; 11] = [
+    "ReplaceText",
     "InsertBlocks",
     "InsertMarkdown",
     "SetBlockText",

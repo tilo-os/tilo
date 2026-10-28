@@ -133,9 +133,9 @@ def main() -> int:
     if violations:
         print("Automerge apply contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("Automerge apply contract OK (AutoCommit takes changes through ApplyIncoming)")
+    print("Automerge apply contract OK (AutoCommit takes changes through ApplyIncoming)", file=sys.stderr)
     return 0
 
 

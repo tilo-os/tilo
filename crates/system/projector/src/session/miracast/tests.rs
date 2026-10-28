@@ -536,7 +536,7 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
                 || match TestSink::connect_and_play(
                     rtsp,
                     &SinkCapabilities::default(),
-                    Duration::from_secs(30),
+                    tilo_test_env::hang_bound(),
                 ) {
                     Ok(sink) => Some(sink),
                     Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -560,7 +560,7 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
         );
         assert_eq!(sink.negotiated().audio_codecs, "AAC 00000001 00");
         let streamed = sink
-            .receive_until(Duration::from_secs(30), |sink| {
+            .receive_until(tilo_test_env::hang_bound(), |sink| {
                 sink.ts.idr_seen
                     && sink.ts.pes_count(PID_VIDEO) >= 15
                     && sink.ts.pes_count(PID_AUDIO) >= 5
@@ -573,7 +573,7 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
         // Disconnect: the source triggers the receiver's teardown, then
         // releases the group and the portal session.
         context.control().request_stop(None);
-        sink.follow_teardown_trigger(Duration::from_secs(10))
+        sink.follow_teardown_trigger(tilo_test_env::hang_bound())
             .expect("teardown trigger");
         session
             .join()

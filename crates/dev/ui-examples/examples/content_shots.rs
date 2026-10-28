@@ -1,7 +1,7 @@
 //! Offscreen renders of the content composites (list rows, property lists,
 //! sections, cards, media grids, stat tiles, data tables, empty states,
 //! drop zones, skeletons, progress rings, steppers) and of the status
-//! surfaces (banners with their actions, toasts, progress bars, badges,
+//! surfaces (banners with their actions, progress bars, badges,
 //! avatars with presence, charts) on the window ground, dark and light, wide
 //! and narrow, and at twice the text size.
 //!
@@ -122,7 +122,9 @@ fn cards() -> Element {
                 )))
                 .with_title("Terminal")
                 .with_footer(Actions::new(Button::new("open-terminal", "Open").role(ButtonRole::Primary)))
-                .on_activate("terminal", || {}),
+                .on_activate("terminal", || {})
+                // The selected object: one accent outline in its edge's place.
+                .selected(true),
             ),
             Box::new(
                 Card::new(Box::new(tilo_ui::widget::Text::new(
@@ -296,7 +298,11 @@ fn states_page() -> Element {
                 .message("EPUB or PDF, up to 200 MB")
                 .with_action(Button::new("choose", "Choose files")),
         ),
-        Box::new(Skeleton::row()),
+        Box::new(Skeleton::row(
+            tilo_ui::widget::RowShape::TITLE
+                .led_by(tilo_ui::widget::RowLeadingShape::Avatar)
+                .with_secondary(1),
+        )),
         Box::new(Skeleton::text(3)),
         Box::new(
             tilo_ui::widget::Container::new()
@@ -440,8 +446,6 @@ fn marks() -> Element {
 }
 
 fn status_page() -> Element {
-    let mut toasts = tilo_ui::widget::toast::ToastStack::new();
-    toasts.push("Link copied", tilo_ui::widget::toast::ToastKind::Success);
     page(vec![
         banners(),
         Box::new(
@@ -457,7 +461,6 @@ fn status_page() -> Element {
         ),
         progress(),
         marks(),
-        Box::new(toasts),
     ])
 }
 
@@ -509,7 +512,17 @@ fn shelf() -> Element {
             )))
             .push(Box::new(Section::titled(
                 "Loading",
-                vec![Box::new(MediaGrid::loading(3, MediaAspect::Wide))],
+                vec![Box::new(MediaGrid::arriving(
+                    3,
+                    MediaAspect::Wide,
+                    &tilo_ui::arriving::Source::host("Lounge"),
+                    // Asked a while ago: the skeleton shows.
+                    {
+                        let now = tilo_ui::time::now();
+                        now.checked_sub(tilo_ui::time::Duration::from_secs(1))
+                            .unwrap_or(now)
+                    },
+                ))],
             ))),
     )
 }
@@ -559,9 +572,17 @@ fn charts_page() -> Element {
 /// A named page and the function that builds it.
 type Page = (&'static str, fn() -> Element);
 
+#[allow(
+    clippy::exit,
+    reason = "a capture whose layout failed would write a blank page; the scenario must fail with a status instead"
+)]
 fn shoot(out: &Path, name: &str, build: fn() -> Element, theme: &Theme, viewport: (u32, u32)) {
-    let harness =
+    let mut harness =
         FrameHarness::new_with_theme(tilo_ui::State::new(), build(), viewport, theme.clone());
+    if let Some(report) = harness.take_skip_report() {
+        eprintln!("{name}: {report}");
+        std::process::exit(1);
+    }
     let path = out.join(format!("{name}.png"));
     harness.render_png(&path);
     if let Ok(json) = harness.inspection_json() {

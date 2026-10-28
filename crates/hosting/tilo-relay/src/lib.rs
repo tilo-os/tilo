@@ -15,7 +15,7 @@
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
 //! connection speaks a Tilo relay ALPN and performs a small
-//! authenticated handshake ([`transport::hello`]):
+//! authenticated handshake ([`Hello`](tilo_relay_protocol::auth::Hello)):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user
@@ -54,7 +54,6 @@
 //!   handles only the CRDT-directory tier.
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 #![cfg_attr(
     test,
     allow(
@@ -88,8 +87,6 @@ pub mod compute_transport;
 pub mod compute_worker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
-#[cfg(not(target_arch = "wasm32"))]
-mod desktop_guard;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_bridge;
 #[cfg(target_os = "linux")]
@@ -129,6 +126,8 @@ mod offload_media;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_placement;
 #[cfg(not(target_arch = "wasm32"))]
+mod offload_rooms;
+#[cfg(not(target_arch = "wasm32"))]
 mod offload_route;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
@@ -142,6 +141,8 @@ pub mod presence_mailbox;
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
+#[cfg(feature = "agents")]
+pub mod reseal;
 #[cfg(not(target_arch = "wasm32"))]
 mod room_access;
 #[cfg(feature = "agents")]
@@ -150,6 +151,8 @@ pub mod room_bots;
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod state_lock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
@@ -238,8 +241,8 @@ pub use transport::{ALPN, Envelope};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use tilo_relay_protocol::{
-    personal_continuity_workspace_id, personal_continuity_workspace_id_matches, room_workspace_id,
-    room_workspace_id_matches,
+    own_room, own_room_workspace_id_matches, personal_continuity_workspace_id,
+    personal_continuity_workspace_id_matches, room_workspace_id, room_workspace_id_matches,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

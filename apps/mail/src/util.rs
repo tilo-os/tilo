@@ -55,7 +55,6 @@ mod tests {
 
     #[test]
     fn date_helpers_compute_weekdays_relative_and_absolute_labels() {
-        // Phase `relative_labels`.
         {
             let now = minutes_of(2026, 6, 30, 14, 0);
             assert_eq!(
@@ -77,7 +76,6 @@ mod tests {
             );
         }
 
-        // Phase `absolute_format`.
         {
             let s = format_absolute(minutes_of(2026, 6, 30, 13, 42));
             assert_eq!(s, "Jun 30, 2026, 1:42 PM");

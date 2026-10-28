@@ -553,7 +553,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn managed_prefixes_and_leases_are_exact_and_initialize_per_architecture() {
-        // Phase `managed_prefix_is_exact_and_cannot_be_redirected`.
         {
             assert!(validate_prefix(Some(OsStr::new(PREFIX))).is_ok());
             for value in [
@@ -565,7 +564,6 @@ mod tests {
             }
             assert_eq!(NATIVE_OVERRIDES, "d3d8,d3d9,d3d10core,d3d11,dxgi=n");
         }
-        // Phase `lease_drop_unlocks_even_while_its_open_file_description_is_duplicated`.
         {
             let fixture = Fixture::new();
             let lease = fixture
@@ -584,7 +582,6 @@ mod tests {
                 "duplicate remains open after explicit lease release"
             );
         }
-        // Phase `fresh_and_existing_prefixes_request_distinct_wineboot_actions`.
         {
             let fixture = Fixture::new();
             let action = Cell::new(None);
@@ -619,7 +616,6 @@ mod tests {
             assert_eq!(action.get(), Some(PrefixAction::Update));
             assert_eq!(PrefixAction::Update.wineboot_argument(), "-u");
         }
-        // Phase `initializes_correct_architecture_and_allows_simultaneous_ready_leases`.
         {
             for mode in [WineMode::Win32, WineMode::Win64] {
                 let fixture = Fixture::new();
@@ -646,7 +642,6 @@ mod tests {
                 drop((first, second));
             }
         }
-        // Phase `source_version_change_waits_for_all_existing_leases`.
         {
             let fixture = Fixture::new();
             let first = fixture
@@ -686,7 +681,6 @@ mod tests {
 
     #[test]
     fn dll_repairs_never_follow_links_or_redirected_directories() {
-        // Phase `changed_dll_is_repaired_even_with_valid_generation_hint`.
         {
             let fixture = Fixture::new();
             drop(
@@ -712,7 +706,6 @@ mod tests {
                 fs::read(fixture.payload.join("x32/d3d11.dll")).unwrap()
             );
         }
-        // Phase `replacing_symlink_and_hardlink_dlls_does_not_write_external_targets`.
         {
             for use_symlink in [false, true] {
                 let fixture = Fixture::new();
@@ -742,7 +735,6 @@ mod tests {
                 );
             }
         }
-        // Phase `redirected_directory_is_rejected_before_wineboot`.
         {
             for component in ["drive_c", "drive_c/windows", "drive_c/windows/system32"] {
                 let fixture = Fixture::new();
@@ -761,7 +753,6 @@ mod tests {
                 assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
             }
         }
-        // Phase `registry_links_and_wrong_architecture_are_rejected_before_initialization`.
         {
             let fixture = Fixture::new();
             fixture.initialize(WineMode::Win64);
@@ -774,7 +765,6 @@ mod tests {
             symlink(&outside, &registry).unwrap();
             assert!(fixture.prepare(WineMode::Win64, || panic!()).is_err());
         }
-        // Phase `immutable_payload_links_are_rejected`.
         {
             let fixture = Fixture::new();
             let source = fixture.payload.join("x32/dxgi.dll");
@@ -790,7 +780,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn readiness_requires_real_initialization_and_temporaries_are_safe() {
-        // Phase `callback_success_without_initialization_is_not_readiness`.
         {
             let fixture = Fixture::new();
             assert!(fixture.prepare(WineMode::Win64, || Ok(())).is_err());
@@ -811,7 +800,6 @@ mod tests {
                     .unwrap(),
             );
         }
-        // Phase `marker_does_not_prove_registry_initialization`.
         {
             let fixture = Fixture::new();
             drop(
@@ -833,7 +821,6 @@ mod tests {
                 .unwrap();
             assert!(called.get());
         }
-        // Phase `fifo_leaf_is_replaced_without_blocking`.
         {
             let fixture = Fixture::new();
             drop(
@@ -857,7 +844,6 @@ mod tests {
             let _lease = fixture.prepare(WineMode::Win32, || Ok(())).unwrap();
             assert!(fs::metadata(target).unwrap().is_file());
         }
-        // Phase `stale_temporary_name_is_retained_and_a_new_file_is_created`.
         {
             let fixture = Fixture::new();
             let stale = fixture
@@ -877,7 +863,6 @@ mod tests {
                 b"new private data"
             );
         }
-        // Phase `temporary_collision_retries_are_bounded_and_preserve_foreign_files`.
         {
             let fixture = Fixture::new();
             for index in 0..128 {

@@ -1,0 +1,27 @@
+[package]
+name = "tilo-governor"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "The workspace-join exchange every governor answers, over the store its rooms live in"
+
+# Only what governing needs: the join ledger and room state, the join service
+# contract and logging. A relay links this without a device's sessions, media
+# or file store.
+
+[dependencies]
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+ed25519-dalek.workspace = true
+tracing.workspace = true
+# Room, person and device keys in the governor's join log lines.
+hex.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

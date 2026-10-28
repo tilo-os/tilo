@@ -22,7 +22,6 @@ use tilo_user_identity::{
     sign_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
-/// The full enrollment and directory sync flow works, and a peer from a different user is rejected.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -175,7 +174,6 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
                 .apply_incremental(&bob_delta, &b_cert, &revs, 400)
                 .is_err()
         );
-        // Same in reverse.
         assert!(
             bob_dir
                 .apply_incremental(&alice_delta, &a_cert, &revs, 400)

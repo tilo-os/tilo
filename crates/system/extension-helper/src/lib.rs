@@ -24,7 +24,7 @@
 //! directories.
 //!
 //! The image decides which bytes are acceptable. Its catalogue entry
-//! (/usr/share/tilo/system-extensions/sysext.d/<id>.json, part of the sealed
+//! (`/usr/share/tilo/system-extensions/sysext.d/<id>.json`, part of the sealed
 //! image) names the parts and the hosts artifacts may come from, and where Tilo
 //! publishes the extension's manifest. The manifest pins every artifact by URL,
 //! length and SHA-256 and names the exact base it was resolved for; it is
@@ -78,7 +78,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// A `Pack` failure with `message`.
     pub fn pack(message: impl Into<String>) -> Self {
         Self::Pack(message.into())
     }

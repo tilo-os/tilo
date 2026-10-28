@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from restart_fixture import restart_fixture
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -15,18 +16,6 @@ BUILD_INTERCEPTED = 73
 KERNEL_PIN = "registry.tilo.so/tilo/tilo-kernel@sha256:" + "1" * 64
 RPMS_PIN = "registry.tilo.so/tilo/rpms@sha256:" + "2" * 64
 TARGET_REF = "code.tilo.so/tilo/tilo:board-fixture"
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class ImageBuildProfileTests(unittest.TestCase):
@@ -370,6 +359,57 @@ print(json.dumps({'signed_rootfs_id': identity}))
         self.assertIn(diagnostic, result.stderr)
         self.assertFalse(self.log.exists(), "invalid profile reached podman")
 
+    def test_layer_action_leaves_whole_tree_preflights_to_their_checks(self):
+        # A layer action is cached by what its own piece reads. The static
+        # pre-flights read every Containerfile, COPY source and app manifest,
+        # so a layer action that ran them could keep a failure past its fix.
+        for preflight in ("os/tests/containerfile_sources.sh", "os/tests/app_store.sh"):
+            self.write(preflight, "#!/bin/bash\necho \"$0 ran\" >&2\nexit 1\n", executable=True)
+        with self.subTest(phase="whole_build_stops_at_a_failing_preflight"):
+            result = self.run_builder()
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("containerfile_sources.sh ran", result.stderr)
+            self.assertFalse(self.log.exists(), "a failing preflight reached podman")
+        with self.subTest(phase="layer_action_builds_without_them"):
+            piece = self.write("scratch/piece.Containerfile", "FROM scratch AS system\n")
+            result = self.run_builder(TILO_LAYER_TARGET="system", TILO_CONTAINERFILE=str(piece))
+            self.assertEqual(result.returncode, BUILD_INTERCEPTED, result.stderr)
+            self.assertNotIn("containerfile_sources.sh ran", result.stderr)
+            self.assertNotIn("app_store.sh ran", result.stderr)
+            arguments = self.log.read_bytes().decode().split("\0")
+            self.assertIn("system", arguments)
+
+    def test_only_the_kernel_layer_reads_the_kernel_pin(self):
+        # t keys the layers that build nothing FROM the kernel without its pin
+        # (tools/ci/os/os_toml.py), so their actions must not read or verify it:
+        # a kept result would otherwise vouch for a pin it was not keyed by.
+        self.write("os/dev/verify-kernel-provenance.sh",
+                   "#!/bin/bash\necho \"verified $1\" >&2\nexit 0\n", executable=True)
+        with self.subTest(phase="a_layer_without_the_kernel_reads_no_pin"):
+            self.write("os/kernel-snapshot.env", "")
+            piece = self.write("scratch/system.Containerfile", "FROM scratch AS system\n")
+            result = self.run_builder(TILO_LAYER_TARGET="system", TILO_CONTAINERFILE=str(piece))
+            arguments = self.build_arguments(result)
+            self.assertEqual(arguments["KERNEL_RPMS_REF"], "scratch")
+            self.assertNotIn("verified", result.stderr)
+        restart_fixture(self)
+        self.write("os/dev/verify-kernel-provenance.sh",
+                   "#!/bin/bash\necho \"verified $1\" >&2\nexit 0\n", executable=True)
+        with self.subTest(phase="the_kernel_layer_resolves_and_verifies_the_pin"):
+            piece = self.write("scratch/kernel.Containerfile",
+                               "FROM ${KERNEL_RPMS_REF} AS kernel-rpms\nFROM scratch AS kernel-installed\n")
+            result = self.run_builder(TILO_LAYER_TARGET="kernel-installed", TILO_CONTAINERFILE=str(piece))
+            arguments = self.build_arguments(result)
+            self.assertEqual(arguments["KERNEL_RPMS_REF"], KERNEL_PIN)
+            self.assertIn(f"verified {KERNEL_PIN}", result.stderr)
+        restart_fixture(self)
+        with self.subTest(phase="the_kernel_layer_refuses_a_missing_pin"):
+            self.write("os/kernel-snapshot.env", "")
+            piece = self.write("scratch/kernel.Containerfile",
+                               "FROM ${KERNEL_RPMS_REF} AS kernel-rpms\nFROM scratch AS kernel-installed\n")
+            result = self.run_builder(TILO_LAYER_TARGET="kernel-installed", TILO_CONTAINERFILE=str(piece))
+            self.assert_rejected_before_build(result, "no KERNEL_RPMS_REF")
+
     def test_windows_provider_pins(self):
         with self.subTest(phase="default_pins_and_generic_profile_reach_the_first_build"):
             arguments = self.build_arguments(self.run_builder())
@@ -510,7 +550,7 @@ exit {BUILD_INTERCEPTED}
                 self.write(path, "fixture only\n")
             # Both stale binary sources must be ignored in image reuse mode.
             self.write("os/tilo-installer", "stale host binary\n")
-            self.write("os/usr/bin/tilo-installer", "stale overlay binary\n")
+            self.write("os/usr/libexec/tilo/tilo-installer", "stale overlay binary\n")
             self.write("os/usr/share/tilo/preserved", "overlay fixture\n")
             self.write("os/dev/disk-image.sh", "#!/bin/sh\nexit 97\n", executable=True)
             self.write("bin/podman", """\
@@ -522,7 +562,7 @@ if [ "$1" = rm ]; then exit 0; fi
 [ "$1" = build ] || exit 72
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 context="${@: -1}"
-[ ! -e "$context/rootfs/usr/bin/tilo-installer" ] || exit 74
+[ ! -e "$context/rootfs/usr/libexec/tilo/tilo-installer" ] || exit 74
 [ -f "$context/rootfs/usr/share/tilo/preserved" ] || exit 75
 exit 0
 """, executable=True)

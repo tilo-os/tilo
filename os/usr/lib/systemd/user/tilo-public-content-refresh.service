@@ -1,0 +1,19 @@
+[Unit]
+Description=Refresh this device's copies of public catalogues
+
+# The device's one fs daemon keeps the copies (crates/system/fs/src/
+# public_content.rs). It asks each origin whether its file changed since the
+# copy was taken and downloads only a changed one, then moves the name to it.
+# Only on mains power: a laptop on battery waits for its charger.
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+# Nothing anybody waits for: never over a metered connection, whatever the
+# update policy says (os/usr/libexec/tilo-update-policy-check).
+ExecCondition=/usr/libexec/tilo-update-policy-check --background
+ExecStart=/usr/bin/fs refresh-public-content
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+NoNewPrivileges=yes

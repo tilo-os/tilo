@@ -116,15 +116,10 @@ fn verbs_and_field_edits_change_one_snippet() {
     assert_eq!(copy.body, "kubectl apply");
     assert!(!copy.favorite && copy.uses.get() == 0);
 
-    assert!(
-        library
-            .apply(Snippets::DELETE.with(deploy.clone()))
-            .is_err(),
-        "deleting asks for confirmation"
-    );
+    // Undo takes a deletion back, so it runs at once.
     library
-        .apply_confirmed(Snippets::DELETE.with(deploy.clone()))
-        .unwrap();
+        .apply(Snippets::DELETE.with(deploy.clone()))
+        .expect("an undoable delete runs at once");
     assert!(library.state().unwrap().get(&deploy).is_none());
     assert!(
         library.apply(Snippets::RECORD_USE.with(deploy)).is_err(),
@@ -228,9 +223,12 @@ fn snippets_folders_and_tags_offer_their_verbs() {
             "{verb} is bound to the snippet, never asked for its id"
         );
     }
-    assert_ne!(
-        action(item, "delete").contract.confirmation,
-        ui::tilo_actions::ConfirmationPolicy::None
+    let delete = action(item, "delete");
+    assert!(delete.contract.can_be_undone());
+    assert_eq!(
+        delete.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::None,
+        "Undo takes a deletion back, so nobody is asked"
     );
 
     let ops = child(&tree, "snippets.library/derived/folder:Ops");
@@ -303,8 +301,6 @@ fn snippets_folders_and_tags_offer_their_verbs() {
     );
 }
 
-/// Search lists each snippet once, by what it holds, anchored at the
-/// snippet it opens.
 #[test]
 fn search_finds_each_snippet_by_what_it_holds() {
     let mut library = Replica::<Snippets>::new();
@@ -330,7 +326,11 @@ fn search_finds_each_snippet_by_what_it_holds() {
         "kubectl rollout",
         "Roll a deployment",
     ] {
-        assert!(hit.text.contains(held), "{held} in {:?}", hit.text);
+        assert!(
+            hit.fields.iter().any(|(text, _)| text.contains(held)),
+            "{held} in {:?}",
+            hit.fields
+        );
     }
     assert_eq!(
         hit.anchor.as_deref(),

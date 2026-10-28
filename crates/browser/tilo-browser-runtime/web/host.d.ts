@@ -161,6 +161,8 @@ export interface DesktopMount {
   setHostActions(actions: HostAction[]): void;
   /** Show a banner offering `action` until the person chooses or dismisses it. */
   offerHostAction(offer: {action: HostAction; title: string; body?: string}): void;
+  /** Wear the picture `user` (root key, hex) chose, a `data:` URL, on their avatars now; `null` takes it away. */
+  setPersonPhoto(user: string, url: string | null): Promise<void>;
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including
@@ -176,6 +178,9 @@ export interface DesktopMount {
    * own person. `null` for a single application.
    */
   people(): {id: string; label: string; agent: boolean}[] | null;
+  /** Name the room's people by the id their actions record (what an app's
+   * `cx.me()` answers), for a page that knows who it admitted. */
+  setPeople(people: {id: string; name: string}[]): void;
   /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
   publications(): ActionDescriptor[];
   /** At most 32 exact targets. No locus until a subsequent successful presentation. */

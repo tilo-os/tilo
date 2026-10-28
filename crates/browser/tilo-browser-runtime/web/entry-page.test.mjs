@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -21,11 +21,11 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot} = {}) {
+async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   const values = new Map();
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
-  globalThis.location = {href: 'https://web.example/#/room', search: '', pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
+  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
   globalThis.history = {pushState: () => calls.push('history')};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}}, createElement: tag => new Element(tag),
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
@@ -34,29 +34,35 @@ async function fixture({boot} = {}) {
   const shown = [];
   let diagnostics;
   const peer = {origin: ORIGIN, room: 'current', userPublicKey: USER,
-    host: {hostCert: {user_public_key: Array(32).fill(170)}},
+    host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
-    membership: {list: async () => ({name: 'Current', members: []})},
+    // A member, not the owner, of a host that keeps who asks to join to its owner.
+    membership: {list: async () => ({name: 'Current', members: []}), requests: async () => { throw new Error('only the owner sees who asks'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
-  const page = {peer, entry: {base: 'https://web.example/'},
-    mount: {setHostActions: actions => shown.push(actions), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
-    router: {route: {target: {scope: {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
+  const page = {peer: own ? null : peer, entry: {base: 'https://web.example/'},
+    mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
+    router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
-  globalThis.__entryPageFixture = {page, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
-  rememberEntered({origin: ORIGIN, room: 'other', name: 'Other'});
+  rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
+  // Rooms an earlier visit kept as they were stored, whichever host held them.
+  if (remembered.length) {
+    localStorage.setItem('tilo-entered-workspaces', JSON.stringify([...JSON.parse(localStorage.getItem('tilo-entered-workspaces')), ...remembered]));
+  }
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
-    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = () => {}, prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
+    .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
-    .replace("import {watchForUpdate} from './bundle-update.mjs';", 'const watchForUpdate = () => {};')
+    .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
-    .replace("import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
-  const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
+  // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
+  const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
@@ -88,10 +94,42 @@ test('a page the host refuses compiles no renderer for the next page to wait on'
   assert.deepEqual(prepared, []);
 });
 
+test('the account choice says it is the account choice, and resolves to the account taken', async () => {
+  // Pages driving a link wait for this card rather than counting buttons
+  // against a clock.
+  const accounts = [{displayName: 'Fixture reader', userPublicKey: USER}, {displayName: '', userPublicKey: 'bb'.repeat(32)}];
+  let chosen;
+  const {failure} = await fixture({boot: async ({deps}, page) => {
+    const choice = deps.chooseAccount(accounts);
+    const shown = document.body.children.filter(form => form.dataset.card === 'accounts');
+    assert.equal(shown.length, 1, 'one account choice is shown');
+    const buttons = shown[0].children.find(child => child.className === 'tilo-entry-options' || child.className === 'tilo-entry-actions').children;
+    assert.deepEqual(buttons.map(button => button.textContent), ['Fixture reader', 'bbbbbbbbbbbb']);
+    buttons[1].listeners.get('click')();
+    chosen = await choice;
+    return page;
+  }});
+  assert.equal(failure, null);
+  assert.equal(chosen, accounts[1]);
+  assert.equal(document.body.children.filter(form => form.dataset.card === 'accounts').length, 0, 'taking an account closes the choice');
+});
+
+test('rooms another host held at the origin of the page host are no longer offered', async () => {
+  // The host at ORIGIN was set up again on fresh state twice since this
+  // browser entered rooms there; both rooms went with the hosts before.
+  const {shown} = await fixture({remembered: [
+    {origin: ORIGIN, room: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
+    {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
+    {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
+  ]});
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
+  assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
+});
+
 test('the page keeps switch and invitation actions together and dispatches both', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open Other', 'New workspace', 'Invite someone']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Invite someone']);
   diagnostics.onHostAction('invite-someone');
   await tick();
   assert.deepEqual(calls, ['invite']);
@@ -103,6 +141,23 @@ test('the page keeps switch and invitation actions together and dispatches both'
   await tick();
   assert.deepEqual(calls, ['invite', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
+});
+
+test('a room offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
+  const {calls, shown, diagnostics, page} = await fixture();
+  page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.room}`;
+  chooseWorkspace({origin: ORIGIN, room: 'other'});
+  const back = shown.at(-1).find(action => action.title === 'Open your desktop');
+  assert.ok(back, 'a room is no dead end');
+  const urls = [];
+  globalThis.history.pushState = (_state, _title, url) => { urls.push(url); calls.push('history'); };
+  diagnostics.onHostAction(back.id);
+  await tick();
+  assert.deepEqual(calls.slice(-6), ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(urls, ['https://web.example/#/me']);
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'}, 'the room a bare entry reopens stays');
+  const {shown: ownShown} = await fixture({own: true});
+  assert.ok(!ownShown.flat().some(action => action.title === 'Open your desktop'));
 });
 
 test('creating a workspace stays in the current room when pending work cannot be saved', async () => {
@@ -135,3 +190,24 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   assert.equal(enteredWorkspaces().find(room => room.room === 'created').name, 'Created');
 });
 
+
+test('the person’s own desktop writes as their root identity and shows them by their name', async () => {
+  let mountOwn;
+  const {calls} = await fixture({own: true, boot: async (options, page) => { mountOwn = options.deps.mountDesktop; return page; }});
+  // No room's peer certifies who writes there: the browser's root identity does.
+  await mountOwn('surface', {onStatus() {}});
+  const [[, options]] = globalThis.__entryPageFixture.mounted;
+  assert.equal(options.author, USER);
+  const own = calls.find(call => call[0] === 'own');
+  assert.ok(own, 'the desktop is told who its person is');
+  assert.equal(own[1].user, USER);
+  assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
+});
+
+test('an embedded room offers no Invite it could not carry out', async () => {
+  let deps;
+  await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
+  assert.equal(deps.onInvite, undefined);
+  await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
+  assert.equal(typeof deps.onInvite, 'function');
+});

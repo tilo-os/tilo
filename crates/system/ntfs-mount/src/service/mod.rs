@@ -83,10 +83,6 @@ pub trait Backend {
     fn preflight(&mut self, candidate: &Candidate) -> Result<Health, String>;
 
     /// Mount the volume and return where.
-    ///
-    /// # Errors
-    ///
-    /// A message for the person when it could not be mounted.
     fn mount(&mut self, request: &MountRequest<'_>) -> Result<(PathBuf, Self::Mount), String>;
 
     /// Unmount it; `gone` when the device has already disappeared.

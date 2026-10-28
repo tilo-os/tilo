@@ -41,7 +41,55 @@ pub enum ProjectionStatus {
     Scanning,
     Connecting { device_id: String },
     Connected { device_id: String },
-    Error(String),
+    Failed(ProjectionFailure),
+}
+
+/// What went wrong, as the person is told it: an outcome and a next step.
+/// The service's own words (socket errors, `os error` text, a receiver's
+/// diagnostic) go to the log, never to the sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionFailure {
+    /// The wireless display service isn't running or doesn't answer.
+    Unavailable,
+    /// Looking for receivers failed.
+    SearchFailed,
+    /// The receiver refused the connection or never answered it.
+    ConnectFailed,
+    /// A running stream ended without being asked to.
+    Lost,
+    /// Stopping the stream failed.
+    StopFailed,
+}
+
+impl ProjectionFailure {
+    /// The outcome, in one line.
+    pub fn title(self) -> String {
+        crate::shell::i18n::t(match self {
+            Self::Unavailable => "wireless-unavailable",
+            Self::SearchFailed => "wireless-search-failed",
+            Self::ConnectFailed => "wireless-connect-failed",
+            Self::Lost => "wireless-lost",
+            Self::StopFailed => "wireless-stop-failed",
+        })
+    }
+
+    /// What to do about it.
+    pub fn next_step(self) -> String {
+        crate::shell::i18n::t(match self {
+            Self::Unavailable => "wireless-unavailable-detail",
+            Self::SearchFailed => "wireless-search-failed-detail",
+            Self::ConnectFailed => "wireless-connect-failed-detail",
+            Self::Lost => "wireless-lost-detail",
+            Self::StopFailed => "wireless-stop-failed-detail",
+        })
+    }
+
+    /// Record the service's own account of `self` for whoever reads the
+    /// log, and hand back the outcome the person is shown.
+    fn logged(self, detail: impl fmt::Display) -> Self {
+        tracing::warn!(failure = ?self, %detail, "projection");
+        self
+    }
 }
 
 /// Blocking protocol implementation. The controller always calls it on its
@@ -49,26 +97,27 @@ pub enum ProjectionStatus {
 pub trait ProjectionBackend: Send + 'static {
     /// # Errors
     ///
-    /// Returns a user-facing message if the projection service is
-    /// unreachable or returns malformed discovery data.
-    fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String>;
+    /// [`ProjectionFailure::Unavailable`] when the projection service is
+    /// unreachable, [`ProjectionFailure::SearchFailed`] when it could not
+    /// look for receivers.
+    fn discover(&mut self) -> Result<Vec<ProjectionDevice>, ProjectionFailure>;
 
     /// # Errors
     ///
-    /// Returns a user-facing message if `device` doesn't support
-    /// `options.mode` or the projection service refuses/fails the
-    /// connection.
+    /// [`ProjectionFailure::ConnectFailed`] if `device` doesn't support
+    /// `options.mode` or the service or receiver refuses or fails the
+    /// connection; [`ProjectionFailure::Unavailable`] without a service.
     fn connect(
         &mut self,
         device: &ProjectionDevice,
         options: ProjectionOptions,
-    ) -> Result<(), String>;
+    ) -> Result<(), ProjectionFailure>;
 
     /// # Errors
     ///
-    /// Returns a user-facing message if the projection service refuses
-    /// or fails the disconnect.
-    fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), String>;
+    /// [`ProjectionFailure::StopFailed`] if the service refuses or fails the
+    /// disconnect; [`ProjectionFailure::Unavailable`] without a service.
+    fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), ProjectionFailure>;
 
     /// Gives the backend somewhere to report session changes nobody asked
     /// for. Backends without a live service (tests) have none to report.
@@ -153,14 +202,11 @@ impl SystemProjectionBackend {
         }
     }
 
-    fn unavailable(error: impl fmt::Display) -> String {
-        crate::shell::i18n::t_args(
-            "projection-service-unavailable-detail",
-            &[("error", error.to_string().into())],
-        )
+    fn unavailable(error: impl fmt::Display) -> ProjectionFailure {
+        ProjectionFailure::Unavailable.logged(error)
     }
 
-    fn open(&self) -> Result<ControlLink, String> {
+    fn open(&self) -> Result<ControlLink, ProjectionFailure> {
         let socket = self
             .socket
             .as_ref()
@@ -202,7 +248,10 @@ impl SystemProjectionBackend {
     /// Sends `request` on the shared connection, opening (or reopening, after
     /// the broker restarted) it as needed, and returns the event stream to
     /// read the reply from. Events nobody waited for are dropped first.
-    fn send(&mut self, request: &ProjectorRequest) -> Result<&Receiver<ProjectorEvent>, String> {
+    fn send(
+        &mut self,
+        request: &ProjectorRequest,
+    ) -> Result<&Receiver<ProjectorEvent>, ProjectionFailure> {
         let mut last_error = None;
         for _ in 0..2 {
             let mut link = match self.link.take() {
@@ -235,8 +284,8 @@ impl SystemProjectionBackend {
         &mut self,
         request: &ProjectorRequest,
         timeout: Duration,
-        mut answer: impl FnMut(ProjectorEvent) -> Option<Result<T, String>>,
-    ) -> Result<T, String> {
+        mut answer: impl FnMut(ProjectorEvent) -> Option<Result<T, ProjectionFailure>>,
+    ) -> Result<T, ProjectionFailure> {
         let deadline = Instant::now().checked_add(timeout);
         let events = self.send(request)?;
         loop {
@@ -253,7 +302,7 @@ impl SystemProjectionBackend {
                     return Err(Self::unavailable("no reply in time"));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(crate::shell::i18n::t("projection-service-stopped"));
+                    return Err(Self::unavailable("the projection service stopped"));
                 }
             }
         }
@@ -261,7 +310,7 @@ impl SystemProjectionBackend {
 }
 
 impl ProjectionBackend for SystemProjectionBackend {
-    fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String> {
+    fn discover(&mut self) -> Result<Vec<ProjectionDevice>, ProjectionFailure> {
         let mut devices = self.reply(
             &ProjectorRequest::Discover {
                 timeout_ms: DISCOVERY_WINDOW_MS,
@@ -269,7 +318,9 @@ impl ProjectionBackend for SystemProjectionBackend {
             DISCOVER_REPLY_TIMEOUT,
             |event| match event {
                 ProjectorEvent::Devices(devices) => Some(Ok(devices)),
-                ProjectorEvent::Failed(error) => Some(Err(error)),
+                ProjectorEvent::Failed(error) => {
+                    Some(Err(ProjectionFailure::SearchFailed.logged(error)))
+                }
                 _ => None,
             },
         )?;
@@ -289,15 +340,13 @@ impl ProjectionBackend for SystemProjectionBackend {
         &mut self,
         device: &ProjectionDevice,
         mut options: ProjectionOptions,
-    ) -> Result<(), String> {
+    ) -> Result<(), ProjectionFailure> {
         if !device.supports(options.mode) {
-            return Err(crate::shell::i18n::t_args(
-                "projection-mode-unsupported",
-                &[
-                    ("device", device.name.as_str().into()),
-                    ("mode", options.mode.label().into()),
-                ],
-            ));
+            return Err(ProjectionFailure::ConnectFailed.logged(format_args!(
+                "{} does not take the {} layout",
+                device.name,
+                options.mode.label()
+            )));
         }
         // The secret crosses the socket in the request itself, never in an
         // environment or argument, and is wiped once sent.
@@ -319,22 +368,28 @@ impl ProjectionBackend for SystemProjectionBackend {
                 Some(Ok(()))
             }
             ProjectorEvent::Ended { device_id, error } if started && device_id == device.id => {
-                Some(Err(error.unwrap_or_else(|| {
-                    crate::shell::i18n::t("projection-service-stopped")
-                })))
+                Some(Err(ProjectionFailure::ConnectFailed.logged(
+                    error
+                        .as_deref()
+                        .unwrap_or("the session ended while starting"),
+                )))
             }
-            ProjectorEvent::Failed(error) => Some(Err(error)),
+            ProjectorEvent::Failed(error) => {
+                Some(Err(ProjectionFailure::ConnectFailed.logged(error)))
+            }
             _ => None,
         })
     }
 
-    fn disconnect(&mut self, _device: &ProjectionDevice) -> Result<(), String> {
+    fn disconnect(&mut self, _device: &ProjectionDevice) -> Result<(), ProjectionFailure> {
         self.reply(
             &ProjectorRequest::Disconnect,
             DISCONNECT_REPLY_TIMEOUT,
             |event| match event {
                 ProjectorEvent::Idle => Some(Ok(())),
-                ProjectorEvent::Failed(error) => Some(Err(error)),
+                ProjectorEvent::Failed(error) => {
+                    Some(Err(ProjectionFailure::StopFailed.logged(error)))
+                }
                 _ => None,
             },
         )
@@ -354,9 +409,9 @@ enum WorkerCommand {
 }
 
 enum WorkerEvent {
-    Discovered(Result<Vec<ProjectionDevice>, String>),
-    Connected(String, Result<(), String>),
-    Disconnected(String, Result<(), String>),
+    Discovered(Result<Vec<ProjectionDevice>, ProjectionFailure>),
+    Connected(String, Result<(), ProjectionFailure>),
+    Disconnected(String, Result<(), ProjectionFailure>),
     Notice(ProjectionNotice),
 }
 
@@ -420,7 +475,7 @@ impl ProjectionController {
         if let Err(err) = spawned {
             // Every caller of `self.tx.send` already treats a closed
             // channel as "service stopped" and reports
-            // `ProjectionStatus::Error` (see `refresh`/`connect_selected`/
+            // `ProjectionStatus::Failed` (see `refresh`/`connect_selected`/
             // `disconnect` below); a worker that never started degrades
             // through that same path instead of panicking this
             // panic=abort process. Dropping the closure here drops
@@ -444,9 +499,7 @@ impl ProjectionController {
             tx: None,
             rx,
             devices: Vec::new(),
-            status: ProjectionStatus::Error(crate::shell::i18n::t(
-                "projection-service-unavailable",
-            )),
+            status: ProjectionStatus::Failed(ProjectionFailure::Unavailable),
             options: ProjectionOptions::default(),
             selected: 0,
         }
@@ -454,8 +507,7 @@ impl ProjectionController {
 
     fn available_sender(&mut self) -> Option<&Sender<WorkerCommand>> {
         if self.tx.is_none() {
-            self.status =
-                ProjectionStatus::Error(crate::shell::i18n::t("projection-service-unavailable"));
+            self.status = ProjectionStatus::Failed(ProjectionFailure::Unavailable);
         }
         self.tx.as_ref()
     }
@@ -467,8 +519,7 @@ impl ProjectionController {
         if tx.send(WorkerCommand::Discover).is_ok() {
             self.status = ProjectionStatus::Scanning;
         } else {
-            self.status =
-                ProjectionStatus::Error(crate::shell::i18n::t("projection-service-stopped"));
+            self.status = ProjectionStatus::Failed(ProjectionFailure::Unavailable);
         }
     }
 
@@ -529,21 +580,21 @@ impl ProjectionController {
                             self.selected = self.selected.min(self.devices.len().saturating_sub(1));
                             self.status = ProjectionStatus::Idle;
                         }
-                        Err(error) => self.status = ProjectionStatus::Error(error),
+                        Err(failure) => self.status = ProjectionStatus::Failed(failure),
                     }
                     changed = true;
                 }
                 Ok(WorkerEvent::Connected(device_id, result)) => {
                     self.status = match result {
                         Ok(()) => ProjectionStatus::Connected { device_id },
-                        Err(error) => ProjectionStatus::Error(error),
+                        Err(failure) => ProjectionStatus::Failed(failure),
                     };
                     changed = true;
                 }
                 Ok(WorkerEvent::Disconnected(_device_id, result)) => {
                     self.status = match result {
                         Ok(()) => ProjectionStatus::Idle,
-                        Err(error) => ProjectionStatus::Error(error),
+                        Err(failure) => ProjectionStatus::Failed(failure),
                     };
                     changed = true;
                 }
@@ -567,11 +618,14 @@ impl ProjectionController {
             return None;
         };
         match notice {
-            ProjectionNotice::Ended { device_id, error } => (device_id == *current)
-                .then(|| error.map_or(ProjectionStatus::Idle, ProjectionStatus::Error)),
-            ProjectionNotice::ServiceLost => Some(ProjectionStatus::Error(crate::shell::i18n::t(
-                "projection-service-stopped",
-            ))),
+            ProjectionNotice::Ended { device_id, error } => (device_id == *current).then(|| {
+                error.map_or(ProjectionStatus::Idle, |error| {
+                    ProjectionStatus::Failed(ProjectionFailure::Lost.logged(error))
+                })
+            }),
+            ProjectionNotice::ServiceLost => Some(ProjectionStatus::Failed(
+                ProjectionFailure::Lost.logged("the projection service stopped"),
+            )),
         }
     }
 
@@ -613,11 +667,15 @@ mod tests {
     }
 
     impl ProjectionBackend for FakeBackend {
-        fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String> {
+        fn discover(&mut self) -> Result<Vec<ProjectionDevice>, ProjectionFailure> {
             self.calls.lock().unwrap().push("discover".into());
             Ok(self.devices.clone())
         }
-        fn connect(&mut self, d: &ProjectionDevice, o: ProjectionOptions) -> Result<(), String> {
+        fn connect(
+            &mut self,
+            d: &ProjectionDevice,
+            o: ProjectionOptions,
+        ) -> Result<(), ProjectionFailure> {
             self.calls.lock().unwrap().push(format!(
                 "connect:{}:{}:credential={}",
                 d.protocol.label(),
@@ -626,7 +684,7 @@ mod tests {
             ));
             Ok(())
         }
-        fn disconnect(&mut self, d: &ProjectionDevice) -> Result<(), String> {
+        fn disconnect(&mut self, d: &ProjectionDevice) -> Result<(), ProjectionFailure> {
             self.calls.lock().unwrap().push(format!("stop:{}", d.id));
             Ok(())
         }
@@ -869,7 +927,8 @@ mod tests {
                 device_id: "studio".to_owned(),
                 error: Some("receiver went to sleep".to_owned()),
             }),
-            Some(ProjectionStatus::Error("receiver went to sleep".to_owned()))
+            Some(ProjectionStatus::Failed(ProjectionFailure::Lost)),
+            "the receiver's own words go to the log; the sheet says it disconnected"
         );
         controller.status = ProjectionStatus::Connecting {
             device_id: "studio".to_owned(),

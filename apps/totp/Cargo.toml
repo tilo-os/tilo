@@ -53,6 +53,9 @@ qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
+# The session shell's chooser client, for tests that drive the chooser the
+# app reaches on a device.
+tilo-dialogs.workspace = true
 
 [lints]
 workspace = true

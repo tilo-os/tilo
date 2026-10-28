@@ -5,7 +5,7 @@
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_search::{Document, FieldWeight, Page, SearchIndex};
 
@@ -15,6 +15,18 @@ fn is_writer_thread(name: &str) -> bool {
     name.starts_with("thrd-tantivy")
         || name == "segment_updater"
         || name.starts_with("merge_thread")
+}
+
+/// Whether every writer thread is asleep (`S` in its `stat`), blocked on
+/// whatever it waits for between commits.
+fn writers_asleep() -> bool {
+    writer_switches().keys().all(|task| {
+        std::fs::read_to_string(format!("{task}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                == Some("S")
+        })
+    })
 }
 
 /// Context switches so far of every writer thread, by task path. An
@@ -65,7 +77,7 @@ fn a_kept_writer_sleeps_between_commits_and_leaves_with_its_index() {
     assert_eq!(index.search("new", Page::first(10)).hits.len(), 5);
 
     // Let the indexing thread a commit respawns reach its channel.
-    std::thread::sleep(Duration::from_millis(200));
+    tilo_test_env::wait_until("the writer threads to go to sleep", writers_asleep);
     let before = writer_switches();
     assert!(
         before.len() >= 2,
@@ -84,12 +96,7 @@ fn a_kept_writer_sleeps_between_commits_and_leaves_with_its_index() {
 
     // Dropping the index shuts the writer down: its threads end.
     drop(index);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !writer_switches().is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "writer threads outlived their index"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the writer threads to end with their index", || {
+        writer_switches().is_empty()
+    });
 }

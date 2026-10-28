@@ -17,7 +17,7 @@ use smithay::reexports::drm as drm_re;
 use drm_re::control::{Device as ControlDevice, ResourceHandle, connector, property};
 use settings_store::hardware::HdrUnavailable;
 
-use crate::wayland::edid::HdrDisplayInfo;
+use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// Look up one named property on a KMS object, with its current value.
 pub(super) fn find_property<D, T>(
@@ -564,6 +564,25 @@ impl CrtcGamma {
         }
     }
 
+    /// The LUT as this process knows it, for the flight record: whether the
+    /// CRTC carries one, the light wanted and what the kernel holds
+    /// (`none` for no LUT, `unknown` after a resume).
+    pub(super) fn describe(&self) -> String {
+        let light = |(bits, pq): (u32, bool)| {
+            if (bits, pq) == UNDIMMED {
+                "none".to_owned()
+            } else {
+                format!("{:.3}{}", f32::from_bits(bits), if pq { "-pq" } else { "" })
+            }
+        };
+        format!(
+            "{}wanted={} applied={}",
+            if self.carries() { "" } else { "uncarried," },
+            light(self.wanted),
+            self.applied.map_or_else(|| "unknown".to_owned(), light),
+        )
+    }
+
     /// After a session resume the kernel state is unknown and a previous
     /// refusal may have been a transient master-less failure.
     pub(super) fn forget_applied(&mut self) {
@@ -629,6 +648,42 @@ mod tests {
 
     fn u16_at(blob: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes([blob[offset], blob[offset.saturating_add(1)]])
+    }
+
+    /// Dim, blank, undim on the wake's input, wake: the dimmed LUT the CRTC
+    /// held through the blank is replaced by no LUT before anything shows,
+    /// and no dimming LUT is ever black. (The idle dim of a panel with a
+    /// backlight never touches the LUT; this is the software-dimmed one.)
+    #[test]
+    fn a_wake_after_a_dimmed_blank_shows_no_lut_and_no_lut_is_ever_black() {
+        use crate::shell::software_dim::{Transfer, gamma_lut};
+        let mut gamma = CrtcGamma::new(Some(handle()), 1024);
+        // Dimmed before the blank, and written while the CRTC scanned out.
+        gamma.want(0.3, false);
+        gamma.applied = Some(gamma.wanted);
+        assert_eq!(gamma.describe(), "wanted=0.300 applied=0.300");
+        // Blanked: nothing is written to a CRTC that is off. The wake's
+        // input restores the brightness before the panel lights.
+        gamma.want(1.0, false);
+        assert_eq!(
+            gamma.pending_write(),
+            Some((1.0, false)),
+            "the link-up write (on_link_up) takes the dimmed LUT off"
+        );
+        gamma.applied = Some(gamma.wanted);
+        assert_eq!(gamma.pending_write(), None);
+        assert_eq!(gamma.describe(), "wanted=none applied=none");
+        // A resume makes the kernel's LUT unknown: it is written again.
+        gamma.forget_applied();
+        assert_eq!(gamma.describe(), "wanted=none applied=unknown");
+        assert_eq!(gamma.pending_write(), Some((1.0, false)));
+        let darkest = gamma_lut(
+            1024,
+            os_actions::brightness::SOFTWARE_DIM_FLOOR,
+            Transfer::Srgb,
+        );
+        let top = darkest.last().copied().expect("a LUT");
+        assert!(top > 0, "{top}");
     }
 
     #[test]
@@ -711,12 +766,10 @@ mod tests {
         ];
         assert_eq!(colorspace_values(named), Some((0, 9)));
         assert_eq!(colorspace_values([(0, b"Default".as_slice())]), None);
-        // Phase `link_depth_is_at_least_ten_and_never_above_the_range`.
         assert_eq!(hdr_max_bpc(8, 16), Some(10));
         assert_eq!(hdr_max_bpc(12, 16), Some(12));
         assert_eq!(hdr_max_bpc(8, 10), Some(10));
         assert_eq!(hdr_max_bpc(8, 8), None);
-        // Phase `capability_reports_the_first_missing_piece`.
         assert_eq!(hdr_capability(false, None, None), (false, None));
         assert_eq!(
             hdr_capability(true, Some(HdrUnavailable::DriverUnsupported), None),
@@ -731,7 +784,6 @@ mod tests {
             (false, Some(HdrUnavailable::DriverRejected))
         );
         assert_eq!(hdr_capability(true, None, None), (true, None));
-        // Phase `a_connector_without_properties_is_driver_unsupported`.
         let bare = HdrSignal {
             max_bpc: None,
             colorspace: None,
@@ -799,7 +851,6 @@ mod tests {
 
     #[test]
     fn adaptive_sync_writes_only_changes_and_stops_after_a_refusal() {
-        // Phase `writes_follow_the_wanted_state_without_repeats`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             assert!(sync.supported());
@@ -814,7 +865,6 @@ mod tests {
             sync.record_write(false, true);
             assert!(!sync.active());
         }
-        // Phase `a_sink_without_vrr_or_a_driver_without_the_property_never_writes_on`.
         {
             let mut sink_cannot = AdaptiveSync::new(Some(handle()), false);
             sink_cannot.want(true);
@@ -825,7 +875,6 @@ mod tests {
             assert!(!no_property.supported());
             assert_eq!(no_property.pending_write(), None);
         }
-        // Phase `a_refused_write_latches_until_resume`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             sync.want(true);
@@ -837,7 +886,6 @@ mod tests {
             assert!(!sync.rejected());
             assert_eq!(sync.pending_write(), Some(true), "resume tries once more");
         }
-        // Phase `resume_rewrites_even_an_unchanged_off_state`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             sync.forget_applied();

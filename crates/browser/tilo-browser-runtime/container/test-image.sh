@@ -115,6 +115,8 @@ head_of() { curl -fsS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
 entry TILO_WEB_HOME_NAME=X && fail "a home name without a host must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_FEEDBACK='c"x' \
+  && fail "a feedback channel that is not an id must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"
@@ -155,6 +157,13 @@ page=$(get /)
 version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -d/ -f2)
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get /app/)" || fail "the app entry points elsewhere"
+# The runtime module's early fetch must name the file init fetches.
+grep -q "<link rel=\"preload\" href=\"./v/$version/pkg/tilo_browser_runtime_bg.wasm\"" <<<"$page" \
+  || fail "the entry page does not preload the versioned runtime module"
+grep -q "<link rel=\"preload\" href=\"../v/$version/pkg/tilo_browser_runtime_bg.wasm\"" <<<"$(get /app/)" \
+  || fail "the app entry does not preload the versioned runtime module"
+grep -q "<link rel=\"modulepreload\" href=\"./v/$version/media-moq-library.mjs\"" <<<"$page" \
+  || fail "the entry page does not preload the versioned live-plane library"
 grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
 # Safari's home-screen icon sits beside the entry pages, as their links and
 # Safari's own unasked lookup expect.
@@ -210,7 +219,11 @@ done
 wasm="/v/$version/pkg/tilo_browser_runtime_bg.wasm"
 headers=$(head_of "$wasm" -H 'Accept-Encoding: br, zstd')
 grep -q '^content-type: application/wasm' <<<"$headers" || fail "wasm type: $headers"
-grep -q '^content-encoding: \(zstd\|br\)' <<<"$headers" || fail "wasm is not served precompressed: $headers"
+grep -q '^content-encoding: br' <<<"$headers" || fail "wasm is not served as brotli, the smaller encoding: $headers"
+grep -q '^content-encoding: br' <(head_of "$wasm" -H 'Accept-Encoding: gzip, deflate, br, zstd') \
+  || fail "a browser accepting both br and zstd must get brotli"
+grep -q '^content-encoding: zstd' <(head_of "$wasm" -H 'Accept-Encoding: zstd') \
+  || fail "a client accepting only zstd must still get zstd"
 grep -qi '^vary:.*accept-encoding' <<<"$headers" || fail "no Vary: Accept-Encoding: $headers"
 grep -q '^cache-control: public, max-age=31536000, immutable' <<<"$headers" || fail "versioned files must be immutable: $headers"
 grep -q '^content-encoding:' <(head_of "$wasm") && fail "a client without br/zstd got an encoded body"

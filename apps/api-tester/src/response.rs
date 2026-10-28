@@ -7,8 +7,7 @@ use ui::tokens::TextRole;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, ChipStyle, Column, ControlSize, Element, EmptyState, Row, Scrollable, Spacer, Text,
-    ToggleGroup, Tone,
+    Badge, ChipStyle, Column, ControlSize, Element, EmptyState, Row, Scrollable, Spacer, Text, Tone,
 };
 
 use crate::commands::{Cmd, Sink};
@@ -32,12 +31,15 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
     )
 }
 
-/// A request is on its way.
-pub(crate) fn sending() -> Element {
+/// A request is on its way, with the way out of waiting for it.
+pub(crate) fn sending(sink: &Sink) -> Element {
+    let waiting = EmptyState::new("Sending request")
+        .with_icon(Icon::Send)
+        .with_message("Waiting for the server to respond.")
+        .with_action("Cancel request")
+        .with_action_id("api.response.cancel");
     Box::new(
-        EmptyState::new("Sending request")
-            .with_icon(Icon::Send)
-            .with_message("Waiting for the server to respond.")
+        sink.effect(waiting, &crate::actions::ApiTesterEffect::CancelSend)
             .into_scrollable(),
     )
 }
@@ -78,9 +80,14 @@ fn caption(text: &str) -> Element {
 }
 
 /// The status, timing and size, and the switch between views of the body.
-pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> Built {
+pub(crate) fn response(
+    data: &ResponseData,
+    view: ResponseView,
+    sink: &Sink,
+    notice: Option<&str>,
+) -> Built {
     let view_sink = sink.clone();
-    let switch = ToggleGroup::new(
+    let switch = ui::widget::ViewTabs::new(
         ResponseView::ALL
             .iter()
             .map(|v| Segment::new(v.label()))
@@ -96,13 +103,42 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     });
     let status = Badge::text(format!("{} {}", data.status, data.status_text))
         .style(ChipStyle::Tinted(status_tone(data.status_class())));
-    let size = ui::format::size(u64::try_from(data.size_bytes).unwrap_or(u64::MAX));
-    let summary = Row::new()
+    let mut summary = Row::new()
         .push(Box::new(status))
         .push(caption(&human_duration(data.duration_ms)))
-        .push(caption(&size))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(switch));
+        .push(caption(&size_caption(data)));
+    if let Some(shown) = shown_caption(data) {
+        summary = summary.push(caption(&shown));
+    }
+    let summary = summary.push(Box::new(Spacer::new()));
+    let summary = match notice {
+        Some(notice) => summary.push(caption(notice)),
+        None => summary,
+    };
+    // The response can leave the app: its body, its headers, and the request
+    // that produced it.
+    let summary = summary.push(copy_control(
+        sink,
+        "api.copy.body",
+        Icon::Copy,
+        "Copy body",
+        "body",
+    ));
+    let summary = summary.push(copy_control(
+        sink,
+        "api.copy.headers",
+        Icon::List,
+        "Copy headers",
+        "headers",
+    ));
+    let summary = summary.push(copy_control(
+        sink,
+        "api.copy.request",
+        Icon::ClipboardPaste,
+        "Copy request",
+        "request",
+    ));
+    let summary = summary.push(Box::new(switch));
     let (slot, handle) = Slot::new(body(data, view));
     let column = Column::new()
         .with_no_padding()
@@ -114,7 +150,45 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     }
 }
 
-/// The body in the chosen view.
+/// A control that copies something out of the response, as the effect the
+/// palette and an agent invoke.
+fn copy_control(sink: &Sink, id: &str, icon: Icon, label: &str, part: &str) -> Element {
+    let effect = crate::actions::ApiTesterEffect::CopyResponse {
+        part: part.to_owned(),
+    };
+    Box::new(sink.effect(
+        ui::widget::Button::icon_only(id, icon, label).control_size(ControlSize::Small),
+        &effect,
+    ))
+}
+
+fn size(bytes: usize) -> String {
+    ui::format::size(u64::try_from(bytes).unwrap_or(u64::MAX))
+}
+
+/// The body's size; a lower bound when the server declared none and only
+/// its start was downloaded.
+pub(crate) fn size_caption(data: &ResponseData) -> String {
+    if data.size_exact {
+        size(data.size_bytes)
+    } else {
+        format!("More than {}", size(data.size_bytes))
+    }
+}
+
+/// How the body view shows the body, when it is not the whole of it as
+/// text: only its start, or in hex.
+pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
+    let partial = !data.size_exact || data.shown_bytes < data.size_bytes;
+    let shown = size(data.shown_bytes);
+    match (data.binary, partial) {
+        (true, true) => Some(format!("First {shown} shown as hex")),
+        (true, false) => Some("Shown as hex".to_owned()),
+        (false, true) => Some(format!("First {shown} shown")),
+        (false, false) => None,
+    }
+}
+
 pub(crate) fn body(data: &ResponseData, view: ResponseView) -> Element {
     match view {
         ResponseView::Pretty if data.is_json() => Box::new(

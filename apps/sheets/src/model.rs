@@ -23,7 +23,6 @@ pub type Addr = (Col, Row);
 /// replays in (a multi-row delete applies one row at a time).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridEdit {
-    /// A blank row inserted above this row.
     InsertRow(Row),
     DeleteRow(Row),
     /// A blank column inserted left of this column.
@@ -212,7 +211,7 @@ impl CellValue {
             CellValue::Number(n) => Some(*n),
             CellValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
             CellValue::Empty => Some(0.0),
-            CellValue::Text(t) => t.trim().parse::<f64>().ok(),
+            CellValue::Text(t) => parse_number(t.trim()),
             CellValue::Error(_) => None,
         }
     }
@@ -290,20 +289,23 @@ impl CellFormat {
     }
 
     /// Parse the stored string back into a format. Unknown subtypes fall
-    /// back to a default (USD currency, ISO date, 24h time) so an
-    /// unrecognized variant never loses the *category*. The supplied
-    /// `default_currency` seeds a bare `"currency"` with no subtype.
-    pub fn from_str_with(s: &str, default_currency: Currency) -> CellFormat {
+    /// back to a fixed default (USD currency, ISO date, 24h time), never the
+    /// reader's locale, so an unrecognized variant keeps its *category* and
+    /// reads the same for everyone.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
+    )]
+    pub fn from_str(s: &str) -> CellFormat {
         let (head, sub) = match s.split_once(':') {
             Some((h, t)) => (h, Some(t)),
             None => (s, None),
         };
         match head {
             "number" => CellFormat::Number,
-            "currency" => CellFormat::Currency(
-                sub.and_then(Currency::from_code)
-                    .unwrap_or(default_currency),
-            ),
+            "currency" => {
+                CellFormat::Currency(sub.and_then(Currency::from_code).unwrap_or(Currency::USD))
+            }
             "percent" => CellFormat::Percent,
             "date" => {
                 CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso))
@@ -315,16 +317,6 @@ impl CellFormat {
             "text" => CellFormat::Text,
             _ => CellFormat::General,
         }
-    }
-
-    /// Convenience parse with the USD/ISO/24h defaults — used where the
-    /// document currency isn't handy (e.g. tests).
-    #[allow(
-        clippy::should_implement_trait,
-        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
-    )]
-    pub fn from_str(s: &str) -> CellFormat {
-        Self::from_str_with(s, Currency::USD)
     }
 
     /// The high-level category label shown in the type indicator. For
@@ -438,6 +430,13 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
     }
 }
 
+/// Read text as a spreadsheet number. Only finite numbers count: Rust's float
+/// parser also accepts "inf", "Infinity", "NaN" and overflows like "1e400" to
+/// an infinity, and a person who types those means text, not a number.
+pub fn parse_number(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
 /// "General"-style number rendering: integers print without a decimal
 /// point, fractions print with trailing zeros trimmed (up to 10 sig
 /// figures), and very large/small magnitudes fall back to a compact
@@ -460,7 +459,6 @@ pub fn format_number_general(n: f64) -> String {
         // straight, with no decimal point.
         return format!("{n:.0}");
     }
-    // Trim trailing zeros from a fixed-precision rendering.
     let s = format!("{n:.10}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     trimmed.to_string()
@@ -757,7 +755,6 @@ mod tests {
         reason = "3.14 is the value under test, not an approximation of PI"
     )]
     fn cell_addresses_and_number_formatting() {
-        // Case `column_letters_round_trip`.
         {
             assert_eq!(col_to_letters(0), "A");
             assert_eq!(col_to_letters(25), "Z");
@@ -783,14 +780,12 @@ mod tests {
             assert_eq!(a1_to_addr(""), None);
         }
 
-        // Case `thousands_grouping`.
         {
             assert_eq!(format_thousands(1234.5, 2), "1,234.50");
             assert_eq!(format_thousands(-1200.0, 2), "-1,200.00");
             assert_eq!(format_thousands(12.0, 0), "12");
         }
 
-        // Case `general_trims_trailing_zeros`.
         {
             assert_eq!(format_number_general(42.0), "42");
             assert_eq!(format_number_general(3.14), "3.14");
@@ -798,10 +793,8 @@ mod tests {
         }
     }
 
-    /// Currency, date and time formats and format-string round-trips.
     #[test]
     fn currency_date_and_time_formats_render_and_round_trip() {
-        // Case `currency_symbol_placement_and_decimals`.
         {
             // USD: leading $, two decimals, comma grouping.
             assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
@@ -816,16 +809,19 @@ mod tests {
             assert_eq!(format_currency(50.0, Currency::CHF), "50.00 CHF");
         }
 
-        // Case `currency_format_round_trips_through_string`.
         {
             for c in Currency::ALL {
                 let fmt = CellFormat::Currency(c);
                 let s = fmt.as_str();
                 assert_eq!(CellFormat::from_str(&s), fmt, "round trip {s}");
             }
+            // A code-less "currency" reads the same for every reader.
+            assert_eq!(
+                CellFormat::from_str("currency"),
+                CellFormat::Currency(Currency::USD)
+            );
         }
 
-        // Case `date_styles_render`.
         {
             let serial = date_to_serial(2023, 3, 15);
             assert_eq!(serial_to_date(serial, DateStyle::Iso), "2023-03-15");
@@ -837,7 +833,6 @@ mod tests {
             }
         }
 
-        // Case `date_serial_round_trips`.
         {
             // 45000 ~ 2023-03-15 per the LibreOffice 1899-12-30 epoch.
             let s = serial_to_date(45000.0, DateStyle::Iso);
@@ -847,7 +842,6 @@ mod tests {
             assert_eq!(back, "2023-03-15");
         }
 
-        // Case `time_styles_render`.
         {
             // 0.5 of a day == noon.
             assert_eq!(serial_to_time(0.5, TimeStyle::H24), "12:00");
@@ -861,7 +855,6 @@ mod tests {
             }
         }
 
-        // Case `format_string_round_trip_all_variants`.
         {
             let cases = [
                 CellFormat::General,

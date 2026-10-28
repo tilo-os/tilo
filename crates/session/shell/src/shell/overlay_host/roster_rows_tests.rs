@@ -26,14 +26,14 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
         let mut tree = tree_with_room();
         tree.desktop
             .collaborators
-            .push(Collaborator::new("bob", "bob"));
+            .push(Collaborator::new("bob", "Bob"));
         let rows = tilo_desktop::collaborators::collaborator_roster_rows(
             &tree.desktop,
             &crate::shell::state::local_user_id(),
         );
         assert_eq!(rows.len(), 1, "only the peer is here: {rows:?}");
         assert!(!rows[0].is_agent);
-        assert_eq!(rows[0].label, "bob");
+        assert_eq!(rows[0].label, "Bob");
         assert!(rows[0].followable);
         assert_eq!(
             rows[0].activity, None,
@@ -45,7 +45,7 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
         let mut tree = tree_with_room();
         tree.desktop
             .collaborators
-            .push(Collaborator::new("bob", "bob"));
+            .push(Collaborator::new("bob", "Bob"));
         {
             let ws = tree
                 .desktop
@@ -63,7 +63,7 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
             &crate::shell::state::local_user_id(),
         );
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].label, "bob");
+        assert_eq!(rows[0].label, "Bob");
         assert!(!rows[0].is_agent, "a peer must never be tagged as an agent");
     }
 
@@ -116,7 +116,7 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
                 .expect("fixture has a room");
             ws.collaborators.push(Collaborator::new("peer@7", "peer@7"));
             ws.collaborators
-                .push(Collaborator::new("bob", "bob").with_role("editor"));
+                .push(Collaborator::new("bob", "Bob").with_role("editor"));
             ws.admit_agent_preset(
                 "scribe",
                 tilo_action_policy::roles::AgentPreset::Contributor,
@@ -186,7 +186,7 @@ fn quick_settings_bounds_cover_shadows_and_hints_yield_to_modal_surfaces() {
         host.qs_motion = super::qs_motion::QsMotion::opened();
         host.qs_motion.follow(&super::qs_motion::QsFrame {
             open: false,
-            stack: &[crate::shell::quick_settings::QsLevel::Root],
+            stack: &[tilo_quick_settings::QsLevel::Root],
             height: 300.0,
             motion: ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             source: ui::tokens::MotionSource::Pointer,

@@ -219,10 +219,6 @@ impl Surface {
     /// return what changed. `tenant_changed`: the renderer last drew another
     /// app, so its pooled scratch is dropped before this one draws (fresh
     /// buffers are zeroed: nothing of the other app is left to read).
-    ///
-    /// # Errors
-    ///
-    /// When rasterization fails or a backdrop names an unknown image.
     pub fn rasterize(
         &mut self,
         gpu: Option<&mut Gpu>,

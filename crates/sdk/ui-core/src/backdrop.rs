@@ -13,7 +13,7 @@
 //! Vello cannot sample what it has already drawn, so the blur is a pass
 //! that runs before the frame:
 //!
-//! 1. While a host holds a [`BackdropRecording`], [`fill`] draws a surface's
+//! 1. While a host holds a [`BackdropRecording`], `fill` draws a surface's
 //!    body as a placeholder image under the tint and records what lies
 //!    behind it: what the scene it is drawn into held so far, which of the
 //!    host's scenes that is (see [`layer_scene`]), the surface's bounds and
@@ -114,6 +114,28 @@ pub(crate) fn fill_with_ground(
     theme: &Theme,
     ground: Color,
 ) {
+    if material == Material::SeeThrough {
+        // The blurred backdrop under half the ground, where there is a
+        // backdrop pass; half the ground straight over it where there is not.
+        let tint = see_through_fill(theme, ground);
+        if blurs(Material::Floating, theme)
+            && tint.components[3] < 1.0
+            && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
+        {
+            let brush = ImageBrush::new(image)
+                .with_extend(Extend::Pad)
+                .with_quality(ImageQuality::Medium);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                shape,
+            );
+        }
+        scene.fill(Fill::NonZero, transform, tint, None, shape);
+        return;
+    }
     if blurs(material, theme)
         && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
     {
@@ -127,6 +149,7 @@ pub(crate) fn fill_with_ground(
             Some(brush_transform),
             shape,
         );
+        settle(scene, transform, shape, theme, ground);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -137,6 +160,83 @@ pub(crate) fn fill_with_ground(
         return;
     }
     scene.fill(Fill::NonZero, transform, ground, None, shape);
+}
+
+/// How far, as a contrast ratio, the floating material may stand off its
+/// ground anywhere, whatever is behind it. Every ink a panel draws is
+/// chosen to clear [`SMALL_TEXT_MIN_CONTRAST`] on the opaque ground (a
+/// disabled row's dim ink included), so on the material it still clears
+/// 7 / 1.5 ≈ 4.7:1, above body text's 4.5:1 with room for 8-bit rounding.
+///
+/// [`SMALL_TEXT_MIN_CONTRAST`]: crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
+pub const MATERIAL_SPREAD: f64 = 1.5;
+
+/// The darkest and the lightest colour the floating material shows over
+/// `ground`: the ground stepped toward each end of the theme's neutral ramp
+/// until it stands [`MATERIAL_SPREAD`] off it (or reaches the end).
+#[must_use]
+pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
+    let toward = |end: Color| {
+        let at = |t: f32| {
+            let [r, g, b, _] = ground.components;
+            let [er, eg, eb, _] = end.components;
+            Color::new([r + (er - r) * t, g + (eg - g) * t, b + (eb - b) * t, 1.0])
+        };
+        if crate::color::contrast_ratio(at(1.0), ground) <= MATERIAL_SPREAD {
+            return at(1.0);
+        }
+        let (mut within, mut beyond) = (0.0_f32, 1.0_f32);
+        for _ in 0..24 {
+            let mid = (within + beyond) / 2.0;
+            if crate::color::contrast_ratio(at(mid), ground) <= MATERIAL_SPREAD {
+                within = mid;
+            } else {
+                beyond = mid;
+            }
+        }
+        at(within)
+    };
+    let stops = &theme.tokens.colors.neutral.stops;
+    let (first, last) = (toward(stops[0]), toward(stops[10]));
+    if crate::color::relative_luminance(first) <= crate::color::relative_luminance(last) {
+        (first, last)
+    } else {
+        (last, first)
+    }
+}
+
+/// Hold the blurred backdrop just drawn in `shape` inside the material's
+/// band ([`material_band`]), channel by channel: no channel lighter than
+/// the band's light end, none darker than its dark end. Each channel of
+/// the ground lies between the two, so the tint drawn over it stays
+/// inside too, and a panel's text keeps its contrast over a white page, a
+/// black one or a busy one. Inside the band the backdrop shows as it is.
+fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Theme, ground: Color) {
+    use vello::peniko::{BlendMode, Compose, Mix};
+    let (dark_end, light_end) = material_band(theme, ground);
+    for (mix, end) in [(Mix::Darken, light_end), (Mix::Lighten, dark_end)] {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(mix, Compose::SrcOver),
+            1.0,
+            transform,
+            shape,
+        );
+        scene.fill(Fill::NonZero, transform, end, None, shape);
+        scene.pop_layer();
+    }
+}
+
+/// The see-through material's fill over `ground`: half of it, unblurred,
+/// opaque under reduced transparency and forced colours (and on high
+/// contrast, whose token is `1`).
+pub(crate) fn see_through_fill(theme: &Theme, ground: Color) -> Color {
+    let opacity = if theme.reduce_transparency || theme.forced_colors {
+        1.0
+    } else {
+        theme.tokens.colors.surfaces.see_through_opacity
+    };
+    ground.with_alpha(opacity)
 }
 
 /// One surface drawn in the blurred material while a recording was active,
@@ -152,7 +252,8 @@ pub struct RecordedBackdrop {
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
-    /// What that scene held before the surface.
+    /// What that scene held before the surface, with the layers still open
+    /// there ended: a balanced scene of its own.
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
@@ -297,6 +398,17 @@ pub fn nest_scene(child: &Scene) {
     });
 }
 
+/// Forget the floating surfaces drawn into `child` since [`nest_scene`]:
+/// it is about to be drawn again. A no-op outside a recording.
+pub fn forget_nested(child: &Scene) {
+    let address = std::ptr::from_ref(child) as usize;
+    RECORDING.with(|slot| {
+        if let Some(recording) = slot.borrow_mut().as_mut() {
+            recording.pending.retain(|(known, _)| *known != address);
+        }
+    });
+}
+
 /// `scene.append(child, Some(transform))`, carrying the floating surfaces
 /// drawn into `child` since [`nest_scene`] onto `scene`: what `scene` holds
 /// so far lies below them. Returns how many surfaces `child` carried. A
@@ -324,6 +436,7 @@ pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usi
         for (_, mut surface) in carried {
             let mut below = scene.clone();
             below.append(&surface.below, Some(transform));
+            end_open_layers(&mut below);
             surface.below = below;
             surface.bounds = transform.transform_rect_bbox(surface.bounds);
             surface.blur_px *= transform.determinant().abs().sqrt();
@@ -391,7 +504,11 @@ fn record(
             blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px)
                 * transform.determinant().abs().sqrt(),
             layer: layer.unwrap_or_default(),
-            below: scene.clone(),
+            below: {
+                let mut below = scene.clone();
+                end_open_layers(&mut below);
+                below
+            },
             ground,
         };
         if layer.is_some() {
@@ -401,6 +518,21 @@ fn record(
         }
         Some((image, brush_transform))
     })
+}
+
+/// End the layers `below` leaves open, so a copy of a scene taken part way
+/// through drawing it is a scene of its own.
+///
+/// A surface is often drawn inside layers its scene still has open: the clip
+/// of the list or window it floats over, the alpha layer of its own fade-in.
+/// Those layers end after the surface, so what lies below it is everything
+/// drawn so far with them ended where the copy stops, exactly as a renderer
+/// ends a scene's open layers. The render service draws a backdrop's scene by
+/// itself and refuses one that leaves a clip open, and with it the whole frame.
+fn end_open_layers(below: &mut Scene) {
+    for _ in 0..below.encoding().n_open_clips {
+        below.pop_layer();
+    }
 }
 
 #[allow(
@@ -543,7 +675,6 @@ fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
 }
 ";
 
-/// Bytes of the shader's `Pass`.
 const PASS_BYTES: u64 = 32;
 
 /// What [`BackdropBlur::prepare`] did, for frame profiling.

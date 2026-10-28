@@ -6,6 +6,7 @@
 )]
 
 use crate::widget::ModelPath;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -130,7 +131,7 @@ impl Treemap {
             .filter(|(_, item)| item.value.is_finite() && item.value > 0.0)
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        indices.sort_by(|left, right| {
+        indices.compact_sort_by(|left, right| {
             let left_item = self.items.get(*left);
             let right_item = self.items.get(*right);
             match (left_item, right_item) {
@@ -408,7 +409,6 @@ mod tests {
     use super::*;
     #[test]
     fn treemap_layout_covers_positive_items_once_and_omits_invalid() {
-        // Case `layout_covers_each_positive_item_once`.
         {
             let mut map = Treemap::new(vec![
                 ChartItem::new("a", "A", 3.0),
@@ -419,7 +419,6 @@ mod tests {
             assert_eq!(map.layout().len(), 3);
         }
 
-        // Case `invalid_values_are_omitted`.
         {
             let map = Treemap::new(vec![
                 ChartItem::new("a", "A", f64::NAN),

@@ -28,6 +28,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             .flat_map(|change| change.raw_bytes().to_vec())
             .collect();
         let message = signing
+            .publication_mut()
             .signed_mutation(
                 "so.tilo.chat",
                 "",
@@ -52,9 +53,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         let service = NativeOwnerCommitService::new(tree.shared(), None);
         // Building the service only starts the owner's open, off this
         // thread: the barrier under test is the commit's, after it.
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(30))
-            .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         while OwnerCommitService::health(&service).is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -79,26 +78,21 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             },
         };
         let before = std::fs::read(&path).unwrap();
-        let result = if fail {
-            // The adapter's future has no await; poll it inside the real storage failure scope.
-            tilo_files::native::atomic::test_support::with_failure(
-                tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-                || {
-                    let mut future = std::pin::pin!(service.commit(request.clone()));
-                    match future
-                        .as_mut()
-                        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-                    {
-                        std::task::Poll::Ready(result) => result,
-                        std::task::Poll::Pending => {
-                            panic!("the adapter's commit future completes without awaiting")
-                        }
-                    }
+        // The commit writes on a blocking thread of its own, so the real
+        // storage failure scope opens around the write on that thread.
+        let failing = fail.then(|| {
+            super::super::native_workspace_owner::store::test_seam::wrap_writes(
+                &service.tree.read().native_runtime,
+                |write| {
+                    tilo_files::native::atomic::test_support::with_failure(
+                        tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
+                        write,
+                    );
                 },
             )
-        } else {
-            service.commit(request.clone()).await
-        };
+        });
+        let result = service.commit(request.clone()).await;
+        drop(failing);
         if fail {
             assert!(result.is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);

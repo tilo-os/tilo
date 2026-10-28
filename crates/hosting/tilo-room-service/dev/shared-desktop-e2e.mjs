@@ -1,28 +1,33 @@
 #!/usr/bin/env node
-// Whose windows are whose on a persistent room's shared desktop, end to
-// end: the stack production runs (dev/run.py: the web entry, the room
-// service and its relay, the room's desktop starting with named strips) and
-// headless Chrome, each person a browser context of their own. Two guests,
-// Ada and Ben, each open a window; a third person, Mo, is made one of the
-// room's moderators while everyone is in (TILO_ROOMS_ROLES_FILE), and from
-// then on sees and moderates the desktop live.
+// Whose windows are whose in a public room, end to end: the stack production
+// runs (dev/run.py: the web entry, the room service and its relay, the
+// room's desktop starting with named strips) and headless Chrome, each person
+// a browser context of their own. Two guests, Ada and Ben, each open a
+// window; a third person, Mo, is made one of the room's moderators while
+// everyone is in (TILO_ROOMS_ROLES_FILE).
+//
+// A public room shares what its people write (Chat's messages) but no
+// member's layout: each visitor's desktop is their own, so the windows they
+// open, move and close stay on it, and the workspace's name and desks are
+// its host's.
 //
 // usage: node crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs
 //          --bundle DIR --relay-bin PATH --room-service-bin PATH --out DIR
 //          [--allow-dev] [--expect-revision SHA] [--timeout S]
 //
 // It checks, and photographs into --out:
-//   first-post       Ada's first post in the fresh room's Chat shows on Ben's
-//                    and Mo's pages, open before it, with no input of theirs
-//   own-window      Ada's own window under her pointer offers its close
-//   others-window    Ben's window under Ada's pointer offers none and names
-//                    him, in his colour
-//   refused-drag     Ada drags Ben's window: it follows a little and springs
-//                    back, and the room keeps it where it was
-//   refused-close    Ada's page closes Ben's window through its navigation
-//                    door: it comes back, and Ben still has it
-//   moderator-view   Mo's pointer on Ada's window: a normal close, and Mo
-//                    closing it closes it for Ada too
+//   first-post        Ada's first post in the fresh room's Chat shows on Ben's
+//                     and Mo's pages, open before it, with no input of theirs
+//   windows-open      Ada opens Notes and Ben a Calculator, each on their own
+//                     desktop
+//   windows-stay-own  neither window reaches anyone else's desktop, Mo's
+//                     included, and none comes back to its own after a reload
+//                     any different
+//   own-window        Ada's own window under her pointer offers its close
+//   own-close         Ada closes her window: it leaves her desktop, and Ben's
+//                     window stays on his
+//   moderator-desktop Mo, a moderator, still sees only his own desktop: the
+//                     guests' windows are theirs
 //
 // Every check runs and is reported (summary.json under --out); the run exits
 // 1 when any failed and 2 when it cannot observe its subject.
@@ -229,38 +234,39 @@ async function main() {
     await shoot('first-post', ben);
     check('first-post', !posted.error && missed.length === 0, {window: chatWindow, posted, missed});
 
-    // Ada opens Notes, Ben a Calculator; everyone sees both. A window lost
-    // to such a race is opened again, and counted.
+    // Ada opens Notes, Ben a Calculator, each on their own desktop. A launch
+    // lost to a race is tried again, and counted.
     const opens = [];
-    const opened = async (opener, app, title, watcher) => {
+    const opened = async (opener, app, title) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         opens.push(title);
         await command(opener, {kind: 'launch', app});
-        if (await until(`${title} reaches the room`, async () => (await titles(watcher)).includes(title), 20_000)
+        if (await until(`${title} opens`, async () => (await titles(opener)).includes(title), 20_000)
           .catch(() => false)) return;
       }
-      throw Error(`${title} never reached the room`);
+      throw Error(`${title} never opened`);
     };
     step('windows open');
-    await opened(ada, 'so.tilo.notes', 'Notes', ben);
-    await opened(ben, 'so.tilo.calculator', 'Calculator', ada);
+    await opened(ada, 'so.tilo.notes', 'Notes');
+    await opened(ben, 'so.tilo.calculator', 'Calculator');
     check('windows-open', opens.length === 2, {opens});
-    const both = async tab => {
-      const seen = await titles(tab);
-      return seen.includes('Notes') && seen.includes('Calculator');
-    };
-    const late = [];
-    for (const [name, person] of Object.entries(people)) {
-      if (await until(`${name} sees both windows`, () => both(person.tab), 30_000).catch(() => false)) continue;
-      // Reported, then given a reload: what a person would do.
-      late.push(name);
-      await reload(person.tab, settleOptions);
-      await until(`${name}'s desktop navigates again`, () => person.tab.evaluate('Boolean(globalThis.tiloMount?.navigation)'));
-      await until(`${name} sees both windows after a reload`, () => both(person.tab));
-    }
-    check('windows-reach-everyone', late.length === 0, {late});
-    // Presence (names, colours) and each page's answer from the room settle.
+    // What each desktop shows once the room had time to carry anything.
     await sleep(8_000);
+    const seen = async () => Object.fromEntries(await Promise.all(
+      Object.entries(people).map(async ([name, person]) => [name, await titles(person.tab)])));
+    const before = await seen();
+    // A reload shows what the page keeps and what the room hands back.
+    await reload(ben, settleOptions);
+    await until('Ben\'s desktop navigates again', () => ben.evaluate('Boolean(globalThis.tiloMount?.navigation)'));
+    await sleep(5_000);
+    const after = await seen();
+    await shoot('windows-stay-own', mo);
+    check('windows-stay-own',
+      before.Ada.includes('Notes') && !before.Ada.includes('Calculator')
+        && before.Ben.includes('Calculator') && !before.Ben.includes('Notes')
+        && !before.Mo.includes('Notes') && !before.Mo.includes('Calculator')
+        && !after.Ben.includes('Notes') && !after.Ada.includes('Calculator'),
+      {before, after});
 
     step('own-window');
     // own-window: Ada's pointer on her own window's tab.
@@ -270,64 +276,25 @@ async function main() {
     await shoot('own-window', ada);
     check('own-window', true, {at: notes});
 
-    step('others-window');
-    // others-window: Ada's pointer on Ben's.
-    const calculator = await tabAt(ada, 'Calculator');
-    await mouse(ada, 'mouseMoved', calculator);
-    await sleep(1_500);
-    await shoot('others-window', ada);
-    check('others-window', true, {at: calculator});
-
-    step('refused-drag');
-    // refused-drag: Ada drags Ben's window well away; it follows a little,
-    // then springs back.
-    const order = await titles(ada);
-    await mouse(ada, 'mousePressed', calculator, {button: 'left', buttons: 1, clickCount: 1});
-    for (let step = 1; step <= 12; step++) {
-      await mouse(ada, 'mouseMoved', {x: calculator.x - step * 30, y: calculator.y + step * 6}, {buttons: 1});
-      await sleep(40);
-    }
-    await sleep(300);
-    await shoot('refused-drag', ada);
-    await mouse(ada, 'mouseReleased', {x: calculator.x - 360, y: calculator.y + 72}, {button: 'left', buttons: 0, clickCount: 1});
-    await sleep(1_500);
-    await shoot('refused-drag-after', ada);
-    const afterDrag = await titles(ada);
-    const benAfterDrag = await titles(ben);
-    check('refused-drag', JSON.stringify(afterDrag) === JSON.stringify(order) && benAfterDrag.includes('Calculator'),
-      {before: order, after: afterDrag, ben: benAfterDrag});
-
-    step('refused-close');
-    // refused-close: Ada's page closes Ben's window through the navigation
-    // door; it comes back on her page and never leaves Ben's.
-    const benWindow = (await snapshot(ada)).entries.find(entry => entry.label === 'Calculator');
-    await command(ada, {kind: 'close', route: benWindow.route}).catch(() => {});
-    await sleep(3_000);
-    const adaAfterClose = await titles(ada);
-    const benAfterClose = await titles(ben);
-    check('refused-close', adaAfterClose.includes('Calculator') && benAfterClose.includes('Calculator'),
-      {ada: adaAfterClose, ben: benAfterClose});
-
-    step('moderator-view');
-    // moderator-view: Mo's pointer on Ada's window, then Mo closes it.
-    // A page asks the room what it may moderate when it joins and every
-    // fifteen seconds after; Mo was made a moderator well before this.
-    await sleep(16_000);
-    const adaNotes = await tabAt(mo, 'Notes');
-    await mouse(mo, 'mouseMoved', adaNotes);
-    await sleep(1_500);
-    await shoot('moderator-view', mo);
-    const adaWindow = (await snapshot(mo)).entries.find(entry => entry.label === 'Notes');
-    await command(mo, {kind: 'close', route: adaWindow.route}).catch(() => {});
-    const closedForAda = await until('Mo\'s close reaches Ada', async () => !(await titles(ada)).includes('Notes'), 20_000)
+    step('own-close');
+    // own-close: Ada closes her own window through the navigation door.
+    const adaWindow = (await snapshot(ada)).entries.find(entry => entry.label === 'Notes');
+    await command(ada, {kind: 'close', route: adaWindow.route}).catch(() => {});
+    const closed = await until('Ada\'s window closes', async () => !(await titles(ada)).includes('Notes'), 20_000)
       .catch(() => false);
     await sleep(1_000);
-    await shoot('moderator-closed', ada);
-    check('moderator-view', closedForAda, {ada: await titles(ada), mo: await titles(mo)});
-    if (!closedForAda) {
-      for (const [name, tab] of [['Mo', mo], ['Ada', ada]]) console.error(`${name}: ${(tab.log ?? []).slice(-20).join('\n  ')}`);
-      console.error((stack.log().match(/^.*(refus|warn|error).*$/gim) ?? []).slice(-20).join('\n'));
-    }
+    await shoot('own-close', ada);
+    const benAfterClose = await titles(ben);
+    check('own-close', closed && benAfterClose.includes('Calculator'), {ada: await titles(ada), ben: benAfterClose});
+
+    step('moderator-desktop');
+    // moderator-desktop: a page asks the room what it may moderate when it
+    // joins and every fifteen seconds after; Mo was made a moderator well
+    // before this, and his desktop is still only his.
+    await sleep(16_000);
+    const mos = await titles(mo);
+    await shoot('moderator-desktop', mo);
+    check('moderator-desktop', !mos.includes('Notes') && !mos.includes('Calculator'), {mo: mos});
   } catch (error) {
     // What each person saw when it went wrong, in the run's log.
     for (const [name, person] of Object.entries(people)) {

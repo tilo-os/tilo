@@ -21,7 +21,7 @@ use std::process::Command;
 fn install_bin() -> PathBuf {
     // Cargo compiles the binary before running integration tests and
     // exposes its path via CARGO_BIN_EXE_<name>.
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
+    tilo_test_env::package_binary!("tilo-install")
 }
 
 fn fake_host(root: &Path) {
@@ -174,7 +174,6 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
             .unwrap();
         assert!(out.status.success());
 
-        // Flip a byte in the installed libc stub.
         let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
         let mut bytes = fs::read(&libc).unwrap();
         bytes[0] ^= 0x5a;

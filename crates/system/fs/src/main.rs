@@ -14,7 +14,7 @@ mod workspace_startup;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
-use fs::clock::{unix_now_ms, unix_now_ns};
+use fs::clock::unix_now_ms;
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
@@ -39,7 +39,7 @@ use fs::{
     RecordProtocolSnapshotV1, RecordPublisher, RecordRepository, RecordServices,
     RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore, ShareAuthority,
     ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity, load_revocation_list, load_workspace_share_issuer,
+    load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -77,7 +77,6 @@ mod share_mount_tests {
 
     #[test]
     fn share_mounts_take_secret_free_bounded_input_and_durable_generations() {
-        // Phase `mount_share_accepts_stdin_without_putting_a_bearer_in_argv`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -98,7 +97,6 @@ mod share_mount_tests {
                 }
             ));
         }
-        // Phase `stdin_share_link_is_trimmed_and_strictly_bounded`.
         {
             assert_eq!(
                 parse_share_uri_input(b"tilo-file://v2/example#secret\n".to_vec(), 64).unwrap(),
@@ -108,7 +106,6 @@ mod share_mount_tests {
             assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
             assert!(parse_share_uri_input(vec![0xff], 64).is_err());
         }
-        // Phase `durable_replica_generation_is_written_before_readiness_can_use_it`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("namespace.bin");
@@ -126,7 +123,6 @@ mod share_mount_tests {
                 "a restart reopens the generation that was checkpointed"
             );
         }
-        // Phase `recipient_service_command_line_is_explicit_and_secret_free`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -154,7 +150,6 @@ mod share_mount_tests {
         persist_namespace_changes(&namespace, &path).unwrap();
         assert!(path.exists(), "the first barrier writes the document");
 
-        // Removing the file shows whether the next barrier writes.
         std::fs::remove_file(&path).unwrap();
         persist_namespace_changes(&namespace, &path).unwrap();
         assert!(!path.exists(), "an unchanged document is not written again");
@@ -218,7 +213,6 @@ mod share_mount_tests {
             "a restart resumes the progress"
         );
 
-        // Phase `damaged_progress_is_ignored`.
         let mut damaged = std::fs::read(&progress).unwrap();
         let last = damaged.len() - 1;
         damaged[last] ^= 1;
@@ -229,7 +223,6 @@ mod share_mount_tests {
             "damaged progress was resumed"
         );
 
-        // Phase `progress_beside_a_recovered_document_is_ignored`.
         persist_peer_sync_states(&namespace, &progress);
         namespace
             .lock()
@@ -322,7 +315,6 @@ mod share_mount_tests {
 
     #[test]
     fn shared_snapshots_project_exactly_one_record() {
-        // Phase `shared_snapshot_projects_one_exact_record_and_updates_it_in_place`.
         {
             let dir = tempfile::tempdir().unwrap();
             let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
@@ -374,7 +366,6 @@ mod share_mount_tests {
             assert_eq!(guard.getattr(ino).unwrap().size, 456);
             drop(guard);
         }
-        // Phase `shared_snapshot_rejects_cross_record_metadata_and_history`.
         {
             let dir = tempfile::tempdir().unwrap();
             let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
@@ -388,7 +379,6 @@ mod share_mount_tests {
             wrong_history.versions[0].record_id = FileRecordId::new();
             assert!(apply_shared_snapshot(&namespace, &history, &wrong_history).is_err());
         }
-        // Phase `shared_namespace_refuses_any_extra_visible_node`.
         {
             let expected = FileRecordId::new();
             let mut namespace = Namespace::new("recipient").unwrap();
@@ -679,6 +669,13 @@ enum Command {
         #[arg(long)]
         relay_service_id: String,
     },
+    /// Ask the origins of this device's public catalogue copies that are due
+    /// whether they changed, through the running daemon.
+    RefreshPublicContent {
+        /// The daemon's document-media socket.
+        #[arg(long, default_value = "/run/tilo/fs-blobs.sock")]
+        blob_sock: PathBuf,
+    },
 }
 
 /// Exit status of `publish-authority` when this device holds no governor key:
@@ -903,6 +900,25 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             relay_service_id,
         } => unregister_content_peer(cache_dir, &relay_service_id).await,
+        Command::RefreshPublicContent { blob_sock } => {
+            // fs.service starts only on a device with its certified identity
+            // (before setup, and in a development VM's session, it does not):
+            // with no daemon there are no copies to refresh, which is no
+            // failure of the timer that asks.
+            if matches!(blob_sock.try_exists(), Ok(false)) {
+                println!(
+                    "no fs daemon serves this device ({} is absent): no public copies to refresh",
+                    blob_sock.display()
+                );
+                return Ok(());
+            }
+            let changed = tokio::task::spawn_blocking(move || {
+                runtime_fs::blobs::BlobClient::connect_session(&blob_sock)?.refresh_public()
+            })
+            .await??;
+            println!("{changed} public copies changed");
+            Ok(())
+        }
     }
 }
 
@@ -1185,8 +1201,28 @@ fn spawn_workspace_authority_reload(
 fn spawn_document_media(
     socket: &Path,
     store: &Arc<ContentStore>,
+    cache_dir: Option<&Path>,
+    attributions: (Arc<fs::write_attribution::WriteAttributions>, PathBuf),
 ) -> Option<std::thread::JoinHandle<()>> {
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(store));
+    // The device's one document-media service also keeps the device's copies
+    // of public files, beside the content store whose budget evicts them.
+    let public = cache_dir.and_then(|dir| {
+        let origin = fs::public_content::NetOrigin::new()
+            .map_err(|error| eprintln!("public content cannot be fetched here: {error}"))
+            .ok()?;
+        fs::public_content::PublicContent::open(
+            &dir.join("public-content"),
+            Arc::clone(store.files()),
+            origin,
+        )
+        .map_err(|error| eprintln!("public content cannot be kept here: {error}"))
+        .ok()
+    });
+    let media = match public {
+        Some(public) => fs::document_media::DocumentMedia::with_public(Arc::clone(store), public),
+        None => fs::document_media::DocumentMedia::new(Arc::clone(store)),
+    }
+    .with_write_attributions(attributions);
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -1505,7 +1541,7 @@ async fn replica_workspace(
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1814,7 +1850,7 @@ async fn serve(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
@@ -2121,9 +2157,17 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            cache_dir.as_deref(),
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2319,6 +2363,7 @@ async fn serve(
             replacement_transactions,
             #[cfg(target_os = "linux")]
             external_history,
+            write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -2420,7 +2465,7 @@ async fn mount(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -2485,9 +2530,17 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            cache_dir.as_deref(),
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -2567,6 +2620,7 @@ async fn mount(
             replacement_transactions,
             #[cfg(target_os = "linux")]
             external_history: None,
+            write_attributions: Some(write_attributions),
             rebind: None,
         },
     )
@@ -2602,7 +2656,7 @@ async fn mount_share(
         SharedCredential::Named(_) => None,
     };
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let actor = fs_protocol::FileActor {
@@ -2743,6 +2797,7 @@ async fn mount_share(
             replacement_transactions: None,
             #[cfg(target_os = "linux")]
             external_history: None,
+            write_attributions: None,
             rebind: None,
         },
     )
@@ -2765,7 +2820,7 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = match load_certified_mount_identity(&paths, unix_now_ns()) {
+    let certified = match load_certified_mount_identity_once_valid(&paths).await {
         Ok(certified) => certified,
         Err(error) => {
             // Unconfigured session: keep the activation socket and wait for
@@ -3664,6 +3719,8 @@ struct MountServices {
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
     #[cfg(target_os = "linux")]
     external_history: Option<Arc<fs::external_history::ExternalHistoryFactory>>,
+    /// What the desktop session says caused writes to some paths.
+    write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -3699,6 +3756,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         replacement_transactions,
         #[cfg(target_os = "linux")]
         external_history,
+        write_attributions,
         mut rebind,
     } = services;
     // Before anything is served: from here on a stop signal ends the mount
@@ -3730,6 +3788,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let durable_namespace = Arc::clone(&namespace);
+    #[cfg(target_os = "linux")]
+    let signalled_namespace = Arc::clone(&namespace);
+    #[cfg(target_os = "linux")]
+    let signalled_availability = availability.clone();
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
         .with_document_content(tilo_content_device::for_app());
@@ -3761,6 +3823,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     let fs = match record_publisher {
         Some(publisher) => fs.with_record_publisher(publisher)?,
+        None => fs,
+    };
+    let fs = match write_attributions {
+        Some(attributions) => fs.with_write_attributions(attributions),
         None => fs,
     };
     let fs = match replacement_transactions {
@@ -3917,6 +3983,26 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
+    // Watchers on the mount hear of the changes the kernel did not make
+    // (a peer's edit) instead of polling for them. A read-only mount cannot
+    // take the signal, so its watchers keep polling.
+    #[cfg(target_os = "linux")]
+    let change_signal = if read_only {
+        None
+    } else {
+        match fs::change_signal::ChangeSignal::new() {
+            Ok(signal) => Some(Arc::new(signal)),
+            Err(error) => {
+                eprintln!("folders on the mount will not signal their changes: {error}");
+                None
+            }
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let fs = match &change_signal {
+        Some(signal) => fs.with_change_signal(Arc::clone(signal)),
+        None => fs,
+    };
 
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
@@ -3948,6 +4034,25 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // supervisor sleeps until one of the two happens.
     let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount(fs, &mp, &config)?;
+        // Held until the session ends: dropping it stops the signals.
+        #[cfg(target_os = "linux")]
+        let _signals = change_signal.and_then(|signal| {
+            signal
+                .start(
+                    signalled_namespace,
+                    signalled_availability,
+                    &mp,
+                    session.notifier(),
+                    &tokio::runtime::Handle::current(),
+                )
+                .map_err(|error| {
+                    eprintln!(
+                        "folders on {} will not signal their changes; watchers poll: {error}",
+                        mp.display()
+                    );
+                })
+                .ok()
+        });
         if signal_recipient_ready {
             use std::io::Write;
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
@@ -4271,7 +4376,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn shipped_units_serve_with_a_seeded_enforced_capability_list() {
-        // Phase `shipped_service_restarts_clean_ticket_rebinds`.
         {
             let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
                 .expect("the shipped fs.service must exist");
@@ -4286,7 +4390,6 @@ mod tests {
                 "the shipped unit must enter the serve startup path that consumes persisted tickets"
             );
         }
-        // Phase `service_command_line_parses`.
         {
             // The exact line fs.service runs, so a bad flag fails here, not on boot.
             let argv = service_exec_start();
@@ -4445,7 +4548,6 @@ mod tests {
 
     #[test]
     fn cli_parses_mount_lines_principals_and_persisted_tickets() {
-        // Phase `mount_command_line_parses`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -4460,7 +4562,6 @@ mod tests {
             .expect("mount command line must parse");
             assert!(matches!(cli.command, Command::Mount { .. }));
         }
-        // Phase `principal_specs_parse_by_kind`.
         {
             assert_eq!(
                 parse_principal("room:team").unwrap(),
@@ -4473,7 +4574,6 @@ mod tests {
             assert!(parse_principal("wizard:merlin").is_err());
             assert!(parse_principal("noseparator").is_err());
         }
-        // Phase `persisted_discovered_ticket_selects_remote_record_workspace`.
         {
             let temp = tempfile::tempdir().unwrap();
             let owner =
@@ -4539,7 +4639,6 @@ mod tests {
                 "expected a read failure, got: {err:#}"
             );
         }
-        // Phase `a_malformed_capability_file_refuses_the_mount`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -4569,7 +4668,6 @@ mod tests {
             assert!(!acl.permits(&identity, "/", Access::Read));
             assert!(!acl.permits(&identity, "/anything", Access::Write));
         }
-        // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
             use collab_types::{
                 Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
@@ -4610,7 +4708,6 @@ mod tests {
             let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
             assert!(resolve_acl(&args, NODE_KEY).is_err());
         }
-        // Phase `a_short_identity_is_rejected`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");

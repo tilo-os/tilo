@@ -89,14 +89,12 @@ mod tests {
 
     #[test]
     fn dev_overrides_pass_only_through_an_open_gate_and_warn_once() {
-        // Phase `the_gate_tracks_the_build_profile_and_feature`.
         {
             assert_eq!(
                 DEV_ENV_OVERRIDES,
                 cfg!(any(debug_assertions, feature = "dev-overrides"))
             );
         }
-        // Phase `an_open_gate_passes_the_value_through`.
         {
             assert_eq!(
                 dev_override_from(true, "TILO_X", Some("/dev/store".into())),
@@ -104,14 +102,12 @@ mod tests {
             );
             assert_eq!(dev_override_from(true, "TILO_X", None), None);
         }
-        // Phase `a_closed_gate_ignores_the_override`.
         {
             assert_eq!(
                 dev_override_from(false, "TILO_X", Some("/attacker/controlled".into())),
                 None
             );
         }
-        // Phase `the_warning_names_the_variable_and_how_to_enable_it`.
         {
             let warning = ignored_warning("TILO_X");
             assert!(warning.contains("TILO_X"));
@@ -119,7 +115,6 @@ mod tests {
             assert!(warning.contains("debug build"));
             assert!(warning.contains("dev VM image"));
         }
-        // Phase `each_variable_warns_only_once`.
         {
             const NAME: &str = "TILO_DEV_ENV_WARN_ONCE_TEST";
             assert!(first_ignore(NAME));

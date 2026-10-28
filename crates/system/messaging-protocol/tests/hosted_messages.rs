@@ -145,11 +145,32 @@ fn open_app(client: MessagingClient) -> ui::framework::testing::TestApp<Messages
         .expect("exact route");
     app
 }
+/// Whether an accessible `label` says `text`: the whole label, or one part of
+/// a conversation line. The shared conversation list speaks each line as who
+/// said it, when, whether it arrived and what it says
+/// (`ui::widget::ConversationList`), so a message body or a delivery word is
+/// one comma-separated part of its list item's name.
+fn speaks(label: Option<&str>, text: &str) -> bool {
+    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
+}
 fn has_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .iter()
-        .any(|(_, n)| n.label() == Some(text))
+        .any(|(_, n)| speaks(n.label(), text))
+}
+/// Whether `text` shows once the conversation settles. A send publishes the
+/// history change, so the next frame starts a fresh read of the conversation
+/// that hides the page until it answers; on a loaded machine that answer
+/// comes after the send's own frame, so a single look can miss it.
+fn shows_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
+    app.harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, n)| speaks(n.label(), text))
+        })
 }
 fn field(value: &serde_json::Value, path: &str) -> serde_json::Value {
     value
@@ -274,7 +295,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     revoked.store(false, Ordering::SeqCst);
     let history = client
         .history()
-        .read(route())
+        .read(route(), None)
         .await
         .expect("restored access");
     assert_eq!(history.messages.len(), 1);
@@ -307,7 +328,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     let client = service.client();
     let history = client
         .history()
-        .read(route())
+        .read(route(), None)
         .await
         .expect("durable uncertain state");
     assert_eq!(
@@ -347,15 +368,13 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
         "sensitive send requires normal confirmation"
     );
     app.effect_confirmed(&send).expect("confirmed actual send");
-    assert!(has_text(&mut app, "private outgoing"));
+    assert!(shows_text(&mut app, "private outgoing"));
     assert!(has_text(&mut app, "private incoming"));
-    assert!(has_text(
+    assert!(has_text(&mut app, &ui::widget::DeliveryState::Sent.label()));
+    assert!(!has_text(
         &mut app,
-        &<MessagesShell as ui::framework::ResourceApp>::catalog()
-            .expect("app catalog")
-            .t("messages-server-acknowledged")
+        &ui::widget::DeliveryState::Delivered.label()
     ));
-    assert!(!has_text(&mut app, "Delivered to recipient"));
     assert!(!app.harness().dump_json().contains("private outgoing"));
     assert!(
         app.effect_confirmed(&send).is_err(),
@@ -448,16 +467,19 @@ fn idle_inbound_arrival_persists_and_wakes_the_selected_conversation() {
     go.send(()).expect("fixture arrival");
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("idle private arrival"))
+                    .any(|(_, node)| speaks(node.label(), "idle private arrival"))
             }),
         "actual arrival wakes UI and reads durable history"
     );
     assert!(!app.harness().dump_json().contains("idle private arrival"));
-    assert!(!has_text(&mut app, "Delivered to recipient"));
+    assert!(!has_text(
+        &mut app,
+        &ui::widget::DeliveryState::Delivered.label()
+    ));
     assert!(!guard.stopped());
     drop(guard);
     daemon.join().expect("only owned receive connection stops");
@@ -510,10 +532,10 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
             native
                 .lock()
                 .expect("shutdown lock")
-                .recv_timeout(ui::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native peer"),
         );
-        let deadline = std::time::Instant::now() + ui::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while supervisor.client().account_state(&account) != AccountState::Failed
             && std::time::Instant::now() < deadline
         {
@@ -535,7 +557,7 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
     setup.join().expect("bounded native fixture");
     assert_eq!(
         observed
-            .recv_timeout(ui::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("actual ready observer"),
         AccountState::Failed
     );
@@ -683,7 +705,10 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
     };
     app.effect_confirmed(&send)
         .expect("confirmed native submission");
-    assert!(has_text(&mut app, "Read by recipient"));
+    assert!(shows_text(
+        &mut app,
+        &ui::widget::DeliveryState::Read.label()
+    ));
     assert!(has_text(&mut app, "private outgoing"));
     assert!(!app.harness().dump_json().contains("private outgoing"));
     assert!(app.effect_confirmed(&send).is_err());
@@ -740,14 +765,18 @@ fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery(
             text: "private outgoing".into(),
         })
         .expect("server accepts the exact submission");
-        assert!(has_text(
+        assert!(shows_text(
             &mut app,
-            &<MessagesShell as ui::framework::ResourceApp>::catalog()
-                .expect("catalog")
-                .t("messages-server-acknowledged")
+            &ui::widget::DeliveryState::Sent.label()
         ));
-        assert!(!has_text(&mut app, "Read by recipient"));
-        assert!(!has_text(&mut app, "Delivered to recipient"));
+        assert!(!has_text(
+            &mut app,
+            &ui::widget::DeliveryState::Read.label()
+        ));
+        assert!(!has_text(
+            &mut app,
+            &ui::widget::DeliveryState::Delivered.label()
+        ));
         daemon.join().expect("owned daemon");
     }
 }
@@ -793,13 +822,14 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
         .start_receiver(receiver)
         .expect("independent receive worker");
     go.send(()).expect("receipt arrival");
+    let read = ui::widget::DeliveryState::Read.label();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("Read by recipient"))
+                    .any(|(_, node)| speaks(node.label(), &read))
             }),
         "the actual idle receipt persists and wakes private Messages history"
     );

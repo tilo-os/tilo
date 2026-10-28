@@ -20,7 +20,7 @@ mod construction_owner {
         let id = crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(LaunchError::Record)?;
         let views = std::rc::Rc::new(
             crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
@@ -69,18 +69,12 @@ mod construction_owner {
     }
 
     fn refresh_prepared_owner(context: &HostContext) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while crate::collaboration::native_initial::component_history_phase_for_test(
-            &context.callback_binding(),
-        )
-        .is_some_and(|phase| phase.1)
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "original applied capture must leave staging"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("original applied capture must leave staging", || {
+            !crate::collaboration::native_initial::component_history_phase_for_test(
+                &context.callback_binding(),
+            )
+            .is_some_and(|phase| phase.1)
+        });
         let mut refresh =
             REFRESH.with_borrow_mut(|refresh| refresh.take().expect("original socket fixture"));
         let before = refresh();

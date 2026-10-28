@@ -26,11 +26,31 @@
 //!   asked for before they are kept or handed to an app.
 //! - **Nothing arrives unasked.** Pieces for content this device did not
 //!   ask for on that route are dropped.
+//!
+//! A want is in one of three states, which its subscribers hear as they
+//! change ([`ContentNews`]):
+//!
+//! - **fetching** ([`ContentState::Pending`]): a device that could hand the
+//!   content over — a peer on the route, or the host serving it — is
+//!   connected and has not said it lacks it;
+//! - **waiting** ([`ContentState::Waiting`]): no peer is connected right
+//!   now, and the hosts that are (if any) keep none of it;
+//! - **unavailable** ([`ContentState::Unavailable`]): peers are connected,
+//!   and every connected device said it does not keep it.
+//!
+//! A host serving the route keeps what it was given, not what its members
+//! hold: its saying it lacks the content does not make it unavailable while
+//! a member that might hold it is yet to connect. The members a host
+//! reaches are peers of the route ([`ContentSources::peers`]).
+//!
+//! The state follows the host's connections, never a timer: the host says
+//! when they change ([`RouteContent::sources_changed`]), and a device that
+//! connects is asked for what is still wanted.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
+pub use tilo_content::ContentState;
 use tilo_content::{hash_bytes, valid_hash};
 use tokio::sync::mpsc;
 
@@ -41,9 +61,6 @@ use crate::route::CrdtRoute;
 pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 /// Bytes one piece carries on the network.
 pub const PIECE_BYTES: usize = 192 * 1024;
-/// How long an unanswered request keeps collecting pieces, and how long
-/// before the same content may be asked of the route again.
-const WANT_TTL: Duration = Duration::from_secs(60);
 /// Requests this device keeps open at once; past it, the oldest go.
 const MAX_OPEN_WANTS: usize = 256;
 
@@ -99,18 +116,63 @@ pub trait ContentPeers: Send + Sync {
     fn want(&self, route: &CrdtRoute, hash: &str);
     /// Send `piece` of content to `peer`, which asked for it on `route`.
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece);
+    /// Tell `peer`, which asked on `route` for `hash`, that this device
+    /// keeps none of it.
+    fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str);
+    /// The devices connected now that could hand over `route`'s content,
+    /// never this device.
+    fn sources(&self, route: &CrdtRoute) -> ContentSources;
 }
 
-/// Content that arrived for a scope, as an app's `subscribeBlobs` reads it.
+/// The devices connected now that could hand over a route's content.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContentSources {
+    /// The route's other devices: those connected directly, and the members
+    /// a host serving the route reaches.
+    pub peers: BTreeSet<ContentPeer>,
+    /// The hosts serving the route, which keep what they were given.
+    pub hosts: BTreeSet<ContentPeer>,
+}
+
+impl ContentSources {
+    fn all(&self) -> BTreeSet<ContentPeer> {
+        self.peers.union(&self.hosts).copied().collect()
+    }
+}
+
+/// What a scope's subscribers hear about content: it arrived (`state` is
+/// [`ContentState::Resolved`] and `bytes` are the content), or where a want
+/// of it has got to (`bytes` empty).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContentArrival {
+pub struct ContentNews {
     pub hash: String,
+    pub state: ContentState,
     pub bytes: Vec<u8>,
+}
+
+impl ContentNews {
+    fn arrived(hash: &str, bytes: &[u8]) -> Self {
+        Self {
+            hash: hash.to_owned(),
+            state: ContentState::Resolved,
+            bytes: bytes.to_vec(),
+        }
+    }
 }
 
 /// A request this device made and the pieces gathered for it.
 struct Want {
-    asked: Instant,
+    /// The route it was asked on, to ask devices that connect later.
+    route: CrdtRoute,
+    /// When it was made among the open ones: the oldest go first.
+    order: u64,
+    /// Connected devices it was asked of. A device that leaves is asked
+    /// again when it is back.
+    asked: BTreeSet<ContentPeer>,
+    /// Connected devices that said they keep none of it.
+    lacking: BTreeSet<ContentPeer>,
+    /// Where it has got to, as its subscribers last heard.
+    state: ContentState,
     /// The content as it arrives: its length once known, and which bytes
     /// are in.
     total: Option<u64>,
@@ -127,8 +189,49 @@ struct Want {
 pub struct RouteContent {
     shelf: Arc<dyn ContentShelf>,
     peers: Arc<dyn ContentPeers>,
-    subscribers: Mutex<HashMap<ContentScope, Vec<mpsc::UnboundedSender<ContentArrival>>>>,
-    wants: Mutex<HashMap<(ContentScope, String), Want>>,
+    subscribers: Mutex<HashMap<ContentScope, Vec<mpsc::UnboundedSender<ContentNews>>>>,
+    wants: Mutex<Wants>,
+}
+
+#[derive(Default)]
+struct Wants {
+    open: HashMap<(ContentScope, String), Want>,
+    made: u64,
+}
+
+impl Want {
+    /// Where a want stands with `sources` connected: fetching while one of
+    /// them has not said it lacks the content; past that unavailable when
+    /// peers are connected, and waiting for one when none is.
+    fn standing(&self, sources: &ContentSources) -> ContentState {
+        if !sources.all().is_subset(&self.lacking) {
+            ContentState::Pending
+        } else if sources.peers.is_empty() {
+            ContentState::Waiting
+        } else {
+            ContentState::Unavailable
+        }
+    }
+
+    /// Start gathering afresh, handing back what was gathered.
+    fn restart(&mut self) -> Vec<u8> {
+        self.total = None;
+        self.received = 0;
+        self.pieces.clear();
+        std::mem::take(&mut self.bytes)
+    }
+
+    /// Follow the devices connected now: forget what those that left said
+    /// and were asked, and return whether one that connected is to be
+    /// asked.
+    fn follow(&mut self, sources: &ContentSources) -> bool {
+        let sources = sources.all();
+        self.asked.retain(|peer| sources.contains(peer));
+        self.lacking.retain(|peer| sources.contains(peer));
+        let new = !sources.is_subset(&self.asked);
+        self.asked.extend(sources.iter().copied());
+        new
+    }
 }
 
 impl RouteContent {
@@ -161,7 +264,8 @@ impl RouteContent {
         }
         let scope = ContentScope::of(route);
         self.shelf.keep(&scope, &hash, bytes)?;
-        self.arrived(&scope, &hash, bytes);
+        self.settle(&scope, &hash);
+        self.tell(&scope, &ContentNews::arrived(&hash, bytes));
         Ok(())
     }
 
@@ -175,47 +279,152 @@ impl RouteContent {
         }
         let scope = ContentScope::of(route);
         if let Some(bytes) = self.shelf.read(&scope, &hash) {
-            self.arrived(&scope, &hash, &bytes);
+            self.tell(&scope, &ContentNews::arrived(&hash, &bytes));
             return;
         }
-        let ask = {
+        let sources = self.peers.sources(route);
+        let (ask, state) = {
             let Ok(mut wants) = self.wants.lock() else {
                 return;
             };
-            wants.retain(|_, want| want.asked.elapsed() < WANT_TTL);
-            let key = (scope, hash.clone());
-            if wants.contains_key(&key) {
-                false
+            let key = (scope.clone(), hash.clone());
+            if let Some(want) = wants.open.get(&key) {
+                // Asked already: the asker hears where it stands.
+                (false, want.state)
             } else {
-                if wants.len() >= MAX_OPEN_WANTS
+                if wants.open.len() >= MAX_OPEN_WANTS
                     && let Some(oldest) = wants
+                        .open
                         .iter()
-                        .min_by_key(|(_, want)| want.asked)
+                        .min_by_key(|(_, want)| want.order)
                         .map(|(key, _)| key.clone())
                 {
-                    wants.remove(&oldest);
+                    wants.open.remove(&oldest);
                 }
-                wants.insert(
-                    key,
-                    Want {
-                        asked: Instant::now(),
-                        total: None,
-                        bytes: Vec::new(),
-                        received: 0,
-                        pieces: std::collections::BTreeSet::new(),
-                    },
-                );
-                true
+                wants.made = wants.made.wrapping_add(1);
+                let mut want = Want {
+                    route: route.clone(),
+                    order: wants.made,
+                    asked: BTreeSet::new(),
+                    lacking: BTreeSet::new(),
+                    state: ContentState::Waiting,
+                    total: None,
+                    bytes: Vec::new(),
+                    received: 0,
+                    pieces: BTreeSet::new(),
+                };
+                want.follow(&sources);
+                want.state = want.standing(&sources);
+                let state = want.state;
+                wants.open.insert(key, want);
+                (true, state)
             }
         };
+        self.tell(
+            &scope,
+            &ContentNews {
+                hash: hash.clone(),
+                state,
+                bytes: Vec::new(),
+            },
+        );
         if ask {
             self.peers.want(route, &hash);
         }
     }
 
-    /// Content arriving for the record `route` carries — answers to
-    /// [`Self::want`] and what another local app offered on its scope.
-    pub fn subscribe(&self, route: &CrdtRoute) -> mpsc::UnboundedReceiver<ContentArrival> {
+    /// The devices that could hand over content changed: a peer or the
+    /// serving host connected or left. Ask those that connected for what is
+    /// still wanted, and tell subscribers where each want now stands.
+    pub fn sources_changed(&self) {
+        let routes: Vec<CrdtRoute> = {
+            let Ok(wants) = self.wants.lock() else {
+                return;
+            };
+            let mut routes: Vec<CrdtRoute> =
+                wants.open.values().map(|want| want.route.clone()).collect();
+            routes.sort_by(|a, b| (&a.cluster_id, &a.app_id).cmp(&(&b.cluster_id, &b.app_id)));
+            routes.dedup_by(|a, b| a.cluster_id == b.cluster_id && a.app_id == b.app_id);
+            routes
+        };
+        let sources: HashMap<ContentScope, ContentSources> = routes
+            .iter()
+            .map(|route| (ContentScope::of(route), self.peers.sources(route)))
+            .collect();
+        let mut asks = Vec::new();
+        let mut news = Vec::new();
+        {
+            let Ok(mut wants) = self.wants.lock() else {
+                return;
+            };
+            for ((scope, hash), want) in &mut wants.open {
+                let Some(sources) = sources.get(scope) else {
+                    continue;
+                };
+                if want.follow(sources) {
+                    asks.push((want.route.clone(), hash.clone()));
+                }
+                let state = want.standing(sources);
+                if state != want.state {
+                    want.state = state;
+                    news.push((
+                        scope.clone(),
+                        ContentNews {
+                            hash: hash.clone(),
+                            state,
+                            bytes: Vec::new(),
+                        },
+                    ));
+                }
+            }
+        }
+        for (scope, news) in news {
+            self.tell(&scope, &news);
+        }
+        for (route, hash) in asks {
+            self.peers.want(&route, &hash);
+        }
+    }
+
+    /// `peer` said it keeps none of `hash`, asked on `route`. When no
+    /// connected device is left that might, the want is unavailable.
+    pub fn peer_lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
+        let hash = hash.to_ascii_lowercase();
+        let scope = ContentScope::of(route);
+        let sources = self.peers.sources(route);
+        let state = {
+            let Ok(mut wants) = self.wants.lock() else {
+                return;
+            };
+            let Some(want) = wants.open.get_mut(&(scope.clone(), hash.clone())) else {
+                return;
+            };
+            // Only what a connected device says counts: one that left says
+            // nothing about what it may keep when it is back.
+            if !sources.all().contains(&peer) || !want.lacking.insert(peer) {
+                return;
+            }
+            let state = want.standing(&sources);
+            if state == want.state {
+                return;
+            }
+            want.state = state;
+            state
+        };
+        self.tell(
+            &scope,
+            &ContentNews {
+                hash,
+                state,
+                bytes: Vec::new(),
+            },
+        );
+    }
+
+    /// News of content for the record `route` carries: answers to
+    /// [`Self::want`] and where each stands until it arrives, and what
+    /// another local app offered on its scope.
+    pub fn subscribe(&self, route: &CrdtRoute) -> mpsc::UnboundedReceiver<ContentNews> {
         let (sender, receiver) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers
@@ -228,19 +437,23 @@ impl RouteContent {
 
     /// `peer` asked for `hash` on `route`. Answer, in pieces, when the host
     /// says the peer may read the route (`may_read`) and this device keeps
-    /// the content under the record's scope; otherwise say nothing.
+    /// the content under the record's scope; say it keeps none when it may
+    /// read and this device does not. A device that may not read hears
+    /// nothing.
     pub fn peer_wants(&self, route: &CrdtRoute, peer: ContentPeer, may_read: bool, hash: &str) {
         let hash = hash.to_ascii_lowercase();
         if !may_read || !valid_hash(&hash) {
             return;
         }
-        let Some(bytes) = self.shelf.read(&ContentScope::of(route), &hash) else {
+        let Some(bytes) = self
+            .shelf
+            .read(&ContentScope::of(route), &hash)
+            .filter(|bytes| bytes.len() as u64 <= MAX_CONTENT_BYTES)
+        else {
+            self.peers.lacks(route, peer, &hash);
             return;
         };
         let total = bytes.len() as u64;
-        if total > MAX_CONTENT_BYTES {
-            return;
-        }
         if bytes.is_empty() {
             self.peers.answer(
                 route,
@@ -277,37 +490,41 @@ impl RouteContent {
         let hash = piece.hash.to_ascii_lowercase();
         let scope = ContentScope::of(route);
         let key = (scope.clone(), hash.clone());
-        let complete = {
+        let gathered = {
             let Ok(mut wants) = self.wants.lock() else {
                 return;
             };
-            let Some(want) = wants.get_mut(&key) else {
+            let Some(want) = wants.open.get_mut(&key) else {
                 return;
             };
             if !Self::gather(want, piece) {
-                // A piece that contradicts what arrived before spoils the
-                // request; it may be asked again later.
-                wants.remove(&key);
+                // A piece that contradicts what arrived before spoils what
+                // was gathered.
+                want.restart();
+                None
+            } else if want.total.is_some_and(|total| want.received >= total) {
+                Some(want.restart())
+            } else {
                 return;
             }
-            if want.total.is_some_and(|total| want.received >= total) {
-                wants.remove(&key).map(|want| want.bytes)
-            } else {
-                None
+        };
+        match gathered {
+            Some(bytes) if hash_bytes(&bytes) == hash => {
+                if let Err(error) = self.shelf.keep(&scope, &hash, &bytes) {
+                    tracing::warn!(%error, %hash, "record content could not be kept");
+                    return;
+                }
+                self.settle(&scope, &hash);
+                self.tell(&scope, &ContentNews::arrived(&hash, &bytes));
+                return;
             }
-        };
-        let Some(bytes) = complete else {
-            return;
-        };
-        if hash_bytes(&bytes) != hash {
-            tracing::warn!(%hash, "record content from a peer did not match its address");
-            return;
+            Some(_) => {
+                tracing::warn!(%hash, "record content from a peer did not match its address");
+            }
+            None => {}
         }
-        if let Err(error) = self.shelf.keep(&scope, &hash, &bytes) {
-            tracing::warn!(%error, %hash, "record content could not be kept");
-            return;
-        }
-        self.arrived(&scope, &hash, &bytes);
+        // Spoiled: it is asked for again.
+        self.peers.want(route, &hash);
     }
 
     /// Fold `piece` into `want`; `false` when it does not fit.
@@ -348,19 +565,19 @@ impl RouteContent {
         true
     }
 
-    fn arrived(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) {
+    /// Content wanted on `scope` is here now: the want is done.
+    fn settle(&self, scope: &ContentScope, hash: &str) {
+        if let Ok(mut wants) = self.wants.lock() {
+            wants.open.remove(&(scope.clone(), hash.to_owned()));
+        }
+    }
+
+    fn tell(&self, scope: &ContentScope, news: &ContentNews) {
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
         };
         if let Some(senders) = subscribers.get_mut(scope) {
-            senders.retain(|sender| {
-                sender
-                    .send(ContentArrival {
-                        hash: hash.to_owned(),
-                        bytes: bytes.to_vec(),
-                    })
-                    .is_ok()
-            });
+            senders.retain(|sender| sender.send(news.clone()).is_ok());
         }
     }
 }

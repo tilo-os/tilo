@@ -8,19 +8,28 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::commands::Command;
 
+/// The contract tag of an effect that acts where the caret is: the caret's
+/// line, or every line of the selection when there is one. It needs an open
+/// file, not a selection.
+const CARET: &str = ui::tilo_actions::ContextRequirement::Caret.tag();
+
 /// Code's effect vocabulary. File ids are the UUIDs of the project's file
 /// records; paths are absolute filesystem paths.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "code_editor.effect")]
 pub enum CodeEditorEffect {
     /// Open file.
-    #[effect(kind = "read")]
+    ///
+    /// Offered on the file it opens: its id is the file row's, never typed.
+    #[effect(row, kind = "read")]
+    #[effect(icon = "file-code")]
     ShowFile {
         #[param("The file record's id")]
         file: String,
     },
     /// Show location.
     #[effect(kind = "read")]
+    #[effect(icon = "locate-fixed")]
     Reveal {
         #[param("The file record's id, when the location is in a project file")]
         file: Option<String>,
@@ -38,21 +47,27 @@ pub enum CodeEditorEffect {
     /// Opens a file Code can reach: one it was handed or one in its open
     /// project. Any other file is opened from Files (its `open-with` with
     /// Code Editor), which hands the file to Code.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
+    #[effect(icon = "folder-open")]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<String>,
     },
     /// Open project folder.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
+    #[effect(keywords = "open project, open workspace folder")]
+    #[effect(icon = "folder-open")]
     OpenFolder {
         #[param("Absolute path of the folder; omit to choose one")]
         path: Option<String>,
     },
-    /// New file.
+    /// New untitled file.
+    #[effect(icon = "file-plus")]
     NewBuffer,
     /// Save file.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
+    #[effect(keywords = "write file, save changes")]
+    #[effect(icon = "hard-drive")]
     Save {
         #[param("The file record's id; omit for the active file")]
         file: Option<String>,
@@ -60,69 +75,97 @@ pub enum CodeEditorEffect {
         path: Option<String>,
     },
     /// Save as.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
+    #[effect(icon = "hard-drive")]
     SaveAs,
     /// Save all files.
-    #[effect(device_only)]
+    #[effect(icon = "hard-drive")]
     SaveAll,
     /// Format file.
     ///
     /// Reformats the active file as its language's formatter does, as one
     /// edit.
+    #[effect(icon = "wand-sparkles")]
     FormatFile,
     /// Revert file to saved.
-    #[effect(device_only)]
+    #[effect(icon = "rotate-ccw")]
     RevertFile,
     /// Find in file.
     #[effect(kind = "read")]
+    #[effect(keywords = "search in file, find text")]
+    #[effect(icon = "search")]
     Find,
     /// Replace in file.
+    #[effect(keywords = "find and replace, search and replace, substitute")]
+    #[effect(icon = "type")]
     Replace,
     /// Search project.
     #[effect(kind = "read")]
+    #[effect(keywords = "find in files, grep, search all files")]
+    #[effect(icon = "search")]
     SearchProject,
     /// Go to line.
     #[effect(kind = "read")]
+    #[effect(keywords = "jump to line, line number, goto")]
+    #[effect(icon = "hash")]
     GoToLine {
         #[param("One-based line number; omit to ask for one")]
         value: Option<String>,
     },
     /// Duplicate line.
+    #[effect(icon = "copy")]
     DuplicateLine,
     /// Move line up.
+    #[effect(icon = "arrow-up")]
     MoveLineUp,
     /// Move line down.
+    #[effect(icon = "arrow-down")]
     MoveLineDown,
     /// Delete line.
+    #[effect(icon = "delete")]
     DeleteLine,
     /// Toggle line comment.
+    #[effect(icon = "slash")]
+    #[effect(tag = CARET)]
     ToggleComment,
     /// Toggle bottom panel.
     #[effect(kind = "read")]
+    #[effect(icon = "panel-bottom")]
     ToggleBottomPanel,
     /// Cycle color theme.
     #[effect(kind = "read")]
+    #[effect(icon = "palette")]
     NextTheme,
     /// Show problems.
     #[effect(kind = "read")]
+    #[effect(keywords = "errors, warnings, diagnostics")]
+    #[effect(icon = "triangle-alert")]
     GoToProblems,
     /// Show search results.
     #[effect(kind = "read")]
+    #[effect(icon = "search")]
     GoToSearch,
     /// Show terminal.
     #[effect(kind = "read")]
+    #[effect(keywords = "console, shell, command line")]
+    #[effect(icon = "square-terminal")]
     GoToTerminal,
     /// Toggle sidebar.
     #[effect(kind = "read")]
+    #[effect(icon = "panel-left")]
     ToggleSidebar,
     /// Turn language servers on or off.
     #[effect(kind = "read")]
+    #[effect(icon = "code")]
     ToggleLanguageServers,
     /// Turn format on save on or off.
     #[effect(kind = "read")]
+    #[effect(keywords = "auto format, format code, formatter")]
+    #[effect(icon = "wand-sparkles")]
     ToggleFormatOnSave,
     /// Read file text.
     #[effect(row, kind = "read", returns, idempotent)]
+    #[effect(icon = "file-text")]
     ReadText {
         #[param("The file record's id")]
         file: String,
@@ -220,7 +263,7 @@ mod tests {
     fn every_command_is_one_published_effect_and_back() {
         let published: Vec<String> = CodeEditorEffect::specs()
             .into_iter()
-            .map(|spec| spec.id)
+            .map(|spec| spec.id.clone())
             .collect();
         for command in Command::ALL {
             let effect = command.effect();

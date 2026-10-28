@@ -48,22 +48,10 @@ struct Owner {
 impl Widget for Owner {
     crate::provides!(
         dyn crate::history_mode::capability::DocumentHistory,
-        dyn crate::widget::document_effects::DocumentEffects
+        dyn crate::widget::document_effects::DocumentEffects,
+        dyn crate::widget::ResourceOperations
     );
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        Ok(op.unscoped().map(|_| {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        }))
-    }
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
@@ -80,6 +68,22 @@ impl Widget for Owner {
         self.sibling
             .as_mut()
             .map_or_else(Vec::new, |s| vec![s.as_mut() as &mut dyn Widget])
+    }
+}
+
+impl crate::widget::ResourceOperations for Owner {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        Ok(op.unscoped().map(|_| {
+            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        }))
     }
 }
 
@@ -159,8 +163,9 @@ fn execute_mode(
     let mut spec =
         tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
     if background {
-        spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-        spec.contract.result = tilo_actions::ResultSpec::Job;
+        spec.type_mut().contract.execution =
+            tilo_actions::ExecutionMode::Background { cancellable: true };
+        spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
     }
     let invocation = tilo_actions::InvocationId::new();
     let source_invocation = owner
@@ -185,6 +190,7 @@ fn execute_mode(
             source_invocation,
             ambient: None,
             scope: None,
+            door: None,
         },
     )
 }
@@ -400,6 +406,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                     source_invocation: None,
                     ambient: None,
                     scope: None,
+                    door: None,
                 },
             )
             .unwrap();

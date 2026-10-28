@@ -141,9 +141,6 @@ impl CheckedFiles {
     /// `admit` sees the file's stamp before it is read (to refuse one too
     /// large to read); `check` sees its bytes, unless this same file has
     /// passed it before.
-    ///
-    /// # Errors
-    /// `admit`'s or `check`'s error, or one reading the file.
     pub(crate) fn read(
         &self,
         path: &Path,

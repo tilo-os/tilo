@@ -171,10 +171,19 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
+        # The native helpers are compiled outside the image build
+        # (os/image/compile.sh) and installed by their os/components.toml rows.
+        compile_script = (ROOT / "os/image/compile.sh").read_text()
+        components = (ROOT / "os/components.toml").read_text()
+        for name in ("tilo-firstboot-files",
+                     "tilo-firstboot-home-seeds",
+                     "tilo-installer-prepared-setup-extract"):
+            self.assertIn(f"--bin {name} ", compile_script)
+            self.assertIn(f"$target/release/{name} ", compile_script)
+            self.assertIn(
+                f'{{ from = "{name}", to = "/usr/libexec/{name}", mode = "0755" }}',
+                components)
         for path in ("os/usr/libexec/tilo-firstboot-user",
-                     "target/release/tilo-firstboot-files",
-                     "target/release/tilo-firstboot-home-seeds",
-                     "target/release/tilo-installer-prepared-setup-extract",
                      "os/usr/libexec/tilo-firstboot-autologin-cleanup",
                      "os/usr/lib/systemd/system/tilo-firstboot-user.service",
                      "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"):

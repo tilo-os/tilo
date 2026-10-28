@@ -463,7 +463,6 @@ mod tests {
 
     #[test]
     fn prompt_field_is_the_real_editable_input() {
-        // Case `typing_into_prompt_updates_the_real_field`.
         {
             let body = PromptBody::new("Name", "New volume");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
@@ -476,7 +475,6 @@ mod tests {
             );
         }
 
-        // Case `initial_value_is_selected_for_replace`.
         {
             let body = PromptBody::new("Name", "").with_initial("old-name");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
@@ -489,7 +487,6 @@ mod tests {
             );
         }
 
-        // Case `click_in_field_reaches_the_input`.
         {
             let body = PromptBody::new("Name", "hint");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
@@ -509,7 +506,6 @@ mod tests {
             );
         }
 
-        // Case `multiline_prompt_accepts_newlines`.
         {
             let body = PromptBody::new("Notes", "").multiline(true);
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));

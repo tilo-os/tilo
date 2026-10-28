@@ -182,7 +182,6 @@ mod tests {
 
     #[test]
     fn tool_runs_capture_streams_forward_stdin_and_report_the_last_error() {
-        // Phase `last_error_line_picks_the_bottom_line`.
         {
             let o = Output {
                 code: 1,
@@ -202,7 +201,6 @@ mod tests {
             };
             assert_eq!(o.last_error_line(), "ERROR: value is out of range");
         }
-        // Phase `last_error_line_falls_back_when_the_epilogue_is_all_there_is`.
         {
             let o = Output {
                 code: 1,
@@ -211,7 +209,6 @@ mod tests {
             };
             assert_eq!(o.last_error_line(), "ERROR: Unable to run tpm2_changeauth");
         }
-        // Phase `real_runner_captures_status_and_streams`.
         {
             let r = Real::new();
             let out = r
@@ -225,7 +222,6 @@ mod tests {
             assert_eq!(out.stdout_utf8(), "hi");
             assert_eq!(out.last_error_line(), "bad");
         }
-        // Phase `stdin_is_forwarded`.
         {
             let r = Real::new();
             let out = r.run("/bin/cat", &argv![], Some(b"secret")).unwrap();

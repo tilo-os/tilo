@@ -1,27 +1,22 @@
 git-remote-running = Remote-Vorgang läuft…
 git-remote-busy = Warte, bis der aktuelle Remote-Vorgang abgeschlossen ist.
 git-remote-worker-stopped = Der Remote-Prozess wurde unerwartet beendet. Prüfe den Repository-Zustand vor einem erneuten Versuch.
-git-remote-fetching = Wird abgerufen…
-git-remote-pulling = Wird gepullt…
-git-remote-pushing = Wird gepusht…
-git-error-no-repository = Kein Git-Repository unter { $path }
 
 # Screens
 git-screen-changes = Änderungen
 git-screen-history = Verlauf
 git-screen-branches = Branches
 git-app-description = Änderungen, Verlauf, Branches und Remotes des Repositorys
+git-view = Ansicht
 
-# Header
-git-diff-unified = Einspaltig
-git-diff-split = Geteilt
+# Window bar
 git-diff-unified-name = Einspaltiger Diff
 git-diff-split-name = Diff nebeneinander
-git-syntax = Syntax
 git-syntax-name = Syntaxhervorhebung
-git-sidebar-show = Seitenleiste einblenden
-git-sidebar-hide = Seitenleiste ausblenden
 git-dismiss-error = Fehler schließen
+
+git-switched = Zu { $name } gewechselt
+git-switched-stashed = Zu { $name } gewechselt; die Änderungen liegen als { $stash } im Stash
 
 # Confirmation
 git-confirm-discard-file-title = Änderungen an { $name } verwerfen?
@@ -31,6 +26,10 @@ git-confirm-discard-untracked-body = Die Datei wird aus deinem Arbeitsverzeichni
 git-confirm-discard-body = Deine Änderungen gehen verloren. Das lässt sich nicht rückgängig machen.
 git-confirm-delete-branch-body = Commits, die nur dieser Branch enthält, gehen verloren.
 git-confirm-discard = Verwerfen
+git-confirm-switch-title = Zu { $name } wechseln?
+git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
+git-switch-stash = Stash und wechseln
+git-switch-carry = Änderungen behalten
 git-cancel = Abbrechen
 
 # Changes
@@ -69,6 +68,7 @@ git-stage-hunk = Abschnitt vormerken
 git-unstage-hunk = Abschnitt zurücknehmen
 git-discard-hunk = Abschnitt verwerfen
 git-renamed-from = Umbenannt von { $path }
+git-split-needs-width = Zwei Spalten brauchen ein breiteres Fenster, also ist es eine.
 git-binary-file = Binärdatei
 git-binary-file-detail = Es gibt keinen Text zum Vergleichen.
 git-mode-only = Keine Änderungen anzuzeigen
@@ -97,6 +97,7 @@ git-date = { $day }. { $month ->
     [11] November
    *[12] Dezember
 } { $year }, { $time }
+git-more-refs = +{ $count }
 git-fact-refs = Branches und Tags
 git-changed-files = Geänderte Dateien
 
@@ -106,9 +107,6 @@ git-section-remote-branches = Remote-Branches
 git-section-tags = Tags
 git-section-stashes = Stashes
 git-section-remotes = Remotes
-git-fetch = Abrufen
-git-pull = Pullen
-git-push = Pushen
 git-fetch-name = Vom Remote abrufen
 git-pull-name = Vom Remote pullen
 git-push-name = Zum Remote pushen
@@ -152,26 +150,6 @@ git-choose-title = Repository auswählen
 git-open-name = Repository öffnen
 git-repository-path = Repository-Pfad
 
-# Palette
-git-action-open-diff = Diff öffnen
-git-action-open-commit = Commit öffnen
-git-action-check-out-branch = Branch auschecken
-git-action-fetch-remote = Remote abrufen
-git-action-layout-split = Diff-Ansicht: nebeneinander
-git-action-layout-unified = Diff-Ansicht: einspaltig
-git-action-syntax-off = Syntaxhervorhebung ausschalten
-git-action-syntax-on = Syntaxhervorhebung einschalten
-git-action-whitespace-hide = Leerzeichen ausblenden
-git-action-whitespace-show = Leerzeichen anzeigen
-git-action-wrap-off = Lange Zeilen nicht umbrechen
-git-action-wrap-on = Lange Zeilen umbrechen
-git-action-show-changes = Änderungen anzeigen
-git-action-show-history = Verlauf anzeigen
-git-action-show-branches = Branches und Remotes anzeigen
-git-action-commit = Vorgemerkte Änderungen committen
-git-action-commit-description = Einen Commit aus den vorgemerkten Änderungen erstellen
-git-action-stash = Änderungen im Arbeitsverzeichnis stashen
-git-action-stash-message = Stash-Nachricht
 git-collection-repository = Repository
 
 git-section-worktrees = Arbeitsverzeichnisse
@@ -188,3 +166,28 @@ git-worktree-read-error = Arbeitsverzeichnisse konnten nicht gelesen werden: { $
 
 git-client-git-client-repository = Repository { $new } geöffnet
 git-client-record-repository = Zweige und Verlauf des Repositorys festgehalten
+
+# Conflicts and a commit's changed files
+git-conflict-resolved = { $side } für { $file } behalten
+git-conflict-ours = unsere Seite
+git-conflict-theirs = ihre Seite
+git-conflict-take-ours = Unsere nehmen
+git-conflict-take-theirs = Ihre nehmen
+git-conflict-explainer = Diese Datei ist im Konflikt.
+# The choice above a conflicted file, costing each side: $ours is how many
+# lines only your side has, $theirs how many only theirs does.
+git-conflict-cost = Beide Seiten haben diese Datei geändert. Unsere zu behalten verwirft { $theirs ->
+    [one] eine Zeile der anderen Seite
+   *[other] { $theirs } Zeilen der anderen Seite
+}; ihre zu behalten verwirft { $ours ->
+    [one] eine Ihrer Zeilen
+   *[other] { $ours } Ihrer Zeilen
+}.
+git-back-to-commit = Zurück zum Commit
+git-commit-file-heading = { $file } in { $commit }
+git-commit-file-name = { $file } ({ $kind })
+git-show-commit-file = Die Änderungen dieser Datei im Commit zeigen
+
+# Diff controls in the window bar
+git-whitespace-name = Leerraum anzeigen
+git-wrap-name = Lange Zeilen umbrechen

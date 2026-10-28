@@ -1,0 +1,5 @@
+Panic#2 Part1
+<4>[ 1843.211904] Call trace:
+<4>[ 1843.211910]  msm_dpu_crtc_atomic_flush+0x4c/0x1d0
+<0>[ 1843.212002] Kernel panic - not syncing: Oops: Fatal exception
+<2>[ 1843.212010] SMP: stopping secondary CPUs

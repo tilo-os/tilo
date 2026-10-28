@@ -42,7 +42,6 @@ impl TemplatePicker {
     /// Open the menu under `anchor` (the New button), kept inside
     /// `viewport`.
     pub(crate) fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
-        // Start each invocation without a stale hover or queued selection.
         *self = Self::default();
         self.menu.open_anchored(anchor, viewport);
     }

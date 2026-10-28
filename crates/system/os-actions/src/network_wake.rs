@@ -118,14 +118,31 @@ fn driver(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<(bool, bool),
         .lines()
         .take_while(|line| line.trim().is_empty() || line.trim().starts_with('*'))
         .any(|line| line.contains("wake up on magic packet"));
-    let state = run("iw", &["phy", &phy, "wowlan", "show"])?;
+    Ok((supported, wowlan_magic_packet(&phy, run)?))
+}
+
+/// Whether the Wi-Fi radio `phy` (`phy0`, the name under
+/// `/sys/class/ieee80211`) wakes the machine on a magic packet now. Wi-Fi
+/// drivers do not answer the ethtool wake query that Ethernet ones do.
+///
+/// # Errors
+/// Refuses an invalid radio name; reports an unreadable configuration.
+pub fn wifi_magic_packet_enabled(phy: &str) -> Result<bool, String> {
+    if !phy
+        .strip_prefix("phy")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("invalid Wi-Fi radio name".into());
+    }
+    wowlan_magic_packet(phy, &system_command)
+}
+
+fn wowlan_magic_packet(phy: &str, run: &Runner<'_>) -> Result<bool, String> {
+    let state = run("iw", &["phy", phy, "wowlan", "show"])?;
     if !state.contains("WoWLAN is enabled:") && !state.contains("WoWLAN is disabled.") {
         return Err("Wi-Fi wake configuration was not reported".into());
     }
-    Ok((
-        supported,
-        state.contains("wake up on magic packet") && state.contains("is enabled"),
-    ))
+    Ok(state.contains("wake up on magic packet") && state.contains("is enabled"))
 }
 
 fn observe(profile: &str, run: &Runner<'_>) -> Result<NetworkWakeStatus, String> {
@@ -388,5 +405,16 @@ mod tests {
         assert_eq!(status.applied, Some(false));
         assert!(status.problem.unwrap().contains("saved"));
         assert!(nm.configured.get());
+    }
+
+    #[test]
+    fn wifi_magic_packet_wake_is_read_from_the_named_radio_only() {
+        let nm = NetworkManager::default();
+        assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(false));
+        nm.applied.set(true);
+        assert_eq!(wowlan_magic_packet("phy0", &|t, a| nm.run(t, a)), Ok(true));
+        for name in ["", "phy", "wlan0", "phy0 ", "-phy0", "phy-1"] {
+            assert!(wifi_magic_packet_enabled(name).is_err(), "{name:?}");
+        }
     }
 }

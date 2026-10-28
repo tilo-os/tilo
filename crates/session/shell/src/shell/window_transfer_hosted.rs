@@ -26,31 +26,25 @@ const LAPSE_GRACE: Duration = Duration::from_secs(30);
 /// How often governed rooms are looked at for proposals to answer.
 const CONSENT_SCAN: Duration = Duration::from_secs(1);
 
-/// The source document as last made durable where it lives.
+/// A governed source document as its room committed it. A source kept in
+/// this device's profile is read off the frame loop instead.
 pub(super) fn read_source(
     transfers: &WindowTransfers,
     plan: &Plan,
     origin: &Origin,
-    source_root: &Path,
 ) -> Result<AutoCommit, String> {
     let room = plan.source.room.to_string();
-    if plan.source.hosted {
-        let (Some(hosted), Origin::Record(checkout)) = (transfers.hosted.as_deref(), origin) else {
-            return Err(t("window-transfer-failed-record"));
-        };
-        let bytes = hosted
-            .read(plan.source.room, &plan.app_id, &checkout.id)
-            .map_err(|_| t("window-transfer-failed-record"))?;
-        let doc = AutoCommit::load(&bytes).map_err(|_| t("window-transfer-failed-record"))?;
-        origin
-            .validate(&doc, &room)
-            .map_err(|error| transfer_reason(&error))?;
-        return Ok(doc);
-    }
-    let source = NativeProfile::open(source_root, Some(&room))
-        .map_err(|_| t("window-transfer-failed-storage"))?;
-    transfer::read(source.store(), &plan.app_id, source.workspace_id(), origin)
-        .map_err(|error| transfer_reason(&error))
+    let (Some(hosted), Origin::Record(checkout)) = (transfers.hosted.as_deref(), origin) else {
+        return Err(t("window-transfer-failed-record"));
+    };
+    let bytes = hosted
+        .read(plan.source.room, &plan.app_id, &checkout.id)
+        .map_err(|_| t("window-transfer-failed-record"))?;
+    let doc = AutoCommit::load(&bytes).map_err(|_| t("window-transfer-failed-record"))?;
+    origin
+        .validate(&doc, &room)
+        .map_err(|error| transfer_reason(&error))?;
+    Ok(doc)
 }
 
 /// What a proposal into a governed destination starts from.
@@ -153,6 +147,7 @@ pub(super) fn propose(
                 label: plan.title.clone(),
                 note: t_args("window-transfer-awaiting-owner", &[("to", to.into())]),
             },
+            app_title: None,
         },
     );
     let wait = Wait::Sending(hosted.propose(
@@ -291,42 +286,50 @@ fn accepted(
     view: &SavedInstanceView,
     resume: Option<(u16, Vec<u8>)>,
 ) -> Option<Phase> {
-    let presented = std::fs::create_dir_all(&carried.destination_root)
-        .ok()
-        .and_then(|()| {
-            NativeProfile::open(
-                &carried.destination_root,
-                Some(&plan.destination.room.to_string()),
-            )
-            .ok()
-        })
-        .is_some_and(|profile| {
-            profile
-                .adopt_view(view, carried.instance, &carried.target)
-                .is_ok()
-        });
-    if !presented {
-        roll_back(
-            st,
-            plan,
-            Some(tab),
-            &carried,
-            &t("window-transfer-failed-storage"),
-        );
-        return None;
-    }
-    set_note(st, tab, crate::shell::peer_windows::OPENING.to_string());
-    start(st, transfers, plan, mode, tab, carried, resume)
+    let (dir, room, view, instance, target) = (
+        carried.destination_root.clone(),
+        plan.destination.room.to_string(),
+        view.clone(),
+        carried.instance,
+        carried.target.clone(),
+    );
+    // Off the frame loop, and on the disk before the instance reads it.
+    after_disk(
+        st,
+        transfers,
+        plan,
+        false,
+        false,
+        move || {
+            profile_off_loop(&dir, &room)
+                .ok()
+                .is_some_and(|profile| profile.adopt_view(&view, instance, &target).is_ok())
+        },
+        move |st, transfers, plan, presented, _| {
+            if !presented {
+                roll_back(
+                    st,
+                    plan,
+                    Some(tab),
+                    &carried,
+                    &t("window-transfer-failed-storage"),
+                );
+                return None;
+            }
+            set_note(st, tab, crate::shell::peer_windows::OPENING.to_string());
+            start(st, transfers, plan, mode, tab, carried, resume)
+        },
+    )
 }
 
-/// Whether the source changed after the transfer read it.
+/// Whether a governed source changed after the transfer read it.
 pub(super) fn changed_since_read(
     transfers: &WindowTransfers,
     plan: &Plan,
     carried: &Carried,
 ) -> bool {
     // Unreadable is treated as changed: keeping the original is the safe side.
-    read_source(transfers, plan, &carried.origin, &carried.source_root).map_or(true, |now| {
+    read_source(transfers, plan, &carried.origin).map_or(true, |now| {
         transfer::changes_since(&now, &carried.known) > 0
     })
 }
@@ -357,33 +360,14 @@ pub(super) fn kept_as_copy(st: &mut ChromeState, plan: &Plan, carried: &Carried)
     );
 }
 
-/// The source as its old instance left it: up to its retirement stamp.
+/// A governed source as its old instance left it: up to its retirement
+/// stamp. One in this device's profile is read off the frame loop instead.
 pub(super) fn read_last(
     transfers: &WindowTransfers,
     plan: &Plan,
     carried: &Carried,
 ) -> Result<AutoCommit, String> {
     let room = plan.source.room.to_string();
-    if !plan.source.hosted {
-        let source =
-            source_profile(plan, carried).ok_or_else(|| t("window-transfer-failed-storage"))?;
-        let read = match &carried.retired_at {
-            Some(heads) => transfer::read_until(
-                source.store(),
-                &plan.app_id,
-                source.workspace_id(),
-                &carried.origin,
-                heads,
-            ),
-            None => transfer::read(
-                source.store(),
-                &plan.app_id,
-                source.workspace_id(),
-                &carried.origin,
-            ),
-        };
-        return read.map_err(|error| transfer_reason(&error));
-    }
     let (Some(hosted), Origin::Record(checkout)) = (transfers.hosted.as_deref(), &carried.origin)
     else {
         return Err(t("window-transfer-failed-record"));
@@ -487,7 +471,7 @@ fn person_name(st: &ChromeState, room: RoomId, person: Option<&str>) -> String {
         return t("document-import-someone");
     };
     let tree = st.tree();
-    let Some(workspace) = tree.desktop.workspaces.iter().find(|ws| ws.room == room) else {
+    let Some(workspace) = tree.desktop.workspaces.iter().find(|ws| ws.room() == room) else {
         return t("document-import-someone");
     };
     let me = crate::shell::state::local_user_id_for_room(&room);
@@ -553,8 +537,8 @@ pub(super) fn consent(st: &mut ChromeState, transfers: &mut WindowTransfers) {
             tree.desktop
                 .workspaces
                 .iter()
-                .filter(|ws| tree.requires_native_owner(ws.room) || hosted.hosts(ws.room))
-                .map(|ws| (ws.room, ws.name.clone()))
+                .filter(|ws| tree.requires_native_owner(ws.room()) || hosted.hosts(ws.room()))
+                .map(|ws| (ws.room(), ws.name.clone()))
                 .collect()
         };
         transfers.consent.watching = false;

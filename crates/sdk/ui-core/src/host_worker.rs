@@ -7,7 +7,6 @@ use crate::{
     launch::LaunchError,
     permissions::PermissionContext,
 };
-use std::{cell::RefCell, rc::Rc};
 
 #[cfg(unix)]
 pub mod private_actions;
@@ -21,7 +20,7 @@ pub use crate::invocation_scope::{
 
 pub struct HostWorker {
     app: crate::App,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: crate::permissions::SharedPermissions,
     /// Last presence handed to the host per participant, for
     /// [`HostWorker::take_participant_presence_changes`].
     published_presence:
@@ -41,7 +40,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         inputs: PreparedComponentInputs,
         collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
     ) -> Result<Self, LaunchError> {
         Self::mount_inner(definition, inputs, collaboration, permissions)
     }
@@ -51,7 +50,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         mut inputs: PreparedComponentInputs,
         collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         retirement: crate::semantic_document_read::retirement::MountRetirement,
     ) -> Result<Self, LaunchError> {
         inputs.context.bind_retirement(retirement)?;
@@ -61,7 +60,7 @@ impl HostWorker {
         definition: &ApplicationDefinition,
         inputs: PreparedComponentInputs,
         mut collaboration: CollaborationManager,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
     ) -> Result<Self, LaunchError> {
         // The actual admitted record exists before the factory. Defaults or
         // migrations performed by the factory cannot become a trusted baseline.
@@ -151,13 +150,24 @@ impl HostWorker {
         self.app.install_published_invocation_authorizer(authorizer)
     }
     /// Recompute time-sensitive permissions in the host before every pump.
+    ///
+    /// A worker whose collaboration is not connected sent no invocation, so
+    /// this pass has no application outcome to speak for. It refuses with the
+    /// connection state's own reason instead of reporting an uncertain one:
+    /// uncertain outcomes belong to invocations that were sent, retained by the
+    /// broker's guarded journal and the managed sender, and calling a merely
+    /// unconnected transport one hid the actual cause while implying that work
+    /// may have happened.
     pub fn pump(&mut self, current: PermissionContext) -> Result<(), String> {
         self.app.published_invocation_health()?;
-        *self.permissions.borrow_mut() = current;
+        self.permissions.set(current);
         self.app.pump_hosted_model();
         self.app.published_invocation_health()?;
         if !self.app.collaboration_is_connected() {
-            return Err("application collaboration transport failed; outcome unknown".into());
+            return Err(format!(
+                "application collaboration transport is not connected: {}; no invocation was sent",
+                self.app.collaboration_state().reason()
+            ));
         }
         Ok(())
     }
@@ -168,7 +178,7 @@ impl HostWorker {
     pub fn app_mut(&mut self) -> &mut crate::App {
         &mut self.app
     }
-    pub fn permissions(&self) -> &Rc<RefCell<PermissionContext>> {
+    pub fn permissions(&self) -> &crate::permissions::SharedPermissions {
         &self.permissions
     }
 }

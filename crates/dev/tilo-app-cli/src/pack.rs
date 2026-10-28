@@ -40,11 +40,6 @@ pub struct Packed {
 /// Signs `payload` with `manifest` as a full `.tapp` at `output`, declaring
 /// `resource_kinds` as the kinds the app's records hold, then reads it back
 /// and verifies it against its own publisher key.
-///
-/// # Errors
-///
-/// Returns an error when the manifest is invalid, packing or writing fails,
-/// the archive exceeds the application size ceiling, or it does not verify.
 pub fn pack_manifest(
     mut manifest: Manifest,
     resource_kinds: Vec<String>,

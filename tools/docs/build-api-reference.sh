@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build the tilo-app API reference that tilo.so serves under
-# /docs/developers/api/ (docs/developers/pages.toml, [api]) into OUT.
+# Build the tilo-app API reference into OUT for local browsing or packaging.
 # `tilo-app` re-exports the toolkit, so this documents the whole app surface.
 set -euo pipefail
 

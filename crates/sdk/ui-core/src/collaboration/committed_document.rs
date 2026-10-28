@@ -6,15 +6,30 @@ use super::{
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
 use tilo_lock::MutexRecover as _;
+use tilo_sort::CompactSort as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
-    Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    Arc<std::sync::Mutex<Option<DocumentOwners>>>,
     Arc<Progress>,
 );
+/// The App's live document owner routes and the document generation they
+/// belong to. Reopening or replacing the document starts a new generation.
+#[derive(Clone)]
+pub(super) struct DocumentOwners {
+    routes: Vec<String>,
+    generation: u64,
+}
+/// The document owner an accepted invocation arrived for. It may run only
+/// while that exact owner is still current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DeliveryOwner {
+    generation: Option<u64>,
+    route: Option<String>,
+}
 /// Counts changes a constructing owner waits for (a capture staged, a route
 /// becoming publishable), so its bounded wait ends at the change instead of
 /// at its next poll.
@@ -78,7 +93,6 @@ impl Reads {
         let current = !self.closed() && rows.values().any(|gate| {
             matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
         });
-        // Serialize a positive publication with close's gate withdrawal.
         ready.swap(current, Ordering::AcqRel) != current
     }
     /// How many readiness changes happened so far; pass it to
@@ -87,12 +101,16 @@ impl Reads {
         *self.5.changes.lock_recover()
     }
     /// Wait until a readiness change after `seen`, or `bound` elapses.
-    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
+    /// Returns whether the change came.
+    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) -> bool {
         let changes = self.5.changes.lock_recover();
-        let _ = self
+        let (changes, waited) = self
             .5
             .changed
-            .wait_timeout_while(changes, bound, |changes| *changes == seen);
+            .wait_timeout_while(changes, bound, |changes| *changes == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(changes);
+        !waited.timed_out()
     }
     pub(super) fn progressed(&self) {
         let mut changes = self.5.changes.lock_recover();
@@ -145,18 +163,47 @@ impl Reads {
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone())
     }
-    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
-        keys.sort();
+    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>, generation: u64) {
+        keys.compact_sort();
         keys.dedup();
         if let Ok(mut owners) = self.4.lock() {
-            *owners = Some(keys);
+            *owners = Some(DocumentOwners {
+                routes: keys,
+                generation,
+            });
         }
     }
     pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
         self.4
             .lock()
             .map_err(|_| "document owner routes poisoned".into())
-            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
+            .map(|owners| {
+                owners
+                    .as_ref()
+                    .map_or_else(|| vec![original.into()], |owners| owners.routes.clone())
+            })
+    }
+    /// The owner an invocation arriving on `key` now belongs to.
+    pub(super) fn delivery_owner(&self, key: &str) -> DeliveryOwner {
+        let owners = self.4.lock_recover();
+        DeliveryOwner {
+            generation: owners.as_ref().map(|owners| owners.generation),
+            route: owners
+                .as_ref()
+                .filter(|owners| owners.routes.iter().any(|route| route == key))
+                .map(|_| key.into()),
+        }
+    }
+    /// Whether `owner` is still the current document owner: same document
+    /// generation, and its route is still one of the live owner routes.
+    pub(super) fn owns(&self, owner: &DeliveryOwner) -> bool {
+        let owners = self.4.lock_recover();
+        owners.as_ref().map(|owners| owners.generation) == owner.generation
+            && owner.route.as_ref().is_none_or(|key| {
+                owners
+                    .as_ref()
+                    .is_some_and(|owners| owners.routes.iter().any(|route| route == key))
+            })
     }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
@@ -701,14 +748,10 @@ mod tests {
         let seen = reads.progress();
         let waiter = {
             let reads = reads.clone();
-            std::thread::spawn(move || {
-                let started = std::time::Instant::now();
-                reads.wait_progress(seen, Duration::from_secs(30));
-                started.elapsed()
-            })
+            std::thread::spawn(move || reads.wait_progress(seen, tilo_test_env::hang_bound()))
         };
         reads.stage("route", &ready, read).unwrap();
-        assert!(waiter.join().unwrap() < Duration::from_secs(30));
+        assert!(waiter.join().unwrap(), "staging woke the waiting owner");
         assert!(reads.initial("route").is_some());
     }
     #[test]
@@ -716,9 +759,7 @@ mod tests {
         let reads = Reads::default();
         let seen = reads.progress();
         reads.legacy("route").unwrap();
-        let started = std::time::Instant::now();
-        reads.wait_progress(seen, Duration::from_secs(30));
-        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(reads.wait_progress(seen, tilo_test_env::hang_bound()));
         assert!(reads.publishable("route"));
     }
     #[tokio::test]
@@ -778,7 +819,6 @@ mod tests {
             &ByteBudget::new(),
             async |request| {
                 assert!(matches!(request, Request::Cancel { capture: 1, .. }));
-                // A loaded broker answers in hundreds of milliseconds.
                 tokio::time::sleep(Duration::from_millis(900)).await;
                 Ok(Reply::Cancelled)
             },
@@ -1125,6 +1165,9 @@ mod tests {
     }
 }
 
+/// The bytes of committed reads this process holds at once, beyond a single
+/// capture larger than that.
+const CAPTURE_LIMIT: usize = MAX_DOCUMENT_BYTES * 2;
 fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
@@ -1134,18 +1177,24 @@ fn capture_budget() -> &'static ByteBudget {
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Only local deadlines permit retiring a capture and renewing its read epoch,
-/// or retrying a renewal. Broker refusals, invalid replies and authority
-/// failures remain terminal.
+/// or retrying a renewal, and only a full local budget makes a read wait and
+/// Open again. Broker refusals, invalid replies and authority failures remain
+/// terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
     Rejected(String),
+    /// This process's committed read budget had no room for a capture of
+    /// this many bytes. The broker's capture was cancelled; the read waits
+    /// for room ([`ByteBudget::until_room`]) and Opens again.
+    Capacity(usize),
 }
 impl std::fmt::Display for CaptureFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deadline(message) => formatter.write_str(message),
             Self::Rejected(message) => formatter.write_str(message),
+            Self::Capacity(_) => formatter.write_str("SDK committed read capacity"),
         }
     }
 }
@@ -1214,14 +1263,15 @@ async fn capture_using(
     };
     let prepared = (|| {
         if total == 0 || total > MAX_DOCUMENT_BYTES {
-            return Err("committed document initial bounds".into());
+            return Err(CaptureFailure::from("committed document initial bounds"));
         }
         // Charge the validated raw payload before allocating its destination.
-        // Clones share this one lease; the aggregate limit is unchanged.
+        // Clones share this one lease; the aggregate limit is unchanged. A
+        // capture alone in the budget always fits, so waiting for room ends.
         let reservation = budget
-            .reserve(total, MAX_DOCUMENT_BYTES * 2)
-            .ok_or("SDK committed read capacity")?;
-        Ok::<_, String>((reservation, Assembly::start(first)?))
+            .reserve_sole(total, CAPTURE_LIMIT)
+            .ok_or(CaptureFailure::Capacity(total))?;
+        Ok::<_, CaptureFailure>((reservation, Assembly::start(first)?))
     })();
     let (reservation, mut assembly) = match prepared {
         Ok(prepared) => prepared,
@@ -1234,7 +1284,7 @@ async fn capture_using(
                 }),
             )
             .await;
-            return Err(error.into());
+            return Err(error);
         }
     };
     let id = assembly.id;
@@ -1372,13 +1422,6 @@ const MERGE_RECHECK: Duration = Duration::from_millis(100);
 /// `Await` keeps failing.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
-/// How long a reader waits for a change before it confirms its read with an
-/// Open anyway. Every change it depends on ends the wait at once; this only
-/// bounds how long a broker that stopped answering (a wedged owner) goes
-/// unnoticed, which the Open's own deadline then turns into the renewal it
-/// always was. 2 requests per 30 s instead of 5 per second.
-const AWAIT_KEEPALIVE: Duration = Duration::from_secs(30);
-
 /// What ended a reader's wait for its committed read to change.
 #[derive(Debug, PartialEq, Eq)]
 enum Woke {
@@ -1388,8 +1431,6 @@ enum Woke {
     /// Something on this side changed: the route closed or was replaced,
     /// or the owner asked for a fresh read.
     Local,
-    /// Nothing changed for [`AWAIT_KEEPALIVE`]: confirm the read.
-    Keepalive,
     /// The wait failed or was answered with something other than `Stale`:
     /// the next Open decides.
     Refused,
@@ -1400,6 +1441,13 @@ enum Woke {
 /// (`None` after `Unavailable`), or until something on this side changes.
 /// The answer is never a read: the caller Opens, under its delivery turn,
 /// and only that Open publishes readiness or hands out bytes.
+///
+/// No clock ends the wait. An owner that stops answering matters only to a
+/// reader that asks it something, and every ask has its deadline: the Open
+/// that follows any wake (a change, the owner asking for a fresh read, a
+/// route replaced) gives up after two seconds and renews the read as it
+/// always did. A read nobody asks about arms no timer, so an idle app's
+/// shovel sleeps; a hang meanwhile is met by the next ask.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1425,11 +1473,10 @@ async fn until_stale(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = tokio::time::timeout(AWAIT_KEEPALIVE, channel.committed_document(&request)) => {
+        reply = channel.committed_document(&request) => {
             match reply {
-                Ok(Ok(Reply::Stale)) => Woke::Stale,
-                Ok(_) => Woke::Refused,
-                Err(_) => Woke::Keepalive,
+                Ok(Reply::Stale) => Woke::Stale,
+                _ => Woke::Refused,
             }
         }
     }
@@ -1483,14 +1530,38 @@ pub(super) async fn install(
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // What the first read waits for before it Opens again, when it could
+    // not be read yet: its turn in the broker's queue, or room here.
+    let mut waiting = None;
+    // The room's hosts have none of this on-demand record: the app shows it
+    // unavailable, said once each time it becomes so.
+    let mut absent = false;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => {
-            let (read, revision) = read_capture(channel, first)
-                .await
-                .map_err(|error| error.to_string())?;
-            (Some(read), Some(revision))
-        }
+        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
+            Ok((read, revision)) => (Some(read), Some(revision)),
+            Err(CaptureFailure::Capacity(bytes)) => {
+                waiting = Some(Waiting::Room(bytes));
+                (None, None)
+            }
+            Err(error) => return Err(error.to_string()),
+        },
         Reply::Unavailable => (None, None),
+        Reply::Busy => {
+            waiting = Some(Waiting::Turn);
+            (None, None)
+        }
+        Reply::Absent => {
+            absent = true;
+            if !inbound
+                .send_durable(CollabEvent::RecordUnavailable {
+                    route: spec.clone(),
+                })
+                .await
+            {
+                return Err("committed read event queue closed".into());
+            }
+            (None, None)
+        }
         _ => return Err("invalid initial committed read mode".into()),
     };
     let mut channel = channel.clone();
@@ -1506,6 +1577,16 @@ pub(super) async fn install(
         let mut current = initial;
         let mut revision = revision;
         let mut last_open;
+        // Whether the broker may hold this channel's place in its byte
+        // budget's queue: after `Busy`, or an Open whose answer never came.
+        let mut queued = matches!(waiting, Some(Waiting::Turn));
+        match waiting {
+            Some(Waiting::Turn) => {
+                until_stale(&channel, None, &inbound, &key, &ready).await;
+            }
+            Some(Waiting::Room(bytes)) => capture_budget().until_room(bytes, CAPTURE_LIMIT).await,
+            None => {}
+        }
         'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
@@ -1532,10 +1613,13 @@ pub(super) async fn install(
                 {
                     break;
                 }
-                if !inbound.send_durable(CollabEvent::CommittedDocument {
-                    route: spec.clone(),
-                    read,
-                }) {
+                if !inbound
+                    .send_durable(CollabEvent::CommittedDocument {
+                        route: spec.clone(),
+                        read,
+                    })
+                    .await
+                {
                     break;
                 }
                 until_merged(&staged, || {
@@ -1574,6 +1658,7 @@ pub(super) async fn install(
             let result =
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
                     .await;
+            queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
@@ -1585,10 +1670,18 @@ pub(super) async fn install(
                         || (known.is_some() && matches!(reply, Reply::Changes { .. })) =>
                 {
                     set_read_ready(&inbound, &ready, false);
+                    absent = false;
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
                             current = Some(read);
                             revision = Some(next);
+                            continue;
+                        }
+                        Err(CaptureFailure::Capacity(bytes)) => {
+                            // Load, not a failure: wait for this process
+                            // to release committed bytes, then Open again.
+                            drop(turn);
+                            capture_budget().until_room(bytes, CAPTURE_LIMIT).await;
                             continue;
                         }
                         Err(error) => {
@@ -1608,21 +1701,51 @@ pub(super) async fn install(
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
+                    absent = false;
+                    false
+                }
+                Ok(Ok(Reply::Absent)) => {
+                    set_read_ready(&inbound, &ready, false);
+                    revision = None;
+                    if !std::mem::replace(&mut absent, true)
+                        && !inbound
+                            .send_durable(CollabEvent::RecordUnavailable {
+                                route: spec.clone(),
+                            })
+                            .await
+                    {
+                        break;
+                    }
+                    false
+                }
+                // The broker's byte budget is held by other reads. This read
+                // keeps its place in the queue and what it holds; the Await
+                // below answers once its turn has come.
+                Ok(Ok(Reply::Busy)) => {
+                    set_read_ready(&inbound, &ready, false);
                     false
                 }
                 Err(_) if !renewed => true,
                 _ => {
                     #[cfg(any(test, feature = "test-support"))]
-                    if let Ok(Err(error)) = &result {
-                        tracing::warn!(error = %error, route = ?spec, "committed document polling RPC failed");
+                    tracing::warn!(route = ?spec, "committed document polling stopped");
+                    // Collaboration ends here, so say why in every build: the
+                    // broker's refusal, a second deadline, or a reply that
+                    // fits no read this channel started.
+                    match &result {
+                        Ok(Err(error)) => tracing::warn!(
+                            error = %error,
+                            "committed document read refused; collaboration stops"
+                        ),
+                        Ok(Ok(reply)) => tracing::warn!(
+                            reply = reply_kind(reply),
+                            reader_holds_revision = known.is_some(),
+                            "committed document read answered out of turn; collaboration stops"
+                        ),
+                        Err(_) => tracing::warn!(
+                            "committed document read missed its deadline again; collaboration stops"
+                        ),
                     }
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!(
-                        timed_out = result.is_err(),
-                        rpc_failed = matches!(&result, Ok(Err(_))),
-                        unexpected_reply = matches!(&result, Ok(Ok(_))),
-                        "committed document polling stopped"
-                    );
                     inbound
                         .state
                         .fail_closed("committed document read outcome unknown");
@@ -1648,6 +1771,9 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
+                if std::mem::take(&mut queued) {
+                    leave_queue(&channel);
+                }
                 let mut turn = Some(turn);
                 loop {
                     match join.renew(&spec, &inbound.state.document_reads).await {
@@ -1675,7 +1801,7 @@ pub(super) async fn install(
                                 break 'read;
                             }
                         }
-                        Err(CaptureFailure::Rejected(_)) => {
+                        Err(CaptureFailure::Rejected(_) | CaptureFailure::Capacity(_)) => {
                             inbound
                                 .state
                                 .fail_closed("committed read renewal unavailable");
@@ -1697,6 +1823,49 @@ pub(super) async fn install(
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
+        if queued {
+            leave_queue(&channel);
+        }
     });
     Ok(true)
+}
+
+/// What a reader waits for before it Opens again, when its read could not
+/// be taken yet. Neither is a refusal.
+enum Waiting {
+    /// The broker answered `Busy`: its turn in the byte budget's queue,
+    /// which the channel's `Await` announces.
+    Turn,
+    /// This process had no room for a capture of this many bytes.
+    Room(usize),
+}
+
+/// Give up `channel`'s place in the broker's byte budget queue: this reader
+/// reads no more on it (it renewed onto another channel, or stopped), and
+/// reads behind it must not wait for a turn it would never take. The
+/// channel itself lives on with its route.
+fn leave_queue(channel: &runtime_collab::ChannelHandle) {
+    let channel = channel.clone();
+    tokio::task::spawn_local(async move {
+        let _ = channel.committed_document(&Request::Leave).await;
+    });
+}
+
+/// The variant of `reply`, for a log line that must not carry its bytes.
+fn reply_kind(reply: &Reply) -> &'static str {
+    match reply {
+        Reply::Legacy => "legacy",
+        Reply::Unavailable => "unavailable",
+        Reply::Unchanged { .. } => "unchanged from another revision",
+        Reply::Chunk { .. } => "chunk",
+        Reply::Cancelled => "cancelled",
+        Reply::Created { .. } => "created",
+        Reply::Initialized { .. } => "initialized",
+        Reply::PrivateWindowBinding { .. } => "private window binding",
+        Reply::Stale => "stale",
+        Reply::Changes { .. } => "changes",
+        Reply::ConnectionSnapshot(_) => "connection snapshot",
+        Reply::Busy => "busy",
+        Reply::Absent => "absent",
+    }
 }

@@ -1,7 +1,15 @@
 [Unit]
-Description=Initialize shipped Flatpak defaults before first login
-After=local-fs.target flatpak-add-fedora-repos.service
-Before=greetd.service
+Description=Initialize shipped Flatpak defaults
+# Off the greeter's path: nothing the greeter or graphical.target needs reads a Flatpak
+# remote, and on a first boot this and Fedora's remote-add held the greeter. Without the
+# default dependencies multi-user.target does not wait for it either; Fedora's unit, which
+# the image no longer enables on its own, starts with it. The system helper, through which
+# a session changes the system installation, waits for both, as it waits for Fedora's unit.
+DefaultDependencies=no
+Wants=flatpak-add-fedora-repos.service
+After=local-fs.target basic.target flatpak-add-fedora-repos.service
+Before=flatpak-system-helper.service shutdown.target
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
@@ -11,8 +19,8 @@ RemainAfterExit=yes
 # This uses the shipped descriptor and embedded signing key, without network.
 # Applying is needed only when the predefined remotes changed (the first boot, an image
 # update) or the system repository is new. On every other boot the listing changes
-# nothing and only held the greeter (0.26 s, more on a loaded machine), so the unit skips
-# when the descriptors match the copy it kept after its last successful run.
+# nothing (0.26 s, more on a loaded machine), so the unit skips when the descriptors
+# match the copy it kept after its last successful run.
 ExecCondition=/bin/sh -c '[ -e /var/lib/flatpak/repo/config ] && cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null | cmp -s - /var/lib/flatpak/.tilo-applied-remotes && exit 1; exit 0'
 ExecStart=/usr/bin/flatpak remotes --system --columns=name
 ExecStartPost=/bin/sh -c 'cat /usr/share/flatpak/remotes.d/* /etc/flatpak/remotes.d/* 2>/dev/null > /var/lib/flatpak/.tilo-applied-remotes; exit 0'

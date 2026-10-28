@@ -32,7 +32,7 @@ impl std::ops::DerefMut for Handoff {
 
 /// Keys of the installer's secret-free media profile
 /// (`InstallProfile::to_media_profile_json`).
-const PROFILE_KEYS: [&str; 11] = [
+const PROFILE_KEYS: [&str; 12] = [
     "schema",
     "purpose",
     "hostname",
@@ -44,6 +44,7 @@ const PROFILE_KEYS: [&str; 11] = [
     "timezone",
     "filesystem",
     "prepared_setup",
+    "tpm_handoff",
 ];
 
 /// Refuse anything but the secret-free media profile shape, so a request can
@@ -72,6 +73,9 @@ pub fn validate_profile(
                 serde_json::from_value::<crate::model::PreparedSetupExpectation>(value.clone())
                     .is_ok_and(|receipt| receipt.valid())
             }
+            "tpm_handoff" => value
+                .as_str()
+                .is_some_and(|handoff| handoff.len() <= 64 * 1024),
             _ => value.as_str().is_some_and(|s| s.len() <= 256),
         };
         if !ok {
@@ -361,7 +365,6 @@ mod tests {
     /// Handoff encoding, validation and profile mapping.
     #[test]
     fn handoff_round_trips_validates_and_maps_only_profile_keys() {
-        // Phase `padded_handoff_round_trips_through_a_whitespace_tolerant_parser`.
         {
             let h = sample();
             let bytes = h.to_padded(4096).unwrap();
@@ -371,7 +374,6 @@ mod tests {
             assert!(h.to_padded(16).is_err());
         }
 
-        // Phase `validation_rejects_inconsistent_extents_and_secrets`.
         {
             let mut h = sample();
             h.target_extent.last_lba += 1;
@@ -394,7 +396,6 @@ mod tests {
             assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
         }
 
-        // Phase `install_profile_maps_to_the_media_profile_keys_only`.
         {
             let mut profile = crate::model::InstallProfile::default();
             profile.user.username = "ada".into();

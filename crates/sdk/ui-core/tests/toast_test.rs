@@ -10,38 +10,16 @@
     reason = "in a test these are the assertion, not a hazard; pixel probes round f64 rects to u32"
 )]
 
-use std::time::Duration;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::toast::{ToastCard, ToastKind, ToastStack, paint_card};
+use tilo_ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
 #[test]
-fn toast_stack_expires_caps_and_registers_its_edge() {
-    // Case `toast_stack_expires_entries`.
-    {
-        let mut s = ToastStack::new();
-        s.push("Workspace created", ToastKind::Info);
-        s.push("Save failed", ToastKind::Error);
-        assert_eq!(s.len(), 2);
-        s.tick(Duration::from_millis(3100)); // default 3s TTL elapsed
-        assert_eq!(s.len(), 0);
-    }
-
-    // Case `toast_stack_caps_entries`.
-    {
-        let mut s = ToastStack::new().with_max(3);
-        for i in 0..5 {
-            s.push(format!("t{i}"), ToastKind::Info);
-        }
-        assert_eq!(s.len(), 3);
-        assert!(s.iter().any(|t| t.text == "t4"));
-        assert!(!s.iter().any(|t| t.text == "t0"));
-    }
-
+fn a_notification_card_registers_its_edge() {
     // Case `toast_card_edge_registers_in_both_themes`.
     // HIG §9.5 "Rest edges": a settled toast card is a Panel whose edge is
     // derived against the ground and visibly moves against the card's own

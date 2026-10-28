@@ -60,11 +60,6 @@ fn fail_if_armed(
 
 /// Resume every durable phase for one exact journal intent. Every operation is
 /// idempotent, so a crash can re-enter with the entry in any persisted phase.
-///
-/// # Errors
-///
-/// Returns an error when any repository, history, namespace, journal, or
-/// broadcast phase fails.
 pub fn complete_replacement_transaction<A, F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,

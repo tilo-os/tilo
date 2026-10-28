@@ -36,10 +36,6 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
 /// Keep a private staging path out of casual view where the host has no
 /// owner-only permission for it: the Hidden attribute on Windows, nothing
 /// elsewhere.
-///
-/// # Errors
-///
-/// Returns the attribute change's error.
 pub fn mark_private(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {

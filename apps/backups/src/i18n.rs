@@ -28,6 +28,30 @@ pub fn counted(key: &str, count: u64, size: &str) -> String {
     )
 }
 
+/// How the retention page names what the counts on screen would remove at the
+/// next backup, so the sentence a person reads is the catalogue's, in their
+/// language.
+pub fn removal(count: u64, when: &str) -> String {
+    let key = match count {
+        0 => "backups-retention-removes-none",
+        1 => "backups-retention-removes-one",
+        _ => "backups-retention-removes-many",
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+    )]
+    let number = count as f64;
+    CATALOG.t_args(
+        key,
+        &[
+            ("count", ArgValue::Number(number)),
+            ("snapshots", ArgValue::Text(group_digits(count))),
+            ("when", ArgValue::Text(when.to_owned())),
+        ],
+    )
+}
+
 /// `1840` → `1,840`.
 pub fn group_digits(n: u64) -> String {
     let digits = n.to_string();
@@ -47,7 +71,7 @@ mod tests {
 
     #[test]
     fn counted_strings_choose_their_plural_form() {
-        assert_eq!(t("backups-health-ok"), "All backups healthy");
+        assert_eq!(t("backups-health-ok"), "No failed backups");
         let one = counted("backups-health-attention", 1, "");
         let two = counted("backups-health-attention", 2, "");
         assert!(one.contains("One backup needs"), "{one}");

@@ -436,7 +436,6 @@ mod tests {
 
     #[test]
     fn discovery_records_share_the_broker_contract_and_stay_bounded() {
-        // Phase `fcast_discovery_record_preserves_endpoint_and_identity`.
         {
             let device = into_projection_device(info(ProtocolType::FCast));
             assert_eq!(device.protocol, ProjectionProtocol::FCast);
@@ -445,7 +444,6 @@ mod tests {
             assert_eq!(device.port, 46899);
             assert_eq!(device.modes, [ProjectionMode::Mirror]);
         }
-        // Phase `chromecast_discovery_record_uses_the_same_broker_contract`.
         {
             let mut cast = info(ProtocolType::Chromecast);
             cast.port = 8009;
@@ -454,12 +452,10 @@ mod tests {
             assert_eq!(device.id, "Google Cast:receiver-42");
             assert_eq!(device.port, 8009);
         }
-        // Phase `zero_length_discovery_is_bounded_and_json_serialisable`.
         {
             let devices = discover(Duration::ZERO).expect("empty bounded discovery");
             serde_json::to_string(&devices).expect("projection discovery JSON");
         }
-        // Phase `local_mdns_receivers_exercise_three_real_discovery_browsers`.
         {
             let daemon = ServiceDaemon::new().expect("mDNS simulator daemon");
             let suffix = std::process::id();
@@ -509,9 +505,13 @@ mod tests {
             daemon
                 .register(airplay)
                 .expect("register AirPlay simulator");
-            std::thread::sleep(Duration::from_millis(300));
-
-            let devices = discover(Duration::from_secs(3)).expect("discover simulated receivers");
+            // Browse until every simulator has answered, however late.
+            let names = [&fcast_name, &cast_name, &airplay_name];
+            let devices = tilo_test_env::wait_for("every simulated receiver to answer", || {
+                let devices = discover(Duration::from_secs(1)).expect("discover simulators");
+                let seen = |name: &&String| devices.iter().any(|device| &device.name == *name);
+                names.iter().all(seen).then_some(devices)
+            });
             let _ = daemon.shutdown();
 
             assert!(

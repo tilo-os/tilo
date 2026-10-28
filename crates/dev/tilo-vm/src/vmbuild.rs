@@ -95,9 +95,6 @@ fn use_msys_ssh(ssh: &mut CommandLine, sibling: &Path) {
 /// `.gitignore` rules apply, `.git` and `target/` stay behind (the VM's
 /// `target/` is its own build dir and is never deleted by the sync), and
 /// the remote side holds the worktree's build lock while it writes.
-///
-/// # Errors
-/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     root: &Path,
     endpoint: &SshEndpoint,

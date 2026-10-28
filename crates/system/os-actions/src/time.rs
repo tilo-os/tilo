@@ -42,10 +42,6 @@ pub fn get_time_sync_status() -> Result<TimeSyncStatus, String> {
 
 /// The IANA zones timedated accepts. This uses the system zoneinfo database,
 /// so the list follows tzdata updates instead of an embedded copy.
-///
-/// # Errors
-///
-/// Returns an error message if `timedatectl` is not installed or the command fails.
 pub fn list_timezones() -> Result<Vec<String>, String> {
     let out = run_capture("timedatectl", &["list-timezones"])?;
     let mut zones: Vec<String> = out
@@ -125,11 +121,6 @@ fn parse_time_source(out: &str) -> Option<String> {
 
 /// Is automatic time synchronisation (NTP) enabled?
 /// `timedatectl show -p NTP --value` prints `yes` / `no`.
-///
-/// # Errors
-///
-/// Returns an error message if `timedatectl` is not installed, the command fails, or its
-/// output is not `yes`/`no`.
 pub fn get_ntp() -> Result<bool, String> {
     let out = run_capture("timedatectl", &["show", "-p", "NTP", "--value"])?;
     parse_timedatectl_ntp(&out)
@@ -164,13 +155,11 @@ mod time_tests {
 
     #[test]
     fn timedated_output_parses_without_guessing_and_zone_ids_are_validated() {
-        // Phase `parses_ntp_yes_no`.
         {
             assert_eq!(parse_timedatectl_ntp("yes\n"), Ok(true));
             assert_eq!(parse_timedatectl_ntp("no\n"), Ok(false));
             assert!(parse_timedatectl_ntp("maybe").is_err());
         }
-        // Phase `parses_timedated_status_without_guessing_missing_fields`.
         {
             let status = parse_time_status("Timezone=Europe/Berlin\nNTP=yes\nNTPSynchronized=no\n");
             assert_eq!(status.timezone.as_deref(), Some("Europe/Berlin"));
@@ -178,14 +167,12 @@ mod time_tests {
             assert_eq!(status.synchronized, Some(false));
             assert_eq!(parse_time_status("NTP=n/a").ntp_enabled, None);
         }
-        // Phase `rejects_paths_and_accepts_iana_zone_ids`.
         {
             assert!(valid_timezone("America/Argentina/Buenos_Aires"));
             assert!(!valid_timezone("../../etc/passwd"));
             assert!(!valid_timezone("/etc/localtime"));
             assert!(!valid_timezone("Europe/Berlin;reboot"));
         }
-        // Phase `extracts_selected_timesync_server`.
         {
             assert_eq!(
                 parse_time_source("       Server: 192.0.2.1 (time.example)\n"),

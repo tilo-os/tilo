@@ -96,10 +96,6 @@ pub struct Baseline {
 
 impl Baseline {
     /// The files of the commit this CLI was built from.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an embedded workspace file does not parse.
     pub fn embedded() -> Result<Self> {
         Self::parse(
             EMBEDDED_MANIFEST,
@@ -112,10 +108,6 @@ impl Baseline {
 
     /// The files of the checkout at `root`. A file the checkout lacks falls
     /// back to this CLI's copy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a workspace file does not parse.
     pub fn from_checkout(root: &Path) -> Result<Self> {
         let read = |relative: &str, embedded: &'static str| {
             std::fs::read_to_string(root.join(relative)).unwrap_or_else(|_| embedded.to_owned())

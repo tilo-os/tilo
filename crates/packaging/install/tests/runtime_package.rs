@@ -209,7 +209,7 @@ bin = "bin/app"
     }
 
     fn cmd(&self, args: &[&str]) -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_tilo-install"))
+        let out = Command::new(tilo_test_env::package_binary!("tilo-install"))
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home.path())
@@ -605,7 +605,7 @@ fn app_host_unit_covers_the_canonical_signed_runtime_destination() {
     env.trust(&[&runtime_key]);
     let (version, bundle) = env.bundle("host", b"canonical runtime payload", &runtime_identity);
     let package = env.runtime_tapp("host", &bundle, &format!("tilo-runtime/{version}"));
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-install"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-install"))
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", env.home.path())

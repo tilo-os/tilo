@@ -239,7 +239,6 @@ impl CallPictures {
             .cloned()
     }
 
-    /// Every person and source with a picture, with it.
     pub fn pictures(&self) -> Vec<(String, PictureSource, ImageData)> {
         self.decoded
             .lock_recover()

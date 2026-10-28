@@ -372,7 +372,7 @@ fn push_event(
 }
 
 /// This device's own wake routes, re-read from its interfaces at most every
-/// [`ROUTE_SCAN_INTERVAL`]. `previous` is what it last advertised.
+/// `ROUTE_SCAN_INTERVAL`. `previous` is what it last advertised.
 pub fn local_routes(previous: &[WakeRoute]) -> Vec<WakeRoute> {
     let now = Instant::now();
     {
@@ -663,10 +663,18 @@ fn scan_interfaces() -> Vec<WakeRoute> {
         } else {
             WakeInterfaceKind::Ethernet
         };
+        // Wi-Fi drivers answer the wake query through their radio, not ethtool.
+        let magic_packet = match std::fs::read_link(path.join("phy80211")) {
+            Ok(radio) => os_actions::network_wake::wifi_magic_packet_enabled(
+                &radio.file_name().unwrap_or_default().to_string_lossy(),
+            )
+            .unwrap_or(false),
+            Err(_) => magic_packet_enabled(&name),
+        };
         let route = WakeRoute {
             mac,
             kind,
-            magic_packet: magic_packet_enabled(&name),
+            magic_packet,
             subnet: subnets.get(&name).copied(),
         };
         if routes.len() < crate::shell::device_fabric::MAX_WAKE_ROUTES
@@ -702,7 +710,7 @@ pub fn parse_mac(text: &str) -> Option<[u8; 6]> {
 
 /// Each interface's first IPv4 subnet.
 #[cfg(target_os = "linux")]
-fn ipv4_subnets() -> BTreeMap<String, Ipv4Subnet> {
+pub(crate) fn ipv4_subnets() -> BTreeMap<String, Ipv4Subnet> {
     let mut subnets = BTreeMap::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: `getifaddrs` fills `head` with a list we free below.
@@ -805,7 +813,7 @@ mod tests {
     use super::*;
     use crate::shell::device_fabric::{
         DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, FabricStamp,
+        FabricCapabilities, FabricStamp, OwnerSession,
     };
 
     fn id(value: &str) -> DeviceId {
@@ -839,6 +847,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: 1,
                 wake_routes: routes,
+                session: OwnerSession::default(),
                 stamp: FabricStamp {
                     counter: 1,
                     device: owner,

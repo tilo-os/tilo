@@ -113,6 +113,25 @@ const XLSX_SHEET1: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="ye
 const XLSX_SHEET2: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>note &lt;1&gt;</t></is></c></row><row r="3"><c r="C3"><v>7</v></c></row></sheetData></worksheet>"#;
 
+/// [`excel_like_xlsx`] with its "Notes & Data" tab hidden, as Excel keeps a
+/// tab someone hid.
+pub(crate) fn excel_like_xlsx_hiding_notes() -> Vec<u8> {
+    let workbook = XLSX_WORKBOOK.replace(
+        r#"sheetId="2" r:id="rId2""#,
+        r#"sheetId="2" state="hidden" r:id="rId2""#,
+    );
+    zip_of(&[
+        ("[Content_Types].xml", XLSX_CONTENT_TYPES),
+        ("_rels/.rels", XLSX_ROOT_RELS),
+        ("xl/workbook.xml", &workbook),
+        ("xl/_rels/workbook.xml.rels", XLSX_WORKBOOK_RELS),
+        ("xl/sharedStrings.xml", XLSX_SHARED_STRINGS),
+        ("xl/styles.xml", XLSX_STYLES),
+        ("xl/worksheets/sheet1.xml", XLSX_SHEET1),
+        ("xl/worksheets/sheet2.xml", XLSX_SHEET2),
+    ])
+}
+
 fn excel_like_xlsx() -> Vec<u8> {
     zip_of(&[
         ("[Content_Types].xml", XLSX_CONTENT_TYPES),
@@ -126,7 +145,6 @@ fn excel_like_xlsx() -> Vec<u8> {
     ])
 }
 
-/// Excel/Calc imports and XLSX/ODS export round-trips.
 #[test]
 fn foreign_workbooks_import_and_exports_round_trip() {
     // Case `excel_workbook_imports_tabs_values_formats_and_formulas`.
@@ -137,19 +155,21 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(names, ["Budget", "Notes & Data"]);
         let budget = &tables[0];
 
-        // Shared, rich and inline strings import as text.
         assert_eq!(raw(budget, "A1"), "Item");
         assert_eq!(format(budget, "A1"), CellFormat::Text);
         assert_eq!(raw(budget, "B1"), "Amount");
         assert_eq!(raw(budget, "C1"), "Total");
         assert_eq!(raw(budget, "A2"), "Rent");
 
-        // Numbers import as numbers; only date/time number formats survive as a
-        // format (currency and percent re-infer from the value on import).
+        // Numbers import as numbers in the format their cell style shows:
+        // money stays money and a percentage a percentage, as dates do.
         assert_eq!(raw(budget, "B2"), "1200");
-        assert_eq!(format(budget, "B2"), CellFormat::General);
+        assert_eq!(
+            format(budget, "B2"),
+            CellFormat::Currency(tilo_locale::Currency::USD)
+        );
         assert_eq!(raw(budget, "B4"), "0.25");
-        assert_eq!(format(budget, "B4"), CellFormat::General);
+        assert_eq!(format(budget, "B4"), CellFormat::Percent);
         assert_eq!(raw(budget, "A3"), "45000");
         assert_eq!(format(budget, "A3"), CellFormat::Date(DateStyle::Iso));
         assert_eq!(raw(budget, "B3"), "45001.5");
@@ -166,16 +186,13 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "E2"), "big");
         assert_eq!(formula(budget, "D2"), Some("=B2/0"));
         assert_eq!(format(budget, "D2"), CellFormat::Text);
-        // An error result keeps Excel's own spelling.
         assert_eq!(raw(budget, "D2"), "#DIV/0!");
 
-        // A shared formula expands to every cell of its fill-down.
         assert_eq!(formula(budget, "C2"), Some("=B2*2"));
         assert_eq!(formula(budget, "C3"), Some("=B3*2"));
         assert_eq!(formula(budget, "C4"), Some("=B4*2"));
         assert_eq!(raw(budget, "C3"), "90003");
 
-        // Blank cells stay blank, and the second tab keeps its gap.
         assert!(at(budget, "B5").is_none());
         let notes = &tables[1];
         assert_eq!(raw(notes, "A1"), "note <1>");
@@ -195,7 +212,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(format(budget, "A1"), CellFormat::Text);
         assert_eq!(raw(budget, "B1"), "1200");
         assert_eq!(format(budget, "B1"), CellFormat::General);
-        // ODF dates arrive as their ISO text.
         assert_eq!(raw(budget, "A2"), "2024-01-15");
         assert_eq!(format(budget, "A2"), CellFormat::Text);
         assert_eq!(raw(budget, "B2"), "TRUE");
@@ -207,14 +223,12 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "A3"), "1200.21");
         assert_eq!(raw(budget, "B3"), "line one\nline two");
 
-        // Compressed repeats of populated cells and rows expand.
         for a1 in ["A4", "B4", "C4"] {
             assert_eq!(raw(budget, a1), "0", "{a1}");
         }
         assert_eq!(raw(budget, "A5"), "x");
         assert_eq!(raw(budget, "A6"), "x");
         assert!(at(budget, "B5").is_none());
-        // Calc's trailing empty repeat materialises nothing.
         assert!(budget.rows.len() <= 6, "{} rows", budget.rows.len());
 
         assert_eq!(raw(&tables[1], "A1"), "3.5");
@@ -227,7 +241,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         crate::xlsx::write_xlsx(&file.0, &tables).unwrap();
         let back = crate::xlsx::read_xlsx(&file.0).unwrap();
         assert_sheets_round_trip(&back);
-        // The date format survives the Excel round-trip.
         assert_eq!(format(&back[0], "B4"), CellFormat::Date(DateStyle::Iso));
     }
 
@@ -373,7 +386,6 @@ fn offset_sparse_and_dtd_packages_are_handled_safely() {
         let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
         assert!(at(&tables[0], "A1").is_none());
         assert_eq!(raw(&tables[0], "C3"), "1");
-        // The formula still points at the cell it was written against.
         assert_eq!(formula(&tables[0], "D3"), Some("=C3*2"));
     }
 

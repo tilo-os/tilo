@@ -55,7 +55,7 @@ def check(root: Path = ROOT) -> list[str]:
         else []
     )
     if not directories:
-        return ["vendor/ holds no vendored directories; nothing to check is an error, not a pass"]
+        return ["vendor/: holds no vendored directories; nothing to check is an error, not a pass"]
 
     problems = []
     for directory in directories:
@@ -75,13 +75,13 @@ def check(root: Path = ROOT) -> list[str]:
         try:
             version = manifest_version(manifest)
         except tomllib.TOMLDecodeError as error:
-            problems.append(f"{name}/Cargo.toml does not parse: {error}")
+            problems.append(f"{name}/Cargo.toml: does not parse: {error}")
             continue
         if version is None:
-            problems.append(f"{name}/Cargo.toml declares no package version")
+            problems.append(f"{name}/Cargo.toml: declares no package version")
         elif not names_version(record.read_text(encoding="utf-8"), version):
             problems.append(
-                f"{name}/{PROVENANCE} does not name version {version} from its Cargo.toml"
+                f"{name}/{PROVENANCE}: does not name version {version} from its Cargo.toml"
             )
     return problems
 
@@ -89,11 +89,13 @@ def check(root: Path = ROOT) -> list[str]:
 def main() -> int:
     problems = check()
     if problems:
-        print("Vendored code keeps its licence and records its upstream version (docs/policies.md):")
+        print("Vendored code keeps its licence and records its upstream version (docs/policies.md):",
+              file=sys.stderr)
         for line in problems:
-            print(f"  {line}")
+            print(line)
         return 1
-    print("Every vendored directory has a licence file and a PROVENANCE.md naming its version.")
+    print("Every vendored directory has a licence file and a PROVENANCE.md naming its version.",
+          file=sys.stderr)
     return 0
 
 

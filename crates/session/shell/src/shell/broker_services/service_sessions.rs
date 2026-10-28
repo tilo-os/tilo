@@ -165,7 +165,8 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
                 .map_err(|_| UNAVAILABLE)?;
             Reply::Resolved { session }
         }
-        Command::Forget { .. } => unreachable!("Forget handled before read snapshot validation"),
+        // Forget is handled before the read snapshot is validated.
+        Command::Forget { .. } => return Err(UNAVAILABLE.into()),
     };
     if read_store(root).map_err(|_| UNAVAILABLE)? != store {
         return Err("Selected website sessions changed".into());
@@ -215,8 +216,7 @@ fn child(parent: &File, name: &std::ffi::OsStr, is_directory: bool) -> io::Resul
 }
 fn owned(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
-    // SAFETY: geteuid has no preconditions.
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o022 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())
@@ -246,6 +246,7 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn native_private_custody_lists_and_resolves_only_current_enabled_person() {
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

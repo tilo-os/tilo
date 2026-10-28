@@ -15,8 +15,11 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockDevice {
     /// `NAME`: the kernel name (`sda1`), or the full path (`/dev/sda1`) when
-    /// listed with [`Lsblk::full_paths`].
+    /// listed with [`Lsblk::full_paths`]. A device-mapper device is listed by
+    /// its mapping's name (`home`), not its kernel name.
     pub name: String,
+    /// `KNAME`: the kernel's own name (`dm-1` for the mapping `home`).
+    pub kname: Option<String>,
     /// `TYPE`: `disk`, `part`, `crypt`, `lvm`, `loop`, `rom`, ...
     pub kind: String,
     /// `SIZE` in bytes.
@@ -35,6 +38,8 @@ pub struct BlockDevice {
     /// `RO`.
     pub read_only: bool,
     pub fstype: Option<String>,
+    /// `FSVER`: the filesystem's (or container's) version, `2` for LUKS2.
+    pub fsver: Option<String>,
     pub label: Option<String>,
     pub uuid: Option<String>,
     /// `FSUSED` in bytes.
@@ -44,6 +49,9 @@ pub struct BlockDevice {
     /// `MOUNTPOINTS`: every mount of the device.
     pub mountpoints: Vec<String>,
     pub parttype: Option<String>,
+    /// `PARTTYPENAME`: what the partition type is called (`EFI System`,
+    /// `Microsoft reserved`).
+    pub parttypename: Option<String>,
     pub partuuid: Option<String>,
     pub pttype: Option<String>,
     pub ptuuid: Option<String>,
@@ -59,6 +67,7 @@ impl BlockDevice {
     pub fn from_json(value: &Value) -> Self {
         Self {
             name: string(value, "name").unwrap_or_default(),
+            kname: string(value, "kname"),
             kind: string(value, "type").unwrap_or_default(),
             size: number(value, "size").unwrap_or(0),
             start: number(value, "start"),
@@ -70,6 +79,7 @@ impl BlockDevice {
             removable: flag(value, "rm"),
             read_only: flag(value, "ro"),
             fstype: string(value, "fstype"),
+            fsver: string(value, "fsver"),
             label: string(value, "label"),
             uuid: string(value, "uuid"),
             fsused: number(value, "fsused"),
@@ -88,6 +98,7 @@ impl BlockDevice {
                 })
                 .unwrap_or_default(),
             parttype: string(value, "parttype"),
+            parttypename: string(value, "parttypename"),
             partuuid: string(value, "partuuid"),
             pttype: string(value, "pttype"),
             ptuuid: string(value, "ptuuid"),
@@ -129,7 +140,6 @@ pub fn parse(json: &Value) -> Option<Vec<BlockDevice>> {
     Some(devices.iter().map(BlockDevice::from_json).collect())
 }
 
-/// [`parse`] over raw `lsblk -J` output.
 pub fn parse_slice(output: &[u8]) -> Option<Vec<BlockDevice>> {
     parse(&serde_json::from_slice(output).ok()?)
 }
@@ -258,7 +268,6 @@ mod tests {
 
     #[test]
     fn parses_captured_disks_imager_and_installer_inventories() {
-        // Phase `parses_a_captured_disks_inventory`.
         {
             let devices = fixture(include_str!("../tests/fixtures/disks.json"));
             let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
@@ -293,7 +302,6 @@ mod tests {
             assert_eq!(unmounted.fsused, None);
             assert!(unmounted.all_mountpoints().is_empty());
         }
-        // Phase `parses_a_captured_imager_inventory`.
         {
             let devices = fixture(include_str!("../tests/fixtures/imager.json"));
             let nvme = find(&devices, "nvme1n1");
@@ -305,7 +313,6 @@ mod tests {
                 Some("/boot/efi")
             );
         }
-        // Phase `parses_a_captured_installer_inventory_with_every_mount`.
         {
             let devices = fixture(include_str!("../tests/fixtures/installer.json"));
             let disk = find(&devices, "/dev/nvme0n1");
@@ -335,7 +342,6 @@ mod tests {
 
     #[test]
     fn parser_accepts_older_shapes_walks_holders_and_distinguishes_malformed_documents() {
-        // Phase `accepts_the_value_shapes_older_lsblk_emits`.
         {
             let devices = fixture(
                 r#"{"blockdevices":[{"name":"sdc","model":"Old Stick  ","size":"8000000000",
@@ -352,13 +358,11 @@ mod tests {
             assert_eq!(stick.mountpoint, None, "blank is absent");
             assert_eq!(stick.mountpoints, ["/media"]);
         }
-        // Phase `malformed_and_empty_documents_are_distinguished`.
         {
             assert_eq!(parse_slice(br#"{"blockdevices":[]}"#), Some(Vec::new()));
             assert_eq!(parse_slice(b"{}"), None);
             assert_eq!(parse_slice(b"not json"), None);
         }
-        // Phase `descendants_walk_the_holder_tree_depth_first`.
         {
             let devices = fixture(
                 r#"{"blockdevices":[{"name":"sda","type":"disk","children":[

@@ -1,8 +1,4 @@
 snippets-body-placeholder = Snippet body
-snippets-count = { $count ->
-    [one] { $count } snippet
-   *[other] { $count } snippets
-}
 snippets-variables = { $count ->
     [one] { $count } variable
    *[other] { $count } variables
@@ -30,19 +26,28 @@ snippets-tag-named = Tag { $name }
 snippets-untitled = Untitled snippet
 snippets-new = New snippet
 snippets-empty-library = No snippets yet
+snippets-empty-library-message = Keep the text you paste again and again: commands, replies, code. Copy one in a click, with blanks to fill in when it has variables.
 snippets-empty-favorites = No favorites yet
 snippets-empty-most-used = Nothing copied yet
 snippets-empty-place = No snippets here
 snippets-none-selected = No snippet selected
 snippets-language = Language
+snippets-name = Name
+snippets-description = Description
+snippets-description-placeholder = What this snippet is for
+snippets-folder = Folder
+snippets-folder-placeholder = File it under a folder
+snippets-add-tag = Add a tag
+snippets-copied-clears = Copied; it leaves the clipboard in a minute
+snippets-copy-failed = Could not copy to the clipboard
+snippets-add-tag-placeholder = Add a tag
+snippets-copy-only = Copying is how a snippet leaves this library: paste it where you need it.
 snippets-language-plain-text = Plain text
 snippets-set-language = Set language to { $language }
 snippets-copy = Copy
 snippets-fill-and-copy = Fill in and copy
-snippets-favorite = Favorite
 snippets-add-favorite = Add to favorites
 snippets-remove-favorite = Remove from favorites
-snippets-more-actions = More actions
 snippets-menu-duplicate = Duplicate
 snippets-menu-delete = Delete
 snippets-copy-title = { $title } (copy)

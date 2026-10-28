@@ -12,12 +12,12 @@
 //! - [`shortcut`] — the serialisable program: inputs, [`Step`]s, value
 //!   [`Binding`]s between them, the [`grant`](Shortcut::grant) that bounds its
 //!   authority and the [`TriggerSpec`]s that may start it.
-//! - [`check`] — the save-time type checker. It reads the descriptors a host
+//! - [`check`](mod@check) — the save-time type checker. It reads the descriptors a host
 //!   returned from `query` (parameters, contracts, result specs) and refuses a
 //!   binding whose type cannot satisfy the parameter it feeds, a step output
 //!   pointer that the declared result schema does not have, an action outside
 //!   the grant, and a shortcut that could run itself.
-//! - [`run`] — the interpreter. It invokes each step as the person who
+//! - [`run`](mod@run) — the interpreter. It invokes each step as the person who
 //!   started the run, only inside the shortcut's grant, with invocation ids
 //!   derived from the run so a retried run observes what already happened
 //!   instead of doing it twice, and it hands confirmation and questions to
@@ -26,6 +26,16 @@
 //! AI steps are not a second execution path: an [`Ai`](StepKind::Ai) step is
 //! an invocation of the agent's transform actions ([`AGENT_APP_ID`],
 //! [`AGENT_TRANSFORM_KIND`]), granted, confirmed and recorded like any other.
+//! What the agent may run inside a [`Task`](StepKind::Task) step is the
+//! shortcut's own grant, narrowed to the step's own [`allow`](StepKind::Task::allow),
+//! and nothing a run can widen.
+//!
+//! - [`scenario`] — a test as the same kind of program: a [`Scenario`] holds
+//!   the Shortcut's own action [`Invocation`]s, the surface presses only a
+//!   window can answer, and assertions on the model ([`Assert::Resource`]),
+//!   written as versioned canonical text a golden file holds. A saved
+//!   Shortcut runs as a scenario, and a scenario's action steps are the
+//!   Shortcut's steps.
 
 pub mod catalog;
 pub mod check;
@@ -35,10 +45,14 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+pub mod scenario;
 pub mod shortcut;
 mod template;
+pub mod text;
 mod types;
 
+#[cfg(test)]
+mod continuation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -49,24 +63,28 @@ pub use check::{
     BindingOption, CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, binding_options,
     check, check_bot, values_at,
 };
-pub use grant::{StepGrant, action_rule, grant_answer, step_node};
+pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
-    AskRequest, ConfirmationRequest, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
-    RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, invocation_id, run,
+    AskRequest, ConfirmationRequest, Continuation, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT,
+    MAX_BACKOFF_MS, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
+    RunTrigger, STEP_FACET, StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch,
+    invocation_id, run,
+};
+pub use scenario::{
+    Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
+    ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
     FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
-    TimeOfDay, TriggerSpec, Weekday,
+    StepPolicy, TimeOfDay, TriggerSpec, Weekday,
 };
-
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";
 /// Resource kind of one saved shortcut; its id is
 /// `shortcuts.shortcut:<shortcut id>` (see [`shortcut_resource_id`]).
 pub const SHORTCUT_RESOURCE_KIND: &str = "shortcuts.shortcut";
-/// Action on a shortcut resource that runs it.
 pub const SHORTCUT_RUN_ACTION: &str = "run";
 
 /// Application that publishes the model-backed transform actions an
@@ -74,7 +92,6 @@ pub const SHORTCUT_RUN_ACTION: &str = "run";
 pub const AGENT_APP_ID: &str = "so.tilo.agent";
 /// Resource kind carrying the transform actions.
 pub const AGENT_TRANSFORM_KIND: &str = "agent.transform";
-/// The one resource the agent publishes its transforms on.
 pub const AGENT_TRANSFORM_RESOURCE: &str = "agent.transform:default";
 /// Condense the input into a short text.
 pub const AGENT_SUMMARISE_ACTION: &str = "summarise";
@@ -84,6 +101,9 @@ pub const AGENT_EXTRACT_ACTION: &str = "extract";
 pub const AGENT_CLASSIFY_ACTION: &str = "classify";
 /// Answer a free-form prompt about the input.
 pub const AGENT_FREEFORM_ACTION: &str = "freeform";
+/// Start a task — a model-driven run of the actions the person is offered —
+/// and wait for its typed summary.
+pub const AGENT_TASK_ACTION: &str = "task";
 /// Take a person's request to their agent: answer it when it asks for
 /// information, or name the work when it asks for something to be done.
 pub const AGENT_RESPOND_ACTION: &str = "respond";

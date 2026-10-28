@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use ui::text_render::FontChoice;
 use ui::widget::EditableLabel;
+use ui::widget::toast::Transient;
 
 use super::{
     BooksApp, DocPos, ImportKind, LoadingImport, Rename, RenameTarget, SettingsTab, TextSel, View,
@@ -21,6 +22,38 @@ use crate::scenarios::{
 const TIDEGLASS: &str = "book:tideglass";
 
 impl BooksApp {
+    /// A fresh device opens its first book, whose text is on another
+    /// device: one that is offline (`waiting`), or one connected device
+    /// that says it does not have it.
+    fn stage_open_elsewhere(&mut self, waiting: bool) {
+        use ui::collaboration::record_content::{ContentLane, RecordContent};
+
+        self.view = View::Library;
+        let Some(entry) = self
+            .record
+            .entries
+            .values()
+            .find(|entry| entry.title == "Pride and Prejudice")
+            .cloned()
+        else {
+            return;
+        };
+        let lane = ContentLane::of("so.tilo.books-capture", "fresh-device");
+        let store = RecordContent::store(tilo_content::ContentStore::memory(), Arc::clone(&lane));
+        if let Some(hash) = entry.content_hash() {
+            // Asked for, and the host says where it stands.
+            let _ = store.read(&hash);
+            let standing = if waiting {
+                tilo_content::ContentState::Waiting
+            } else {
+                tilo_content::ContentState::Unavailable
+            };
+            lane.stands(hash, standing);
+        }
+        self.content = Some(store);
+        self.open_hit(&crate::resource::book_place_resource(&entry.id));
+    }
+
     /// Stage the view state of `scenario`. The reader opens on the first
     /// sample book where its progress left off, unless the scenario shows
     /// something else.
@@ -31,7 +64,9 @@ impl BooksApp {
         self.page = 0;
         self.last_persisted = None;
         match scenario {
-            "onboarding" | "shelf" | "library" => self.view = View::Library,
+            "onboarding" | "shelf" | "library" | "fresh-device" => self.view = View::Library,
+            "fresh-device-waiting" => self.stage_open_elsewhere(true),
+            "fresh-device-unavailable" => self.stage_open_elsewhere(false),
             "library-scrolled" => {
                 // The large value clamps to the real maximum in draw.
                 self.view = View::Library;
@@ -45,7 +80,7 @@ impl BooksApp {
                 self.notes_drawer.snap(false);
             }
             "import-error" => {
-                self.load_error = Some(
+                self.report_failure(
                     "Couldn’t open damaged.epub: epub text is too large (maximum 64 MiB)".into(),
                 );
             }
@@ -55,6 +90,8 @@ impl BooksApp {
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
                     kind: ImportKind::Open,
                     expected_book_id: None,
+                    store_book: None,
+                    card: Transient::showing_progress(()),
                 });
             }
             "type" => self.reading_settings.open(),
@@ -73,6 +110,14 @@ impl BooksApp {
                 self.comment_overlay.open(COMMENTED_HIGHLIGHT);
             }
             "continuous" => self.scroll_y = 520.0,
+            "search" | "search-elsewhere" => {
+                self.view = View::Library;
+                self.query.staged = Some((View::Library, "glass".into()));
+            }
+            "search-in-book" => {
+                self.book_idx = self.book_index(TIDEGLASS);
+                self.query.staged = Some((View::Reader, "patience".into()));
+            }
             _ => {
                 if !self.stage_settings(scenario) {
                     self.stage_selection(scenario);

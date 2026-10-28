@@ -13,7 +13,7 @@ use std::time::Duration;
 use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins the session's collaboration broker
-/// and carries out broker-leased tasks (`--task-runs`).
+/// and carries out the runs of issues assigned to it (`--task-runs`).
 ///
 /// Read by hand rather than through an argument-parser crate: the launcher
 /// passes a handful of long options, and a parser's builder, help renderer
@@ -36,7 +36,7 @@ struct Cli {
     /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     endpoint: Option<PathBuf>,
-    /// Receive broker-minted Task Center leases, the agent's only mode; every
+    /// Receive the runs of issues assigned to it, the agent's only mode; every
     /// launcher passes it. A task uses only the agent's admitted, permission-
     /// filtered action catalogue and cannot infer work from room traffic.
     task_runs: bool,
@@ -71,7 +71,7 @@ struct Cli {
 /// What `tilo-agent --help` prints.
 const USAGE: &str = "\
 A participant without a window: joins the session's collaboration broker and
-carries out broker-leased tasks.
+carries out the runs of issues assigned to it.
 
 Usage: tilo-agent --workspace <UUID> --task-runs [OPTIONS]
 
@@ -82,7 +82,7 @@ Options:
       --name <NAME>               The display name instructions address [default: Claude]
       --agent-id <ID>             Stable admitted agent id [default: the name]
       --endpoint <PATH>           Broker socket for headless diagnostics
-      --task-runs                 Receive broker-leased tasks (required)
+      --task-runs                 Receive the runs of assigned issues (required)
       --no-model                  Decide by keyword only, without asking a model
       --model-timeout-ms <MS>     How long a model may take to choose
       --companion <APP>           An application started beside this agent (repeatable)
@@ -232,7 +232,7 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
     anyhow::ensure!(
         cli.task_runs,
-        "tilo-agent runs broker-leased tasks only: pass --task-runs"
+        "tilo-agent runs assigned issues only: pass --task-runs"
     );
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
     let model_timeout_ms = cli

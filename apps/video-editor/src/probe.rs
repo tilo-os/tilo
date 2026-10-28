@@ -357,8 +357,6 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
     })
 }
 
-// ---- magic-byte sniffers --------------------------------------------------
-
 fn is_wav(d: &[u8]) -> bool {
     d.starts_with(b"RIFF") && d.get(8..12) == Some(b"WAVE".as_slice())
 }
@@ -401,8 +399,6 @@ fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
         .any(|(i, &b)| b == 0xFF && d.get(i + 1).is_some_and(|n| (n & 0xE0) == 0xE0))
 }
 
-// ---- byte readers ---------------------------------------------------------
-
 /// Big-endian `u32` at `at`, or `None` if the buffer is too short.
 ///
 /// These take an offset rather than a pre-sliced buffer because `&d[a..b]` is
@@ -412,7 +408,6 @@ fn be_u32(d: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;
     Some(u32::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
-// ---- WAV ------------------------------------------------------------------
 
 fn le_u16(d: &[u8], at: usize) -> Option<u16> {
     let end = at.checked_add(2)?;
@@ -468,8 +463,6 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
         has_audio: false,
     })
 }
-
-// ---- ISOBMFF (MP4 / MOV) --------------------------------------------------
 
 /// One box's payload slice and four-CC.
 struct BoxRef<'a> {
@@ -723,8 +716,6 @@ fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
     Some(samples as f64 * f64::from(timescale) / units as f64)
 }
 
-// ---- Matroska / WebM (EBML) ----------------------------------------------
-
 // The EBML element IDs we care about, in their full (marker-retained) form.
 const EBML_SEGMENT: u64 = 0x1853_8067;
 const EBML_INFO: u64 = 0x1549_A966;
@@ -897,8 +888,6 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
     })
 }
 
-// ---- MP3 (MPEG-1/2/2.5 Layer III) -----------------------------------------
-
 /// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
 fn syncsafe(b: [u8; 4]) -> usize {
     b.iter()
@@ -1046,7 +1035,6 @@ fn mp3_probe(duration: f64) -> ProbedMedia {
 mod tests {
     use super::*;
 
-    // ---- box builder for crafting deterministic ISOBMFF test bytes ----
     fn boxed(typ: [u8; 4], payload: &[u8]) -> Vec<u8> {
         let size = (8 + payload.len()) as u32;
         let mut v = Vec::with_capacity(size as usize);
@@ -1131,7 +1119,6 @@ mod tests {
                 p.fps
             );
         }
-        // Case `a_video_track_without_sample_timing_reports_unknown_fps`.
         {
             // A fragmented MP4 carries an empty `stts` in `moov` — the real timing
             // lives in the `moof` boxes. There is nothing to read, so fps must stay
@@ -1168,7 +1155,6 @@ mod tests {
                 "no sample timing → unknown, never a stand-in rate"
             );
         }
-        // Case `parses_a_crafted_wav_for_duration_and_kind`.
         {
             // fmt : PCM, 2ch, 44100Hz, 16-bit → byte_rate 176400.
             let mut fmt = Vec::new();
@@ -1196,7 +1182,6 @@ mod tests {
             assert!((p.duration - 1.0).abs() < 1e-6, "duration {}", p.duration);
             assert_eq!(p.codec, "pcm");
         }
-        // Case `fixed_width_fields_decode_exactly`.
         {
             // Seven bits per byte, most significant first.
             assert_eq!(syncsafe([0x00, 0x00, 0x02, 0x01]), 257);
@@ -1221,7 +1206,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn probe_refuses_non_media_and_never_panics() {
-        // Case `every_prefix_of_a_header_probes_without_panicking`.
         {
             // A cut-short file can end anywhere inside a header. Each sniffer and
             // parser must answer from what is there rather than read past it.
@@ -1274,7 +1258,6 @@ mod tests {
                 "the refusal names what the file really is: {err}"
             );
         }
-        // Case `the_same_bytes_on_disk_are_refused_through_probe_file`.
         {
             // Prove it through the production entry point the importer calls, not
             // just the pure byte path.
@@ -1289,7 +1272,6 @@ mod tests {
             );
             std::fs::remove_file(&f).ok();
         }
-        // Case `other_non_media_bytes_are_refused_with_what_they_really_are`.
         {
             for (bytes, name, detected) in [
                 (
@@ -1323,14 +1305,12 @@ mod tests {
                 }
             }
         }
-        // Case `an_empty_file_is_refused`.
         {
             assert_eq!(
                 probe_bytes(b"", Path::new("empty.mp4")),
                 Err(ProbeError::Empty)
             );
         }
-        // Case `an_unknown_extension_is_refused_rather_than_guessed_video`.
         {
             // Arbitrary binary with no media extension: we know nothing about it,
             // so say nothing rather than declaring it a video.
@@ -1345,7 +1325,6 @@ mod tests {
         {
             let path = std::path::Path::new("probe.mp4");
 
-            // Every truncation of each container's magic prefix.
             let seeds: [&[u8]; 6] = [
                 b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
                 b"\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1f",
@@ -1373,7 +1352,6 @@ mod tests {
             large.extend_from_slice(b"moov");
             let _ = probe_bytes(&large, path);
 
-            // Random bytes at a spread of lengths.
             let mut seed = 0x9E37_79B9_7F4A_7C15u64;
             for len in [0usize, 1, 4, 8, 16, 64, 128, 512, 4096] {
                 let blob: Vec<u8> = (0..len)
@@ -1395,7 +1373,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn probe_parses_image_webm_and_mp3_headers() {
-        // Case `parses_png_dimensions`.
         {
             let mut png = Vec::new();
             png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -1409,7 +1386,6 @@ mod tests {
             assert_eq!((p.width, p.height), (640, 360));
             assert!((p.duration - DEFAULT_IMAGE_DURATION).abs() < 1e-9);
         }
-        // Case `parses_jpeg_dimensions`.
         {
             // SOI, then a SOF0 marker with height 480, width 720.
             let mut jpg = vec![0xFF, 0xD8, 0xFF];
@@ -1424,7 +1400,6 @@ mod tests {
             assert_eq!(p.kind, MediaKind::Image);
             assert_eq!((p.width, p.height), (720, 480));
         }
-        // Case `parses_a_crafted_webm_for_duration_dims_and_kind`.
         {
             // TimestampScale = 1_000_000 ns, Duration = 8000 units → 8.0 s.
             let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
@@ -1448,7 +1423,6 @@ mod tests {
             assert!((p.duration - 8.0).abs() < 1e-6, "duration {}", p.duration);
             assert_eq!((p.width, p.height), (320, 180));
         }
-        // Case `ebml_audio_only_reports_audio_kind`.
         {
             let timescale = ebml(&[0x2A, 0xD7, 0xB1], &1_000_000u64.to_be_bytes()[5..]);
             let duration = ebml(&[0x44, 0x89], &3000.0f64.to_be_bytes()); // 3.0 s
@@ -1504,7 +1478,6 @@ mod tests {
                 expected
             );
         }
-        // Case `a_real_format_we_do_not_parse_still_imports_with_unknown_numbers`.
         {
             // AVI and FLAC are genuine media we have no container parser for.
             // These must keep working exactly as before: right kind, no invented
@@ -1537,8 +1510,6 @@ mod tests {
         }
     }
 
-    // ---- EBML (Matroska / WebM) test builders --------------------------
-
     /// Encode an EBML size as a minimal-length vint (with its marker bit).
     fn ebml_size(n: usize) -> Vec<u8> {
         for len in 1..=8usize {
@@ -1559,6 +1530,4 @@ mod tests {
         v.extend_from_slice(payload);
         v
     }
-
-    // ---- MP3 --------------------------------------------------------------
 }

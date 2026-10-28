@@ -2,7 +2,8 @@
  * The arrival screen's presentation (index.html, `#arrival`): while the
  * desktop is on its way, a thin progress bar moved by the real steps of
  * getting in, and above it one rotating line, a joke or a tip, from the
- * locale files beside this module (`locales/<locale>.ftl`).
+ * locale files beside this module (`locales/<locale>.ftl`), in the
+ * desktop's language.
  *
  * What it reads is what the page already says: `data-arrival` on the root
  * (`load`, `join`, `open`, `draw`, `done`, `stopped`; entry-page.mjs) and the
@@ -133,24 +134,38 @@ export const STEP_NOTES = new Set([
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
 ]);
 
-/** Said in place of the line when a step that waits on the network, or on
- * the GPU's first frame, runs long; the locale file may word them. */
+/** Said in place of the line when a step runs long; the locale file may
+ * word them. */
 export const SLOW_NOTES = {
   fetch: ['arrival-slow-loading', 'Still loading. Your network may be slow.'],
+  compile: ['arrival-slow-starting', 'Still starting Tilo. This device may be busy.'],
   join: ['arrival-slow-connecting', 'Still connecting. Your network may be slow.'],
+  open: ['arrival-slow-opening', 'Still opening the workspace.'],
   draw: ['arrival-slow-drawing', 'Still starting graphics. Without a graphics card this takes longer.'],
 };
 
+/** Said, with Try again beside it, once a step has not moved on for long:
+ * the page keeps waiting, since a busy device gets there in the end, and
+ * the person may start over instead. */
+export const STALLED = ['arrival-stalled', 'This is taking longer than it should. Keep waiting, or try again.'];
+
 /**
  * What the arrival screen shows at `now` (ms since the page started):
- * `{line, note, progress, bar}`. Feed it the page's state on every tick
- * (`{arrival, wasmFetched, statusShown}`; `statusShown` when `#status`
- * says something other than a step note). Lines rotate every `periodMs`
- * from `delayMs`; before that, nothing. A failed or stopped page shows no
- * line, note or bar: its status says what went wrong.
+ * `{line, note, progress, bar, stalled}`. Feed it the page's state on every
+ * tick (`{arrival, wasmFetched, statusShown, gpuStalled}`; `statusShown`
+ * when `#status` says something other than a step note, `gpuStalled` when
+ * the runtime says graphics start-up stopped moving on). Lines rotate every
+ * `periodMs` from `delayMs`; before that, nothing. A step that runs past
+ * `slowMs` says so; one that has not moved on for `stallMs` (graphics:
+ * once the runtime says so) is `stalled`, and the page offers Try again
+ * while it keeps waiting. `slowNotes` may word each note (`stalled` too).
+ * Nothing the page waits on a person for (being let in, a pairing code)
+ * stalls. A failed or stopped page shows no line, note or bar: its status
+ * says what went wrong.
  */
 export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000, draw: 10_000}, slowNotes = {}} = {}) {
+  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, compile: 8000, join: 6000, open: 8000, draw: 10_000},
+  stallMs = 30_000, slowNotes = {}} = {}) {
   let rotation = createRotation(lines, random);
   let line = null;
   let shownAt = null;
@@ -161,22 +176,25 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
     /** New lines (the locale file arrived): the next turn draws from them. */
     setLines(next) { rotation = createRotation(next, random); },
     get segment() { return segment; },
-    update({arrival, wasmFetched = false, statusShown = false}, now) {
+    update({arrival, wasmFetched = false, statusShown = false, gpuStalled = false}, now) {
       const current = segmentOf(arrival, wasmFetched);
       // The first segment runs from the page's start, before this module.
       if (current !== segment) { since = segment === null ? 0 : now; segment = current; }
-      if (segment === 'stopped') return {line: null, note: null, progress, bar: false};
+      if (segment === 'stopped') return {line: null, note: null, progress, bar: false, stalled: false};
       // Never backwards: a skipped step (no door to join) jumps forward.
       progress = Math.max(progress, progressIn(segment, now - since, {reducedMotion}));
-      if (segment === 'done' || now < delayMs) return {line: null, note: null, progress, bar: false};
+      if (segment === 'done') return {line: null, note: null, progress, bar: false, stalled: false};
+      // Graphics start-up has steps of its own, which only the runtime sees.
+      const stalled = !statusShown && (segment === 'draw' ? gpuStalled : now - since >= stallMs);
+      if (now < delayMs) return {line: null, note: null, progress, bar: false, stalled};
       const slow = slowMs[segment] !== undefined && now - since >= slowMs[segment] && !statusShown;
-      const note = slow ? (slowNotes[segment] ?? SLOW_NOTES[segment][1]) : null;
-      if (statusShown || slow) return {line: null, note, progress, bar: true};
+      const note = stalled ? (slowNotes.stalled ?? STALLED[1]) : slow ? (slowNotes[segment] ?? SLOW_NOTES[segment][1]) : null;
+      if (statusShown || slow || stalled) return {line: null, note, progress, bar: true, stalled};
       if (shownAt === null || now - shownAt >= periodMs) {
         const next = rotation.next();
         if (next !== null || line === null) { line = next; shownAt = next === null ? null : now; }
       }
-      return {line, note: null, progress, bar: true};
+      return {line, note: null, progress, bar: true, stalled: false};
     },
   };
 }
@@ -186,14 +204,131 @@ export function lineParts(line, tipLabel = 'Tip') {
   return {label: line?.kind === 'tip' ? tipLabel : null, text: line?.text ?? ''};
 }
 
-/** Said when the desktop stops drawing; the cause goes to the console. */
+/** Said when the desktop stops drawing; the cause goes to the console.
+ * The locale file words it as `arrival-failed-stopped-drawing`. */
 export const STOPPED_DRAWING = 'The desktop stopped working. Try again to start it.';
 
+/** `text` with each `{ $name }` filled from `args`; a placeholder `args`
+ * lacks stays as written. */
+export function fill(text, args = {}) {
+  return String(text).replace(/\{\s*\$([A-Za-z][A-Za-z0-9_-]*)\s*\}/g,
+    (placeholder, name) => (Object.hasOwn(args, name) ? String(args[name]) : placeholder));
+}
+
+/** Message `id` of `messages` (a locale file's), filled from `args`, or the
+ * English `fallback` where the locale lacks it. */
+export function localized(messages, id, fallback, args) {
+  return fill(messages?.get(id) ?? fallback, args);
+}
+
+/** What a failure says, by case: the locale file's `arrival-failed-<case>`
+ * (naming the workspace) or `arrival-failed-<case>-unnamed` (where the page
+ * does not know its name), else the English here. */
+export const FAILURES = {
+  'custody-busy': [
+    'Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.',
+    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.',
+  ],
+  removed: [
+    'You were removed from { $workspace }. To come back, ask someone in it for a new invitation.',
+    'You were removed from this workspace. To come back, ask someone in it for a new invitation.',
+  ],
+  'invitation-only': [
+    'You need an invitation to join { $workspace } for now. Ask someone in it for an invite link, then open it here.',
+    'You need an invitation to join this workspace for now. Ask someone in it for an invite link, then open it here.',
+  ],
+  'cooling-down': [
+    '{ $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
+    'This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
+  ],
+  unreachable: [
+    'Can’t reach { $workspace } right now. Check your connection, then try again.',
+    'Can’t reach the workspace right now. Check your connection, then try again.',
+  ],
+  desktop: [
+    'You got into { $workspace }, but its desktop did not start in this tab. Try again.',
+    'You got into the workspace, but its desktop did not start in this tab. Try again.',
+  ],
+  general: [
+    'Something went wrong opening { $workspace }. Try again, or come back later.',
+    'Something went wrong opening the workspace. Try again, or come back later.',
+  ],
+};
+
+/** Failure `kind` (a key of `FAILURES`) in `messages`' words. */
+function failure(kind, workspace, messages) {
+  const [named, unnamed] = FAILURES[kind];
+  return workspace
+    ? localized(messages, `arrival-failed-${kind}`, named, {workspace})
+    : localized(messages, `arrival-failed-${kind}-unnamed`, unnamed);
+}
+
 /** Whether `error` is a host's door turning this visitor away for a while
- * (`cooling-down`: the address someone removed from the room joined from),
+ * (`cooling-down`: the address someone removed from the room joined from;
+ * `removed`: the person themselves; `invitation-only`: a room that takes
+ * people by invitation, and this visitor came without one),
  * which trying again does not change. */
 export function refusedByHost(error) {
-  return error?.name === 'HostAdmissionError' && error.code === 'cooling-down';
+  return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed', 'invitation-only'].includes(error.code);
+}
+
+/**
+ * The words of the door a page turned away for coming without an
+ * invitation shows (index.html, `#arrival-door`), in `messages`' language.
+ * A door whose host keeps a wait list (`waitList`) is the product's own
+ * front door: it apologises, says why, and asks for an address. Without
+ * one, it names the workspace and how to get an invite.
+ */
+export function doorCopy({workspace = null, waitList = false, messages = null} = {}) {
+  const say = (key, english, args) => localized(messages, key, english, args);
+  if (waitList) {
+    return {
+      heading: say('arrival-door-wait-heading', 'Sorry, Tilo is invite-only right now'),
+      body: say('arrival-door-wait-body', 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.'),
+    };
+  }
+  return {
+    heading: workspace
+      ? say('arrival-door-heading', '{ $workspace } is invite-only for now', {workspace})
+      : say('arrival-door-heading-unnamed', 'This workspace is invite-only for now'),
+    body: say('arrival-door-body', 'Ask someone in it for an invite link, then paste it here.'),
+  };
+}
+
+/** What the door says when it kept no address, by `HostAdmissionError`
+ * code (`leaveOnWaitList`), in `messages`' language. */
+export function waitListFailure(code, messages = null) {
+  const say = (key, english) => localized(messages, key, english);
+  switch (code) {
+    case 'invalid-email': return say('arrival-wait-invalid', 'That doesn’t look like an email address.');
+    case 'too-many': return say('arrival-wait-too-many', 'Too many sign-ups from your network just now. Try again later.');
+    case 'wait-list-full': return say('arrival-wait-full', 'The wait list is full for now. Please try again in a few days.');
+    default: return say('arrival-wait-failed', 'That didn’t go through. Try again in a moment.');
+  }
+}
+
+/** The page to open for `text`, an invite link a person pasted, or `null`
+ * when it is not one: a web address carrying an invitation. */
+export function inviteLinkTarget(text, base = globalThis.location?.href) {
+  let url;
+  try {
+    url = new URL(String(text ?? '').trim(), base);
+  } catch {
+    return null;
+  }
+  if (!['https:', 'http:'].includes(url.protocol)) return null;
+  const carries = part => new URLSearchParams(part.slice(part.indexOf('?') + 1)).has('invite');
+  return (url.hash.includes('?') && carries(url.hash)) || carries(url.search) ? url.href : null;
+}
+
+/** Whether a page that stopped had got in: the host let the person in
+ * (`admitted`, the peer) and the desktop had not drawn yet (`arrival`, the
+ * page's arrival step). A desktop whose first frame never came marks the
+ * arrival `stopped` itself before the page hears its mount failed: that is
+ * still a desktop that did not start, not something that went wrong
+ * getting in. */
+export function stoppedInside(admitted, arrival) {
+  return Boolean(admitted) && arrival !== 'done';
 }
 
 /** Whether `error` is the network failing: a fetch that never answered, a
@@ -206,31 +341,96 @@ function unreachable(error) {
 
 /**
  * What a page that could not get in says, in plain words, beside its Try
- * again button. A refusal says itself (it is written for people); the
- * network failing names the workspace where the page knows it (else Tilo,
- * while Tilo itself was still loading); anything else stays general, its
- * cause left to the console.
+ * again button, in the person's language (`messages`, the locale file the
+ * arrival screen reads). A refusal says itself (it is written for people);
+ * the network failing names the workspace where the page knows it (else
+ * Tilo, while Tilo itself was still loading); a desktop that did not start
+ * once the host let the person in (`admitted`) says so; anything else stays
+ * general, its cause left to the console.
  */
-export function failureMessage(error, {workspace = null, loaded = true} = {}) {
+export function failureMessage(error, {workspace = null, loaded = true, admitted = false, messages = null} = {}) {
+  // Taken out of the room by its people: said in the person's words.
+  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'removed') {
+    return failure('removed', workspace, messages);
+  }
+  // A room taking people by invitation, opened without one.
+  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'invitation-only') {
+    return failure('invitation-only', workspace, messages);
+  }
   if (error?.name === 'AdmissionError') return error.message;
   if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
     // Each tab is a device of its own; this is only said where this tab
     // could not become one (every device key in use, and no way here to
     // certify another).
-    return `Every device this browser keeps for ${workspace || 'the workspace'} is open in another tab. Close one of those tabs, then try again.`;
+    return failure('custody-busy', workspace, messages);
   }
-  if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
-  if (refusedByHost(error)) {
-    return `${workspace || 'This workspace'} is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.`;
-  }
-  const name = workspace || (loaded ? 'the workspace' : 'Tilo');
-  if (unreachable(error)) return `Can’t reach ${name} right now. Check your connection, then try again.`;
-  return `Something went wrong opening ${name}. Try again, or come back later.`;
+  if (refusedByHost(error)) return failure('cooling-down', workspace, messages);
+  const name = workspace || (loaded ? null : 'Tilo');
+  if (unreachable(error)) return failure('unreachable', name, messages);
+  return failure(admitted ? 'desktop' : 'general', name, messages);
 }
 
-/** The locale whose lines this browser gets: German for German, else English. */
-export function arrivalLocale(languages = globalThis.navigator?.languages ?? []) {
-  return languages.find(language => /^(de|en)\b/i.test(language))?.toLowerCase().startsWith('de') ? 'de-DE' : 'en-US';
+/**
+ * What a page watching a room through its door says about joining, so it
+ * never promises a join the door will not give. `entered`: `watching` (an
+ * embed, until a gesture) or `seatless` (the door had no seat, `because`
+ * its code); `presence`: the door's answer (`admission`: `open` or
+ * `invite`; `joins`: `false` while nobody joins), `null` when it did not
+ * answer. `join` is what the page does
+ * next: `gesture` joins on a click or key, `seat` once the door has a seat
+ * for a guest again, `none` never by itself.
+ */
+export function visitLine({entered, because = null, presence = null, workspace = null, messages = null}) {
+  const embed = entered === 'watching';
+  // Only members and invitees get in: the door's own words for it.
+  if (embed && presence?.admission === 'invite') {
+    return {line: `You’re watching live. ${failure('invitation-only', workspace, messages)}`, join: 'none'};
+  }
+  if (presence?.joins === false) {
+    return embed
+      ? {line: 'You’re watching live. Joining is closed for now; you can join once it opens.', join: 'seat'}
+      : {line: 'Joining is closed for now, so you’re watching live. You’ll join once it opens.', join: 'seat'};
+  }
+  if (embed) return {line: 'Click or type to join', join: 'gesture'};
+  return {
+    line: because === 'full'
+      ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
+      : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.',
+    join: 'seat',
+  };
+}
+
+/** The language the desktop speaks before the person chooses one in
+ * Settings: its source language. The browser's own language is not it, so
+ * the arrival screen and its failures do not follow the browser either: a
+ * page in German that opens an English desktop reads as two products. */
+export const DESKTOP_LANGUAGE = 'en-US';
+
+/** The locale file for the desktop's `language`: German for German, else
+ * English. */
+export function arrivalLocale(language = DESKTOP_LANGUAGE) {
+  return /^de\b/i.test(String(language ?? '')) ? 'de-DE' : 'en-US';
+}
+
+let pageMessages = null;
+/** The messages of the desktop's locale file (`arrivalLocale`), fetched
+ * once per page: the arrival screen's lines and what a failure says. An
+ * empty map when the file cannot be read: everything has its English. */
+export function localeMessages(window = globalThis, language = DESKTOP_LANGUAGE) {
+  pageMessages ??= Promise.resolve()
+    .then(() => window.fetch(new URL(`locales/${arrivalLocale(language)}.ftl`, import.meta.url)))
+    .then(response => (response.ok ? response.text() : ''))
+    .then(parseMessages)
+    .catch(() => new Map());
+  return pageMessages;
+}
+
+/** `localeMessages()`, or an empty map if it has not arrived within
+ * `waitMs`: a failure is said at once, in English if need be. */
+export function localeMessagesSoon(waitMs = 1500, window = globalThis) {
+  let timer;
+  const late = new Promise(resolve => { timer = setTimeout(() => resolve(new Map()), waitMs); });
+  return Promise.race([localeMessages(window), late]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -249,7 +449,6 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   const retry = document.getElementById('arrival-retry');
   retry?.addEventListener('click', () => window.location.reload());
   const reducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-  const locale = arrivalLocale(window.navigator?.languages);
   const mac = /Mac/.test(window.navigator?.platform ?? '');
   const slowNotes = {};
   let tipLabel = 'Tip';
@@ -263,15 +462,15 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     });
     observer.observe({type: 'resource', buffered: true});
   } catch { /* No resource timing: the load step is one segment. */ }
-  void window.fetch(new URL(`locales/${locale}.ftl`, import.meta.url))
-    .then(response => (response.ok ? response.text() : ''))
-    .then(text => {
-      const messages = parseMessages(text);
+  void localeMessages(window)
+    .then(messages => {
       arrival.setLines(arrivalLines(messages, {mode, mac, hostname: window.location?.hostname}));
       tipLabel = messages.get('arrival-label-tip') ?? tipLabel;
       for (const [segment, [id]] of Object.entries(SLOW_NOTES)) {
         if (messages.has(id)) slowNotes[segment] = messages.get(id);
       }
+      if (retry && messages.has('arrival-retry')) retry.textContent = messages.get('arrival-retry');
+      if (messages.has(STALLED[0])) slowNotes.stalled = messages.get(STALLED[0]);
     })
     .catch(() => { /* No lines: the bar alone. */ });
   let shownLine = null;
@@ -281,7 +480,9 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     const step = root.dataset.arrival;
     const statusShown = status.textContent.trim() !== '' && !STEP_NOTES.has(status.textContent.trim());
     root.toggleAttribute('data-arrival-status', statusShown);
-    const view = arrival.update({arrival: step, wasmFetched, statusShown}, now());
+    const view = arrival.update({arrival: step, wasmFetched, statusShown, gpuStalled: root.hasAttribute('data-gpu-stalled')}, now());
+    // Try again shows beside a stalled step (index.html) while it keeps waiting.
+    root.toggleAttribute('data-arrival-stalled', view.stalled);
     if (arrival.segment !== logged) {
       logged = arrival.segment;
       console.debug(`arrival: ${logged} at ${Math.round(now())} ms`);

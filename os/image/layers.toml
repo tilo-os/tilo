@@ -1,0 +1,87 @@
+# The OS image's actions, bottom first: what each builds, over what, and given what.
+# tools/ci/os/os_toml.py writes their checks into t.toml from this file, keyed by
+# exactly the files each piece reads (found in the piece itself: what it COPYs and
+# bind-mounts, and the pieces it builds on); tools/ci/os/pieces.py writes
+# os/Containerfile, every piece in this order, for a build of the whole image at
+# once.
+
+# Stages pieces build on that aren't layers of the image, in the order
+# os/Containerfile defines them.
+helpers = [
+  "public-trust", "rpms", "env-runtime", "public-trust-tools", "runtime-resolver-link",
+  "kernel-rpms", "external-assets", "windows-provider", "virtio-win-media",
+  "windows-compat-artifacts", "windows-compat-sysext", "doubletake-builder",
+  "joycond-builder", "bootc-builder", "xwayland-satellite-builder", "uki-tools",
+  "image-tool-stages", "builder-sources", "builder-base", "apps-payload",
+  "native-builder-payload", "os-fonts", "plymouth-assets", "os-wallpapers",
+  "runtime-image-payload", "engine-runtime-package", "dnf-build-clock",
+  "virtio-gallivm-cpu", "component-files", "desktop-binaries", "remote-capture-files",
+  "rollback-files", "recovery-files", "extension-files",
+]
+
+# Boards with a release image of their own (os/hardware/profiles/<board>.json, on its
+# architecture): the release image with the `board` layers, which read the hardware profile, built
+# again for the board (os/image/build-layer.sh, TILO_OS_BOARD).
+release_boards = ["lenovo-83ed"]
+
+# Images the layers are built with, which ship nothing themselves.
+[[image]]
+# The OS builder: the toolchains over the pinned base and the frozen RPM snapshot.
+# The compile runs in it, and the pieces that pack the compiled tree build on it.
+name = "builder"
+targets = ["builder-base"]
+
+[[image]]
+# The side builds (AirPlay sender, joycond, bootc, xwayland-satellite) and the UKI
+# tools: they change with their pins, not with Tilo's code.
+name = "tools"
+targets = ["image-tool-stages", "uki-tools"]
+
+# The layers, bottom first, over the pinned base. `piece` is
+# os/image/<piece>.Containerfile and `target` the stage the action builds, over the
+# image of every layer below it given as the stage its piece builds FROM (the
+# previous layer's target), unless it is made over nothing (`scratch`). `given`
+# are stages given as images of other actions: `<image>:<target>` of an image
+# above, `<layer>:<stage>` for the image of every layer up to that one (or a stage
+# it saves beside its layers, `also`), and `compiled`, the compiled tree.
+# `release` layers differ in a release image (the registry owner's key, thin LTO), which
+# builds them, and every layer above one, again (os/image/build-layer.sh); `board` layers
+# differ in a board's (its firmware, device tree and update origin), and so does every layer
+# above one.
+[[layer]]
+name = "packages"
+piece = "packages"
+target = "packages"
+given = ["builder:builder-base"]
+
+[[layer]]
+name = "kernel"
+piece = "kernel"
+target = "kernel-installed"
+board = true
+
+[[layer]]
+name = "system"
+piece = "system"
+target = "system"
+given = ["builder:builder-base"]
+board = true
+
+[[layer]]
+name = "trust"
+piece = "trust"
+target = "trust"
+release = true
+board = true
+
+[[layer]]
+# The Tilo binaries, the state derived from every layer below (initramfs, font and
+# linker caches, the final checks) and the seal: one action, since the derived state
+# and the seal are made again whenever the binaries change, and one action loads and
+# writes the image once instead of three times.
+name = "image"
+pieces = ["binaries", "rootfs", "boot"]
+target = "final"
+given = ["builder:builder-base", "tools:image-tool-stages", "tools:uki-tools", "compiled"]
+release = true
+board = true

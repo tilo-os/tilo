@@ -1,5 +1,5 @@
 //! Encoder selection and codec negotiation in
-//! [`shell::collab::flatpak_share::SharedFlatpakSession`]. The media stack
+//! [`tilo_window_share::flatpak_share::SharedFlatpakSession`]. The media stack
 //! picks hardware first, then royalty-free software, then Cisco's openh264;
 //! the codec follows what the viewers can decode. Session start only — the
 //! tracker/encode loop lives in `flatpak_share_e2e.rs`.
@@ -11,9 +11,9 @@
 
 use media::StreamCodec;
 use media::realtime::{CodecCapabilities, local_capabilities};
-use shell::collab::encoder::EncoderKind;
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::encoder::EncoderKind;
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
 const HOST_PEER: u64 = 0xAAAA;
 const SURFACE: u64 = 42;

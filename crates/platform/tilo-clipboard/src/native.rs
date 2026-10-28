@@ -74,12 +74,20 @@ fn wayland() -> Option<&'static NoWayland> {
 }
 
 /// Stand-in so the resolution order reads the same on every desktop.
+///
+/// The Linux build reaches its Wayland session through the same
+/// [`ClipboardBackend`] methods, so resolving through this type keeps the
+/// calls above checked against the trait the Linux backend implements. Adding
+/// a method one side and not the other is then a compile error wherever each
+/// is built, rather than one only a macOS or Windows build meets.
 #[cfg(not(target_os = "linux"))]
 struct NoWayland;
 
 #[cfg(not(target_os = "linux"))]
-#[allow(clippy::unused_self, reason = "mirrors the Wayland backend's methods")]
-impl NoWayland {
+impl ClipboardBackend for NoWayland {
+    // There is no Wayland connection to hand a copy to, so every method
+    // answers as an empty clipboard and `NativeClipboard` falls through to
+    // the system clipboard behind it.
     fn set_text(&self, _target: ClipboardTarget, _text: &str) -> bool {
         false
     }
@@ -91,14 +99,8 @@ impl NoWayland {
         let _ = reply.send(None);
         result
     }
-    fn set_secret_text(&self, _text: &str) -> bool {
-        false
-    }
-    fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
-        false
-    }
-    fn image(&self) -> Option<crate::ClipboardImage> {
-        None
+    fn name(&self) -> &'static str {
+        "no-wayland"
     }
 }
 
@@ -164,6 +166,17 @@ impl ClipboardBackend for NativeClipboard {
         system::set_secret_text(text)
     }
 
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        if let Some(wayland) = wayland() {
+            return wayland.set_rich_text(html, plain);
+        }
+        if system::set_html(html, plain) {
+            return true;
+        }
+        warn_fallback_once("copy");
+        self.local.set_rich_text(html, plain)
+    }
+
     #[cfg(target_os = "linux")]
     fn copy(&self, content: crate::CopyContent<'_>) -> crate::ClipboardCopy {
         let Some(wayland) = wayland() else {
@@ -206,11 +219,21 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
-        #[cfg(target_os = "linux")]
         if let Some(wayland) = wayland() {
             return wayland.rich_text();
         }
-        None
+        match system::html() {
+            SystemText::Read(html) => html
+                .map(|html| crate::RichTextOffer {
+                    html,
+                    plain: match system::text(ClipboardTarget::Clipboard) {
+                        SystemText::Read(plain) => plain,
+                        SystemText::Unavailable => None,
+                    },
+                })
+                .filter(crate::RichTextOffer::is_valid),
+            SystemText::Unavailable => self.local.rich_text(),
+        }
     }
 
     fn image(&self) -> Option<crate::ClipboardImage> {
@@ -231,7 +254,13 @@ enum SystemText {
     Unavailable,
     /// The clipboard was read: its text, or `None` when it holds none. A
     /// Linux build without `x11` has no such clipboard to read.
-    #[cfg_attr(all(target_os = "linux", not(feature = "x11")), allow(dead_code))]
+    #[cfg_attr(
+        all(target_os = "linux", not(feature = "x11")),
+        allow(
+            dead_code,
+            reason = "a Linux build without x11 never reads a system clipboard"
+        )
+    )]
     Read(Option<String>),
 }
 
@@ -270,6 +299,28 @@ mod system {
             return super::SystemText::Unavailable;
         };
         super::SystemText::Read(arboard_text(&mut handle, target))
+    }
+
+    /// Formatted text: `html` with `plain` as its fallback.
+    pub(super) fn set_html(html: &str, plain: &str) -> bool {
+        let Some(mut handle) = arboard_clipboard().and_then(|cb| cb.lock().ok()) else {
+            return false;
+        };
+        handle.set_html(html, Some(plain)).is_ok()
+    }
+
+    /// The HTML the system clipboard holds, or that there is none to read.
+    pub(super) fn html() -> super::SystemText {
+        let Some(mut handle) = arboard_clipboard().and_then(|cb| cb.lock().ok()) else {
+            return super::SystemText::Unavailable;
+        };
+        super::SystemText::Read(
+            handle
+                .get()
+                .html()
+                .ok()
+                .filter(|html| html.len() <= crate::MAX_CLIPBOARD_HTML_BYTES),
+        )
     }
 
     /// `rgba` is already checked against the dimensions.
@@ -422,6 +473,15 @@ mod system {
 
     pub(super) fn set_secret_text(_text: &str) -> bool {
         false
+    }
+
+    pub(super) fn set_html(_html: &str, _plain: &str) -> bool {
+        false
+    }
+
+    /// No system clipboard to read.
+    pub(super) fn html() -> super::SystemText {
+        super::SystemText::Unavailable
     }
 
     /// No system clipboard to read.

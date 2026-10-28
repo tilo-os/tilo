@@ -4,9 +4,10 @@ use std::rc::Rc;
 
 use super::*;
 use crate::testing::{Dispatch, dispatch};
-use crate::widget::ResourceOperation;
 use crate::widget::TaffyTreeExt;
+use crate::widget::{ResourceOperation, ResourceOperationStart};
 use automerge::ReadDoc;
+use automerge::{AutoCommit, ObjId};
 
 /// The method names declared at the top level of the block that opens with
 /// the line `header` in `source`: lines indented four spaces deeper than the
@@ -252,7 +253,8 @@ impl Widget for Recorder {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
@@ -299,7 +301,9 @@ impl Widget for Recorder {
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
     }
+}
 
+impl crate::widget::ResourceOperations for Recorder {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,

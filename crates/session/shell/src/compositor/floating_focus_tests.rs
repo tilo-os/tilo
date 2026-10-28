@@ -284,7 +284,7 @@ fn assert_floating_input_routes(
 #[test]
 fn floating_input_gutter_routes_pointer_touch_and_remote_to_lower_float() {
     use crate::network::input_firewall::{Denial, RemoteInputFirewall};
-    use crate::network::streaming::InputEvent;
+    use tilo_window_share::streaming::InputEvent;
 
     let mut fixture = Fixture::new();
     let [source, child, lower] = fixture.ids;

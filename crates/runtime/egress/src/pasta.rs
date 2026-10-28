@@ -94,10 +94,6 @@ fn cstring(bytes: &[u8]) -> Result<CString, String> {
 
 impl Pasta {
     /// Start `pasta` on `netns` and wait until the namespace is configured.
-    ///
-    /// # Errors
-    /// Returns why `pasta` could not be started or did not finish setting
-    /// up, with what it printed.
     pub fn start(
         binary: &Path,
         netns: &Netns,

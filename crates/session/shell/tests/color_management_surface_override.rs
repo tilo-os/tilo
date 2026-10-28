@@ -8,13 +8,13 @@
 //! colorimetry even though the session was constructed with `hdr: None`.
 //! The codec label and bit depth always describe the encoded bytes.
 
-use shell::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::collab::hdr_metadata::Hdr10Metadata;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::network::protocol::NeighbourMsg;
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::hdr_metadata::Hdr10Metadata;
 
 fn sdr_config() -> FlatpakShareConfig {
     FlatpakShareConfig {
@@ -112,7 +112,7 @@ fn stream_colour_state_follows_the_client_description_else_the_config() {
         // The workspace was configured for HDR and the client then attaches an SDR
         // description: client intent wins, so the session must not force PQ.
         let mut cfg = sdr_config();
-        cfg.hdr = Some(shell::collab::hdr_metadata::HdrConfig::pq_reference());
+        cfg.hdr = Some(tilo_window_share::hdr_metadata::HdrConfig::pq_reference());
         let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg).expect("session");
         session.set_color_override(Colorimetry::sdr_bt709(), None);
 

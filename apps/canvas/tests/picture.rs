@@ -151,6 +151,61 @@ fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
     assert_eq!(app.state().ground.colour, "#ff0000");
 }
 
+/// In a browser page no thread renders a look: the frame loop renders its
+/// picture between frames, and the look answers once it is there.
+#[test]
+fn a_look_rendered_between_frames_answers_with_its_picture() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "set-artwork",
+        json!({"width": 64, "height": 64, "ground_colour": "#ff0000", "texture": "smooth"}),
+    )
+    .unwrap();
+    let gpu = ui::offscreen::shared_gpu().unwrap();
+    let renderer = ui::vello::Renderer::new(
+        &gpu.device,
+        ui::vello::RendererOptions {
+            antialiasing_support: ui::vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut host = ui::offscreen::pixels::PixelsHost::new();
+    host.set_gpu(gpu.device, gpu.queue, renderer);
+    let look = canvas::resource::ViewOp::Look {
+        look: Look {
+            size: Some(64),
+            format: Some("png".into()),
+            ..Default::default()
+        },
+    };
+    let invocation = app.start_effect(&look).unwrap();
+    assert!(host.waiting(), "the frame loop renders the look's picture");
+    let answered = app
+        .harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            host.drive();
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    assert!(answered, "the look never answered");
+    let updates = app.effect_progress();
+    let output = updates
+        .iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{updates:?}"));
+    let hash = ui::tilo_actions::content_hash(&output.resources[0]).unwrap();
+    let png = app.content().read(hash).unwrap();
+    let picture = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(picture.dimensions(), (64, 64));
+    assert_eq!(picture.get_pixel(32, 32).0, [255, 0, 0, 255]);
+}
+
 #[test]
 fn a_picture_is_drawn_a_unit_to_a_pixel_and_kept_by_content() {
     let mut app = TestApp::<App>::new().unwrap();

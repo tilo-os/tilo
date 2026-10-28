@@ -12,7 +12,7 @@
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
 //! (`NeighbourMsg`); it is the only place compaction, surface admission,
 //! retained-checkpoint replacement, continuity evidence and the live
-//! checkpoint gate decode one. With the `web` feature, [`legacy`] is the
+//! checkpoint gate decode one. With the `web` feature, `legacy` is the
 //! browser legacy-window bridge, which decodes and originates those
 //! messages on the browser live plane.
 //!
@@ -88,7 +88,6 @@ pub enum CheckpointKind {
         /// The user public key the checkpoint belongs to.
         user: [u8; 32],
     },
-    /// Any other checkpoint.
     Other,
 }
 

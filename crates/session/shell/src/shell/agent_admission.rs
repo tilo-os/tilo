@@ -99,7 +99,6 @@ pub struct MemberChoice {
     pub preset: Option<AgentPreset>,
 }
 
-/// The person's answer to an agent admission.
 #[derive(Debug)]
 pub struct AgentAnswer {
     pub outcome: PromptOutcome,
@@ -207,7 +206,7 @@ pub fn ensure_agent_member(
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .map(|workspace| {
                 (
                     workspace.id,
@@ -369,7 +368,7 @@ impl AgentDoorConsent {
             let member = remembered
                 .as_deref()
                 .is_some_and(|agent| workspace.agent_role_at(agent, now).is_some());
-            (workspace.room.to_string(), workspace.name.clone(), member)
+            (workspace.room().to_string(), workspace.name.clone(), member)
         });
         let Some((room, workspace, remembered_member)) = workspace else {
             let _ = decide.send(Consent::Refuse(t("agent-door-no-workspace")));

@@ -179,7 +179,6 @@ mod tests {
 
     #[test]
     fn publication_catalogues_reject_paths_duplicates_and_unsafe_uninstallers() {
-        // Phase `rejects_executable_paths_as_aliases`.
         {
             let mut application = app("example");
             application.remote_app_alias = "C:\\Windows\\notepad.exe".to_string();
@@ -188,7 +187,6 @@ mod tests {
                 Err(CatalogError::InvalidIdentifier("RemoteApp alias"))
             );
         }
-        // Phase `older_catalogues_default_to_no_safe_uninstaller`.
         {
             let application: PublishedApplication = serde_json::from_str(
                 r#"{"id":"example","displayName":"Example","remoteAppAlias":"tilo-example","iconSha256":null,"associations":[]}"#,
@@ -196,7 +194,6 @@ mod tests {
             .unwrap();
             assert!(!application.uninstall_available);
         }
-        // Phase `duplicate_ids_are_rejected`.
         {
             let catalog = Catalog {
                 generation: 1,

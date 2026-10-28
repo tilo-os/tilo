@@ -1,5 +1,3 @@
-//! Exercise dial classification through the native browser-peer connect path.
-
 use super::*;
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Endpoint, presets::Minimal};

@@ -21,10 +21,6 @@ pub(crate) fn validate_pending(
     }
     Ok(())
 }
-#[allow(
-    clippy::suspicious_operation_groupings,
-    reason = "a persisted floor stores the descriptor digest as `digest`"
-)]
 pub(crate) fn restore(
     room: RoomId,
     record: &StoredRoom,
@@ -38,43 +34,21 @@ pub(crate) fn restore(
     {
         return Err("invalid native committed room record".into());
     }
-    let intent = VerifiedNativeEnrollmentIntent::restore(&record.enrollment_intent)?;
-    let grant = intent.verified_join().grant();
-    if intent.room() != room
-        || record.governor != grant.authority
-        || record.workspace != grant.workspace_id
-        || record.device != *intent.local_device()
-        || record.transport_hint != *intent.transport_hint()
-        || record.invitation != intent.verified_join().signed_invitation()
-    {
-        return Err("native committed room differs from its authenticated enrollment".into());
-    }
-    if record.host.as_ref() != intent.delivery_host()
-        || record.locator.as_ref() != intent.delivery_locator()
-    {
-        return Err("native service pin differs from its unique signed enrollment locator".into());
-    }
-    if record.host.is_none() && (record.hint.is_some() || record.floor.is_some()) {
-        return Err("native descriptor has no independent service pin".into());
-    }
-    if record.hint.is_some() != record.floor.is_some() {
-        return Err("native persisted descriptor acknowledgement is incomplete".into());
-    }
-    if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
-            .map_err(|e| e.to_string())?;
-        if record.floor.as_ref().is_some_and(|floor| {
-            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
-        }) {
-            return Err("native persisted descriptor/floor mismatch".into());
+    match &record.enrollment {
+        Some(enrollment) => validate_enrollment(room, record, enrollment)?,
+        // A room this device created and governs: no join to check it against.
+        None if record.governor != record.device => {
+            return Err("a room governed here is governed by this device".into());
         }
+        None => {}
     }
+    let (governor, revocations) = record.current_governor(now);
     let peer = StatePeer::restore(
         &record.peer,
         &room.to_string(),
-        record.governor.clone(),
+        governor,
         vec![record.device.clone()],
-        RevocationList::new(),
+        revocations,
         now,
     )?;
     if !peer.admission_v5_selected() {
@@ -88,6 +62,49 @@ pub(crate) fn restore(
     view.record.private_direct_conversations.validate()?;
     crate::effect_receipt::validate(&view)?;
     Ok(view)
+}
+#[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "a persisted floor stores the descriptor digest as `digest`"
+)]
+fn validate_enrollment(
+    room: RoomId,
+    record: &StoredRoom,
+    enrollment: &crate::record::StoredEnrollment,
+) -> Result<(), String> {
+    let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
+    let grant = intent.verified_join().grant();
+    if intent.room() != room
+        || record.governor != grant.authority
+        || record.workspace != grant.workspace_id
+        || (record.device != *intent.local_device()
+            && !crate::renewal::renews(&record.device, intent.local_device()))
+        || enrollment.transport_hint != *intent.transport_hint()
+        || enrollment.invitation != intent.verified_join().signed_invitation()
+    {
+        return Err("native committed room differs from its authenticated enrollment".into());
+    }
+    if enrollment.host.as_ref() != intent.delivery_host()
+        || enrollment.locator.as_ref() != intent.delivery_locator()
+    {
+        return Err("native service pin differs from its unique signed enrollment locator".into());
+    }
+    if enrollment.host.is_none() && (enrollment.hint.is_some() || enrollment.floor.is_some()) {
+        return Err("native descriptor has no independent service pin".into());
+    }
+    if enrollment.hint.is_some() != enrollment.floor.is_some() {
+        return Err("native persisted descriptor acknowledgement is incomplete".into());
+    }
+    if let (Some(hint), Some(host)) = (&enrollment.hint, &enrollment.host) {
+        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
+            .map_err(|e| e.to_string())?;
+        if enrollment.floor.as_ref().is_some_and(|floor| {
+            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
+        }) {
+            return Err("native persisted descriptor/floor mismatch".into());
+        }
+    }
+    Ok(())
 }
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
@@ -130,16 +147,14 @@ impl NativeWorkspaceOwner {
                     .into(),
             );
         }
+        // The workspace a join installs into is the room's own, made for
+        // it: never a workspace of another room, which would have to be
+        // re-pointed at this one.
         let target = local
-            .map(|workspace| {
-                self.0
-                    .store
-                    .slot_room(workspace)
-                    .map(|prior_room| record::EnrollmentTarget {
-                        workspace,
-                        prior_room,
-                    })
-                    .ok_or("enrollment local slot no longer exists")
+            .map(|workspace| match self.0.store.slot_room(workspace) {
+                Some(shown) if shown == room => Ok(record::EnrollmentTarget { workspace, room }),
+                Some(_) => Err("enrollment workspace is another room's"),
+                None => Err("enrollment local slot no longer exists"),
             })
             .transpose()?;
         if let Some(target) = &target
@@ -156,9 +171,7 @@ impl NativeWorkspaceOwner {
 
         if let Some(pending) = next.pending.get(&room) {
             let same_target = match (&pending.target, &target) {
-                (Some(stored), Some(target)) => {
-                    stored.workspace == target.workspace && stored.prior_room == target.prior_room
-                }
+                (Some(stored), Some(target)) => stored.workspace == target.workspace,
                 (None, None) => true,
                 _ => false,
             };
@@ -191,8 +204,6 @@ impl NativeWorkspaceOwner {
         self.publish_pending(&next, Some(room))?;
         Ok(id)
     }
-    /// # Errors
-    /// The store is fenced.
     pub fn pending_enrollment(
         &self,
         room: RoomId,
@@ -204,9 +215,6 @@ impl NativeWorkspaceOwner {
     }
     /// The in-flight enrollment redeeming `invitation`, where the host has
     /// no slots to find it by.
-    ///
-    /// # Errors
-    /// The store is fenced or a retained proof no longer decodes.
     pub fn pending_enrollment_for_invitation(
         &self,
         invitation: &str,
@@ -234,8 +242,6 @@ impl NativeWorkspaceOwner {
         }
         Ok(None)
     }
-    /// # Errors
-    /// The store is fenced or the slot is ambiguous.
     pub fn pending_enrollment_for_slot(
         &self,
         local: WorkspaceId,
@@ -361,7 +367,8 @@ impl NativeWorkspaceOwner {
         }
         let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
         if intent.verified_join() != enrollment.verified_join()
-            || intent.local_device() != enrollment.local_device()
+            || (intent.local_device() != enrollment.local_device()
+                && !crate::renewal::renews(enrollment.local_device(), intent.local_device()))
             || intent.transport_hint() != enrollment.transport_hint()
         {
             return Err("native Complete differs from persisted enrollment intent".into());
@@ -381,18 +388,12 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         peer.select_admission_v5().map_err(|e| e.to_string())?;
-        // Only B's closed, pinned Complete evidence selects historical bootstrap
-        // admission. Ongoing relay input uses strict receive_from_report instead.
-        // This legacy enum labels canonical admission context, not fabricated
-        // gossip provenance or a claim that Complete arrived as a relay frame.
-        for bytes in &bootstrap.governance_messages {
-            let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
-            peer.receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
-                message,
-                now,
-            )?;
-        }
+        let app_messages = install_governance(&mut peer, bootstrap, now)?;
+        tracing::debug!(
+            %room,
+            app_messages,
+            "a room was installed on its governance; its app data follows through the room's sync"
+        );
         if !peer.has_governance() {
             return Err("native enrollment is missing real admitted governance".into());
         }
@@ -417,22 +418,26 @@ impl NativeWorkspaceOwner {
             workspace: bootstrap.workspace_id,
             governor: bootstrap.authority.clone(),
             device: enrollment.local_device().clone(),
-            invitation: enrollment.verified_join().signed_invitation().to_vec(),
-            enrollment_intent: pending.intent.clone(),
-            enrolled_at_ns: ns(now)?,
-            transport_hint: enrollment.transport_hint().clone(),
-            host: intent.delivery_host().cloned(),
-            locator: intent.delivery_locator().cloned(),
-            hint: enrollment.delivery_hint().cloned(),
+            enrollment: Some(crate::record::StoredEnrollment {
+                invitation: enrollment.verified_join().signed_invitation().to_vec(),
+                enrollment_intent: pending.intent.clone(),
+                enrolled_at_ns: ns(now)?,
+                transport_hint: enrollment.transport_hint().clone(),
+                host: intent.delivery_host().cloned(),
+                locator: intent.delivery_locator().cloned(),
+                hint: enrollment.delivery_hint().cloned(),
+                floor: None,
+            }),
             peer: peer.durable()?,
             private_direct_conversations: crate::PrivateDirectConversationStore::default(),
             generation: 1,
             continuity: 0,
-            floor: None,
             publication: Some(publication::StoredPublication::default()),
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
+            successions: Vec::new(),
+            join_ledger: tilo_peer_state::join_ledger::JoinLedger::default(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }
@@ -464,10 +469,6 @@ impl NativeWorkspaceOwner {
     /// Prepare a signed local document mutation from the current committed
     /// room and admit it in the same owner turn. This keeps its sequence and
     /// document basis current when other publications race the caller.
-    ///
-    /// # Errors
-    /// The room is fenced, preparation fails, or exact admission and durable
-    /// publication refuse the prepared write.
     pub fn commit_document_with_current(
         &self,
         room: RoomId,
@@ -503,7 +504,8 @@ impl NativeWorkspaceOwner {
             .map_err(|e| e.to_string())?
             .is_some()
         {
-            if !publication::has_exact(&candidate, &outgoing)?
+            if !candidate.governed_here()
+                && !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
                 return Err("exact local admission has no retained publication custody".into());
@@ -533,69 +535,42 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
-
-    /// Commit one typed Task Center command in the room owner's serialized
-    /// turn. Unlike an app document, this mutates the admitted room task
-    /// projection itself; it never creates a hidden application record.
-    ///
-    /// # Errors
-    /// The authority is no longer current, the command is stale or malformed,
-    /// or the durable owner cannot publish the resulting room generation.
-    pub fn commit_workspace_task_command(
-        &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-        now: SystemTime,
-    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
-        use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
-        let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native task room")?;
-        let CommitOperation::WorkspaceTaskCommand {
-            invocation,
-            authority,
-            command,
-        } = request.operation
-        else {
-            return Err("unsupported native task owner commit family".into());
-        };
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        if let tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Host { attestor }
-        | tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Agent { attestor, .. } =
-            &authority
-        {
-            let admitted = match candidate.host() {
-                Some(host) => host == attestor && attestor.capabilities.can_act_as_host,
-                None => candidate.governor() == attestor,
-            };
-            if !admitted {
-                return Err("task command attestor is not the exact pinned workspace host".into());
-            }
+}
+/// Admit the room's governance from `bootstrap` into `peer`, in the order
+/// the host published it, and answer how many app messages it left out.
+///
+/// Becoming a member takes the room's governance alone: its membership,
+/// roles and policy, and the certificates they import, which are everything
+/// an app message is authorized against. An app message is not part of it.
+/// A host's bootstrap carries its own record publications as well (every
+/// checkpoint it published since its last full one), and a device that does
+/// not hold the room yet cannot decide many of them: the app surface a change
+/// names is read from the room's own content, and a sealed write needs its
+/// record's checkpoint. Admitted here, each one waited in the peer's bounded
+/// prerequisite queue, so a busy room's bootstrap overflowed it and the join
+/// failed however often it was tried. The host retains every one of those
+/// publications on its record's channel, and the room's sync delivers them
+/// once the room is installed, where each is authorized exactly as any later
+/// write is.
+pub(crate) fn install_governance(
+    peer: &mut StatePeer,
+    bootstrap: &tilo_peer_state::join::JoinBootstrap,
+    now: SystemTime,
+) -> Result<usize, String> {
+    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
+    let mut app_messages = 0usize;
+    for bytes in &bootstrap.governance_messages {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+        if matches!(message, NeighbourMsg::AppDocument { .. }) {
+            app_messages = app_messages.saturating_add(1);
+            continue;
         }
-        let (changed, _) = candidate
-            .peer
-            .workspace_mut()
-            .apply_workspace_task_command(
-                invocation,
-                binding.request_digest,
-                &authority,
-                &command,
-                now,
-            )?;
-        if changed {
-            candidate.record.peer = candidate.peer.durable()?;
-            candidate.record.generation = candidate
-                .record
-                .generation
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            self.publish_room(room, candidate.clone(), None)?;
-        }
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: candidate.generation(),
-            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-        })
+        // Only the closed, pinned Complete evidence selects historical
+        // admission here; ongoing relay input uses strict receive_from_report.
+        // The origin labels that admission context, not a relay frame.
+        peer.receive_from(origin, message, now)?;
     }
+    Ok(app_messages)
 }
 pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(

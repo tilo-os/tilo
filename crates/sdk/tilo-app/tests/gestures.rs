@@ -17,7 +17,7 @@ pub struct Mixer {
     pub pan: Option<f64>,
 }
 
-#[resource(kind = "test.mixer", label = "Mixer")]
+#[resource(kind = "test.mixer", label = "Mixer", app = "so.tilo.test-mixer")]
 impl Mixer {}
 
 struct MixerApp;
@@ -50,6 +50,23 @@ fn typing_a_word_into_a_bound_field_is_one_undo_step() {
     assert_eq!(app.state().name, "Drums");
     assert!(app.undo());
     assert_eq!(app.state().name, "", "the whole word is one step");
+}
+
+#[test]
+fn typing_words_into_a_bound_field_undoes_one_word_at_a_time() {
+    let mut app = TestApp::<MixerApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("Drums and bass");
+    assert!(app.undo());
+    assert_eq!(
+        app.state().name,
+        "Drums and ",
+        "the last word, not the field"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().name, "Drums ");
+    assert!(app.undo());
+    assert_eq!(app.state().name, "");
 }
 
 #[test]

@@ -1,8 +1,0 @@
-{
-  "smoke.py": "db1427721d683cc4c7eb7dc833a1c82a83b0b29a07c5d1091fcec40c14bbc7e8",
-  "manifest.toml": "3a9b0d184a3ff7dfc011d60c487cd779b06a948a415c650ba46d7d2d1566b229",
-  "descriptor.json": "865ced6f595954ba251a38ea1bad39024d188241c0e92b46687aa77b673a9813",
-  "canonical_verifier_bundle.py": "8c49065799bc5bcb47006bccbbaab954f2ffb7823803dd7142ec3c43a2b4fe82",
-  "app_channel_manifest.py": "79ec19bb04ec37d2b09c337e82f19fb5893da6ce46830c694d06e2da2e2be76a",
-  "download.py": "8935e3b1214a1258fbb2a4fc0e619b63333b423292597894da2f3f652830d75e"
-}

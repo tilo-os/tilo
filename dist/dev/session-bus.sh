@@ -21,6 +21,8 @@ socket=$dir/bus
 bus_pid=$!
 child_pid=
 stop() {
+    # A second signal must not cut the stop short and leave the command up.
+    trap '' INT TERM HUP
     [[ -n $child_pid ]] && kill -TERM "$child_pid" 2>/dev/null
     kill -TERM "$bus_pid" 2>/dev/null || true
     wait "$bus_pid" 2>/dev/null || true

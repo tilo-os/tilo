@@ -17,6 +17,10 @@
 //!   * `idle`   — the resting overlay thumb (neutral, no track chrome).
 //!   * `active` — pointer parked on the thumb: brightened + track revealed.
 //!   * `both`   — content overflowing on both axes: vertical + horizontal bars.
+//!   * `window-rounded` / `window-square` — `both` filling a window the
+//!     shell rounds at the theme's window radius (the bars stop that radius
+//!     short of each corner) or draws edge to edge (they run to the edge),
+//!     over the desktop ground.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -72,6 +76,19 @@ fn long_list(both: bool) -> Box<dyn Widget> {
     Box::new(col)
 }
 
+/// Rows wider and taller than the window, so both bars show.
+fn wide_list() -> Box<dyn Widget> {
+    let mut col = Column::new().with_intrinsic_height();
+    for i in 0..60usize {
+        col = col.push(Box::new(Text::new(&format!(
+            "{i:>3}  2026-07-09T12:{:02}:00Z  systemd[1]: Started Tilo session service for the \
+             workspace and its collaborators.",
+            i % 60
+        ))));
+    }
+    Box::new(col)
+}
+
 fn cursor_at(p: Point) -> winit::event::WindowEvent {
     winit::event::WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
@@ -79,7 +96,25 @@ fn cursor_at(p: Point) -> winit::event::WindowEvent {
     }
 }
 
-fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
+/// How the shot frames the scroll view: alone, or filling a window drawn
+/// with rounded or square corners.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    Bare,
+    Rounded,
+    Square,
+}
+
+fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
+    let mut framed = theme.clone();
+    let window = vello::kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
+    let radius = match frame {
+        Frame::Bare => None,
+        Frame::Rounded => Some(f64::from(theme.tokens.radii.tile)),
+        Frame::Square => Some(0.0),
+    };
+    framed.surface = radius.map(|radius| tilo_ui::theme::SurfaceShape::rounded(window, radius));
+    let theme = &framed;
     let mut state = State::new();
     let axis = if both {
         ScrollAxis::Both
@@ -87,7 +122,11 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
         ScrollAxis::Vertical
     };
     let mut scroll = Scrollable::new(axis)
-        .with_child(long_list(both))
+        .with_child(if frame == Frame::Bare {
+            long_list(both)
+        } else {
+            wide_list()
+        })
         .with_height(HEIGHT_F32);
 
     let mut tr = TextRenderer::new();
@@ -118,11 +157,28 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
     // (which wakes the overlay bar to full opacity); a second layout pushes
     // the new offset down to the children.
     scroll.apply_layout(&taffy, node, Point::ZERO);
-    scroll.scroll_by(0.0, 700.0);
-    if both {
-        scroll.scroll_by(320.0, 0.0);
+    if frame == Frame::Bare {
+        scroll.scroll_by(0.0, 700.0);
+        if both {
+            scroll.scroll_by(320.0, 0.0);
+        }
+    } else {
+        // Scrolled to the end, so the vertical thumb rests at the bottom of
+        // its track and the horizontal one at its start: where each track
+        // ends beside the window's bottom corners.
+        scroll.scroll_by(0.0, 1.0e6);
     }
     scroll.apply_layout(&taffy, node, Point::ZERO);
+    if frame != Frame::Bare {
+        // A first draw learns the window's corners, as a live frame has.
+        scroll.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::default(),
+        );
+    }
 
     if active {
         // Park the pointer on the vertical thumb so it renders in its
@@ -147,12 +203,49 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
         }
     }
 
+    render(&mut scroll, (theme, &mut tr), window, radius, out);
+}
+
+/// Draw `scroll` and write it to `out`: alone on the window ground, or as
+/// a window the shell shows with corners of `radius`, over the desktop.
+fn render(
+    scroll: &mut Scrollable,
+    (theme, tr): (&Theme, &mut TextRenderer),
+    window: vello::kurbo::Rect,
+    radius: Option<f64>,
+    out: &Path,
+) {
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    scroll.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    let background = if let Some(radius) = radius {
+        // The window as the shell shows it: its ground clipped to its
+        // shape, over the desktop.
+        let shape = vello::kurbo::RoundedRect::from_rect(window, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &shape,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &shape,
+        );
+        theme.tokens.colors.surfaces.base
+    } else {
+        theme.tokens.colors.surfaces.content
+    };
+    scroll.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+    if radius.is_some() {
+        scene.pop_layer();
+    }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
+    r.render_png(&scene, background, out);
     println!("wrote {}", out.display());
 }
 
@@ -172,19 +265,31 @@ pub fn run(_args: &[String]) {
             &dir.join(format!("scrollbar-{tag}-idle.png")),
             false,
             false,
+            Frame::Bare,
         );
         shoot(
             &theme,
             &dir.join(format!("scrollbar-{tag}-active.png")),
             true,
             false,
+            Frame::Bare,
         );
         shoot(
             &theme,
             &dir.join(format!("scrollbar-{tag}-both.png")),
             true,
             true,
+            Frame::Bare,
         );
+        for (frame, name) in [(Frame::Rounded, "rounded"), (Frame::Square, "square")] {
+            shoot(
+                &theme,
+                &dir.join(format!("scrollbar-{tag}-window-{name}.png")),
+                true,
+                true,
+                frame,
+            );
+        }
     }
 }
 

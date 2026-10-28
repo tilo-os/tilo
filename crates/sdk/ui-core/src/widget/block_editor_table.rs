@@ -85,7 +85,6 @@ enum Hover {
     InsertRow(usize),
     /// Delete-column handle over column `c`.
     DeleteCol(usize),
-    /// Delete-row handle over row `r`.
     DeleteRow(usize),
     /// Interior column boundary `1..cols` (drag to resize the column to its
     /// left, `boundary - 1`).
@@ -1249,7 +1248,6 @@ impl Widget for Table {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
 
-        // ---- active column resize captures the pointer ----
         if let Some(rz) = self.resize.as_ref() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -1443,11 +1441,8 @@ mod tests {
         }
     }
 
-    // ---- pure model-op tests (the production path) --------------------
-
     #[test]
     fn table_model_inserts_removes_and_keeps_stable_ids() {
-        // Case `insert_and_read_roundtrip`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 2, 2);
@@ -1456,7 +1451,6 @@ mod tests {
             assert_eq!(cell_text(&doc, &t, 1, 1), "11");
         }
 
-        // Case `insert_column_in_the_middle_preserves_and_shifts_content`.
         {
             let (mut doc, t) = doc_with_table();
             // one row, three columns: A B C
@@ -1479,7 +1473,6 @@ mod tests {
             );
         }
 
-        // Case `insert_row_in_the_middle_preserves_and_shifts_content`.
         {
             let (mut doc, t) = doc_with_table();
             insert_column(&mut doc, &t, 0);
@@ -1497,7 +1490,6 @@ mod tests {
             assert_eq!(texts, vec!["R0", "", "R1", "R2"]);
         }
 
-        // Case `remove_row_in_the_middle`.
         {
             let (mut doc, t) = doc_with_table();
             insert_column(&mut doc, &t, 0);
@@ -1511,7 +1503,6 @@ mod tests {
             assert_eq!(texts, vec!["R0", "R2"], "the middle row is the one removed");
         }
 
-        // Case `remove_column_in_the_middle`.
         {
             let (mut doc, t) = doc_with_table();
             insert_row(&mut doc, &t, 0);
@@ -1525,7 +1516,6 @@ mod tests {
             assert_eq!(texts, vec!["C0", "C2"]);
         }
 
-        // Case `set_cell_text_overwrites`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
@@ -1534,7 +1524,6 @@ mod tests {
             assert_eq!(cell_text(&doc, &t, 0, 0), "second");
         }
 
-        // Case `stable_ids_survive_a_middle_delete`.
         {
             // Deleting a middle column must not disturb the identity/content of
             // the surviving columns (proves the order-list + stable-id design).
@@ -1559,8 +1548,6 @@ mod tests {
             assert_eq!(texts, vec!["c0", "c1", "c3"]);
         }
     }
-
-    // ---- widget-integration tests (through the real event path) -------
 
     /// Run `sync` → `build_layout` → `compute_layout` → `apply_layout` at the
     /// table's natural size, returning the taffy tree + root node for event
@@ -1622,7 +1609,6 @@ mod tests {
             .path(root)
             .layout(taffy, node)
             .send(table, ev);
-        // The owner applies what the table hands it, as an app's action does.
         for edit in table.take_edits() {
             apply(doc, root, &edit);
         }
@@ -1631,7 +1617,6 @@ mod tests {
 
     #[test]
     fn table_affordances_insert_delete_resize_and_create_cells() {
-        // Case `clicking_a_middle_boundary_inserts_a_column_there`.
         {
             let (mut doc, t) = doc_with_table();
             // 1 row, 2 columns "A","B".
@@ -1674,7 +1659,6 @@ mod tests {
             );
         }
 
-        // Case `clicking_a_row_delete_handle_removes_that_row`.
         {
             let (mut doc, t) = doc_with_table();
             insert_column(&mut doc, &t, 0);
@@ -1707,7 +1691,6 @@ mod tests {
             assert_eq!(texts, vec!["R0", "R2"]);
         }
 
-        // Case `dragging_an_interior_boundary_resizes_the_left_column`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 2);
@@ -1765,7 +1748,6 @@ mod tests {
             );
         }
 
-        // Case `empty_table_add_affordance_creates_a_cell`.
         {
             let (mut doc, t) = doc_with_table();
             let mut table = Table::new("t"); // no seed → empty
@@ -1793,7 +1775,6 @@ mod tests {
 
     #[test]
     fn cell_editing_splices_only_changed_text_and_moves_focus() {
-        // Case `typing_into_a_focused_cell_reaches_the_owner_as_cell_edits`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
@@ -1817,7 +1798,6 @@ mod tests {
             );
         }
 
-        // Case `enter_moves_focus_to_the_cell_below`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 2, 2);
@@ -1839,7 +1819,6 @@ mod tests {
             );
         }
 
-        // Case `typing_into_a_cell_splices_only_the_new_text`.
         {
             // `set_cell_text` receives the cell's whole contents on every keystroke.
             // Deleting and reinserting them costs O(len) ops per key and leaves the
@@ -1870,7 +1849,6 @@ mod tests {
             );
         }
 
-        // Case `rewriting_a_cell_with_its_current_value_is_free`.
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);

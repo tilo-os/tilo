@@ -30,8 +30,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report  # noqa: E402
-from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
-                               provenance, resources, search, startup, ui, window)
+from acceptance.checks import (agent, apps, basics, clock, daily_apps,  # noqa: E402,F401
+                               input_devices, provenance, resources, search, secrets, startup, ui,
+                               window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -83,7 +84,7 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
-    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # The installed-desktop gates os-acceptance-{arch} runs on a KVM guest: kernel and userspace
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
@@ -105,7 +106,10 @@ DE_PASS = ("U03", "U04", "S03")
 # shares a workspace on a relay it starts for the run, so it comes late, but before R07, A16
 # and R05, which judge the apps it opens too. R08 signs the dev account in at seat0's
 # greeter, which starts a second compositor: it runs after every check that measures or
-# renders the slot's session.
+# renders the slot's session. K01 sets the VM's clock back and restarts the session, so it
+# runs after the checks that judge what the run opened, and before R08. C01 opens Notes, so it
+# runs before R05 judges the apps the run opened. C02 takes the account R08 signed in through first use and signs it
+# in again, so it follows R08.
 ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
@@ -113,8 +117,8 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
-         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07",
-         "R09", "R07", "A16", "R05", "R08", "P03"]
+         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
+         "C01", "R09", "R07", "A16", "R05", "K01", "R08", "C02", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -223,28 +227,30 @@ def renderer(vm: TiloVm, without_3d: bool = False) -> tuple[str, dict]:
 def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
     helptext = vm.run("slot", "create", "--help", slot=False)
     args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
-    # A throwaway test identity where this tilo-vm can mint one (`slot create --identity`).
+    # A throwaway test identity in a private root (`--identity`), where fs never runs. Making
+    # the slot the VM's person through its own onboarding (`--identity device`) is what fs
+    # needs, but on a real VM that session never shows onboarding yet and tilo-vmd waits out
+    # its 180 s, so every run would stop before its first check; it comes back here once
+    # `tilo-vm slot create --identity device` passes on a fresh VM.
     if "--identity" in helptext:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
-    try:
-        vm.run(*args, timeout=300, slot=False)
-    except VmError as exc:
-        # A slot whose compositor missed the display change is reapplied, as tilo-vm advises.
-        if "did not pick up the display change" not in str(exc):
-            raise
-        time.sleep(3)
-        vm.run(*args, timeout=300, slot=False)
+    vm.run(*args, timeout=300, slot=False)
 
 
 def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
     """What the slot's compositor and tilo-vmd said, for a run that could not set up its
     session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
     try:
-        text = vm.run("logs", vm.slot, timeout=120, check=False, slot=False)
+        text = vm.run("logs", vm.slot, "-n", "20000", timeout=120, check=False, slot=False)
     except VmError as exc:
         text = f"tilo-vm logs {vm.slot} failed: {exc}"
+    # The compositor's per-frame and per-second statistics drown what it said at start-up
+    # (its identity, onboarding, the services it waited for): the journal since the boot,
+    # without them.
+    noise = ("FRAME-LIFECYCLE", "paint-stats:", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=")
+    text = "\n".join(line for line in text.splitlines() if not any(n in line for n in noise))
     if not text.strip():
         return None
     path = out / "data" / f"P00-{vm.slot}-logs.txt"
@@ -393,7 +399,7 @@ def switch_locale(vm: TiloVm, lang: str) -> None:
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
-    time.sleep(5)
+    vm.wait_catalogue()
 
 
 def main() -> int:
@@ -407,6 +413,13 @@ def main() -> int:
     ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
     ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
+    ap.add_argument("--shard", choices=sorted(SHARDS),
+                    help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
+                    "checks run, and the checks that judge the whole session (SESSION_JUDGES) judge "
+                    "this one; with none of its checks selected, nothing boots")
+    ap.add_argument("--budgets", choices=("gate", "report"), default="gate",
+                    help="gate: a measurement over its budget fails its check; report: it is recorded as "
+                         "over-budget and the run still passes (core.BudgetExceeded)")
     ap.add_argument("--idle-seconds", type=int, default=30)
     ap.add_argument("--memory-mb", type=int, default=4608)
     ap.add_argument("--cpus", type=int, default=6)
@@ -434,6 +447,19 @@ def main() -> int:
     ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
+    if args.only:
+        known = {c.id for c in core.REGISTRY} | {c.area for c in core.REGISTRY}
+        unknown = sorted({w.strip() for w in args.only.split(",")} - known - {""})
+        if unknown:
+            # A name that matches nothing would run nothing and pass.
+            ap.error(f"--only names no check or area: {', '.join(unknown)}")
+    selected = select(args.only, SHARDS[args.shard] if args.shard else None)
+    if args.shard and not selected - FRAME:
+        # A part of the suite with nothing selected in it: no VM, no records, and a pass.
+        print(f"no check of shard {args.shard} is selected ({args.only or 'all'}); nothing to boot")
+        if args.records:
+            records.write(args.records, [])
+        return 0
 
     if bool(args.bootstrap_tilo_vm) != bool(args.bootstrap_from):
         ap.error("--bootstrap-tilo-vm and --bootstrap-from must be supplied together")
@@ -497,7 +523,7 @@ def main() -> int:
         "commit": want_commit, "commit_short": (want_commit or "unknown")[:9],
         "commit_subject": git("log", "-1", "--format=%s", want_commit) if want_commit else None,
         "vm": vm_name, "vm_memory_mb": args.memory_mb, "vm_cpus": args.cpus, "gl": args.gl,
-        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS,
+        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS, "budget_mode": args.budgets,
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
@@ -551,20 +577,23 @@ def main() -> int:
                 swapped["components"] = management["components"] + swapped["components"]
                 swapped["slot_layers"].update(management["slot_layers"])
             facts["provenance"]["swap"] = swapped
-        time.sleep(5)
+        vm.wait_catalogue()
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
+        # A VM this run created without --gl renders in software: no GPU for R05 to judge.
+        facts["software_rendering"] = created and not args.gl
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
-        config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
+        config = {"budgets": BUDGETS, "budget_mode": args.budgets, "outputs": outputs,
+                  "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
         ctx.facts.update(facts)
         de = "de" in args.locales.split(",")
         if not de:
             ctx.facts["locale_de:why"] = "the German pass was not requested (--locales)"
-        selected = select(args.only)
         by_id = {c.id: c for c in core.REGISTRY}
         german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
+            core.keep_awake(ctx)
             r = core.run_check(ctx, by_id[cid])
             results.append(r)
             print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -578,6 +607,7 @@ def main() -> int:
             except VmError as exc:
                 ctx.facts["locale_de:why"] = f"the session could not be restarted in German: {exc.reason()}"
             for cid in de_ids:
+                core.keep_awake(ctx)
                 r = core.run_check(ctx, by_id[cid])
                 results.append(r)
                 print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -614,21 +644,55 @@ def main() -> int:
                 # No file: the comparison then reports every KPI of the run as missing.
                 print(f"records: none written: {exc}", file=sys.stderr)
     expected = sum(r.status == "xfail" for r in results)
+    skipped = sum(r.status == "skip" for r in results)
+    over = [r.id for r in results if r.status == "over-budget"]
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass"
-          + (f", {expected} expected failure(s)" if expected else ""))
+          + (f", {expected} expected failure(s)" if expected else "")
+          + (f", {skipped} skipped" if skipped else "")
+          + (f", over budget (reported): {', '.join(over)}" if over else ""))
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1
 
 
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
+# The parts of the suite t runs apart (t.toml's `shards` of vm-acceptance), each in a VM of its
+# own, by the areas whose checks they run, or by check id where an area alone would make one
+# part far longer than the others: a check named by id runs in that part only, and its area's
+# part runs the rest. Every check is in exactly one; the checks that depend on another's order
+# or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
+SHARDS = {
+    "session": "provenance,resources,secrets,agent,basics",
+    "apps": "apps",
+    # The non-Tilo apps (Chromium on Wayland and X11, GTK, Qt, alacritty, glxgears), each a
+    # minute or more: with the Tilo apps they made the longest part twice the next.
+    "foreign-apps": "A08,A09,A10,A11,A12,A13",
+    "window": "window,input",
+    "shell": "ui,search",
+}
+# The checks a part names by id, which their areas' parts leave out.
+_BY_ID = {w for part in SHARDS.values() for w in part.split(",") if w[:1].isupper()}
+# What every run states: the image it runs, and that its slot is up.
+FRAME = {"P01", "P02"}
+# The checks that judge everything a session did rather than one area: no failed or looping
+# service, every presented frame within the render budgets, every app launch within its budget.
+# A run of some areas (--areas) has a session of its own, so they judge it too.
+SESSION_JUDGES = {"P03", "R07", "A16"}
 
 
-def select(only: str | None) -> set[str]:
+def select(only: str | None, areas: str | None = None) -> set[str]:
     ids = {c.id for c in core.REGISTRY}
     if not only:
-        return ids
-    want = {w.strip() for w in only.split(",")}
-    chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}
+        chosen = set(ids)
+    else:
+        want = {w.strip() for w in only.split(",")}
+        chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}
+    if areas:
+        part = {a.strip() for a in areas.split(",")}
+        chosen = {c.id for c in core.REGISTRY
+                  if c.id in chosen and (c.id in part or c.id in SESSION_JUDGES
+                                         or (c.area in part and c.id not in _BY_ID))}
+        if not chosen - SESSION_JUDGES:
+            chosen = set()
     # A check that needs a fact runs after the check that establishes it.
     for c in core.REGISTRY:
         if c.id in chosen:

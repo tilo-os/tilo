@@ -144,7 +144,6 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Content-follows-finger scrolling for touchpads.
     pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
     pub mouse_natural_scroll: bool,
@@ -343,6 +342,11 @@ impl SettingsChange {
         self.0.is_empty()
     }
 
+    /// The model providers, whose models apps offer for an agent's run.
+    pub fn agent_providers(&self) -> bool {
+        self.touches(&[agent_provider_config::SETTINGS_SECTION])
+    }
+
     /// The backend's input devices: pointer and keyboard preferences
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
@@ -367,6 +371,11 @@ impl SettingsChange {
         self.touches(&["display_identify"])
     }
 
+    /// Settings asked to stop a terminal tab controlling the desktop.
+    pub fn desktop_control_stop(&self) -> bool {
+        self.touches(&[settings_store::desktop_control::StopRequest::SECTION])
+    }
+
     /// The shortcut table the compositor matches before a client sees a key.
     pub fn shortcuts(&self) -> bool {
         self.touches(&["shortcuts"])
@@ -375,6 +384,18 @@ impl SettingsChange {
     /// Which desktop controls the chrome offers.
     pub fn desktop_controls(&self) -> bool {
         self.touches(&["desktop_controls"])
+    }
+
+    /// The person's record of the desktop's control hints: what they learned
+    /// on any of their devices, and whether hints show.
+    pub fn control_hints(&self) -> bool {
+        self.touches(&[settings_store::control_hints::SECTION])
+    }
+
+    /// When and from whom notifications may interrupt (do not disturb,
+    /// quiet hours, per-app choices).
+    pub fn notifications(&self) -> bool {
+        self.touches(&[settings_store::notification_policy::SECTION])
     }
 
     /// The theme: `appearance`, and the contrast and text-size layers in
@@ -1252,11 +1273,11 @@ mod tests {
         );
     }
 
-    /// Long enough for every notification of a write and one stamp poll.
-    fn settle() {
-        std::thread::sleep(
-            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
-        );
+    /// Re-read the document now, as the refresh thread does on a
+    /// notification or a moved stamp, so whatever the write changed has been
+    /// published before the test looks.
+    fn settle(live: &LiveSettings) {
+        let _ = live.refresh_now();
     }
 
     #[test]
@@ -1286,7 +1307,7 @@ mod tests {
                 sections(&["input"]),
                 "the rewrite must be noticed"
             );
-            settle();
+            settle(&live);
             assert_eq!(
                 follower.changed_sections(&live),
                 sections(&[]),
@@ -1358,7 +1379,7 @@ mod tests {
         // A rewrite that changes no value is nothing to do.
         let generation = live.generation();
         write(&path, "notifications", json!({"do_not_disturb": true}));
-        settle();
+        settle(&live);
         assert_eq!(live.generation(), generation);
         assert_eq!(follower.changed_sections(&live), sections(&[]));
     }
@@ -1392,6 +1413,50 @@ mod tests {
         let keyboard = KeyboardSettings::from_section(&live.section(SECTION));
         assert_eq!(keyboard.layouts, "de");
         assert_eq!(keyboard.source_ids, ["de"]);
+    }
+
+    /// The person's control-hint record and notification policy reach the
+    /// desktop with the settings change that carries them, read from the
+    /// changed document: nothing reads them again on a schedule.
+    #[test]
+    fn the_hint_record_and_the_notification_policy_follow_their_settings_change() {
+        let path = scratch("hints-notifications");
+        write(&path, "input", json!({"tap_to_click": true}));
+        let live = LiveSettings::start_at(path.clone(), || {});
+        let mut follower = SectionFollower::new(&live);
+
+        changed(&live, || {
+            write(
+                &path,
+                settings_store::control_hints::SECTION,
+                json!({"learned": {"enabled": false}}),
+            );
+        });
+        let change = SettingsChange::from(follower.changed_sections(&live));
+        assert!(change.control_hints());
+        assert!(!change.notifications());
+        assert!(
+            !settings_store::control_hints::LEARNED
+                .from_document(&live.snapshot().document)
+                .enabled
+        );
+
+        changed(&live, || {
+            write(
+                &path,
+                settings_store::notification_policy::SECTION,
+                json!({"do_not_disturb": true}),
+            );
+        });
+        let change = SettingsChange::from(follower.changed_sections(&live));
+        assert!(change.notifications());
+        assert!(!change.control_hints());
+        assert!(
+            settings_store::notification_policy::NotificationPolicy::from_document(
+                &live.snapshot().document
+            )
+            .do_not_disturb
+        );
     }
 
     #[test]

@@ -8,19 +8,7 @@ use super::{
 const MAX_HISTORY_PARENTS: usize = 64;
 const MAX_HISTORY_LOCATOR_BYTES: usize = 4096;
 
-/// Descriptive facts observed through a genuine live retained Read subject.
-/// A receiver still needs its independently authenticated source capability and
-/// admitted current person/Read context; this value is not an enrollment token.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeHistoryReadObservation {
-    pub source_owner: [u8; 32],
-    pub root: [u64; 2],
-    pub parent: [u64; 2],
-    pub parents: Vec<Vec<u8>>,
-    pub name: Vec<u8>,
-    pub identity: [u64; 2],
-}
+pub use tilo_fs_client::directory_types::HistoryReadObservation as NativeHistoryReadObservation;
 
 /// Source-resident original Read custody. Only `FsSession` can mint it from a
 /// genuinely opened readable child of its already admitted directory grant.
@@ -122,8 +110,6 @@ impl NativeHistoryReadSubject {
     }
     /// Match the actual named entry to the held original readable inode. This
     /// prevents a stale history subject from following a substituted file.
-    /// # Errors
-    /// Refuses substitution/deletion, stale scope and kernel metadata errors.
     pub fn check(&self) -> Result<(), FsError> {
         let table = self.session.call()?;
         self.scope_locked(&table)?;

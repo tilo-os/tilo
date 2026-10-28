@@ -8,6 +8,17 @@ pub(super) struct Compatibility {
     result: Option<ui::LocalState<Option<FullOsCheck>>>,
 }
 
+impl Compatibility {
+    /// A production-route test paints the same read-only facts the native
+    /// surface reports; the ordinary compatibility drain still advances the
+    /// journey, so no page or prepared identity is assigned.
+    #[cfg(test)]
+    pub(super) fn accept_read_only_check_for_test(&mut self, check: FullOsCheck) {
+        self.pending = false;
+        self.result = Some(ui::LocalState::new(Some(check)));
+    }
+}
+
 impl InstallerPreview {
     pub(super) fn drain_compatibility(&mut self) -> bool {
         if std::mem::take(&mut self.compatibility.pending) {
@@ -98,7 +109,10 @@ mod tests {
             .apply(InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert!(!another.compatibility.pending);
-        assert_eq!(another.journey.page, Page::Migration);
+        // The destination is identified on its own page before any identity,
+        // data or medium choice; a model name is not a grant.
+        assert_eq!(another.journey.page, Page::Target);
+        assert!(!another.target.ready());
         assert!(another.storage.facts.is_none());
     }
 

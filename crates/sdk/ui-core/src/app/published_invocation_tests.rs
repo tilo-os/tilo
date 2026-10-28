@@ -424,7 +424,11 @@ fn completed_owned_job_retires_retained_handler_and_worker_custody() {
         fn poll(&mut self) -> Vec<CollabEvent> {
             vec![]
         }
-        fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        fn join_route(
+            &mut self,
+            _: crate::collaboration::RouteSpec,
+            _: crate::record::RecordKind,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn send_to_route(
@@ -580,13 +584,6 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
     }
 }
 
-/// #3928: a caller that names no revision is admitted against the one the
-/// owner resolved the action at, and the broker binds the admission to the
-/// revision that resolution names. When the directory moves on between that
-/// resolution and the host running the action (the owner's actions changed),
-/// the host refuses before the handler runs, exactly as it does for a
-/// revision the caller named. Two controls run: the same invocation with no
-/// change, and one resolved after the change.
 #[test]
 fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
     use std::sync::{Arc, atomic::AtomicU64};

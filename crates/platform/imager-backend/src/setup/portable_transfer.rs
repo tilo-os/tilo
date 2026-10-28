@@ -15,7 +15,7 @@ use std::{
 use zeroize::Zeroizing;
 pub mod acl;
 pub mod archive;
-mod codec;
+pub(crate) mod codec;
 mod process;
 mod progress;
 pub use progress::{ArchivePhase, ArchiveProgress, Observer};

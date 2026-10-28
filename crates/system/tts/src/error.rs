@@ -14,7 +14,6 @@ pub enum TtsError {
     /// The backend's prerequisite (daemon / binary) is not present.
     #[error("tts backend `{backend}` unavailable: {detail}")]
     BackendUnavailable {
-        /// Which backend.
         backend: &'static str,
         /// Why it's unavailable.
         detail: String,
@@ -23,7 +22,6 @@ pub enum TtsError {
     /// Failed to spawn a subprocess (espeak-ng) or connect a socket.
     #[error("tts backend `{backend}` failed to start a process")]
     Spawn {
-        /// Which backend.
         backend: &'static str,
         /// Underlying I/O error.
         #[source]

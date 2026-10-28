@@ -216,7 +216,10 @@ fn signed_snapshot(
 fn retained_snapshot_rejects_mismatched_exact_channel() {
     let (mut peer, key, now) = fixture();
     install_policy(&mut peer, &key, now);
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let authority = RetentionAuthority::new(ROOM, peer.authority().clone()).unwrap();
     let verify_room = |message: &NeighbourMsg| {
         verify_room(

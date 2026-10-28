@@ -163,6 +163,30 @@ class CatalogSelectionTests(unittest.TestCase):
             with patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "team/public",
                                          "TILO_RELEASE_SERVER": "https://downloads.example.invalid"}):
                 self.assertEqual(len(catalog.media(data, self.root)), 3)
+    def test_target_policy_entries_are_checked_and_are_not_media(self):
+        with patch.dict(os.environ, GITHUB_RELEASES):
+            data = self.media_fixture()
+            entry = {"purpose": "tilo-target-policy", "layout": "target-policy-bundle-v1",
+                     "release_id": "imager-v1.2.3", "arch": "x86_64", "generation": 11,
+                     "target_uki_sha256": "e" * 64,
+                     "url": "https://code.tilo.so/api/packages/tilo/generic/tilo-target-policy/"
+                            "imager-v1.2.3/tilo-target-policy-x86_64.tar",
+                     "archive_sha256": "f" * 64, "archive_size": 4096}
+            data["releases"].append(entry)
+            self.assertEqual(len(catalog.media(data, self.root)), 3)
+            for field, bad in (("layout", "target-policy-bundle-v0"),
+                               ("release_id", "imager-v9.9.9"),
+                               ("generation", 0),
+                               ("target_uki_sha256", "E" * 64),
+                               ("archive_sha256", "not-a-digest"),
+                               ("archive_size", 0),
+                               ("url", entry["url"].replace("code.tilo.so", "github.com")),
+                               ("hardware_profile", "generic")):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(data)
+                    changed["releases"][-1][field] = bad
+                    with self.assertRaises(ValueError):
+                        catalog.media(changed, self.root)
 
 if __name__ == "__main__":
     unittest.main()

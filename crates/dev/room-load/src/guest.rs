@@ -71,7 +71,6 @@ pub const CHAT_RECORD: &str = "general";
 /// what one record's snapshot may hold, so every part stays compactable.
 pub const PART_MESSAGES: usize = 2000;
 
-/// Part `index` of the chat in `room`.
 pub fn chat_part(room: &str, index: usize) -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.chat".into(),

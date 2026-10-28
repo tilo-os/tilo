@@ -35,6 +35,7 @@ fn open(root: &Path) -> State {
         workers: isolated_test_workers(),
         replay_worker: Arc::new(Semaphore::new(1)),
         retaining_only: false,
+        group: crate::persistence::Group::default(),
     }
 }
 
@@ -72,6 +73,18 @@ fn commit(state: &State, sequence: u64, index: u32) {
         !build.holds_scratch(),
         "a delta's owner job must not queue a scratch disposal"
     );
+}
+
+/// [`commit`], joining the owner's group: the record waits for the group's
+/// barriers ([`super::Group`]).
+fn commit_grouped(state: &State, sequence: u64, index: u32) {
+    let mut build = state
+        .store
+        .start_retain(&CHANNEL, Some(sequence), edit(index))
+        .unwrap()
+        .deferring(state.group.records())
+        .unwrap();
+    while build.step(WorkLimit::default()).unwrap() == Step::More {}
 }
 
 /// The bodies of the workspace's retained edits, in retained order.
@@ -137,7 +150,6 @@ fn the_sequence_survives_a_restart_with_the_clock_stepped_back() {
             .map(|tick| state.next_sequence_at(now + tick).unwrap())
             .collect();
         assert!(issued.windows(2).all(|pair| pair[0] < pair[1]));
-        // Sequences outrun a clock that stands still.
         assert_eq!(issued, [now, now + 1, now + 2]);
         issued
     };
@@ -167,11 +179,22 @@ fn killed_writer_child() {
     };
     let mut state = open(Path::new(&root));
     let mut out = std::io::stdout().lock();
-    // Bounded, in case the parent died without killing this process.
-    for index in 0..100_000 {
-        let sequence = state.next_sequence().unwrap();
-        commit(&state, sequence, index);
-        writeln!(out, "{ACKED}{index} {sequence}").unwrap();
+    // Bounded, in case the parent died without killing this process. Edits
+    // commit in groups of a growing size, each acknowledged only after the
+    // group's barriers, as the owner does.
+    let mut index = 0;
+    for size in (1..12).cycle().take(20_000) {
+        let mut group = Vec::new();
+        for _ in 0..size {
+            let sequence = state.next_sequence().unwrap();
+            commit_grouped(&state, sequence, index);
+            group.push((index, sequence));
+            index += 1;
+        }
+        state.group.flush().unwrap();
+        for (index, sequence) in group {
+            writeln!(out, "{ACKED}{index} {sequence}").unwrap();
+        }
         out.flush().unwrap();
     }
 }
@@ -259,7 +282,6 @@ fn thread_cpu_ns() -> u64 {
         .saturating_add(u64::try_from(now.tv_nsec).unwrap())
 }
 
-/// The lineage of the edits, as the store names it.
 fn edits_lineage(store: &WorkspaceStore) -> std::path::PathBuf {
     store.root().join("retained/v2").join(format!(
         "{}-{}",
@@ -317,11 +339,30 @@ fn cost_per_edit(stored: u32, count: u32) -> (u64, u64) {
 /// Reports what an edit costs the committing thread as the document's
 /// retained history grows. Timing is never asserted; the listing
 /// it grew with is.
+///
+/// Each history length runs on its own thread, whose CPU clock counts
+/// only its own commits. A commit's wall time is its two barriers, which
+/// on a busy CI disk take a tenth of a second each: 200 commits per
+/// length, one length after another, outran the suite's 8-minute hang
+/// bound while every commit still cost the same 1.2 ms of CPU, which 32
+/// commits per length measure as well.
 #[test]
 fn delta_commit_cpu_per_stored_records() {
-    for stored in [1, 256, 1_000, 5_000] {
-        let (cpu_ns, listed) = cost_per_edit(stored, 200);
+    let costs = std::thread::scope(|scope| {
+        let runs: Vec<_> = [1, 256, 1_000, 5_000]
+            .map(|stored| scope.spawn(move || (stored, cost_per_edit(stored, 32))))
+            .into_iter()
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for (stored, (cpu_ns, listed)) in costs {
         println!("RETAIN_COST stored={stored} cpu_ns_per_edit={cpu_ns} listed_per_edit={listed}");
+        assert_eq!(
+            listed, 0,
+            "an edit after {stored} stored records listed its lineage's history"
+        );
     }
 }
 
@@ -448,5 +489,214 @@ fn a_new_generation_is_listed_not_answered_from_the_index() {
             .join(format!("{:016x}.delta", 1))
             .exists(),
         "the next ordinal follows the new generation, not the old index"
+    );
+}
+
+/// Edits one group commits in the barrier-count test.
+const GROUP: u32 = 16;
+/// Commits queued behind a busy owner in the owner-level group test.
+const QUEUED: u32 = 24;
+
+#[test]
+fn a_group_of_edits_shares_its_barriers_and_is_invisible_until_they_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    for index in 0..2 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, index);
+    }
+    let before = crate::store::thread_fsyncs();
+    for index in 2..2 + GROUP {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit_grouped(&state, sequence, index);
+    }
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        0,
+        "a grouped edit issues no barrier of its own"
+    );
+    assert_eq!(
+        retained_edits(&state.store),
+        [0, 1],
+        "no reader sees an edit before its barriers"
+    );
+    let before = crate::store::thread_fsyncs();
+    state.group.flush().unwrap();
+    // One file barrier per record, issued together, and the generation's
+    // directory once: ungrouped, each edit costs a file and a directory
+    // barrier in turn.
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        u64::from(GROUP) + 1,
+        "a group costs its records' file barriers and one directory barrier"
+    );
+    assert_eq!(state.group.records().flushes(), 1);
+    assert_eq!(
+        retained_edits(&state.store),
+        (0..2 + GROUP).collect::<Vec<_>>()
+    );
+    // The index followed the group: the next edit lists nothing.
+    let listed = crate::store::thread_listed_entries();
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit_grouped(&state, sequence, 2 + GROUP);
+    state.group.flush().unwrap();
+    assert_eq!(crate::store::thread_listed_entries() - listed, 0);
+    assert_eq!(
+        retained_edits(&state.store),
+        (0..3 + GROUP).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_barrier_after_a_group_makes_the_group_durable_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 0);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit_grouped(&state, sequence, 1);
+    let records = state.group.records();
+    let hook = super::flush_hook(records.clone());
+    // Any later barrier, here an ungrouped edit's, orders after the group.
+    tilo_relay_store::with_barrier_hook(hook, || {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit(&state, sequence, 2);
+    });
+    assert!(!records.pending());
+    assert_eq!(retained_edits(&state.store), [0, 1, 2]);
+}
+
+#[test]
+fn a_retried_edit_still_in_its_group_is_retained_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 0);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit_grouped(&state, sequence, 1);
+    // The same frame again: the build must list, so it flushes first.
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit_grouped(&state, sequence, 1);
+    state.group.flush().unwrap();
+    assert_eq!(retained_edits(&state.store), [0, 1]);
+}
+
+/// The owner, its first job held until `gate` fires, then `count` grouped
+/// edits queued behind it, each completing with whether its record was
+/// durable and listed when it completed.
+async fn grouped_owner(
+    root: &Path,
+    count: u32,
+) -> (
+    Arc<std::sync::Mutex<State>>,
+    tokio::sync::oneshot::Sender<()>,
+    Vec<tokio::sync::oneshot::Receiver<Result<u32, crate::store::StoreError>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::sync::{mpsc, oneshot};
+    let mut opened = open(root);
+    let sequence = opened.next_sequence_at(NOW).unwrap();
+    commit(&opened, sequence, 0);
+    let records = opened.group.records();
+    let state = Arc::new(std::sync::Mutex::new(opened));
+    let (tx, rx) = mpsc::channel::<super::NormalJob>(64);
+    let (_replay_tx, replay_rx) = mpsc::channel::<super::ReplayJob>(1);
+    let (gate, held) = oneshot::channel::<()>();
+    tx.send(super::NormalJob {
+        sequence: 1,
+        grouped: false,
+        job: Box::new(move |_| {
+            Box::pin(async move {
+                let _ = held.await;
+            })
+        }),
+    })
+    .await
+    .unwrap();
+    let permits = Arc::new(Semaphore::new(1024));
+    let mut receipts = Vec::new();
+    for index in 1..=count {
+        let records = records.clone();
+        let store_root = root.to_path_buf();
+        let (job, receipt) = super::resumable_job(
+            permits.clone().try_acquire_owned().unwrap(),
+            permits.clone().try_acquire_owned().unwrap(),
+            1,
+            super::NORMAL_STEPS,
+            true,
+            async { Ok(()) },
+            move |state: &mut State, _: &mut Option<()>| {
+                let sequence = state.next_sequence_at(NOW)?;
+                commit_grouped(state, sequence, index);
+                Ok(Step::Done(index))
+            },
+            move |result: Result<u32, crate::store::StoreError>| async move {
+                let index = result?;
+                // Completion is where a commit is acknowledged and fanned
+                // out: its barriers must already hold.
+                assert!(
+                    !records.pending(),
+                    "edit {index} completed before its barrier"
+                );
+                let store = WorkspaceStore::open(&store_root, WORKSPACE, false).unwrap();
+                assert!(
+                    retained_edits(&store).contains(&index),
+                    "edit {index} completed before it was retained"
+                );
+                Ok(index)
+            },
+        );
+        tx.send(super::NormalJob {
+            sequence: u64::from(index) + 1,
+            grouped: true,
+            job,
+        })
+        .await
+        .unwrap();
+        receipts.push(receipt);
+    }
+    drop(tx);
+    let running = tokio::spawn(super::run_owner(rx, replay_rx, state.clone()));
+    (state, gate, receipts, running)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_commits_complete_in_order_after_one_shared_barrier() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, gate, receipts, running) = grouped_owner(dir.path(), QUEUED).await;
+    let records = state.lock().unwrap().group.records();
+    gate.send(()).unwrap();
+    let mut completed = Vec::new();
+    for receipt in receipts {
+        completed.push(receipt.await.unwrap().unwrap());
+    }
+    assert_eq!(completed, (1..=QUEUED).collect::<Vec<_>>());
+    assert_eq!(
+        records.flushes(),
+        1,
+        "{QUEUED} queued commits shared one round of barriers"
+    );
+    running.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_group_barrier_fails_every_commit_it_covers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, gate, receipts, running) = grouped_owner(dir.path(), 5).await;
+    let lineage = edits_lineage(&state.lock().unwrap().store);
+    let _fault = crate::store::test_barrier::fail(&lineage, "group-sync-file");
+    gate.send(()).unwrap();
+    for receipt in receipts {
+        assert!(
+            receipt.await.unwrap().is_err(),
+            "a commit whose barrier failed was acknowledged"
+        );
+    }
+    running.await.unwrap();
+    let store = WorkspaceStore::open(dir.path(), WORKSPACE, false).unwrap();
+    assert_eq!(
+        retained_edits(&store),
+        [0],
+        "no unsynced record was published"
     );
 }

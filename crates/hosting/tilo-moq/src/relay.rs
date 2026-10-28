@@ -14,7 +14,7 @@
 //! subscriber asks for it, so a publisher sends, and the relay forwards, only
 //! the layers someone shows.
 //! Every session is served from its own host-owned view of the shared origin
-//! ([`crate::mirror`]), which revocation drops before anything else.
+//! (`crate::mirror`), which revocation drops before anything else.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{
@@ -138,14 +138,15 @@ pub trait SessionAuthorization: Send + Sync {
             merge_status(status, self.status(Direction::Subscribe, name))
         })
     }
+    /// Told every authority interval while this session's connection is
+    /// open (its idle timeout ends one whose device went away): the owner
+    /// may count it as the holder being present. The default ignores it.
+    fn connected(&self) {}
 }
 
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
 pub trait RelayAuthority: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns [`Denied`] when the proof does not authorize a session.
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
 }
 
@@ -363,6 +364,7 @@ impl Relay {
                     subscribe.clone(),
                     VIEW_BYTES,
                     PICTURE_RETAIN,
+                    crate::mirror::Start::Requested,
                     Some(scopes.downlink.clone()),
                 );
                 server = server.with_publisher(view.consume());
@@ -579,6 +581,7 @@ impl Relay {
                     let gap = ticked.duration_since(last_tick).as_millis().try_into().unwrap_or(u64::MAX);
                     self.counters.max_tick_gap_ms.fetch_max(gap, Ordering::Relaxed);
                     last_tick = ticked;
+                    authorization.connected();
                     self.observe(authorization.as_ref(), offered.as_mut())
                 }) => match verdict {
                     Verdict::Continue => {}
@@ -587,13 +590,13 @@ impl Relay {
             }
         };
         if lapsed {
-            self.counters.expired.fetch_add(1, Ordering::Relaxed);
             // Media stops at once in both directions: the session's own view
             // (every track it is served) and its publication are dropped
-            // before the client is told to close. The grace below only
-            // covers the transport teardown.
+            // before the lapse counts and the client is told to close. The
+            // grace below only covers the transport teardown.
             view.take();
             forwarder.take();
+            self.counters.expired.fetch_add(1, Ordering::Relaxed);
             admission.revoke().await;
             tokio::select! {
                 _ = session.closed() => {}
@@ -798,29 +801,37 @@ async fn copy_voice_group(
     }
 }
 
-/// Serve the picture tracks subscribers ask of one publication: each copied
-/// from the publisher, validated, only while someone asks for it. Any other
-/// track name is refused.
+/// Serve the picture and window tracks subscribers ask of one publication:
+/// each copied from the publisher, validated, only while someone asks for
+/// it. Any other track name is refused.
 async fn forward_pictures(
     mut requests: moq_net::broadcast::Dynamic,
     source: moq_net::broadcast::Consumer,
     counters: Arc<Counters>,
 ) {
     let mut serving: Vec<crate::Task> = Vec::new();
+    let mut windows: Vec<crate::Task> = Vec::new();
     while let Ok(request) = requests.requested_track().await {
         serving.retain(|task| !task.is_finished());
-        let Some((_, layer)) = crate::video::parse_track(request.name()) else {
+        windows.retain(|task| !task.is_finished());
+        let Some(track) = crate::video::Track::parse(request.name()) else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        if serving.len() >= MAX_PICTURE_TRACKS {
+        // A call's layers and a publisher's viewed windows are bounded
+        // apart: a window viewer never takes a call's picture slots.
+        let (tasks, bound) = match track {
+            crate::video::Track::Picture(..) => (&mut serving, MAX_PICTURE_TRACKS),
+            crate::video::Track::Window(_) => (&mut windows, crate::video::MAX_WINDOW_TRACKS),
+        };
+        if tasks.len() >= bound {
             request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
-        serving.push(crate::Task::spawn(forward_picture(
+        tasks.push(crate::Task::spawn(forward_picture(
             request,
             source.clone(),
-            layer,
+            track.layer(),
             counters.clone(),
         )));
     }
@@ -1028,7 +1039,6 @@ mod status_all_tests {
         }
         fn status_all(&self) -> AuthorizationStatus {
             self.observed.fetch_add(1, Ordering::Relaxed);
-            // One of the current namespace permissions was revoked.
             AuthorizationStatus::Denied
         }
     }

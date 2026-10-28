@@ -19,10 +19,12 @@ use std::process::{Command, Output};
 
 use tilo_session_record::value::Value;
 
-const REPORTER: &str = env!("CARGO_BIN_EXE_tilo-session-report");
+fn reporter() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-session-report")
+}
 
 fn report(root: &Path, extra: &[&str]) -> Output {
-    Command::new(REPORTER)
+    Command::new(reporter())
         .arg("--root")
         .arg(root)
         .args(extra)

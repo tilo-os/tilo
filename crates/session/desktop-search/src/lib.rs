@@ -9,14 +9,16 @@
 //!   registry, open windows, application actions and content, recent
 //!   choices, host commands).
 //! - [`palette`]: the toolkit's command palette over those sources.
-//! - [`availability`]: the manifest registry's apps a desktop cannot run,
-//!   with the reason shown for each.
+//! - [`window`]: one window's own search, over what it publishes.
+//! - [`availability`]: what the manifest registry knows of each app: where
+//!   it runs, its category and the words people know it by.
 
 pub mod availability;
 pub mod model;
 pub mod palette;
 pub mod providers;
 pub mod rank;
+pub mod window;
 
 pub use model::{ActionTarget, Hit, Source, Target, search};
 pub use palette::{DesktopSearch, SearchData};

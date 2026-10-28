@@ -22,7 +22,6 @@ pub fn dispatcher_or_real(
 
 #[cfg(test)]
 pub mod testing {
-    //! Recording dispatcher used by every pane's tests.
 
     use std::sync::{
         Mutex,

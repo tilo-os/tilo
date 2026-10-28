@@ -43,7 +43,6 @@ pub fn parse(text: &str) -> Vec<OpmlFeed> {
             i += 1;
             continue;
         }
-        // Find the end of the tag.
         let Some(rel_end) = rest.find('>') else {
             break;
         };

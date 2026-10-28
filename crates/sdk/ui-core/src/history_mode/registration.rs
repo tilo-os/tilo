@@ -128,6 +128,9 @@ pub struct HistoryRegistration {
     pub(crate) sources: Vec<HistorySourceRegistration>,
     pub(crate) assets:
         std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
+    /// The change History opens at when the window starts, as a window
+    /// replaying a recording opens at its first step.
+    pub(crate) opening_at: Option<crate::HistoryEntryId>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HistoryRegistrationError {
@@ -213,9 +216,6 @@ impl HistoryRegistration {
     }
 
     /// Build a registration with exactly one source for each declared scope.
-    ///
-    /// # Errors
-    /// Returns an error for invalid scopes, missing presentations or foreign sources.
     pub fn new(
         definition: &'static HistoryDefinition,
         sources: Vec<HistorySourceRegistration>,
@@ -224,6 +224,7 @@ impl HistoryRegistration {
             definition,
             sources,
             assets: std::collections::HashMap::new(),
+            opening_at: None,
         };
         registration.validate()?;
         for scope in definition.scopes {
@@ -234,9 +235,6 @@ impl HistoryRegistration {
         Ok(registration)
     }
     /// Attach the trusted source owner, never a service available to a preview.
-    ///
-    /// # Errors
-    /// Returns an error if the named scope is not installed in this registration.
     pub fn with_asset_source(
         mut self,
         scope: &'static str,
@@ -262,9 +260,6 @@ impl HistoryRegistration {
             .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }))
     }
     /// Validate the declared scope and source correspondence.
-    ///
-    /// # Errors
-    /// Returns an error for invalid scopes, missing presentations or foreign sources.
     pub fn validate(&self) -> Result<(), HistoryRegistrationError> {
         use std::collections::HashSet;
         let mut keys = HashSet::new();

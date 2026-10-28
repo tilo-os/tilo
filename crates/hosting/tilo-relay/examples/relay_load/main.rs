@@ -9,7 +9,7 @@
 //! for each of them, over and over:
 //!
 //! - **typing**: 30 one-character edits, one every 200 ms, through the
-//!   production publish path (`StatePeer::publish_incremental`, retention,
+//!   production publish path (`PeerPublicationMut::publish_incremental`, retention,
 //!   `RelayCoeditSession::publish_retained_delta`), each followed by the
 //!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::AppPresenceV2`);
 //! - **pointing**: 4 seconds of pointer motion at the shell's 30 Hz publish

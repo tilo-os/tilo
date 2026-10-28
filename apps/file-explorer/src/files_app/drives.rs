@@ -7,6 +7,11 @@
 //! The shell asks the person in its own sheet unless they chose to remember
 //! that drive, mounts it, and opens it in Files with a grant for its folder.
 //! A drive already open whose folder this window can read opens here.
+//!
+//! Files never asks on a timer: it asks for the list once when the window
+//! joins and once each time the shell says the drives changed
+//! ([`CollabEvent::DrivesChanged`](ui::collaboration::CollabEvent::DrivesChanged),
+//! which names nothing).
 #[cfg(test)]
 #[path = "drives_tests.rs"]
 mod tests;
@@ -19,17 +24,16 @@ use super::*;
 use runtime_portal::tools::DriveEntry;
 use std::sync::Mutex;
 
-/// How often the list is asked for again while the window is up. The shell
-/// answers from memory; this only bounds how stale a plugged-in drive looks.
-const POLL: Duration = Duration::from_secs(5);
-
 pub(super) type DriveLister = fn() -> Result<Vec<DriveEntry>, String>;
 pub(super) type DriveOpener = fn(&str) -> Result<(), String>;
 
 fn open_through_shell(drive: &str) -> Result<(), String> {
-    runtime_portal::tools::open_tool(runtime_portal::tools::ToolIntent::OpenDrive {
-        drive: drive.to_owned(),
-    })
+    runtime_portal::tools::open_tool(
+        runtime_portal::tools::ToolIntent::OpenDrive {
+            drive: drive.to_owned(),
+        },
+        None,
+    )
 }
 
 pub(super) struct Drives {
@@ -38,7 +42,9 @@ pub(super) struct Drives {
     listed: Arc<Mutex<Option<Vec<DriveEntry>>>>,
     refused: Arc<Mutex<Option<String>>>,
     listing: bool,
-    next_poll: Option<Instant>,
+    /// The shell said the drives changed since the list was last asked
+    /// for. A change during an unanswered ask becomes one more ask.
+    stale: bool,
     /// `None` for a window whose drives are given (scenarios, tests).
     lister: Option<DriveLister>,
     opener: DriveOpener,
@@ -51,7 +57,7 @@ impl Default for Drives {
             listed: Arc::default(),
             refused: Arc::default(),
             listing: false,
-            next_poll: None,
+            stale: false,
             // Unit tests never reach a shell; they inject what they need.
             lister: (!cfg!(test)).then_some(runtime_portal::tools::list_drives as DriveLister),
             opener: open_through_shell,
@@ -64,10 +70,16 @@ impl Drives {
     pub(super) fn next_wake(&self) -> Option<Instant> {
         let answered = self.listed.lock().is_ok_and(|slot| slot.is_some())
             || self.refused.lock().is_ok_and(|slot| slot.is_some());
-        if answered {
-            return Some(Instant::now());
+        let due = self.lister.is_some() && self.stale && !self.listing;
+        (answered || due).then(Instant::now)
+    }
+
+    /// Take in `event`: a change the shell announced is asked about on the
+    /// next pump.
+    pub(super) fn event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if matches!(event, ui::collaboration::CollabEvent::DrivesChanged) {
+            self.stale = true;
         }
-        self.lister.and(self.next_poll)
     }
 }
 
@@ -129,15 +141,21 @@ impl FileExplorerWidget {
         ]);
     }
 
+    /// Ask `lister` for the drives instead of the shell.
+    #[cfg(test)]
+    pub(super) fn set_drive_lister(&mut self, lister: DriveLister) {
+        self.drives.lister = Some(lister);
+    }
+
     /// Route opening a drive through `opener` instead of the shell.
     #[cfg(test)]
     pub(super) fn set_drive_opener(&mut self, opener: DriveOpener) {
         self.drives.opener = opener;
     }
 
-    /// Take in answers that arrived, and ask again when due. Returns whether
-    /// what the window shows changed.
-    pub(super) fn poll_drives(&mut self, now: Instant) -> bool {
+    /// Take in answers that arrived, and ask again when the shell said the
+    /// drives changed. Returns whether what the window shows changed.
+    pub(super) fn poll_drives(&mut self) -> bool {
         let mut changed = false;
         if let Some(listed) = self
             .drives
@@ -166,10 +184,10 @@ impl FileExplorerWidget {
         let Some(lister) = self.drives.lister else {
             return changed;
         };
-        if self.drives.listing || self.drives.next_poll.is_some_and(|due| now < due) {
+        if self.drives.listing || !self.drives.stale {
             return changed;
         }
-        self.drives.next_poll = Some(now + POLL);
+        self.drives.stale = false;
         self.drives.listing = true;
         let slot = Arc::clone(&self.drives.listed);
         let spawned = std::thread::Builder::new()
@@ -182,6 +200,7 @@ impl FileExplorerWidget {
                 }
             });
         if spawned.is_err() {
+            // Asking again at once would spin; the next change asks.
             self.drives.listing = false;
         }
         changed

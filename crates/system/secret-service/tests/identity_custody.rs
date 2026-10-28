@@ -37,7 +37,9 @@ use ed25519_dalek::{Signature, SigningKey, Verifier};
 use runtime_identity::KeyProtection;
 use secret_vault::Custody;
 
-const SERVICE: &str = env!("CARGO_BIN_EXE_tilo-secret-service");
+fn service() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-secret-service")
+}
 const NAME: &str = "org.freedesktop.secrets";
 
 /// A private session bus with no activatable services, and the
@@ -141,7 +143,7 @@ impl Bus {
     }
 
     fn service_command(&self, device: &str) -> Command {
-        let mut command = self.command(SERVICE);
+        let mut command = self.command(service());
         command
             .args(["serve", "--identity-root"])
             .arg(self.path(device))
@@ -157,7 +159,7 @@ impl Bus {
 
     /// Until something on the bus owns the Secret Service's name.
     fn wait_for_owner(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while !self.owned() {
             assert!(
                 Instant::now() < deadline,
@@ -172,7 +174,7 @@ impl Bus {
             let _ = service.kill();
             let _ = service.wait();
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while self.owned() {
             assert!(Instant::now() < deadline, "{NAME} outlived its service");
             std::thread::sleep(Duration::from_millis(100));
@@ -183,7 +185,7 @@ impl Bus {
     /// `open` or `locked: <why>` (a second names any earlier import).
     fn status(&self) -> String {
         let output = self
-            .command(SERVICE)
+            .command(service())
             .arg("status")
             .output()
             .expect("the service binary runs");
@@ -524,7 +526,7 @@ fn child_env(name: &str) -> PathBuf {
 /// Wait until `path` exists.
 #[cfg(target_os = "linux")]
 fn wait_for_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = tilo_test_env::hang_deadline();
     while !path.exists() {
         assert!(
             Instant::now() < deadline,

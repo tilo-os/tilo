@@ -88,7 +88,7 @@ def orphans(root: Path) -> list[str]:
             if path not in reached:
                 rel = path.relative_to(root.resolve()).as_posix()
                 errors.append(
-                    f"{rel} is not compiled by any test target; "
+                    f"{rel}: not compiled by any test target; "
                     "declare it in tests/it.rs or delete it"
                 )
     return errors
@@ -102,10 +102,10 @@ def main() -> int:
     args = parser.parse_args()
     errors = orphans(args.root)
     for error in errors:
-        print(error, file=sys.stderr)
+        print(error)
     if errors:
         return 1
-    print("integration test modules OK")
+    print("integration test modules OK", file=sys.stderr)
     return 0
 
 

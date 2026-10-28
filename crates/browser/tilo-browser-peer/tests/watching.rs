@@ -28,7 +28,7 @@ use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{TestHost, admitted, enrol, next_document, start_peer, start_room_host, wait_for};
+use support::{TestHost, admitted, enrol, next_document_on, start_peer, start_room_host, wait_for};
 
 async fn rooms(link: &HttpsLink, request: RoomsRequest) -> Room {
     match carrier::rooms(link.client().as_ref(), link.session(), &request)
@@ -153,6 +153,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
             role: RoomRole::Viewer,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
+            wait_list_entry: None,
         },
     )
     .await
@@ -240,7 +241,10 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         )
         .unwrap();
     let mut pending = Vec::new();
-    assert_eq!(next_document(&watcher, &mut pending).await, hello);
+    assert_eq!(
+        next_document_on(&watcher, &mut pending, &route).await,
+        hello
+    );
     assert_eq!(paths.asked("/channel-keys").first(), Some(&200));
     assert!(paths.asked("/here").is_empty());
 
@@ -248,15 +252,19 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     // reached her or was refused it.
     let again = DocumentMutation::Incremental(b"and again".to_vec());
     alice_page.publish(route.clone(), &again).unwrap();
-    assert_eq!(next_document(&watcher, &mut pending).await, again);
+    assert_eq!(
+        next_document_on(&watcher, &mut pending, &route).await,
+        again
+    );
     let status = watcher.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
+    // Alice also holds the room's shared desktop record, which the room was
+    // seeded with; the page's edit would have arrived on the note's route.
     assert!(
-        alice_page
-            .drain()
-            .iter()
-            .all(|event| !matches!(event, PeerEvent::Document(_))),
+        alice_page.drain().iter().all(
+            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
+        ),
         "the watching page wrote to Alice"
     );
 
@@ -282,13 +290,31 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         async move { held.then_some(()) }
     })
     .await;
-    assert_eq!(paths.asked("/channel-keys"), vec![403]);
+    // One request per sealed record the page holds (the note, and the
+    // room's shared desktop it was seeded with), each refused.
+    let refused = paths.asked("/channel-keys");
     assert!(
-        sealed_off
-            .drain()
-            .iter()
-            .all(|event| !matches!(event, PeerEvent::Document(_))),
-        "a page opened a private room's note"
+        !refused.is_empty() && refused.iter().all(|status| *status == 403),
+        "{refused:?}"
+    );
+    // The room's own seed of its shared desktop is no member's sealed
+    // writing; what a member sealed (the note, and any sealed desktop
+    // change) the page never opens.
+    let opened: Vec<_> = sealed_off
+        .drain()
+        .into_iter()
+        .filter_map(|event| match event {
+            PeerEvent::Document(document)
+                if document.route == route || document.decrypted_payload.is_some() =>
+            {
+                Some(document.route.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        opened.is_empty(),
+        "a page opened a private room's sealed records: {opened:?}"
     );
 
     sealed_off.close();

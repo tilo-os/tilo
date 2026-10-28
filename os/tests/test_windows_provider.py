@@ -10,6 +10,7 @@ import unittest
 
 import test_fex_payload as fex_fixture
 import test_windows_guest_payload as guest_fixture
+from restart_fixture import restart_fixture
 
 PAYLOAD, GUEST, elf = fex_fixture.PAYLOAD, guest_fixture.GUEST, guest_fixture.elf
 
@@ -18,18 +19,6 @@ SPEC = importlib.util.spec_from_file_location("windows_provider", DEV / "windows
 PROVIDER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROVIDER)
 REF = "registry.invalid/payload@sha256:" + "a" * 64
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class ProviderTests(unittest.TestCase):

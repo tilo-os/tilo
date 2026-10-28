@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use ui::framework::ActionControl;
 use ui::tilo_resource::{Edit, Path};
+use vello::kurbo::{Point, Rect};
 
 use crate::model::Id;
 use crate::resource::Workspace;
@@ -24,6 +25,9 @@ pub(crate) struct Sink {
     /// The builder's URL as the record holds it, for the variable hint.
     pub(crate) url: Rc<RefCell<String>>,
     pub(crate) reset_area: ui::LocalState<bool>,
+    /// Whether the person moved the divider between the request and the
+    /// response: only then does resetting the area change anything.
+    pub(crate) area_resized: ui::LocalState<bool>,
 }
 impl Sink {
     pub(crate) fn borrow(&self) -> std::cell::Ref<'_, Vec<Cmd>> {
@@ -60,6 +64,19 @@ impl Sink {
             None => state.unavailable(),
         }
     }
+    /// Bind `effect` to `control`, so a copy or a cancel is the same action
+    /// the palette and an agent invoke.
+    pub(crate) fn effect<V: ActionControl<()>>(
+        &self,
+        control: V,
+        effect: &crate::actions::ApiTesterEffect,
+    ) -> V {
+        match self.actions.borrow().as_ref() {
+            Some(actions) => actions.bind_effect_invocation(control, effect),
+            None => control.unavailable(),
+        }
+    }
+
     pub(crate) fn send(&self, button: ui::widget::Button) -> ui::widget::Button {
         match self.actions.borrow().as_ref() {
             Some(actions) => {
@@ -114,7 +131,19 @@ pub(crate) enum Cmd {
     SetBodyMode(usize),
     SetAuthKind(usize),
     LoadRequest(usize, usize),
+    /// Open the sent request at `index` in the builder again.
     ReplayHistory(usize),
+    /// Keep the sent request at `index` as a saved request: the sheet names
+    /// it and says where it goes.
+    SaveHistory(usize),
+    /// Forget the sent request at `index`; Undo brings it back.
+    DeleteHistory(usize),
+    /// Show the actions of the sidebar row `id`, under its `lift`, at `at`.
+    RowMenu {
+        id: String,
+        lift: Rect,
+        at: Point,
+    },
     Edit {
         table: Table,
         row: String,
@@ -133,6 +162,8 @@ pub(crate) enum Cmd {
 pub(crate) enum FormMode {
     NewCollection,
     SaveRequest,
+    /// Name a sent request being kept as a saved one.
+    SaveSent,
     RenameCollection,
     RenameRequest,
     NewEnvironment,
@@ -146,7 +177,7 @@ impl FormMode {
     pub(crate) fn heading(self) -> &'static str {
         match self {
             Self::NewCollection => "New collection",
-            Self::SaveRequest => "Save request",
+            Self::SaveRequest | Self::SaveSent => "Save request",
             Self::RenameCollection => "Rename collection",
             Self::RenameRequest => "Rename request",
             Self::NewEnvironment => "New environment",
@@ -160,7 +191,7 @@ impl FormMode {
     pub(crate) fn confirm_label(self) -> &'static str {
         match self {
             Self::NewCollection | Self::NewEnvironment => "Create",
-            Self::SaveRequest => "Save",
+            Self::SaveRequest | Self::SaveSent => "Save",
             Self::RenameCollection | Self::RenameRequest | Self::RenameEnvironment => "Rename",
             Self::NewVariable => "Add variable",
             Self::DeleteVariable => "Delete variable",
@@ -189,6 +220,8 @@ impl FormMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FormTarget {
     pub(crate) collection: Option<Id>,
+    /// The sent request a form acts on (a history entry's id).
+    pub(crate) sent: Option<Id>,
     pub(crate) request: Option<Id>,
 }
 
@@ -201,6 +234,7 @@ impl Default for Sink {
             method: ui::LocalState::new(String::new()),
             url: Rc::default(),
             reset_area: ui::LocalState::new(false),
+            area_resized: ui::LocalState::new(false),
         }
     }
 }

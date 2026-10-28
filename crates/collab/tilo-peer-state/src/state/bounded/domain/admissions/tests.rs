@@ -6,14 +6,10 @@ fn real_signed_v5_exact_membership_matches_legacy_empty_baseline() {
     let v4 = peer.durable().unwrap();
     peer.select_admission_v5().unwrap();
     let empty_v5 = peer.durable().unwrap();
-    peer.publish_document(
-        "test.app",
-        "tab:1",
-        peer.document("test.app", "tab:1").unwrap(),
-        &key,
-        now,
-    )
-    .unwrap();
+    let current_document = peer.document("test.app", "tab:1").unwrap();
+    peer.publication_mut()
+        .publish_document("test.app", "tab:1", current_document, &key, now)
+        .unwrap();
     let v5 = peer.durable().unwrap();
     let empty = StatePeer::new(
         peer.room(),

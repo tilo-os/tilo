@@ -1,9 +1,9 @@
 //! Per-participant view state.
 //!
 //! A participant is a person's window or an agent task. Each owns a
-//! [`ParticipantView`] — caret, selection anchor, region and Find state — and
+//! [`ParticipantView`](crate::actions::participant::ParticipantView) — caret, selection anchor, region and Find state — and
 //! Writer builds that participant's resource tree from it through the pure
-//! [`ParticipantView::ctx`]. The view is presentation state: it is never
+//! [`ParticipantView::ctx`](crate::actions::participant::ParticipantView::ctx). The view is presentation state: it is never
 //! written into the document.
 
 use automerge::AutoCommit;
@@ -83,7 +83,6 @@ pub struct ParticipantView {
 }
 
 impl ParticipantView {
-    /// A collapsed caret at `caret` in `region`.
     pub fn at(caret: ViewPoint, region: RegionKind) -> Self {
         Self {
             caret,

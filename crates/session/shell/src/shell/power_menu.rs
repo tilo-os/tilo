@@ -12,7 +12,8 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
 use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
 };
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -298,11 +299,13 @@ impl PowerMenu {
         self.open = true;
         self.selected = 0;
         self.armed_by = ArmedBy::Pointer;
+        // It comes and goes as the input that asked: from a key (Ctrl+Alt+
+        // Delete, Escape) at once, from a click on its motion.
         self.transition.show(
             true,
             ui::motion::Appear::SPEC,
             self.motion,
-            ui::tokens::MotionSource::Pointer,
+            ui::motion::input_source(),
             ui::time::now(),
         );
     }
@@ -316,7 +319,7 @@ impl PowerMenu {
                 false,
                 ui::motion::Appear::SPEC,
                 self.motion,
-                ui::tokens::MotionSource::Pointer,
+                ui::motion::input_source(),
                 ui::time::now(),
             );
         }
@@ -531,7 +534,6 @@ impl PowerMenu {
     ) {
         let panel = self.panel_rect(viewport);
         let m = self.metrics();
-        let colors = &theme.tokens.colors;
         // This is a compact flyout rooted in the status area, not a modal
         // task. Its bounds are the click-dismiss surface; the rest of the
         // desktop stays visually present so the power button and result read
@@ -539,7 +541,9 @@ impl PowerMenu {
         // Panel role (HIG §9.1/§9.2): the flyout is the same material as
         // every other Panel — `panel_ground` at the Panel radius, with the
         // derived Panel border — rather than a ramp slot and a literal 24.
-        ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
         // Theme-resolved sizes, painted once: `draw` has reset the renderer
         // for this pass.
         let title_style = theme.text(TextRole::Heading);
@@ -587,6 +591,19 @@ impl PowerMenu {
 impl ShellLayer for PowerMenu {
     fn id(&self) -> LayerId {
         LayerId::PowerMenu
+    }
+
+    /// A popup hanging from the top bar's trailing edge, window-modal: it
+    /// covers the desktop it stands on and takes every vector of input
+    /// while it is up, nothing wider.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Popup,
+            Anchor::TopTrailing(self.metrics().margin),
+            Modality::WindowModal,
+            Material::Floating,
+            self.open,
+        ))
     }
 
     fn is_open(&self) -> bool {
@@ -883,6 +900,31 @@ mod tests {
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     #[test]
+    fn the_menu_comes_and_goes_as_the_input_that_asked() {
+        let key =
+            ui::synthetic_input::key_press(winit::keyboard::Key::Named(NamedKey::Escape), None);
+        let click = ui::synthetic_input::mouse_press();
+        for (input, lands) in [(&key, true), (&click, false)] {
+            let mut menu = PowerMenu::default();
+            ui::motion::note_input(input);
+            menu.open();
+            assert_eq!(
+                !menu.is_animating(ui::time::now()),
+                lands,
+                "opened by {input:?}"
+            );
+            menu.force_settled_for_visual_test();
+            ui::motion::note_input(input);
+            assert!(menu.close());
+            assert_eq!(
+                !menu.is_animating(ui::time::now()),
+                lands,
+                "closed by {input:?}"
+            );
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -956,6 +998,8 @@ mod tests {
 
         fn opening_animation_hit_test_tracks_the_painted_logout_row() {
             let mut menu = PowerMenu::default();
+            // Opened by a click: it appears on its motion.
+            ui::motion::note_input(&ui::synthetic_input::mouse_press());
             menu.open();
             let now = ui::time::now();
             let stable = action_rect(VIEWPORT, 1).center();
@@ -1086,6 +1130,8 @@ mod tests {
 
         fn opening_requests_animation_frames_without_waiting_for_draw() {
             let mut menu = PowerMenu::default();
+            // Opened by a click: it appears on its motion.
+            ui::motion::note_input(&ui::synthetic_input::mouse_press());
             menu.open();
             assert!(menu.is_animating(Instant::now()));
         }

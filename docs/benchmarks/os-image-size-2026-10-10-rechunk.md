@@ -13,7 +13,7 @@ side by side.
 over the two images of Build / OS dev run 92862 (pull request #4111, revision
 `27042bba49`, LTO off), and the step's own comparison report
 (`rechunk-report-<arch>` artifact). The raw output is in
-`os-image-size-2026-10-10-rechunk.json`. Updates are measured with
+[`os-image-size-2026-10-10-rechunk.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-image-size-2026-10-10-rechunk.json). Updates are measured with
 `image_size.py --update-from OLD --update-only`: the compressed layers of the
 new manifest whose digests the old one does not have, which is what bootc
 downloads.

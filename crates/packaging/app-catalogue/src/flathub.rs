@@ -78,6 +78,51 @@ pub fn install_commands(app_id: &str, remotes: &str) -> Result<Vec<Vec<String>>,
     ])
 }
 
+/// Which Flatpak installation an app is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Installation {
+    /// The person's own (`--user`).
+    User,
+    /// The device's (`--system`), which only an administrator changes:
+    /// Flatpak's system helper asks polkit, whose rule lets a local, active
+    /// administrator through.
+    System,
+}
+
+impl Installation {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::User => "--user",
+            Self::System => "--system",
+        }
+    }
+}
+
+/// The `flatpak` argument lists that uninstall `app_id` from `installation`,
+/// in order: the app, then the runtimes no app there uses any more (nothing
+/// else removes those, so each removed app would leave its runtime behind
+/// for good). The app's data (`~/.var/app/<id>`) is left for the caller,
+/// which moves it to the Trash when the person asks; Flatpak's own
+/// `--delete-data` would delete it.
+///
+/// # Errors
+///
+/// [`InstallRefusal::InvalidId`] when `app_id` is not an application id.
+pub fn uninstall_commands(
+    app_id: &str,
+    installation: Installation,
+) -> Result<Vec<Vec<String>>, InstallRefusal> {
+    if !valid_app_id(app_id) {
+        return Err(InstallRefusal::InvalidId);
+    }
+    let scope = installation.flag();
+    let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    Ok(vec![
+        args(&["uninstall", scope, "--noninteractive", "--", app_id]),
+        args(&["uninstall", scope, "--unused", "--noninteractive"]),
+    ])
+}
+
 /// An account Flathub source must itself be trustworthy; otherwise an
 /// enabled, verifying official device source is enough.
 fn require_enabled_flathub(rows: &str) -> Result<(), InstallRefusal> {
@@ -113,9 +158,143 @@ fn require_enabled_flathub(rows: &str) -> Result<(), InstallRefusal> {
     }
 }
 
+/// The processor whose Flathub builds are looked up beside this machine's:
+/// `x86_64` on every other machine, since hundreds of Flathub apps (Steam,
+/// Spotify, Discord, Zoom) are built for it alone. `None` on `x86_64`.
+#[must_use]
+pub fn other_processor() -> Option<&'static str> {
+    (std::env::consts::ARCH != "x86_64").then_some("x86_64")
+}
+
+/// The `flatpak` arguments that list the device's Flathub apps for `arch`
+/// from the summary Flatpak keeps (no network), as `id<TAB>name` rows. The
+/// hourly `tilo-app-update` run keeps that summary current.
+#[must_use]
+pub fn listing_args(arch: &str) -> Vec<String> {
+    [
+        "remote-ls",
+        "--system",
+        "--cached",
+        "--app",
+        "--arch",
+        arch,
+        "--columns=application,name",
+        "--",
+        crate::appstream::FLATHUB_REMOTE,
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// The apps of `rows` ([`listing_args`]' output for another processor) that
+/// `native` (this processor's catalogue) does not list: Flathub builds them
+/// only for that processor, so each is marked
+/// [`crate::CatalogueEntry::not_built_for_this_device`]. It is found and
+/// says it is not available here, and is never offered for installing.
+#[must_use]
+pub fn other_processor_apps(
+    rows: &str,
+    native: &[crate::CatalogueEntry],
+) -> Vec<crate::CatalogueEntry> {
+    let mut seen: std::collections::HashSet<String> =
+        native.iter().map(crate::CatalogueEntry::key).collect();
+    rows.lines()
+        .filter_map(|row| {
+            let mut columns = row.split('\t');
+            let id = columns.next()?.trim();
+            let name = columns
+                .next()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())?;
+            (valid_app_id(id) && seen.insert(id.to_ascii_lowercase())).then(|| {
+                crate::CatalogueEntry {
+                    id: id.to_owned(),
+                    source: crate::Source::Flathub {
+                        remote: crate::appstream::FLATHUB_REMOTE.to_owned(),
+                        installation: crate::Installation::System,
+                    },
+                    name: name.to_owned(),
+                    other_names: Vec::new(),
+                    tagline: String::new(),
+                    description: String::new(),
+                    keywords: Vec::new(),
+                    category: None,
+                    icon_file: None,
+                    icon_url: None,
+                    resource_types: Vec::new(),
+                    actions: Vec::new(),
+                    not_built_for_this_device: true,
+                }
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uninstalling touches only the person's installation, never deletes
+    /// the app's data (`--delete-data`), and refuses anything that could be
+    /// read as an option.
+    #[test]
+    fn uninstalling_removes_the_app_from_its_installation_and_keeps_its_data() {
+        for (installation, scope) in [
+            (Installation::User, "--user"),
+            (Installation::System, "--system"),
+        ] {
+            let commands = uninstall_commands("org.gnome.Chess", installation).expect("valid id");
+            assert_eq!(
+                commands,
+                [
+                    vec![
+                        "uninstall",
+                        scope,
+                        "--noninteractive",
+                        "--",
+                        "org.gnome.Chess"
+                    ],
+                    vec!["uninstall", scope, "--unused", "--noninteractive"],
+                ]
+            );
+        }
+        for bad in ["--delete-data", "--all", "chess", "", "org.x/../y"] {
+            assert_eq!(
+                uninstall_commands(bad, Installation::User),
+                Err(InstallRefusal::InvalidId),
+                "{bad}"
+            );
+        }
+    }
+
+    /// Flathub builds Steam for `x86_64` only. Listed from the other
+    /// processor's summary it is an entry marked not built for this device;
+    /// an app this processor's catalogue already has is not listed twice,
+    /// and a row that could name a Flatpak option is dropped.
+    #[test]
+    fn apps_only_another_processor_has_are_marked_not_built_for_this_device() {
+        let mut spotify = crate::tilo::entry(&registry_types::catalogue::CatalogueApp {
+            package_id: "com.spotify.Client".into(),
+            display_name: "Spotify".into(),
+            ..Default::default()
+        });
+        spotify.source = crate::Source::Flathub {
+            remote: "flathub".into(),
+            installation: crate::Installation::System,
+        };
+        let rows = "com.valvesoftware.Steam\tSteam\ncom.spotify.Client\tSpotify\n--system\tEvil\norg.example.Nameless\t\n";
+        let apps = other_processor_apps(rows, &[spotify]);
+        assert_eq!(apps.len(), 1, "{apps:?}");
+        assert_eq!(apps[0].id, "com.valvesoftware.Steam");
+        assert_eq!(apps[0].name, "Steam");
+        assert!(apps[0].not_built_for_this_device);
+        assert!(apps[0].source.needs_install());
+        assert_eq!(
+            listing_args("x86_64").last().map(String::as_str),
+            Some("flathub")
+        );
+        assert!(listing_args("x86_64").iter().any(|arg| arg == "--cached"));
+    }
 
     #[test]
     fn only_a_trustworthy_flathub_installs_and_only_into_the_persons_installation() {

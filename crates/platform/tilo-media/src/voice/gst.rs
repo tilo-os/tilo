@@ -64,12 +64,17 @@ pub struct VoiceAudio {
     closed: bool,
     jitter: JitterBuffer,
     decoders: BTreeMap<PublicationId, Decoder>,
+    /// How loud each publication plays here, in percent, by namespace;
+    /// one not named plays as it arrives.
+    volumes: BTreeMap<String, u16>,
     last_output: Option<Instant>,
     timeline: CaptureTimeline,
     /// The microphone's speech: contiguous transmitted frames up to the
     /// last one, which DTX silence never adds to.
     capture_run: u32,
     capture_last: Option<Instant>,
+    /// Plays silence in place of the call: the person is deafened.
+    deafened: bool,
 }
 impl VoiceAudio {
     /// Start the persistent output pipeline on the observer's exact socket.
@@ -107,13 +112,23 @@ impl VoiceAudio {
             .map_err(|_| AudioError::Codec)?;
         Self::from_output_bound(pipeline, source, Some(remote_fd))
     }
+    /// A software output: no driver can hold its transition, so it has no
+    /// startup deadline and becomes ready whenever it reaches Playing.
     #[cfg(test)]
     fn from_output(pipeline: gst::Pipeline, source: gst_app::AppSrc) -> Result<Self, AudioError> {
-        Self::from_output_bound(pipeline, source, None)
+        Self::start_output(pipeline, source, None, None)
     }
     fn from_output_bound(
         pipeline: gst::Pipeline,
         source: gst_app::AppSrc,
+        remote_fd: Option<OwnedFd>,
+    ) -> Result<Self, AudioError> {
+        Self::start_output(pipeline, source, Some(CAPTURE_STARTUP_TIMEOUT), remote_fd)
+    }
+    fn start_output(
+        pipeline: gst::Pipeline,
+        source: gst_app::AppSrc,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<Self, AudioError> {
         let permit = Permit::acquire()?;
@@ -122,7 +137,8 @@ impl VoiceAudio {
         source.set_property("max-bytes", 1920u64);
         source.set_property("block", false);
         source.set_property_from_str("leaky-type", "downstream");
-        let pipeline = DevicePipeline::start(pipeline, remote_fd, None, false, permit)?;
+        let pipeline =
+            DevicePipeline::start(pipeline, startup_deadline, remote_fd, None, false, permit)?;
         Ok(Self {
             output: pipeline,
             output_source: source,
@@ -131,10 +147,12 @@ impl VoiceAudio {
             closed: false,
             jitter: JitterBuffer::default(),
             decoders: BTreeMap::new(),
+            volumes: BTreeMap::new(),
             last_output: None,
             timeline: CaptureTimeline::default(),
             capture_run: 0,
             capture_last: None,
+            deafened: false,
         })
     }
     /// Enqueue bounded startup. The current-authority callback must be a
@@ -170,20 +188,27 @@ impl VoiceAudio {
         let source = element("pipewiresrc")?;
         configure_pipewire(&source, serial, remote_fd.as_fd())?;
         source.set_property("do-timestamp", true);
-        self.start_capture_element_bound(&source, still_current, Some(remote_fd))
+        self.start_capture_element_bound(
+            &source,
+            still_current,
+            Some(CAPTURE_STARTUP_TIMEOUT),
+            Some(remote_fd),
+        )
     }
+    /// A software capture: like [`Self::from_output`], no startup deadline.
     #[cfg(test)]
     fn start_capture_element(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<(), AudioError> {
-        self.start_capture_element_bound(source, still_current, None)
+        self.start_capture_element_bound(source, still_current, None, None)
     }
     fn start_capture_element_bound(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<(), AudioError> {
         if self.closed {
@@ -241,6 +266,7 @@ impl VoiceAudio {
         self.stop_capture();
         let pipeline = DevicePipeline::start(
             pipeline,
+            startup_deadline,
             remote_fd,
             Some(still_current.clone()),
             true,
@@ -289,10 +315,7 @@ impl VoiceAudio {
             self.stop_capture();
             return Err(error);
         }
-        if !capture.pipeline.ready()
-            && now.saturating_duration_since(capture.pipeline.started_at())
-                >= CAPTURE_STARTUP_TIMEOUT
-        {
+        if capture.pipeline.startup_expired(now) {
             self.stop_capture();
             return Err(AudioError::DeviceLost);
         }
@@ -462,11 +485,22 @@ impl VoiceAudio {
         } else {
             now
         };
-        let frames: Vec<Vec<i16>> = self
+        let mut frames: Vec<Vec<i16>> = self
             .decoders
-            .values_mut()
-            .filter_map(|decoder| decoder.render(now))
+            .iter_mut()
+            .filter_map(|(publisher, decoder)| {
+                let frame = decoder.render(now)?;
+                Some(match self.volumes.get(&publisher.namespace) {
+                    Some(&percent) => louder(frame, percent),
+                    None => frame,
+                })
+            })
             .collect();
+        // Deafened, the call plays on unheard: undeafening hears it as it
+        // is then, never a backlog.
+        if self.deafened {
+            frames.clear();
+        }
         // Keep the playback graph clocked while listening or waiting for remote audio.
         // An idle live appsrc can leave a shared PipeWire graph waiting for its first
         // buffer, including independent capture streams. Empty mixing produces one
@@ -488,6 +522,21 @@ impl VoiceAudio {
             .map_err(|_| AudioError::DeviceLost)?;
         self.last_output = Some(output_at);
         Ok(())
+    }
+    /// Play each publication named in `volumes` (by namespace) at its
+    /// percent of as it arrives, the rest as they arrive. Who is heard
+    /// talking stays as they speak.
+    pub fn set_volumes(&mut self, volumes: BTreeMap<String, u16>) {
+        self.volumes = volumes;
+    }
+    /// Play silence in place of the call (`true`), or play it again.
+    pub const fn set_deafened(&mut self, deafened: bool) {
+        self.deafened = deafened;
+    }
+    /// Whether the call plays silence here.
+    #[must_use]
+    pub const fn deafened(&self) -> bool {
+        self.deafened
     }
     /// The publishers heard talking at `now`.
     pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
@@ -849,6 +898,18 @@ fn configure_pipewire(
     Ok(())
 }
 
+/// `frame` at `percent` of its level, clipped.
+fn louder(frame: Vec<i16>, percent: u16) -> Vec<i16> {
+    let percent = i32::from(percent);
+    frame
+        .into_iter()
+        .map(|sample| {
+            let scaled = i32::from(sample).saturating_mul(percent) / 100;
+            i16::try_from(scaled).unwrap_or(if scaled < 0 { i16::MIN } else { i16::MAX })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +918,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_lock::MutexRecover as _;
     static DEVICE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The shared test hang bound, as a pipeline timeout.
+    fn hang_bound() -> gst::ClockTime {
+        gst::ClockTime::from_nseconds(
+            u64::try_from(tilo_test_env::hang_bound().as_nanos()).unwrap_or(u64::MAX),
+        )
+    }
+
     fn device_test_lock() -> std::sync::MutexGuard<'static, ()> {
         let guard = DEVICE_TESTS.lock_recover();
         wait_for_device_workers();
@@ -874,6 +942,8 @@ mod tests {
         #[derive(Default)]
         pub struct Gate {
             pub entered: AtomicBool,
+            /// The held transition went on, released or past its bound.
+            pub left: AtomicBool,
             released: std::sync::Mutex<bool>,
             wake: std::sync::Condvar,
         }
@@ -909,11 +979,17 @@ mod tests {
                 };
                 if let Some(gate) = gate {
                     gate.entered.store(true, Ordering::Release);
-                    let released = gate.released.lock().unwrap();
+                    // Held until released; the bound only keeps a failed test
+                    // from leaving the element stuck.
                     let _ = gate
                         .wake
-                        .wait_timeout_while(released, Duration::from_secs(4), |released| !*released)
+                        .wait_timeout_while(
+                            gate.released.lock().unwrap(),
+                            tilo_test_env::hang_bound().saturating_mul(2),
+                            |released| !*released,
+                        )
                         .unwrap();
+                    gate.left.store(true, Ordering::Release);
                 }
                 self.parent_change_state(transition)
             }
@@ -998,28 +1074,30 @@ mod tests {
         let (fd, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (done, completed) = std::sync::mpsc::channel();
         let caller = std::thread::spawn(move || {
-            let result =
-                audio.start_capture_element_bound(&source, Arc::new(|| true), Some(fd.into()));
+            let result = audio.start_capture_element_bound(
+                &source,
+                Arc::new(|| true),
+                None,
+                Some(fd.into()),
+            );
             done.send((audio, result)).unwrap();
         });
         wait_for_gate(&gate);
-        let early = completed.recv_timeout(Duration::from_millis(100));
-        let nonblocking = early.is_ok();
-        if !nonblocking {
-            gate.release();
-        }
-        let (mut audio, result) = early
-            .unwrap_or_else(|_| tilo_test_env::recv("the capture start to complete", &completed));
+        // The source's startup stays held until released below, so the start
+        // returns only if it does not wait for the device.
+        let (mut audio, result) = tilo_test_env::recv(
+            "the capture start to return while the source's startup is held",
+            &completed,
+        );
         caller.join().unwrap();
         result.unwrap();
         let stop = audio.capture_stop_handle().unwrap();
-        let now = Instant::now();
         audio.stop_capture();
         assert!(
-            now.elapsed() < Duration::from_millis(100),
+            !gate.left.load(Ordering::Acquire),
             "cancel waited for driver state lock"
         );
-        peer.set_read_timeout(Some(Duration::from_millis(100)))
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         assert_eq!(
             peer.read(&mut [0]).unwrap(),
@@ -1035,10 +1113,6 @@ mod tests {
         wait_for_worker_exit(&stop);
         assert_eq!(observed.current_state(), gst::State::Null);
         assert!(audio.poll_capture(Instant::now()).unwrap().is_empty());
-        assert!(
-            nonblocking,
-            "set_state blocked the caller on delayed source startup"
-        );
     }
 
     #[test]
@@ -1076,18 +1150,21 @@ mod tests {
         use std::io::Read;
         let _device_test = device_test_lock();
         wait_for_device_workers();
+        let start = Instant::now();
         let (mut audio, gate, mut peer) = pending_output();
         let stop = audio.output.stop_handle();
         assert!(!audio.output_ready());
-        peer.set_read_timeout(Some(Duration::from_millis(2300)))
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
-        let start = Instant::now();
         assert_eq!(
             peer.read(&mut [0]).unwrap(),
             0,
             "watchdog must revoke without a service tick"
         );
-        assert!(start.elapsed() < Duration::from_millis(2300));
+        assert!(
+            start.elapsed() >= CAPTURE_STARTUP_TIMEOUT,
+            "revoked before the startup deadline"
+        );
         assert!(!stop.finished(), "driver is deliberately still blocked");
         assert!(!audio.output_ready());
         assert_eq!(audio.playout(Instant::now()), Err(AudioError::DeviceLost));
@@ -1107,7 +1184,7 @@ mod tests {
             let stop = audio.output.stop_handle();
             audio.close();
             drop(audio);
-            peer.set_read_timeout(Some(Duration::from_millis(100)))
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             assert_eq!(peer.read(&mut [0]).unwrap(), 0);
             assert!(!stop.finished());
@@ -1180,8 +1257,19 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the software output to start", || audio.output_ready());
+        wait_for_output(&audio, "the software output to start");
         audio
+    }
+
+    fn wait_for_output(audio: &VoiceAudio, what: &str) {
+        let failure = tilo_test_env::wait_for(what, || {
+            if audio.output_ready() {
+                Some(None)
+            } else {
+                audio.output.failure().map(Some)
+            }
+        });
+        assert_eq!(failure, None, "{what}: the output failed instead");
     }
 
     fn observed_output() -> (VoiceAudio, gst_app::AppSink) {
@@ -1198,7 +1286,7 @@ mod tests {
             .downcast::<gst_app::AppSink>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the observed output to start", || audio.output_ready());
+        wait_for_output(&audio, "the observed output to start");
         (audio, sink)
     }
 
@@ -1234,10 +1322,19 @@ mod tests {
             .build();
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
+        let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         audio
-            .start_capture_element(&source.upcast(), Arc::new(|| true))
+            .start_capture_element_bound(
+                &source.upcast(),
+                Arc::new(|| true),
+                Some(CAPTURE_STARTUP_TIMEOUT),
+                Some(fd.into()),
+            )
             .unwrap();
         let worker = audio.capture_stop_handle().unwrap();
+        tilo_test_env::wait_until("the capture's Playing transition to begin", || {
+            observed.current_state() != gst::State::Null
+        });
         assert!(
             !audio.capture_active(),
             "requested Playing is not observed microphone audio"
@@ -1385,10 +1482,11 @@ mod tests {
                 .start_capture_element(&source, Arc::new(|| true))
                 .unwrap();
             let deadline = tilo_test_env::hang_deadline();
-            let frames = loop {
-                let frames = audio.poll_capture(Instant::now()).unwrap();
+            let (polled_at, frames) = loop {
+                let polled_at = Instant::now();
+                let frames = audio.poll_capture(polled_at).unwrap();
                 if !frames.is_empty() {
-                    break frames;
+                    break (polled_at, frames);
                 }
                 assert!(
                     Instant::now() < deadline,
@@ -1400,7 +1498,7 @@ mod tests {
             for frame in frames {
                 assert_eq!(frame.timestamp_48k % 960, 0);
                 assert!(previous.is_none_or(|last| frame.timestamp_48k > last));
-                assert!(Instant::now().duration_since(frame.captured_at) < SEND_LIFETIME);
+                assert!(polled_at.duration_since(frame.captured_at) < SEND_LIFETIME);
                 previous = Some(frame.timestamp_48k);
             }
             audio.stop_capture();
@@ -1445,7 +1543,14 @@ mod tests {
         let deadline = tilo_test_env::hang_deadline();
         let mut received = Vec::new();
         while received.len() < 3 {
-            received.extend(audio.poll_capture(Instant::now()).unwrap());
+            let polled_at = Instant::now();
+            received.extend(
+                audio
+                    .poll_capture(polled_at)
+                    .unwrap()
+                    .into_iter()
+                    .map(|frame| (polled_at, frame)),
+            );
             assert!(
                 Instant::now() < deadline,
                 "jittered real Opus frames never reached capture"
@@ -1454,12 +1559,12 @@ mod tests {
         }
         assert!(counter.load(std::sync::atomic::Ordering::Relaxed) >= 3);
         for pair in received.windows(2) {
-            assert!(pair[1].timestamp_48k >= pair[0].timestamp_48k + 960);
+            assert!(pair[1].1.timestamp_48k >= pair[0].1.timestamp_48k + 960);
         }
-        for frame in received {
+        for (polled_at, frame) in received {
             assert_eq!(frame.timestamp_48k % 960, 0);
             assert_eq!(frame.duration_samples, 960);
-            assert!(Instant::now().duration_since(frame.captured_at) < SEND_LIFETIME);
+            assert!(polled_at.duration_since(frame.captured_at) < SEND_LIFETIME);
         }
         pad.remove_probe(probe);
         audio.close();
@@ -1491,10 +1596,11 @@ mod tests {
             "future data is not fresh capture readiness"
         );
         let deadline = tilo_test_env::hang_deadline();
-        let frames = loop {
-            let frames = audio.poll_capture(Instant::now()).unwrap();
+        let (polled_at, frames) = loop {
+            let polled_at = Instant::now();
+            let frames = audio.poll_capture(polled_at).unwrap();
             if !frames.is_empty() {
-                break frames;
+                break (polled_at, frames);
             }
             assert!(
                 Instant::now() < deadline,
@@ -1507,7 +1613,7 @@ mod tests {
         for frame in frames {
             assert_eq!(frame.timestamp_48k % 960, 0);
             assert_eq!(frame.duration_samples, 960);
-            assert!(Instant::now().duration_since(frame.captured_at) < SEND_LIFETIME);
+            assert!(polled_at.duration_since(frame.captured_at) < SEND_LIFETIME);
         }
         audio.close();
     }
@@ -1570,9 +1676,7 @@ mod tests {
             audio.decoders[&id].ready.is_empty(),
             "PLC cannot outlive original receive window"
         );
-        let sample = sink
-            .try_pull_sample(gst::ClockTime::from_seconds(1))
-            .unwrap();
+        let sample = sink.try_pull_sample(hang_bound()).unwrap();
         assert_eq!(sample.buffer().unwrap().size(), FRAME_SAMPLES * 2);
         assert!(
             sample
@@ -1617,6 +1721,57 @@ mod tests {
         );
         audio.playout(now + RECEIVE_LIFETIME).unwrap();
         assert!(audio.decoders[&id].ready.is_empty());
+    }
+
+    #[test]
+    fn deafened_playout_plays_silence_and_consumes_the_call_unheard() {
+        let _device_test = device_test_lock();
+        let (mut audio, sink) = observed_output();
+        let id = PublicationId {
+            namespace: "deafened".into(),
+            carrier_generation: 1,
+            incarnation: 1,
+        };
+        // One frame of the call played at `at`, read back off the output.
+        let played = |audio: &mut VoiceAudio, at: Instant| {
+            let mut decoder = audio
+                .decoders
+                .remove(&id)
+                .unwrap_or_else(|| Decoder::new().unwrap());
+            decoder.ready.push_back(PcmFrame {
+                samples: vec![1000; 960],
+                expires_at: at + RECEIVE_LIFETIME,
+            });
+            audio.decoders.insert(id.clone(), decoder);
+            audio.playout(at).unwrap();
+            let sample = sink
+                .try_pull_sample(hang_bound())
+                .expect("the output carries a frame");
+            let buffer = sample.buffer().unwrap().map_readable().unwrap();
+            buffer
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let start = Instant::now();
+        assert!(played(&mut audio, start) > 0, "the call is heard");
+        audio.set_deafened(true);
+        assert!(audio.deafened());
+        assert_eq!(
+            played(&mut audio, start + FRAME_DURATION),
+            0,
+            "deafened, the output is silent"
+        );
+        assert!(
+            audio.decoders[&id].ready.len() <= 1,
+            "the call plays on unheard, no backlog builds"
+        );
+        audio.set_deafened(false);
+        assert!(
+            played(&mut audio, start + FRAME_DURATION * 2) > 0,
+            "undeafened, heard again"
+        );
     }
 
     #[test]
@@ -1708,7 +1863,6 @@ mod tests {
         pcm.extend(voiced(150));
         let packets = encoder.encode(&pcm);
         assert!(packets.len() >= 200, "{}", packets.len());
-        // The encoder was in DTX right up to the onset...
         assert!(
             transmitted(&packets[25..50]).0 <= 3,
             "not in DTX before the onset"
@@ -1866,7 +2020,7 @@ mod tests {
             audio.playout(base + Duration::from_millis(millis)).unwrap();
             if due.contains(&millis) {
                 let sample = sink
-                    .try_pull_sample(gst::ClockTime::from_seconds(1))
+                    .try_pull_sample(hang_bound())
                     .unwrap_or_else(|| panic!("missing actual PCM at {millis}ms"));
                 assert_eq!(sample.buffer().unwrap().size(), FRAME_SAMPLES * 2);
             } else {
@@ -1875,10 +2029,7 @@ mod tests {
         }
         // A long outage emits one current frame, with no catch-up burst.
         audio.playout(base + Duration::from_secs(1)).unwrap();
-        assert!(
-            sink.try_pull_sample(gst::ClockTime::from_seconds(1))
-                .is_some()
-        );
+        assert!(sink.try_pull_sample(hang_bound()).is_some());
         audio.playout(base + Duration::from_millis(1001)).unwrap();
         assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
         audio.close();
@@ -1917,10 +2068,7 @@ mod tests {
         audio.playout(now + Duration::from_millis(19)).unwrap();
         assert!(sink.try_pull_sample(gst::ClockTime::ZERO).is_none());
         audio.playout(now + FRAME_DURATION).unwrap();
-        assert!(
-            sink.try_pull_sample(gst::ClockTime::from_seconds(1))
-                .is_some()
-        );
+        assert!(sink.try_pull_sample(hang_bound()).is_some());
         audio.close();
         assert_eq!(
             audio.playout(now + FRAME_DURATION * 2),
@@ -1983,6 +2131,16 @@ mod tests {
         assert_eq!(
             audio.receive(frame("alice", 2), now),
             Err(AudioError::Closed)
+        );
+    }
+
+    #[test]
+    fn a_publication_plays_at_its_volume_clipped() {
+        assert_eq!(super::louder(vec![1000, -1000, 0], 0), vec![0, 0, 0]);
+        assert_eq!(super::louder(vec![1000, -1000], 50), vec![500, -500]);
+        assert_eq!(
+            super::louder(vec![i16::MAX, i16::MIN], 200),
+            vec![i16::MAX, i16::MIN]
         );
     }
 }

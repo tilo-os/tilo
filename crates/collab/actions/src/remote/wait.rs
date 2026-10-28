@@ -174,7 +174,6 @@ fn look<H: ActionHost + Send + 'static>(wait: Wait<H>) {
         // Asked for before looking, so a change between the two still wakes
         // the wait rather than slipping past it.
         let change = wait.host.next_change(&wait.caller, &wait.invocation);
-        // Read now, as the caller is now.
         let state = wait.host.observe(&wait.caller, &wait.invocation);
         let answer_now =
             wait.arrived(state.as_ref()) || wait.over() || wakes >= MAX_IMMEDIATE_WAKES;

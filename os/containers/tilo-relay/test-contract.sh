@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Static contract for the operator-facing composite home-peer deployment.
 #
-# Keep this cheap: image construction is covered by release-relay.yml, while this
-# asserts the Compose artifact includes the complete filesystem replica.
+# Keep this cheap: t's image-relay check builds the image (tools/ci/publish/relay-build.sh,
+# which runs this contract first), while this asserts the Compose artifact includes the
+# complete filesystem replica.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,16 +12,14 @@ config="$root/relay.toml.example"
 readme="$root/README.md"
 containerfile="$root/Containerfile"
 dockerignore="$root/Containerfile.dockerignore"
-workflow="$root/../../../.forgejo/workflows/release-relay.yml"
+build="$root/../../../tools/ci/publish/relay-build.sh"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
-
-bash "$root/test-base-retry.sh"
 
 fail() { echo "tilo-relay container contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 
-for path in "$compose" "$config" "$readme" "$dockerignore" "$workflow"; do
+for path in "$compose" "$config" "$readme" "$dockerignore" "$build"; do
   [ -f "$path" ] || fail "missing $(basename "$path")"
 done
 
@@ -75,30 +74,30 @@ need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-home-peer"]'
 need "$compose" "./config:/etc/tilo:Z"
 need "$compose" "tilo-full-replica"
 need "$entrypoint" "/usr/bin/fs replica"
-need "$entrypoint" "/usr/bin/tilo-relay"
-need "$entrypoint" "/usr/bin/tilo-enroll join"
-need "$entrypoint" "/usr/bin/tilo-enroll pair"
+need "$entrypoint" "/usr/libexec/tilo/tilo-relay"
+need "$entrypoint" "/usr/libexec/tilo/tilo-enroll join"
+need "$entrypoint" "/usr/libexec/tilo/tilo-enroll pair"
 need "$entrypoint" "/var/lib/tilo-relay/decommissioned"
 need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 need "$entrypoint" "wait -n"
-need "$workflow" "persist-credentials: false"
-need "$workflow" "SOURCE_DATE_EPOCH=0"
-need "$workflow" "actions_cache_url=ACTIONS_CACHE_URL"
-need "$workflow" "actions_runtime_token=ACTIONS_RUNTIME_TOKEN"
-if grep -Fq 'SCCACHE_AWS' "$workflow"; then
-  fail "release-relay binds the static compiler-cache key"
+# The build t runs (image-relay): this contract first; a commit time is no input (the
+# Containerfile's SOURCE_DATE_EPOCH defaults to 0 and no build argument overrides it); the pinned
+# sccache release reaches the build only through the verified github-assets context; the base
+# and the frozen RPM snapshot are passed by digest; the context is the ignore file's filtered copy.
+need "$build" "bash os/containers/tilo-relay/test-contract.sh"
+need "$containerfile" "ARG SOURCE_DATE_EPOCH=0"
+if grep -Fq -- '--build-arg "SOURCE_DATE_EPOCH' "$build" || grep -Fq -- '--build-arg SOURCE_DATE_EPOCH' "$build"; then
+  fail "relay-build.sh passes a commit time into the image"
 fi
-need "$workflow" "Bind the runner compiler-cache configuration"
-need "$workflow" "TILO_REQUIRE_COMPILER_CACHE="
-need "$workflow" "TILO_COMPILER_CACHE_CONFIGURED="
-need "$workflow" "TILO_CACHE_PROBE_NONCE="
-need "$workflow" 'github-assets=os/external-assets/cache'
-need "$workflow" 'uses: ./.forgejo/actions/cache-github-assets'
-need "$workflow" 'assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz'
-need "$workflow" "driver-opts: network=host"
-# Publications never build on a builder whose state another job left behind.
-need "$workflow" "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
-need "$workflow" 'cache-to: type=gha,scope=relay,mode=max,ignore-error=true'
+if grep -Fq 'SCCACHE_AWS' "$build"; then
+  fail "relay-build.sh binds the static compiler-cache key"
+fi
+need "$build" 'assets=$(pinned_assets sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz)'
+need "$build" '--build-context "github-assets=$assets"'
+need "$build" '--build-arg "BASE_REF=$BASE_REF"'
+need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
+need "$build" 'stage_context os/containers/tilo-relay/Containerfile.dockerignore "$context"'
+need "$build" '--ignorefile os/containers/tilo-relay/Containerfile.dockerignore'
 
 for excluded in .git .forgejo target os/output; do
   grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"

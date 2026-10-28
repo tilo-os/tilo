@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 import re
@@ -43,15 +44,20 @@ def step_script(text, step_id):
 class EnabledImagerPlatforms(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-        self.winget_monitor = (ROOT / ".forgejo/workflows/release-imager-winget.yml").read_text()
+        products = tomllib.loads((ROOT / "tools/ci/products.toml").read_text())
+        checks = {check["name"]: check for matrix in products["matrix"] for check in matrix["check"]}
+        self.winget_check = checks["imager-winget-acceptance"]
 
     def test_release_gate_requires_every_enabled_platform_artifact(self):
-        with self.subTest(phase='full native, tags and protected main require both macos architectures'):
+        with self.subTest(phase='a tag or a full-native dispatch requires both macos architectures'):
             self.doCleanups()
             self.setUp()
             macos = section(self.workflow, "macos", 2)
+            # macOS and Windows need hosts this fleet does not serve, so a
+            # promotion publishes the Linux media and these lanes wait for a
+            # tag or for a dispatch that names them.
             self.assertIn(
-                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))",
+                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
                 macos,
             )
             for arch in ("x86_64", "aarch64"):
@@ -60,8 +66,8 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.assertIn("    needs: [plan, linux, windows, macos]", publish)
             install = section(self.workflow, "homebrew-install-test", 2)
             self.assertNotIn("package_kind: cask", install)
-            for arch in ("x86_64", "aarch64"):
-                self.assertIn(f"runner: imager-linux-{arch}", install)
+            for runner in ("runner-release", "runner-large-arm64"):
+                self.assertIn(f"runner: {runner}", install)
             native_casks = section(self.workflow, "homebrew-macos-install-test", 2)
             self.assertIn("    if: startsWith(github.ref, 'refs/tags/imager-v')", native_casks)
             for arch in ("x86_64", "aarch64"):
@@ -117,7 +123,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
         with self.subTest(phase='release signing and publication are oidc broker only'):
             self.doCleanups()
             self.setUp()
-            combined = self.workflow + "\n" + self.winget_monitor
+            combined = self.workflow + "\n" + repr(self.winget_check)
             retired_interfaces = (
                 "IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP",
                 "IMAGER_LINUX_SIGNING_KEY_B64",
@@ -169,13 +175,25 @@ class EnabledImagerPlatforms(unittest.TestCase):
                         rf"acquire-release-token\.sh\s+\\?\s*{mode}\s+\"\$CREDENTIAL_BROKER\"",
                     )
 
-            self.assertIn("vars.IMAGER_SITE_CREDENTIAL_BROKER != ''", self.winget_monitor)
-            self.assertIn("enable-openid-connect: true", self.winget_monitor)
-            self.assertNotIn("secrets.", self.winget_monitor)
-            self.assertRegex(
-                self.winget_monitor,
-                r'acquire-release-token\.sh\s+\\?\s*site\s+"\$CREDENTIAL_BROKER"',
-            )
+        with self.subTest(phase='winget acceptance holds only the site token t gives it'):
+            self.doCleanups()
+            self.setUp()
+            # The site repository is on the forge, which takes no identity token from t, so the
+            # monitor's one credential is a token in t's server config, given to this check alone;
+            # the repository holds none, and without it the check fails instead of passing blind.
+            check = self.winget_check
+            self.assertEqual(["schedule:23 */6 * * *", "dispatch"], check["on"])
+            self.assertIs(False, check["cache"])
+            self.assertEqual(["TILO_SITE_TOKEN"], check["secrets"])
+            self.assertNotIn("id_token", check)
+            self.assertNotIn("env", check)
+            self.assertIn("GITHUB_SERVER_URL=https://code.tilo.so TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN",
+                          check["run"])
+            self.assertIn("bash apps/imager/packaging/monitor-winget-acceptance.sh", check["run"])
+            unset = subprocess.run(["bash", "-c", check["run"]], env={"PATH": "/usr/bin:/bin"},
+                                   capture_output=True, text=True)
+            self.assertNotEqual(0, unset.returncode)
+            self.assertIn("TILO_SITE_TOKEN is not set", unset.stderr)
         with self.subTest(phase='manual full native dispatch remains a non publishing rehearsal'):
             self.doCleanups()
             self.setUp()

@@ -361,7 +361,6 @@ mod tests {
         assert_eq!(pkg.ncx_href.as_deref(), Some("OEBPS/toc.ncx"));
         assert_eq!(pkg.cover_href, None);
 
-        // Cover resolution prefers properties, then meta, then the item name.
         let with = |meta: &str, items: &str| {
             let opf = format!(
                 "<package><metadata>{meta}</metadata><manifest>{items}</manifest><spine/></package>"
@@ -391,7 +390,6 @@ mod tests {
             None
         );
 
-        // An empty spine parses.
         let pkg = OpfPackage::parse("<package><manifest/></package>", "").unwrap();
         assert!(pkg.spine.is_empty());
     }

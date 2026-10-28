@@ -2,14 +2,15 @@
 //! the results overlay fed by a real [`SearchRegistry`]; the palette narrowed
 //! to a scope with facet chips, message rows and a slow page still loading;
 //! media and file-hit rows; the in-content filter field in its states; and
-//! the find bar over a document with its match highlights.
+//! the find bar over a document with its match highlights; and the window
+//! bar's search on the same document with its options and replacement open.
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- search_showcase [OUT_DIR]`
 //! Out:  `OUT_DIR`, else `$SEARCH_SHOWCASE_OUT`, else `/tmp/search_showcase` —
 //!       search-{dark,light}-populated.png, search-dark-selected.png,
 //!       search-dark-empty.png, palette-scoped-{dark,light}.png,
 //!       palette-rows-{dark,light}.png, filter-{dark,light}.png,
-//!       find-bar-{dark,light}.png
+//!       find-bar-{dark,light}.png, window-search-replace-{dark,light}.png
 //!
 //! Each shot drives the real five-pass path for the field and the real
 //! self-layout of the overlay, so the pixels match the live widgets.
@@ -229,6 +230,20 @@ pub fn run(args: &[String]) {
         shoot_palette(theme, &dir.join(format!("palette-rows-{name}.png")), false);
         shoot_filters(theme, &dir.join(format!("filter-{name}.png")));
         shoot_find(theme, &dir.join(format!("find-bar-{name}.png")));
+        // Replacing; the replacement still empty, with its hint; nothing
+        // matching.
+        for (shot, query, replacement) in [
+            ("replace", "parse", "read"),
+            ("replacement-empty", "parse", ""),
+            ("no-matches", "zebra", ""),
+        ] {
+            shoot_window_search(
+                theme,
+                &dir.join(format!("window-search-{shot}-{name}.png")),
+                query,
+                replacement,
+            );
+        }
     }
 }
 
@@ -483,6 +498,23 @@ impl Findable for Prose {
     }
 }
 
+/// The prose as the window's search reaches it: a widget that provides it.
+impl Widget for Prose {
+    tilo_ui::provides!(dyn Findable);
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use tilo_ui::widget::TaffyTreeExt;
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+    fn name(&self) -> &'static str {
+        "Prose"
+    }
+}
+
 fn shoot_find(theme: &Theme, out: &Path) {
     let presence = PresenceCtx::default();
     let width = 640.0;
@@ -540,5 +572,109 @@ fn shoot_find(theme: &Theme, out: &Path) {
     bar.paint(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     let mut r = OffscreenRenderer::new(px_dim(width), px_dim(y + 24.0));
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
+    println!("wrote {}", out.display());
+}
+
+/// The window bar's search open on the prose, as the replace chord opens it:
+/// the options panel under the field with Match case on, and the
+/// replacement holding the keyboard over Replace and Replace all. Set
+/// through the search's semantic actions, as an agent sets them.
+fn shoot_window_search(theme: &Theme, out: &Path, query: &str, replacement: &str) {
+    use tilo_ui::a11y::Action;
+    use tilo_ui::tokens::MotionSource;
+    use tilo_ui::widget::{Edits, InPlace, WindowSearch};
+    use tilo_ui::window_toolbar::SearchOpening;
+
+    // A key opened it: it lands at once, as it does for the person.
+    tilo_ui::motion::note_source(MotionSource::Keyboard);
+    let presence = PresenceCtx::default();
+    let width = 640.0;
+    let bar_h = 40.0;
+    let mut tr = TextRenderer::new();
+    let mut prose = Prose {
+        found: Vec::new(),
+        current: 0,
+    };
+    let mut search = WindowSearch::new();
+    search.set_app_name("Writer");
+    let control = tilo_ui::widget::window_controls::CONTROL_PX;
+    let top = (bar_h - control) / 2.0;
+    search.place(
+        Rect::new(12.0, top, 12.0 + control, top + control),
+        width - 12.0,
+    );
+    search.open_as(
+        InPlace::Document,
+        MotionSource::Keyboard,
+        SearchOpening::Replace,
+    );
+    let mut doc = automerge::AutoCommit::new();
+    let mut act = |search: &mut WindowSearch, target: &str, action: Action| {
+        search.perform_semantic_action(
+            target,
+            &action,
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+    };
+    act(
+        &mut search,
+        "window-search-query",
+        Action::SetValue(query.into()),
+    );
+    search.drive(&mut prose);
+    act(&mut search, "window-search-match-case", Action::ToggleCheck);
+    act(
+        &mut search,
+        "window-search-replacement",
+        Action::SetValue(replacement.into()),
+    );
+    search.drive(&mut prose);
+
+    let mut scene = Scene::new();
+    let ground = theme.tokens.colors.surfaces.content;
+    let reading = theme.text(TextRole::Reading);
+    let line_h = f64::from(tr.measure_style("Ag", None, &reading).1);
+    let left = 24.0;
+    let mut y = bar_h + 24.0;
+    for (line, text) in PROSE.iter().enumerate() {
+        for (index, found) in prose.found.iter().enumerate() {
+            if found.start / 1000 != line {
+                continue;
+            }
+            let start = found.start % 1000;
+            let end = found.end % 1000;
+            let before = tr
+                .measure_style(text.get(..start).unwrap_or(""), None, &reading)
+                .0;
+            let hit = tr
+                .measure_style(text.get(start..end).unwrap_or(""), None, &reading)
+                .0;
+            let x0 = left + f64::from(before);
+            paint_find_match(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(x0, y, x0 + f64::from(hit), y + line_h),
+                index == prose.current,
+                theme,
+            );
+        }
+        tr.draw_style(
+            &mut scene,
+            text,
+            theme.text_primary,
+            Affine::translate((left, y)),
+            None,
+            &reading,
+        );
+        y += line_h;
+    }
+    tilo_ui::surface::separator(&mut scene, Affine::IDENTITY, 0.0, width, bar_h, 0.0, ground);
+    search.set_ground(ground);
+    search.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    search.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    let height = search.get_rect().y1.max(y) + 24.0;
+    let mut r = OffscreenRenderer::new(px_dim(width), px_dim(height));
+    r.render_png(&scene, ground, out);
     println!("wrote {}", out.display());
 }

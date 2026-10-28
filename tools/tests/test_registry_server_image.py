@@ -1,21 +1,23 @@
 from pathlib import Path
-import tomllib
 import unittest
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 
 
 class RegistryServerImageTests(unittest.TestCase):
     def setUp(self) -> None:
-        t = tomllib.loads((ROOT / "t.toml").read_text())
+        t = t_matrix.load(ROOT)
         self.checks = {check["name"]: check for check in t["check"]}
         self.containerfile = (
             ROOT / "crates/packaging/registry-server/container/Containerfile"
         ).read_text()
         self.smoke = (ROOT / "crates/packaging/registry-server/container/test-image.sh").read_text()
 
-    def test_the_image_is_tested_before_main_publishes_it(self) -> None:
+    def test_the_image_is_tested_before_it_is_published(self) -> None:
         build = self.checks["image-registry-server"]
         self.assertNotIn("id_token", build)
         self.assertNotIn("secrets", build)
@@ -24,11 +26,14 @@ class RegistryServerImageTests(unittest.TestCase):
         test = build["run"].index("container/test-image.sh")
         self.assertGreater(test, build["run"].index("oci-build.sh"))
         publish = self.checks["publish-registry-server"]
-        self.assertEqual(publish["needs"], ["image-registry-server"])
-        self.assertEqual(publish["on"], ["main", "dispatch"])
+        self.assertEqual(publish["needs"], ["image-registry-server", "signing-tools"])
+        self.assertEqual(publish["optional_needs"], ["sign-registry-server"])
+        # Signed releases from stable; development tags only when someone dispatches them.
+        self.assertEqual(publish["on"], ["dispatch", "stable"])
+        self.assertEqual(self.checks["sign-registry-server"]["on"], ["stable"])
         self.assertEqual(publish["id_token"], ["registry.tilo.so"])
         self.assertIn("registry.tilo.so/tilo/tilo-registry-server", publish["run"])
-        self.assertIn("'sha-{commit}'", publish["run"])
+        self.assertIn("'dev:dev-{commit}' 'release:sha-{commit}'", publish["run"])
         self.assertNotRegex(publish["run"], r"latest|:main")
 
     def test_runtime_is_distroless_and_nonroot(self) -> None:

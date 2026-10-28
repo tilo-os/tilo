@@ -291,7 +291,6 @@ fn truncated(error: io::Error) -> FrameError {
 pub enum FrameError {
     /// The underlying stream failed.
     Io(io::Error),
-    /// The stream ended inside a frame.
     Truncated,
     /// The stream ended where the caller required another frame. Readers
     /// return `Ok(None)` for a clean close; callers for which the next frame

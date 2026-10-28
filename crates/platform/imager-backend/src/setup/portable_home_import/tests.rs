@@ -147,7 +147,7 @@ fn fixture_with_root_acl(root_acl: bool) -> Fixture {
     }
 }
 fn finished(worker: &mut AdoptionWorker) -> AdoptionResult {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(result) = worker.try_next() {
             return result.unwrap();

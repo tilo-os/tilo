@@ -121,7 +121,6 @@ pub(super) async fn ask(
         .unwrap_or_else(|reason| panic!("the relay did not answer: {reason}"))
 }
 
-/// An invocation of `action` on `resource` of `provider` with `argument`.
 pub(super) fn invocation(
     provider: &str,
     resource: String,
@@ -147,7 +146,6 @@ pub(super) fn invocation(
     })
 }
 
-/// The host's own operation `action` with `argument`.
 pub(super) fn host_operation(action: &str, argument: serde_json::Value) -> RemoteActionMessage {
     invocation(
         HOST_ACTIONS_PROVIDER,
@@ -214,7 +212,7 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Design review").await.unwrap();
     rooms.enter(&room.room, &laptop.cert).await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &phone, &room.room).await;
+    super::members::admit(&relay, &host, &phone, &room.room).await;
 
     // Alice's laptop invites through the action: the room records it, as
     // the administration door would have.
@@ -400,7 +398,7 @@ async fn the_old_administration_door_only_removes_members() {
     let rooms = relay.rooms().unwrap();
     let room = rooms.create("Design review").await.unwrap();
     rooms.enter(&room.room, &laptop.cert).await.unwrap();
-    super::topology_namespace::admit(&relay, &host, &phone, &room.room).await;
+    super::members::admit(&relay, &host, &phone, &room.room).await;
 
     // What the actions serve is refused there, naming the action.
     let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
@@ -411,13 +409,6 @@ async fn the_old_administration_door_only_removes_members() {
                 room: room.room.clone(),
             },
             "`room.enter` action of `tilo.host`",
-        ),
-        (
-            RoomCommand::ClaimTopologyNamespace {
-                room: room.room.clone(),
-                salt: 3,
-            },
-            "`topology-namespace.claim` action of `tilo.member`",
         ),
     ] {
         let refused = admin.send(relay.node_addr(), command).await.unwrap_err();

@@ -1,6 +1,6 @@
 //! Asking an agent about what the person selected in the focused window.
 //!
-//! The desktop's ask-agent chord, and the "Ask agent…" entry a Tilo app's
+//! The desktop's ask-agent chord, and the "Tell an agent…" entry a Tilo app's
 //! menus offer, open the agent quick composer seeded with the selection: the
 //! person types what they want ("tighten this", "why does this fail?") and
 //! the composer queues a task about the selection (its subject, never a
@@ -44,7 +44,9 @@ const CONTEXT_CHARS: usize = 160;
 pub(crate) fn desktop_area(bounds: Option<[f64; 4]>, window: Option<Rect>) -> Option<Rect> {
     let local = ui::floating_surface::protocol_rect(bounds?).ok()?;
     let window = window?;
-    let area = (local + window.origin().to_vec2()).intersect(window);
+    let area = vello::kurbo::Affine::translate(window.origin().to_vec2())
+        .transform_rect_bbox(local)
+        .intersect(window);
     (area.width() > 0.0 && area.height() > 0.0).then_some(area)
 }
 
@@ -55,6 +57,12 @@ pub(crate) struct SelectionSeed {
     pub app_id: String,
     pub app_label: String,
     pub selection: Option<SharedSelection>,
+    /// The resource the app said its focused window shows, when that is not
+    /// what the selection names: a person long-pressed the window's title or
+    /// its drawer, not a place in what it shows. It travels as the task's
+    /// subject, so the agent is told which view of the app it is about and
+    /// starts there.
+    pub view: Option<SharedSelection>,
     /// Where the selection is drawn on the desktop, when the app said: the
     /// composer keeps clear of all of it.
     pub area: Option<Rect>,
@@ -85,8 +93,23 @@ impl SelectionSeed {
             app_id: app_id.into(),
             app_label: app_label.into(),
             selection,
+            view: None,
             area: None,
         }
+    }
+
+    /// This seed also says which view of its app the window shows: the
+    /// whole item `resource` named `label`, the place the task starts at
+    /// when the selection itself names no resource.
+    #[must_use]
+    pub(crate) fn showing(mut self, resource: tilo_actions::ActionResource) -> Self {
+        let label = resource.label.clone();
+        self.view = Some(
+            SharedSelection::of_text(&label)
+                .at(tilo_actions::SelectionPlace::item(resource.id.as_str()))
+                .in_resource(resource),
+        );
+        self
     }
 
     /// This seed's selection drawn at `area` on the desktop.
@@ -96,14 +119,23 @@ impl SelectionSeed {
         self
     }
 
+    /// What the request is about, as typed context: the selection's resource
+    /// when it names one, else the view the app's window shows.
+    fn about(&self) -> Option<&SharedSelection> {
+        self.selection
+            .as_ref()
+            .filter(|selection| selection.resource.is_some())
+            .or(self.view.as_ref())
+    }
+
     /// The `subject_json` argument of `desktop:tasks/queue`: what the
     /// request is about, the resource the app published and the selection
     /// in it. The subject only: it attaches nothing, so the task runs with a
     /// room-wide task's authority. `None` when the selection names no
     /// resource, or the app has no package id to name it by.
     pub(crate) fn subject_json(&self) -> Option<String> {
-        let selection = self.selection.as_ref()?;
-        let resource = selection.resource.clone()?;
+        let about = self.about()?;
+        let resource = about.resource.clone()?;
         if !self.app_id.contains('.') {
             return None;
         }
@@ -111,7 +143,7 @@ impl SelectionSeed {
             app_id: self.app_id.clone(),
             app_label: self.app_label.clone(),
             resource,
-            anchor: selection.anchor.clone(),
+            anchor: about.anchor.clone(),
         })
         .ok()
     }
@@ -155,10 +187,21 @@ impl SelectionSeed {
                     ("selection", excerpt.into()),
                 ],
             ),
-            None => t_args(
-                "agent-quick-about-window",
-                &[("app", self.app_label.clone().into())],
-            ),
+            // Nothing is selected, but the app said which view its window
+            // shows: that is what the request is about, named as it reads.
+            None => match self.about().and_then(|about| about.resource.as_ref()) {
+                Some(resource) => t_args(
+                    "agent-quick-about-resource",
+                    &[
+                        ("app", self.app_label.clone().into()),
+                        ("resource", resource.label.clone().into()),
+                    ],
+                ),
+                None => t_args(
+                    "agent-quick-about-window",
+                    &[("app", self.app_label.clone().into())],
+                ),
+            },
         }
     }
 }
@@ -201,6 +244,9 @@ pub(crate) struct SelectionRequests {
     /// Connections whose app announced it answers selection requests, by
     /// the app id the launcher vouched for.
     capable: HashMap<u64, String>,
+    /// The resource each connection's window shows, with its app id as the
+    /// launcher vouched for it.
+    windows: HashMap<u64, (String, tilo_actions::ActionResource)>,
     pressed: bool,
     waiting: Option<Waiting>,
     /// The agent last asked in each room, asked again while it is live.
@@ -209,13 +255,55 @@ pub(crate) struct SelectionRequests {
 }
 
 impl SelectionRequests {
-    /// `app_id` on `connection` answers selection requests.
     pub(crate) fn capable(&mut self, connection: u64, app_id: &str) {
         self.capable.insert(connection, app_id.to_owned());
     }
 
     pub(crate) fn disconnected(&mut self, connection: u64) {
         self.capable.remove(&connection);
+        self.windows.remove(&connection);
+    }
+
+    /// The window of `app_id` on `connection` shows `resource` now.
+    pub(crate) fn window_resource(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        resource: Option<tilo_actions::ActionResource>,
+    ) {
+        match resource {
+            Some(resource) => {
+                self.windows
+                    .insert(connection, (app_id.to_owned(), resource));
+            }
+            None => {
+                self.windows.remove(&connection);
+            }
+        }
+    }
+
+    /// The resource a window of `app_id` shows, when one said.
+    pub(crate) fn window_of(&self, app_id: &str) -> Option<&tilo_actions::ActionResource> {
+        let mut windows: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|(_, (app, _))| app == app_id)
+            .collect();
+        windows.sort_unstable_by_key(|(connection, _)| **connection);
+        windows.last().map(|(_, (_, resource))| resource)
+    }
+
+    /// The shell-ui connections of `app` that answer what the shell asks
+    /// about its focused window (its selection, the control at a point).
+    pub(crate) fn connections_of(&self, app: &str) -> Vec<u64> {
+        let mut connections: Vec<u64> = self
+            .capable
+            .iter()
+            .filter(|(_, capable)| capable.as_str() == app)
+            .map(|(connection, _)| *connection)
+            .collect();
+        connections.sort_unstable();
+        connections
     }
 
     /// The chord was pressed.
@@ -233,17 +321,11 @@ impl SelectionRequests {
             self.waiting = None;
             return Some(ChordRoute::Open);
         };
-        let mut connections: Vec<u64> = self
-            .capable
-            .iter()
-            .filter(|(_, capable)| capable.as_str() == app)
-            .map(|(connection, _)| *connection)
-            .collect();
+        let connections = self.connections_of(app);
         if connections.is_empty() {
             self.waiting = None;
             return Some(ChordRoute::Open);
         }
-        connections.sort_unstable();
         self.waiting = Some(Waiting {
             app_id: app.to_owned(),
             deadline: now.checked_add(ANSWER_WAIT).unwrap_or(now),
@@ -252,7 +334,7 @@ impl SelectionRequests {
     }
 
     /// Whether `app_id` may open the composer with its answer: the app the
-    /// chord asked, or (an "Ask agent…" entry) the focused app itself. A
+    /// chord asked, or (an "Tell an agent…" entry) the focused app itself. A
     /// window in the background never opens one.
     pub(crate) fn accept(&mut self, app_id: &str, focused_app: Option<&str>) -> bool {
         if self
@@ -343,7 +425,6 @@ impl SelectionRequests {
             .cloned()
     }
 
-    /// `agent` was asked in `room`.
     pub(crate) fn asked(&mut self, room: &str, agent: &str) {
         self.last_agent.insert(room.to_owned(), agent.to_owned());
     }
@@ -545,6 +626,60 @@ mod tests {
         );
     }
 
+    /// On 2026-10-19 one chord press started the workspace agent 87 times in
+    /// a second: the start counted as done once the agent subscribed for
+    /// tasks, the composer then found no agent it may ask (no certified
+    /// identity yet) and started another, every frame. Frame by frame as
+    /// `ShellOverlayHost::follow_agent_start` and `open_ask_agent` run, with
+    /// the one test both use (`askable`): an agent that never becomes
+    /// askable is started once, waited for, and given up on once.
+    #[test]
+    fn a_started_agent_that_never_takes_asks_is_started_once_and_given_up_on() {
+        let start = Instant::now();
+        let seed = SelectionSeed::new("so.tilo.notes", "Notes", Some(writer_selection()));
+        let members = vec!["claude-code".to_owned()];
+        // Subscribed for tasks, but not certified: not askable.
+        let askable = |_room: &str, _agent: &str| false;
+        let mut requests = SelectionRequests::default();
+        let mut starts = 0;
+        let mut gave_up = 0;
+        // The chord: nobody askable, so the admitted agent starts.
+        let live: Vec<String> = members
+            .iter()
+            .filter(|agent| askable("room", agent))
+            .cloned()
+            .collect();
+        assert_eq!(requests.choose_agent("room", &live), None);
+        let agent = requests
+            .choose_agent("room", &members)
+            .expect("an admitted agent");
+        starts += 1;
+        requests.starting("room", &agent, seed.clone(), start);
+        // Every frame for longer than the wait, at 90 Hz.
+        for frame in 1..=(AGENT_START_WAIT.as_millis() / 11 + 10) {
+            let now = start + Duration::from_millis(u64::try_from(frame * 11).unwrap_or(u64::MAX));
+            match requests.started(now, askable) {
+                Some(AgentStart::Ready(_)) => {
+                    // `open_ask_agent` asks among the askable members: with
+                    // the same test there is always one here.
+                    let live: Vec<String> = members
+                        .iter()
+                        .filter(|agent| askable("room", agent))
+                        .cloned()
+                        .collect();
+                    if requests.choose_agent("room", &live).is_none() {
+                        starts += 1;
+                        requests.starting("room", &agent, seed.clone(), now);
+                    }
+                }
+                Some(AgentStart::GaveUp) => gave_up += 1,
+                None => {}
+            }
+        }
+        assert_eq!(starts, 1, "started once");
+        assert_eq!(gave_up, 1, "and given up on once, when the wait ran out");
+    }
+
     /// The chord asks a Tilo app for its selection over the app's shell-ui
     /// connection, and an app holds one only when its manifest asks for the
     /// service. An app that shares its selection without it is never asked:
@@ -596,5 +731,24 @@ mod tests {
             missing.is_empty(),
             "share a selection without shell-ui: {missing:?}"
         );
+    }
+
+    #[test]
+    fn a_window_s_resource_is_its_apps_latest_and_leaves_with_its_connection() {
+        let resource = |id: &str| tilo_actions::ActionResource {
+            id: id.into(),
+            kind: "notes.notebook".into(),
+            label: "Notebook".into(),
+        };
+        let mut requests = SelectionRequests::default();
+        requests.window_resource(3, "so.tilo.notes", Some(resource("a")));
+        requests.window_resource(7, "so.tilo.notes", Some(resource("b")));
+        requests.window_resource(5, "so.tilo.mail", Some(resource("m")));
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("b")));
+        requests.disconnected(7);
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("a")));
+        requests.window_resource(3, "so.tilo.notes", None);
+        assert_eq!(requests.window_of("so.tilo.notes"), None);
+        assert_eq!(requests.window_of("so.tilo.mail"), Some(&resource("m")));
     }
 }

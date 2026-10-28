@@ -150,7 +150,7 @@ async fn until_sheet_by(
     author: [u8; 32],
     name: &str,
 ) -> Option<DocumentRoute> {
-    let deadline = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         member.pump();
         let routes: Vec<DocumentRoute> = member
@@ -245,7 +245,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     let laptop = enrol(&owner, "laptop", DeviceCapabilities::primary());
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let rooms = hosted.relay.rooms().unwrap().clone();
     let room = rooms.create("An agent's own session").await.unwrap();
@@ -277,7 +277,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     )
     .await;
     let grant = requested["grant"].as_str().unwrap().to_owned();
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while !status(&mut page)
         .await
         .grants
@@ -290,7 +290,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     approver.abort();
     // The approved grant puts the agent on the roster of the room it names,
     // and of no other room this host governs.
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while rooms.agents(&room.room).await.unwrap().is_empty() {
         assert!(
             Instant::now() < deadline,
@@ -323,7 +323,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
             break agent.device.clone();
         }
         assert!(
-            started.elapsed() < Duration::from_secs(30),
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the agent never started"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -383,7 +383,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         InvokeArgument::None,
     )
     .await;
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let roster = rooms.agents(&room.room).await.unwrap();
         if roster

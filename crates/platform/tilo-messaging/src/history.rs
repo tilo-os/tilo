@@ -45,10 +45,46 @@ impl std::fmt::Debug for Message {
     }
 }
 
+/// Where an older page of history begins: the marker of the oldest message the
+/// app already holds, in the host's own encoding (`None` asks for the newest
+/// page). Opaque to the app: it is minted here from a message the host handed
+/// out, and only the host reads it back.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct HistoryCursor(String);
+
+impl HistoryCursor {
+    /// The page before `message`: what one page hands on to ask for the page
+    /// beneath it, the newest page being read without a cursor.
+    #[must_use]
+    pub fn before(message: &Message) -> Self {
+        Self(message.id.clone())
+    }
+
+    /// The marker as the host wrote it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether a marker can be one: the bar's own limits on an id, so a
+    /// whole message cannot ride in a cursor.
+    fn is_valid(&self) -> bool {
+        !self.0.trim().is_empty() && self.0.len() <= 512 && !self.0.chars().any(char::is_control)
+    }
+}
+
+impl std::fmt::Debug for HistoryCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HistoryCursor(<private>)")
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HistoryPage {
     pub route: Route,
     pub messages: Vec<Message>,
+    /// There is a page before this one: [`HistoryCursor::before`] its oldest
+    /// message and read it.
     pub more: bool,
 }
 
@@ -64,6 +100,8 @@ pub enum HistoryError {
     Revoked,
     InvalidRoute,
     InvalidPage,
+    /// The cursor names nothing this host handed out.
+    InvalidCursor,
 }
 
 pub type HistoryFuture =
@@ -82,7 +120,10 @@ pub trait HistoryHost: Send + Sync {
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         None
     }
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture;
+    /// The page of `route` before `cursor` (the newest page without one), at
+    /// most `limit` messages: newest page first, and the page a person reads
+    /// next is the one before the oldest message it carried.
+    fn read(&self, route: Route, cursor: Option<HistoryCursor>, limit: usize) -> HistoryFuture;
 }
 
 /// Read-only service supplied through the existing host loan mechanism.
@@ -113,12 +154,14 @@ impl HistoryClient {
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         self.host.observe(changed)
     }
-    /// Read a bounded page and refuse another identity/account/route or malformed
-    /// data before any private content becomes visible in the consumer.
-    ///
-    /// # Errors
-    /// Returns the host's refusal or a mismatched/oversized history response.
-    pub async fn read(&self, route: Route) -> Result<HistoryPage, HistoryError> {
+    /// Read a bounded page and refuse another identity/account/route, a cursor
+    /// this host did not mint, or malformed data before any private content
+    /// becomes visible in the consumer.
+    pub async fn read(
+        &self,
+        route: Route,
+        cursor: Option<HistoryCursor>,
+    ) -> Result<HistoryPage, HistoryError> {
         if self.principal.trim().is_empty()
             || self.principal.len() > 256
             || self.principal.chars().any(char::is_control)
@@ -126,7 +169,13 @@ impl HistoryClient {
             return Err(HistoryError::InvalidRoute);
         }
         validate_route(&route)?;
-        let page = self.host.read(route.clone(), MAX_HISTORY_MESSAGES).await?;
+        if cursor.as_ref().is_some_and(|cursor| !cursor.is_valid()) {
+            return Err(HistoryError::InvalidCursor);
+        }
+        let page = self
+            .host
+            .read(route.clone(), cursor, MAX_HISTORY_MESSAGES)
+            .await?;
         validate_page(&page, &route)?;
         Ok(page)
     }
@@ -184,7 +233,7 @@ mod tests {
 
     struct Host(HistoryPage);
     impl HistoryHost for Host {
-        fn read(&self, _: Route, limit: usize) -> HistoryFuture {
+        fn read(&self, _: Route, _: Option<HistoryCursor>, limit: usize) -> HistoryFuture {
             assert_eq!(limit, MAX_HISTORY_MESSAGES);
             Box::pin(std::future::ready(Ok(self.0.clone())))
         }
@@ -215,8 +264,14 @@ mod tests {
         }
     }
     fn read(page: HistoryPage) -> Poll<Result<HistoryPage, HistoryError>> {
+        read_before(page, None)
+    }
+    fn read_before(
+        page: HistoryPage,
+        cursor: Option<HistoryCursor>,
+    ) -> Poll<Result<HistoryPage, HistoryError>> {
         let client = HistoryClient::new("fixture-owner", Arc::new(Host(page)));
-        let mut future = Box::pin(client.read(route()));
+        let mut future = Box::pin(client.read(route(), cursor));
         let mut cx = Context::from_waker(Waker::noop());
         future.as_mut().poll(&mut cx)
     }
@@ -255,5 +310,29 @@ mod tests {
         }
         assert_eq!(read(invalid), Poll::Ready(Err(HistoryError::InvalidPage)));
         assert_eq!(format!("{:?}", page()), "HistoryPage(<private>)");
+    }
+
+    #[test]
+    fn an_older_page_is_asked_for_by_the_oldest_message_held() {
+        let page = page();
+        let cursor = HistoryCursor::before(&page.messages[0]);
+        assert_eq!(cursor.as_str(), "message");
+        assert_eq!(format!("{cursor:?}"), "HistoryCursor(<private>)");
+        assert_eq!(
+            read_before(page.clone(), Some(cursor)),
+            Poll::Ready(Ok(page.clone()))
+        );
+        // A cursor no host minted cannot carry a page's worth of text.
+        for refused in [
+            String::new(),
+            " ".to_owned(),
+            "\u{7}".to_owned(),
+            "x".repeat(513),
+        ] {
+            assert_eq!(
+                read_before(page.clone(), Some(HistoryCursor(refused))),
+                Poll::Ready(Err(HistoryError::InvalidCursor))
+            );
+        }
     }
 }

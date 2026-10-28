@@ -14,6 +14,11 @@ pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);
 /// High contrast in the current mode's polarity. Choosing a mode leaves it.
 pub const HIGH_CONTRAST: Key<bool> = Key::new(SECTION, "high_contrast", || false);
 
+/// The band of type scales the theme applies (`appearance.text_scale`); a
+/// stored scale outside it is clamped.
+pub const TEXT_SCALE_MIN: f32 = 0.5;
+pub const TEXT_SCALE_MAX: f32 = 4.0;
+
 /// The desktop's wallpaper: the id of a picture the image ships
 /// (`tilo-wallpapers`' catalog), or `"custom"` for the person's own picture,
 /// which the compositor keeps per device. Unset shows the default picture.

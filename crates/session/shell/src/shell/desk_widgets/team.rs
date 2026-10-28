@@ -46,12 +46,13 @@ pub fn members(
     let mut rows: Vec<TeamMember> =
         tilo_desktop::collaborators::collaborator_roster_rows(desktop, local_user)
             .into_iter()
-            .filter(|row| !row.invited && row.id != own_id && row.id != local_user)
+            .filter(|row| !row.invited && !row.own_device && row.id != own_id)
+            .filter(|row| row.id != local_user)
             .map(|mut row| {
                 row.status = status_line(presence, &row, now);
                 // Idle or away dims their face; a call rings it, as
                 // everywhere else their face shows.
-                if let Some(id) = presence_id(presence, &row) {
+                if let Some(id) = presence_id(presence, None, &row) {
                     row.availability = presence.availability_of(&id);
                     row.call = presence.call_of(&id).map(str::to_owned);
                 }
@@ -92,12 +93,21 @@ pub fn status_line(
     })
 }
 
-/// Who `row` is to live presence: their own id when presence knows it,
-/// else the one presence names as they are named.
+/// Who `row` is to live presence in `room` (the workspace in front when
+/// `None`): their own id when presence knows it, else the one presence
+/// names as they are named.
 #[must_use]
-pub fn presence_id(presence: &PresenceCtx, row: &RosterRow) -> Option<ui::permissions::UserId> {
+pub fn presence_id(
+    presence: &PresenceCtx,
+    room: Option<&str>,
+    row: &RosterRow,
+) -> Option<ui::permissions::UserId> {
     let direct = ui::permissions::UserId(row.id.clone());
-    if presence.names.contains_key(&direct) || presence.has_availability(&direct) {
+    let said = match room {
+        Some(room) => presence.has_availability_in(room, &direct),
+        None => presence.has_availability(&direct),
+    };
+    if presence.names.contains_key(&direct) || said {
         return Some(direct);
     }
     presence

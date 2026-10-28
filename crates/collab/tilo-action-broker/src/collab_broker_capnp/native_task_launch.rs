@@ -63,11 +63,7 @@ pub(super) struct NativeLaunch {
 
 impl NativeLaunch {
     fn binding(&self) -> Result<crate::services::NativeTaskBinding, String> {
-        let mut binding = self
-            .run
-            .native
-            .clone()
-            .ok_or("native launch binding absent")?;
+        let mut binding = self.run.native.clone();
         binding.revision = runtime_collab::native_task_revision(&self.lease)
             .ok_or("invalid native launch lease")?
             .1;
@@ -76,13 +72,14 @@ impl NativeLaunch {
 
     fn requirement(&self) -> Result<NativeTaskActionRequirement, String> {
         Ok(NativeTaskActionRequirement {
-            binding: Some(self.binding()?),
+            binding: self.binding()?,
             app: self.app.clone(),
             resource_kind: "applications.app".into(),
             resource: format!("app.{}", self.app),
             action: "open".into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
+            attended: false,
             // Opening the application is part of the action the person
             // confirmed, not a second question.
             confirmed: self.confirmed,
@@ -112,35 +109,25 @@ impl NativeLaunch {
             {
                 return Err("closed task action requires person confirmation".into());
             }
-            state
-                .native_tasks(&self.run.cluster_id)
-                .ok_or("native launch owner unavailable")?
-                .authorize_action(
-                    &self.run.cluster_id,
-                    &self.run.agent_id,
-                    &NativeTaskActionRequirement {
-                        binding: Some(self.binding()?),
-                        app: self.app.clone(),
-                        resource_kind: retained.resource_kind.clone(),
-                        resource: self.resource.clone(),
-                        action: self.action.clone(),
-                        need: retained.contract.need(),
-                        consequential: false,
-                        confirmed: self.confirmed,
-                    },
-                )?;
+            state.authorize_task_action(
+                &self.run,
+                &NativeTaskActionRequirement {
+                    binding: self.binding()?,
+                    app: self.app.clone(),
+                    resource_kind: retained.resource_kind.clone(),
+                    resource: self.resource.clone(),
+                    action: self.action.clone(),
+                    need: retained.contract.need(),
+                    consequential: false,
+                    attended: false,
+                    confirmed: self.confirmed,
+                },
+            )?;
         }
         // A ready app does not need launch authority. Its action still takes
         // the exact current task admission below, including starter revocation.
         if self.bootstrap || self.ready(state).is_none() {
-            state
-                .native_tasks(&self.run.cluster_id)
-                .ok_or("native launch owner unavailable")?
-                .authorize_action(
-                    &self.run.cluster_id,
-                    &self.run.agent_id,
-                    &self.requirement()?,
-                )?;
+            state.authorize_task_action(&self.run, &self.requirement()?)?;
         }
         Ok(())
     }
@@ -211,6 +198,9 @@ impl NativeLaunch {
         clippy::too_many_lines,
         reason = "the launch's authorization, journal intent and admission run inside one host launch callback, in order"
     )]
+    /// Admit, launch and settle the activation. It waits for the journal and
+    /// the host's launcher, so it runs on a blocking thread, never the
+    /// broker's loop.
     pub(super) fn launch(
         &self,
         state: &CapnpBrokerState,
@@ -219,10 +209,8 @@ impl NativeLaunch {
     ) -> Result<(), String> {
         let binding = self.binding()?;
         state
-            .native_tasks(&self.run.cluster_id)
-            .ok_or("native launch owner absent")?
-            .admit_host_launch(
-                &self.run.cluster_id,
+            .admit_task_launch(
+                &self.run,
                 &binding,
                 &self.requirement()?,
                 &mut || {
@@ -266,10 +254,14 @@ impl NativeLaunch {
                     }
                     let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
                     let evidence = state.native_host_action_evidence(&self.caller, &key, &intent)?;
-                    if !journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))? {
+                    let (fresh, admitted) =
+                        journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))?;
+                    if !fresh {
                         return Err("native host activation already admitted".into());
                     }
                     drop(guard);
+                    // Nothing launches before the admission is durable.
+                    admitted.wait_blocking()?;
                     #[cfg(test)]
                     test_barrier::run(self.invocation);
                     // The owner still serializes the run, but disk custody is
@@ -318,16 +310,16 @@ impl NativeLaunch {
                             },
                         },
                     };
-                    let mut guard = state
+                    let finished = state
                         .journal
                         .lock()
-                        .map_err(|_| "launch journal unavailable")?;
-                    guard
+                        .map_err(|_| "launch journal unavailable")?
                         .as_mut()
                         .map_err(|error| error.clone())?
                         .as_mut()
                         .ok_or("durable launch journal absent")?
-                        .update(&key, update, false)?;
+                        .record_update(&key, update, false)?;
+                    finished.wait_blocking()?;
                     result
                 },
             )
@@ -386,15 +378,20 @@ impl NativeLaunch {
         Ok(())
     }
 
-    pub(super) async fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
+    pub(super) async fn deliver(
+        &self,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+    ) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
-            self.launch(
-                state,
-                &self.destination(state)?,
-                &state.launch_place(&caller, &self.run.cluster_id, None),
-            )?;
+            let destination = self.destination(state)?;
+            let place = state.launch_place(&caller, &self.run.cluster_id, None);
+            let (launch, launching) = (self.clone(), Arc::clone(state));
+            tokio::task::spawn_blocking(move || launch.launch(&launching, &destination, &place))
+                .await
+                .map_err(|error| format!("host activation worker stopped: {error}"))??;
             let key = self.launch_key(state)?;
             let guard = state
                 .journal
@@ -433,27 +430,23 @@ impl NativeLaunch {
         }
         self.check_retained_contract(state, &offered.1)?;
         let mut admitted = self.clone();
-        let mut confirmation = None;
         // Application-directory providers can name an action that was never
         // retained. Once published, it needs the same exact disclosure gate.
         if super::requires_store_witness(&self.app, &self.action) && self.witness.is_none() {
             if !admitted.confirmed
                 && let super::native_task_confirmation::NativeGate::Confirmed {
                     argument,
-                    confirmation: id,
-                } = state
-                    .native_confirmation_for(
-                        &self.run,
-                        &self.lease,
-                        (&self.app, &offered.1),
-                        (&self.resource, &self.action),
-                        self.argument.as_deref(),
-                    )
-                    .await?
+                    confirmation: _,
+                } = state.native_confirmation_for(
+                    &self.run,
+                    &self.lease,
+                    (&self.app, &offered.1),
+                    (&self.resource, &self.action),
+                    self.argument.as_deref(),
+                )?
             {
                 admitted.argument = Some(argument);
                 admitted.confirmed = true;
-                confirmation = Some(id);
             }
             admitted.witness = state
                 .native_store_witness(
@@ -468,7 +461,7 @@ impl NativeLaunch {
             state.check_native_store_offer(&offered)?;
         }
         let job = state.admit_task_action(
-            admitted.run.clone(),
+            &admitted.run,
             &admitted.lease,
             runtime_collab::TaskAction {
                 peer_id: peer,
@@ -483,22 +476,7 @@ impl NativeLaunch {
             ),
             offered,
         )?;
-        admitted
-            .settle_started_confirmation(state, confirmation.as_deref())
-            .await;
-        Ok(job.id)
-    }
-
-    async fn settle_started_confirmation(
-        &self,
-        state: &CapnpBrokerState,
-        confirmation: Option<&str>,
-    ) {
-        if let Some(id) = confirmation
-            && let Err(error) = state.settle_native_confirmation(&self.run, id).await
-        {
-            tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
-        }
+        Ok(job.start(state).await?.id)
     }
 }
 
@@ -513,7 +491,7 @@ fn host_activation_key(
         .as_bytes()
         .first_chunk::<16>()
         .ok_or("launch digest invalid")?;
-    let binding = run.native.as_ref().ok_or("native launch binding absent")?;
+    let binding = &run.native;
     Ok(InvocationKey {
         room: run.cluster_id.clone(),
         host: state.invocation_host()?,
@@ -567,28 +545,20 @@ impl CapnpBrokerState {
         {
             return Err("host activation request changed or its outcome is uncertain".into());
         }
-        let service = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native launch owner absent")?;
-        let mut binding = run.native.clone().ok_or("native launch binding absent")?;
-        binding.revision = service
-            .snapshot(&run.cluster_id)?
-            .controls
-            .get(&binding.task_id)
-            .and_then(|control| control.active_run.as_ref())
-            .ok_or("native task run ended")?
-            .applied_direction_revision;
+        let mut binding = run.native.clone();
+        binding.revision = self.applied_task_revision(run)?;
         let requirement = NativeTaskActionRequirement {
-            binding: Some(binding.clone()),
+            binding: binding.clone(),
             app: app.into(),
             resource_kind: "applications.app".into(),
             resource: target.resource.into(),
             action: target.action.into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
+            attended: false,
             confirmed: false,
         };
-        service.admit_host_launch(&run.cluster_id, &binding, &requirement, &mut || {
+        self.admit_task_launch(run, &binding, &requirement, &mut || {
             caller.authorize_host_action(self, &run.cluster_id, &requirement)?;
             Ok(())
         })?;
@@ -665,24 +635,20 @@ impl CapnpBrokerState {
         let mut native = self.native_launch_for(reask)?;
         // A retained action that asks first pauses at its draft before the
         // application is launched for it, as a running application's does.
-        let mut confirmation = None;
         if let Some(retained) = native.retained.clone()
             && let super::native_task_confirmation::NativeGate::Confirmed {
                 argument,
-                confirmation: id,
-            } = self
-                .native_confirmation_for(
-                    &native.run,
-                    reask.lease,
-                    (&native.app, &retained),
-                    (target.resource, target.action),
-                    target.argument,
-                )
-                .await?
+                confirmation: _,
+            } = self.native_confirmation_for(
+                &native.run,
+                reask.lease,
+                (&native.app, &retained),
+                (target.resource, target.action),
+                target.argument,
+            )?
         {
             native.argument = Some(argument);
             native.confirmed = true;
-            confirmation = Some(id);
         }
         // A disclosure witness needs the actual live provider/publication, not
         // just a retained descriptor. Ask after launch in NativeLaunch::deliver.
@@ -711,7 +677,6 @@ impl CapnpBrokerState {
         };
         let launch_key = native.launch_key(self)?;
         let (completer, answer) = pending::<Result<u64, tilo_actions::remote::ActionHostError>>();
-        let run = native.run.clone();
         let state = Arc::clone(self);
         super::launchable::delivery_runtime()?.spawn(async move {
             let result = state
@@ -730,13 +695,6 @@ impl CapnpBrokerState {
             .await
             .ok_or("native activation delivery ended")?
             .map_err(|error| error.to_string())?;
-        if let Some(confirmation) = confirmation {
-            // The child started; a failure to clear the answer only leaves
-            // the card until the run ends.
-            if let Err(error) = self.settle_native_confirmation(&run, &confirmation).await {
-                tracing::warn!(%error, "confirmed task action started but its confirmation stayed");
-            }
-        }
         let update = self
             .invocation_status(id)
             .or_else(|| {

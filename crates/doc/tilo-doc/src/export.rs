@@ -8,6 +8,7 @@
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, ChangeKind};
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_sort::CompactSort as _;
 
 /// Canonical block semantics shared by format exporters.
 ///
@@ -332,7 +333,6 @@ pub struct InlineRun<'a> {
     pub marks: Vec<&'a MarkSpan>,
     /// The active `link` value, whether external or an internal `#target`.
     pub link: Option<&'a str>,
-    /// The active tracked change, if any.
     pub change: Option<ActiveChange<'a>>,
     /// Note id when this is the single object-replacement placeholder covered
     /// by an exact `note-ref` mark.
@@ -392,7 +392,7 @@ impl<'a> InlinePlan<'a> {
                     .filter(|mark| offset >= mark.start && offset < mark.end)
                     .collect();
                 // Stable sorting preserves canonical order among same-name marks.
-                active.sort_by(|a, b| a.name.cmp(&b.name));
+                active.compact_sort_by(|a, b| a.name.cmp(&b.name));
                 let link = active
                     .iter()
                     .find(|mark| mark.name == crate::schema::MARK_LINK)
@@ -462,7 +462,7 @@ fn range_boundary<'a>(marks: &'a [MarkSpan], name: &str, offset: usize) -> Range
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort_unstable();
+        values.compact_sort();
         values
     };
     RangeBoundary {
@@ -485,7 +485,7 @@ fn change_boundary(marks: &[MarkSpan], offset: usize) -> RangeBoundary<'_> {
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort_unstable();
+        values.compact_sort();
         values
     };
     RangeBoundary {
@@ -512,7 +512,6 @@ pub fn without_kept_placeholders(
     }
 }
 
-/// [`without_kept_placeholders`] for a block sequence.
 pub fn without_kept_placeholders_in(blocks: &[BlockView]) -> std::borrow::Cow<'_, [BlockView]> {
     use std::borrow::Cow;
     if !blocks.iter().any(|b| !kept_placeholders(b).is_empty()) {
@@ -614,7 +613,6 @@ mod tests {
 
     #[test]
     fn block_plans_normalize_kinds_tables_images_and_walk_order() {
-        // Aliases, clamped heading levels and unknown kinds.
         let mut heading = block("heading", "title");
         heading.attrs.insert("level".into(), AttrVal::Int(99));
         assert_eq!(ExportBlock::new(&heading).kind(), BlockKind::Heading);

@@ -275,11 +275,6 @@ pub struct RemoteCaptureRegistry {
 impl RemoteCaptureRegistry {
     /// Mint a fresh session and grant for a validated request from `source`
     /// to `target`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the request is invalid, names the same device
-    /// twice, or the session limit is reached.
     pub fn grant(
         &mut self,
         request: &RemoteCaptureRequest,
@@ -435,7 +430,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_device_grants_are_exactly_bound_bounded_and_expiring() {
-        // Phase `grant_expiry_adds_the_ttl`.
         {
             let now = Instant::now();
             assert_eq!(
@@ -445,7 +439,6 @@ mod tests {
             assert!(grant_expiry(now) > now);
         }
 
-        // Phase `exact_binding_rejects_peer_app_workspace_and_grant_spoofing`.
         {
             let now = Instant::now();
             let source = device("phone");
@@ -517,7 +510,6 @@ mod tests {
             );
         }
 
-        // Phase `chunks_profiles_and_sequences_are_bounded`.
         {
             assert!(
                 !RemoteCaptureProfile::Camera {
@@ -580,7 +572,6 @@ mod tests {
             ));
         }
 
-        // Phase `peer_app_policy_and_expiry_teardown_are_authoritative`.
         {
             let now = Instant::now();
             let source = device("phone");

@@ -18,7 +18,6 @@ struct ResponsiveRoot {
     oscillate: Rc<Cell<bool>>,
     paints: Rc<Cell<usize>>,
 }
-/// An editor of the document's `body`.
 fn body_editor(path: Vec<crate::presence::PathSegment>, id: &str) -> Element {
     Box::new(crate::testing::OwnedText::new(
         "body",

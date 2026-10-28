@@ -1,0 +1,958 @@
+//! Search and publication follow the room by what changed: one retyped item is reindexed and
+//! republished alone, and what they hold always equals indexing and publishing everything anew.
+
+use std::sync::Arc;
+
+use automerge::AutoCommit;
+use serde_json::{Value as Json, json};
+use tilo_actions::{Resource, Target};
+use tilo_resource::{Edit, EditOp, Id, Segment};
+use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
+use tilolang_tilo::publish::{
+    ActionTypes, PlanRequest, Planner, Publications, publish_tree, resource_id,
+};
+use tilolang_tilo::record::DynValue;
+use tilolang_tilo::search::{every_hit, hits};
+
+use crate::fixtures::{Replica, TODO, field_id};
+
+const APP: &str = "so.tilo.todo";
+
+fn add(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, text: &str) {
+    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let args = json!({ "text": text }).as_object().cloned().unwrap();
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &action.id,
+            resource: Some(root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    replica.apply(&planned);
+}
+
+fn retype(
+    replica: &mut Replica,
+    meta: &tilolang_runtime::Meta,
+    root: &str,
+    item: &str,
+    text: &str,
+) {
+    let edit = Edit::new(
+        vec![
+            Segment::Field(field_id(meta, "TodoList", "items")),
+            Segment::Item(Id::from_raw(item)),
+            Segment::Field(field_id(meta, "Item", "text")),
+        ],
+        EditOp::Replace {
+            text: text.to_owned(),
+        },
+    );
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.to_owned(),
+            edit,
+        }],
+    });
+}
+
+fn item_ids(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec<String> {
+    match replica
+        .host
+        .store()
+        .record(root)
+        .unwrap()
+        .get(&field_id(meta, "TodoList", "items"))
+    {
+        Some(DynValue::Collection(items)) => {
+            items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Ada's list with three items.
+fn room() -> (Replica, tilolang_runtime::Meta, String) {
+    let (ada, meta, root, _) = room_with_ids();
+    (ada, meta, root)
+}
+
+/// As [`room`], with the package's ids lock, for a peer to load the same package.
+fn room_with_ids() -> (Replica, tilolang_runtime::Meta, String, String) {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
+    let meta = packages[0].meta.clone();
+    let ids = packages[0].ids.clone();
+    let root = ada.host.root_of(APP).unwrap();
+    ada.commit();
+    for text in ["milk", "eggs", "bread"] {
+        add(&mut ada, &meta, &root.doc, text);
+    }
+    (ada, meta, root.doc, ids)
+}
+
+/// Everything search would find, indexed anew.
+fn all_hits(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec<String> {
+    let record = replica.host.store().record(root).unwrap();
+    let mut out: Vec<String> = hits(meta, &record, root)
+        .into_iter()
+        .map(|hit| format!("{} {:?}", hit.resource, hit.texts))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Everything search finds, read from the index.
+fn indexed(replica: &Replica) -> Vec<String> {
+    let mut out: Vec<String> = every_hit(&replica.host)
+        .into_iter()
+        .filter(|hit| hit.resource.starts_with(&resource_id(APP, "")))
+        .map(|hit| format!("{} {:?}", hit.resource, hit.texts))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The titles of what a query finds, best first.
+fn found(replica: &Replica, query: &str) -> Vec<String> {
+    tilolang_tilo::search::find(&replica.host, query, 10)
+        .into_iter()
+        .map(|hit| hit.title)
+        .collect()
+}
+
+#[test]
+fn search_reads_the_index_the_lists_read() {
+    let (mut ada, meta, root) = room();
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "milk"), ["milk"]);
+
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[1], "oat milk");
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    // Every word, the last as typed so far.
+    assert_eq!(found(&ada, "oat mi"), ["oat milk"]);
+    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
+
+    add(&mut ada, &meta, &root, "jam");
+    assert_eq!(found(&ada, "ja"), ["jam"]);
+
+    // Emptied, an item has nothing to be found by.
+    retype(&mut ada, &meta, &root, &ids[0], "");
+    assert_eq!(found(&ada, "milk"), ["oat milk"]);
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+}
+
+#[test]
+fn search_follows_a_peer_and_matches_a_full_index() {
+    let (mut ada, meta, root, lock) = room_with_ids();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut grace, &meta, &root, &ids[2], "rye bread");
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "rye"), ["rye bread"]);
+
+    // A peer removes one item and moves another.
+    let ids = item_ids(&ada, &meta, &root);
+    remove(&mut grace, &meta, &root, &ids[1]);
+    let moved = plan_move_first(&grace, &meta, &root, &ids[3]);
+    grace.apply(&moved);
+    ada.sync_with(&mut grace);
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
+    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
+}
+
+struct Refusing;
+
+impl Planner for Refusing {
+    fn plan(&self, _: &PlanRequest<'_>) -> Result<DynAction, String> {
+        Err("not in this test".into())
+    }
+}
+
+/// A published tree as text: ids, kinds, labels and action names, children in order.
+fn shape(resource: &Resource) -> String {
+    let actions: Vec<String> = resource.actions.iter().map(|a| a.id.clone()).collect();
+    let children: Vec<String> = resource.children.iter().map(shape).collect();
+    format!(
+        "{}|{}|{}|{actions:?}[{}]",
+        resource.id.as_str(),
+        resource.kind,
+        resource.label,
+        children.join(",")
+    )
+}
+
+fn published_anew(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> String {
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let record = replica.host.store().record(root).unwrap();
+    let label = replica.host.label_of(root);
+    shape(&publish_tree(
+        &ActionTypes::new(meta, &planner),
+        &record,
+        "TodoList",
+        root,
+        &label,
+    ))
+}
+
+#[test]
+fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    assert_eq!(published.settle(&ada.host, &planner), vec![root.clone()]);
+    assert!(
+        published.update(&ada.host, &planner).is_empty(),
+        "nothing changed"
+    );
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[0], "almond milk");
+    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+
+    add(&mut ada, &meta, &root, "jam");
+    let first = item_ids(&ada, &meta, &root)[3].clone();
+    let move_first = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "move_first")
+        .unwrap();
+    let items = field_id(&meta, "TodoList", "items");
+    let args = json!({ "i": format!("{root}/{items}:{first}") })
+        .as_object()
+        .cloned()
+        .unwrap();
+    let moved = ada
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &move_first.id,
+            resource: Some(&root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    ada.apply(&moved);
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+
+    remove(&mut ada, &meta, &root, &ids[1]);
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+}
+
+/// Search and publication starting in one frame read one copy of the mirror; a change makes
+/// the next reader take a new one.
+#[test]
+fn readers_share_a_snapshot_until_the_mirror_changes() {
+    let (mut ada, meta, root) = room();
+    let first = ada.host.store().snapshot();
+    assert!(Arc::ptr_eq(&first, &ada.host.store().snapshot()));
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[0], "oat milk");
+    let after = ada.host.store().snapshot();
+    assert!(
+        !Arc::ptr_eq(&first, &after),
+        "a snapshot of the mirror before the change"
+    );
+    let list_type = meta
+        .types
+        .iter()
+        .find(|t| t.name == "TodoList")
+        .unwrap()
+        .id
+        .clone();
+    let list = tilolang_runtime::value::ResourceRef::root(&root, list_type);
+    assert_eq!(
+        after.first_text(&list),
+        ada.host.store().first_text(&list),
+        "the new snapshot holds the change"
+    );
+}
+
+/// What names a record is its first text, in field id order and a collection's items in order.
+/// A republish reads it again only where a change can move it, and gets it right each time.
+#[test]
+fn the_label_follows_whatever_names_the_record() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let label = |published: &Publications| published.trees()[&root].label.clone();
+    assert_eq!(label(&published), "milk");
+
+    let ids = item_ids(&ada, &meta, &root);
+    let check = |ada: &Replica, published: &Publications, step: &str| {
+        assert_eq!(
+            shape(&published.trees()[&root]),
+            published_anew(ada, &meta, &root),
+            "after {step}"
+        );
+    };
+    retype(&mut ada, &meta, &root, &ids[0], "almond milk");
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "retyping the item that names the list");
+    assert_eq!(label(&published), "almond milk");
+
+    retype(&mut ada, &meta, &root, &ids[0], "");
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "emptying it");
+    assert_eq!(label(&published), "eggs", "the next item names the list");
+
+    retype(&mut ada, &meta, &root, &ids[2], "rye bread");
+    published.update(&ada.host, &planner);
+    check(
+        &ada,
+        &published,
+        "retyping an item after the one that names it",
+    );
+
+    let tag = meta.actions.iter().find(|a| a.name == "tag").unwrap();
+    let args = json!({ "t": "groceries" }).as_object().cloned().unwrap();
+    let tagged = ada
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &tag.id,
+            resource: Some(&root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    ada.apply(&tagged);
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "tagging the list");
+
+    let title = Edit::new(
+        vec![Segment::Field(field_id(&meta, "TodoList", "title"))],
+        EditOp::Replace {
+            text: "Shopping".to_owned(),
+        },
+    );
+    ada.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.clone(),
+            edit: title,
+        }],
+    });
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "titling the list");
+}
+
+#[test]
+fn planning_an_action_changes_nothing_anyone_follows() {
+    let (ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let before = indexed(&ada);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let mut view = ada.view(APP);
+    view.poll_patches().unwrap();
+    // Running a published action plans it first: a trial run, taken back.
+    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let args = json!({ "text": "tea" }).as_object().cloned().unwrap();
+    ada.host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &action.id,
+            resource: Some(&root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    assert_eq!(indexed(&ada), before);
+    assert!(published.update(&ada.host, &planner).is_empty());
+    assert!(!view.is_stale(), "no view re-runs for a trial run");
+    assert!(view.poll_patches().unwrap().is_empty());
+}
+
+#[test]
+fn the_first_publication_does_not_hold_up_the_frame() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    // The frame that starts it returns at once; the room is read on another thread.
+    assert!(published.update(&ada.host, &planner).is_empty());
+    assert!(published.is_building());
+    // A change while it reads is taken in after what it read.
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[1], "oat milk");
+    published.settle(&ada.host, &planner);
+    assert!(!published.is_building());
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+}
+
+/// A planner that counts what it is asked to plan.
+#[derive(Default)]
+struct Counting(std::sync::atomic::AtomicUsize);
+
+impl Planner for Counting {
+    fn plan(&self, _: &PlanRequest<'_>) -> Result<DynAction, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err("counted".into())
+    }
+}
+
+#[test]
+fn publishing_plans_no_action_until_one_runs() {
+    let (ada, _meta, root) = room();
+    let counting = Arc::new(Counting::default());
+    let planner: Arc<dyn Planner> = counting.clone();
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let plans = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        plans(),
+        0,
+        "publishing every item planned none of their actions"
+    );
+    // An action without parameters is built when it runs.
+    let tree = &published.trees()[&root];
+    let item = &tree.children[0];
+    let action = item
+        .actions
+        .iter()
+        .find(|a| matches!(a.input(), tilo_actions::ActionInput::Deferred { .. }))
+        .expect("the item's `finish`, deferred");
+    assert!(action.build_deferred().is_some());
+    assert_eq!(plans(), 1);
+}
+
+/// Conversations of notes: a collection within a collection's items.
+const THREADS: &str = r#"app so.tilo.threads "Threads"
+
+type Note {
+  text: Text merge text
+}
+
+type Thread {
+  title: Text merge text
+  notes: Collection<Note>
+  draft: Text merge text
+}
+
+type Inbox {
+  threads: Collection<Thread>
+}
+
+action start(i: Inbox, title: Text) { i.threads.insert(Thread(title: title)) }
+
+action post(t: Thread, text: Text) { t.notes.insert(Note(text: text)) }
+
+action clear(n: Note) { n.text = "" }
+
+root Inbox
+
+default view main for Inbox
+
+view main(i: Inbox) {
+  page {
+    for t in i.threads {
+      text(t.title)
+    }
+  }
+}
+"#;
+
+const THREADS_APP: &str = "so.tilo.threads";
+
+fn invoke(
+    replica: &mut Replica,
+    meta: &tilolang_runtime::Meta,
+    (ty, action): (&str, &str),
+    resource: &str,
+    args: &Json,
+) {
+    let action = meta.actions.iter().find(|a| a.name == action).unwrap();
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: THREADS_APP,
+            kind: &format!("tl.{THREADS_APP}.{ty}"),
+            action_id: &action.id,
+            resource: Some(resource),
+            args: args.as_object().unwrap(),
+            caller: None,
+        })
+        .unwrap();
+    replica.apply(&planned);
+}
+
+fn edit_text(replica: &mut Replica, root: &str, path: Vec<Segment>, text: &str) {
+    replica.apply(&DynAction {
+        app: THREADS_APP.to_owned(),
+        kind: format!("tl.{THREADS_APP}.Inbox"),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.to_owned(),
+            edit: Edit::new(
+                path,
+                EditOp::Replace {
+                    text: text.to_owned(),
+                },
+            ),
+        }],
+    });
+}
+
+/// Every published resource with a deferred action, by id, and the target that action is bound
+/// to: a resource republished is bound to a target of its own, one kept keeps it. (The action's
+/// builder is its type's, shared by every item of the type.)
+fn targets(resource: &Resource, out: &mut std::collections::BTreeMap<String, Target>) {
+    if let Some(action) = resource
+        .actions
+        .iter()
+        .find(|a| matches!(a.input(), tilo_actions::ActionInput::Deferred { .. }))
+    {
+        out.insert(resource.id.as_str().to_owned(), action.target().clone());
+    }
+    for child in &resource.children {
+        targets(child, out);
+    }
+}
+
+/// A change within a conversation is republished where it is: typing its draft reads its
+/// label again, retyping a note relabels that note, posting one adds it, and the notes no
+/// change reached are the ones published before.
+#[test]
+fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(THREADS, "")]);
+    let meta = packages[0].meta.clone();
+    let root = ada.host.root_of(THREADS_APP).unwrap().doc;
+    ada.commit();
+    let threads = field_id(&meta, "Inbox", "threads");
+    let notes = field_id(&meta, "Thread", "notes");
+    invoke(
+        &mut ada,
+        &meta,
+        ("Inbox", "start"),
+        &root,
+        &json!({ "title": "" }),
+    );
+    let thread_id = match ada.host.store().record(&root).unwrap().get(&threads) {
+        Some(DynValue::Collection(items)) => items.iter().next().unwrap().0.as_str().to_owned(),
+        other => panic!("{other:?}"),
+    };
+    let thread = format!("{root}/{threads}:{thread_id}");
+    for text in ["one", "two", "three"] {
+        invoke(
+            &mut ada,
+            &meta,
+            ("Thread", "post"),
+            &thread,
+            &json!({ "text": text }),
+        );
+    }
+    let note_ids: Vec<String> = match ada.host.store().record(&root).unwrap().get(&threads) {
+        Some(DynValue::Collection(items)) => match items.iter().next().unwrap().1.get(&notes) {
+            Some(DynValue::Collection(notes)) => {
+                notes.iter().map(|(id, _)| id.as_str().to_owned()).collect()
+            }
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    let anew = |ada: &Replica| {
+        let planner: Arc<dyn Planner> = Arc::new(Refusing);
+        let record = ada.host.store().record(&root).unwrap();
+        let label = ada.host.label_of(&root);
+        shape(&publish_tree(
+            &ActionTypes::new(&meta, &planner),
+            &record,
+            "Inbox",
+            &root,
+            &label,
+        ))
+    };
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert_eq!(shape(&published.trees()[&root]), anew(&ada));
+    let before = {
+        let mut out = std::collections::BTreeMap::new();
+        targets(&published.trees()[&root], &mut out);
+        out
+    };
+    assert_eq!(before.len(), 3, "the three notes: {:?}", before.keys());
+    let note = |id: &str| resource_id(THREADS_APP, &format!("{thread}/{notes}:{id}"));
+    // Typing the draft: the conversation names itself by it once its title is empty.
+    let thread_path = |field: &str| {
+        vec![
+            Segment::Field(threads.clone()),
+            Segment::Item(Id::from_raw(&thread_id)),
+            Segment::Field(field_id(&meta, "Thread", field)),
+        ]
+    };
+    edit_text(&mut ada, &root, thread_path("draft"), "hel");
+    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    check_kept(&ada, &published, &before, "typing the draft", &anew);
+
+    let mut note_path = thread_path("notes");
+    note_path.push(Segment::Item(Id::from_raw(&note_ids[1])));
+    note_path.push(Segment::Field(field_id(&meta, "Note", "text")));
+    edit_text(&mut ada, &root, note_path, "zwei");
+    published.update(&ada.host, &planner);
+    check_kept(&ada, &published, &before, "retyping a note", &anew);
+    assert_eq!(
+        find(&published.trees()[&root], &note(&note_ids[1]))
+            .unwrap()
+            .label,
+        "zwei"
+    );
+
+    invoke(
+        &mut ada,
+        &meta,
+        ("Thread", "post"),
+        &thread,
+        &json!({ "text": "four" }),
+    );
+    published.update(&ada.host, &planner);
+    check_kept(&ada, &published, &before, "posting a note", &anew);
+}
+
+fn find<'r>(resource: &'r Resource, id: &str) -> Option<&'r Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource.children.iter().find_map(|child| find(child, id))
+}
+
+/// The tree published equals publishing anew, and every resource with a target in `before`
+/// still has the one it had.
+fn check_kept(
+    ada: &Replica,
+    published: &Publications,
+    before: &std::collections::BTreeMap<String, Target>,
+    step: &str,
+    anew: &dyn Fn(&Replica) -> String,
+) {
+    let tree = published.trees().values().next().unwrap();
+    assert_eq!(shape(tree), anew(ada), "after {step}");
+    let mut now = std::collections::BTreeMap::new();
+    targets(tree, &mut now);
+    for (id, target) in before {
+        assert!(
+            now.get(id).is_some_and(|now| now.same(target)),
+            "{id} was republished by {step}"
+        );
+    }
+}
+
+/// The planned action moving `item` to the front of the list.
+fn plan_move_first(
+    replica: &Replica,
+    meta: &tilolang_runtime::Meta,
+    root: &str,
+    item: &str,
+) -> DynAction {
+    let move_first = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "move_first")
+        .unwrap();
+    let items = field_id(meta, "TodoList", "items");
+    let args = json!({ "i": format!("{root}/{items}:{item}") })
+        .as_object()
+        .cloned()
+        .unwrap();
+    replica
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &move_first.id,
+            resource: Some(root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap()
+}
+
+/// Remove `item` from the list, as an edit of `replica`'s.
+fn remove(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str) {
+    let remove = Edit::new(
+        vec![Segment::Field(field_id(meta, "TodoList", "items"))],
+        EditOp::RemoveItem {
+            id: Id::from_raw(item),
+        },
+    );
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.to_owned(),
+            edit: remove,
+        }],
+    });
+}
+
+/// A collection's listing is kept across items added, moved and removed, by this replica and by
+/// a peer: the store moves each item a change touched and says how ([`Splice`]), and what it
+/// holds is what listing the collection anew reads.
+#[test]
+fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldKey, FieldSpec, Splice, Store as _};
+    use tilolang_runtime::value::{ResourceRef, Value};
+
+    let (mut ada, meta, root, lock) = room_with_ids();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let items = field_id(&meta, "TodoList", "items");
+    let list_ty = meta
+        .types
+        .iter()
+        .find(|t| t.name == "TodoList")
+        .unwrap()
+        .id
+        .clone();
+    let list = ResourceRef::root(&root, list_ty);
+    let spec = FieldSpec {
+        id: items.clone(),
+        kind: FieldKind::Collection,
+    };
+    let key = FieldKey::new(&list, items);
+    let store = ada.host.store().clone();
+    let listed = || store.listing(&list, &spec).unwrap().ids();
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+    let watch = store.watch();
+
+    // A peer's item arrives at the end.
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    let ids = item_ids(&ada, &meta, &root);
+    let tea = ids[3].clone();
+    let arrived = [Splice::Insert {
+        at: 3,
+        item: tea.clone(),
+    }];
+    assert_eq!(watch.take().listing(&key), Some(&arrived[..]));
+    assert_eq!(listed(), ids);
+
+    // Moved to the front by its replica: out of its place, into the first.
+    let moved = plan_move_first(&ada, &meta, &root, &tea);
+    assert!(watch.take().is_empty(), "planning tells nobody");
+    ada.apply(&moved);
+    let steps = [
+        Splice::Remove {
+            at: 3,
+            item: tea.clone(),
+        },
+        Splice::Insert { at: 0, item: tea },
+    ];
+    assert_eq!(watch.take().listing(&key), Some(&steps[..]));
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+
+    // Added by the runtime here: told when the action commits, and not again when the record
+    // holds it.
+    let add_action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                add_action.id.as_str(),
+                vec![Value::resource(&list), Value::text("jam")],
+            ),
+        )
+        .unwrap();
+    let told = watch.take();
+    let [Splice::Insert { at: 4, item: jam }] = told.listing(&key).unwrap() else {
+        panic!("{told:?}");
+    };
+    let jam = jam.clone();
+    ada.commit();
+    assert_eq!(watch.take().listing(&key), Some(&[][..]), "nothing moved");
+    let ids = item_ids(&ada, &meta, &root);
+    assert_eq!(ids[4], jam);
+    assert_eq!(listed(), ids);
+
+    // Removed by a peer.
+    grace.sync_with(&mut ada);
+    remove(&mut grace, &meta, &root, &ids[1]);
+    ada.sync_with(&mut grace);
+    let removed = [Splice::Remove {
+        at: 1,
+        item: ids[1].clone(),
+    }];
+    assert_eq!(watch.take().listing(&key), Some(&removed[..]));
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+
+    // A store that lists the collection anew reads the same.
+    let fresh = Replica::new("ada", ada.doc.fork(), &[(TODO, &lock)]).0;
+    assert_eq!(
+        fresh.host.store().listing(&list, &spec).unwrap().ids(),
+        listed()
+    );
+}
+
+/// A filtered listing (the items a predicate holds of) is kept across items finished, added,
+/// moved and removed, here and by a peer: each change has the store evaluate the items it
+/// touched, not every item, and what it holds is what evaluating every item anew finds.
+#[test]
+fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldSpec, Store as _};
+    use tilolang_runtime::value::{ResourceRef, Value};
+
+    let (mut ada, meta, root, lock) = room_with_ids();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let items = field_id(&meta, "TodoList", "items");
+    let done = field_id(&meta, "Item", "done");
+    let type_id = |name: &str| {
+        meta.types
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let list = ResourceRef::root(&root, type_id("TodoList"));
+    let item_ty = type_id("Item");
+    let spec = FieldSpec {
+        id: items.clone(),
+        kind: FieldKind::Collection,
+    };
+    let open = not_done(done);
+    let store = ada.host.store().clone();
+    let filtered = || {
+        store
+            .listing_where(&list, &spec, &item_ty, &open)
+            .unwrap()
+            .ids()
+    };
+    // Every item evaluated anew, read by read.
+    let anew = |replica: &Replica| -> Vec<String> {
+        item_ids(replica, &meta, &root)
+            .into_iter()
+            .filter(|id| {
+                let item = list.item(&items, id, item_ty.clone());
+                replica.host.runtime().read(&item, "done").ok() != Some(Value::Bool(true))
+            })
+            .collect()
+    };
+    let evaluated = || store.read_stats().evaluated;
+
+    // Answered from the index's column of `done`: no item is evaluated.
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(evaluated(), 0, "answered from the column");
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(evaluated(), 0, "answered from the column");
+
+    // Finished here: it leaves, and only it is evaluated again.
+    let ids = item_ids(&ada, &meta, &root);
+    let finish = meta.actions.iter().find(|a| a.name == "finish").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                finish.id.as_str(),
+                vec![Value::resource(&list.item(
+                    &items,
+                    &ids[1],
+                    item_ty.clone(),
+                ))],
+            ),
+        )
+        .unwrap();
+    ada.commit();
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(filtered().len(), 2);
+    assert!(evaluated() - before <= 1, "the finished item alone");
+
+    // A peer's item arrives at the end, and one moves to the front.
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert!(evaluated() - before <= 1, "the arrived item alone");
+    let tea = item_ids(&ada, &meta, &root)[3].clone();
+    let moved = plan_move_first(&ada, &meta, &root, &tea);
+    ada.apply(&moved);
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(filtered()[0], tea);
+    assert!(evaluated() - before <= 1, "the moved item alone");
+
+    // Removed by a peer.
+    grace.sync_with(&mut ada);
+    let first_open = filtered()[1].clone();
+    remove(&mut grace, &meta, &root, &first_open);
+    ada.sync_with(&mut grace);
+    assert_eq!(filtered(), anew(&ada));
+    assert!(!filtered().contains(&first_open));
+
+    // A store that lists the collection anew finds the same.
+    let fresh = Replica::new("ada", ada.doc.fork(), &[(TODO, &lock)]).0;
+    assert_eq!(
+        fresh
+            .host
+            .store()
+            .listing_where(&list, &spec, &item_ty, &open)
+            .unwrap()
+            .ids(),
+        filtered()
+    );
+}
+
+/// `not item.done`, as the store answers it: the register `done`, false where unwritten.
+fn not_done(done: String) -> tilolang_runtime::store::Pred {
+    use tilolang::pred::{CmpOp, Lit, Operand};
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldRead, FieldSpec, Pred};
+
+    Pred::Not(Box::new(Pred::Cmp(
+        CmpOp::Eq,
+        Operand::Field(FieldRead {
+            spec: FieldSpec {
+                id: done,
+                kind: FieldKind::Register,
+            },
+            absent: Lit::Bool(false),
+        }),
+        Operand::Lit(Lit::Bool(true)),
+    )))
+}

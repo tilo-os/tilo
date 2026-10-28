@@ -5,7 +5,7 @@ resource controls. Model accuracy and early committed hallucinations still preve
 shipping it as the dictation default. No dependency, runtime package, microphone
 permission, catalogue activation or deployment was added.
 
-The [exact ledger](dictation-whistle-v8-review.json) contains public artifact/source
+The [exact ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-v8-review.json) contains public artifact/source
 hashes, raw stream responses, resource observations and scoring. It extends the
 [interpreter qualification](dictation-whistle-wasm-review.md).
 

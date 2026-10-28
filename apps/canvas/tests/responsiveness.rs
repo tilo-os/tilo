@@ -1,4 +1,3 @@
-//! Exercise the production vector renderer through repeated viewport changes.
 use canvas::{
     App,
     render::{Options, Renderer},

@@ -18,7 +18,15 @@
 //! that was running when the host went down is marked failed), and paused
 //! agents come back paused. A host shutting down leaves its agents'
 //! statuses as they were, so the next start resumes them.
+//!
+//! Each room's content (the bytes its records name by hash) is kept under
+//! `content/<room>` in the state directory, in this process: an agent's
+//! app workers are handed what an operation names and give back what they
+//! store ([`ConfinedReplica`](crate::ConfinedReplica)). A harness puts
+//! content in and reads it back by address ([`AgentHost::put_content`],
+//! [`AgentHost::content`]).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -26,6 +34,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tilo_browser_peer::Host;
+use tilo_content::ContentStore;
 use tilo_relay_protocol::agents::AgentStatus;
 use tilo_user_identity::DeviceCert;
 
@@ -37,11 +46,12 @@ use crate::model::ModelChoice;
 use crate::participant::{AgentParticipant, ParticipantConfig};
 use tilo_lock::MutexRecover as _;
 
-/// The file under the state directory.
 const STATE_FILE: &str = "agents.json";
 /// The least time between two writes of the state: a burst of changes (an
 /// agent's steps) is written as one.
 const WRITE_SPACING: Duration = Duration::from_millis(500);
+/// The directory under the state directory each room's content is kept in.
+const CONTENT_DIR: &str = "content";
 
 /// Builds the apps an agent may open, on the agent's own thread.
 pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
@@ -49,7 +59,6 @@ pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 /// How agents reach the host they run on.
 #[derive(Clone)]
 pub struct HostEndpoint {
-    /// The host's endpoint.
     pub host: Host,
     /// Its certificate.
     pub host_cert: DeviceCert,
@@ -80,9 +89,40 @@ struct Shared {
     stopping: AtomicBool,
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
+    /// Each room's content store, by the room's uuid.
+    content: Mutex<BTreeMap<String, ContentStore>>,
+    /// Each agent's session state, by its agent id: kept while the host
+    /// runs, so an agent stopped and started again keeps its channel keys.
+    sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
+    /// The wall clock the keeper judges grants by.
+    clock: HostClock,
 }
 
-/// Every agent of one host.
+/// How the host reads the wall clock. The keeper runs on its own thread,
+/// which a test's thread-scoped clock does not reach, so a test hands the
+/// host its pinned time instead of pinning the whole process.
+type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+impl Shared {
+    /// The content store of `room`, under the state directory. One room's
+    /// store never answers for another's.
+    fn room_content(&self, room: &str) -> Result<ContentStore, String> {
+        let room = uuid::Uuid::parse_str(room)
+            .map_err(|_| "the room is not a uuid".to_string())?
+            .hyphenated()
+            .to_string();
+        let mut stores = self.content.lock_recover();
+        let store = stores
+            .entry(room)
+            .or_insert_with_key(|room| {
+                ContentStore::in_dir(self.state_dir.join(CONTENT_DIR).join(room))
+            })
+            .clone();
+        drop(stores);
+        Ok(store)
+    }
+}
+
 pub struct AgentHost {
     supervisor: Arc<AgentSupervisor>,
     shared: Arc<Shared>,
@@ -103,6 +143,24 @@ impl AgentHost {
         model: ModelChoice,
         catalogue: CatalogueFactory,
     ) -> Self {
+        Self::with_clock(
+            user_public_key,
+            state_dir,
+            model,
+            catalogue,
+            Arc::new(tilo_clock::unix_now_ns),
+        )
+    }
+
+    /// [`Self::new`] with the wall clock read by `clock` (Unix nanoseconds).
+    #[must_use]
+    pub fn with_clock(
+        user_public_key: [u8; 32],
+        state_dir: PathBuf,
+        model: ModelChoice,
+        catalogue: CatalogueFactory,
+        clock: HostClock,
+    ) -> Self {
         let shared = Arc::new(Shared {
             state_dir,
             model,
@@ -111,6 +169,9 @@ impl AgentHost {
             runtime: OnceLock::new(),
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
+            content: Mutex::new(BTreeMap::new()),
+            sessions: Mutex::new(BTreeMap::new()),
+            clock,
         });
         let spawning = shared.clone();
         let supervisor = AgentSupervisor::new(
@@ -142,10 +203,6 @@ impl AgentHost {
     /// start the agents that were running, and keep checking expiry and
     /// writing the state. Agents' sessions run their I/O on the calling
     /// Tokio runtime, or on one of the host's own outside a runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the state directory or file could not be read.
     pub fn start(
         &mut self,
         endpoint: HostEndpoint,
@@ -170,7 +227,7 @@ impl AgentHost {
         let _ = self.shared.runtime.set(runtime);
         self.supervisor.set_link(link);
         let snapshot = read_state(&self.state_file())?;
-        let resume = self.supervisor.restore(snapshot, tilo_clock::unix_now_ns());
+        let resume = self.supervisor.restore(snapshot, (self.shared.clock)());
         for (identity, control) in resume {
             tracing::info!(agent = %crate::control::agent_id(&identity.delegation), "agent resumes after a host restart");
             if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
@@ -189,6 +246,7 @@ impl AgentHost {
         let shared = self.shared.clone();
         let written = self.written.clone();
         let file = self.state_file();
+        let clock = Arc::clone(&self.shared.clock);
         self.ticker = Some(
             std::thread::Builder::new()
                 .name("agent-host".into())
@@ -198,7 +256,7 @@ impl AgentHost {
                         // Read before the snapshot: a change after this
                         // point wakes the wait below.
                         let seen = changes.generation();
-                        for expired in supervisor.expire(tilo_clock::unix_now_ns()) {
+                        for expired in supervisor.expire((clock)()) {
                             tracing::info!(grant = %expired, "agent grant expired");
                         }
                         persist(&supervisor, &file, &written);
@@ -206,9 +264,9 @@ impl AgentHost {
                         if shared.stopping.load(Ordering::Acquire) {
                             break;
                         }
-                        let until_expiry = supervisor.next_expiry_ns().map(|at| {
-                            Duration::from_nanos(at.saturating_sub(tilo_clock::unix_now_ns()))
-                        });
+                        let until_expiry = supervisor
+                            .next_expiry_ns()
+                            .map(|at| Duration::from_nanos(at.saturating_sub((clock)())));
                         changes.wait_past(seen, until_expiry);
                         if shared.stopping.load(Ordering::Acquire) {
                             break;
@@ -221,6 +279,37 @@ impl AgentHost {
                 .map_err(|error| error.to_string())?,
         );
         Ok(())
+    }
+
+    /// Keep `bytes` in `room`'s content store, where its agents' apps read
+    /// them, and answer their content address (`tilo.content:<hash>`), the
+    /// way an operation's arguments name them.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the room is not one, or why the store refused the bytes.
+    pub fn put_content(&self, room: &str, bytes: &[u8]) -> Result<String, String> {
+        let hash = self
+            .shared
+            .room_content(room)?
+            .put(bytes)
+            .map_err(|error| error.to_string())?;
+        tilo_actions::content_resource(&hash).ok_or_else(|| "the store named no content".into())
+    }
+
+    /// The content `room` keeps at `address` (a content address or a bare
+    /// hash): what was put, and what its agents' apps stored. `None` when
+    /// the room holds none there.
+    #[must_use]
+    pub fn content(&self, room: &str, address: &str) -> Option<Vec<u8>> {
+        let hash = tilo_actions::content_hash(address).unwrap_or(address);
+        if !tilo_content::valid_hash(hash) {
+            return None;
+        }
+        self.shared
+            .room_content(room)
+            .ok()?
+            .read(&hash.to_ascii_lowercase())
     }
 
     /// Write the state now.
@@ -296,16 +385,32 @@ fn run_agent(
     // it plans with the host's model.
     let planner = Box::new(shared.model.planner());
     let catalogue = (shared.catalogue)();
-    let mut participant = match AgentParticipant::start(
+    let content = match shared.room_content(&room) {
+        Ok(content) => content,
+        Err(error) => {
+            control.fail(&error);
+            return;
+        }
+    };
+    let session = Arc::clone(
+        shared
+            .sessions
+            .lock_recover()
+            .entry(agent_id.clone())
+            .or_default(),
+    );
+    let mut participant = match AgentParticipant::start_with_store(
         ParticipantConfig {
             host: endpoint.host,
             host_cert: endpoint.host_cert,
             room,
+            content,
         },
         identity,
         control.clone(),
         catalogue,
         planner,
+        session,
     ) {
         Ok(participant) => participant,
         Err(error) => {
@@ -372,6 +477,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_relay_protocol::agents::GrantState;
@@ -387,13 +494,21 @@ mod tests {
 
     #[test]
     fn the_idle_host_sleeps_until_its_state_changes_or_a_grant_expires() {
+        // The wall clock stands still until the test moves it past the
+        // grant's expiry, so a loaded runner cannot expire it early. The
+        // keeper reads the clock this test hands it: it runs on its own
+        // thread, which a thread-scoped pin does not reach.
+        let start = tilo_clock::unix_now_ns();
+        let pinned = Arc::new(std::sync::atomic::AtomicU64::new(start));
         let state = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[1; 32]);
-        let mut host = AgentHost::new(
+        let clock = Arc::clone(&pinned);
+        let mut host = AgentHost::with_clock(
             root.verifying_key().to_bytes(),
             state.path().to_owned(),
             ModelChoice::Scripted,
             Arc::new(AppCatalogue::native),
+            Arc::new(move || clock.load(Ordering::Relaxed)),
         );
         #[cfg(target_os = "linux")]
         {
@@ -416,7 +531,7 @@ mod tests {
         host.keep().unwrap();
 
         // A change is written at once, not at the next tick.
-        let expires_at = tilo_clock::unix_now_ns().saturating_add(1_500_000_000);
+        let expires_at = start.saturating_add(1_500_000_000);
         let changed = Instant::now();
         host.supervisor()
             .add_grant(crate::control::tests::identity_until(&root, expires_at));
@@ -428,14 +543,161 @@ mod tests {
 
         // With nothing else changing, the grant still expires: the host has
         // no interval, so only the wake it sets for the expiry gets it there.
+        // A wake set from the wrong deadline or unit is minutes off, past
+        // the hang bound.
+        pinned.store(start.saturating_add(2_000_000_000), Ordering::Relaxed);
         wait_until("the grant's expiry", || {
             grant_state(&file) == Some(GrantState::Expired)
         });
-        let late = Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(expires_at));
-        eprintln!("agent host expired the grant {late:?} after its expiry");
-        // A wake set from the wrong deadline or unit is minutes off; a synced
-        // write or a stalled thread on a busy runner is not.
-        assert!(late < Duration::from_secs(10), "expired {late:?} late");
+        eprintln!(
+            "agent host expired the grant {:?} after it was granted",
+            changed.elapsed()
+        );
         host.shutdown();
+    }
+
+    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const OTHER_ROOM: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
+
+    fn agent_host(state: &Path) -> AgentHost {
+        AgentHost::new(
+            [7; 32],
+            state.to_path_buf(),
+            ModelChoice::Scripted,
+            Arc::new(|| AppCatalogue::new(Vec::new())),
+        )
+    }
+
+    #[test]
+    fn content_put_in_a_room_reads_back_by_its_address() {
+        let state = tempfile::tempdir().unwrap();
+        let host = agent_host(state.path());
+        let address = host.put_content(ROOM, b"a picture's bytes").unwrap();
+        let hash = tilo_actions::content_hash(&address).unwrap();
+        assert_eq!(hash, tilo_content::hash_bytes(b"a picture's bytes"));
+        assert_eq!(
+            host.content(ROOM, &address).as_deref(),
+            Some(&b"a picture's bytes"[..])
+        );
+        assert_eq!(
+            host.content(&ROOM.to_uppercase(), hash).as_deref(),
+            Some(&b"a picture's bytes"[..]),
+            "a bare hash, in the room however its uuid is spelt"
+        );
+        // Kept under the state directory: a host started again reads it.
+        let again = agent_host(state.path());
+        assert!(again.content(ROOM, &address).is_some());
+    }
+
+    #[test]
+    fn one_rooms_content_is_not_anothers() {
+        let state = tempfile::tempdir().unwrap();
+        let host = agent_host(state.path());
+        let address = host.put_content(ROOM, b"kept in one room").unwrap();
+        assert!(host.content(OTHER_ROOM, &address).is_none());
+        assert!(host.put_content("../escape", b"anything").is_err());
+        assert!(host.content("../escape", &address).is_none());
+    }
+
+    /// The content addresses kept under `dir`, each with what it holds: a
+    /// store names an item's file after its hash, in a shard directory of
+    /// its own, beside the lock and generation files it keeps to write
+    /// safely.
+    fn contents(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut found = BTreeMap::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    pending.push(path);
+                } else if let (Some(name), Ok(bytes)) = (
+                    entry.file_name().to_str().map(str::to_owned),
+                    std::fs::read(&path),
+                ) && tilo_content::valid_hash(&name)
+                {
+                    found.insert(name, bytes);
+                }
+            }
+        }
+        found
+    }
+
+    /// Every file of `dir` that is not content, relative to it: what a
+    /// person would read as a note, a log or a record.
+    fn documents(dir: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let named = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy();
+                if !named.contains("content/")
+                    && !entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(tilo_content::valid_hash)
+                {
+                    found.push(named.into_owned());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// An agent whose work is done leaves nothing in the host's state
+    /// directory but its credentials and the room's content: no notes, no
+    /// facts, nothing read off a record. What it learned, it wrote where a
+    /// person would, in the room's records, which the state directory does
+    /// not hold (docs/architecture/agent-memory.md).
+    #[test]
+    fn the_host_keeps_credentials_and_content_and_nothing_learned() {
+        let state = tempfile::tempdir().unwrap();
+        let host = agent_host(state.path());
+        host.put_content(ROOM, b"a picture's bytes").unwrap();
+        // A grant survives a restart, which is the state file's whole job.
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let expires_at = tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000);
+        host.supervisor()
+            .add_grant(crate::control::tests::identity_until(&root, expires_at));
+        host.flush();
+
+        // The credential file, and the one content address the room
+        // holds: no file of any other kind anywhere under it.
+        let kept = contents(&state.path().join(CONTENT_DIR));
+        let address = tilo_content::hash_bytes(b"a picture's bytes");
+        assert_eq!(
+            kept.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![address.as_str()],
+        );
+        assert_eq!(documents(state.path()), vec!["agents.json"]);
+        // The state file is the credentials and the grants, nothing about
+        // the person or the work.
+        let text = std::fs::read(state.path().join("agents.json")).unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert_eq!(written["grants"].as_array().map(Vec::len), Some(1));
+        let mut fields: Vec<&str> = written
+            .as_object()
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        fields.sort_unstable();
+        assert_eq!(fields, vec!["agents", "grants"]);
     }
 }

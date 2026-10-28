@@ -381,7 +381,7 @@ mod tests {
         device
             .poll(vello::wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(10)),
+                timeout: Some(tilo_test_env::hang_bound()),
             })
             .expect("test-only completion of actual GPU submission");
         rows.extend(observer.read(readings(&mut renderer), None));

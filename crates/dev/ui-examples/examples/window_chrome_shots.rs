@@ -20,7 +20,6 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
-use tilo_ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use tilo_ui::widget::video_player::PlayerSetting;
 use tilo_ui::widget::{
     Banner, BannerContent, BannerKind, Column, ModalDialog, Popover, PopoverSide, Text,
@@ -145,19 +144,6 @@ fn status(out: &Path, name: &str, theme: &Theme) {
         "1,204 words",
         "Ln 12, Col 4",
     );
-    tilo_ui::widget::toast::paint_transient(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        theme,
-        content,
-        ToastAnchor::BottomCenter,
-        &ToastCard::new("Copied link to Quarterly report", ToastKind::Success).closable(true),
-    );
-    let mut bubble = tilo_ui::StatusBubble::new();
-    let now = tilo_ui::time::now();
-    bubble.show("Saved", now);
-    bubble.paint(&mut scene, Affine::IDENTITY, &mut tr, theme, content, now);
     let path = out.join(format!("status-{name}.png"));
     OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, &path);
 }

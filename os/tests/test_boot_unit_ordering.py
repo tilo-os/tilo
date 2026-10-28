@@ -245,8 +245,15 @@ class BootOrdering(unittest.TestCase):
         self.assertIn("    layout.extensions().join(name).exists() || raw_path(layout, name).exists()\n", helper)
         self.assertIn('    layout.extensions().join(format!("{name}{RAW_SUFFIX}"))\n', helper)
         self.assertIn("    let any_part_present = || ours.iter().any(|name| live_exists(layout, name));\n"
-                      "    if !catalogues.iter().any(|c| layout.desired(&c.id).exists()) && !any_part_present() {\n"
-                      "        return Ok(0);\n", helper)
+                      "    let wanted = catalogues.iter().any(|c| layout.desired(&c.id).exists()) || any_part_present();\n",
+                      helper)
+        # The live update's layer also keeps it from returning early, but that
+        # layer is linked and marked only under /run, so no boot finds it: at
+        # boot the two conditions above remain the whole early return.
+        self.assertIn("    if !wanted && !live_linked && !live_was_merged {\n        return Ok(0);\n", helper)
+        live = (REPO / "crates/system/extension-helper/src/live.rs").read_text()
+        self.assertIn('    layout.at("/run/extensions").join(LIVE_NAME)\n', live)
+        self.assertIn('    layout.at("/run/tilo/live-update/merged")\n', live)
 
     def test_nothing_before_tmpfiles_setup_is_ordered_after_it(self):
         after = after_graph(shipped_units())

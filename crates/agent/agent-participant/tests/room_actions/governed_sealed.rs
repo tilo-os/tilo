@@ -70,7 +70,7 @@ async fn until_retained(
     author: [u8; 32],
     count: usize,
 ) -> Vec<bool> {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let sealed = retained_by(hosted, workspace, route, author).await;
         if sealed.len() >= count {
@@ -88,7 +88,7 @@ async fn until_retained(
 
 /// Wait until `browser` holds a change `author` made to `route`.
 async fn until_authored(browser: &mut Browser, route: &DocumentRoute, author: [u8; 32]) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         if browser
@@ -120,7 +120,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let host_key = host.cert.device_public_key;
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let room = hosted
         .relay

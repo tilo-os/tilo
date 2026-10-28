@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use notify::{Event, RecommendedWatcher};
 
+use super::room::SharedRoom;
 use super::{Project, TargetRequest, web};
 use tilo_lock::MutexRecover as _;
 
@@ -28,6 +29,11 @@ pub struct ServeOptions {
     /// Rebuild and reload on source changes.
     pub watch: bool,
     pub debounce: Duration,
+    /// Open the app in a room others join from their own browser
+    /// ([`super::room`]).
+    pub share: bool,
+    /// With `share`, start an empty room instead of the last one.
+    pub fresh: bool,
 }
 
 impl Default for ServeOptions {
@@ -36,6 +42,8 @@ impl Default for ServeOptions {
             address: SocketAddr::from(([127, 0, 0, 1], 7878)),
             watch: true,
             debounce: Duration::from_millis(150),
+            share: false,
+            fresh: false,
         }
     }
 }
@@ -46,7 +54,15 @@ const RELOAD_SCRIPT: &str = "<script type=\"module\">\n  // Injected by `tilo-ap
 struct Server {
     root: PathBuf,
     clients: Mutex<Vec<TcpStream>>,
+    room: Option<SharedRoom>,
 }
+
+/// Where the shared room's page and door are served.
+const ROOM_PATH: &str = "/__tilo/room";
+/// The largest request body the room's door reads.
+const MAX_BODY: usize = 64 * 1024;
+/// The join page: a name, then the app in the room.
+const ROOM_PAGE: &str = include_str!("room.html");
 
 impl Server {
     fn broadcast(&self, event: &str, data: &str) {
@@ -66,6 +82,9 @@ pub(super) fn run(
     request: &TargetRequest,
     options: &ServeOptions,
 ) -> Result<()> {
+    if options.share {
+        refresh_surface(project)?;
+    }
     let first = web::build(project, request)?;
     let listener = TcpListener::bind(options.address).with_context(|| {
         format!(
@@ -73,9 +92,16 @@ pub(super) fn run(
             options.address
         )
     })?;
+    let room = if options.share {
+        let pages = format!("http://{}", options.address);
+        Some(SharedRoom::start(project, &pages, options.fresh)?)
+    } else {
+        None
+    };
     let server = Arc::new(Server {
         root: first.artifact.clone(),
         clients: Mutex::new(Vec::new()),
+        room,
     });
     let accepting = Arc::clone(&server);
     std::thread::Builder::new()
@@ -93,12 +119,20 @@ pub(super) fn run(
             }
         })
         .context("starting the web server")?;
-    eprintln!(
-        "[tilo-app] serving {} at http://{}/{}",
-        project.display_name(),
-        options.address,
-        first.entry
-    );
+    if server.room.is_some() {
+        eprintln!(
+            "[tilo-app] {} is shared: open http://{}{ROOM_PATH}/play in one browser window per person",
+            project.display_name(),
+            options.address,
+        );
+    } else {
+        eprintln!(
+            "[tilo-app] serving {} at http://{}/{}",
+            project.display_name(),
+            options.address,
+            first.entry
+        );
+    }
     if !options.watch {
         eprintln!("[tilo-app] press Ctrl-C to stop");
         loop {
@@ -148,7 +182,12 @@ fn watch(
                 }
                 crate::drain_until_quiet(&event_rx, &roots, options.debounce, &mut watcher);
                 eprintln!("[tilo-app] change detected; rebuilding the web bundle");
-                match web::build(project, request) {
+                let built = if server.room.is_some() {
+                    refresh_surface(project).and_then(|()| web::build(project, request))
+                } else {
+                    web::build(project, request)
+                };
+                match built {
                     Ok(_) => {
                         server.broadcast("reload", "{}");
                     }
@@ -176,15 +215,38 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
+    let mut length = 0_usize;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 || header == "\r\n" || header == "\n" {
             break;
         }
+        if let Some((name, value)) = header.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
     }
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
+    if let Some(room) = &server.room
+        && let Some(rest) = target.strip_prefix(ROOM_PATH)
+    {
+        if length > MAX_BODY {
+            return respond(
+                &mut stream,
+                "413 Payload Too Large",
+                "text/plain",
+                b"too large\n",
+                false,
+            );
+        }
+        let mut body = vec![0_u8; length];
+        std::io::Read::read_exact(&mut reader, &mut body)?;
+        let (status, content_type, answer) = room_route(room, method, rest, &body);
+        return respond(&mut stream, status, content_type, &answer, method == "HEAD");
+    }
     if method != "GET" && method != "HEAD" {
         return respond(
             &mut stream,
@@ -226,6 +288,111 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
         body = inject_reload(&body);
     }
     respond(&mut stream, "200 OK", content_type, &body, method == "HEAD")
+}
+
+/// Write the app's `surface.toml` from its code. The room's devices decide
+/// every change a participant sends against the surface the change names,
+/// so with a surface from before the last edit of the resource the others
+/// refuse moves the code makes. `tilo-app check` fails on a stale file; a
+/// shared room keeps it current instead.
+fn refresh_surface(project: &Project) -> Result<()> {
+    if !crate::surface::is_framework_app(&project.app_dir) {
+        return Ok(());
+    }
+    let before = std::fs::read(project.app_dir.join(crate::surface::FILE)).ok();
+    let (path, _) = crate::surface::write_app(&project.app_dir, None)?;
+    if std::fs::read(&path).ok() != before {
+        eprintln!(
+            "[tilo-app] updated {}: the room decides changes against it",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// The shared room's page and door: `GET /` (what the page opens), `GET
+/// /play` (the join page), `POST /join` (admit a person), `GET /people`
+/// (everyone admitted, by name) and `/record` (which record of the app
+/// everyone opens).
+fn room_route(
+    room: &SharedRoom,
+    method: &str,
+    target: &str,
+    body: &[u8],
+) -> (&'static str, &'static str, Vec<u8>) {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let json = |status, value: serde_json::Value| {
+        (status, "application/json", value.to_string().into_bytes())
+    };
+    let request: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    let text = |key: &str| {
+        request
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match (method, path) {
+        ("GET", "" | "/") => json(
+            "200 OK",
+            serde_json::json!({"app": room.app_id, "room": room.room, "name": room.name}),
+        ),
+        ("GET", "/people") => json("200 OK", room.people()),
+        ("GET", "/play" | "/play/") => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            ROOM_PAGE.as_bytes().to_vec(),
+        ),
+        ("POST", "/join") => {
+            let name: String = text("name").trim().chars().take(32).collect();
+            let name = if name.is_empty() {
+                "Guest".to_owned()
+            } else {
+                name
+            };
+            match room.admit(&text("userPublicKey"), &name) {
+                Ok(admission) => {
+                    eprintln!("[tilo-app] {name} joined");
+                    json(
+                        "200 OK",
+                        serde_json::json!({
+                            "invitation": admission.invitation,
+                            "admissionToken": admission.admission_token,
+                            "origin": room.origin,
+                        }),
+                    )
+                }
+                Err(error) => json(
+                    "403 Forbidden",
+                    serde_json::json!({"error": format!("{error:#}")}),
+                ),
+            }
+        }
+        ("GET" | "POST", "/record") => {
+            let app = if method == "GET" {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("app="))
+                    .and_then(percent_decode)
+                    .unwrap_or_default()
+            } else {
+                text("app")
+            };
+            let claim = room.claim(&app, method == "POST");
+            json(
+                "200 OK",
+                serde_json::json!({"record": claim.record, "open": claim.open}),
+            )
+        }
+        ("PUT", "/record") => match room.opened(&text("app"), &text("record")) {
+            Ok(()) => json("200 OK", serde_json::json!({})),
+            Err(error) => json(
+                "500 Internal Server Error",
+                serde_json::json!({"error": format!("{error:#}")}),
+            ),
+        },
+        _ => ("404 Not Found", "text/plain", b"not found\n".to_vec()),
+    }
 }
 
 fn respond(
@@ -360,6 +527,7 @@ mod tests {
         let server = Arc::new(Server {
             root: dir.path().to_path_buf(),
             clients: Mutex::new(Vec::new()),
+            room: None,
         });
         let accepting = Arc::clone(&server);
         std::thread::spawn(move || {
@@ -385,12 +553,9 @@ mod tests {
             line.clear();
             reader.read_line(&mut line).unwrap();
         }
-        for _ in 0..50 {
-            if !server.clients.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the event stream to register its client", || {
+            !server.clients.lock().unwrap().is_empty()
+        });
         server.broadcast("reload", "{}");
         let mut received = String::new();
         while !received.contains("data: {}") {

@@ -27,7 +27,7 @@ use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
-/// What a view is built for. See the [module docs](self).
+/// What a view is built for. See the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunMode {
     /// A window someone uses: real sources, and the work that keeps them
@@ -76,6 +76,13 @@ pub(crate) struct Run {
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
     pub(crate) opener: Option<super::launch::OpenHere>,
+    /// A capture a headless drive invokes actions on
+    /// ([`Capture::driven`](ui_core::application::Capture::driven)): the
+    /// effects it is asked for run, though it starts no work on its own.
+    pub(crate) driven: bool,
+    /// What the room holds, when the record the window opened was not on
+    /// this device: the view shows once it arrived.
+    pub(crate) room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -91,6 +98,11 @@ pub(crate) struct Launched {
     pub(crate) handoff: Option<ui_core::application::PlaybackHandoff>,
     /// The services the host that mounts the app in-process lent it.
     pub(crate) lent: Lent,
+    /// The item the launch asked to show ([`LaunchTarget::Record`]'s
+    /// `reveal`), until a view that opens items has shown it.
+    ///
+    /// [`LaunchTarget::Record`]: ui_core::application::LaunchTarget::Record
+    pub(crate) reveal: std::cell::RefCell<Option<String>>,
 }
 
 /// What an in-process host lent the app
@@ -129,6 +141,8 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
+            room: None,
         }
     }
 
@@ -156,7 +170,26 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
+            room: None,
         }
+    }
+
+    /// The same run, a capture a headless drive invokes actions on when
+    /// `driven`.
+    pub(crate) fn driven_by_drive(mut self, driven: bool) -> Self {
+        self.driven = driven;
+        self
+    }
+
+    /// The same run, its view waiting for what the room holds (`room`)
+    /// when its record was not on this device.
+    pub(crate) fn awaiting_room(
+        mut self,
+        room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
+    ) -> Self {
+        self.room = room;
+        self
     }
 
     /// The same run, able to open another record in its window.
@@ -177,7 +210,6 @@ impl Run {
             .open(arguments))
     }
 
-    /// The same run, for the participant `me`.
     pub(crate) fn for_participant(mut self, me: Option<&str>) -> Self {
         self.people = super::People::new(me);
         self
@@ -210,6 +242,28 @@ impl Run {
     }
 }
 
+/// What other providers' actions answer in a capture
+/// ([`Fixture::answer`]), by the action.
+#[derive(Clone, Default)]
+pub(crate) struct Answers(HashMap<String, serde_json::Value>);
+
+impl Answers {
+    fn key(target: &tilo_actions::remote::RemoteActionTarget) -> String {
+        format!(
+            "{}/{}/{}",
+            target.provider, target.address.resource, target.address.action
+        )
+    }
+
+    /// What the action at `target` answers in this capture.
+    pub(crate) fn get(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<&serde_json::Value> {
+        self.0.get(&Self::key(target))
+    }
+}
+
 /// A version of the resource another person wrote before the capture.
 struct Version<R: Resource> {
     author: String,
@@ -222,18 +276,33 @@ struct Version<R: Resource> {
 /// the view is built.
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
+    /// The participant the capture's window reads as
+    /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
+    /// something of their own in it.
+    person: String,
     values: HashMap<TypeId, Rc<dyn Any>>,
+    /// What the record starts with, written before the versions.
+    start: Option<Start>,
     history: Vec<Version<R>>,
     collaborators: Vec<(String, ResourceSelection)>,
     content: Option<tilo_content::ContentStore>,
     directory: Option<tempfile::TempDir>,
 }
 
+/// Writes a capture's starting state into the record.
+type Start = Box<dyn Fn(&mut Doc) -> Result<(), String>>;
+
 impl<R: Resource> Fixture<R> {
-    pub(crate) fn new(scenario: Option<&str>, content: Option<tilo_content::ContentStore>) -> Self {
+    pub(crate) fn new(
+        scenario: Option<&str>,
+        person: &str,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
         Self {
             scenario: scenario.map(str::to_owned),
+            person: person.to_owned(),
             values: HashMap::new(),
+            start: None,
             history: Vec::new(),
             collaborators: Vec::new(),
             content,
@@ -246,6 +315,14 @@ impl<R: Resource> Fixture<R> {
         self.scenario.as_deref()
     }
 
+    /// Who the capture's window is for: the participant the view reads as
+    /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
+    /// something of the person's own — a seat at the table, an issue
+    /// assigned to them — stages it for them.
+    pub fn person(&self) -> &str {
+        &self.person
+    }
+
     /// Stand `value` in for a live source: the views and surfaces of this
     /// capture read it with `cx.fixture::<T>()`. One value per type; a
     /// second replaces the first.
@@ -253,11 +330,29 @@ impl<R: Resource> Fixture<R> {
         self.values.insert(TypeId::of::<T>(), Rc::new(value));
     }
 
+    /// Stand `value` in for what another provider's action at `target`
+    /// answers: a view's [`RecordEnv::query`](super::RecordEnv::query) of
+    /// it reads `value`, as the action's result, in this capture.
+    pub fn answer(
+        &mut self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        value: &impl serde::Serialize,
+    ) {
+        let mut answers = self
+            .values
+            .remove(&TypeId::of::<Answers>())
+            .and_then(|answers| answers.downcast::<Answers>().ok())
+            .map(|answers| (*answers).clone())
+            .unwrap_or_default();
+        answers.0.insert(
+            Answers::key(target),
+            serde_json::to_value(value).unwrap_or_default(),
+        );
+        self.provide(answers);
+    }
+
     /// A private scratch directory for files the scene shows (a folder to
     /// browse, a repository to diff), removed after the capture.
-    ///
-    /// # Errors
-    /// Returns why the directory could not be created.
     pub fn directory(&mut self) -> std::io::Result<&std::path::Path> {
         if self.directory.is_none() {
             self.directory = Some(
@@ -281,6 +376,39 @@ impl<R: Resource> Fixture<R> {
             .get_or_insert_with(tilo_content::ContentStore::memory)
     }
 
+    /// What the record holds when the capture starts: `state`, written into
+    /// it directly as the record's first content, before the versions. For
+    /// a scene whose starting content no single action makes as it stands
+    /// (items under fixed ids the scenario names, written by several
+    /// people) in fields the record keeps to its own actions
+    /// (`#[model(readonly)]`), which refuse every generic edit, a
+    /// scenario's or a version's alike. It is nobody's change: committed as
+    /// the record's genesis and checked by no door, so only ever a
+    /// capture's.
+    pub fn start(&mut self, state: R::State)
+    where
+        R::State: tilo_resource::Fields,
+    {
+        self.start = Some(Box::new(move |doc| {
+            let root = ui_core::automerge::ROOT;
+            let before = <R::State as tilo_resource::Fields>::read_fields(doc, &root)
+                .map_err(|error| format!("read the record: {error}"))?;
+            tilo_resource::Fields::write_changed_fields(
+                &state,
+                &before,
+                doc,
+                &root,
+                &tilo_resource::Delta::default(),
+            )
+            .map_err(|error| format!("write the record's start: {error}"))?;
+            doc.commit_with(
+                ui_core::automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+            );
+            Ok(())
+        }));
+    }
+
     /// A version of the resource `author` wrote at `at_ms` (milliseconds
     /// since the Unix epoch), before the capture: it arrives as their
     /// change does over sync, attributed to them in history and on no one's
@@ -301,12 +429,15 @@ impl<R: Resource> Fixture<R> {
         self.collaborators.push((name.to_owned(), at));
     }
 
-    /// Write the other people's versions into `doc`.
+    /// Write the record's start and the other people's versions into `doc`.
     pub(crate) fn write_history(
         &self,
         doc: &mut Doc,
         registry: &tilo_actions::ActionRegistry,
     ) -> Result<(), String> {
+        if let Some(start) = &self.start {
+            start(doc)?;
+        }
         for version in &self.history {
             write_version::<R>(doc, registry, version)?;
         }
@@ -314,30 +445,39 @@ impl<R: Resource> Fixture<R> {
     }
 
     pub(crate) fn has_history(&self) -> bool {
-        !self.history.is_empty()
+        self.start.is_some() || !self.history.is_empty()
     }
 
     /// What the capture's views read.
     pub(crate) fn into_run(self) -> Run {
-        Run {
-            mode: RunMode::Capture,
-            fixtures: Rc::new(Fixtures {
-                values: self.values,
-                collaborators: self.collaborators,
-                content: self.content,
-                _directory: self.directory,
-            }),
-            launched: Rc::default(),
-            private: false,
-            file_history: None,
-            people: super::People::new(None),
-            opener: None,
-        }
+        capture_run(Fixtures {
+            values: self.values,
+            collaborators: self.collaborators,
+            content: self.content,
+            _directory: self.directory,
+        })
     }
 
     /// The content store the capture lends, once the fixture is prepared.
     pub(crate) fn lent_content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
+    }
+}
+
+/// The run of a capture whose views read `fixtures`: made here once rather
+/// than in every app's [`Fixture::into_run`].
+#[inline(never)]
+fn capture_run(fixtures: Fixtures) -> Run {
+    Run {
+        mode: RunMode::Capture,
+        fixtures: Rc::new(fixtures),
+        launched: Rc::default(),
+        private: false,
+        file_history: None,
+        people: super::People::new(None),
+        opener: None,
+        driven: false,
+        room: None,
     }
 }
 

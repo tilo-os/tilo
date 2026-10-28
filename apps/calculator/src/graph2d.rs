@@ -61,7 +61,6 @@ struct CurvePath {
 struct CurveKey {
     /// `(expr, visible)` for every function, in order.
     funcs: Vec<(String, bool)>,
-    deg: bool,
     cx: u64,
     cy: u64,
     scale: u64,
@@ -89,7 +88,6 @@ impl CurveKey {
                 .iter()
                 .map(|f| (f.expr.clone(), f.visible))
                 .collect(),
-            deg: model.deg,
             cx: bits(model.view2d.cx),
             cy: bits(model.view2d.cy),
             scale: bits(model.view2d.scale),
@@ -105,17 +103,12 @@ impl CurveKey {
 
 impl Graph2dScreen {
     /// Resolve the panel, the content column and the plot for the window
-    /// `area` (the header row included).
+    /// `area`. The plot fills the content column: its controls are the
+    /// window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.funcs.len());
-        let content = self.panel.side().content();
-        self.canvas = Rect::new(
-            content.x0,
-            (content.y0 + self.panel.side().header_height()).min(content.y1),
-            content.x1,
-            content.y1,
-        );
+        self.canvas = self.panel.side().content();
     }
 
     /// Measure the formulas and lay the screen out for this frame, then
@@ -124,7 +117,6 @@ impl Graph2dScreen {
         self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
-        // Advance the smooth-zoom ease one frame toward the model target.
         self.zoom.tick(model.view2d, theme.reduce_motion);
         self.layout(area, model);
     }
@@ -191,8 +183,6 @@ impl Graph2dScreen {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
     }
-
-    // ----- canvas internals -------------------------------------------------
 
     fn plane(&self, v: &View2d) -> FunctionPlane {
         FunctionPlane::new(self.canvas, Point::new(v.cx, v.cy), v.scale)
@@ -270,7 +260,7 @@ impl Graph2dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let Ok(comp) = engine::compile(&f.expr, model.deg, false) else {
+            let Ok(comp) = engine::compile(&f.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             let mut path = BezPath::new();
@@ -401,7 +391,7 @@ impl Graph2dScreen {
         if !active.visible {
             return None;
         }
-        let curve = engine::compile(&active.expr, model.deg, false).ok()?;
+        let curve = engine::compile(&active.expr, engine::PLOT_IN_DEGREES, false).ok()?;
         let x = self.to_world(pointer, view).x;
         let mut point = Point::new(x, curve.eval1(x));
         let mut snapped = false;
@@ -410,7 +400,7 @@ impl Graph2dScreen {
             if index == model.active_fn || !row.visible {
                 continue;
             }
-            let Ok(other) = engine::compile(&row.expr, model.deg, false) else {
+            let Ok(other) = engine::compile(&row.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             if let Some(crossing) = crossing_near(&curve, &other, x, radius / view.scale) {
@@ -424,8 +414,6 @@ impl Graph2dScreen {
         }
         point.y.is_finite().then_some((point, snapped))
     }
-
-    // ----- hit-testing ------------------------------------------------------
 
     pub fn canvas_contains(&self, p: Point) -> bool {
         // While a floating drawer (and its scrim) is up, the canvas is not
@@ -562,8 +550,8 @@ mod tests {
                 "canvas starts after the docked panel"
             );
             assert!(
-                s.canvas.y0 >= area.y0 + s.panel.side().header_height() - 0.5,
-                "the plot stands below the header row"
+                (s.canvas.y0 - area.y0).abs() < 0.5,
+                "no header row: the plot starts at the top, its controls are the window bar's"
             );
         }
 
@@ -590,15 +578,6 @@ mod tests {
                 (s.canvas.width() - area.width()).abs() < 0.5,
                 "the plot gets the full width when collapsed"
             );
-            let toggle = s
-                .panel
-                .toggle_rect()
-                .expect("a button must be present to open it");
-            assert!(
-                toggle.x0 < area.x0 + s.panel.side().header_height(),
-                "the button sits at the leading edge of the content header"
-            );
-            assert!(s.panel.side().toggle_at(toggle.center()));
         }
 
         // phase narrow_drawer_opens_with_scrim_and_dismisses
@@ -613,16 +592,9 @@ mod tests {
             assert!(s.panel.side().is_open() && s.panel.side().is_overlay());
             let column = s.panel.side().column();
             assert!(column.width() > 0.0, "an open drawer is drawn");
-            assert!(
-                s.panel
-                    .toggle_rect()
-                    .is_some_and(|t| column.contains_rect(t)),
-                "the drawer carries its own show/hide button"
-            );
             // A press inside the drawer must not pan the plot.
             assert!(!s.canvas_contains(column.center()));
             assert!(s.panel.side().covers(column.center()));
-            // A press on the scrim, beside the drawer, dismisses it.
             let beside = Point::new(area.x1 - 10.0, area.center().y);
             assert!(s.panel.side().scrim_at(beside));
             s.panel.side_mut().close();
@@ -716,7 +688,6 @@ mod tests {
                 s.curve_cache.rebuilds, 1,
                 "re-sampled with no geometry change"
             );
-            // Switching tabs and back leaves funcs/view/canvas identical.
             m.mode = Mode::Calc;
             s.ensure_curves(&m);
             m.mode = Mode::Graph2d;
@@ -757,6 +728,116 @@ mod tests {
             m.funcs[0].visible = false;
             s.ensure_curves(&m);
             assert_eq!(s.curve_cache.paths.len(), before - 1);
+        }
+    }
+
+    /// Every sampled coordinate of every curve, as raw bits, in draw order.
+    fn sampled_bits(screen: &Graph2dScreen) -> Vec<(usize, Vec<(u64, u64)>)> {
+        screen
+            .curve_cache
+            .paths
+            .iter()
+            .map(|curve| {
+                let points = curve
+                    .path
+                    .elements()
+                    .iter()
+                    .filter_map(|element| match element {
+                        vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => {
+                            Some((bits(p.x), bits(p.y)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (curve.series, points)
+            })
+            .collect()
+    }
+
+    /// Sampling is a pure function of the functions, the view and the canvas:
+    /// the same inputs give the same bits, in the same order, in a screen built
+    /// from scratch and in one re-sampled after its cached geometry is dropped.
+    ///
+    /// This is what makes two runs of one binary draw one curve. A frame can
+    /// still differ between two runs by one antialiased pixel, but that tie is
+    /// the rasteriser's segment order (see `ui::offscreen`'s module docs), not
+    /// an unstable sample: nothing here reads a clock, a map's iteration order
+    /// or a second thread.
+    #[test]
+    fn the_same_view_samples_the_same_curve_bits() {
+        let model = CalcModel::seeded();
+        // The tablet preset's plot: the canvas the capture writes at 768x1024
+        // with the functions panel docked at the theme's 1x width.
+        let canvas = Rect::new(432.0, 0.0, 768.0, 1024.0);
+        let sample = |screen: &mut Graph2dScreen| {
+            screen.canvas = canvas;
+            screen.ensure_curves(&model);
+            sampled_bits(screen)
+        };
+
+        let mut first = Graph2dScreen::default();
+        let once = sample(&mut first);
+        assert!(
+            !once.is_empty() && once[0].1.len() > 100,
+            "the plot samples"
+        );
+
+        let mut second = Graph2dScreen::default();
+        assert_eq!(once, sample(&mut second), "a fresh screen samples one way");
+
+        // A cache hit replays the cached paths untouched, and a rebuild from
+        // the same key reproduces them bit for bit.
+        first.ensure_curves(&model);
+        assert_eq!(
+            first.curve_cache.rebuilds, 1,
+            "the second call reused the cache"
+        );
+        assert_eq!(once, sampled_bits(&first), "the cache replay kept the bits");
+        first.curve_cache.key = None;
+        first.ensure_curves(&model);
+        assert_eq!(
+            once,
+            sampled_bits(&first),
+            "re-sampling reproduced the bits"
+        );
+    }
+
+    /// The columns are an integer step from the canvas edge, and a line lands
+    /// on itself: `y = x` sampled on a 300x200 plot gives the points a person
+    /// can compute by hand, exactly — no accumulated float drift, and the last
+    /// column is reachable. A sampler that walked `while sx <= x1` in floats,
+    /// or accumulated `sx += 1.5`, would miss that here.
+    #[test]
+    fn a_line_samples_at_exact_columns_and_lands_on_the_line() {
+        let mut screen = Graph2dScreen {
+            canvas: Rect::new(0.0, 0.0, 300.0, 200.0),
+            ..Graph2dScreen::default()
+        };
+        let model = CalcModel {
+            funcs: vec![crate::model::PlotFn {
+                expr: "x".into(),
+                visible: true,
+            }],
+            ..CalcModel::default()
+        };
+        screen.ensure_curves(&model);
+        let curve = &screen.curve_cache.paths[0].path;
+        let points: Vec<Point> = curve
+            .elements()
+            .iter()
+            .filter_map(|element| match element {
+                vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        // 300 / 1.5 = 200 steps, and the step at the right edge is sampled too.
+        assert_eq!(points.len(), 201);
+        for (step, point) in points.iter().enumerate() {
+            let column = step as f64 * 1.5;
+            // The plot's centre is (150, 100) and the view is `scale` 64 about
+            // the origin, so screen y = 100 - (column - 150) = 250 - column.
+            assert_eq!(point.x.to_bits(), column.to_bits(), "column {step}");
+            assert_eq!(point.y.to_bits(), (250.0 - column).to_bits(), "row {step}");
         }
     }
 

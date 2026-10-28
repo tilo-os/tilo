@@ -119,7 +119,6 @@ impl OneDriveConfig {
         }
     }
 
-    /// The whole of a drive by id.
     pub fn drive(id: impl Into<String>) -> Self {
         Self {
             drive: DriveSelector::Id(id.into()),
@@ -135,7 +134,6 @@ pub struct Mount {
     pub api: String,
     pub drive_id: String,
     pub drive_type: DriveType,
-    /// The id of the drive's root folder.
     pub drive_root: String,
     /// The id of the mounted folder (equal to `drive_root` for a whole
     /// drive).
@@ -376,7 +374,6 @@ impl OneDriveSource {
         format!("{}root/delta", self.drive_url())
     }
 
-    /// One delta page from `link`.
     fn delta_page(
         &self,
         link: &str,

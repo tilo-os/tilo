@@ -58,7 +58,8 @@ pub fn settings_path() -> Option<PathBuf> {
 }
 
 /// Load the policy from the session's settings for the power-profiles-daemon
-/// profile the power service last observed ([`crate::PowerBridge::active_profile`]),
+/// profile the power service last observed ([`crate::PowerBridge::active_profile`])
+/// and the power source it last saw ([`crate::PowerBridge::on_battery`]),
 /// falling back to the Settings defaults when there are none. Never asks the
 /// daemon itself: the compositor reloads this on its frame thread.
 ///
@@ -71,10 +72,10 @@ pub fn settings_path() -> Option<PathBuf> {
 ///
 /// The result is already narrowed to this machine's duty: a host never
 /// suspends on its own.
-pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
+pub fn load_policy_for_profile(active_profile: Option<&str>, on_battery: bool) -> PowerPolicy {
     let section =
         serde_json::Value::Object(settings_store::load_section(settings_store::power::SECTION));
-    policy_from_section_for_profile(&section, active_profile)
+    policy_from_section_for_profile(&section, active_profile, on_battery)
         .for_duty(crate::policy::this_machine_duty())
 }
 
@@ -104,12 +105,13 @@ pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
 /// Parse a [`PowerPolicy`] from a full `settings.json` document with no
 /// active power profile. Never fails; unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
-    policy_from_settings_json_for_profile(text, None)
+    policy_from_settings_json_for_profile(text, None, false)
 }
 
 pub fn policy_from_settings_json_for_profile(
     text: &str,
     active_profile: Option<&str>,
+    on_battery: bool,
 ) -> PowerPolicy {
     let root: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -118,17 +120,19 @@ pub fn policy_from_settings_json_for_profile(
     let Some(section) = root.get("power") else {
         return default_policy();
     };
-    policy_from_section_for_profile(section, active_profile)
+    policy_from_section_for_profile(section, active_profile, on_battery)
 }
 
-/// Resolve a policy for a known power-profiles-daemon profile.
+/// Resolve a policy for a power-profiles-daemon profile and a power source.
 ///
 /// This separate entry point keeps parsing deterministic in tests and makes
-/// the Settings/compositor contract explicit. Unknown profiles retain the
-/// legacy `suspend_minutes` value.
+/// the Settings/compositor contract explicit. The idle-suspend timer is the
+/// power source's ([`settings_store::power::SuspendTimers::applying`]); a
+/// profile's own applies only where the stored profile timers truly differ.
 pub fn policy_from_section_for_profile(
     section: &serde_json::Value,
     active_profile: Option<&str>,
+    on_battery: bool,
 ) -> PowerPolicy {
     let defaults = default_policy();
 
@@ -136,23 +140,11 @@ pub fn policy_from_section_for_profile(
         .get("auto_suspend")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or_else(|| defaults.idle_suspend.is_some());
-    let legacy_suspend_minutes = section
-        .get("suspend_minutes")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_SUSPEND_MINUTES, |m| {
-            u32::try_from(m).unwrap_or(u32::MAX)
-        });
-    let profile_key = match active_profile {
-        Some("power-saver") => Some("saver_suspend_minutes"),
-        Some("balanced") => Some("balanced_suspend_minutes"),
-        Some("performance") => Some("performance_suspend_minutes"),
-        _ => None,
-    };
-    let suspend_minutes = profile_key
-        .and_then(|key| section.get(key))
-        .and_then(serde_json::Value::as_u64)
-        .map_or(legacy_suspend_minutes, |m| {
-            u32::try_from(m).unwrap_or(u32::MAX)
+    let suspend_minutes = section
+        .as_object()
+        .map_or(DEFAULT_SUSPEND_MINUTES, |section| {
+            settings_store::power::SuspendTimers::from_section(section)
+                .applying(active_profile, on_battery)
         });
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
@@ -200,6 +192,12 @@ pub fn policy_from_section_for_profile(
         idle_blank,
         idle_lock,
         idle_suspend,
+        // Only an explicit `false` lets sleep leave the session unlocked: a
+        // missing or malformed value keeps the password.
+        lock_on_sleep: section
+            .get(settings_store::power::LOCK_ON_SLEEP.name())
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(defaults.lock_on_sleep),
         lid_close_action: action("lid_close_action", defaults.lid_close_action),
         power_key_action: action("power_key_action", defaults.power_key_action),
         low_battery_percent: percent("low_battery_percent", defaults.low_battery_percent),
@@ -242,7 +240,6 @@ mod tests {
 
     #[test]
     fn settings_json_parses_power_sections_and_falls_back_to_defaults() {
-        // Phase `missing_file_is_settings_defaults`.
         {
             let p = policy_from_settings_json("");
             assert_eq!(p, default_policy());
@@ -258,7 +255,6 @@ mod tests {
                 "closing the lid still does"
             );
         }
-        // Phase `a_timeout_without_the_switch_stays_off`.
         {
             // A suspend timeout is written by the pane even while the switch
             // is off; it alone must not turn idle-suspend back on.
@@ -269,14 +265,11 @@ mod tests {
             );
             assert_eq!(p.idle_suspend, Some(Duration::from_secs(900)));
         }
-        // Phase `no_power_section_is_defaults`.
         {
             let p = policy_from_settings_json(r#"{"version":1,"display":{"scale":1.0}}"#);
             assert_eq!(p, default_policy());
         }
-        // Phase `full_section_parses`.
         {
-            // Exactly the shape the Settings app writes.
             let json = r#"{
                 "version": 1,
                 "power": {
@@ -301,18 +294,15 @@ mod tests {
             assert_eq!(p.critical_battery_percent, 8);
             assert_eq!(p.critical_action, PowerAction::Suspend);
         }
-        // Phase `malformed_action_falls_back_to_default`.
         {
             let json = r#"{"power":{"lid_close_action":"explode"}}"#;
             let p = policy_from_settings_json(json);
             assert_eq!(p.lid_close_action, default_policy().lid_close_action);
         }
-        // Phase `percent_is_clamped`.
         {
             let json = r#"{"power":{"low_battery_percent":250}}"#;
             assert_eq!(policy_from_settings_json(json).low_battery_percent, 100);
         }
-        // Phase `partial_section_keeps_other_defaults`.
         {
             // Only the lid action is set; everything else is the default.
             let json = r#"{"power":{"lid_close_action":"suspend"}}"#;
@@ -324,6 +314,32 @@ mod tests {
             assert_eq!(p.idle_blank, d.idle_blank);
             assert_eq!(p.idle_lock, d.idle_lock);
             assert_eq!(p.idle_suspend, d.idle_suspend);
+        }
+    }
+
+    #[test]
+    fn the_password_after_sleep_setting_is_kept_unless_it_is_explained_away() {
+        type Case = (&'static str, &'static str, bool);
+        let cases: [Case; 4] = [
+            ("missing keeps the password", "{}", true),
+            ("no power section keeps it", r#"{"display":{}}"#, true),
+            (
+                "an explicit false lets sleep leave the session open",
+                r#"{"power":{"lock_on_sleep":false}}"#,
+                false,
+            ),
+            (
+                "a malformed value keeps the password",
+                r#"{"power":{"lock_on_sleep":"sometimes"}}"#,
+                true,
+            ),
+        ];
+        for (name, json, want) in cases {
+            assert_eq!(
+                policy_from_settings_json(json).lock_on_sleep,
+                want,
+                "{name}"
+            );
         }
     }
 
@@ -401,7 +417,6 @@ mod tests {
 
     #[test]
     fn power_profiles_select_their_idle_timeout_or_the_legacy_one() {
-        // Phase `active_profile_selects_its_idle_timeout`.
         {
             let section: serde_json::Value = serde_json::from_str(
                 r#"{
@@ -414,28 +429,95 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("power-saver")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("power-saver"), false).idle_suspend,
                 Some(Duration::from_secs(420))
             );
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("balanced")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("balanced"), false).idle_suspend,
                 Some(Duration::from_secs(1020))
             );
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("performance")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("performance"), false).idle_suspend,
                 Some(Duration::from_secs(2220))
             );
         }
-        // Phase `unknown_profile_uses_legacy_timeout`.
         {
             let section: serde_json::Value = serde_json::from_str(
                 r#"{"auto_suspend":true,"suspend_minutes":23,"balanced_suspend_minutes":99}"#,
             )
             .unwrap();
             assert_eq!(
-                policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
+                policy_from_section_for_profile(&section, Some("vendor-profile"), false)
+                    .idle_suspend,
                 Some(Duration::from_secs(1380))
             );
         }
+        {
+            let section: serde_json::Value = serde_json::from_str(
+                r#"{"auto_suspend":true,"suspend_minutes":30,"battery_suspend_minutes":10}"#,
+            )
+            .unwrap();
+            for profile in [None, Some("power-saver"), Some("performance")] {
+                assert_eq!(
+                    policy_from_section_for_profile(&section, profile, true).idle_suspend,
+                    Some(Duration::from_secs(600)),
+                    "on battery with {profile:?}"
+                );
+                assert_eq!(
+                    policy_from_section_for_profile(&section, profile, false).idle_suspend,
+                    Some(Duration::from_secs(1800)),
+                    "plugged in with {profile:?}"
+                );
+            }
+        }
+    }
+
+    /// What can put this machine to sleep when "suspend when idle" is off
+    /// and the screen is set never to lock: idleness never, whatever the
+    /// profile, power source or stored timers; only the lid, the power key
+    /// and a critical battery, each as configured.
+    #[test]
+    fn with_idle_suspend_off_only_the_lid_the_power_key_and_a_critical_battery_suspend() {
+        let section: serde_json::Value = serde_json::from_str(
+            r#"{
+                "auto_suspend": false,
+                "lock_minutes": 0,
+                "suspend_minutes": 15,
+                "battery_suspend_minutes": 5,
+                "saver_suspend_minutes": 3,
+                "balanced_suspend_minutes": 10,
+                "performance_suspend_minutes": 30
+            }"#,
+        )
+        .unwrap();
+        for profile in [
+            None,
+            Some("power-saver"),
+            Some("balanced"),
+            Some("performance"),
+        ] {
+            for on_battery in [false, true] {
+                let policy = policy_from_section_for_profile(&section, profile, on_battery);
+                assert_eq!(
+                    policy.idle_suspend, None,
+                    "{profile:?} on battery {on_battery}"
+                );
+                assert_eq!(
+                    policy.idle_lock, None,
+                    "{profile:?} on battery {on_battery}"
+                );
+                assert_eq!(policy.on_lid(true), Some(PowerAction::Suspend));
+                assert_eq!(policy.on_power_key(), Some(PowerAction::Suspend));
+                assert_eq!(policy.critical_action, PowerAction::Suspend);
+            }
+        }
+        let ignored: serde_json::Value = serde_json::from_str(
+            r#"{"auto_suspend":false,"lid_close_action":"ignore","power_key_action":"lock","critical_action":"ignore"}"#,
+        )
+        .unwrap();
+        let policy = policy_from_section_for_profile(&ignored, None, true);
+        assert_eq!(policy.on_lid(true), None);
+        assert_eq!(policy.on_power_key(), Some(PowerAction::Lock));
+        assert_eq!(policy.critical_action, PowerAction::Ignore);
     }
 }

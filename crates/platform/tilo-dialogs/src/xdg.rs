@@ -193,6 +193,11 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// What an app may show the person when the desktop's chooser fails: what
+/// happened and what to do. The desktop's own error goes to the log.
+const UNAVAILABLE: &str = "The file chooser didn't open. Try again.";
+const UNREADABLE_ANSWER: &str = "The file chooser's answer couldn't be read. Try again.";
+
 async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -226,7 +231,10 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
                 .modal(true)
                 .directory(true)
                 .current_folder::<&std::path::Path>(req.directory_hint())
-                .map_err(|error| PortalFailure::Failed(error.to_string()))?;
+                .map_err(|error| {
+                    tracing::warn!(%error, "the folder to start the chooser in is unusable");
+                    PortalFailure::Failed(UNAVAILABLE.into())
+                })?;
             if req.is_writable_directory() {
                 // `choices` is a standard forwarded option. A private top-level
                 // option would be discarded by xdg-desktop-portal. The label
@@ -260,7 +268,8 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
                 }) =>
         {
             Err(PortalFailure::Failed(
-                "the desktop did not authorize a writable destination directory".into(),
+                "The folder was chosen without allowing changes to it. Choose it again and allow changes."
+                    .into(),
             ))
         }
         Ok(files) => files
@@ -268,9 +277,15 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
             .iter()
             .map(|uri| url::Url::parse(uri.as_str()))
             .collect::<Result<_, _>>()
-            .map_err(|e| PortalFailure::Failed(format!("portal returned a malformed URI: {e}"))),
+            .map_err(|error| {
+                tracing::warn!(%error, "the desktop's file chooser answered a malformed URI");
+                PortalFailure::Failed(UNREADABLE_ANSWER.into())
+            }),
         Err(ashpd::Error::Response(_)) => Err(PortalFailure::Cancelled),
-        Err(e) => Err(PortalFailure::Failed(e.to_string())),
+        Err(error) => {
+            tracing::warn!(%error, "the desktop's file chooser did not answer");
+            Err(PortalFailure::Failed(UNAVAILABLE.into()))
+        }
     }
 }
 
@@ -288,7 +303,7 @@ mod tests {
         ] {
             let result = PortalFilePicker
                 .open_file(request)
-                .recv_timeout(std::time::Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
             assert!(matches!(result, OpenFileOutcome::Failed(reason)
                 if reason.contains("single-file Open")));
@@ -313,9 +328,7 @@ mod tests {
                     .unwrap();
                 let _entry = scope.enter();
                 let outcomes = PortalFilePicker.launch(LaunchRequest::open("relative/file.txt"));
-                let event = wakes
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert!(matches!(
                     outcomes.try_recv().unwrap(),

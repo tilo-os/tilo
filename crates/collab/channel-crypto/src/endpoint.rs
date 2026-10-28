@@ -43,17 +43,14 @@ impl ChannelContentKeys {
         }
     }
 
-    /// The channel these keys belong to.
     pub fn channel_id(&self) -> ChannelId {
         self.channel
     }
 
-    /// The epoch new content is sealed under.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
-    /// Whether the key of `epoch` is held.
     pub fn holds_epoch(&self, epoch: u64) -> bool {
         self.keyring.get(epoch).is_some()
     }

@@ -122,10 +122,6 @@ pub fn seal_sibling_half(
 
 /// Open a sealed sibling half with the person's secret-sync key. Fails for
 /// any other certificate than the one it was sealed for.
-///
-/// # Errors
-///
-/// When the version, key, certificate or bytes do not match.
 pub fn open_sibling_half(
     secret_sync: &SecretKey,
     cert: &BootKeyCert,

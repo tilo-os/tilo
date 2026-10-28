@@ -33,8 +33,6 @@ pub fn node_number(node: &str) -> Option<u32> {
 
 /// `sfdisk --json <disk>` for a GPT disk. `sector_bytes` is used when the
 /// dump predates the `sectorsize` field.
-/// # Errors
-/// Returns an error for malformed JSON or invalid partition extents.
 pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Result<Disk, String> {
     let root: Value = serde_json::from_str(json).map_err(|e| format!("sfdisk JSON: {e}"))?;
     let table = root
@@ -130,8 +128,6 @@ pub struct LsblkDisk {
     pub partitions: Vec<(String, u32, String, String)>,
 }
 
-/// # Errors
-/// Returns an error for missing or unsupported device facts.
 pub fn lsblk_disk(json: &str) -> Result<LsblkDisk, String> {
     let root: Value = serde_json::from_str(json).map_err(|e| format!("lsblk JSON: {e}"))?;
     let devices = root
@@ -189,8 +185,6 @@ pub fn lsblk_disk(json: &str) -> Result<LsblkDisk, String> {
 /// units, whatever the logical sector size). Usable bounds assume the
 /// standard 128-entry GPT, as every mainstream partitioner writes; the
 /// elevated helper re-reads the real header with `sfdisk`.
-/// # Errors
-/// Returns an error for unsupported geometry, missing extents or arithmetic overflow.
 pub fn disk_from_lsblk(
     l: &LsblkDisk,
     sysfs_extent: &dyn Fn(&str) -> Option<(u64, u64)>,
@@ -281,8 +275,6 @@ pub fn mount_source(mountinfo: &str, mountpoint: &str) -> Option<MountSource> {
 
 /// Whole disks under a device, from `lsblk -J -s -o NAME,TYPE <dev>`
 /// (inverse tree). `Err` when a RAID sits in between.
-/// # Errors
-/// Returns an error for malformed JSON or unsupported storage stacks.
 pub fn backing_disks(json: &str) -> Result<Vec<String>, String> {
     fn walk(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
         let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -345,8 +337,6 @@ pub fn on_low_battery(supplies: &[PowerSupply]) -> bool {
 }
 
 /// Strip the 4-byte attribute prefix of an efivarfs file.
-/// # Errors
-/// Returns an error if the attribute prefix is truncated.
 pub fn efivar_payload(file: &[u8]) -> Result<Vec<u8>, String> {
     file.get(4..)
         .map(<[u8]>::to_vec)

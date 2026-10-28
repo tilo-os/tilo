@@ -11,6 +11,14 @@ impl Access {
             return Err(failure());
         }
         let source = migration_handoff::retain_access(&plan, mode)?;
+        imager_backend::setup::deferred_handoff::import_selected_from_source(
+            &plan,
+            source.path(),
+            &grants.home,
+            &grants.workspace,
+            super::current_person(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
         let result = Self { grants, source };
         result.validate()?;
         Ok(result)

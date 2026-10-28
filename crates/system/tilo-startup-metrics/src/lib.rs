@@ -89,11 +89,23 @@ pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
 /// that changes nothing must still say why, in the log a device keeps.
 pub const REPAIR_TARGET: &str = "tilo::repair";
 
+/// The `tracing` target of where a person's input went: each input device
+/// the compositor opened or lost, each finger contact's route as it begins
+/// (raw to a client or widget, or turned into pointer input) and each
+/// launchpad card that activated. One line per device and per contact, so a
+/// key or tap that did nothing says in the device's log where it went.
+pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
+
 /// Targets the session log keeps at `info` whatever the base filter: rare
 /// lines that time an app's open, the only record of the compositor's and
-/// launcher's share of it before the app's own clock starts, and what the
-/// session's repairs of saved state decided.
-const ALWAYS_LOGGED: [&str; 3] = [LAUNCH_LATENCY_TARGET, XWAYLAND_TARGET, REPAIR_TARGET];
+/// launcher's share of it before the app's own clock starts, what the
+/// session's repairs of saved state decided, and where touch went.
+const ALWAYS_LOGGED: [&str; 4] = [
+    LAUNCH_LATENCY_TARGET,
+    XWAYLAND_TARGET,
+    REPAIR_TARGET,
+    INPUT_ROUTE_TARGET,
+];
 
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
 /// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
@@ -634,7 +646,7 @@ pub fn init() {
 /// The file is replaced with every mark so far — a checkpoint, since startup failures
 /// often end in a forced reboot and an exit-only dump is least useful exactly then. Once
 /// [`start_writer`] ran, a background thread does that, at most once per
-/// [`WRITE_SPACING`], so the marking thread never waits for the disk or for another
+/// `WRITE_SPACING`, so the marking thread never waits for the disk or for another
 /// thread's write; before, the marking thread writes.
 #[inline]
 pub fn mark(name: &str) {
@@ -704,6 +716,37 @@ pub fn summary_line(app: &str) -> Option<String> {
         .map(|event| (event.name.clone(), event.ns))
         .collect::<Vec<_>>();
     Some(format_summary(app, &events))
+}
+
+/// What the process holds now and the most it has held, as a log line:
+/// `FIRST-FRAME-MEMORY rss_kib=<kib> peak_kib=<kib>`. `None` where the
+/// system does not say (only Linux's `/proc/self/status` is read).
+pub fn memory_line() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let kib = |field: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(field))
+                .and_then(|value| {
+                    value
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        Some(format!(
+            "FIRST-FRAME-MEMORY rss_kib={} peak_kib={}",
+            kib("VmRSS:"),
+            kib("VmHWM:")
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 /// Every mark recorded so far, in order, with its nanoseconds since the
@@ -874,22 +917,14 @@ mod tests {
         }
         let checkpoint = |snapshot: &NativeAdmissionSnapshot| {
             metrics.checkpoint_admission(snapshot.clone());
-            let started = std::time::Instant::now();
-            loop {
-                let written = metrics.file.lock().unwrap();
-                if written
+            tilo_test_env::wait_until("the snapshot to reach the file", || {
+                metrics
+                    .file
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .is_some_and(|(_, admission)| admission.as_ref() == Some(snapshot))
-                {
-                    break;
-                }
-                drop(written);
-                assert!(
-                    started.elapsed() < std::time::Duration::from_secs(10),
-                    "snapshot did not reach the file"
-                );
-                std::thread::yield_now();
-            }
+            });
         };
         let mut admission = NativeAdmissionSnapshot {
             process_id: std::process::id(),
@@ -937,7 +972,6 @@ mod tests {
         assert_eq!(current["events"], first["events"]);
         assert_eq!(current["native_admission"], serde_json::json!(admission));
         assert_eq!(current["native_admission"].as_object().unwrap().len(), 12);
-        // A later ordinary startup checkpoint retains the observation.
         metrics.write_snapshot();
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         std::fs::remove_dir_all(directory).unwrap();
@@ -945,16 +979,13 @@ mod tests {
 
     #[test]
     fn startup_metrics_are_opt_in_transparent_and_bind_launches_once() {
-        // Phase `disabled_by_default`.
         {
             // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
             mark("nothing");
         }
-        // Phase `span_passes_through_return_value`.
         {
             assert_eq!(span("computation", || 40 + 2), 42);
         }
-        // Phase `summary_names_the_slow_phases`.
         {
             let events = [
                 ("app-launch-start".to_owned(), 3_000),
@@ -969,7 +1000,6 @@ mod tests {
                  phases=app-construct:7,app-construct-end:8692,first-frame-presented:141"
             );
         }
-        // Phase `same_app_launches_bind_fifo_and_present_once`.
         {
             launch_table().clear();
             let first = launch_requested("dev.tilo.test");
@@ -990,7 +1020,6 @@ mod tests {
             launch_failed(second);
         }
         lifecycle_events_correlate_same_app_attempts_and_retire_once();
-        // Phase `dispatch_phases_belong_to_the_unspawned_launch`.
         {
             launch_table().clear();
             let id = launch_requested("dev.tilo.phases");
@@ -1058,23 +1087,23 @@ mod tests {
     fn launch_latency_lines_survive_the_default_session_filter() {
         assert_eq!(
             log_directives(None),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info"
         );
         assert_eq!(
             log_directives(Some("  ")),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info"
         );
         assert_eq!(
             log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
+            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info"
         );
         assert_eq!(
             log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info"
+            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info"
         );
         assert_eq!(
             log_directives(Some("tilo::xwayland=debug")),
-            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info"
+            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info,tilo::input_route=info"
         );
     }
 
@@ -1133,15 +1162,7 @@ mod tests {
         assert!(metrics.writer.get().is_some_and(Option::is_some));
         metrics.record("first-window");
         metrics.record("first-frame");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while marks_in(&path).len() < 3 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the writer thread never wrote: {:?}",
-                marks_in(&path)
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the writer thread to write", || marks_in(&path).len() >= 3);
         assert_eq!(
             marks_in(&path),
             ["main-start", "first-window", "first-frame"]

@@ -1072,7 +1072,7 @@ qualification is established. Machine-readable experiment accounting is in
 
 ### Lazy undo delivery retained; display benefit not yet established
 
-Default Widget::set_undo_status now ignores an unevaluated provider. UndoButton
+Default UndoControl::set_undo_status now ignores an unevaluated provider. UndoButton
 and video-editor toolbar consume the provider; native/headless delivery,
 observers and examples migrate together. Unbound transaction flushing stays at
 the previous boundary. Bound status is still prepared eagerly to preserve its

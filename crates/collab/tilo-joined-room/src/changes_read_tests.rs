@@ -14,7 +14,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
             let before = chat.get_heads();
             edit(&mut chat);
             chat.commit_edit("fixture", "edit");
-            let message = view.peer().clone().publish_incremental(
+            let message = view.peer().clone().publication_mut().publish_incremental(
                 APP,
                 "",
                 chat.save_after(&before),
@@ -176,6 +176,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
         .with_current(joined.room, |view| Ok(view.peer().clone()))
         .unwrap();
     let frames = remote
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, joined.now, 600)
         .unwrap();
     let mut pending = 0;

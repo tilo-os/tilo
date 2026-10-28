@@ -15,7 +15,7 @@ use media::voice::{
 use runtime_collab::native_media::{
     Inventory, Issue, Picture, PictureSource, Shown, State as CallState,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
 use tilo_relay_protocol::voice::HEARTBEAT;
@@ -83,6 +83,7 @@ impl MediaFactory for Factory {
         let devices = self.devices.clone();
         let runtime = self.runtime.clone();
         let camera = self.camera.clone();
+        let channel = super::call_seal::CallChannel::of(&target);
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
                 // From here until the call ends the observations it reads
@@ -160,10 +161,16 @@ impl MediaFactory for Factory {
                     publishers: Vec::new(),
                     publications_revision: None,
                     heard: Heard::default(),
+                    channel,
+                    keys: None,
                     video: Video {
                         choice: camera,
                         ..Video::default()
                     },
+                    volumes: BTreeMap::new(),
+                    volumes_applied: None,
+                    said_muted: true,
+                    told: Arc::default(),
                 }) as Box<dyn MediaSession>)
             }));
             (&mut preparing.0).await.map_err(|_| Issue::Unavailable)?
@@ -176,14 +183,14 @@ impl<T> Drop for AbortTask<T> {
         self.0.abort();
     }
 }
-struct Running {
-    ticket: Arc<Ticket>,
-    client: Mutex<Option<Arc<Client>>>,
-    state: Mutex<Result<CallState, Issue>>,
-    cancelled: AtomicBool,
-    task: Mutex<Option<tokio::task::AbortHandle>>,
-    commands: mpsc::Sender<NetCmd>,
-    executor: tokio::runtime::Handle,
+pub(super) struct Running {
+    pub(super) ticket: Arc<Ticket>,
+    pub(super) client: Mutex<Option<Arc<Client>>>,
+    pub(super) state: Mutex<Result<CallState, Issue>>,
+    pub(super) cancelled: AtomicBool,
+    pub(super) task: Mutex<Option<tokio::task::AbortHandle>>,
+    pub(super) commands: mpsc::Sender<NetCmd>,
+    pub(super) executor: tokio::runtime::Handle,
 }
 impl Running {
     fn retire(&self) {
@@ -198,7 +205,10 @@ impl Running {
         tracing::debug!("native carrier retirement completed");
     }
 }
-async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Result<Reply, String> {
+pub(super) async fn command(
+    commands: &mpsc::Sender<NetCmd>,
+    operation: Operation,
+) -> Result<Reply, String> {
     let (reply, receive) = tokio::sync::oneshot::channel();
     tokio::time::timeout(Duration::from_secs(3), async {
         commands
@@ -232,7 +242,10 @@ fn later(delay: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(delay).unwrap_or(now)
 }
-async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Result<(), String> {
+pub(super) async fn maintain(
+    commands: &mpsc::Sender<NetCmd>,
+    running: &Arc<Running>,
+) -> Result<(), String> {
     let ticket = &running.ticket;
     let mut heartbeat = later(HEARTBEAT);
     let mut failures = 0_u32;
@@ -486,7 +499,28 @@ struct Session {
     /// The carrier's reading revision the decoders were last matched to.
     publications_revision: Option<u64>,
     heard: Heard,
+    /// Whose keys seal the call's audio and pictures.
+    channel: Option<super::call_seal::CallChannel>,
+    /// Those keys, as of this tick; `None` until this device holds them.
+    keys: Option<channel_crypto::ChannelContentKeys>,
     video: Video,
+    /// How loud each participant plays here, by `authority::call_id`.
+    volumes: BTreeMap<String, u16>,
+    /// The grant revision `volumes` was last worked out for, as publications.
+    volumes_applied: Option<u64>,
+    /// Whether the governor was last told this device is muted. A call
+    /// starts muted, as its participation says from the start.
+    said_muted: bool,
+    told: Arc<Telling>,
+}
+
+/// What the governor is to be told this device shows. Tellings run one at
+/// a time, in order, each sending what is newest when its turn comes, so
+/// the governor always ends on the newest.
+#[derive(Default)]
+struct Telling {
+    newest: Mutex<tilo_relay_protocol::voice::Showing>,
+    turn: tokio::sync::Mutex<()>,
 }
 
 /// The call's pictures: what this device shows, what the app shows of the
@@ -504,16 +538,14 @@ struct Video {
     showing: BTreeSet<String>,
     /// This device's person, as the grant names them.
     own: Option<String>,
+    /// The publication this device sends, as the grant names it.
+    publication: Option<String>,
+    /// The grant revision `publication` was read at.
+    publication_revision: Option<u64>,
+    /// What the encoders seal with; `None` until this device holds the
+    /// call's keys.
+    sealing: Arc<Mutex<Option<super::call_seal::Sealing>>>,
     inbox: video::Inbox,
-}
-impl Video {
-    /// What this device shows now, as the governor is told.
-    const fn showing(&self) -> tilo_relay_protocol::voice::Showing {
-        tilo_relay_protocol::voice::Showing {
-            camera: self.camera.is_some(),
-            screen: self.screen.is_some(),
-        }
-    }
 }
 impl Session {
     // False requests guarded recovery from a nonterminal owner fence.
@@ -613,6 +645,32 @@ impl Session {
         self.video.showing.clear();
         self.video.inbox.clear();
     }
+    /// Play each participant at the volume set for them, by the
+    /// publications of the current grant: someone back on a new
+    /// publication keeps theirs.
+    fn volume_tick(&mut self) {
+        let revision = self.runtime.ticket.revision();
+        if self.volumes_applied == Some(revision) {
+            return;
+        }
+        let volumes = &self.volumes;
+        let by_publication = self
+            .runtime
+            .ticket
+            .inspect_current(|_, grant| {
+                Ok(grant
+                    .participants
+                    .iter()
+                    .filter_map(|participant| {
+                        let percent = volumes.get(&authority::call_id(participant)?)?;
+                        Some((participant.namespace.clone(), *percent))
+                    })
+                    .collect())
+            })
+            .unwrap_or_default();
+        self.audio.set_volumes(by_publication);
+        self.volumes_applied = Some(revision);
+    }
     /// Ask the carrier for the pictures the app shows, by the publications
     /// of the people it shows, whenever the carrier or its grant changed;
     /// then move what arrived into the inbox, named by person.
@@ -630,6 +688,10 @@ impl Session {
                     for participant in &grant.participants {
                         if grant.publication.as_ref() == Some(&participant.namespace) {
                             own = Some(hex::encode(participant.user_public_key));
+                            continue;
+                        }
+                        // A bridge carries voices only, under its own person.
+                        if participant.bridged.is_some() {
                             continue;
                         }
                         let person = hex::encode(participant.user_public_key);
@@ -669,6 +731,76 @@ impl Session {
             self.video.showing = wanted.into_keys().collect();
             self.video.applied = Some((carrier, revision));
         }
+        self.take_own_camera();
+        for (source, publisher) in [
+            (tilo_moq::video::Source::Camera, &self.video.camera),
+            (tilo_moq::video::Source::Screen, &self.video.screen),
+        ] {
+            if let Some(publisher) = publisher
+                && client.wants_picture_keyframe(source)
+            {
+                publisher.ask_keyframe();
+            }
+        }
+        self.receive_pictures(client);
+    }
+    /// The pictures of others the app shows, opened with the call's keys,
+    /// into its inbox; and the keys this device's encoders seal with.
+    fn receive_pictures(&mut self, client: &Client) {
+        let keys = self.keys.clone();
+        let ticket = &self.runtime.ticket;
+        for _ in 0..video::RECEIVE_PER_TICK {
+            let Some(received) = client.try_recv_picture() else {
+                break;
+            };
+            let (Some(keys), Some(channel)) = (&keys, self.channel) else {
+                continue;
+            };
+            let namespace = &received.publisher.namespace;
+            let Some(person) = ticket
+                .inspect_current(|_, grant| {
+                    Ok(grant
+                        .participants
+                        .iter()
+                        .find(|participant| {
+                            &participant.namespace == namespace && participant.bridged.is_none()
+                        })
+                        .map(|participant| hex::encode(participant.user_public_key)))
+                })
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let Some(opened) = super::call_seal::open(
+                keys,
+                channel.channel(),
+                namespace,
+                received.source,
+                received.object,
+            ) else {
+                continue;
+            };
+            let Ok(object) = opened.encode() else {
+                continue;
+            };
+            let keyframe = opened.keyframe;
+            self.video.inbox.admit(
+                Picture {
+                    person,
+                    stream: format!(
+                        "{namespace}/{}/{}",
+                        received.publisher.carrier_generation, received.publisher.incarnation
+                    ),
+                    source: video::picture_source(received.source),
+                    object,
+                },
+                keyframe,
+            );
+        }
+    }
+    /// This person's own camera pictures, into the inbox their tile shows.
+    fn take_own_camera(&mut self) {
         if let (Some(camera), Some(own)) = (&self.video.camera, &self.video.own) {
             const OWN: &str = "own/camera";
             let (objects, gap) = camera.preview().take();
@@ -689,57 +821,71 @@ impl Session {
                 }
             }
         }
-        for _ in 0..video::RECEIVE_PER_TICK {
-            let Some(received) = client.try_recv_picture() else {
-                break;
-            };
-            let namespace = &received.publisher.namespace;
-            let Some(person) = ticket
-                .inspect_current(|_, grant| {
-                    Ok(grant
-                        .participants
-                        .iter()
-                        .find(|participant| &participant.namespace == namespace)
-                        .map(|participant| hex::encode(participant.user_public_key)))
-                })
-                .ok()
-                .flatten()
-            else {
-                continue;
-            };
-            let Ok(object) = received.object.encode() else {
-                continue;
-            };
-            let keyframe = received.object.keyframe;
-            self.video.inbox.admit(
-                Picture {
-                    person,
-                    stream: format!(
-                        "{namespace}/{}/{}",
-                        received.publisher.carrier_generation, received.publisher.incarnation
-                    ),
-                    source: video::picture_source(received.source),
-                    object,
-                },
-                keyframe,
-            );
+    }
+    /// What this device shows now, as the governor is told: muted while
+    /// it holds no microphone capture (a reconnect only pauses it).
+    const fn showing(&self) -> tilo_relay_protocol::voice::Showing {
+        tilo_relay_protocol::voice::Showing {
+            camera: self.video.camera.is_some(),
+            screen: self.video.screen.is_some(),
+            muted: self.capture.is_none(),
+            deafened: self.audio.deafened(),
         }
     }
-    /// Tell the governor what this device shows, off the call's tick.
+    /// Tell the governor when this device was muted or unmuted.
+    fn say_muted(&mut self) {
+        let muted = self.capture.is_none();
+        if muted != self.said_muted {
+            self.said_muted = muted;
+            self.say_showing();
+        }
+    }
+    /// Tell the governor what this device shows, off the call's tick; not
+    /// once the call is closed.
     fn say_showing(&self) {
+        if self.runtime.cancelled.load(Ordering::Acquire) {
+            return;
+        }
         let ticket = self.runtime.ticket.clone();
         let commands = self.runtime.commands.clone();
-        let showing = self.video.showing();
+        *self.told.newest.lock() = self.showing();
+        let told = self.told.clone();
         self.runtime.executor.spawn(async move {
+            let _turn = told.turn.lock().await;
+            let showing = *told.newest.lock();
             if let Err(error) = command(&commands, Operation::Show { ticket, showing }).await {
                 tracing::debug!(%error, "the call was not told what this device shows");
             }
         });
     }
+    /// The call's keys, and what this device seals with: its publication as
+    /// the current grant names it.
+    fn refresh_keys(&mut self) {
+        let revision = self.runtime.ticket.revision();
+        if self.video.publication_revision != Some(revision) {
+            self.video.publication = self
+                .runtime
+                .ticket
+                .inspect_current(|_, grant| Ok(grant.publication.clone()))
+                .ok()
+                .flatten();
+            self.video.publication_revision = Some(revision);
+        }
+        self.keys = self.channel.and_then(super::call_seal::CallChannel::keys);
+        *self.video.sealing.lock() = self
+            .keys
+            .clone()
+            .zip(self.video.publication.clone())
+            .map(|(keys, publication)| super::call_seal::Sealing { keys, publication });
+    }
     /// The carrier the call sends on now, for an encoder thread.
     fn current_client(&self) -> video::CurrentClient {
         let running = Arc::downgrade(&self.runtime);
-        Arc::new(move || running.upgrade()?.client.lock().clone())
+        let sealing = self.video.sealing.clone();
+        Arc::new(move || {
+            let client = running.upgrade()?.client.lock().clone()?;
+            Some((client, sealing.lock().clone()))
+        })
     }
     /// Drop the playout and decoder of every publication the carrier no
     /// longer reads: someone left, or came back as a new incarnation.
@@ -805,6 +951,7 @@ impl MediaSession for Session {
                 return Ok(CallState::Reconnecting);
             }
         }
+        self.refresh_keys();
         let generation = self.runtime.ticket.carrier_generation();
         if self.decoded_generation != generation {
             for publisher in self.publishers.drain(..) {
@@ -849,18 +996,29 @@ impl MediaSession for Session {
                     );
                     self.next_audio_diagnostic = later(Duration::from_secs(1));
                 }
+                let sealing = self.video.sealing.lock().clone();
                 for frame in frames {
+                    // Until this device holds the call's keys nothing leaves it.
+                    let Some(sealing) = &sealing else {
+                        continue;
+                    };
                     let first_packet = !self.first_packet_diagnosed;
                     self.first_packet_diagnosed = true;
                     if first_packet {
                         tracing::debug!("native voice first packet entering carrier");
                     }
-                    let result = client.try_send(client::CapturedOpus {
-                        timestamp_48k: frame.timestamp_48k,
-                        duration_samples: frame.duration_samples,
-                        payload: frame.payload,
-                        captured_at: frame.captured_at,
-                    });
+                    let header = (frame.timestamp_48k, frame.duration_samples);
+                    let result = client.try_send_sealed(
+                        client::CapturedOpus {
+                            timestamp_48k: frame.timestamp_48k,
+                            duration_samples: frame.duration_samples,
+                            payload: frame.payload,
+                            captured_at: frame.captured_at,
+                        },
+                        |sequence, payload| {
+                            super::call_seal::seal_audio(sealing, sequence, header, &payload)
+                        },
+                    );
                     if first_packet {
                         tracing::debug!(
                             accepted = result.is_ok(),
@@ -889,6 +1047,17 @@ impl MediaSession for Session {
             let Some(frame) = client.try_recv() else {
                 break;
             };
+            let (Some(keys), Some(channel)) = (&self.keys, self.channel) else {
+                continue;
+            };
+            let Some(payload) = super::call_seal::open_audio(
+                keys,
+                channel.channel(),
+                &frame.publisher.namespace,
+                &frame.object,
+            ) else {
+                continue;
+            };
             // Carrier arrivals are asynchronous: this frame can arrive after
             // the tick began. Compare it with a fresh local clock observation,
             // retaining its original arrival and expiry without clamping either.
@@ -911,7 +1080,7 @@ impl MediaSession for Session {
                         sequence: frame.object.sequence,
                         timestamp_48k: frame.object.timestamp,
                         duration_samples: frame.object.duration,
-                        payload: frame.object.payload,
+                        payload,
                         received_at: frame.received_at,
                         expires_at: frame.expires_at,
                     },
@@ -924,6 +1093,7 @@ impl MediaSession for Session {
         }
         self.retire_departed(&client);
         self.video_tick(&client);
+        self.volume_tick();
         let now = Instant::now();
         self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
         let others = self
@@ -988,8 +1158,12 @@ impl MediaSession for Session {
                 && intent.slot.current.load(Ordering::SeqCst)
         });
         if !reuse {
-            // Leaves `self.capture` empty, so the intent below is always fresh.
-            self.stop_capture();
+            // Leaves `self.capture` empty, so the intent below is always
+            // fresh; the person stays unmuted throughout a source change.
+            if let Some(intent) = self.capture.take() {
+                intent.slot.stop();
+            }
+            self.audio.stop_capture();
         }
         let intent = self.capture.get_or_insert_with(|| CaptureIntent {
             source_id: source_id.into(),
@@ -1001,12 +1175,13 @@ impl MediaSession for Session {
             prepared: None,
             watchdog: None,
         });
-        if intent.pending.is_some()
+        let starting = intent.pending.is_some()
             || intent.prepared.is_some()
-            || intent.slot.generation.lock().is_some()
-        {
+            || intent.slot.generation.lock().is_some();
+        self.say_muted();
+        let Some(intent) = self.capture.as_mut().filter(|_| !starting) else {
             return Ok(());
-        }
+        };
         intent.cancel_pending();
         let slot = intent.slot.clone();
         let startup = slot.begin()?;
@@ -1073,6 +1248,7 @@ impl MediaSession for Session {
             intent.slot.stop();
         }
         self.audio.stop_capture();
+        self.say_muted();
     }
     fn start_video(&mut self, source: PictureSource) -> Result<(), Issue> {
         let running = self.runtime.client.lock().clone();
@@ -1128,11 +1304,25 @@ impl MediaSession for Session {
         }
         None
     }
+    fn set_deafened(&mut self, deafened: bool) {
+        if self.audio.deafened() != deafened {
+            self.audio.set_deafened(deafened);
+            self.say_showing();
+        }
+    }
     fn show(&mut self, shown: Vec<Shown>) {
         if self.video.shown != shown {
             self.video.shown = shown;
             self.video.applied = None;
         }
+    }
+    fn set_volume(&mut self, participant: String, percent: u16) {
+        if percent == 100 {
+            self.volumes.remove(&participant);
+        } else {
+            self.volumes.insert(participant, percent);
+        }
+        self.volumes_applied = None;
     }
     fn take_pictures(&mut self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
         self.video.inbox.take(after, budget)
@@ -1141,10 +1331,11 @@ impl MediaSession for Session {
         Some(self.video.inbox.signal())
     }
     fn close(&mut self) {
+        // First, so nothing tells the governor what a leaving call shows.
+        let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.stop_capture();
         self.video.camera = None;
         self.video.screen = None;
-        let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.runtime.ticket.stop();
         let task = self.runtime.task.lock().take();
         if let Some(task) = task {

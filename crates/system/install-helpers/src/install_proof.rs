@@ -572,7 +572,7 @@ pub fn write(destination: &Path, result: &Value) -> Result<()> {
 /// the proof line the backend emits.
 ///
 /// # Errors
-/// As [`build_proof`] and [`write`].
+/// As [`build_proof`] and [`write()`].
 pub fn run(host: &dyn Host, values: &Values) -> Result<()> {
     let path = |flag: &str| values.required(flag).map(PathBuf::from);
     let request = Request {

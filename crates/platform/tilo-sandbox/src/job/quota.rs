@@ -28,7 +28,6 @@ struct FsXattr {
     pad: [u8; 8],
 }
 
-/// `struct fs_disk_quota`.
 #[repr(C)]
 #[derive(Default)]
 struct FsDiskQuota {
@@ -223,9 +222,6 @@ pub fn set_project_quota(
 }
 
 /// Open a directory for [`set_project_quota`].
-///
-/// # Errors
-/// Returns why it could not be opened.
 pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;

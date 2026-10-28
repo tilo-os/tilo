@@ -1,0 +1,5 @@
+# Sites where the compositor's main thread still waits for a store's writer
+# thread after startup (FileWalk::site of a storage-wait: the innermost frame
+# that is neither std, the audit nor the store). Each freezes the desktop for
+# as long as an fsync on another thread takes. This list only shrinks; see
+# desktop_smoke::the_main_loop_walks_no_path_after_startup.

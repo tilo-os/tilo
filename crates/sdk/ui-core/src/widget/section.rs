@@ -218,6 +218,19 @@ impl SectionHeader {
         self
     }
 
+    /// The header as a widget of its own: the head of a card or a panel that is not a
+    /// [`Section`].
+    #[must_use]
+    pub fn into_element(self) -> Element {
+        Box::new(self.into_widget(None))
+    }
+
+    /// The header's title.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     fn into_widget(self, disclosure: Option<Disclosure>) -> HeaderRow {
         let has_leading = self.leading.is_some();
         let mut children: Vec<Element> = self.leading.into_iter().collect();
@@ -247,10 +260,7 @@ impl SectionHeader {
         }
         let has_chevron = disclosure.is_some();
         if let Some(disclosure) = &disclosure {
-            children.push(Box::new(Chevron {
-                expanded: Rc::clone(&disclosure.expanded),
-                rect: Rect::ZERO,
-            }));
+            children.push(Box::new(Chevron::new(Rc::clone(&disclosure.expanded))));
         }
         HeaderRow {
             parts: Parts::new(children),
@@ -261,6 +271,8 @@ impl SectionHeader {
             has_action,
             has_chevron,
             disclosure,
+            painted: None,
+            presented: None,
         }
     }
 }
@@ -494,6 +506,21 @@ impl Widget for CountPill {
 struct Chevron {
     expanded: Rc<Cell<bool>>,
     rect: Rect,
+    /// Which way the chevron last painted, and which way the last presented
+    /// frame showed it: it repaints only when the section opens or closes.
+    painted: Option<bool>,
+    presented: Option<bool>,
+}
+
+impl Chevron {
+    fn new(expanded: Rc<Cell<bool>>) -> Self {
+        Self {
+            expanded,
+            rect: Rect::ZERO,
+            painted: None,
+            presented: None,
+        }
+    }
 }
 
 impl Widget for Chevron {
@@ -522,12 +549,27 @@ impl Widget for Chevron {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let icon = if self.expanded.get() {
+        let expanded = self.expanded.get();
+        let icon = if expanded {
             Icon::ChevronDown
         } else {
             Icon::ChevronRight
         };
         icon.draw(scene, transform, self.rect, theme.text_dim);
+        self.painted = Some(expanded);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.presented != Some(self.expanded.get())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.presented = self.painted;
+    }
+
+    /// A chevron is laid out once it has a rect.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 
     fn name(&self) -> &'static str {
@@ -537,6 +579,9 @@ impl Widget for Chevron {
 
 /// The shared open state of a collapsible section.
 struct Disclosure {
+    /// What the header is addressed by. It only shows what the page holds,
+    /// so its binding is semantic, never an action on the app's resources.
+    id: String,
     expanded: Rc<Cell<bool>>,
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     interaction: Interaction,
@@ -570,9 +615,20 @@ struct HeaderRow {
     has_action: bool,
     has_chevron: bool,
     disclosure: Option<Disclosure>,
+    /// The hover, press and focus the header painted under its row, and
+    /// where, this frame and as the last presented frame showed them: the
+    /// row repaints its box only when they change.
+    painted: Option<(Interaction, Rect)>,
+    presented: Option<(Interaction, Rect)>,
 }
 
 impl HeaderRow {
+    /// Whether the hover, press or focus the header paints changed since
+    /// the last presented frame.
+    fn own_paint_changed(&self) -> bool {
+        self.disclosure.as_ref().map(|d| d.interaction) != self.presented.map(|(state, _)| state)
+    }
+
     fn action_rect(&self) -> Option<Rect> {
         if !self.has_action {
             return None;
@@ -598,8 +654,29 @@ impl Widget for HeaderRow {
     }
 
     fn mark_drawn(&mut self) {
+        self.presented = self.painted;
         for child in &mut self.parts.children {
             child.mark_drawn();
+        }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.own_paint_changed() || self.parts.children.iter().any(|child| child.needs_redraw())
+    }
+
+    /// Where its hover, press or focus changed, and what its parts changed:
+    /// a header the pointer is not on repaints nothing.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.painted != self.presented {
+            regions.extend(
+                [self.painted, self.presented]
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, rect)| rect),
+            );
+        }
+        for child in &self.parts.children {
+            child.collect_damage(regions);
         }
     }
 
@@ -815,12 +892,15 @@ impl Widget for HeaderRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.painted = None;
         if let Some(disclosure) = &self.disclosure {
             let state = disclosure.interaction;
+            let row = self.parts.rect.inflate(row_bleed(theme), 0.0);
+            self.painted = Some((state, row));
             paint_row_selection(
                 scene,
                 transform,
-                self.parts.rect.inflate(row_bleed(theme), 0.0),
+                row,
                 SelectionState::new(state.pressed, state.hovered, false),
                 theme.tokens.colors.surfaces.content,
                 theme,
@@ -897,6 +977,7 @@ impl Widget for HeaderRow {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.title.clone())
+                .with_action_target(disclosure.id.clone())
                 .with_bounds(self.parts.rect)
                 .with_state(
                     AccessState::new()
@@ -917,10 +998,21 @@ pub struct Section {
     /// rebuild the header around them.
     header: Option<String>,
     expanded: Option<Rc<Cell<bool>>>,
-    /// The label column the section's property lists share.
     labels: crate::widget::property_list::PropertyColumn,
     /// The width the section's dropdowns share.
     choosers: crate::widget::dropdown::ChooserColumn,
+    /// The space laid out above each item: where a band on its way stands,
+    /// and how far what follows it moves (`widget::Disclosing`).
+    gaps: Vec<f64>,
+    /// Bands its view stopped building, drawn leaving.
+    ghosts: crate::widget::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
+    /// Told whether the pointer is over the section.
+    pointer: Option<Rc<Cell<bool>>>,
+    /// How its own items changed since the host last read it: inserted, removed or moved by
+    /// key in place.
+    structure: crate::widget::StructureChange,
 }
 
 impl Section {
@@ -933,10 +1025,37 @@ impl Section {
             expanded: None,
             labels: crate::widget::property_list::PropertyColumn::new(),
             choosers: crate::widget::dropdown::ChooserColumn::default(),
+            gaps: Vec::new(),
+            ghosts: crate::widget::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
+            pointer: None,
+            structure: crate::widget::StructureChange::None,
         }
     }
 
-    /// A section of a page titled `title`.
+    /// Keep `over` saying whether the pointer is over the section: a host
+    /// that reorders the section's rows holds them still while it is, so no
+    /// row moves under the pointer.
+    #[must_use]
+    pub fn pointer_over(mut self, over: Rc<Cell<bool>>) -> Self {
+        self.pointer = Some(over);
+        self
+    }
+
+    /// While a band moves in the section, how far below its laid-out place
+    /// each shown item is drawn, then how much taller the section is drawn.
+    fn follower_shifts(&self) -> Option<Vec<f64>> {
+        let gaps = &self.gaps;
+        let shown = self.shown();
+        let shifts = crate::widget::follower_shifts(
+            self.parts.children.iter().take(shown).map(|child| &**child),
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        );
+        // A band its view stopped building moves what followed it up.
+        self.ghosts
+            .shift(shifts, shown.min(self.parts.children.len()))
+    }
+
     pub fn titled(title: impl Into<String>, items: Vec<Element>) -> Self {
         Self::new(items).with_header(SectionHeader::heading(title))
     }
@@ -946,6 +1065,7 @@ impl Section {
     pub fn with_header(mut self, header: SectionHeader) -> Self {
         self.header = Some(header.title.clone());
         let disclosure = self.expanded.as_ref().map(|expanded| Disclosure {
+            id: format!("disclosure:{}", header.title),
             expanded: Rc::clone(expanded),
             on_toggle: None,
             interaction: Interaction::default(),
@@ -1007,6 +1127,7 @@ impl Section {
         {
             let had_chevron = row.has_chevron;
             row.disclosure = Some(Disclosure {
+                id: format!("disclosure:{title}"),
                 expanded: Rc::clone(&state),
                 on_toggle,
                 interaction: Interaction::default(),
@@ -1024,13 +1145,29 @@ impl Section {
                     chevron.expanded = Rc::clone(&state);
                 }
             } else {
-                row.parts.children.push(Box::new(Chevron {
-                    expanded: state,
-                    rect: Rect::ZERO,
-                }));
+                row.parts.children.push(Box::new(Chevron::new(state)));
                 row.has_chevron = true;
             }
             row.title = title;
+        }
+        self
+    }
+
+    /// Address a collapsible section's header by `id` rather than by its
+    /// title, for a page holding several disclosures of the same title.
+    /// Call after [`Self::collapsible`] or [`Self::collapsed`].
+    #[must_use]
+    pub fn disclosure_id(mut self, id: impl Into<String>) -> Self {
+        if self.has_header
+            && let Some(disclosure) = self
+                .parts
+                .children
+                .first_mut()
+                .and_then(|first| first.as_any_mut())
+                .and_then(|any| any.downcast_mut::<HeaderRow>())
+                .and_then(|row| row.disclosure.as_mut())
+        {
+            disclosure.id = id.into();
         }
         self
     }
@@ -1092,6 +1229,14 @@ impl Widget for Section {
     // A section paints nothing of its own: what changed is what its rows
     // changed, so a hover or a meter in one row does not repaint the group.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A band on its way moves every item after it, and the section is
+        // drawn taller by as much.
+        if let Some(shifts) = self.follower_shifts() {
+            let mut rect = self.parts.rect;
+            rect.y1 += shifts.last().copied().unwrap_or(0.0).max(0.0);
+            regions.push(rect);
+            return;
+        }
         for child in &self.parts.children {
             child.collect_damage(regions);
         }
@@ -1102,11 +1247,20 @@ impl Widget for Section {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for child in &mut self.parts.children {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    /// Its items inserted, removed or moved by key, and what its parts describe.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let mut change = std::mem::take(&mut self.structure);
+        for child in &mut self.parts.children {
+            change = change.join(child.take_structure_change());
+        }
+        change
     }
 
     fn build_layout(
@@ -1115,6 +1269,8 @@ impl Widget for Section {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
+        self.share_trailing_column(theme);
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(
             Style {
@@ -1161,6 +1317,7 @@ impl Widget for Section {
         }
         let rows = self.row_flags();
         let shown = self.shown();
+        self.gaps = vec![0.0; self.parts.nodes.len()];
         for (index, &node) in self.parts.nodes.iter().enumerate() {
             let Ok(style) = taffy.style(node) else {
                 continue;
@@ -1179,6 +1336,9 @@ impl Widget for Section {
                     rhythm.sibling
                 };
                 style.margin.top = length(gap);
+                if let Some(laid) = self.gaps.get_mut(index) {
+                    *laid = f64::from(gap);
+                }
             }
             let _ = taffy.set_style(node, style);
         }
@@ -1188,6 +1348,29 @@ impl Widget for Section {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(taffy, node, origin);
+        // A band on its way stands out of the layout, in its slot.
+        let shown = self.shown();
+        let gaps = &self.gaps;
+        crate::widget::place_bands(
+            self.parts.children.iter_mut().take(shown),
+            self.parts.rect,
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        );
+        // A band its view stopped building leaves where it stood.
+        let shown = shown.min(self.parts.children.len());
+        // The room a band leaving gives back: its own space above it, or,
+        // first, the space above the item after it, which then comes first
+        // and has none.
+        self.ghosts.find(
+            "Section",
+            &mut self.parts.children[..shown],
+            self.parts.rect,
+            |index| {
+                let above = if index == 0 { 1 } else { index };
+                gaps.get(above).copied().unwrap_or(0.0)
+            },
+            self.motion,
+        );
     }
 
     fn draw(
@@ -1200,13 +1383,68 @@ impl Widget for Section {
     ) {
         self.sync_rows(text, theme);
         let shown = self.shown();
-        for child in self.parts.children.iter_mut().take(shown) {
-            child.draw(scene, transform, text, theme, presence);
+        // While a band moves, what follows it is drawn shifted by transform.
+        let shifts = self.follower_shifts();
+        for (index, child) in self.parts.children.iter_mut().take(shown).enumerate() {
+            let dy = shifts
+                .as_deref()
+                .and_then(|shifts| shifts.get(index).copied())
+                .unwrap_or(0.0);
+            child.draw(
+                scene,
+                transform * Affine::translate((0.0, dy)),
+                text,
+                theme,
+                presence,
+            );
         }
+        self.ghosts.retain_drawn();
+        self.ghosts.draw(scene, transform, shifts.as_deref());
+    }
+
+    /// Frames while a band its view stopped building leaves, and one more
+    /// to draw it gone.
+    fn needs_animation_frame(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+    }
+
+    /// A section grows with a band moving in it, and so moves what follows
+    /// it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        let shifts = self.follower_shifts()?;
+        Some(crate::widget::Disclosing::Grows(
+            shifts.last().copied().unwrap_or(0.0),
+        ))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(over) = &self.pointer {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    over.set(self.parts.rect.contains(ctx.logical(position)));
+                }
+                WindowEvent::CursorLeft { .. } => over.set(false),
+                _ => {}
+            }
+        }
         let shown = self.shown();
+        if let Some(shifts) = self.follower_shifts() {
+            let shown = shown.min(self.parts.nodes.len());
+            crate::widget::route_to_shifted_children(
+                &mut self.parts.children[..shown],
+                &self.parts.nodes[..shown],
+                Some(&shifts),
+                event,
+                ctx,
+            );
+            return;
+        }
         for (child, &node) in self
             .parts
             .children
@@ -1235,6 +1473,14 @@ impl Widget for Section {
         for child in self.parts.children.iter().take(self.shown()) {
             visitor(child.as_ref());
         }
+    }
+
+    /// The items of a collapsed section too: they keep their nodes.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for child in &self.parts.children {
+            visitor(child.as_ref());
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1305,6 +1551,43 @@ impl Section {
             for child in self.parts.children.iter_mut().take(end).skip(start) {
                 if let Some(row) = Self::row_mut(child) {
                     row.set_shared_leading(shared);
+                }
+            }
+            start = end;
+        }
+    }
+
+    /// One column of trailing controls per run of consecutive list rows:
+    /// where a row's control has marks after it (a status dot, a check, a
+    /// chevron), every row's control keeps that room, and a run whose
+    /// controls have none keeps them on the edge.
+    fn share_trailing_column(&mut self, theme: &Theme) {
+        let marks: Vec<Option<f64>> = self
+            .parts
+            .children
+            .iter_mut()
+            .map(|child| Self::row_mut(child).map(|row| row.marks_after_trailing(theme)))
+            .collect();
+        let mut start = 0;
+        while start < marks.len() {
+            if marks.get(start).is_some_and(Option::is_none) {
+                start += 1;
+                continue;
+            }
+            let end = (start..marks.len())
+                .find(|&i| marks.get(i).is_some_and(Option::is_none))
+                .unwrap_or(marks.len());
+            let widest = marks
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .flatten()
+                .copied()
+                .fold(0.0, f64::max);
+            let shared = (widest > 0.0).then_some(widest);
+            for child in self.parts.children.iter_mut().take(end).skip(start) {
+                if let Some(row) = Self::row_mut(child) {
+                    row.set_shared_after_trailing(shared);
                 }
             }
             start = end;
@@ -1598,7 +1881,6 @@ impl ObjectHeader {
         self
     }
 
-    /// The avatar's picture.
     #[must_use]
     pub fn avatar_image(mut self, picture: vello::peniko::ImageData) -> Self {
         if let Some(ObjectLead::Avatar { image, .. }) = &mut self.lead {
@@ -1772,3 +2054,6 @@ impl Widget for ObjectHeader {
 #[cfg(test)]
 #[path = "section_tests.rs"]
 mod tests;
+
+mod component;
+pub use component::SectionProps;

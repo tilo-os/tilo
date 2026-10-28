@@ -36,6 +36,9 @@ import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
+import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
+/** Where a leaving page ends its host session, the token its body (tilo-relay-protocol's `SESSION_END_PATH`). */
+const SESSION_END_PATH = '/peer/v1/session/end';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -62,13 +65,6 @@ export function withStartFields(certified, fields) {
     .map(([key, value]) => `,${JSON.stringify(key)}:${JSON.stringify(value)}`)
     .join('');
   return added ? certified.replace(/\}\s*$/, `${added}}`) : certified;
-}
-/** A member's cursor colour, from its device key: the same on every page. */
-const COLORS = ['#e5484d', '#30a46c', '#0090ff', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ffc53d'];
-export function colorOf(publisher) {
-  let hash = 0;
-  for (const char of String(publisher)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
-  return COLORS[hash % COLORS.length];
 }
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -124,6 +120,24 @@ function keepProfileDevice(profile, slot, device, namespaces) {
   const all = readProfileDevices(namespaces);
   all[forSlot(profile, slot)] = device;
   namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
+}
+/**
+ * Replace the device key `custody` holds for `profile` with a new one, in a
+ * namespace of its own: a new device of the same person. For a key a host
+ * knows under a certificate this browser no longer holds, which that host
+ * never admits again under another. What was kept for the old key stays in
+ * its namespace, never opened for the new one. Resolves to the new custody.
+ */
+export async function renewDevice(custody, profile, {
+  open = name => openDeviceCustody({profile: name, storage: idbStorage()}), namespaces = globalThis.localStorage,
+  random = bytes => crypto.getRandomValues(bytes),
+} = {}) {
+  await custody.destroy();
+  const renewed = await open(profile);
+  // Another tab may have taken the freed slot meanwhile: a key that is not
+  // new keeps the namespace it has.
+  if (renewed.created) keepProfileDevice(profile, renewed.slot ?? 0, forSlot(`${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, renewed.slot ?? 0), namespaces);
+  return renewed;
 }
 /** The namespace a profile's slot keeps a host's state in once that host
  * replaced the one it kept state for: named after the host's device key, so
@@ -735,6 +749,11 @@ async function connect({
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
+  // The colour this person's presence names, the runtime's for who they are
+  // (their user root): the same one a native desktop draws them in. A
+  // desktop settles everyone here over the whole room instead, so people
+  // here together never share one.
+  const ownColor = () => runtime.presenceColor(userPublicKey);
   const carriersFor = info => {
     if (liveCarriers) return liveCarriers;
     const fallbackEndpoint = liveEndpoints(origin, info).fallback;
@@ -773,6 +792,18 @@ async function connect({
   let actions;
   let voice;
   let disposed = false;
+  let drawName = null;
+  // What the person says they are doing, in their own words: their
+  // presence carries it as their participant's activity.
+  let activity = null;
+  const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
+    label: (displayName || label).slice(0, 32), color: ownColor(), activity}});
+  // The person's name, as history and presence show it from now on.
+  const rename = name => {
+    displayName = fitDisplayName(name);
+    peer?.setDisplayName?.(displayName);
+    publishParticipant();
+  };
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
   // by every consumer: agents' and the room's actions share the path.
@@ -975,7 +1006,7 @@ async function connect({
       peer.joinRoom(room);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
       agents?.dispose();
@@ -995,7 +1026,7 @@ async function connect({
     if (!layer && live) {
       layer = createLiveLayer(peer, runtime, room, {
         origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
-        participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
+        participant: {label: agent.slice(0, 32), color: runtime.presenceColor(`agent:${agent}`)},
       });
       agentLayers.set(agent, layer);
     }
@@ -1031,9 +1062,32 @@ async function connect({
     throw error;
   }
 
+  // Leaving the page leaves the room's live plane at once: closing its
+  // sessions withdraws this page's announcement, so everyone else takes its
+  // pointer and face down now, not when the link times out. Its host
+  // session ends with it, by beacon (the one request a leaving page still
+  // sends), so the room stops counting the page now too, not once its polls
+  // are missed. A page kept to come back to (`persisted`) is frozen, not
+  // gone.
+  const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
+  const leavePage = event => {
+    if (event?.persisted) return;
+    stopLive();
+    const token = disposed ? undefined : peer?.sessionToken?.();
+    if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
+  };
+  page?.addEventListener('pagehide', leavePage);
+  // Back online, the session reconnects now rather than when its backoff
+  // (up to half a minute after a long outage) runs out: a call waits on it
+  // for its fresh grant.
+  const online = () => { if (!disposed) { try { peer?.retryNow?.(); } catch {} } };
+  page?.addEventListener('online', online);
+
   let disposal;
   function dispose() {
     if (disposal) return disposal;
+    page?.removeEventListener('pagehide', leavePage);
+    page?.removeEventListener('online', online);
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
@@ -1069,14 +1123,16 @@ async function connect({
     userPublicKey,
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
-    setDisplayName(name) {
-      displayName = fitDisplayName(name);
-      peer?.setDisplayName?.(displayName);
-      live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
-        color: colorOf(custodyKeyHex()), activity: null}});
+    /** The room's name as its people last set it (the workspace in front on
+     * its shared desktop), once the room delivered it; else `undefined`. */
+    get workspaceName() {
+      // Asked after a failure too, when the session may be gone.
+      try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
     },
-    /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
-    createInvitation: options => membership.createInvitation(options),
+    setDisplayName: name => rename(name),
+    /** Issue an invitation to the room (`membership.mjs`): resolves to its
+     * text. A watching page has none to give: it is not in the room. */
+    ...(watching ? {} : {createInvitation: options => membership.createInvitation(options)}),
     /** The room's members, waiting people and invitations, for its owner
      * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
      * `remove`, `cancelInvitation`. */
@@ -1104,7 +1160,16 @@ async function connect({
     },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
-      return {label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex())};
+      return {label: (displayName || label).slice(0, 32), color: ownColor()};
+    },
+    /** Say what this person is doing in their own words (`null` clears
+     * it): everyone here reads it on their presence, before anything
+     * the host words for them. */
+    setStatus(text) {
+      const said = typeof text === 'string' && text.trim() ? text.trim() : null;
+      if (said === activity) return;
+      activity = said;
+      publishParticipant();
     },
     /** Post this person's name, the window they focus (tab id, hex, or
      * null) and their own recent steps (`[{id, action, resource, app,
@@ -1114,7 +1179,23 @@ async function connect({
     async here(window, actions = []) {
       // A watching page is not listed: it would only post for itself.
       if (!room || !peer || watching) return [];
-      return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+      const lines = JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+      // Someone else here already goes by this person's drawn name: they
+      // take another, so the room and what it is bridged with tell them apart.
+      const redrawn = drawName?.(displayName, lines);
+      if (redrawn && redrawn !== displayName) rename(redrawn);
+      return lines;
+    },
+    /** Who draws this person's name again when it collides in the room:
+     * `(current, lines) => name | null`, or `null` once they chose one. */
+    setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
+    /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
+     * `{endpoint, session}` while the host serves one over the current
+     * session, else `null`. Read for each request: the session follows
+     * reconnects. */
+    fetchProxy() {
+      const session = disposed ? undefined : peer?.fetchProxySession?.();
+      return session ? {endpoint: new URL(FETCH_PROXY_PATH, origin).href, session} : null;
     },
     /** The device (hex) of the session the node runs beside the host (the
      * one that opens the node's legacy apps), or `null`. */

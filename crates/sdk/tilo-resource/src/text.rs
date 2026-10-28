@@ -72,10 +72,6 @@ pub enum TextEdit {
 }
 
 impl PlainText {
-    /// The text in the text object `obj`.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when `obj` is not a text object.
     pub fn read_under(doc: &Doc, obj: &ObjId) -> Result<String, ModelError> {
         doc.text(obj)
             .map_err(|error| ModelError::invalid(format!("not a text: {error}")))
@@ -359,7 +355,6 @@ mod tests {
             "each person's typing carries their name"
         );
 
-        // An edit applied outside an invoked action marks nothing.
         let mut plain = Doc::new();
         let obj = plain.put_object(ROOT, "body", ObjType::Text).unwrap();
         TextEdit::Splice {

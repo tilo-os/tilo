@@ -146,7 +146,6 @@ pub trait Host {
         0
     }
 
-    /// Whether a `ukify` is on `PATH`.
     fn has_ukify(&self) -> bool {
         std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|directory| {
@@ -799,7 +798,6 @@ fn installed_boot_type(ini: &Ini, selected: &Selected) -> Result<String> {
     Ok(boot_type)
 }
 
-/// The ESP's one loader entry.
 fn loader_entry(esp: &Path) -> Result<PathBuf> {
     let entries_dir = esp.join("loader/entries");
     let mut entries = Vec::new();

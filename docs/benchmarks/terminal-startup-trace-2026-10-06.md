@@ -8,7 +8,7 @@ foreign Wayland clients. Neither observation establishes a rendering failure.
 This report supersedes that conclusion; the original failed probe remains
 useful evidence of an observation error, not an application startup benchmark.
 
-[Completed journey and raw observations](terminal-startup-trace-2026-10-06.json)
+[Completed journey and raw observations](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/terminal-startup-trace-2026-10-06.json)
 record a fresh disposable COW of developer image
 `registry.tilo.so/tilo/tilo-vm@sha256:ec4aff79035255d6aec7f9cf3c3e7555f26a8a1890b3d24c8bc95310708c228e`,
 source `12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3`. These are the installed

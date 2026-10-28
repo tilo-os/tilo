@@ -323,7 +323,56 @@ impl ContactDirectory {
     }
 }
 
+/// One address-book mailbox of one person, as a picker offers it: a choice
+/// for the person to review, never proof of identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailHint {
+    pub person: String,
+    pub label: String,
+    pub email: String,
+}
+
 impl ContactDirectory {
+    /// Every live person's mailboxes, each canonical and once per person.
+    /// Different people with one address stay separate choices.
+    pub fn email_hints(&self) -> Vec<EmailHint> {
+        let mut hints = Vec::new();
+        for (id, person) in self.people.iter().filter(|(_, person)| !person.removed) {
+            let mut emails: Vec<_> = person
+                .emails
+                .iter()
+                .filter_map(|email| canonical_email_hint(email))
+                .collect();
+            emails.sort();
+            emails.dedup();
+            hints.extend(emails.into_iter().map(|email| EmailHint {
+                person: id.as_str().to_owned(),
+                label: person.label.clone(),
+                email,
+            }));
+        }
+        hints.sort_by(|a, b| (&a.person, &a.email).cmp(&(&b.person, &b.email)));
+        hints
+    }
+
+    /// Whether `hint` still stands as it was reviewed: the person is in the
+    /// book under that name and still has that address. A changed or
+    /// removed contact makes an earlier choice stale.
+    pub fn holds(&self, hint: &EmailHint) -> bool {
+        canonical_email_hint(&hint.email).as_deref() == Some(hint.email.as_str())
+            && self
+                .people
+                .get(&Id::from_raw(hint.person.as_str()))
+                .is_some_and(|person| {
+                    !person.removed
+                        && person.label == hint.label
+                        && person
+                            .emails
+                            .iter()
+                            .any(|email| canonical_email_hint(email).as_ref() == Some(&hint.email))
+                })
+    }
+
     /// The picture of the one person in the book with mailbox `email`, if
     /// they have one. Several people sharing the mailbox show none: a picture
     /// never guesses between them.

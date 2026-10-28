@@ -260,22 +260,20 @@ impl Attachment {
             | Attachment::File { name, .. } => name,
         }
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct Reaction {
-    pub emoji: String,
-    pub users: Vec<Id>,
-}
-
-impl Reaction {
-    pub fn count(&self) -> usize {
-        self.users.len()
-    }
-    pub fn reacted_by(&self, user: &str) -> bool {
-        self.users.iter().any(|u| u == user)
+    /// Its size in bytes, when the sender's import measured one: an image's
+    /// size is the store's, and an older one carries none rather than a guess.
+    pub fn size(&self) -> Option<u64> {
+        match self {
+            Attachment::Image { .. } => None,
+            Attachment::Video { size, .. } | Attachment::File { size, .. } => Some(*size),
+        }
     }
 }
+
+/// Everyone who reacted to a message with one emoji: the framework's
+/// reactions, grouped as a reaction strip shows them.
+pub type Reaction = ui::tilo_resource::ReactionGroup;
 
 /// One prior version of a message body, captured when the author edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,7 +282,7 @@ pub struct EditRecord {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
     pub channel: Id,
@@ -328,6 +326,8 @@ pub struct Message {
     /// The name and avatar a bot showed for this message instead of its own
     /// (a bridge posting an outside user's line). The author stays the bot.
     pub appearance: Option<tilo_actions::Appearance>,
+    /// The window it shares live, and whether it still does.
+    pub share: Option<crate::record::WindowShare>,
 }
 
 impl Message {
@@ -695,8 +695,11 @@ pub struct MessageGroup {
 }
 
 /// Group consecutive **top-level** messages (parent == None) by the same
-/// author within [`GROUP_WINDOW_SECS`]. Threaded replies are excluded —
-/// they render inside the thread panel, not the main timeline.
+/// author, shown the same way, within [`GROUP_WINDOW_SECS`]. A bridge's
+/// lines are all its own but each shows the outside person who wrote it,
+/// so a line in another appearance starts a group of its own. Threaded
+/// replies are excluded — they render inside the thread panel, not the
+/// main timeline.
 pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
     let mut groups: Vec<MessageGroup> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
@@ -708,7 +711,10 @@ pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
                 && g.message_indices
                     .last()
                     .and_then(|&last_idx| messages.get(last_idx))
-                    .is_some_and(|prev| (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS)
+                    .is_some_and(|prev| {
+                        prev.appearance == m.appearance
+                            && (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS
+                    })
         });
         if extend {
             if let Some(g) = groups.last_mut() {
@@ -786,6 +792,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         }
     }
 
@@ -811,6 +818,28 @@ mod tests {
             ];
             let groups = group_messages(&msgs);
             assert_eq!(groups.len(), 3);
+        }
+        // A bridge's lines split by the outside person each shows.
+        {
+            let shown = |name: &str| {
+                Some(tilo_actions::Appearance {
+                    name: name.into(),
+                    avatar: None,
+                    persona: None,
+                })
+            };
+            let mut msgs = vec![
+                msg("a", "bot:bridge", 0, None),
+                msg("b", "bot:bridge", 10, None),
+                msg("c", "bot:bridge", 20, None),
+            ];
+            msgs[0].appearance = shown("kim");
+            msgs[1].appearance = shown("kim");
+            msgs[2].appearance = shown("rae");
+            let groups = group_messages(&msgs);
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].message_indices, vec![0, 1]);
+            assert_eq!(groups[1].message_indices, vec![2]);
         }
         // Phase: grouping_excludes_thread_replies.
         {

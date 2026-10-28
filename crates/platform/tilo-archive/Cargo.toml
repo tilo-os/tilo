@@ -1,0 +1,35 @@
+[package]
+name = "tilo-archive"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Reading, extracting and creating archives (zip, tar with gzip, xz, zstd or bzip2, 7z) with untrusted entry names, in pure Rust."
+
+[lib]
+name = "tilo_archive"
+path = "src/lib.rs"
+
+# Every codec is pure Rust: Files loads this crate from its engine library
+# (crates/runtime/engines/archive), a Rust dylib that exports only Rust
+# symbols, so a statically compiled C library here could not be called from
+# the app. ruzstd rather than zstd, libbz2-rs-sys rather than libbz2, and
+# lzma-rust2 rather than liblzma for that reason.
+[dependencies]
+tar.workspace = true
+# Zip keeps local times; reading them needs the device's zone.
+chrono = { workspace = true, features = ["clock"] }
+flate2.workspace = true
+zip.workspace = true
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
+lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "xz"] }
+# Its default backend is libbz2-rs-sys, the pure Rust port of libbz2.
+bzip2 = "0.6.1"
+sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["bzip2"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

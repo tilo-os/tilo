@@ -11,7 +11,7 @@
 //! that answered "no" but acted anyway still fails.
 //!
 //! The suite is the `tenant_isolation::` module of the relay's `it` target;
-//! `.forgejo/workflows/security-isolation.yml` runs it nightly and on
+//! t.toml's `security-isolation` check runs it nightly and on
 //! demand alongside the room-access and agent-confinement suites.
 
 #![allow(
@@ -37,10 +37,10 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, ENTER_ROOM, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
-    HOST_ROOMS_RESOURCE, IssueInvitationRequest, IssuedInvitation, LIST_ROOMS,
-    MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient,
-    RoomAdminError, RoomCommand, RoomReply, RoomSummary, Rooms, member_resource,
+    CREATE_ROOM, ENTER_ROOM, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
+    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
+    RoomReply, RoomSummary, Rooms, member_resource,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -286,7 +286,6 @@ fn retained_delta(marker: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
-/// Whether any file under `root` contains `marker`.
 fn persisted(root: &Path, marker: &[u8]) -> bool {
     let Ok(entries) = std::fs::read_dir(root) else {
         return false;
@@ -312,7 +311,6 @@ async fn received_until_quiet(client: &RelayClient) -> Vec<Envelope> {
     received
 }
 
-/// Whether `bytes` contains `marker`.
 fn carries(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }
@@ -572,12 +570,6 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
             HOST_ROOMS_RESOURCE.to_owned(),
             GRANT_APP_AUTHORSHIP,
             serde_json::json!({ "room": globex, "app": "so.tilo.notes" }),
-        ),
-        (
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource(globex),
-            CLAIM_TOPOLOGY_NAMESPACE,
-            serde_json::json!({ "salt": 165 }),
         ),
         (
             MEMBER_ACTIONS_PROVIDER,

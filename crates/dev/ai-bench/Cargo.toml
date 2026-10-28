@@ -1,0 +1,41 @@
+[package]
+name = "tilo-ai-bench"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Quality cases for Tilo's AI interactions: typed checks, model and prompt comparison, no silent fallbacks"
+
+[lib]
+name = "tilo_ai_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-ai-bench"
+path = "src/main.rs"
+
+[dependencies]
+# An answer is checked against the vocabulary and the validator an action's
+# result already goes through, not a second copy of either.
+tilo-actions = { path = "../../collab/actions" }
+# The HTTP client the run reaches its endpoints through: Tilo's one TLS and
+# trust source, never a second one of this tool's own.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "blocking"] }
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+# The patterns a shape may declare are the ones the actions' schemas compile.
+regex-lite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+# A loopback endpoint that answers in a chat-completions shape, which is what
+# every case is scored against.
+test-http = { path = "../test-http" }
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

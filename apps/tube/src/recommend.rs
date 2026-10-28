@@ -48,7 +48,6 @@ mod tests {
 
     #[test]
     fn interleave_is_round_robin_across_channels() {
-        // Case `interleave_is_round_robin_across_channels`.
         {
             let a = vec![vid("a1", "A"), vid("a2", "A"), vid("a3", "A")];
             let b = vec![vid("b1", "B")];

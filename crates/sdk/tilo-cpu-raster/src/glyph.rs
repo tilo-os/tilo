@@ -146,7 +146,6 @@ pub(crate) struct Session<'a> {
 }
 
 impl Session<'_> {
-    /// The outline of `glyph`, and whether it had to be built.
     pub fn get(&mut self, glyph: u32) -> (Option<Arc<Outline>>, bool) {
         if let Some(outline) = self.entry.glyphs.get(&glyph) {
             return (outline.clone(), false);

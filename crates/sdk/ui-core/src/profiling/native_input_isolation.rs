@@ -95,7 +95,6 @@ mod tests {
                 cursor_moved(100.0, 100.0),
                 |event| driver.send(&event)
             ));
-            // Both origins deliberately have the same DeviceId.
             assert!(!dispatch(
                 true,
                 EventOrigin::Platform,

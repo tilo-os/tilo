@@ -21,16 +21,10 @@ pub struct PeerPresence {
 }
 
 impl PeerPresence {
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonical serialisation fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
 
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if `bytes` fails to decode as `Self`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CanonicalError> {
         from_canonical_bytes(bytes)
     }
@@ -84,10 +78,6 @@ pub enum PeerPresencePayload {
         state: String,
         call: Option<String>,
     },
-    /// The sender waves at `target`, a roster id. Desktop presence.
-    Wave {
-        target: String,
-    },
     /// What the sender says beside their pointer (cursor chat) in a room
     /// with no live plane: `text` while the bubble is open (empty with
     /// nothing typed yet), `None` once it closed; `sent` once they pressed
@@ -130,9 +120,6 @@ mod tests {
             PeerPresencePayload::Availability {
                 state: "idle".into(),
                 call: Some("voice".into()),
-            },
-            PeerPresencePayload::Wave {
-                target: "peer@7".into(),
             },
             PeerPresencePayload::Chat {
                 text: Some("look at the second paragraph".into()),

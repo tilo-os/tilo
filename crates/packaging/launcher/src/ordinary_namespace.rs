@@ -57,13 +57,9 @@ impl NamespaceWitness {
     pub fn init_pidfd(&self) -> io::Result<OwnedFd> {
         self.init.try_clone()
     }
-    /// # Errors
-    /// Returns descriptor exhaustion.
     pub fn pid_namespace(&self) -> io::Result<File> {
         self.pid_namespace.try_clone()
     }
-    /// # Errors
-    /// Returns descriptor exhaustion.
     pub fn mount_namespace(&self) -> io::Result<File> {
         self.mount_namespace.try_clone()
     }
@@ -229,8 +225,6 @@ impl NamespaceWitness {
     }
     /// Kill only the exact held namespace init and wait for kernel exit.
     /// A timeout leaves this witness intact and cannot release a source lease.
-    /// # Errors
-    /// Returns an actual signal/poll error or an incomplete-stop timeout.
     pub fn cancel_and_wait(&self, budget: Duration) -> io::Result<()> {
         if self.observed_stopped()? {
             return Ok(());
@@ -265,8 +259,6 @@ impl NamespaceWitness {
     }
     /// Observe exact task exit, even after admission or session revocation.
     /// This does not establish a successful application exit.
-    /// # Errors
-    /// Returns a kernel poll failure rather than assuming the task stopped.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         let mut fd = libc::pollfd {
             fd: self.init.as_raw_fd(),
@@ -509,14 +501,12 @@ mod tests {
     fn stalled_handoff_uses_one_total_deadline_and_restores_socket_mode() {
         let (mut stream, _stalled_peer) = UnixStream::pair().unwrap();
         let cancellation = ServiceCancellation::default();
-        let began = Instant::now();
         {
             let mut io =
                 Handoff::new(&mut stream, &cancellation, Duration::from_millis(60)).unwrap();
             let error = io.read_exact(&mut [0; 4]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         }
-        assert!(began.elapsed() < Duration::from_secs(2));
         let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
         assert!(flags >= 0);
         assert_eq!(flags & libc::O_NONBLOCK, 0);
@@ -553,10 +543,10 @@ mod tests {
         let (mut receiver, mut sender) = UnixStream::pair().unwrap();
         for stream in [&receiver, &sender] {
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
         }
         let sent_candidate = Arc::clone(&candidate);

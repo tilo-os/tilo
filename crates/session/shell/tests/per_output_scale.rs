@@ -42,7 +42,7 @@ fn frame_on(outputs: Vec<Output>) -> (FrameBuilder, Vec<Output>) {
 }
 
 /// How the workspace name is called, after the workspace's own name.
-const WORKSPACE_MENU: &str = ": workspaces, overview and desks";
+const WORKSPACE_MENU: &str = ": workspaces, overview and strips";
 
 /// The control whose label ends with `label` on the display with output id
 /// `display`: the primary carries the full top bar, every other display a
@@ -259,32 +259,17 @@ fn patch_in(rect: Rect, side: u32) -> Region {
     Region::new((c.x - half) as u32, (c.y - half) as u32, side, side)
 }
 
-/// The workspace recap is a tiled window, and drawing it once opened a
-/// layer it never closed. Each display's pass is the logical desktop
-/// appended inside that display's clip, so the first display's clip stayed
-/// open around the second display's whole pass, which nested inside it and
-/// drew nothing: with a second, scaled monitor, opening Activity (or
-/// Super+H) blanked it. The arrangement is the acceptance VM's, a 1x monitor
-/// with a 1.25x one beside it.
+/// Each display's pass is the logical desktop appended inside that display's
+/// clip, so a layer one overlay opens and never closes nests the next
+/// display's whole pass inside the first display's clip, and that display
+/// draws nothing. The arrangement is the acceptance VM's, a 1x monitor with
+/// a 1.25x one beside it.
 #[test]
-fn opening_the_activity_window_leaves_every_display_drawn() {
+fn a_scaled_second_display_is_drawn_and_no_layer_is_left_open() {
     let outputs = resolve_output_arrangement("1920x1080@1,1280x800@1.25").expect("arrangement");
     let (mut fb, outputs) = frame_on(outputs);
-    fb.with_chrome(|st| st.open_room_activity(None));
     let _ = fb.paint_settled();
     let scene = fb.paint_settled();
-
-    // The recap is drawn into the logical desktop, which every display's
-    // pass appends, so where it sits does not matter; that it is laid out
-    // on a display does, or this would prove nothing about it.
-    let recap = fb.host().room_activity().rect();
-    assert!(
-        recap.area() > 0.0
-            && outputs
-                .iter()
-                .any(|o| o.logical_rect().contains(recap.center())),
-        "the recap window is laid out on a display, got {recap:?}"
-    );
     assert_eq!(
         scene.encoding().n_open_clips,
         0,
@@ -300,9 +285,96 @@ fn opening_the_activity_window_leaves_every_display_drawn() {
         assert_eq!(
             blank,
             0,
-            "display {} ({:?}) has {blank} fully transparent pixels at its centre with the recap open",
+            "display {} ({:?}) has {blank} fully transparent pixels at its centre",
             output.id.0,
             output.scene_rect()
         );
     }
+}
+
+/// Every byte of `area` of `scene`, rasterized at `size` scene pixels.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel offsets into a few-megapixel test target cannot overflow usize"
+)]
+fn pixels(scene: &vello::Scene, size: (u32, u32), area: Region) -> Vec<u8> {
+    let (width, height) = size;
+    let stride = width as usize * 4;
+    let mut pixels = vec![0u8; stride * height as usize];
+    {
+        let mut target = Target::new(&mut pixels, width, height, stride).expect("target");
+        CpuRasterizer::new(Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            Some(&[area]),
+            Color::TRANSPARENT,
+        );
+    }
+    (area.y..area.y + area.height)
+        .flat_map(|y| {
+            let row = y as usize * stride + area.x as usize * 4;
+            pixels[row..row + area.width as usize * 4].to_vec()
+        })
+        .collect()
+}
+
+/// Move the pointer to a scene pixel the way a backend reports it.
+fn move_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
+    let moved = event_to_logical(
+        &placements(outputs),
+        BackendEvent::Input(ui::synthetic_input::cursor_moved(at.x, at.y)),
+    );
+    let BackendEvent::Input(moved) = moved else {
+        panic!("a cursor event stays a cursor event");
+    };
+    let mut doc = AutoCommit::new();
+    let mut focus = None;
+    fb.dispatch_event(
+        &moved,
+        &Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut doc),
+        &ROOT,
+        &mut focus,
+    );
+}
+
+/// The scene pixels of `rect` (logical) as one region.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a bar control is a small positive scene rectangle"
+)]
+fn region_of(fb: &FrameBuilder, rect: Rect) -> Region {
+    let scene = fb.layout_rect_to_scene(rect).expect("on a display");
+    Region::new(
+        scene.x0.floor() as u32,
+        scene.y0.floor() as u32,
+        scene.width().ceil() as u32,
+        scene.height().ceil() as u32,
+    )
+}
+
+#[test]
+fn a_control_on_another_displays_bar_rests_once_the_pointer_leaves_it() {
+    let (mut fb, outputs) = frame_across("docked-laptop");
+    let size = combined_geometry(&outputs);
+    let control = control_on(&fb, &outputs, WORKSPACE_MENU, 1);
+    let area = region_of(&fb, control);
+    let rest = pixels(&fb.paint_settled(), size, area);
+
+    let on_control = fb.layout_point_to_scene(control.center());
+    move_scene(&mut fb, &outputs, on_control);
+    let hovered = pixels(&fb.paint_settled(), size, area);
+    assert_ne!(hovered, rest, "under the pointer the control lifts");
+
+    // Straight down off the bar, into the monitor's desktop.
+    let below = Point::new(control.center().x, control.y1 + 200.0);
+    assert!(outputs[1].logical_rect().contains(below));
+    let below = fb.layout_point_to_scene(below);
+    move_scene(&mut fb, &outputs, below);
+    let left = pixels(&fb.paint_settled(), size, area);
+    assert!(
+        left == rest,
+        "once the pointer has left the bar, its control is plain again"
+    );
 }

@@ -2,6 +2,7 @@
 //! permissions.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,17 +20,19 @@ use crate::capability::Capability;
 use crate::collaborator::Collaborator;
 use crate::ids::{RoomId, WorkspaceId};
 use crate::layout::Strip;
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room — the
-    /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// Change it with [`Self::set_room`], which moves the room's grants too.
-    pub room: RoomId,
+    /// Durable identity of this workspace as a collaboration room: the
+    /// workspace *is* this room, on every device. Given once, when the
+    /// workspace is made ([`Self::new`] mints one, [`Self::in_room`] takes
+    /// the room created or joined), and never changed: read it with
+    /// [`Self::room`]. A workspace for another room is another workspace.
+    room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
     /// Who is in this workspace *right now*, asserted present by a
@@ -71,10 +74,6 @@ pub struct Workspace {
     /// mutation goes through the authority-checked methods below.
     #[serde(default)]
     pub default_apps: desktop_policy::WorkspaceDefaults,
-    /// Work shared by the room independently of any one chat thread or app.
-    /// Values are projected as a CRDT map keyed by task id.
-    #[serde(default)]
-    pub tasks: Vec<WorkspaceTask>,
     /// Consequential effects are activity, but never pretend to be edits to
     /// an app's collaborative document.
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
@@ -128,8 +127,6 @@ struct StoredWorkspace {
     #[serde(default)]
     default_apps: desktop_policy::WorkspaceDefaults,
     #[serde(default)]
-    tasks: Vec<WorkspaceTask>,
-    #[serde(default)]
     effect_receipts: Vec<WorkspaceEffectReceipt>,
     #[serde(default)]
     shortcuts: Vec<tilo_automation::Shortcut>,
@@ -162,7 +159,6 @@ impl From<StoredWorkspace> for Workspace {
             sandbox: stored.sandbox,
             presets: stored.presets,
             default_apps: stored.default_apps,
-            tasks: stored.tasks,
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
             schedule_claims: stored.schedule_claims,
@@ -260,28 +256,6 @@ pub enum WorkspaceDefaultError {
 #[must_use]
 pub fn context_at(now: u64) -> Context<'static> {
     Context::at_secs(now).in_session(session_id())
-}
-
-/// The named task's answer, never an intersection of unrelated agent tasks.
-/// Native execution additionally requires its owner-minted exact run ceiling.
-/// `None` means no named task grant set; it is not execution authorization.
-#[must_use]
-pub fn task_bound(
-    policy: &RoomPolicy,
-    tasks: &[crate::WorkspaceTask],
-    (agent, named): (Option<&str>, Option<&str>),
-    (node, kind): (&TreePath, ActionKind),
-    cx: &Context<'_>,
-) -> Option<Answer> {
-    let task = named?;
-    if let Some(agent) = agent
-        && !tasks
-            .iter()
-            .any(|value| value.id == task && value.assigned_agent.as_deref() == Some(agent))
-    {
-        return Some(Answer::Deny);
-    }
-    policy.task_answer(task, node, kind, cx)
 }
 
 /// This process's session, which a grant given "until log out" names.
@@ -522,10 +496,10 @@ impl Workspace {
             .any(|strip| !strip.window_groups.is_empty())
     }
 
-    /// Give the workspace another durable room id; its grants move with it.
-    pub fn set_room(&mut self, room: RoomId) {
-        self.room = room;
-        self.policy.rehome(room.to_string());
+    /// The room this workspace is, given when it was made and never changed.
+    #[must_use]
+    pub fn room(&self) -> RoomId {
+        self.room
     }
 
     /// A person's own authority in this room.
@@ -569,7 +543,6 @@ impl Workspace {
         self.person_authority(person).bounded_by(bound)
     }
 
-    /// What `user` may do at `node` for an action of `kind`, at `now`.
     #[must_use]
     pub fn answer_at(&self, user: &str, node: &TreePath, kind: ActionKind, now: u64) -> Answer {
         self.person_authority(user)
@@ -800,7 +773,7 @@ impl Workspace {
             let until = match grant.lifetime {
                 Lifetime::Until(ms) => Some(ms / 1000),
                 Lifetime::UntilRevoked => None,
-                Lifetime::Once | Lifetime::Task(_) | Lifetime::Session(_) => continue,
+                Lifetime::Once | Lifetime::Session(_) => continue,
             };
             let held = readers.entry(person.clone()).or_insert(until);
             *held = match (*held, until) {
@@ -855,7 +828,7 @@ impl Workspace {
             })
             .filter(|app| self.app_is_author_at(app, now))
             .collect();
-        authors.sort();
+        authors.compact_sort();
         authors.dedup();
         collab_types::caps::LaunchGrants {
             authors,
@@ -1072,10 +1045,23 @@ pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
 }
 
 impl Workspace {
+    /// A workspace in a room minted for it here: a workspace that exists is
+    /// a room that exists, minted when it is made rather than lazily.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        // A workspace that exists is a room that exists: minted here rather
-        // than lazily.
+        Self::in_room(id, RoomId::new(), name)
+    }
+
+    /// A new workspace, named `name`, in a room minted for it, under the
+    /// id every device derives from that room ([`WorkspaceId::of_room`]).
+    pub fn create(name: impl Into<String>) -> Self {
         let room = RoomId::new();
+        Self::in_room(WorkspaceId::of_room(room), room, name)
+    }
+
+    /// The workspace that is `room`, created or joined, under the local id
+    /// `id`: new workspaces take [`WorkspaceId::of_room`], an existing one
+    /// keeps the id it was stored under.
+    pub fn in_room(id: WorkspaceId, room: RoomId, name: impl Into<String>) -> Self {
         Self {
             id,
             room,
@@ -1089,7 +1075,6 @@ impl Workspace {
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
@@ -1100,7 +1085,7 @@ impl Workspace {
 
     /// A copy holding what authority decisions read — identity, the room's
     /// policy, sandbox, presets, defaults — and none of the layout or
-    /// history: no strips, tasks, effect receipts, shortcuts, schedule
+    /// history: no strips, effect receipts, shortcuts, schedule
     /// claims or ownership-transfer records. For a caller that must not hold
     /// the tree while it asks [`Self::answer_at`] and its kin, so the copy
     /// costs the policy, not the workspace's past.
@@ -1120,7 +1105,6 @@ impl Workspace {
             sandbox,
             presets,
             default_apps,
-            tasks: _,
             effect_receipts: _,
             shortcuts: _,
             schedule_claims: _,
@@ -1140,7 +1124,6 @@ impl Workspace {
             sandbox: sandbox.clone(),
             presets: presets.clone(),
             default_apps: default_apps.clone(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
@@ -1202,7 +1185,6 @@ impl Default for Workspace {
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),

@@ -397,7 +397,6 @@ mod tests {
             assert!(!probe.automatic_assignment);
             assert_eq!(probe.devices.len(), 1);
         }
-        // Phase `mdev_capability_is_not_misreported_as_an_assignment`.
         {
             let sysfs = TempDir::new().unwrap();
             let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
@@ -418,7 +417,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `only_an_iommu_isolated_vfio_bound_virtual_function_is_ready`.
         {
             let sysfs = TempDir::new().unwrap();
             let pci = sysfs.path().join("bus/pci/devices");
@@ -465,7 +463,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `mediated_assignment_requires_an_existing_device_and_escapes_nothing`.
         {
             let sysfs = TempDir::new().unwrap();
             let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
@@ -485,7 +482,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `non_display_sriov_devices_are_ignored`.
         {
             let sysfs = TempDir::new().unwrap();
             let nic = sysfs.path().join("bus/pci/devices/0000:04:00.0");

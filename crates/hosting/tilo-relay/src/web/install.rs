@@ -38,7 +38,6 @@ use crate::daemon::RelayError;
 /// The session beside a node, certified at install with it.
 #[derive(Clone, Debug)]
 pub struct SessionDevice {
-    /// Its device key.
     pub public_key: [u8; 32],
     /// Where its certificate is written, in its canonical encoding.
     pub cert_out: std::path::PathBuf,
@@ -70,7 +69,6 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// The listener of a host awaiting its certificate. Dropping it stops
 /// serving.
 pub struct InstallListener {
-    /// HTTPS address.
     pub addr: SocketAddr,
     /// Plain loopback HTTP address, if any.
     pub plain_addr: Option<SocketAddr>,
@@ -561,6 +559,7 @@ mod tests {
             live_origin: None,
             limits: crate::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         }
     }
 
@@ -617,7 +616,6 @@ mod tests {
 
         let reply = request(addr, "POST", "/peer/v1/install", &token, [7_u8, 7, 7]).await;
         assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
-        // The canonical encoding installs as the JSON does.
         let canonical = tilo_user_identity::canonical::canonical_bytes(
             &serde_json::from_str::<DeviceCert>(&good).unwrap(),
         )

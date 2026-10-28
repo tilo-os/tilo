@@ -76,7 +76,6 @@ fn portal_grants_bind_read_only_or_writable_but_never_the_root() {
         let caller = PortalCaller::new(ws, APP);
         let picked = PathBuf::from("/home/someone/Documents/report.odt");
 
-        // Exactly what `pick_and_grant` records for a confirmed OpenFile dialog.
         store.insert(
             &caller,
             &Capability::Filesystem {
@@ -136,7 +135,6 @@ fn portal_grants_bind_read_only_or_writable_but_never_the_root() {
         let (store, ws) = store();
         let caller = PortalCaller::new(ws, APP);
 
-        // The exact capability the removed sentinel produced.
         store.insert(
             &caller,
             &Capability::Filesystem {

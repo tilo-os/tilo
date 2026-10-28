@@ -389,7 +389,7 @@ impl Fixture {
             .prepare(Zeroizing::new(PASSWORD.to_vec()), &cancel)
             .unwrap();
         let mut worker = review.start_adoption(&cancel).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(result) = worker.try_next() {
                 assert!(result.unwrap().complete);
@@ -550,35 +550,41 @@ fn full_home_restore_replays_after_actual_repository_changes() {
         b"original document"
     );
 }
+/// A retry after a full-home restoration refuses to run once `path` changed
+/// underneath it, leaves the change alone and installs nothing. One test per
+/// path: each builds and restores its own sealed fixture, and the three in
+/// one test summed past the per-test time limit on a loaded node.
+fn full_home_retry_refuses_after(path: &str) {
+    let fixture = Fixture::new(true, false);
+    fixture.adopt_home();
+    fixture.run("restore", "full-home-restore").unwrap();
+    file(&fixture.home.join(path), b"changed after restoration");
+    fixture.runner.calls.borrow_mut().clear();
+    assert!(fixture.run("restore", "changed").is_err());
+    assert_eq!(
+        fs::read(fixture.home.join(path)).unwrap(),
+        b"changed after restoration"
+    );
+    assert!(
+        !fixture
+            .runner
+            .calls
+            .borrow()
+            .iter()
+            .any(|args| args[0] == "install")
+    );
+}
 #[test]
-fn full_home_retry_refuses_changed_original_data_and_signed_output() {
-    for (index, path) in [
-        "document",
-        ".var/app/org.example.Paint/session",
-        ".local/share/flatpak/repo/restored",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let fixture = Fixture::new(true, false);
-        fixture.adopt_home();
-        fixture.run("restore", "full-home-restore").unwrap();
-        file(&fixture.home.join(path), b"changed after restoration");
-        fixture.runner.calls.borrow_mut().clear();
-        assert!(fixture.run("restore", &format!("changed-{index}")).is_err());
-        assert_eq!(
-            fs::read(fixture.home.join(path)).unwrap(),
-            b"changed after restoration"
-        );
-        assert!(
-            !fixture
-                .runner
-                .calls
-                .borrow()
-                .iter()
-                .any(|args| args[0] == "install")
-        );
-    }
+fn full_home_retry_refuses_changed_original_data() {
+    full_home_retry_refuses_after("document");
+}
+#[test]
+fn full_home_retry_refuses_changed_application_data() {
+    full_home_retry_refuses_after(".var/app/org.example.Paint/session");
+}
+#[test]
+fn full_home_retry_refuses_changed_signed_output() {
+    full_home_retry_refuses_after(".local/share/flatpak/repo/restored");
 }
 
 #[test]

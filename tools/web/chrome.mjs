@@ -5,7 +5,7 @@
 // Pages are served from 127.0.0.1, a secure context, so OPFS, Web Locks and
 // WebGPU are available.
 import {spawn} from 'node:child_process';
-import {createReadStream, existsSync, mkdtempSync, readdirSync, rmSync, statSync} from 'node:fs';
+import {accessSync, constants as fsConstants, createReadStream, existsSync, mkdtempSync, readdirSync, rmSync, statSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
 import {extname, join, normalize} from 'node:path';
@@ -67,9 +67,29 @@ function chromeBinary() {
   throw new Error('no Chrome: set CHROME or install Playwright\'s chromium');
 }
 
+/** Where a throwaway profile goes: memory when the host has a tmpfs for it
+ * (/dev/shm, else $XDG_RUNTIME_DIR), as tilo_paths::memory_temp_dir gives app
+ * test profiles, else the temp directory. Nothing in it needs durability, and on
+ * disk Chromium's exit waits on the profile's writeback: on a busy shared disk
+ * its threads sat in the kernel past every shutdown deadline. */
+function throwawayDir() {
+  for (const dir of [process.platform === 'linux' ? '/dev/shm' : null, process.env.XDG_RUNTIME_DIR]) {
+    if (!dir) continue;
+    try {
+      if (statSync(dir).isDirectory()) {
+        accessSync(dir, fsConstants.W_OK);
+        return dir;
+      }
+    } catch {
+      // Not there or not writable: the next one.
+    }
+  }
+  return tmpdir();
+}
+
 /** A headless browser on a fresh profile. */
 export async function launch({args = []} = {}) {
-  const profile = mkdtempSync(join(tmpdir(), 'tilo-chrome-'));
+  const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
   const supervised = process.platform === 'linux';
   const browser = chromeBinary();
   const browserArgs = [

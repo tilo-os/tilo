@@ -76,8 +76,6 @@ impl SpeechRecognition {
     }
 
     /// Use the same bounded segmentation with another image-owned decoder.
-    /// # Errors
-    /// Rejects invalid audio, retired sessions and decoder errors.
     pub fn recognize_with(
         &mut self,
         samples: &[f32],

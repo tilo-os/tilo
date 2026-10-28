@@ -17,7 +17,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
         }
         let contacts = self.0.direct_contacts(
             tilo_desktop_model::RoomId::parse(room).ok_or("invalid room")?,
-            &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+            &tilo_peer_state::caller_authority::CallerAuthority::Person {
                 caller: caller.clone(),
             },
             std::time::SystemTime::now(),
@@ -39,7 +39,16 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = room.to_string();
-            env.membership.write().workspaces[0].set_room(room);
+            {
+                let mut membership = env.membership.write();
+                let before = membership.workspaces[0].clone();
+                let mut workspace =
+                    tilo_desktop_model::Workspace::in_room(before.id, room, before.name);
+                workspace.strips = before.strips;
+                workspace.policy = before.policy;
+                workspace.policy.rehome(room.to_string());
+                membership.workspaces[0] = workspace;
+            }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let mut services = env.membership.services();
@@ -70,7 +79,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let expected = owner
                 .direct_contacts(
                     room,
-                    &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                    &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
                     },
                     std::time::SystemTime::now(),

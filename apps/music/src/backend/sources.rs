@@ -104,6 +104,19 @@ impl MusicBackend for Sources {
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         self.selected().search_all(query)
     }
+    fn search_quick(&self, query: &str) -> Result<SearchBundle, BackendError> {
+        self.selected().search_quick(query)
+    }
+    fn warm(&self) {
+        self.selected().warm();
+    }
+    fn catalogue_label(&self) -> &'static str {
+        if self.selected.load(Ordering::Relaxed) && self.spotify.is_some() {
+            "Spotify"
+        } else {
+            "YouTube Music"
+        }
+    }
     fn resolve_audio(&self, id: &str) -> ResolveOutcome {
         self.for_id(id)?.resolve_audio(id)
     }

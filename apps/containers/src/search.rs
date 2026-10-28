@@ -95,7 +95,6 @@ mod tests {
         ui::framework::testing::search_source::<crate::resource::Containers>(engine_entries(engine))
     }
 
-    /// Search finds objects and log content with canonical addresses, stops at its budget and reaches late matches within the page budget.
     #[test]
     fn search_finds_objects_and_logs_within_page_budgets() {
         // --- phase: searches_objects_and_log_content_with_canonical_addresses ---

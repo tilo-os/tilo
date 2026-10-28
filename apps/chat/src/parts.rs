@@ -20,10 +20,18 @@
 //!   message: an edit, a reaction, a reply in its thread, a report.
 //! - **Read marks** are positions in the chain ([`ReadMark`]), so they mean
 //!   the same whether or not a device holds the earlier parts.
+//! - **Counts of the parts before.** A part carries, for each part before
+//!   it, how many top-level messages each channel has there
+//!   ([`ChatPart::earlier`]): whoever starts it writes them from the part
+//!   before, which they hold. A reader's unread counts reach back to their
+//!   mark through the head's, however many parts they were away for,
+//!   without holding those parts.
 //!
 //! This module is the contract the model, the window and the room's hosts
 //! (bots, seeding, bridges, moderation) share; change it only with all of
 //! them.
+
+use std::collections::BTreeMap;
 
 use ui::record::RecordId;
 use ui::tilo_resource::{self, Collection, Model};
@@ -75,8 +83,46 @@ pub const fn post_part(head: u64, head_messages: usize, head_text_bytes: usize) 
 /// replies in their threads, which stay with the message they answer).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ChatPart {
-    /// The messages, oldest first.
+    /// The messages, oldest first: made, ordered and removed only by the
+    /// part's actions. A post takes its author from whoever signed it; a
+    /// generic insert could name anyone as a message's author, and a
+    /// replica replaying it would reproduce the forgery.
+    #[model(readonly)]
     pub messages: Collection<Message>,
+    /// For each part before this one (by its number, in decimal), how many
+    /// top-level messages each channel (by its id) has there, as whoever
+    /// started this part saw it (`crate::messages::ChatPart::carry_counts`).
+    /// A post that reached a part after the next one started is counted
+    /// where that part is held: its own messages count, not this.
+    #[model(readonly)]
+    pub earlier: BTreeMap<String, BTreeMap<String, i64>>,
+}
+
+impl ChatPart {
+    /// How many top-level messages each channel has in this part, by
+    /// channel id.
+    #[must_use]
+    pub fn counts(&self) -> BTreeMap<String, i64> {
+        let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+        for message in self
+            .messages
+            .values()
+            .filter(|message| message.parent.is_none())
+        {
+            let count = counts.entry(message.channel.to_string()).or_default();
+            *count = count.saturating_add(1);
+        }
+        counts
+    }
+
+    /// What a part started after this one, part `index`, carries of the
+    /// parts before it: what this one carries, and this one's own counts.
+    #[must_use]
+    pub fn carried_after(&self, index: u64) -> BTreeMap<String, BTreeMap<String, i64>> {
+        let mut earlier = self.earlier.clone();
+        earlier.insert(index.to_string(), self.counts());
+        earlier
+    }
 }
 
 /// How far a person read a channel: every top-level message of the channel
@@ -100,7 +146,6 @@ mod tests {
         assert_eq!(part_index(&part(41)), Some(41));
         assert_eq!(part_index(&chain()), None);
         assert_eq!(part_index(&RecordId::room_default().part(3)), None);
-        // The host reads the same chain and number from the wire id.
         assert_eq!(
             neighbour_wire::record_sync(first.as_str()),
             neighbour_wire::RecordSync::Part {

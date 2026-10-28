@@ -1,6 +1,7 @@
 //! Retained, process-local UI for the guided setup flow.
 
 mod guided_desktop;
+mod support_report;
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
@@ -24,7 +25,7 @@ use ui::widget::{
     Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
 
-use super::actions::SetupEffect;
+use super::actions::{HardwareProjection, SetupEffect};
 use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
@@ -39,6 +40,7 @@ use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 use super::staging::helper::Action as HelperAction;
 use crate::resource::Imager;
+use imager_backend::support_report::SupportReport;
 use ui::LocalState;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, RunMode, SurfaceCx,
@@ -110,6 +112,7 @@ enum WorkerMessage {
     HostProbe {
         facts: super::staging::probe::HostFacts,
         records: Vec<super::staging::record::Record>,
+        report: Option<SupportReport>,
     },
     HostCommandFinished {
         command: HostCommand,
@@ -159,6 +162,7 @@ pub struct SetupApp {
     desktop_only: bool,
     full_os_check: Option<LocalState<Option<FullOsCheck>>>,
     check_facts: Option<super::staging::probe::HostFacts>,
+    support_report: Option<SupportReport>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -301,6 +305,10 @@ impl SetupApp {
             && self.internal_install.pending().is_none()
             && self.internal_install.blockers().is_empty()
             && self.check_facts.is_some()
+            && self
+                .support_report
+                .as_ref()
+                .is_some_and(|report| !report.blocks_install())
             && matches!(self.internal_install.plan(), Some(Ok(_)))
     }
 
@@ -430,6 +438,7 @@ impl SetupApp {
             desktop_only: false,
             full_os_check: None,
             check_facts: None,
+            support_report: None,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -678,6 +687,10 @@ impl SetupApp {
                 choose_folder: on_folder_choices && self.folder_selection_settled(),
             },
             internal: self.internal_projection(),
+            hardware: self
+                .support_report
+                .as_ref()
+                .map(HardwareProjection::from_report),
         }
     }
 
@@ -1333,9 +1346,16 @@ impl SetupApp {
                     }
                 }
             }
-            WorkerMessage::HostProbe { facts, records } => {
+            WorkerMessage::HostProbe {
+                facts,
+                records,
+                report,
+            } => {
                 if self.full_os_check.is_some() {
                     self.check_facts = Some(facts.clone());
+                }
+                if report.is_some() {
+                    self.support_report = report;
                 }
                 let has_release = self
                     .internal_download_flow
@@ -1437,6 +1457,37 @@ impl SetupApp {
         changed
     }
 
+    /// `row`, pressed as the published `effect`; before the framework
+    /// attaches, its press publishes its own effect asking for `command`.
+    fn bind_effect(&self, row: ListRow, effect: &SetupEffect, command: SetupCommand) -> ListRow {
+        if let Some(actions) = &self.actions {
+            return actions.bind_effect_invocation(row, effect);
+        }
+        // A bare window asks for the command its own published effect runs.
+        let sink = Rc::clone(&self.commands);
+        row.on_effect(move || sink.borrow_mut().push(command))
+    }
+
+    /// `row` with the revealed action `icon`/`label` running `effect`; a bare
+    /// window asks for the command the effect runs.
+    fn row_action(
+        &self,
+        row: ListRow,
+        (icon, label): (Icon, &str),
+        effect: &SetupEffect,
+        command: SetupCommand,
+    ) -> ListRow {
+        if let Some(binding) = self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(effect))
+        {
+            return row.action_binding(icon, label, binding);
+        }
+        let sink = Rc::clone(&self.commands);
+        row.action(icon, label, move || sink.borrow_mut().push(command))
+    }
+
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
@@ -1490,7 +1541,6 @@ impl SetupApp {
 
     /// One experience as a choice: what it is and what it does.
     fn experience_row(&self, experience: Experience) -> ListRow {
-        let sink = Rc::clone(&self.commands);
         let (id, secondary) = match experience {
             Experience::Desktop => (
                 "setup.experience.desktop",
@@ -1501,7 +1551,7 @@ impl SetupApp {
                 "Installs Tilo next to your current system, which stays the startup default.",
             ),
         };
-        ListRow::new(
+        let row = ListRow::new(
             id,
             if experience == Experience::FullOs {
                 super::strings::t("imager-setup-alongside")
@@ -1514,11 +1564,14 @@ impl SetupApp {
             Experience::FullOs => Icon::HardDrive,
         })
         .secondary(secondary)
-        .selected(self.chosen_experience == Some(experience))
-        .on_activate(move || {
-            sink.borrow_mut()
-                .push(SetupCommand::ChooseExperience(experience));
-        })
+        .selected(self.chosen_experience == Some(experience));
+        self.bind_effect(
+            row,
+            &SetupEffect::ChooseExperience {
+                experience: super::actions::experience_key(experience).to_owned(),
+            },
+            SetupCommand::ChooseExperience(experience),
+        )
     }
 
     fn experience_body(&self) -> Column {
@@ -1557,7 +1610,6 @@ impl SetupApp {
 
     /// One way of bringing folders over, as a choice.
     fn mode_row(&self, mode: FolderMode) -> ListRow {
-        let sink = Rc::clone(&self.commands);
         let (id, title, secondary) = match mode {
             FolderMode::Copy => (
                 "setup.mode.copy",
@@ -1575,10 +1627,16 @@ impl SetupApp {
                 "Start empty and add folders any time.",
             ),
         };
-        ListRow::new(id, title)
+        let row = ListRow::new(id, title)
             .secondary(secondary)
-            .selected(self.controller().default_mode() == mode)
-            .on_activate(move || sink.borrow_mut().push(SetupCommand::SetMode(mode)))
+            .selected(self.controller().default_mode() == mode);
+        self.bind_effect(
+            row,
+            &SetupEffect::SetCommonMode {
+                mode: super::actions::mode_key(mode).to_owned(),
+            },
+            SetupCommand::SetMode(mode),
+        )
     }
 
     /// The ways a folder can come over on this computer.
@@ -1644,18 +1702,21 @@ impl SetupApp {
                 items_phrase(folder.scan.skipped_count)
             );
         }
-        let remove = Rc::clone(&self.commands);
-        let mut row = ListRow::new(format!("setup.folder.{index}"), &source)
-            .icon(Icon::Folder)
-            .secondary(facts)
-            .action(Icon::X, "Remove", move || {
-                remove.borrow_mut().push(SetupCommand::RemoveFolder(index));
-            });
+        let token = self.controller().folder_token(index).unwrap_or_default();
+        let mut row = self.row_action(
+            ListRow::new(format!("setup.folder.{index}"), &source)
+                .icon(Icon::Folder)
+                .secondary(facts),
+            (Icon::X, "Remove"),
+            &SetupEffect::RemoveFolder {
+                folder: token.clone(),
+            },
+            SetupCommand::RemoveFolder(index),
+        );
         if folder.scan.skipped_count > 0 {
             row = row.warning();
         }
         let modes = self.offered_modes();
-        let sink = Rc::clone(&self.commands);
         let choices = modes.clone();
         let choice = ToggleGroup::new(
             modes
@@ -1668,13 +1729,20 @@ impl SetupApp {
                 .unwrap_or(0),
         )
         .with_id(format!("setup.folder.{index}.mode"))
-        .control_size(ControlSize::Small)
-        .on_change(move |chosen| {
-            if let Some(mode) = choices.get(chosen) {
-                sink.borrow_mut()
-                    .push(SetupCommand::SetFolderMode(index, *mode));
-            }
-        });
+        .control_size(ControlSize::Small);
+        // A segment past the modes names none, which the effect refuses.
+        let choice = match &self.actions {
+            Some(actions) => actions.bind_effect(
+                choice,
+                SetupEffect::SET_FOLDER_MODE.map(move |chosen: usize| {
+                    let mode = choices
+                        .get(chosen)
+                        .map_or("", |mode| super::actions::mode_key(*mode));
+                    (token.clone(), mode.to_owned())
+                }),
+            ),
+            None => choice,
+        };
         // How the folder comes over sits under it, on the page's edge with
         // the other controls, so a long path is never cut short.
         let mut controls = Row::new()
@@ -1751,22 +1819,22 @@ impl SetupApp {
                 if chosen(path) {
                     return None;
                 }
-                let sink = Rc::clone(&self.commands);
-                let add = Rc::clone(&self.commands);
-                Some(Box::new(
-                    ListRow::new(
-                        format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
-                        known.kind.label(),
-                    )
-                    .icon(Icon::Folder)
-                    .secondary(path.display().to_string())
-                    .action(Icon::Plus, "Add", move || {
-                        add.borrow_mut().push(SetupCommand::AddSuggested(index));
-                    })
-                    .on_activate(move || {
-                        sink.borrow_mut().push(SetupCommand::AddSuggested(index));
-                    }),
-                ) as Box<dyn Widget>)
+                let suggestion = known.kind.label().to_lowercase();
+                let add = SetupEffect::AddSuggestedFolder {
+                    suggestion: suggestion.clone(),
+                };
+                let row = self.row_action(
+                    ListRow::new(format!("setup.suggestion.{suggestion}"), known.kind.label())
+                        .icon(Icon::Folder)
+                        .secondary(path.display().to_string()),
+                    (Icon::Plus, "Add"),
+                    &add,
+                    SetupCommand::AddSuggested(index),
+                );
+                Some(
+                    Box::new(self.bind_effect(row, &add, SetupCommand::AddSuggested(index)))
+                        as Box<dyn Widget>,
+                )
             })
             .collect();
         let add_folder = self
@@ -2071,13 +2139,27 @@ impl SetupApp {
 
     fn review_body(&self) -> Column {
         if self.full_os_check.is_some() {
-            return stack()
+            let readiness = if self
+                .support_report
+                .as_ref()
+                .is_some_and(SupportReport::blocks_install)
+            {
+                "A component needed for the desktop is unsupported. Resolve it below, then check again."
+                    .to_string()
+            } else {
+                self.internal_readiness_text()
+            };
+            let mut body = stack()
                 .push(Box::new(Text::new(&super::strings::t(
                     "imager-setup-check-title",
                 ))))
                 .push(Box::new(
-                    Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
-                ))
+                    Text::new(&readiness).with_live(Politeness::Polite),
+                ));
+            for section in self.hardware_report_sections() {
+                body = body.push(section);
+            }
+            return body
                 .push(Box::new(self.internal_blockers_card(None)))
                 .push(Box::new(
                     self.button(
@@ -2118,6 +2200,14 @@ impl SetupApp {
             body = body
                 .push(Box::new(self.internal_plan_card()))
                 .push(Box::new(self.internal_blockers_card(None)));
+        }
+        if experience == Experience::FullOs && self.support_report.is_some() {
+            // The direct Full Tilo review reads this computer automatically,
+            // before any identity or migration work. Desktop has its own
+            // package and session check and does not use this report.
+            for section in self.hardware_report_sections() {
+                body = body.push(section);
+            }
         }
         if experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
@@ -2396,7 +2486,10 @@ impl SetupApp {
         if let Some(result) = &self.full_os_check {
             result.set(None);
             self.check_facts = None;
+            self.support_report = None;
         }
+        let wants_report = self.full_os_check.is_some()
+            || self.controller().plan().experience == Experience::FullOs;
         let Some(task) = self.internal_install.probe_task() else {
             return;
         };
@@ -2405,7 +2498,12 @@ impl SetupApp {
             "imager-host-probe",
             Box::new(move || {
                 let (facts, records) = task();
-                let _ = tx.send(WorkerMessage::HostProbe { facts, records });
+                let report = wants_report.then(probe_support_report);
+                let _ = tx.send(WorkerMessage::HostProbe {
+                    facts,
+                    records,
+                    report,
+                });
             }),
         ) {
             self.internal_install.probe_failed();
@@ -3117,7 +3215,11 @@ impl SetupApp {
             .with_enabled(
                 install
                     .install_blocker(self.internal_download_ready())
-                    .is_ok(),
+                    .is_ok()
+                    && !self
+                        .support_report
+                        .as_ref()
+                        .is_some_and(SupportReport::blocks_install),
             ),
         ))
     }
@@ -3139,6 +3241,20 @@ const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) ->
         Phase::Released => "released",
         Phase::Discarded => "discarded",
     }
+}
+
+fn probe_support_report() -> SupportReport {
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(report) = super::journey::main_story_tests::fixture_support_report() {
+        return report;
+    }
+    imager_backend::support_report::SupportReport::probe()
+}
+
+/// The component report supplied for another computer. Important limitations
+/// are expanded; working components stay compact.
+pub(crate) fn another_computer_report_sections(report: &SupportReport) -> Vec<Box<dyn Widget>> {
+    support_report::sections(report, support_report::Placement::AnotherComputer)
 }
 
 fn launch_worker(name: &str, task: WorkerTask) -> Result<(), String> {
@@ -3714,7 +3830,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn folder_selection_blocks_navigation_until_scans_and_pickers_settle() {
-        // Phase `folder_selection_held_scans_block_both_experiences_until_every_terminal_result`.
         {
             for experience in [Experience::Desktop, Experience::FullOs] {
                 let mut app = SetupApp::with_worker_launcher(
@@ -3766,7 +3881,6 @@ mod tests {
             }
         }
 
-        // Phase `folder_selection_pending_picker_blocks_next_until_cancelled`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3791,7 +3905,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Review);
         }
 
-        // Phase `folder_selection_disconnected_picker_recovers_with_existing_failure_path`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3812,7 +3925,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Review);
         }
 
-        // Phase `folder_selection_stale_desktop_install_is_disabled_and_rejected_until_settled`.
         {
             for pending in [PendingFolderSelection::Scan, PendingFolderSelection::Picker] {
                 let (render_app, _render_picker_tx) = stale_ready_desktop_review(pending);
@@ -3863,7 +3975,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn experience_commands_route_through_the_controller() {
-        // Phase `unavailable_experience_command_cannot_proceed`.
         {
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -3881,7 +3992,6 @@ mod tests {
             assert!(app.status.contains("available"));
         }
 
-        // Phase `copy_connected_and_later_commands_change_review`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3904,7 +4014,6 @@ mod tests {
             }
         }
 
-        // Phase `back_retains_experience_and_folder_settings`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
@@ -3957,7 +4066,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `enter_and_space_keyboard_events_reach_controller_commands`.
         {
             let app = supported_fixture();
             let observed = app.controller_handle();
@@ -3975,7 +4083,6 @@ mod tests {
             assert_eq!(observed.borrow().page(), SetupPage::Folders);
         }
 
-        // Phase `assistive_activation_reaches_controller_command`.
         {
             let app = supported_fixture();
             let observed = app.controller_handle();
@@ -4301,14 +4408,12 @@ mod tests {
             .unwrap();
     }
 
-    /// Failed scans, warnings, distinct destinations and launch failures.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn scan_results_warnings_and_launch_failures_are_truthful() {
-        // Phase `failed_scan_worker_never_becomes_a_completed_folder`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4321,7 +4426,6 @@ mod tests {
             assert!(!app.status.contains("ready to copy"));
         }
 
-        // Phase `partial_scan_warnings_persist_on_folder_and_review_screens`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4374,7 +4478,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `concurrent_same_basename_completions_receive_distinct_destinations`.
         {
             let mut app = supported_fixture();
             let destination = PathBuf::from(TEST_DEST_ROOT).join("Documents");
@@ -4399,7 +4502,6 @@ mod tests {
             );
         }
 
-        // Phase `worker_launch_failures_clear_pending_state`.
         {
             let mut scan_app = SetupApp::with_worker_launcher(
                 supported_fixture().capabilities,
@@ -4435,7 +4537,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn folder_sources_are_validated_before_scanning_and_show_mode_feedback() {
-        // Phase `protected_and_overlapping_sources_are_rejected_before_worker_launch`.
         {
             let mut protected = SetupApp::with_worker_launcher(
                 supported_fixture().capabilities,
@@ -4461,7 +4562,6 @@ mod tests {
             assert!(overlapping.status.contains("already covered"));
         }
 
-        // Phase `overlapping_scan_is_deduplicated_with_an_explanation`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4477,7 +4577,6 @@ mod tests {
             assert!(app.status.contains("already covered"));
         }
 
-        // Phase `system_folder_scan_is_refused`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4497,7 +4596,6 @@ mod tests {
             assert!(app.status.contains("system folder"));
         }
 
-        // Phase `var_home_user_folder_is_accepted`.
         #[cfg(unix)]
         {
             let mut app = supported_fixture();
@@ -4518,7 +4616,6 @@ mod tests {
             assert!(app.status.contains("ready to copy"));
         }
 
-        // Phase `inherited_and_overridden_folder_modes_have_visible_selection_feedback`.
         {
             let mut inherited = supported_fixture();
             inherited.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4618,7 +4715,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_review_shows_exact_status_and_recovers_from_failures() {
-        // Phase `initial_worker_loss_can_recheck_and_recover_navigation_in_the_same_app`.
         {
             RECOVERY_PROBES.store(0, Ordering::SeqCst);
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
@@ -4682,7 +4778,6 @@ mod tests {
             assert_eq!(RECOVERY_PROBES.load(Ordering::SeqCst), 2);
         }
 
-        // Phase `desktop_review_shows_exact_host_version_and_pending_destination_before_authorization`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4728,7 +4823,6 @@ mod tests {
             assert!(desktop < folders);
         }
 
-        // Phase `installed_review_leads_with_login_guidance_and_completion_status`.
         {
             let app = SetupApp::for_shot("setup-desktop-installed");
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
@@ -4758,7 +4852,6 @@ mod tests {
             );
         }
 
-        // Phase `native_failure_and_retry_retain_folder_choice_and_mode`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4792,7 +4885,6 @@ mod tests {
             assert_eq!(app.controller().default_mode(), FolderMode::Copy);
         }
 
-        // Phase `desktop_review_ignores_unselected_full_os_download_status`.
         {
             let mut app = SetupApp::for_shot("setup-review");
             app.desktop_revision = app.desktop_flow.revision();
@@ -4803,7 +4895,6 @@ mod tests {
             assert_eq!(app.status, expected);
         }
 
-        // Phase `full_os_review_ignores_unselected_desktop_install_status`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
@@ -4834,14 +4925,12 @@ mod tests {
         }
     }
 
-    /// Embedded import routing and issue pages.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn embedded_import_routes_the_live_child_and_its_public_pages() {
-        // Phase `opened_imports_replace_setup_in_the_published_tree`.
         {
             let mut app = launch(supported_fixture(), || {
                 ImportApp::for_shot("import-first-login-later")
@@ -4863,8 +4952,12 @@ mod tests {
                 .find(|resource| resource.kind == "imager.import.folder")
                 .unwrap()
                 .clone();
-            app.call_on(folder.id.as_str(), "set-folder-copy", serde_json::json!({}))
-                .unwrap();
+            app.call_on(
+                folder.id.as_str(),
+                "set-folder-mode",
+                serde_json::json!({"mode": "copy"}),
+            )
+            .unwrap();
 
             let updated = app.harness().resources();
             let folder = find_row(&updated, folder.id.as_str()).unwrap();
@@ -4877,7 +4970,6 @@ mod tests {
             );
         }
 
-        // Phase `opened_imports_publicly_observe_completed_issue_pages`.
         {
             let mut app = launch(supported_fixture(), || {
                 ImportApp::for_shot("import-issue-pages")
@@ -5132,7 +5224,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn semantic_setup_operations_validate_choices_identities_and_arguments() {
-        // Phase `semantic_operations_choose_navigate_retain_and_invalidate_review`.
         {
             let mut app = supported_fixture();
             let selected = invoke_setup(
@@ -5206,7 +5297,6 @@ mod tests {
             assert_eq!(back["selection"]["folder_count"], 1);
         }
 
-        // Phase `semantic_operations_refuse_unavailable_choices_without_mutating_state`.
         {
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -5244,7 +5334,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Folders);
         }
 
-        // Phase `semantic_operations_refuse_stale_identities_and_malformed_arguments`.
         {
             let mut app = supported_fixture();
             invoke_setup(
@@ -5288,7 +5377,6 @@ mod tests {
             assert_eq!(app.controller().folders(), before.as_slice());
         }
 
-        // Phase `suggested_folder_action_uses_live_choice_and_rechecks_availability`.
         {
             let mut app = supported_fixture();
             app.worker_launcher = accepted_without_completion_worker;
@@ -5332,7 +5420,6 @@ mod tests {
             assert!(invoke_encoded_setup(&mut app, &encoded).is_err());
         }
 
-        // Phase `retained_folder_action_uses_identity_after_earlier_folder_is_removed`.
         {
             let mut app = supported_fixture();
             invoke_setup(
@@ -5363,20 +5450,22 @@ mod tests {
                 .find(|action| action.id == "set-folder-mode")
                 .unwrap()
                 .clone();
-            let remove_a = match &remove_a.input {
-                tilo_actions::ActionInput::Immediate(encoded) => encoded.as_ref().clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("remove must be immediate")
-                }
-            };
-            let set_b = match &set_b.input {
-                tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
-                tilo_actions::ActionInput::Immediate(_)
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("set-mode must prompt for one mode")
-                }
-            };
+            assert!(
+                matches!(remove_a.input(), tilo_actions::ActionInput::Immediate(_)),
+                "remove must be immediate"
+            );
+            let remove_a = remove_a
+                .encode_immediate()
+                .expect("remove fires at once")
+                .as_ref()
+                .clone();
+            assert!(
+                matches!(set_b.input(), tilo_actions::ActionInput::Prompted { .. }),
+                "set-mode must prompt for one mode"
+            );
+            let set_b = set_b
+                .build_text("later")
+                .expect("set-mode builds from a mode");
             assert_ne!(set_b.type_id, "tilo.invalid_arguments");
 
             invoke_encoded_setup(&mut app, &remove_a).unwrap();
@@ -5389,14 +5478,12 @@ mod tests {
         }
     }
 
-    /// Setup actions and resource projection.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn setup_resource_follows_visible_pages_and_projects_folder_selection() {
-        // Phase `setup_actions_follow_visible_pages_and_import_takeover`.
         {
             let mut app = supported_fixture();
             assert!(
@@ -5472,7 +5559,6 @@ mod tests {
             );
         }
 
-        // Phase `setup_resource_projects_availability_help_and_import_navigation`.
         {
             let app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -5608,7 +5694,6 @@ mod tests {
             );
         }
 
-        // Phase `setup_resource_browses_complete_path_free_folder_selection`.
         {
             let mut app = supported_fixture();
             for (name, bytes) in [("Documents", 4096), ("Pictures", 2048)] {
@@ -6350,7 +6435,6 @@ mod tests {
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
         }
 
-        // Phase `full_os_shot_fixtures_pose_a_plan_blocker_and_restart`.
         {
             let review = SetupApp::for_shot("setup-full-review");
             assert!(review.on_full_os_review());

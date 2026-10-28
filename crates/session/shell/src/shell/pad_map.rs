@@ -50,7 +50,6 @@ impl PadControl {
     }
 }
 
-/// An edge of the pad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadSide {
     Left,
@@ -103,7 +102,6 @@ impl PadLayout {
 pub enum PadMapAction {
     /// The focused tablet-aware app's own label for it.
     App(String),
-    /// A shortcut the pad's settings map it to.
     Shortcut(ShortcutAction),
     /// What a ring or strip does in its current mode.
     Dial(PadDialAction),
@@ -233,7 +231,8 @@ impl PadMap {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let theme = &painted.theme;
         let colors = &theme.tokens.colors;
         let text_w = Some(f32_of_f64(card.width() - metrics.inset * 2.0));
         text_renderer.draw_text_weighted(

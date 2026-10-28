@@ -15,10 +15,6 @@ pub struct NativePublicationCut {
 }
 impl NativePublicationCut {
     /// Admit one publication into this cut.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the message is refused.
     pub fn push(self, message: NeighbourMsg, now: SystemTime) -> Result<Self, AdmissionError> {
         self.push_report(message, now, false).map(|(cut, _)| cut)
     }
@@ -48,11 +44,6 @@ impl NativePublicationCut {
         Ok((self, report))
     }
 
-    /// Finish the cut, returning the candidate peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the cut is incomplete.
     pub fn finish(mut self, now: SystemTime) -> Result<StatePeer, AdmissionError> {
         let publisher = self
             .candidate
@@ -105,11 +96,6 @@ fn pending_stamp(pending: &([u8; 32], NeighbourMsg, bool)) -> Result<[u8; 32], A
 }
 
 impl StatePeer {
-    /// Begin a native publication cut for `publisher`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if `publisher` may not publish at `now`.
     pub fn begin_native_publication_cut(
         &self,
         publisher: [u8; 32],

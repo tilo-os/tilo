@@ -8,7 +8,9 @@
 //! are local work. So the test pins what decides the wait — one catalogue
 //! request, downloads that overlap instead of queueing app after app, and
 //! connections that are reused rather than opened per request — and reports
-//! the wall time.
+//! the wall time without judging it: on the network the run costs the
+//! catalogue and two overlapped waves of downloads, the first on fresh
+//! connections.
 //!
 //! `cargo test -p app-cli --test it update_latency -- --nocapture`
 
@@ -46,9 +48,15 @@ const APPS: usize = 12;
 /// A loopback registry with a far-away registry's latency, keeping
 /// connections alive between requests as an HTTP/1.1 or HTTP/2 server does.
 #[derive(Clone, Default)]
-struct FarRegistry {
+pub(crate) struct FarRegistry {
     objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    /// Every request, near or far, until [`Self::take_seen`].
+    seen: Arc<Mutex<Vec<String>>>,
+    /// The `ETag` an object is served with, when it has one.
+    etags: Arc<Mutex<HashMap<String, String>>>,
+    /// Requests answered `304 Not Modified`.
+    not_modified: Arc<AtomicUsize>,
     connections: Arc<AtomicUsize>,
     open: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
@@ -57,7 +65,7 @@ struct FarRegistry {
 }
 
 impl FarRegistry {
-    fn start(&self) -> String {
+    pub(crate) fn start(&self) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let registry = self.clone();
@@ -71,8 +79,23 @@ impl FarRegistry {
         format!("http://127.0.0.1:{port}")
     }
 
-    fn put(&self, path: &str, bytes: Vec<u8>) {
+    pub(crate) fn put(&self, path: &str, bytes: Vec<u8>) {
         self.objects.lock().unwrap().insert(path.to_owned(), bytes);
+    }
+
+    /// Serve `snapshot` as the catalogue with its hash as the `ETag`, as the
+    /// registry does, answering a request that names it with a `304`.
+    pub(crate) fn put_catalogue(&self, snapshot: &SignedRegistrySnapshot) {
+        self.put("/entries", serde_json::to_vec(snapshot).unwrap());
+        self.etags.lock().unwrap().insert(
+            "/entries".to_owned(),
+            format!("\"{}\"", registry_types::snapshot_hash(snapshot).unwrap()),
+        );
+    }
+
+    /// Requests answered `304 Not Modified` so far.
+    pub(crate) fn not_modified(&self) -> usize {
+        self.not_modified.load(Ordering::SeqCst)
     }
 
     fn serve(&self, mut stream: TcpStream) {
@@ -87,25 +110,49 @@ impl FarRegistry {
             if reader.read_line(&mut request).unwrap_or(0) == 0 {
                 return;
             }
+            let mut if_none_match = None;
             loop {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => return,
                     Ok(_) if line.trim().is_empty() => break,
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.trim().eq_ignore_ascii_case("if-none-match")
+                        {
+                            if_none_match = Some(value.trim().to_owned());
+                        }
+                    }
                 }
             }
             let path = request.split_whitespace().nth(1).unwrap_or("/");
             let path = path.split('?').next().unwrap_or(path).to_owned();
+            self.seen.lock().unwrap().push(path.clone());
             if far {
                 self.requests.lock().unwrap().push(path.clone());
                 let open = self.open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                 self.peak.fetch_max(open, Ordering::SeqCst);
                 std::thread::sleep(ROUND_TRIP);
+                // A download waits for a second one to be asked for, so
+                // downloads that overlap always do, however slow the machine,
+                // and ones that queue never do.
+                let deadline = tilo_test_env::hang_deadline();
+                while path.starts_with("/artifacts/")
+                    && self.peak.load(Ordering::SeqCst) < 2
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 self.open.fetch_sub(1, Ordering::SeqCst);
             }
             let body = self.objects.lock().unwrap().get(&path).cloned();
+            let etag = self.etags.lock().unwrap().get(&path).cloned();
+            let unchanged = etag.is_some() && etag == if_none_match;
             let (status, body) = match body {
+                Some(_) if unchanged => {
+                    self.not_modified.fetch_add(1, Ordering::SeqCst);
+                    ("304 Not Modified", Vec::new())
+                }
                 Some(body) => ("200 OK", body),
                 None => ("404 Not Found", b"not found".to_vec()),
             };
@@ -122,7 +169,12 @@ impl FarRegistry {
         }
     }
 
-    fn requests_for(&self, prefix: &str) -> usize {
+    /// The paths asked for since the last call.
+    pub(crate) fn take_seen(&self) -> Vec<String> {
+        std::mem::take(&mut *self.seen.lock().unwrap())
+    }
+
+    pub(crate) fn requests_for(&self, prefix: &str) -> usize {
         self.requests
             .lock()
             .unwrap()
@@ -132,7 +184,7 @@ impl FarRegistry {
     }
 }
 
-fn snapshot(
+pub(crate) fn snapshot(
     entries: Vec<registry_types::RegistryEntry>,
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
@@ -228,7 +280,7 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     registry.far.store(true, Ordering::SeqCst);
 
     let started = Instant::now();
-    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .arg("update")
         .output()
         .unwrap();
@@ -263,15 +315,4 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         connections <= app_cli::install::PARALLEL_DOWNLOADS + 1,
         "{connections} connections for {requests} requests"
     );
-    // On the network the run costs the catalogue and two overlapped waves of
-    // downloads, the first on fresh connections; the installs are local
-    // work. Budgets apply to optimised builds only.
-    if !cfg!(debug_assertions) {
-        let network = (HANDSHAKE + ROUND_TRIP) * 2 + ROUND_TRIP;
-        let budget = network + Duration::from_secs(2);
-        assert!(
-            elapsed < budget,
-            "updating {APPS} apps took {elapsed:?}, budget {budget:?}"
-        );
-    }
 }

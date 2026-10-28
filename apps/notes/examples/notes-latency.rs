@@ -70,7 +70,6 @@ const BLOCKS: usize = 838;
 /// Blocks of the long note every typing and scrolling sample runs in; the
 /// other notes share the rest.
 const LONG_NOTE_BLOCKS: usize = 136;
-/// Blocks of each other note.
 const SHARE: usize = (BLOCKS - LONG_NOTE_BLOCKS) / (PAGES - 1);
 const _: () = assert!(
     LONG_NOTE_BLOCKS + SHARE * (PAGES - 1) == BLOCKS,

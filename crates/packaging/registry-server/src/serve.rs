@@ -4,7 +4,10 @@
 //!
 //! - `GET  /registry`             → `RegistryHandshake` JSON
 //! - `GET  /health`               → `{ "ok": true }`
-//! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`
+//! - `GET  /metrics`              → when the channel authorization and the
+//!   published snapshot expire, for the operator's alerts (`crate::metrics`)
+//! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`,
+//!   expired or not (clients judge freshness)
 //! - `GET  /entries?format=compact` → its `CompactRegistrySnapshot`, or the
 //!   full snapshot while no current compact form exists
 //! - `GET  /indexes/<blake3>.json` → a version index a compact snapshot names
@@ -198,6 +201,9 @@ pub async fn handle(
             &serde_json::json!({"ok": true}),
         )),
         (Method::GET, "/registry") => handle_get_registry(&state),
+        (Method::GET, "/metrics") => published(&state)
+            .await
+            .map(|published| crate::metrics::response(&published)),
         (Method::GET, "/entries") => {
             let format = SnapshotFormat::requested(req.uri().query());
             published(&state)
@@ -598,23 +604,24 @@ fn handle_get_entries(
     format: SnapshotFormat,
     if_none_match: Option<&str>,
 ) -> Response<Full<Bytes>> {
-    let now = tilo_clock::unix_now();
+    // An authentic snapshot is served whether or not it has expired: every
+    // client checks freshness itself, and only with the signed bytes can a
+    // device tell "the catalogue expired" from "the registry is unreachable".
+    // Refusing it here also failed readiness on every replica at once (the
+    // snapshot is shared state), so the ingress answered "no available
+    // server" for every route, `/registry` and uploads included.
     if format == SnapshotFormat::Compact
         && let Some(compact) = &published.compact
-        && compact.fresh_at(now)
-        && matches!(&published.full, FullSnapshot::Verified { encoded, .. } if encoded.fresh_at(now))
     {
         return revalidated_json(compact, if_none_match);
     }
     match &published.full {
         // Clients revalidate on every visit; the snapshot hash names the
         // exact signed bytes, so an unchanged catalogue costs a 304.
-        FullSnapshot::Verified { encoded, .. } if encoded.fresh_at(now) => {
-            revalidated_json(encoded, if_none_match)
-        }
-        FullSnapshot::Verified { .. } | FullSnapshot::Refused => text_response(
+        FullSnapshot::Verified { encoded, .. } => revalidated_json(encoded, if_none_match),
+        FullSnapshot::Refused => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "published registry snapshot failed verification or expired",
+            "published registry snapshot failed verification",
         ),
         FullSnapshot::Missing => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -657,11 +664,8 @@ fn revalidated_json(
 }
 
 fn handle_get_entry(published: &Published, package_id: &str) -> Response<Full<Bytes>> {
-    let now = tilo_clock::unix_now();
     match &published.full {
-        FullSnapshot::Verified { encoded, packages }
-            if encoded.fresh_at(now) && packages.contains(package_id) =>
-        {
+        FullSnapshot::Verified { encoded, packages } if packages.contains(package_id) => {
             // Return the complete signed object: a detached row would discard
             // the owner's authorization and inclusion proof.
             json_bytes_response(StatusCode::OK, encoded.body.clone())
@@ -1046,7 +1050,6 @@ fn store_upload(
     ))
 }
 
-/// The allowlist row of the entry's publisher, if it has one.
 fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::PublisherRow> {
     let key: [u8; 32] = hex::decode(&entry.publisher_pubkey_hex)
         .ok()?
@@ -1059,8 +1062,6 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
         .ok()
         .and_then(|allowlist| allowlist.get(&key).cloned())
 }
-
-// ---- response helpers ------------------------------------------
 
 /// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
 /// downloaded a thin package fetches only the blobs it lacks. Content

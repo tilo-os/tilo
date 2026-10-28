@@ -2,8 +2,8 @@
 //!
 //! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
 //! and distroboxes mirrored from rootless podman) and presents it in a
-//! [`NavShell`]: the sections are the sidebar, the container list is the
-//! overview and the chosen container is the content (see [`crate::view`]).
+//! [`NavShell`](ui::widget::NavShell): the sections are the sidebar, the container list is the
+//! overview and the chosen container is the content (see `crate::view`).
 //! Dialogs (confirming a removal, asking for a name, the new-container form,
 //! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!
@@ -29,9 +29,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::Effect as _;
-use ui::time::Instant;
+use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
-use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
     Widget,
@@ -42,7 +42,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::draft::CreateField;
-use crate::model::{DetailTab, Engine, Section};
+use crate::model::{Container, DetailTab, Engine, Section};
 use crate::podman::{self, Action, StreamMsg};
 use crate::resource::Containers;
 use crate::view::{self, Intent, Intents};
@@ -92,11 +92,9 @@ impl Confirm {
 /// Kind of text the prompt dialog collects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
-    /// Create a new named volume.
     NewVolume,
     /// Tag an existing image (the source is in `Prompt::context`).
     TagImage,
-    /// Pull an image by reference.
     PullImage,
 }
 
@@ -146,17 +144,82 @@ impl Prompt {
 /// Live progress of a streaming `podman pull`.
 pub(crate) struct PullProgress {
     pub(crate) reference: String,
-    /// Most recent progress lines (tail-bounded).
+    /// The engine's output so far, oldest first, as the sheet scrolls it.
     pub(crate) lines: Vec<String>,
     pub(crate) done: bool,
     pub(crate) failed: Option<String>,
+    /// The person stopped it and the engine was told to end it.
+    pub(crate) stopped: bool,
+    /// Bytes the engine has fetched, when its output says: "412 MB of 1.2 GB".
+    pub(crate) fetched: Option<(u64, Option<u64>)>,
+    /// What ends the download: pressing Stop sets it, and the worker kills
+    /// the engine's process rather than only hiding the sheet.
+    pub(crate) stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Background-thread message: a fresh engine probe arrived, or a streaming
-/// op (pull) emitted a line / finished.
+/// How long a lifecycle verb may take to show in the engine before the app
+/// stops claiming it is in flight.
+const VERB_IN_FLIGHT_FOR: Duration = Duration::from_secs(30);
+
+/// A verb asked of the engine on a container, and the state it was in when
+/// asked: the verb has landed once the engine reports another state.
+#[derive(Clone, Debug)]
+struct InFlight {
+    id: String,
+    was: crate::model::ContainerStatus,
+    asked: Instant,
+}
+
+/// How many output lines a pull keeps: enough to read why it stalled (an auth
+/// prompt, a retrying layer) without holding a whole pull log in memory.
+const PULL_LINES_KEPT: usize = 500;
+
+/// What an engine output line says about bytes fetched: `Copying blob … 2.1 MiB
+/// / 3.4 MiB`, or the fetched size alone where the engine names no total.
+fn pulled_bytes(line: &str) -> Option<(u64, Option<u64>)> {
+    /// The scale of a byte unit, as Podman writes it.
+    fn scale(unit: &str) -> Option<f64> {
+        Some(match unit.to_ascii_lowercase().as_str() {
+            "b" => 1.0,
+            "kb" | "kib" => 1_024.0,
+            "mb" | "mib" => 1_048_576.0,
+            "gb" | "gib" => 1_073_741_824.0,
+            _ => return None,
+        })
+    }
+    /// The last size in `segment`, written `2.1 MiB` or as one token `2.1MiB`.
+    fn size(segment: &str) -> Option<u64> {
+        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        tokens.iter().enumerate().rev().find_map(|(index, token)| {
+            let (number, unit) = match token.find(|c: char| c.is_ascii_alphabetic()) {
+                Some(at) => token.split_at(at),
+                // A bare number is a size only when the word after it is
+                // the unit: `… 9fa9226be034 2.1 MiB`.
+                None => (*token, *tokens.get(index + 1)?),
+            };
+            let value: f64 = number.parse().ok()?;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a parsed byte count is a whole, positive number well inside u64"
+            )]
+            let bytes = (value * scale(unit)?) as u64;
+            Some(bytes)
+        })
+    }
+    let (done, total) = line.split_once('/').unwrap_or((line, ""));
+    Some((size(done)?, size(total)))
+}
+
+/// Background-thread message: a fresh engine probe arrived, a streaming op
+/// (pull) emitted a line or finished, or the chosen container's detail was
+/// read.
 pub(crate) enum Bg {
     Snapshot(Engine),
     Pull(StreamMsg),
+    /// The chosen container with its logs and inspect data, read beside the
+    /// probe so the Logs tab follows a container that keeps logging.
+    Detail(Box<Container>),
 }
 
 #[cfg(test)]
@@ -181,9 +244,6 @@ pub struct ControlledRefreshRequest {
 
 #[cfg(test)]
 impl ControlledRefreshRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -200,27 +260,18 @@ pub struct ControlledPullRequest {
 
 #[cfg(test)]
 impl ControlledPullRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn line(&self, line: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Line(line.into())))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn done(&self) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Done))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn fail(&self, error: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Failed(error.into())))
@@ -238,10 +289,6 @@ pub struct ControlledCreateRequest {
 impl ControlledCreateRequest {
     /// Deliver the existing post-run refresh event. The current create worker
     /// exposes no classified create success/failure result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn post_run_snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -318,6 +365,11 @@ pub struct ContainersApp {
     #[cfg(test)]
     controlled_immediate_results: Option<Receiver<Result<(), String>>>,
     pub(crate) last_refresh: Instant,
+    /// A lifecycle verb asked of the engine and not yet visible in it: the
+    /// container, the state it was in, and when it was asked. Until the
+    /// engine answers, that container's controls wait — after clicking Stop on
+    /// a slow container nothing changed for seconds, so people clicked again.
+    in_flight: Option<InFlight>,
     pub(crate) live: bool,
     /// Showing a past version in History: nothing here is live.
     past: bool,
@@ -380,6 +432,7 @@ impl ContainersApp {
             intents: intents.clone(),
             offsets: view::Offsets::default(),
             sort: ui::LocalState::new(None),
+            detail_title: ui::LocalState::new(String::new()),
         };
         let window = view::window(&parts);
         Self {
@@ -411,6 +464,7 @@ impl ContainersApp {
             #[cfg(test)]
             controlled_immediate_results: None,
             last_refresh: ui::time::now(),
+            in_flight: None,
             live: false,
             past: false,
             structure_dirty: true,
@@ -511,7 +565,6 @@ impl ContainersApp {
         self.publish_model();
     }
 
-    /// Show the selected container's `tab`.
     pub(crate) fn show_tab(&mut self, tab: DetailTab) {
         self.view.tab = tab;
         self.parts.offsets.detail.set((0.0, 0.0));
@@ -627,7 +680,6 @@ impl ContainersApp {
         rows
     }
 
-    /// The live row `id`, wherever it is in the engine.
     pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
         let live = self.engine.live;
         if let Some(container_id) = id
@@ -697,8 +749,6 @@ impl ContainersApp {
         !self.past && (self.engine.live || !self.live)
     }
 
-    // ---- background work ------------------------------------------------
-
     /// Kick a background podman re-probe so stats stay fresh without blocking
     /// the UI thread. No-op offline.
     pub(crate) fn spawn_refresh(&mut self) {
@@ -714,9 +764,32 @@ impl ContainersApp {
             ));
             return;
         }
+        let selected = self.view.selected.clone();
         std::thread::spawn(move || {
             let engine = podman::probe().engine;
+            // The chosen container's logs and inspect data are read beside the
+            // probe, on this thread: a container that logs an error after it
+            // was opened says so on the next pass, and the UI thread never
+            // waits on Podman for it.
+            let detail = selected
+                .and_then(|id| {
+                    let mut container = engine.containers.iter().find(|c| c.id == id)?.clone();
+                    podman::inspect_into(&mut container);
+                    match podman::fetch_logs(&id, 200) {
+                        Ok(logs) => {
+                            container.logs = logs;
+                            container.logs_error = None;
+                            container.logs_fetched_unix_ms = ui::time::try_unix_now_ms();
+                        }
+                        Err(error) => container.logs_error = Some(error),
+                    }
+                    Some(container)
+                })
+                .map(|container| Bg::Detail(Box::new(container)));
             let _ = tx.send(Bg::Snapshot(engine));
+            if let Some(detail) = detail {
+                let _ = tx.send(detail);
+            }
         });
     }
 
@@ -754,10 +827,12 @@ impl ContainersApp {
         let Some(rx) = &self.bg_rx else { return };
         let mut latest = None;
         let mut pull_msgs = Vec::new();
+        let mut details = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 Bg::Snapshot(e) => latest = Some(e),
                 Bg::Pull(m) => pull_msgs.push(m),
+                Bg::Detail(container) => details.push(container),
             }
         }
         for msg in pull_msgs {
@@ -770,10 +845,10 @@ impl ContainersApp {
                 && let Some(old) = self.engine.find(&sel).cloned()
                 && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel)
             {
-                if newc.logs.is_empty() {
-                    newc.logs = old.logs;
-                    newc.logs_error = old.logs_error;
-                }
+                // Logs are not carried over: the detail read beside this probe
+                // replaces them below, so the tab shows what the container has
+                // written now rather than what it had written when it was
+                // opened.
                 if newc.env.is_empty() {
                     newc.env = old.env;
                 }
@@ -784,9 +859,25 @@ impl ContainersApp {
             self.engine = fresh;
             self.engine_changed();
         }
+        for detail in details {
+            let Some(container) = self
+                .engine
+                .containers
+                .iter_mut()
+                .find(|c| c.id == detail.id)
+            else {
+                continue;
+            };
+            *container = *detail;
+            self.engine_changed();
+        }
     }
 
-    /// Hydrate the selected container's detail (logs + inspect) on demand.
+    /// Read the chosen container's detail (logs + inspect). The read happens
+    /// on the background probe thread, never here: opening a container used to
+    /// wait on Podman in the frame, and its logs were read once and then
+    /// carried over unchanged, so the tab showed a container's first 200 lines
+    /// for as long as it stayed open.
     pub(crate) fn hydrate_selection(&mut self) {
         let Some(sel) = self.view.selected.clone() else {
             return;
@@ -805,19 +896,8 @@ impl ContainersApp {
             let _ = controlled.send(ControlledRuntimeRequest::SelectedDetails { target: sel });
             return;
         }
-        let logs = podman::fetch_logs(&sel, 200);
-        if let Some(c) = self.engine.containers.iter_mut().find(|c| c.id == sel) {
-            podman::inspect_into(c);
-            match logs {
-                Ok(logs) => {
-                    c.logs = logs;
-                    c.logs_error = None;
-                }
-                Err(error) => {
-                    c.logs_error = Some(error);
-                }
-            }
-            self.engine_changed();
+        if self.last_refresh.elapsed() >= std::time::Duration::from_millis(250) {
+            self.spawn_refresh();
         }
     }
 
@@ -880,8 +960,6 @@ impl ContainersApp {
         self.engine_changed();
     }
 
-    // ---- streaming pull -------------------------------------------------
-
     /// Start a streaming `podman pull` of `reference` on a worker thread and
     /// show its progress. Offline it simulates a quick success so the demo
     /// responds.
@@ -896,6 +974,9 @@ impl ContainersApp {
             lines: vec![format!("Trying to pull {reference}...")],
             done: false,
             failed: None,
+            stopped: false,
+            fetched: None,
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         self.pull_dirty = true;
         if self.live {
@@ -911,9 +992,15 @@ impl ContainersApp {
                         }));
                     return;
                 }
+                let stop = self
+                    .pull
+                    .as_ref()
+                    .map_or_else(Default::default, |p| std::sync::Arc::clone(&p.stop));
                 std::thread::spawn(move || {
                     let (ptx, prx) = std::sync::mpsc::channel();
-                    let worker = std::thread::spawn(move || podman::stream_command(&args, &ptx));
+                    let worker = std::thread::spawn(move || {
+                        podman::stream_command_stoppable(&args, &ptx, &stop);
+                    });
                     while let Ok(msg) = prx.recv() {
                         let last = matches!(msg, StreamMsg::Done | StreamMsg::Failed(_));
                         if tx.send(Bg::Pull(msg)).is_err() || last {
@@ -931,17 +1018,37 @@ impl ContainersApp {
         }
     }
 
+    /// Ask the engine to end the download. The worker kills the process, so
+    /// stopping means stopped rather than hidden.
+    pub(crate) fn stop_pull(&mut self) {
+        let Some(pull) = &mut self.pull else { return };
+        if pull.done || pull.stopped {
+            return;
+        }
+        pull.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.pull_dirty = true;
+        self.rebuild_pull();
+    }
+
     /// Fold one streamed pull message into the progress.
     fn apply_pull_msg(&mut self, msg: StreamMsg) {
         let Some(p) = &mut self.pull else { return };
         self.pull_dirty = true;
         match msg {
             StreamMsg::Line(l) => {
+                if let Some(fetched) = pulled_bytes(&l) {
+                    p.fetched = Some(fetched);
+                }
                 p.lines.push(l);
                 let n = p.lines.len();
-                if n > 200 {
-                    p.lines.drain(0..n - 200);
+                if n > PULL_LINES_KEPT {
+                    p.lines.drain(0..n - PULL_LINES_KEPT);
                 }
+            }
+            StreamMsg::Stopped => {
+                p.stopped = true;
+                let r = p.reference.clone();
+                self.show_toast(format!("Stopped pulling {r}"), false);
             }
             StreamMsg::Done => {
                 p.done = true;
@@ -955,8 +1062,6 @@ impl ContainersApp {
             }
         }
     }
-
-    // ---- image / volume actions ----------------------------------------
 
     /// Remove an image (post-confirmation). Force-removes so an unused tag
     /// goes even if a stopped container references it.
@@ -976,7 +1081,6 @@ impl ContainersApp {
         }
     }
 
-    /// Tag an image with a new reference.
     pub(crate) fn tag_image(&mut self, source: &str, new_tag: &str) {
         let new_tag = new_tag.trim();
         if new_tag.is_empty() {
@@ -1136,8 +1240,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- dialogs --------------------------------------------------------
-
     pub(crate) fn set_create_open(&mut self, open: bool) {
         if self.create_open == open {
             return;
@@ -1194,6 +1296,7 @@ impl ContainersApp {
 
     fn rebuild_pull(&mut self) {
         let had = self.pull_dialog.is_some();
+        let intents = self.intents.clone();
         self.pull_dialog = self.pull.as_ref().map(|pull| {
             let dismiss = self.intents.clone();
             let title = if pull.failed.is_some() {
@@ -1203,9 +1306,9 @@ impl ContainersApp {
             } else {
                 format!("Pulling {}", pull.reference)
             };
-            // One way out: the close control (and Escape). Closing while the
-            // pull runs only hides it; a toast says when it finishes.
-            ModalDialog::new(title, view::pull_body(pull))
+            // Closing while the pull runs stops it: hiding a download that
+            // keeps consuming bandwidth and disk was the whole problem.
+            ModalDialog::new(title, view::pull_body(pull, &intents))
                 .with_test_id("containers-pull-dialog")
                 .on_dismiss(move || dismiss.push(Intent::ClosePull))
                 .open(true)
@@ -1308,6 +1411,9 @@ impl ContainersApp {
                     ],
                     done: false,
                     failed: None,
+                    stopped: false,
+                    fetched: Some((2_202_009, Some(3_565_158))),
+                    stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 });
                 self.rebuild_pull();
             }
@@ -1337,8 +1443,6 @@ impl ContainersApp {
             });
         }
     }
-
-    // ---- intents --------------------------------------------------------
 
     /// Apply what the window's controls asked for.
     pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -1408,15 +1512,22 @@ impl ContainersApp {
                 self.prompt = None;
                 self.rebuild_prompt();
             }
+            Intent::StopPull => self.stop_pull(),
             Intent::ClosePull => {
+                // Closing a pull that is still running ends it.
+                if self
+                    .pull
+                    .as_ref()
+                    .is_some_and(|p| !p.done && p.failed.is_none())
+                {
+                    self.stop_pull();
+                }
                 self.pull = None;
                 self.rebuild_pull();
             }
             Intent::Reconnect => self.spawn_refresh(),
         }
     }
-
-    // ---- view state -----------------------------------------------------
 
     /// Hand the window what it shows, when that changed.
     fn publish_model(&mut self) {
@@ -1428,6 +1539,16 @@ impl ContainersApp {
             return;
         }
         self.published = Some(published);
+        let title = view
+            .selected
+            .as_deref()
+            .and_then(|id| self.engine.find(id))
+            .map(|container| container.name.clone())
+            .unwrap_or_default();
+        if self.parts.detail_title.with(|shown| *shown != title) {
+            self.parts.detail_title.set(title);
+        }
+        let busy = self.saw_in_flight();
         self.parts.model.set(
             view::Model {
                 engine: Rc::new(self.engine.clone()),
@@ -1435,6 +1556,7 @@ impl ContainersApp {
                 controls: self.engine_controls_available(),
                 connected: self.connected(),
                 missing: self.live && !self.engine.live,
+                busy,
                 ..view::Model::default()
             }
             .digested(),
@@ -1469,7 +1591,6 @@ impl ContainersApp {
         }
     }
 
-    /// The dialog on top, if one is open.
     fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
         if let Some(dialog) = self.confirm_dialog.as_mut() {
             return Some(dialog);
@@ -1519,27 +1640,9 @@ impl ContainersApp {
         }
         out
     }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        self.toast.paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-        );
-    }
 }
 
-/// How a finished lifecycle verb reads in a toast.
+/// How a finished lifecycle verb reads in the window bar's notice.
 pub(crate) fn past_tense(action: Action) -> &'static str {
     match action {
         Action::Start => "Started",
@@ -1588,6 +1691,8 @@ impl Widget for ContainersApp {
                 self.rebuild_pull();
             }
             self.toast.expire();
+            // The result says so in the window's bar while it lasts.
+            self.toast.publish();
             self.publish_model();
         }
         self.window.sync(state, path);
@@ -1708,8 +1813,6 @@ impl Widget for ContainersApp {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, tr, theme, presence);
         }
-        let window = presence.viewport.get().unwrap_or(self.rect);
-        self.paint_toast(scene, transform, tr, theme, window);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1786,16 +1889,12 @@ impl Widget for ContainersApp {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("Containers")
-            .with_description(&self.engine.connection)
-            .with_bounds(self.rect);
-        root.children.extend(
-            self.toast
-                .access_node()
-                .map(|node| node.with_hashed_key("containers.toast")),
-        );
-        Some(root)
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Containers")
+                .with_description(&self.engine.connection)
+                .with_bounds(self.rect),
+        )
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -1897,12 +1996,12 @@ impl ContainersApp {
                 } else {
                     Vec::new()
                 },
+                logs_fetched_unix_ms: None,
             }],
             ..Engine::default()
         }
     }
 
-    /// Whether the new-container form is open.
     pub fn is_create_open(&self) -> bool {
         self.create_open
     }
@@ -1917,7 +2016,6 @@ impl ContainersApp {
         self.view.selected.as_deref()
     }
 
-    /// The selected container's detail tab.
     pub fn tab(&self) -> DetailTab {
         self.view.tab
     }
@@ -1947,7 +2045,7 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
     )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.label = format!("Open {}", container.name);
+        open.type_mut().label = format!("Open {}", container.name);
         open
     });
     let effects = match container.status {
@@ -2039,6 +2137,49 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
 }
 
 impl ContainersApp {
+    /// Note that `verb` was asked on `target` and has not shown in the engine
+    /// yet, so the container's controls wait for it.
+    fn begin_in_flight(&mut self, kind: &str, target: &str) {
+        if kind != "containers.container" {
+            return;
+        }
+        let was = self.engine.find(target).map(|c| c.status);
+        self.in_flight = was.map(|was| InFlight {
+            id: target.to_owned(),
+            was,
+            asked: ui::time::now(),
+        });
+        self.engine_changed();
+    }
+
+    /// The container a verb is in flight on, dropping a record the engine has
+    /// already answered or one that waited too long to keep claiming.
+    fn saw_in_flight(&mut self) -> Option<String> {
+        let asked = self.in_flight.as_ref()?;
+        let answered = self
+            .engine
+            .find(&asked.id)
+            .is_none_or(|c| c.status != asked.was);
+        if answered || asked.asked.elapsed() >= VERB_IN_FLIGHT_FOR {
+            self.in_flight = None;
+            return None;
+        }
+        Some(asked.id.clone())
+    }
+
+    /// What a verb is called while the engine is doing it.
+    fn in_flight_word(verb: &str) -> &'static str {
+        match verb {
+            "start" => "Starting",
+            "stop" => "Stopping",
+            "restart" => "Restarting",
+            "pause" => "Pausing",
+            "unpause" => "Resuming",
+            "remove" => "Removing",
+            _ => "Asking the engine for",
+        }
+    }
+
     /// Ask the engine to `verb` the `kind` of thing named `target`.
     pub(crate) fn run_engine_operation(
         &mut self,
@@ -2056,8 +2197,10 @@ impl ContainersApp {
             vec![verb.to_string(), target.to_string()],
         ) {
             result?;
+            self.begin_in_flight(kind, target);
             self.spawn_refresh();
-            self.show_toast(format!("{verb} accepted for {target}"), false);
+            let name = self.container_name(target);
+            self.show_toast(format!("{} {name}…", Self::in_flight_word(verb)), false);
             return Ok(());
         }
         match (kind, verb) {
@@ -2077,8 +2220,14 @@ impl ContainersApp {
             }
             _ => return Err(format!("`{verb}` is not a container engine operation")),
         }
+        self.begin_in_flight(kind, target);
         self.spawn_refresh();
-        self.show_toast(format!("{verb} accepted for {target}"), false);
+        let name = if kind == "containers.container" {
+            self.container_name(target)
+        } else {
+            target.to_owned()
+        };
+        self.show_toast(format!("{} {name}…", Self::in_flight_word(verb)), false);
         Ok(())
     }
 }
@@ -2100,6 +2249,24 @@ mod tests {
 
     fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
         driver.root_mut::<ContainersApp>()
+    }
+
+    /// A finished verb says so in the window's bar, not over the list.
+    #[test]
+    fn a_result_is_the_window_bars_notice() {
+        let mut d = driver(staged());
+        app_of(&mut d).show_toast("Stopped web", false);
+        d.relayout();
+        let notice = ui::window_toolbar::notice().expect("the bar shows the result");
+        assert_eq!(notice.text, "Stopped web");
+        assert_eq!(notice.kind, ToastKind::Success);
+        app_of(&mut d).show_toast("Podman isn't running", true);
+        d.relayout();
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind)),
+            Some(("Podman isn't running".to_owned(), ToastKind::Error)),
+            "a newer result replaces the older one"
+        );
     }
 
     #[test]
@@ -2167,6 +2334,86 @@ mod tests {
         assert!(
             !d.targets().contains_key("detail-close"),
             "with nothing chosen there is nothing to close"
+        );
+    }
+
+    #[test]
+    fn the_section_and_its_commands_are_in_the_window_bar() {
+        let mut d = driver(staged());
+        d.present_in_window_bar();
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        let app = app_of(&mut d);
+        let chosen = app
+            .selected()
+            .and_then(|id| app.engine.find(id))
+            .map(|container| container.name.clone())
+            .expect("the staged window shows a container");
+        assert_eq!(
+            bar.location
+                .as_ref()
+                .map(|location| location.label.as_str()),
+            Some(chosen.as_str()),
+            "the chosen container names the window"
+        );
+        let names: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"Remove"),
+            "the container's verbs are bar actions: {names:?}"
+        );
+        assert!(
+            !d.targets()
+                .keys()
+                .any(|id| id.starts_with("detail-remove-")),
+            "the detail draws no verbs of its own"
+        );
+        assert!(
+            !bar.actions
+                .iter()
+                .any(|action| action.name.contains("Search")),
+            "the bar's own search is the only one: {:?}",
+            bar.actions
+        );
+        let close = bar
+            .actions
+            .iter()
+            .find(|action| action.name == "Close details")
+            .expect("closing the detail is a bar action");
+        assert_eq!(
+            close.icon, "panel-right",
+            "closing the detail shows the pane it closes, not a cross beside the search"
+        );
+        let close = close.id.clone();
+        assert!(
+            !d.targets().contains_key("detail-close"),
+            "the window draws no header row of its own"
+        );
+        d.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: close });
+        // The shell presses the header's button in the frame's settle pass;
+        // the window then dispatches what the button invoked.
+        d.idle();
+        d.relayout();
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "the bar closed the detail"
+        );
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Containers"),
+            "with nothing chosen the section names the window"
+        );
+
+        d.key("2");
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Images")
         );
     }
 
@@ -2525,6 +2772,63 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "nothing reaches the engine before the host answers"
+        );
+    }
+
+    /// A container that logs after it was opened says so: the detail read
+    /// beside the probe replaces what the tab showed, instead of the first
+    /// read being carried over for as long as the container stays open
+    /// (`APP-containers-01`).
+    #[test]
+    fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
+        let (mut app, _requests, _results) = ContainersApp::controlled_runtime_root();
+        app.show_engine(ContainersApp::controlled_engine("controlled Podman", true));
+        app.select_container(Some("armed-container".into()));
+        let mut fresh = app
+            .engine
+            .find("armed-container")
+            .cloned()
+            .expect("the container is there");
+        fresh.logs = vec!["error: upstream timed out".into()];
+        fresh.logs_fetched_unix_ms = Some(1_700_000_000_000);
+        app.bg_tx
+            .as_ref()
+            .expect("the controlled runtime has a channel")
+            .send(Bg::Detail(Box::new(fresh)))
+            .unwrap();
+        app.drain_bg();
+        let shown = app.engine.find("armed-container").expect("still there");
+        assert_eq!(shown.logs, ["error: upstream timed out".to_string()]);
+        assert_eq!(shown.logs_fetched_unix_ms, Some(1_700_000_000_000));
+    }
+
+    /// Stopping a pull asks the engine to end it, and the sheet says it
+    /// stopped rather than pretending it finished.
+    #[test]
+    fn stopping_a_pull_ends_it_rather_than_hiding_it() {
+        let (mut app, _requests, _results) = ContainersApp::controlled_runtime_root();
+        app.start_pull("docker.io/library/alpine:3.20");
+        let pull = app.pull.as_ref().expect("the pull sheet is open");
+        assert!(!pull.stop.load(std::sync::atomic::Ordering::Acquire));
+        app.stop_pull();
+        let pull = app.pull.as_ref().expect("the sheet stays open");
+        assert!(pull.stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!pull.stopped, "the engine has not confirmed yet");
+        app.apply_pull_msg(StreamMsg::Stopped);
+        assert!(app.pull.as_ref().is_some_and(|p| p.stopped));
+    }
+
+    /// What Podman's layer lines say about the bytes fetched.
+    #[test]
+    fn a_layer_line_says_how_many_bytes_are_fetched() {
+        assert_eq!(
+            pulled_bytes("Copying blob sha256:9fa9226be034 2.1 MiB / 3.4 MiB"),
+            Some((2_202_009, Some(3_565_158)))
+        );
+        assert_eq!(pulled_bytes("Copying blob sha256:9fa9226be034 done"), None);
+        assert_eq!(
+            pulled_bytes("Trying to pull docker.io/library/alpine:3.20"),
+            None
         );
     }
 

@@ -5,6 +5,7 @@
 //! to the outer app document and never commits a live edit while browsing.
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
+use tilo_sort::CompactSort as _;
 
 use crate::bound_dispatch::{BoundDispatchError, CallbackBinding};
 use crate::history_source::{
@@ -73,7 +74,7 @@ impl RestoreReview {
 }
 
 fn sorted(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 
@@ -189,7 +190,6 @@ fn apply_record_restore(
         _ => HistoryError::Unavailable,
     })?;
     if receipt.changed {
-        // Record persistence and sync observe the new canonical heads.
         binding
             .records
             .schedule_committed_history(&binding.checkout.id);
@@ -426,8 +426,21 @@ impl StandaloneHistory {
     }
 
     /// Capture the committed state after `entry` together with the live
-    /// frontier being reviewed. Nothing is written.
+    /// frontier being reviewed, for a restore. Nothing is written.
     pub(crate) fn review_restore(
+        &mut self,
+        context: &HistoryReadContext<'_>,
+        entry: HistoryEntryId,
+    ) -> Result<RestoreReview, HistoryError> {
+        let review = self.view_at(context, entry)?;
+        self.target.admit_restore(context)?;
+        Ok(review)
+    }
+
+    /// The committed state after `entry` and the live frontier it was read
+    /// against. Looking at a past state is a read: it needs only what
+    /// listing needs, so whoever may read the document may look.
+    pub(crate) fn view_at(
         &mut self,
         context: &HistoryReadContext<'_>,
         entry: HistoryEntryId,
@@ -439,7 +452,6 @@ impl StandaloneHistory {
             .find(|row| row.id == entry)
             .map(|row| row.summary.clone())
             .ok_or(HistoryError::InvalidSelection)?;
-        self.target.admit_restore(context)?;
         let (target_heads, reviewed_live_heads) = self.target.read(context, |doc| {
             (
                 crate::history_source::heads_for_entry(&mut committed_snapshot(doc), &entry),
@@ -559,7 +571,6 @@ mod tests {
 
     #[test]
     fn standalone_history_browsing_preserves_edits_and_stays_on_its_document() {
-        // Case `browsing_and_comparison_preserve_pending_edit_and_attribution`.
         {
             let mut doc = document("saved");
             let record = RecordId::for_file("a.md");
@@ -607,7 +618,6 @@ mod tests {
             );
         }
 
-        // Case `record_switch_clears_old_rows_and_does_not_fall_back`.
         {
             let first = document("first");
             let second = document("second");
@@ -641,7 +651,6 @@ mod tests {
             assert_eq!(session.refresh(&context), Err(HistoryError::Stale));
         }
 
-        // Case `unknown_selection_cannot_materialize_another_documents_change`.
         {
             let doc = document("first");
             let mut foreign = document("foreign");
@@ -671,7 +680,6 @@ mod tests {
 
     #[test]
     fn standalone_history_sessions_invalidate_on_replacement_and_revocation() {
-        // Case `replacing_same_record_or_app_document_invalidates_old_session`.
         {
             let first = document("first");
             let replacement = document("replacement");
@@ -700,7 +708,6 @@ mod tests {
             }
         }
 
-        // Case `revocation_is_checked_on_cached_refresh_select_and_compare`.
         {
             let doc = document("private");
             let identity = uuid::Uuid::new_v4();

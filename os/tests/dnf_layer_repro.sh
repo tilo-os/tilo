@@ -55,7 +55,14 @@ for run in 1 2; do
   printf 'real-time-%s\n' "$run" >"$root/var/log/dnf5.log"
   mkdir -p "$root/var/cache/ldconfig"
   printf 'inode-%s\n' "$run" >"$root/var/cache/ldconfig/aux-cache"
+  mkdir -p "$root/etc" "$root/var/lib/systemd" "$root/var/roothome/.cache/gstreamer-1.0"
+  printf 'machine-%s\n' "$run" >"$root/etc/machine-id"
+  printf 'seed-%s\n' "$run" >"$root/var/lib/systemd/random-seed"
+  printf 'registry-%s\n' "$run" >"$root/var/roothome/.cache/gstreamer-1.0/registry.x86_64.bin"
   sh "$repo/os/scripts/clean-dnf-layer-state.sh" "$root"
+  test -e "$root/etc/machine-id" && test ! -s "$root/etc/machine-id"
+  test ! -e "$root/var/lib/systemd/random-seed"
+  test ! -e "$root/var/roothome/.cache"
   test ! -e "$root/usr/lib/sysimage/libdnf5/transaction_history.sqlite"
   test ! -e "$root/var/log/dnf5.log"
   test ! -e "$root/var/cache/ldconfig/aux-cache"
@@ -118,14 +125,14 @@ import re
 import sys
 
 source = open(sys.argv[1], encoding='utf-8').read()
-rootfs = source.split('FROM ${BASE_REF} AS rootfs-base\n', 1)[1].split('FROM rootfs AS split\n', 1)[0]
+rootfs = source.split('FROM ${BASE_REF} AS packages\n', 1)[1].split('FROM rootfs AS split\n', 1)[0]
 wrapper = rootfs.index('COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf')
 first_dnf = rootfs.index('dnf install -y --setopt=reposdir=/repo')
 assert wrapper < first_dnf
 assert rootfs.index('ARG FINALIZE_RPMDB=') < first_dnf
 assert rootfs.index('COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm') < first_dnf
 assert rootfs.index('/usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so') > first_dnf
-assert 'clean-dnf-layer-state' in source.split('FROM ${BASE_REF} AS rootfs-base\n', 1)[1]
+assert 'clean-dnf-layer-state' in source.split('FROM ${BASE_REF} AS packages\n', 1)[1]
 from pathlib import Path
 assert '/usr/libexec/tilo/clean-dnf-layer-state' in (
     Path(sys.argv[1]).parent / 'scripts/finalize-rpmdb.sh').read_text(encoding='utf-8')
@@ -150,6 +157,6 @@ for instruction in instructions:
 # which needs files copied after them, is the other.
 assert transactions == 2, (
     f'{transactions} rootfs RUNs run dnf; each ships its own copy of the rpm database. '
-    'Add a transaction to the package RUN in rootfs-base instead.')
+    'Add a transaction to the package RUN in packages instead.')
 PY
 echo 'fixed DNF/RPM transaction time, package ownership and layer cleanup: ok'

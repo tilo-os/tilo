@@ -17,6 +17,9 @@ use crate::api;
 use crate::model::{AirQuality, LocationId, SavedLocation, WeatherSnapshot};
 use crate::units::Units;
 
+/// How long one request may take before it counts as failed.
+pub(crate) const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// A job for the network worker.
 pub enum Request {
     Tracked {
@@ -172,6 +175,9 @@ impl WeatherService {
         let (sender, rx) = channel::<Response>();
         let client = tilo_net::Client::builder()
             .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
+            // A reply that never comes must end as an error the forecast can
+            // show with Retry, not as "Loading the forecast" for good.
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .ok();
         Self {
@@ -267,6 +273,7 @@ async fn serve(client: Option<tilo_net::Client>, req: Request, responses: Respon
         Request::Geocode { seq, query } => fetch(client.as_ref(), &api::geocode_url(&query))
             .await
             .and_then(|body| api::parse_geocode(&body))
+            .map(|results| api::refine_geocode(&query, results))
             .map_or_else(
                 |message| Response::Error {
                     kind: RequestKind::Geocode,

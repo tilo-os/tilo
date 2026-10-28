@@ -55,8 +55,8 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
-        let resolved = environment.resolve(definition.app_id, &author)?;
-        let permissions = Rc::new(RefCell::new(resolved.permissions));
+        let resolved = environment.resolve(definition.app_id(), &author)?;
+        let permissions = crate::permissions::SharedPermissions::new(resolved.permissions);
         // A workspace launch's participation follows the room's grants, as
         // the shell tells the window (`crate::room_sync`): read-only becomes
         // writable the moment the app's authorship arrives, and back.
@@ -73,20 +73,18 @@ impl NativeProcessHost {
         )?;
         host.package_id = Some(resolved.package_id);
         if let Some(person) = resolved.person_dir {
-            host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
+            // The launcher binds the person's directory into the sandbox.
+            host.keep_person_records_in(Rc::new(app_state::FsStore::provisioned(person)));
         }
-        // One record per window or one per room: this is where a window
-        // that names no record gets its fallback, and the fallback is only
-        // half the answer. An app whose definition keeps a room record
-        // (`ApplicationDefinition::room_record`, a framework app's
-        // `ResourceApp::ROOM_RECORD`) never uses it: `prepare_default` opens
-        // the room's package primary for every one of its windows, so they
-        // all show one notebook or conversation, and the first creates it
-        // (adopting what the per-window records held, see
-        // `HostContext::window_records`). Every other app gets a record per
-        // launcher-issued window, so two windows of an editor are two
-        // documents; reopening the closed tab (same instance) brings its own
-        // record back through its saved view.
+        // Where a window that names no record gets its fallback. Every app
+        // the framework builds keeps one record per workspace
+        // (`ApplicationDefinition::room_record`): `prepare_default` opens the
+        // workspace's package primary for every window of it, so they all
+        // show the same data across closing, reopening and restarts, and the
+        // first creates it (adopting what per-window records held before, see
+        // `HostContext::window_records`). A window keeps only its view of it.
+        // A definition that keeps no room record (a fixture) gets a record per
+        // launcher-issued window.
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -149,6 +147,73 @@ impl NativeProcessHost {
     pub fn workspace_scoped(&self) -> bool {
         self.workspace_scoped
     }
+
+    /// Prepare a window of this process: its first, or one the shell opened
+    /// in it later (`crate::window_door`). Every window is prepared on the
+    /// one host the process opens for its first, so all of them read and
+    /// write the app's records through one store and one writer; a second
+    /// host would contend for the store the first holds.
+    ///
+    /// A window the shell opened later is the instance it names, with a
+    /// record of its own where the app keeps one per window, as a launch
+    /// with that instance would have been.
+    ///
+    /// # Errors
+    /// As [`Self::open`] for the first window, and [`Self::prepare_launch`].
+    pub fn prepare_window(
+        definition: &ApplicationDefinition,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        thread_local! {
+            static PROCESS_HOST: RefCell<Option<NativeProcessHost>> = const { RefCell::new(None) };
+        }
+        PROCESS_HOST.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            // A window that waited for its workspace's identity
+            // (`crate::workspace_identity`) wrote as no one; the window that
+            // replaces it writes as the person chosen, on a host of theirs.
+            let author = crate::collaboration::local_user_id();
+            if slot.as_ref().is_some_and(|host| host.host.author != author) {
+                *slot = None;
+            }
+            let host = match &mut *slot {
+                Some(host) => host,
+                empty => empty.insert(Self::open(definition)?),
+            };
+            match crate::window_door::requested_instance() {
+                Some(instance) => host.prepare_instance(definition, instance, named, inputs),
+                None => host.prepare_launch(definition, named, inputs),
+            }
+        })
+    }
+
+    /// [`Self::prepare_launch`] for the window `instance` the shell opened in
+    /// this process.
+    fn prepare_instance(
+        &mut self,
+        definition: &ApplicationDefinition,
+        instance: InstanceId,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let kind = definition.record_kind.clone();
+        match named {
+            Some(id) => self.host.prepare_record(
+                definition,
+                instance,
+                RecordCheckout::new(id, kind),
+                inputs,
+            ),
+            None => self.host.prepare_default(
+                definition,
+                instance,
+                RecordCheckout::new(RecordId::window_default(instance), kind),
+                None,
+                inputs,
+            ),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -167,8 +232,22 @@ struct NativeProcessEnvironment {
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
     home: Option<PathBuf>,
-    action_authority: Option<tilo_host::action_authority::AuthoritySource>,
+    action_authority: Option<HostAuthority>,
 }
+
+/// Where the host's view of the person's authority over the app's actions
+/// is read, and how a change of it is heard.
+#[derive(Clone)]
+struct HostAuthority {
+    read: tilo_host::action_authority::AuthoritySource,
+    watch: AuthorityWatcher,
+}
+
+type AuthorityWatcher = std::sync::Arc<
+    dyn Fn(Box<dyn Fn() + Send>) -> Result<tilo_host::action_authority::AuthorityWatch, String>
+        + Send
+        + Sync,
+>;
 
 struct ResolvedNativeProcessHost {
     package_id: String,
@@ -209,10 +288,18 @@ impl NativeProcessEnvironment {
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
             home: path("HOME"),
-            action_authority: Some(tilo_host::action_authority::source(
-                collab_types::action_authority::PROJECTION_PATH.into(),
-                collab_types::action_authority::MAX_PROJECTION_BYTES,
-            )),
+            action_authority: Some(HostAuthority {
+                read: tilo_host::action_authority::source(
+                    collab_types::action_authority::PROJECTION_PATH.into(),
+                    collab_types::action_authority::MAX_PROJECTION_BYTES,
+                ),
+                watch: std::sync::Arc::new(|changed| {
+                    tilo_host::action_authority::watch(
+                        Path::new(collab_types::action_authority::PROJECTION_PATH),
+                        changed,
+                    )
+                }),
+            }),
         }
     }
 
@@ -254,21 +341,19 @@ impl NativeProcessEnvironment {
             self.participation.as_deref(),
         )?;
         if workspace_scoped
-            && let Some(source) = self.action_authority
-            && source().ok().flatten().is_some()
+            && let Some(authority) = self.action_authority
+            && (authority.read)().ok().flatten().is_some()
         {
-            let app = app_id.to_owned();
-            let room = workspace_id.clone();
-            let person = author.clone();
-            let current_source = source.clone();
-            let initial = read_action_authority_projection(&source, &room, &app, &person);
-            if initial.is_ok() {
-                permissions = permissions.with_action_authority(
-                    app.clone(),
-                    std::sync::Arc::new(move || {
-                        action_authority_context(&current_source, &room, &app, &person)
-                    }),
-                );
+            match FollowedAuthority::follow(authority, &workspace_id, app_id, author) {
+                Ok(followed) => {
+                    permissions = permissions.with_action_authority(
+                        app_id.to_owned(),
+                        std::sync::Arc::new(move || followed.current()),
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the host's action authority is not followed");
+                }
             }
         }
         let instance_id = self.continuity_instance.map_or_else(
@@ -406,7 +491,9 @@ impl NativeProfile {
     }
 
     /// Give `instance` in this profile the presentation `view` had elsewhere,
-    /// now showing `record`: what a window carried into this room reopens to.
+    /// now showing `record`: what a window carried into this room reopens to,
+    /// once the write, when there is one to wait for, has landed in
+    /// [`Self::store`].
     ///
     /// # Errors
     /// An invalid record identity or a store that refused the write.
@@ -415,7 +502,7 @@ impl NativeProfile {
         view: &SavedInstanceView,
         instance: InstanceId,
         record: &RecordCheckout,
-    ) -> Result<(), LaunchError> {
+    ) -> Result<Option<crate::record::transfer::Landing>, LaunchError> {
         let adopted = SavedInstanceView {
             device_id: self.device_id.clone(),
             workspace_id: self.workspace_id.clone(),
@@ -424,7 +511,9 @@ impl NativeProfile {
             record_kind: record.kind.as_str().to_owned(),
             ..view.clone()
         };
-        self.views.save(&adopted).map_err(LaunchError::Restore)
+        self.views
+            .save_landing(&adopted)
+            .map_err(LaunchError::Restore)
     }
 }
 
@@ -448,17 +537,147 @@ fn permissions_for_participation(
     Ok(PermissionContext::member_of(room, author.0.clone(), role))
 }
 
+/// The host's view of the person's authority over one app's actions, read
+/// again only when the host changes it: what deciding reads is the last
+/// read, never the file.
+struct FollowedAuthority {
+    state: std::sync::Arc<FollowedState>,
+    _watch: std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>,
+}
+
+struct FollowedState {
+    authority: HostAuthority,
+    room: String,
+    app: String,
+    person: UserId,
+    /// Held across a read and the store of what it read, so a read never
+    /// replaces a later one.
+    reading: std::sync::Mutex<()>,
+    current: std::sync::RwLock<Result<PermissionContext, String>>,
+}
+
+impl FollowedState {
+    fn read(&self) {
+        let _reading = self
+            .reading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let read =
+            action_authority_context(&self.authority.read, &self.room, &self.app, &self.person);
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = read;
+    }
+}
+
+impl FollowedAuthority {
+    /// Read the host's view now and again on each change of it.
+    ///
+    /// # Errors
+    /// When it cannot be read now or its changes cannot be heard.
+    fn follow(
+        authority: HostAuthority,
+        room: &str,
+        app: &str,
+        person: &UserId,
+    ) -> Result<Self, String> {
+        let state = std::sync::Arc::new(FollowedState {
+            authority: authority.clone(),
+            room: room.to_owned(),
+            app: app.to_owned(),
+            person: person.clone(),
+            reading: std::sync::Mutex::new(()),
+            current: std::sync::RwLock::new(Err("host action policy is unread".into())),
+        });
+        let changed = std::sync::Arc::downgrade(&state);
+        // Heard before the first read, so a change during it is read again.
+        let watch = (authority.watch)(Box::new(move || {
+            if let Some(state) = changed.upgrade() {
+                state.read();
+                crate::permissions::outside_changed();
+            }
+        }))?;
+        state.read();
+        if let Err(error) = &*state
+            .current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(error.clone());
+        }
+        Ok(Self {
+            state,
+            _watch: std::sync::Mutex::new(watch),
+        })
+    }
+
+    /// The host's view as last read, judged now.
+    fn current(&self) -> Result<PermissionContext, String> {
+        let current = self
+            .state
+            .current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        let now_ms =
+            crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
+        Ok(current.at_unix_time(now_ms / 1000))
+    }
+}
+
+/// `context` deciding `app`'s actions by the host's view `read` gives of
+/// its person's authority in `room`, read again whenever `watch` reports a
+/// change.
+#[cfg(test)]
+pub(crate) fn follow_host_authority(
+    context: PermissionContext,
+    read: tilo_host::action_authority::AuthoritySource,
+    watch: AuthorityWatcher,
+    room: &str,
+    app: &str,
+) -> Result<PermissionContext, String> {
+    let person = context.user().clone();
+    let followed = FollowedAuthority::follow(HostAuthority { read, watch }, room, app, &person)?;
+    Ok(context.with_action_authority(
+        app.to_owned(),
+        std::sync::Arc::new(move || followed.current()),
+    ))
+}
+
+/// A watch a test reports the host's changes through, as the kernel would.
+#[cfg(test)]
+pub(crate) fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>)
+{
+    type Listener = Box<dyn Fn() + Send>;
+    let listener: std::sync::Arc<std::sync::Mutex<Option<Listener>>> = std::sync::Arc::default();
+    let installed = listener.clone();
+    let watch: AuthorityWatcher = std::sync::Arc::new(move |changed| {
+        *installed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(changed);
+        Ok(Box::new(()))
+    });
+    let changed = std::sync::Arc::new(move || {
+        if let Some(changed) = &*listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            changed();
+        }
+    });
+    (watch, changed)
+}
+
 fn action_authority_context(
     source: &tilo_host::action_authority::AuthoritySource,
     room: &str,
     app: &str,
     person: &UserId,
 ) -> Result<PermissionContext, String> {
+    // Current for as long as the host holds it: the source reads a policy
+    // the host let go of as absent.
     let projection = read_action_authority_projection(source, room, app, person)?;
-    let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
-    if !projection.is_current_at(now_ms) {
-        return Err("host action policy is not current".into());
-    }
     let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
     if projection.foreign {
         standing = standing.on_foreign_device();
@@ -467,8 +686,7 @@ fn action_authority_context(
         crate::permissions::Actor::person(person.0.clone()).in_room(room),
         Vec::new(),
         standing,
-    )
-    .at_unix_time(now_ms / 1000))
+    ))
 }
 
 fn read_action_authority_projection(
@@ -567,7 +785,7 @@ pub struct ApplicationHost {
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: crate::permissions::SharedPermissions,
     author: UserId,
     action_context: tilo_actions::ActionContext,
     /// Where the person's own records are kept: the host's store unless the
@@ -588,14 +806,12 @@ impl ApplicationHost {
     /// Keep a host-owned profile resource (such as a temporary capture directory)
     /// alive through record writers and failed record or presentation save retries.
     /// The resource must own the supplied profile root for its entire lifetime.
-    /// # Errors
-    /// Rejects the same explicit namespace and identity errors as `new`.
     pub fn new_with_profile_lifetime(
         profile_root: PathBuf,
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
         lifetime: Rc<dyn std::any::Any>,
     ) -> Result<Self, LaunchError> {
@@ -622,7 +838,7 @@ impl ApplicationHost {
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         if !profile_root.is_absolute() {
@@ -641,14 +857,12 @@ impl ApplicationHost {
     }
 
     /// A host persisting records and local views through `store`.
-    /// # Errors
-    /// Rejects invalid identity inputs. Nothing is read or written.
     pub fn with_store(
         store: Rc<dyn durable_store::DurableStore>,
         device_id: String,
         workspace_id: &str,
         author: UserId,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
@@ -682,7 +896,7 @@ impl ApplicationHost {
         definition: &ApplicationDefinition,
         mut context: HostContext,
     ) -> HostContext {
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         match crate::record::person::PersonRecords::open(
             &mut self.person,
             package_id,
@@ -691,6 +905,13 @@ impl ApplicationHost {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
         }
+        // The records every app of the room opens, kept beside the app's
+        // own in the same owners: one writer per app and room here.
+        context.provide_workspace_records(crate::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            self.views.workspace_id().to_owned(),
+            self.author.clone(),
+        ));
         context
     }
 
@@ -707,8 +928,8 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
-        if package_id != definition.app_id {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
+        if package_id != definition.app_id() {
             return Err(LaunchError::BindingMismatch);
         }
         self.owners
@@ -731,8 +952,8 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
-        if package_id != definition.app_id
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
+        if package_id != definition.app_id()
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
                     || saved.record_id != checkout.id.as_str()
@@ -757,7 +978,7 @@ impl ApplicationHost {
         let Some(saved) = self.views.load(instance_id).map_err(LaunchError::Restore)? else {
             return Ok(None);
         };
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if saved.app_id != package_id
             || definition.record_kind.as_str() != saved.record_kind
@@ -790,9 +1011,23 @@ impl ApplicationHost {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
-            let target = definition
-                .unsaved_target(&records)
-                .map_err(LaunchError::Record)?;
+            let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+            // A window that shows before the room's record opens the record this device holds
+            // off the frame; the component takes it in (`HostContext::record_opening`).
+            let target = if definition.opens_before_record
+                && records
+                    .begin_opening(&primary)
+                    .map_err(LaunchError::Record)?
+            {
+                LaunchTarget::Record {
+                    checkout: primary,
+                    reveal: None,
+                }
+            } else {
+                definition
+                    .unsaved_target(&records)
+                    .map_err(LaunchError::Record)?
+            };
             let mut context = HostContext::prepare(
                 definition,
                 HostContextInputs {
@@ -811,7 +1046,7 @@ impl ApplicationHost {
             // presentation: this instance reopens where it was left (the
             // note it showed), when what it saved is of the room's record.
             // A view of a record it kept per window before is not restored.
-            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
             let saved = if matches!(target, LaunchTarget::Record { .. }) {
                 self.views
                     .load(instance_id)
@@ -984,14 +1219,15 @@ mod native_process_tests {
 
     fn definition(app_id: &'static str) -> ApplicationDefinition {
         ApplicationDefinition {
-            app_id,
-            title: "Host probe",
+            app_id: app_id.into(),
+            title: "Host probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("H"),
             record_kind: crate::record::RecordKind::new("host.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: rejected_factory,
         }
     }
@@ -1214,7 +1450,6 @@ mod native_process_tests {
             .unwrap();
         drop(created);
         drop(first);
-        // A later, different window opens that same record.
         let mut second = launch(&per_room, 44);
         let reopened = second
             .prepare_launch(&per_room, None, probe::runner_inputs())
@@ -1354,25 +1589,31 @@ mod native_process_tests {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
-        let now_ms = crate::time::try_unix_now_ms().unwrap();
         let original = AppActionAuthorityProjection::project(
             &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
             app,
             &author.0,
             false,
-            now_ms,
-            now_ms + 3_000,
         );
         let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
         let source: tilo_host::action_authority::AuthoritySource = {
             let bytes = bytes.clone();
             Arc::new(move || Ok(bytes.lock().unwrap().clone()))
         };
+        let (watch, changed) = manual_authority_watch();
         let environment = NativeProcessEnvironment {
             workspace_id: Some(room.into()),
             participation: Some("read-only".into()),
-            action_authority: Some(source.clone()),
+            action_authority: Some(HostAuthority {
+                read: source.clone(),
+                watch,
+            }),
             ..environment(temp.path())
+        };
+        // The host changes what it holds, and the watch reports it.
+        let publish = |value: Option<Vec<u8>>| {
+            *bytes.lock().unwrap() = value;
+            changed();
         };
         let resolved = environment.resolve(app, &author).unwrap();
         let permissions = resolved.permissions;
@@ -1390,13 +1631,13 @@ mod native_process_tests {
         let allowed = permissions.directory_witness().unwrap();
         let mut revoked = original.clone();
         revoked.policy.owner = None;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+        publish(Some(serde_json::to_vec(&revoked).unwrap()));
         assert_ne!(permissions.directory_witness().unwrap(), allowed);
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         {
             let mut invalid = original.clone();
-            invalid.valid_until_unix_ms = invalid.issued_at_unix_ms;
-            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            invalid.schema_version = 2;
+            publish(Some(serde_json::to_vec(&invalid).unwrap()));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         }
         for (field, value) in [
@@ -1406,33 +1647,22 @@ mod native_process_tests {
         ] {
             let mut invalid = serde_json::to_value(&original).unwrap();
             invalid[field] = value.into();
-            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            publish(Some(serde_json::to_vec(&invalid).unwrap()));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
         for invalid in [None, Some(b"invalid".to_vec())] {
-            *bytes.lock().unwrap() = invalid;
+            publish(invalid);
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
-        let mut expired = original.clone();
-        expired.issued_at_unix_ms = now_ms - 4_000;
-        expired.valid_until_unix_ms = now_ms - 1_000;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&expired).unwrap());
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-        let mut future = original.clone();
-        future.issued_at_unix_ms = now_ms + 30_000;
-        future.valid_until_unix_ms = now_ms + 33_000;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&future).unwrap());
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&original).unwrap());
+        publish(Some(serde_json::to_vec(&original).unwrap()));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
     }
 
     #[test]
     fn native_host_identity_authority_and_inputs_are_explicit() {
-        // Case `standalone_native_host_has_durable_device_and_app_unique_view_identity`.
         {
             let temp = tempfile::tempdir().unwrap();
             let author = UserId("person-a".into());
@@ -1470,7 +1700,6 @@ mod native_process_tests {
             assert_ne!(reopened.instance_id(), other.instance_id());
         }
 
-        // Case `workspace_participation_is_host_authority_and_missing_policy_is_viewer`.
         {
             let temp = tempfile::tempdir().unwrap();
             let room = "3f2b1c00-0000-4000-8000-000000000001";
@@ -1496,7 +1725,6 @@ mod native_process_tests {
             }
         }
 
-        // Case `malformed_native_host_inputs_are_refused_without_fallback_storage`.
         {
             let temp = tempfile::tempdir().unwrap();
             let author = UserId("person-a".into());
@@ -1580,7 +1808,7 @@ mod native_process_tests {
             view: View::default(),
             application: None,
         };
-        profile.adopt_view(&view, 7, &carried).unwrap();
+        let _ = profile.adopt_view(&view, 7, &carried).unwrap();
         let host = |temp: &Path| {
             ApplicationHost::new(
                 temp.to_owned(),
@@ -1609,7 +1837,7 @@ mod native_process_tests {
         assert!(matches!(prepared.restore, RestoreInput::Local(_)));
         drop(prepared);
 
-        crate::record::transfer::retire(
+        let _ = crate::record::transfer::retire(
             profile.store(),
             probe::APP,
             room,

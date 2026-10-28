@@ -11,11 +11,15 @@ fn authorized_person_session(
     let room = session.room.clone();
     let socket = session.broker.capnp_socket().to_path_buf();
     let identity = session.identity_socket().to_path_buf();
-    let apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-        .unwrap()
-        .reaching_broker(Rc::new(move |app, room| {
-            session_connector(socket.clone(), identity.clone(), app, room)
-        }));
+    let apps = InProcessApps::at(
+        &profile.join("apps"),
+        &profile.join("apps").join("person"),
+        &session.actor,
+    )
+    .unwrap()
+    .reaching_broker(Rc::new(move |app, room| {
+        session_connector(socket.clone(), identity.clone(), app, room)
+    }));
     (session, apps, room)
 }
 
@@ -106,7 +110,7 @@ fn authorized_browser_directory_waits_for_primary_and_person_documents() {
     let provider = wait_native_directory(
         &mut shown,
         &session.broker.app_action_broker().unwrap(),
-        browser::definition().app_id,
+        browser::definition().app_id(),
     );
     let host = crate::shell::remote_actions::BrokerActionHost::new(
         session.broker.app_action_broker().unwrap(),
@@ -137,7 +141,7 @@ fn authorized_store_directory_publishes_inspect_catalogue() {
     let provider = wait_native_directory(
         &mut shown,
         &session.broker.app_action_broker().unwrap(),
-        definition.app_id,
+        definition.app_id(),
     );
     let host = crate::shell::remote_actions::BrokerActionHost::new(
         session.broker.app_action_broker().unwrap(),

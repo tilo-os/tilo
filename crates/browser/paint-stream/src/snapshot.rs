@@ -5,11 +5,11 @@
 //! module groups those into layers and makes every item relative to its layer,
 //! which is what keeps scroll and sticky motion out of the item lists.
 //!
-//! Call the engine with [`capture_params`]; pass the result to [`convert`].
+//! Capture a snapshot with [`COMPUTED_STYLES`]; pass the result to [`convert`].
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::model::{
     Anchor, BlobRef, Color, FontSpec, Frame, Item, ItemKey, Layer, LayerId, Point, ROOT, Rect,
@@ -78,16 +78,6 @@ enum S {
     SvgStroke,
     SvgStrokeWidth,
     FillRule,
-}
-
-/// Parameters for `DOMSnapshot.captureSnapshot`.
-#[must_use]
-pub fn capture_params() -> Value {
-    json!({
-        "computedStyles": COMPUTED_STYLES,
-        "includePaintOrder": true,
-        "includeDOMRects": true,
-    })
 }
 
 const PLACEHOLDER: Color = Color([117, 117, 117, 255]);
@@ -412,7 +402,6 @@ impl Converter<'_> {
             }
             at = self.doc.parent_of(at);
         };
-        // Create layers for any rooting elements on the way down.
         let mut current = found;
         for &n in chain.iter().rev() {
             if let Some(&li) = self.doc.layout_of.get(&n)
@@ -870,10 +859,6 @@ impl Converter<'_> {
 }
 
 /// Convert a snapshot of a `viewport`-sized page into frame `seq`.
-///
-/// # Errors
-///
-/// [`SnapshotError`] when the snapshot lacks its string table or documents.
 pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, SnapshotError> {
     let doc0 = snapshot["documents"]
         .get(0)

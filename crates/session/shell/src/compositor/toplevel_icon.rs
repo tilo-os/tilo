@@ -113,7 +113,6 @@ pub struct IconObject {
     frozen: OnceLock<Option<Arc<FrozenIcon>>>,
 }
 
-/// An icon as assigned to a toplevel.
 #[derive(Debug)]
 struct FrozenIcon {
     serial: u64,

@@ -46,7 +46,7 @@
 //!   (`iCloud` Drive's web API) declares [`Support::BestEffort`], and the UI
 //!   labels it.
 //!
-//! The [`conformance`] suite (feature `conformance`) checks any provider
+//! The `conformance` suite (feature `conformance`) checks any provider
 //! against an in-process fake, a real server in a container, or a live
 //! account, unchanged.
 
@@ -567,7 +567,12 @@ impl Error {
     /// Worth retrying later without user action.
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Offline | Self::RateLimited { .. } | Self::Io(_) => true,
+            // A reply that arrived broken is worth asking for again, and a
+            // body that stopped part-way is the one no server meant to send.
+            Self::Offline
+            | Self::RateLimited { .. }
+            | Self::Io(_)
+            | Self::InvalidResponse("transport" | "body cut short") => true,
             Self::Status(status) => *status >= 500,
             _ => false,
         }

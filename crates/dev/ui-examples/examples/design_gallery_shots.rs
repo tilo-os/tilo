@@ -787,7 +787,7 @@ fn surfaces(theme: &Theme, out: &Path) {
         ("Accent", c.intent.accent),
         ("Accent ink", c.intent.accent_ink),
         ("On", c.intent.on_state),
-        ("Neutral fill", c.intent.neutral_fill),
+        ("Neutral fill", c.intent.value_fill),
         ("Danger", c.semantic.danger),
         ("Warning", c.semantic.warning),
         ("Success", c.semantic.success),

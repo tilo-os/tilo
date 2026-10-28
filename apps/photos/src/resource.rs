@@ -20,7 +20,7 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::effect::Answers;
 use ui::tilo_resource::{self, Derived, Effect as _, Id, Invoke, Refusal, resource};
-use ui::widget::Element;
+use ui::widget::{ContentKind, Element, NavList, NavShell};
 
 use crate::actions::PhotosEffect;
 use crate::app::PhotosApp;
@@ -482,7 +482,25 @@ impl ResourceApp for PhotosShell {
                 Ok(())
             },
         );
-        cx.surface(app)
+        // The shell keeps the sidebar: the library's places as a list
+        // (their counts and the albums under a heading make it one), its
+        // width, its drawer in a narrow window and its keys.
+        let places = ui::widget::NavFeed::new();
+        // A narrow window opens on the timeline, the library's own grid;
+        // Back leads to the places.
+        let pane = ui::LocalState::new(ui::widget::NavPane::Content);
+        let shell = NavShell::new()
+            .with_id("photos-shell")
+            .content_kind(ContentKind::Grid)
+            .with_window_toolbar()
+            .with_pane_state(&pane);
+        let app = app.in_shell(&places, shell.window_bar_link());
+        let sidebar = NavList::new(Vec::new())
+            .with_id("photos.places")
+            .with_accessible_name(crate::strings::tr("photos-library"))
+            .with_headings()
+            .fed_by(&places);
+        Box::new(shell.sidebar(Box::new(sidebar)).content(cx.surface(app)))
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -584,3 +602,26 @@ impl ResourceSurface<PhotoLibrary, PhotosEffect> for PhotosApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::PhotosShell::scenarios() {
+            let mut app = TestApp::<super::PhotosShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

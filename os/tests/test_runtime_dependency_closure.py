@@ -217,7 +217,40 @@ elif args[0]=='build':
         (bundle / 'lib/libleaf.so').rename(hidden)
         result = self.verify_closure(bundle)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('signed runtime is missing libleaf.so', result.stderr)
+        self.assertIn('a thin app does not load from the runtime bundle alone', result.stderr)
+
+    def test_a_library_loaded_on_first_use_cannot_hide_below_the_top_of_lib(self):
+        bundle = self.signed_layout()
+        hidden = bundle / 'lib/lib64/liblazy.so'
+        hidden.parent.mkdir(parents=True, exist_ok=True)
+        (bundle / 'lib/liblazy.so').rename(hidden)
+        result = self.verify_closure(bundle)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('signed runtime is missing liblazy.so, which it loads on first use', result.stderr)
+
+    def versioned_lazy_library(self):
+        """liblazy.so signed as the versioned file a host links its soname to.
+
+        The collector signs the file the soname points at, so a host that links
+        liblazy.so to liblazy.so.1.2.3 signs liblazy.so.1.2.3 and nothing under
+        the soname's own name."""
+        bundle = self.signed_layout()
+        (bundle / 'lib/liblazy.so').rename(bundle / 'lib/liblazy.so.1.2.3')
+        return bundle
+
+    def test_a_library_signed_as_the_file_its_soname_points_at_is_signed(self):
+        result = self.verify_closure(self.versioned_lazy_library())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_collector_signs_the_file_a_hosts_soname_link_points_at(self):
+        # A host installs the library as liblazy.so.1.2.3 with liblazy.so a
+        # symbolic link to it (Fedora does this for every sonamed library).
+        (self.directory / 'liblazy.so').rename(self.directory / 'liblazy.so.1.2.3')
+        (self.directory / 'liblazy.so').symlink_to('liblazy.so.1.2.3')
+        paths = COLLECTOR.collect([self.directory / 'libruntime_dylib.so'], [self.directory])
+        self.assertIn((self.directory / 'liblazy.so.1.2.3').resolve(), [path.resolve() for path in paths])
+        names = [path.name for path in paths if path.name.startswith('liblazy')]
+        self.assertEqual(names, ['liblazy.so.1.2.3'], names)
 
 
 if __name__ == '__main__':

@@ -18,12 +18,14 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
     doc.put(ROOT, "pending-predecessor", true).unwrap();
     doc.commit_edit("fixture", "pending-predecessor");
     let predecessor = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "pending-descendant", true).unwrap();
     doc.commit_edit("fixture", "pending-descendant");
     let descendant = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     receiver

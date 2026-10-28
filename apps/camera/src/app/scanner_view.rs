@@ -36,7 +36,6 @@ pub(super) struct ScannerLayout {
     pub hint: Rect,
 }
 
-/// The icon for a kind of code.
 pub(super) fn code_icon(kind: &CodeKind) -> Icon {
     match kind {
         CodeKind::Url => Icon::Link,
@@ -87,7 +86,7 @@ impl CardContent {
 }
 
 impl CameraApp {
-    /// Paint the scanner. Returns the top-trailing cluster's panel.
+    /// Paint the scanner.
     pub(super) fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -95,7 +94,7 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
-    ) -> Rect {
+    ) {
         let m = HudMetrics::of(theme);
         let live = self.feed_active();
         let code = self.scanned.clone().filter(|_| !self.scan_dismissed);
@@ -142,22 +141,19 @@ impl CameraApp {
             };
             let area = Rect::new(
                 full.x0 + m.edge,
-                full.y0 + m.edge + m.bar(),
+                full.y0 + m.edge,
                 layout.side.map_or(full.x1, |side| side.x0) - m.edge,
-                below.unwrap_or_else(|| full.y1 - m.edge - m.bar()),
+                below.unwrap_or(full.y1 - m.edge),
             );
             self.draw_scanner_offline(scene, t, tr, theme, area);
         }
 
-        let corner = self.draw_corner_actions(scene, t, tr, theme, full);
         if let (Some(code), Some(card)) = (code.as_ref(), layout.card) {
             self.draw_scan_card(scene, t, tr, theme, card, code);
         }
         if let Some(recent) = layout.recent {
             self.draw_recent_scans(scene, t, tr, theme, recent);
         }
-        self.draw_mode_switcher(scene, t, tr, theme, full);
-        corner
     }
 
     /// The guide, the hint, the result card and the recent scans for
@@ -174,8 +170,8 @@ impl CameraApp {
         let spacing = &theme.tokens.spacing;
         let group = f64::from(spacing.s6);
         let stack = f64::from(spacing.s4);
-        let top = full.y0 + m.edge + m.bar() + m.gap;
-        let bottom = full.y1 - m.edge - m.bar() - group;
+        let top = full.y0 + m.edge;
+        let bottom = full.y1 - m.edge;
         // The side column holds text, so it grows with the text. It goes
         // beside the guide while the stage left of it is at least as wide.
         let growth = f64::from(theme.text_growth());
@@ -288,7 +284,8 @@ impl CameraApp {
                     let scanner_frame = fb.clone();
                     self.live_view = Some((cur_gen, frame_image_cover(fb)));
                     let Some(generation) = self.scan_generation.checked_add(1) else {
-                        self.toast = Some("Code scan counter exhausted; restart Camera".into());
+                        self.toast
+                            .show("Code scan counter exhausted; restart Camera");
                         return;
                     };
                     let id = format!("live:{cur_gen}");
@@ -306,7 +303,7 @@ impl CameraApp {
                         // is expected; keep the previous result until the next
                         // frame rather than spamming a toast.
                         Err(error) if error.contains("already running") => {}
-                        Err(error) => self.toast = Some(error),
+                        Err(error) => self.toast.show(error),
                     }
                 }
             }
@@ -417,9 +414,15 @@ impl CameraApp {
         area: Rect,
     ) {
         let waiting = self.scan_import_pending.get();
+        // The same reason the viewfinder gives: Photo and Codes never
+        // disagree about why there is no picture.
+        let message = format!(
+            "{} Choose a saved image that shows a code.",
+            self.no_feed_reason()
+        );
         let content = EmptyStateContent {
             icon: Some(Icon::QrCode),
-            message: Some("No camera is connected. Choose a saved image that shows a code."),
+            message: Some(&message),
             action_label: (!waiting).then_some("Choose image"),
             ..EmptyStateContent::new("Scan a code from an image")
         };

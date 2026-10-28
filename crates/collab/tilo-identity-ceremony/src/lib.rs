@@ -248,10 +248,6 @@ impl PairingPayload {
     }
 
     /// Bind a validated reachable socket address and bounded exact DER pin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid endpoint or empty/oversized certificate.
     pub fn set_broker(
         &mut self,
         endpoint: impl Into<String>,
@@ -273,11 +269,6 @@ impl PairingPayload {
 
     /// Build a client that requires the exact broker certificate carried by
     /// this payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint or certificate encoding is invalid,
-    /// absent, or oversized.
     pub fn remote_broker(&self) -> Result<PairingHandshake, IdentityFlowError> {
         let certificate = hex::decode(&self.broker_certificate)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("broker certificate: {e}")))?;
@@ -552,7 +543,6 @@ struct PairingChannelState {
     /// Pairer's DKG round-1 broadcast. Host must consume this before round 2;
     /// synthesizing an empty commitment creates no valid FROST ceremony.
     pairer_round1: Option<EnrolmentRound1>,
-    /// Host polls this.
     reply: Option<(EnrolmentRound2, PairingMac)>,
     /// Pairer polls this for the host's round-2 contribution.
     host_round2: Option<(EnrolmentRound2, PairingMac)>,
@@ -584,10 +574,6 @@ impl PairingHandshake {
     }
 
     /// Create an exact-certificate-pinned remote broker client.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid socket address or empty/oversized pin.
     pub fn remote(
         endpoint: impl Into<String>,
         certificate: Vec<u8>,
@@ -1261,11 +1247,6 @@ static INVITE_BROKER_LOCATOR: std::sync::OnceLock<InviteBrokerLocator> = std::sy
 
 /// Install the shell's long-lived redemption endpoint and private authority
 /// location before any invite UI is shown.
-///
-/// # Errors
-///
-/// Returns an error for invalid endpoint/certificate data, unsafe authority
-/// storage, or an attempt to replace an already configured trust boundary.
 pub fn configure_invite_broker(
     endpoint: impl Into<String>,
     certificate: Vec<u8>,
@@ -1464,11 +1445,6 @@ impl InviteRedemptionAuthority {
     }
 
     /// Atomically and durably consume a capability before releasing its secret.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unknown, replayed, expired, unsafe, corrupt, or
-    /// unauthentic records and for durable-storage failures.
     pub fn redeem(
         &self,
         capability: &[u8],
@@ -1545,17 +1521,11 @@ fn local_authority_unavailable() -> IdentityFlowError {
 #[cfg(not(unix))]
 impl InviteRedemptionAuthority {
     /// Open the local Tilo authority.
-    ///
-    /// # Errors
-    /// Returns `Unsupported` on hosts without the Unix authority storage backend.
     pub fn open() -> Result<Self, IdentityFlowError> {
         Err(local_authority_unavailable())
     }
 
     /// Open a local authority at a private root.
-    ///
-    /// # Errors
-    /// Returns `Unsupported` without creating or changing files on this host.
     pub fn at(_root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
         Err(local_authority_unavailable())
     }
@@ -1660,11 +1630,6 @@ pub fn mint_invite(
 /// Explicitly mint for a shell-owned broker. This is also the integration-test
 /// seam: tests can use an isolated authority without mutating the process-wide
 /// production locator.
-///
-/// # Errors
-///
-/// Returns an error for an invalid endpoint/certificate, unsafe authority
-/// storage, encryption/signing failure, or an exhausted authority quota.
 pub fn mint_invite_for_broker(
     terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,

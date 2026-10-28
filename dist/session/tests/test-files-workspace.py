@@ -78,12 +78,21 @@ class FilesWorkspaceTest(unittest.TestCase):
                 lines = [line for line in install.splitlines()
                          if re.match(r"install\s+.*\sbin/" + re.escape(name) + r"\s", line)]
                 self.assertEqual(len(lines), 1, name)
-                command = lines[0].replace("%{buildroot}", str(buildroot)).replace("%{_bindir}", "/usr/bin")
-                subprocess.run(["bash", "-c", command], cwd=root, check=True, capture_output=True)
+                # A program that moved off PATH into /usr/libexec/tilo keeps
+                # its command name as a link beside the others.
+                links = [line for line in install.splitlines()
+                         if re.match(r"ln\s+-s\s+\S+/" + re.escape(name) + r"\s", line)]
+                for command in lines + links:
+                    command = (command.replace("%{buildroot}", str(buildroot))
+                               .replace("%{_bindir}", "/usr/bin")
+                               .replace("%{_libexecdir}", "/usr/libexec"))
+                    subprocess.run(["bash", "-c", command], cwd=root, check=True, capture_output=True)
                 installed = buildroot / "usr/bin" / name
                 self.assertTrue(os.access(installed, os.X_OK))
                 self.assertEqual(installed.read_bytes(), payload.read_bytes())
                 self.assertIn("%{_bindir}/" + name, manifest.splitlines())
+                if installed.is_symlink():
+                    self.assertIn("%{_libexecdir}/tilo/" + name, manifest.splitlines())
         for dependency in ["fuse3", "dbus-tools"]:
             self.assertRegex(spec, r"(?m)^Requires:\s+" + dependency + r"$")
         self.assertNotRegex(spec, r"(?m)^Requires:\s+python", "the host session runs no Python")

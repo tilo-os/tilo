@@ -47,10 +47,6 @@ pub struct Fetcher {
 impl Fetcher {
     /// Start the thread; `wake` is woken whenever an answer is ready. Its
     /// localized reads are in `locale`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the thread could not start.
     pub fn spawn(wake: WakeHandle, locale: String) -> Result<Self, String> {
         let (jobs, job_rx) = mpsc::channel::<Job>();
         let (answer_tx, answers) = mpsc::channel();

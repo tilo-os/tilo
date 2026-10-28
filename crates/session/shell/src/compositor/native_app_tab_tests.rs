@@ -41,12 +41,17 @@ fn focus_app_window(frame: &mut FrameBuilder) -> u64 {
             app_id: APP.into(),
             surface_id: 9_001,
         };
+        drop(tree);
     });
     focused
 }
 
 #[test]
 #[serial_test::serial(process_env)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn an_app_in_its_own_process_steps_its_group_with_the_ctrl_tab_it_left_unused() {
     let runtime = tempfile::tempdir().expect("temporary runtime");
     let mut env = tilo_test_env::ScopedEnv::new();

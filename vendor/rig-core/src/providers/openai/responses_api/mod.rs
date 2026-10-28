@@ -471,6 +471,14 @@ impl wire::Responses {
                 })
             }
             SystemInstructionsPlacement::InputSystemMessages => {}
+            SystemInstructionsPlacement::FirstInstructions => {
+                if items.len() > 1
+                    && let Some(text) = items.first().and_then(system)
+                {
+                    items.remove(0);
+                    lifted.push(text);
+                }
+            }
         }
         if items.is_empty() {
             return Err(EncodeError::request(if items.len() < before {
@@ -696,6 +704,14 @@ pub enum SystemInstructionsPlacement {
     /// Use this only for OpenAI-compatible providers that do not support top-level
     /// `instructions`.
     InputSystemMessages,
+    /// Send only the first system message through the top-level
+    /// `instructions` field; the rest of the leading run stays in `input` as
+    /// `system` messages, in place.
+    ///
+    /// Use this where stable instructions are followed by system context that
+    /// varies between requests: joined into `instructions`, a change in the
+    /// latter would also change the prefix a prompt cache keeps.
+    FirstInstructions,
 }
 
 #[cfg(test)]

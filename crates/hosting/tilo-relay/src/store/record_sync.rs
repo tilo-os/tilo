@@ -34,7 +34,6 @@ enum Class {
 /// How one retained frame's record reaches devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reach {
-    /// Every device that follows the room.
     Everyone,
     /// The devices that hold the record: its chain's head, which every
     /// device follows and keeps once it is a later part.
@@ -136,6 +135,25 @@ impl WorkspaceStore {
         classes.reach(channel).unwrap_or(Reach::Everyone)
     }
 
+    /// Learn the record of `channel` from `bytes`, a frame about to be
+    /// retained on it, unless the channel is known already. A chain's later
+    /// part is then a head before any capture can list its lineage, so a
+    /// capture never takes an earlier part for the head because it met that
+    /// part first, nor misses a lineage the directory scan skipped: the
+    /// scan's change test compares directory times, which two lineages added
+    /// within one clock tick leave equal.
+    pub(super) fn learn_retained_record(&self, channel: &[u8; 32], bytes: &[u8]) {
+        if self.classes().channels.contains_key(channel) {
+            return;
+        }
+        let Some((route, _)) = super::retained::body_of(bytes, self.workspace_id)
+            .and_then(|body| self.payloads.open_document(&body))
+        else {
+            return;
+        };
+        self.classes().learn(*channel, &route.record_id);
+    }
+
     /// The channels of the chains' heads: what a device that subscribes now
     /// is replayed of each chain, and keeps following once a later part
     /// starts.
@@ -178,6 +196,10 @@ impl WorkspaceStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
+        // A lineage still being retained is read again next time, whether or
+        // not another is added meanwhile: until then the store does not know
+        // which part of its chain is the head.
+        let mut unread = false;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
@@ -195,13 +217,16 @@ impl WorkspaceStore {
             match (read, channel) {
                 // Read again next time: its first frame is still being
                 // retained.
-                (LineageRecord::Empty, _) => continue,
+                (LineageRecord::Empty, _) => {
+                    unread = true;
+                    continue;
+                }
                 (LineageRecord::Record(record), Some(channel)) => classes.learn(channel, &record),
                 _ => {}
             }
             classes.lineages.insert(name);
         }
-        self.classes().scanned = changed;
+        self.classes().scanned = changed.filter(|_| !unread);
         Ok(())
     }
 
@@ -271,7 +296,6 @@ mod tests {
         classes.learn(second, &neighbour_wire::record_part("chat", 1));
         assert_eq!(classes.reach(&first), Some(Reach::Opened(first)));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
-        // Learning the earlier part again moves nothing back.
         classes.learn(first, &neighbour_wire::record_part("chat", 0));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
         assert_eq!(classes.reach(&[9; 32]), None);

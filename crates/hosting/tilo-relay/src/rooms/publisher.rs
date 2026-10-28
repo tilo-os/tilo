@@ -63,6 +63,34 @@ struct Progress {
     epoch: u64,
     /// The first publication position a failed admission left unretained.
     failed: Option<usize>,
+    /// Publication positions handed over and not durable yet, each with how
+    /// many changes at it are pending: the room file must not claim them
+    /// published, or a hard stop before they are durable loses them for
+    /// good, since the next start republishes only from `published` on.
+    pending: std::collections::BTreeMap<usize, usize>,
+}
+
+impl Progress {
+    fn hand_over(&mut self, positions: impl IntoIterator<Item = Option<usize>>) {
+        for position in positions.into_iter().flatten() {
+            let pending = self.pending.entry(position).or_default();
+            *pending = pending.saturating_add(1);
+        }
+    }
+
+    fn settled(&mut self, positions: impl IntoIterator<Item = Option<usize>>) {
+        for position in positions.into_iter().flatten() {
+            if let std::collections::btree_map::Entry::Occupied(mut entry) =
+                self.pending.entry(position)
+            {
+                let pending = entry.get_mut();
+                *pending = pending.saturating_sub(1);
+                if *pending == 0 {
+                    entry.remove();
+                }
+            }
+        }
+    }
 }
 
 struct Shared {
@@ -113,11 +141,17 @@ impl RoomPublisher {
         Epoch(progress.epoch)
     }
 
-    /// The first publication position a failed admission left unretained,
-    /// until the next [`Self::reconcile`] takes it: a room record written
-    /// meanwhile must not claim it published.
+    /// The first publication position not known to be retained: one a
+    /// failed admission left unretained (until the next [`Self::reconcile`]
+    /// takes it) or one handed over and not durable yet. A room record
+    /// written meanwhile must not claim it published.
     pub(super) fn unretained_from(&self) -> Option<usize> {
-        self.shared.progress().failed
+        let progress = self.shared.progress();
+        let pending = progress.pending.keys().next().copied();
+        match (progress.failed, pending) {
+            (Some(failed), Some(pending)) => Some(failed.min(pending)),
+            (failed, pending) => failed.or(pending),
+        }
     }
 
     /// Hand `publications` over to be admitted after every batch handed
@@ -146,6 +180,7 @@ impl RoomPublisher {
         });
         // Numbered and queued in one step, so batches finish in number order.
         let mut progress = self.shared.progress();
+        progress.hand_over(publications.iter().map(|p| p.position));
         progress.pushed = progress.pushed.saturating_add(1);
         let number = progress.pushed;
         let batch = Batch {
@@ -182,9 +217,11 @@ impl RoomPublisher {
 /// the change over, so a dropped one is gone, as one whose own admission
 /// failed always was. Say so.
 fn unretained(shared: &Shared, positions: impl IntoIterator<Item = Option<usize>>, failed: bool) {
+    let positions: Vec<Option<usize>> = positions.into_iter().collect();
     let mut channel_changes = 0usize;
     let first = positions
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|position| {
             if position.is_none() {
                 channel_changes = channel_changes.saturating_add(1);
@@ -202,6 +239,8 @@ fn unretained(shared: &Shared, positions: impl IntoIterator<Item = Option<usize>
     if failed {
         progress.epoch = progress.epoch.wrapping_add(1);
     }
+    // Handed back: no longer waited on as pending.
+    progress.settled(positions.iter().copied());
     if let Some(first) = first {
         progress.failed = Some(progress.failed.map_or(first, |known| known.min(first)));
     }
@@ -229,7 +268,7 @@ async fn run(
                     .enqueue_reserved(workspace_id, publication.commit, publication.reservation)
                     .await
                 {
-                    Ok(admission) => admissions.push(admission),
+                    Ok(admission) => admissions.push((position, admission)),
                     Err(error) => {
                         tracing::warn!(%room, %error, "room governance change was not admitted");
                         let rest = publications.map(|publication| publication.position);
@@ -245,10 +284,27 @@ async fn run(
         shared.finished.send_replace(number);
         if !admissions.is_empty() {
             let room = room.clone();
+            let shared = Arc::clone(&shared);
             tokio::spawn(async move {
-                for admission in admissions {
-                    if let Err(error) = admission.durable().await {
+                let mut admissions = admissions.into_iter();
+                while let Some((position, admission)) = admissions.next() {
+                    // Settled before a reader of the room's retention sees the
+                    // change retained, so a decision after that persists it as
+                    // published.
+                    let retained = admission
+                        .durable_then(|outcome| {
+                            if outcome.is_ok() {
+                                shared.progress().settled([position]);
+                            }
+                            outcome.clone().map(drop)
+                        })
+                        .await;
+                    if let Err(error) = retained {
                         tracing::warn!(%room, %error, "room governance change was not retained");
+                        // Not retained: the next settle publishes it again,
+                        // and what was admitted after it with it.
+                        let rest = admissions.map(|(position, _)| position);
+                        unretained(&shared, std::iter::once(position).chain(rest), false);
                         break;
                     }
                 }

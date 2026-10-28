@@ -18,10 +18,6 @@ pub enum Inspection {
 
 /// Inspect the packages or programs behind a pending request. Deletion has
 /// no new bytes.
-///
-/// # Errors
-/// Returns the bounded download, signed package and bot program validation
-/// errors.
 pub fn inspect(
     storage: &Storage,
     pending: &PendingSubmission,
@@ -47,9 +43,6 @@ pub fn inspect(
 /// moderation transition. Uploaded packages and programs become public only
 /// after approval. This stages metadata; publishing a signed snapshot
 /// remains a separate step.
-///
-/// # Errors
-/// Returns inspection, changed-request, authorization or storage errors.
 pub fn approve(
     storage: &Storage,
     pending: &PendingSubmission,

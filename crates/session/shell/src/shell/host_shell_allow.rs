@@ -184,10 +184,7 @@ mod tests {
         std::thread::spawn(move || {
             let _ = ush::supervisor::serve(&serve_socket, &serve_store, std::path::Path::new("/"));
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !socket.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        tilo_test_env::wait_until("the supervisor's socket", || socket.exists());
         assert!(tell_supervisor_at(&socket, Expiry::Never));
         assert!(
             ush::host::HostPolicy::load(&ush::host::HostPolicy::path(&store))

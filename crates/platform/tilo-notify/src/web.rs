@@ -1,4 +1,6 @@
-//! The browser backend: the Notifications API while the page is open.
+//! The browser backend: the Notifications API while the page is open. A
+//! click brings the page forward and hands the notification's activation
+//! URI to the app's handler ([`crate::set_activation_handler`]).
 
 use js_sys::{Promise, Reflect};
 use wasm_bindgen::prelude::*;
@@ -10,10 +12,22 @@ use crate::{Notification, Notifier, NotifyError};
 extern "C" {
     #[wasm_bindgen(js_name = notificationPermission)]
     fn notification_permission() -> String;
+    #[wasm_bindgen(js_name = setActivationListener)]
+    fn set_activation_listener(listener: &Closure<dyn Fn(String)>);
     #[wasm_bindgen(js_name = showNotification, catch)]
-    fn show_notification(tag: &str, title: &str, body: &str) -> Result<(), JsValue>;
+    fn show_notification(
+        tag: &str,
+        title: &str,
+        body: &str,
+        activation: Option<String>,
+    ) -> Result<(), JsValue>;
     #[wasm_bindgen(js_name = requestNotification)]
-    fn request_notification(tag: &str, title: &str, body: &str) -> Promise;
+    fn request_notification(
+        tag: &str,
+        title: &str,
+        body: &str,
+        activation: Option<String>,
+    ) -> Promise;
     #[wasm_bindgen(js_name = withdrawNotification)]
     fn withdraw_notification(tag: &str);
 }
@@ -29,6 +43,17 @@ fn text(error: &JsValue) -> String {
         .unwrap_or_else(|| format!("{error:?}"))
 }
 
+/// Have the page report clicks to the activation handlers, once.
+fn listen() {
+    static LISTENING: std::sync::Once = std::sync::Once::new();
+    LISTENING.call_once(|| {
+        let listener = Closure::<dyn Fn(String)>::new(|uri: String| crate::report_activation(&uri));
+        set_activation_listener(&listener);
+        // The page reports clicks for as long as it runs.
+        listener.forget();
+    });
+}
+
 pub(crate) struct PageNotifier;
 
 impl Notifier for PageNotifier {
@@ -38,13 +63,18 @@ impl Notifier for PageNotifier {
     fn show(&self, notification: &Notification) -> Result<(), NotifyError> {
         crate::validate(notification)?;
         let Notification {
-            tag, title, body, ..
+            tag,
+            title,
+            body,
+            activation,
+            ..
         } = notification;
+        listen();
         match notification_permission().as_str() {
-            "granted" => show_notification(tag, title, body)
+            "granted" => show_notification(tag, title, body, activation.clone())
                 .map_err(|error| NotifyError::Failed(text(&error))),
             "default" => {
-                let asked = request_notification(tag, title, body);
+                let asked = request_notification(tag, title, body, activation.clone());
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Err(error) = JsFuture::from(asked).await {
                         web_sys::console::warn_1(&error);

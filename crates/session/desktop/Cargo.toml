@@ -5,7 +5,17 @@ edition = "2024"
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The profile card is not linked into the desktop that holds it: the program
+# fetches its code the first time a card opens and hands it over
+# (`profile_card::PROFILE_CARD`); a quiet panel stands under the avatar until
+# then. The browser desktop uses this to keep it out of its start module.
+lazy-profile-card = []
+
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 automerge.workspace = true
 blake3.workspace = true
 hex.workspace = true
@@ -28,6 +38,9 @@ ed25519-dalek.workspace = true
 durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
+# The same catalogue for the toolkit's shared picker, which the window bars'
+# reaction pickers open.
+tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
 
 [dev-dependencies]
 chat = { path = "../../../apps/chat", default-features = false }

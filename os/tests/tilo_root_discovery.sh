@@ -139,9 +139,14 @@ echo 'ok: no root discovery units outside the initrd'
 
 # Exercise the encrypted production path with an attach implementation that
 # checks the actual options received by systemd-cryptsetup, not a source grep.
+# It answers isLuks for every root, and lists a tilo-signin token when the
+# test says the root has one.
 cat >"$work/bin/encrypted" <<'EOF'
 #!/bin/bash
-exit 0
+[ "$1" = luksDump ] || exit 0
+printf 'LUKS header information\nTokens:\n'
+[ "${TILO_TEST_SIGNIN_TOKEN:-0}" = 1 ] && printf '  0: tilo-signin\n\tKeyslot:    1\n'
+printf '  1: systemd-tpm2\n\tKeyslot:    0\nDigests:\n'
 EOF
 cat >"$work/bin/attach" <<'EOF'
 #!/bin/bash
@@ -152,7 +157,15 @@ case ",$5," in *,password-cache=no,*) ;; *) exit 1 ;; esac
 case ",$5," in *,tpm2-device=auto,*) ;; *) exit 1 ;; esac
 case ",$5," in *,fido2-device=auto,*) ;; *) exit 1 ;; esac
 [ "$LC_ALL" = C ] && [ "$SYSTEMD_LOG_TARGET" = console ]
+printf '%s\n' "$5" >"$TILO_TEST_OPTIONS_LOG"
+if [ "${TILO_TEST_EXPECT_KEY:-0}" = 1 ]; then
+  [ "$(cat "$TILO_ROOT_RUNTIME/cryptsetup-keys.d/root.key")" = derived ] || exit 1
+fi
 echo attach >>"$TILO_TEST_ORDER_LOG"
+if [ "${TILO_TEST_ATTACH_HOLD:-0}" = 1 ] && [ ! -e "$TILO_ROOT_RUNTIME/backed" ]; then
+  touch "$TILO_ROOT_RUNTIME/attach-running"
+  exec sleep 30
+fi
 if [ "${TILO_TEST_ATTACH_FAILURE:-0}" = 1 ]; then
   echo 'Fatal device failure' >&2
   exit 2
@@ -181,9 +194,10 @@ TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
 TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \
 TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
 TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypted" \
-TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK=true \
+TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK="${TILO_TEST_UNLOCK:-true}" \
+TILO_ROOT_SIGNIN="${TILO_TEST_SIGNIN:-$work/bin/absent}" \
 TILO_ROOT_SIBLING_UNLOCK="${TILO_TEST_SIBLING:-false}" TILO_ROOT_SYSTEMCTL="$work/bin/systemctl" \
-TILO_TEST_ORDER_LOG="$work/order" \
+TILO_TEST_ORDER_LOG="$work/order" TILO_TEST_OPTIONS_LOG="$work/options" \
 TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-events" \
 TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
@@ -211,8 +225,7 @@ echo 'ok: a root without a sibling factor starts no sibling unlock'
 sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$work/dev/tilo-root").service"
 rm -rf "$work/run/tilo-root" "$work/order" "$work/plymouth-events"
 TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
-printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" "stop $sibling_unit" \
-  >"$work/expected-order"
+printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"
 cmp "$work/expected-order" "$work/order"
 rm -rf "$work/run/tilo-root" "$work/order"
 if TILO_TEST_SIBLING="$work/bin/sibling" TILO_TEST_ATTACH_FAILURE=1 encrypted_discover 2>/dev/null; then
@@ -222,6 +235,107 @@ fi
 printf '%s\n' "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"
 cmp "$work/expected-order" "$work/order"
 echo 'ok: a sibling unlock runs beside the prompt and is stopped once it is done'
+
+# A root people sign in to: the sign-in runs first. When it opens the volume
+# the attach consumes its key file, nothing else asks, and the key file is
+# gone afterwards; when the person asks for another way in, or nobody can
+# sign in, every existing path runs as before.
+cat >"$work/bin/signin" <<'EOF'
+#!/bin/bash
+if [ "$1" = unlock-prompt ]; then
+  [ "$2" = --device ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ] || exit 64
+  echo unlock-prompt >>"$TILO_TEST_ORDER_LOG"
+  exit 0
+fi
+if [ "$1" = other-ways ]; then
+  [ "$2" = --device ] && [ "$3" = "$TILO_ROOT_DEVROOT/tilo-root" ] && [ "$4" = --pid ] && [ -n "$5" ]
+  if [ "${TILO_TEST_RELAY_EXIT:-0}" = 3 ] && [ ! -e "$TILO_ROOT_RUNTIME/backed" ]; then
+    until [ -e "$TILO_ROOT_RUNTIME/attach-running" ]; do sleep 0.01; done
+    touch "$TILO_ROOT_RUNTIME/backed"
+    echo back >>"$TILO_TEST_ORDER_LOG"
+    exit 3
+  fi
+  # As the agent does: until the attach has ended (its parent collects it
+  # only once this returns).
+  while state="$(cat "/proc/$5/stat" 2>/dev/null)"; do
+    state="${state##*) }"
+    case "${state%% *}" in Z|X) break ;; esac
+    sleep 0.01
+  done
+  echo relayed >>"$TILO_TEST_ORDER_LOG"
+  exit "${TILO_TEST_RELAY_EXIT:-0}"
+fi
+[ -e "$TILO_ROOT_RUNTIME/backed" ] && TILO_TEST_SIGNIN_EXIT=0
+[ "$1" = --device ] && [ "$2" = "$TILO_ROOT_DEVROOT/tilo-root" ] && [ "$3" = --volume ] && [ "$4" = root ]
+echo signin >>"$TILO_TEST_ORDER_LOG"
+[ "$TILO_TEST_SIGNIN_EXIT" = 0 ] && printf derived >"$TILO_ROOT_RUNTIME/cryptsetup-keys.d/root.key"
+exit "$TILO_TEST_SIGNIN_EXIT"
+EOF
+cat >"$work/bin/rollback-unlock" <<'EOF'
+#!/bin/bash
+echo "rollback-unlock $*" >>"$TILO_TEST_ORDER_LOG"
+EOF
+chmod +x "$work/bin/signin" "$work/bin/rollback-unlock"
+rm -rf "$work/run/tilo-root" "$work/order"
+TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=0 TILO_TEST_EXPECT_KEY=1 \
+  TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
+printf '%s\n' unlock-prompt signin attach >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+test ! -e "$work/run/cryptsetup-keys.d/root.key"
+test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
+echo 'ok: a person who signs in opens the root with nothing else asked, and no key is left behind'
+agent=systemd-ask-password-plymouth
+rm -rf "$work/run/tilo-root" "$work/order"
+TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=2 \
+  TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
+printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+  "start --no-block $sibling_unit" attach "stop $sibling_unit" >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+echo "ok: a root nobody can sign in to keeps every existing unlock path, unchanged"
+# Another way in: the same paths, with the volume's questions asked by the
+# sign-in screen's agent in place of Plymouth's, which is back afterwards.
+for relayed in 0 2; do
+  rm -rf "$work/run/tilo-root" "$work/order"
+  TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT="$relayed" \
+    TILO_TEST_UNLOCK="$work/bin/rollback-unlock" TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
+  printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+    "start --no-block $sibling_unit" "stop $agent.path $agent.service" attach relayed "start $agent.path" "stop $sibling_unit" \
+    >"$work/expected-order"
+  cmp "$work/expected-order" "$work/order"
+  test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
+done
+echo "ok: other ways in keep every existing unlock path, asked on the boot screen"
+# An empty answer there stops that attempt and goes back to signing in.
+rm -rf "$work/run/tilo-root" "$work/order" "$work/run/backed" "$work/run/attach-running"
+TILO_TEST_SIGNIN="$work/bin/signin" TILO_TEST_SIGNIN_EXIT=3 TILO_TEST_RELAY_EXIT=3 \
+  TILO_TEST_ATTACH_HOLD=1 TILO_TEST_UNLOCK="$work/bin/rollback-unlock" \
+  TILO_TEST_SIBLING="$work/bin/sibling" encrypted_discover
+printf '%s\n' unlock-prompt signin "rollback-unlock $work/dev/tilo-root root" \
+  "start --no-block $sibling_unit" "stop $agent.path $agent.service" attach back "stop $sibling_unit" "start $agent.path" \
+  signin attach >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+test ! -e "$work/run/cryptsetup-keys.d/root.key"
+test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
+rm -f "$work/run/backed" "$work/run/attach-running"
+echo "ok: from another way in, an empty answer goes back to signing in"
+rm -rf "$work/run/tilo-root" "$work/order"
+printf stale >"$work/run/cryptsetup-keys.d/root.key"
+TILO_TEST_UNLOCK="$work/bin/rollback-unlock" encrypted_discover
+printf '%s\n' "rollback-unlock $work/dev/tilo-root root" attach >"$work/expected-order"
+cmp "$work/expected-order" "$work/order"
+test ! -e "$work/run/cryptsetup-keys.d/root.key"
+echo 'ok: without a sign-in program the root unlocks as before, and its key file goes once it is open'
+
+# Until a root has a sign-in, the volume key goes to uid 0's user keyring for
+# the first person's keyslot; once it has one, it never leaves the attach.
+link=',link-volume-key=@u::%user:tilo-auth:volume-key'
+rm -rf "$work/run/tilo-root" "$work/order"
+encrypted_discover
+case "$(cat "$work/options")" in *"$link") ;; *) cat "$work/options" >&2; exit 1 ;; esac
+rm -rf "$work/run/tilo-root" "$work/order"
+TILO_TEST_SIGNIN_TOKEN=1 encrypted_discover
+case "$(cat "$work/options")" in *link-volume-key*) cat "$work/options" >&2; exit 1 ;; esac
+echo 'ok: the volume key is linked for the first sign-in only while the root has none'
 
 
 # The install preflight binds both the PCR policy and the exact target UKI to

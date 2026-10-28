@@ -53,6 +53,32 @@ impl MailFixture {
     }
 }
 
+/// Real-world HTML mail, as it arrives: a newsletter laid out in tables, a
+/// code-review notification, a receipt, a mail with a dark form, one with
+/// inline images, and a plain-text one with addresses in it.
+const GALLERY: &[&[u8]] = &[
+    include_bytes!("../tests/fixtures/html/newsletter.eml"),
+    include_bytes!("../tests/fixtures/html/github.eml"),
+    include_bytes!("../tests/fixtures/html/receipt.eml"),
+    include_bytes!("../tests/fixtures/html/dark.eml"),
+    include_bytes!("../tests/fixtures/html/inline.eml"),
+    include_bytes!("../tests/fixtures/html/plain.eml"),
+];
+
+impl MailFixture {
+    /// The bundled mailbox with the HTML gallery on top of its inbox.
+    pub fn html_gallery() -> Self {
+        let mut fixture = Self::bundled();
+        for (age, raw) in (0_i64..).zip(GALLERY) {
+            if let Some(mut message) = parse_eml(raw, SAMPLE_NOW_MIN - age, Folder::Inbox) {
+                message.read = true;
+                fixture.mailbox.insert(message);
+            }
+        }
+        fixture
+    }
+}
+
 /// Deterministic "now" for the sample corpus so relative timestamps render
 /// identically every run. 2026-06-30 14:05 UTC.
 pub const SAMPLE_NOW_MIN: i64 = {
@@ -119,7 +145,6 @@ const HOUR_MIN: i64 = 60;
 /// One day, in minutes.
 const DAY_MIN: i64 = 24 * HOUR_MIN;
 
-/// The people the sample mail is from and to.
 struct People {
     me: Addr,
     maya: Addr,
@@ -491,7 +516,6 @@ mod tests {
     #[test]
     fn sample_corpus_is_populated_threaded_and_hydrated() {
         let mb = sample_mailbox();
-        // Populated across folders.
         assert!(
             mb.count(Folder::Inbox) >= 8,
             "inbox: {}",
@@ -502,7 +526,6 @@ mod tests {
         assert!(mb.count(Folder::Junk) >= 1);
         assert!(mb.unread_count(Folder::Inbox) > 0);
 
-        // The invoice was parsed from raw MIME and carries its PDF with bytes.
         let invoice = mb
             .messages
             .values()
@@ -512,7 +535,6 @@ mod tests {
         assert_eq!(invoice.attachments[0].filename, "invoice-june.pdf");
         assert!(invoice.attachments[0].is_downloadable());
         assert!(!invoice.attachments[0].content.is_empty());
-        // The plain message was parsed too.
         assert!(
             mb.messages
                 .values()
@@ -535,7 +557,6 @@ mod tests {
             .expect("launch thread present");
         assert_eq!(launch.message_ids.len(), 3);
 
-        // Every message is in the past.
         let now = sample_now_min();
         assert!(mb.messages.values().all(|m| m.timestamp_min <= now));
     }

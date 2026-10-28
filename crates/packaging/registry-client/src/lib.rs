@@ -52,10 +52,6 @@ pub fn apply(
 }
 
 /// The claim `FORGE:ACCOUNT` names, such as `github:ada`.
-///
-/// # Errors
-///
-/// When the text names no known forge or no valid account.
 pub fn forge_claim(text: &str) -> Result<NamespaceClaim> {
     let (forge, account) = text
         .rsplit_once(':')

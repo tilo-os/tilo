@@ -10,7 +10,6 @@ for commit in "$collection" "$target"; do
     exit 1
   }
 done
-# Use the publication workflow's input set, including shared UI/runtime code.
 mapfile -t inputs < <(awk '
   /^    paths:$/ { on = 1; next }
   on && /^      - / { gsub(/^      - "|"$/, ""); print ":(glob)" $0; next }
@@ -21,7 +20,7 @@ mapfile -t inputs < <(awk '
   exit 1
 }
 if ! git -C "$repo" diff --quiet "$collection" "$target" -- "${inputs[@]}"; then
-  echo "::error::pinned apps from $collection differ from OS $target; publish a compatible Release / apps collection before proving a release. For branch desktop tests, use Dev / VM acceptance with component swaps (PR #2463)." >&2
+  echo "::error::pinned apps from $collection differ from OS $target; publish a compatible Release / apps collection before proving a release. For branch desktop tests, run t's vm-acceptance-cohort, whose component swaps carry the branch's apps and runtime." >&2
   git -C "$repo" diff --name-only "$collection" "$target" -- "${inputs[@]}" >&2
   exit 1
 fi

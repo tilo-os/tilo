@@ -185,7 +185,7 @@ impl RoomOwner {
             CommitOperation::DesktopCommand { .. }
             | CommitOperation::RetiredAgentRuntime
             | CommitOperation::DocumentImport { .. }
-            | CommitOperation::WorkspaceTaskCommand { .. }
+            | CommitOperation::RetiredWorkspaceTask
             | CommitOperation::WorkspaceMembershipCommand { .. } => {
                 return Err("the runtime room owner commits documents and effect receipts".into());
             }
@@ -263,7 +263,7 @@ impl RoomOwner {
         if !self.creation.allows(app, kind) {
             return Err(format!("{app} does not declare the resource kind `{kind}`"));
         }
-        candidate.publish_document(
+        candidate.publication_mut().publish_document(
             app,
             record,
             automerge::AutoCommit::new().save(),

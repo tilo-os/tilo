@@ -103,6 +103,11 @@ pub struct CatalogueEntry {
     /// Actions it offers while closed.
     #[serde(default)]
     pub actions: Vec<CatalogueAction>,
+    /// Its source has no build of it for this device's processor (Flathub
+    /// lists Steam for `x86_64` only): it is still found, says it is not
+    /// available for this device, and is never offered for installing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_built_for_this_device: bool,
 }
 
 impl CatalogueEntry {

@@ -13,6 +13,9 @@ homepage.workspace = true
 # present the same model. Hosts supply tab contents through `TileSource`.
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
@@ -35,10 +38,13 @@ vello.workspace = true
 winit.workspace = true
 
 [dev-dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
+# Members' pointers are placed through the live plane's layout mapping
+# against the windows and strip a desktop shows.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 
 [lints]
 workspace = true

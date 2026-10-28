@@ -9,7 +9,7 @@ use tilo_secret_service::migrate::{self, GnomeKeyring, Outcome};
 use tilo_secret_service::service::{
     AppRow, BUS_NAME, BusResolver, Core, MANAGEMENT_PATH, Managers, publish,
 };
-use tilo_secret_service::store::{DeviceIdentityKey, Store};
+use tilo_secret_service::store::{DeviceIdentityKey, Store, UserKey};
 use tilo_user_identity::persist::IdentityPaths;
 use tracing::{error, info};
 
@@ -84,6 +84,51 @@ fn uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
+/// The public half of the person's key, as this session knows them.
+///
+/// The private half stays in their own tree and is never read before the
+/// store needs it. A machine whose identity tree has no public half has not
+/// been set up for anybody, and knows no person to seal a vault for.
+fn user_key(paths: &IdentityPaths) -> Option<[u8; 32]> {
+    let bytes = match std::fs::read(&paths.user_pubkey) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // Not an error: the store is simply locked until a person is
+            // known here, exactly as it is before their first sign-in.
+            info!(
+                "no person is set up on this machine ({}): {error}",
+                paths.user_pubkey.display()
+            );
+            return None;
+        }
+    };
+    if let Ok(identity) = <[u8; 32]>::try_from(bytes.as_slice()) {
+        return Some(identity);
+    }
+    info!(
+        "the person's identity at {} is not 32 bytes",
+        paths.user_pubkey.display()
+    );
+    None
+}
+
+/// A development identity root gets a person to stand for, since nothing
+/// claims it: the machine's own device key pair, under `user-identity/`.
+///
+/// Only `--identity-root` reaches this, and only a development build has it.
+fn dev_person(paths: &IdentityPaths) -> Result<(), String> {
+    use tilo_user_identity::persist::{write_public_key, write_signing_key};
+    if paths.user_privkey.exists() || paths.user_pubkey.exists() {
+        return Ok(());
+    }
+    let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+        getrandom::SysRng,
+    ));
+    write_signing_key(&paths.user_privkey, &key)
+        .and_then(|()| write_public_key(&paths.user_pubkey, &key.verifying_key().to_bytes()))
+        .map_err(|e| format!("development identity: {e}"))
+}
+
 async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> {
     let dir = tilo_secret_service::data_dir().ok_or("no home directory")?;
     let uid = uid();
@@ -92,15 +137,30 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
             let paths = IdentityPaths::under(root);
             tilo_user_identity::persist::load_or_create_device_key(&paths)
                 .map_err(|e| format!("development identity: {e}"))?;
+            dev_person(&paths)?;
             paths
         }
         None => IdentityPaths::default_system(),
     };
-    let keys = DeviceIdentityKey::new(paths, dir.join("salt"), &uid.to_string());
-    let store = Arc::new(Store::new(dir.join("vault.tseal"), Box::new(keys)));
+    // The vault belongs to the person, not to this machine: it is sealed
+    // under their own key, which only their sign-in releases. A session that
+    // cannot read it keeps the vault closed and relays nothing; a machine no
+    // person has claimed yet has no store to open, and says so with `None`
+    // rather than minting a stranger's key.
+    let keys = UserKey::new(paths.clone(), dir.join("salt"), user_key(&paths));
+    // A vault this build wrote before belongs to the device identity that
+    // wrote it: it is copied whole under the person's key the first time it
+    // opens, and the machine's key is never enough to open anything else.
+    let device = DeviceIdentityKey::new(paths, dir.join("salt"), &uid.to_string());
+    let store = Arc::new(Store::keyed_by(
+        dir.join("vault.tseal"),
+        Box::new(keys),
+        Box::new(device.clone()),
+        Box::new(device),
+    ));
     match store.locked() {
         None => info!("the store is open"),
-        Some(why) => info!("the store is locked until the device identity is available: {why}"),
+        Some(why) => info!("the store is locked until the person's key is available: {why}"),
     }
 
     let connection = zbus::Connection::session()

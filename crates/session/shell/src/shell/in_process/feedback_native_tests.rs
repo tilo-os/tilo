@@ -69,6 +69,8 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
                 .as_secs(),
         },
         receipt: None,
+        reviewer: None,
+        review: None,
     }
 }
 fn admit(delivery: &Delivery) {
@@ -103,14 +105,16 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     let mut wrong = answer(&delivery.connection.borrow());
     wrong.admission.reporter_device = hex::encode([99; 32]);
     assert!(delivery.connection.borrow().admit(&wrong).is_err());
+    // An admission is fresh for five seconds. Opening the profile first
+    // keeps its stores' setup on a loaded runner out of that window.
+    let profile = directory.path().join("feedback-private-profile");
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     admit(&delivery);
     let current = delivery.connection.borrow().current().unwrap();
     assert_eq!(
         current.owner.device_public_key(),
         Some(&governor.device_public_key)
     );
-    let profile = directory.path().join("feedback-private-profile");
-    let mut apps = InProcessApps::at(&profile, &author).unwrap();
     assert!(
         delivery.pump(&mut apps).is_err(),
         "this fixture supplies no application broker; publication must remain unavailable"
@@ -260,23 +264,17 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                 }
                 chat::demo::start(&mut document, &person, "Fixture", "F")
                     .map_err(|error| error.to_string())?;
-                chat::demo::insert_category(
-                    &mut document,
-                    &person,
-                    "feedback-category",
-                    "Feedback",
-                )
-                .map_err(|error| error.to_string())?;
+                chat::demo::insert_category(&mut document, "feedback-category", "Feedback")
+                    .map_err(|error| error.to_string())?;
                 chat::demo::insert_channel(
                     &mut document,
-                    &person,
                     "feedback",
                     "feedback-category",
                     "Feedback",
                     chat::model::ChannelKind::Text,
                 )
                 .map_err(|error| error.to_string())?;
-                let message = view.peer().clone().publish_incremental(
+                let message = view.peer().clone().publication_mut().publish_incremental(
                     "so.tilo.chat",
                     "",
                     document.save_after(&heads),
@@ -356,7 +354,7 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
     .unwrap();
     let profile = directory.path().join("cold-publisher");
     assert!(!profile.exists());
-    let mut apps = InProcessApps::at(&profile, &author).unwrap();
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     let original_view = save_user_view(&apps);
     let mut publisher = publisher_on(
         &mut apps,

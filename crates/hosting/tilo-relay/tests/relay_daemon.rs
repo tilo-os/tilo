@@ -201,7 +201,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         tilo_test_env::within("a message on b_again", b_again.recv()).await,
         Some(Envelope::Delta { ref delta, .. }) if delta == b"offline-change"
             ));
-        wait_for_ready_with_pending(&b_again).await;
+        wait_for_ready_with_pending(&b_again, &relay.handle().metrics).await;
 
         let members: Vec<String> = serde_json::from_slice(
             &std::fs::read(state.path().join("workspaces/9/membership.json")).unwrap(),
@@ -229,7 +229,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await;
         let relay_addr = relay.relay.node_addr();
 
-        // Peer A dials the relay.
         let ep_a = client_endpoint().await;
         let a_client = RelayClient::connect(
             ep_a,
@@ -242,7 +241,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .expect("A connect");
 
-        // Peer B dials the relay.
         let ep_b = client_endpoint().await;
         let b_client = RelayClient::connect(
             ep_b,
@@ -277,7 +275,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             }
         }
 
-        // A publishes a delta. `delta` bytes are opaque to the relay.
         let payload = b"the-crdt-delta".to_vec();
         let delta_env = Envelope::Delta {
             workspace_id: 42,
@@ -288,7 +285,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         };
         a_client.send(delta_env.clone()).unwrap();
 
-        // B receives it.
         let received = tilo_test_env::within("delta timeout", b_client.recv())
             .await
             .expect("delta channel closed");
@@ -309,7 +305,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let ghost = tokio::time::timeout(Duration::from_millis(200), a_client.recv()).await;
         assert!(ghost.is_err(), "A should not receive its own delta");
 
-        // Metrics reflect activity.
         let snap = relay.relay.handle().metrics.snapshot();
         assert!(snap.conns_authed >= 2, "at least both peers authed");
     }
@@ -348,7 +343,10 @@ async fn publish_until_queued(
 
 /// Drain replayed `Delta`s until the `Ready` marker reports at least one
 /// pending delta was queued for this reconnect.
-async fn wait_for_ready_with_pending(b_again: &RelayClient) {
+async fn wait_for_ready_with_pending(
+    b_again: &RelayClient,
+    metrics: &std::sync::Arc<tilo_relay::metrics::Metrics>,
+) {
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
@@ -359,6 +357,13 @@ async fn wait_for_ready_with_pending(b_again: &RelayClient) {
                 break;
             }
             Ok(Some(Envelope::Delta { .. })) => {}
+            Ok(None) => {
+                let snapshot = metrics.snapshot();
+                panic!(
+                    "the relay closed the reconnected session before Ready: {} sessions ended with an error, {} of them for backpressure",
+                    snapshot.subscriber_dropped, snapshot.subscriber_dropped_backpressure
+                );
+            }
             other => panic!("expected queued delta or Ready, got {other:?}"),
         }
     }

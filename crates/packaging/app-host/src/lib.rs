@@ -11,7 +11,7 @@
 //!
 //! - [`install`] — admit a `.tapp` against the catalogue identity the Store
 //!   capability approved, and install it into the package store.
-//! - [`fetch`] — remote fetch: resolve an app-id through the registry
+//! - `fetch` — remote fetch: resolve an app-id through the registry
 //!   protocol (`app-registry`), download the tapp over iroh-blobs, verify
 //!   it fail-closed, and install it.
 //! - [`service`] — Cap'n Proto `AppHost` server implementation.
@@ -62,6 +62,11 @@ pub mod app_host_capnp {
 pub use package_store::PackageStore;
 pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
+
+/// The app-host interface's one version: what the `app-host` service speaks
+/// to the apps it is handed to (the Store, the Browser, Settings), on its own
+/// rather than the runtime interface's (crates/packaging/app-host/interface.toml).
+pub const APP_HOST_INTERFACE_VERSION: u32 = 3;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
 /// `None` without a runtime directory. Never the shared temp directory, where

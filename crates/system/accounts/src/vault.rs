@@ -101,6 +101,9 @@ pub struct SecretVault {
     pending: std::sync::Mutex<PendingEdits>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     page_in_flight: std::sync::Mutex<Option<PendingEdits>>,
+    /// A write on a thread of its own, for a caller that must not wait on
+    /// the disk ([`Self::commit`] on the compositor's frame loop).
+    native_in_flight: std::sync::Mutex<Option<NativeWrite>>,
     custody: SecretCustody,
     load_error: Option<String>,
     read_only: bool,
@@ -133,6 +136,7 @@ impl SecretVault {
                     page: None,
                     entries: BTreeMap::new(),
                     pending: std::sync::Mutex::default(),
+                    native_in_flight: std::sync::Mutex::default(),
                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                     page_in_flight: std::sync::Mutex::default(),
                     custody: explicit_root_custody(),
@@ -173,6 +177,7 @@ impl SecretVault {
                 page: None,
                 entries: BTreeMap::new(),
                 pending: std::sync::Mutex::default(),
+                native_in_flight: std::sync::Mutex::default(),
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody: explicit_root_custody(),
@@ -192,6 +197,7 @@ impl SecretVault {
             page: None,
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
@@ -217,6 +223,7 @@ impl SecretVault {
             page: Some(page),
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody: SecretCustody::System,
@@ -234,6 +241,7 @@ impl SecretVault {
                 page: None,
                 entries: BTreeMap::new(),
                 pending: std::sync::Mutex::default(),
+                native_in_flight: std::sync::Mutex::default(),
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody,
@@ -259,6 +267,7 @@ impl SecretVault {
             page: None,
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
@@ -344,6 +353,35 @@ impl SecretVault {
     /// prepared, serialization or encryption fails, or the sealed file cannot
     /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
+        match self.written(true)? {
+            Written::Durable => Ok(()),
+            Written::InFlight => Err(SAVE_PENDING.to_owned()),
+            Written::Remaining => Err("credential save pending; retry remaining edits".to_owned()),
+        }
+    }
+
+    /// Save the edits as [`Self::try_save`] does, telling a write still in
+    /// flight apart from a failure: a browser page commits through its
+    /// storage asynchronously, so its first save of an edit is
+    /// [`Saved::Pending`] and the edit stays. Saving again reports how it
+    /// ended.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_save`], except a write in flight.
+    ///
+    /// On a thread that must not wait on storage (the compositor's frame
+    /// loop, [`durable_store::waiting`]) a native vault is written the same
+    /// way: on a thread of its own, [`Saved::Pending`] until it is written.
+    pub fn commit(&self) -> Result<Saved, String> {
+        let wait = !durable_store::waiting::forbidden();
+        Ok(match self.written(wait)? {
+            Written::Durable => Saved::Durable,
+            Written::InFlight | Written::Remaining => Saved::Pending,
+        })
+    }
+
+    fn written(&self, wait: bool) -> Result<Written, String> {
         if self.read_only {
             return Err("read-only credential vault cannot be saved".to_string());
         }
@@ -358,54 +396,154 @@ impl SecretVault {
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             return Err("page credential storage is only available in a browser".into());
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|error| format!("could not create vault directory: {error}"))?;
-        let _lock = advisory_lock::FileLock::open(
-            &self.dir.join("vault.lock"),
-            advisory_lock::LockMode::Exclusive,
-        )
-        .map_err(|error| format!("could not lock credential vault: {error}"))?;
-        let entries = self.merge_pending(load_entries(&self.dir, self.custody)?)?;
-        let key = load_or_create_key(&self.dir, self.custody)
-            .ok_or_else(|| "no vault key is available".to_string())?;
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&entries)
-                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
-        );
-        let blob = seal(&key, &plaintext)
-            .ok_or_else(|| "credential vault encryption failed".to_string())?;
-        tilo_files::native::atomic::write(&self.dir.join("vault.enc"), &blob)
-            .map_err(|error| format!("could not write credential vault: {error}"))?;
-        self.pending
+        // One writer at a time: a caller that may wait writes under this.
+        let mut in_flight = self
+            .native_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_native_vault(&mut in_flight, wait)
+    }
+
+    /// Settle the write `in_flight`, then write the pending edits: here when
+    /// the caller may `wait`, else on a thread of its own.
+    fn write_native_vault(
+        &self,
+        in_flight: &mut Option<NativeWrite>,
+        wait: bool,
+    ) -> Result<Written, String> {
+        if let Some(write) = in_flight.take() {
+            if !wait && !write.thread.is_finished() {
+                *in_flight = Some(write);
+                return Ok(Written::InFlight);
+            }
+            // A failed write leaves its edits pending, to be written again.
+            let written = write
+                .thread
+                .join()
+                .unwrap_or_else(|_| Err("the credential vault writer stopped".to_owned()));
+            written?;
+            self.settle(write.submitted);
+        }
+        let submitted = self
+            .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-        Ok(())
+            .clone();
+        if wait {
+            // Written even with no edits: a vault that cannot be read back
+            // is refused here rather than reported saved.
+            write_native(&self.dir, self.custody, &submitted)?;
+            self.settle(submitted);
+            return Ok(Written::Durable);
+        }
+        if submitted.is_empty() {
+            return Ok(Written::Durable);
+        }
+        let (dir, custody, edits) = (self.dir.clone(), self.custody, submitted.clone());
+        let thread = std::thread::Builder::new()
+            .name("credential-vault".into())
+            .spawn(move || write_native(&dir, custody, &edits))
+            .map_err(|error| format!("could not start writing the credential vault: {error}"))?;
+        *in_flight = Some(NativeWrite { submitted, thread });
+        Ok(Written::InFlight)
     }
-}
 
-impl SecretVault {
-    fn merge_pending(
-        &self,
-        entries: BTreeMap<String, Secret>,
-    ) -> Result<BTreeMap<String, Secret>, String> {
-        merge_edits(
-            entries,
-            &self
+    /// Forget the edits a finished write kept, retaining any made since.
+    fn settle(&self, submitted: PendingEdits) {
+        settle_edits(
+            &mut self
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+            submitted,
+        );
     }
+}
 
+/// Forget from `pending` the edits a finished write kept, retaining any
+/// made since.
+fn settle_edits(pending: &mut PendingEdits, submitted: PendingEdits) {
+    for (id, (_, saved)) in submitted {
+        if let Some((original, replacement)) = pending.get_mut(&id) {
+            if replacement == &saved {
+                pending.remove(&id);
+            } else {
+                // Edited again while that write was under way: the newer
+                // edit stays, based on the value now written.
+                *original = saved;
+            }
+        }
+    }
+}
+
+/// A native vault write under way on its own thread, and the edits it writes.
+struct NativeWrite {
+    submitted: PendingEdits,
+    thread: std::thread::JoinHandle<Result<(), String>>,
+}
+
+impl std::fmt::Debug for NativeWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeWrite").finish_non_exhaustive()
+    }
+}
+
+/// Seal and atomically write the vault in `dir` with `edits` merged into
+/// what it holds, under its lock.
+fn write_native(dir: &Path, custody: SecretCustody, edits: &PendingEdits) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("could not create vault directory: {error}"))?;
+    let _lock =
+        advisory_lock::FileLock::open(&dir.join("vault.lock"), advisory_lock::LockMode::Exclusive)
+            .map_err(|error| format!("could not lock credential vault: {error}"))?;
+    let entries = merge_edits(load_entries(dir, custody)?, edits)?;
+    let key =
+        load_or_create_key(dir, custody).ok_or_else(|| "no vault key is available".to_string())?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&entries)
+            .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+    );
+    let blob =
+        seal(&key, &plaintext).ok_or_else(|| "credential vault encryption failed".to_string())?;
+    tilo_files::native::atomic::write(&dir.join("vault.enc"), &blob)
+        .map_err(|error| format!("could not write credential vault: {error}"))
+}
+
+/// Why [`SecretVault::try_save`] refuses while a browser write is in flight.
+const SAVE_PENDING: &str = "credential save pending; retry after browser storage completes";
+
+/// How far a save got, in the detail [`SecretVault::try_save`] reports.
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code, reason = "only a browser page writes asynchronously")
+)]
+enum Written {
+    Durable,
+    /// The browser is still writing the edits.
+    InFlight,
+    /// A write landed, and edits made meanwhile are written next.
+    Remaining,
+}
+
+/// How far a [`SecretVault::commit`] got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// On disk, or in the browser's storage.
+    Durable,
+    /// The browser is still writing it; save again to learn how it ended.
+    Pending,
+}
+
+impl SecretVault {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    fn save_page(&self) -> Result<(), String> {
+    fn save_page(&self) -> Result<Written, String> {
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.is_empty() {
-            return Ok(());
+            return Ok(Written::Durable);
         }
         let mut in_flight = self
             .page_in_flight
@@ -456,7 +594,7 @@ impl SecretVault {
             }
         };
         if !committed {
-            return Err("credential save pending; retry after browser storage completes".into());
+            return Ok(Written::InFlight);
         }
         *in_flight = None;
         drop(in_flight);
@@ -472,9 +610,10 @@ impl SecretVault {
             }
         }
         if pending.is_empty() {
-            Ok(())
+            Ok(Written::Durable)
         } else {
-            Err("credential save pending; retry remaining edits".into())
+            // Edits made while that write was in flight: written next.
+            Ok(Written::Remaining)
         }
     }
 }
@@ -483,7 +622,6 @@ fn page_vault() -> tilo_files::VPath {
     tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
 }
 
-/// As [`load_entries`], for a vault in page storage.
 fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -917,7 +1055,6 @@ mod tests {
 
     #[test]
     fn vault_key_is_created_once_and_owner_only() {
-        // Phase `simultaneous_vault_creators_use_the_one_persisted_private_key`.
         {
             let root = temp_root();
             let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
@@ -945,7 +1082,6 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
 
-        // Phase `key_file_is_owner_only`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -969,7 +1105,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_key_custody_never_leaks_rotates_or_falls_back() {
-        // Phase `insecure_windows_vault_key_does_not_rotate_or_overwrite_the_vault`.
         {
             let root = temp_root();
             let mut vault =
@@ -997,7 +1132,6 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
 
-        // Phase `windows_dpapi_secret_store_does_not_publish_plaintext_key`.
         {
             let root = temp_root();
             let mut item = crate::SecretItem::login("Owned fixture", "user", "fixture secret");
@@ -1015,7 +1149,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_insecure_protected_key_cannot_replace_existing_vault`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1042,7 +1175,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_a_plaintext_key`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
@@ -1072,7 +1204,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_concurrent_creation_returns_one_persisted_key`.
         {
             let root = temp_root();
             let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
@@ -1099,7 +1230,6 @@ mod tests {
 
     #[test]
     fn a_vault_that_cannot_be_opened_is_never_overwritten_or_misread() {
-        // Phase `missing_key_never_rekeys_an_existing_vault`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1118,7 +1248,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `failed_open_cannot_overwrite_vault_after_key_is_restored`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1141,7 +1270,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `save_preserves_ciphertext_corrupted_after_open`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1157,7 +1285,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `authenticated_but_invalid_document_is_preserved`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
@@ -1171,7 +1298,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `wrong_key_cannot_decrypt_a_persisted_vault`.
         {
             let root = temp_root();
             let id = AccountId::from("x");
@@ -1205,28 +1331,55 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_that_must_not_wait_commits_the_vault_on_a_writer_of_its_own() {
+        let root = temp_root();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&AccountId::from("frame-loop"), &Secret::password("kept"));
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            assert_eq!(
+                vault.commit().unwrap(),
+                Saved::Pending,
+                "the frame loop never writes the vault itself"
+            );
+            vault.put(
+                &AccountId::from("edited-meanwhile"),
+                &Secret::password("too"),
+            );
+        }
+        // A caller that may wait takes the write under way, then writes
+        // the edit made meanwhile.
+        vault.try_save().unwrap();
+        let reopened = SecretVault::open_in(&root);
+        assert_eq!(
+            reopened.get(&AccountId::from("frame-loop")),
+            Some(Secret::password("kept"))
+        );
+        assert_eq!(
+            reopened.get(&AccountId::from("edited-meanwhile")),
+            Some(Secret::password("too"))
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn sealed_vault_round_trips_and_never_exposes_the_secret() {
-        // Phase `seal_open_round_trips_and_rejects_tampering`.
         {
             let key = VaultKey::from_bytes([7u8; KEY_LEN]);
             let plaintext = b"secret vault bytes";
             let blob = seal(&key, plaintext).expect("seal");
             // The sealed blob is not the plaintext.
             assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-            // It is a versioned `tilo-seal` envelope bound to this vault format.
             assert!(blob.starts_with(b"TSEAL"));
-            // Round-trips under the same key.
             assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
             // A different key can't open it.
             assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
-            // A single flipped ciphertext byte fails authentication.
             let mut tampered = blob;
             let last = tampered.len() - 1;
             tampered[last] ^= 0x01;
             assert!(open(&key, &tampered).is_none());
         }
 
-        // Phase `vault_put_save_load_round_trips`.
         {
             let root = temp_root();
             let id = AccountId::from("ada@example.com");
@@ -1245,7 +1398,6 @@ mod tests {
             std::fs::remove_dir_all(&root).ok();
         }
 
-        // Phase `secret_never_appears_in_the_sealed_file`.
         {
             let root = temp_root();
             let mut v = SecretVault::open_in(&root);

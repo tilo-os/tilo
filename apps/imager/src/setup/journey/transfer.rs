@@ -283,7 +283,7 @@ mod tests {
     };
 
     fn wait(transfer: &mut Transfer) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while transfer.busy() {
             assert!(Instant::now() < deadline, "{}", transfer.status());
             transfer.poll();
@@ -405,23 +405,24 @@ mod tests {
         let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         // SAFETY: a valid NUL-terminated path inside an isolated fixture.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        // A regressed blocking open is released by a delayed fixture writer,
-        // making the test fail its latency assertion instead of hanging Cargo.
-        let writer_path = fifo.clone();
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            let _ = std::fs::OpenOptions::new()
-                .write(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(writer_path);
+        // No writer opens the FIFO until the read has answered, so a reader
+        // that waited for one would never answer.
+        let (answered, answer) = std::sync::mpsc::channel();
+        let reading = fifo.clone();
+        let reader = std::thread::spawn(move || {
+            let _ = answered.send(journey_transfer::read_flatpak_inventory(&reading).is_err());
         });
-        let started = Instant::now();
-        assert!(journey_transfer::read_flatpak_inventory(&fifo).is_err());
-        let elapsed = started.elapsed();
-        writer.join().unwrap();
-        assert!(
-            elapsed < Duration::from_millis(250),
-            "A FIFO must be rejected without waiting for a writer: {elapsed:?}"
+        let refused = answer.recv_timeout(tilo_test_env::hang_bound());
+        // Release a regressed blocking open, so failure cannot hang Cargo.
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo);
+        reader.join().unwrap();
+        assert_eq!(
+            refused,
+            Ok(true),
+            "A FIFO must be rejected without waiting for a writer"
         );
         let original = root.join("original");
         std::fs::write(&original, b"unchanged private metadata fixture").unwrap();

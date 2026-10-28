@@ -1,0 +1,72 @@
+Subject: [PATCH] daemon: cleanup tests wait for events, not deadlines
+
+The helpers gave the cleanup goroutine one second to reach its blocking
+operation and to release the daemon mutex, which a loaded builder can
+exceed. Wait for the operation to start or the cleanup to finish instead,
+and check the mutex with TryLock while the operation is blocked.
+---
+--- a/internal/daemon/daemon_capture_groups_test.go
++++ b/internal/daemon/daemon_capture_groups_test.go
+@@ -167,7 +167,7 @@
+ 				close(done)
+ 			}()
+ 
+-			waitForCleanupBlock(t, started, release, done)
++			waitForCleanupBlock(t, started, done)
+ 			assertDaemonMutexAvailable(t, d, release, done, func() {
+ 				if len(d.streams) != 0 {
+ 					t.Errorf("cleanup started before stream was detached: %+v", d.streams)
+@@ -201,7 +201,7 @@
+ 		close(done)
+ 	}()
+ 
+-	waitForCleanupBlock(t, started, release, done)
++	waitForCleanupBlock(t, started, done)
+ 	assertDaemonMutexAvailable(t, d, release, done, func() {
+ 		if len(d.streams) != 0 || len(d.captureGroups) != 0 {
+ 			t.Errorf("capture failure cleanup was not detached: streams=%+v groups=%+v", d.streams, d.captureGroups)
+@@ -267,34 +267,27 @@
+ 	}
+ }
+ 
+-func waitForCleanupBlock(t *testing.T, started, release, done chan struct{}) {
++func waitForCleanupBlock(t *testing.T, started, done chan struct{}) {
+ 	t.Helper()
+ 	select {
+ 	case <-started:
+-	case <-time.After(time.Second):
+-		close(release)
+-		<-done
++	case <-done:
+ 		t.Fatal("cleanup did not reach the deliberately blocking operation")
+ 	}
+ }
+ 
++// The blocking operation has started and cannot return before release is
++// closed, so a cleanup that held the daemon mutex would hold it right now.
+ func assertDaemonMutexAvailable(t *testing.T, d *Daemon, release, done chan struct{}, check func()) {
+ 	t.Helper()
+-	locked := make(chan struct{})
+-	go func() {
+-		d.mu.Lock()
++	locked := d.mu.TryLock()
++	if locked {
+ 		check()
+ 		d.mu.Unlock()
+-		close(locked)
+-	}()
+-
+-	select {
+-	case <-locked:
+-		close(release)
+-		<-done
+-	case <-time.After(time.Second):
+-		close(release)
+-		<-done
++	}
++	close(release)
++	<-done
++	if !locked {
+ 		t.Fatal("daemon mutex remained locked during blocking cleanup")
+ 	}
+ }

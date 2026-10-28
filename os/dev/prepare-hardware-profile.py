@@ -43,15 +43,20 @@ def installed_firmware(destination: str, payload: bytes) -> bytes:
     return b"".join(line for line in lines if line.rstrip(b"\r\n") != SAMPLE_BROADCOM_MAC)
 
 
-def libinput_quirks(profile: str, keyboards: list[dict[str, str]]) -> str:
+def libinput_quirks(profile: str, keyboards: list[dict[str, str]],
+                    dmi: dict[str, str] | None = None) -> str:
     """The libinput quirks naming the profile's built-in keyboards internal.
 
     libinput enables a touchpad's disable-while-typing only against a keyboard
     it tags internal, and its shipped quirks tag only PS/2 keyboards so. An
     I2C or SPI HID keyboard is otherwise unpaired and the touchpad keeps
     tapping and moving under the typing hand. Every match is ANDed, so the
-    section applies to that bus, id and name on that device-tree board only.
+    section applies to that bus, id and name on that board only: a board with
+    a device tree is confined by its compatible, a firmware-described one by
+    its DMI identity, and neither is a glob.
     """
+    if dmi is None:
+        dmi = {}
     lines = [f"# Generated from the {profile} hardware profile (os/hardware/profiles).",
              "# Built-in keyboards libinput would otherwise leave unpaired from the",
              "# touchpad, so disable-while-typing never engaged."]
@@ -64,7 +69,8 @@ def libinput_quirks(profile: str, keyboards: list[dict[str, str]]) -> str:
             f"MatchVendor=0x{keyboard['vendor']}",
             f"MatchProduct=0x{keyboard['product']}",
             f"MatchName={keyboard['name']}",
-            f"MatchDeviceTree={keyboard['devicetree_compatible']}",
+            (f"MatchDeviceTree={keyboard['devicetree_compatible']}" if keyboard["devicetree_compatible"]
+             else f"MatchDMIModalias=dmi:{dmi['sys_vendor']}:{dmi['product_name']}:"),
             "AttrKeyboardIntegration=internal",
         ]
     return "\n".join(lines) + "\n"
@@ -235,8 +241,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         ).encode("utf-8")
     if definition.get("internal_keyboards"):
         outputs[LIBINPUT_QUIRKS_DIR / f"50-tilo-{profile}.quirks"] = libinput_quirks(
-            profile, definition["internal_keyboards"]).encode("utf-8")
-    # Check every destination before creating directories or installing bytes.
+            profile, definition["internal_keyboards"], definition.get("dmi")).encode("utf-8")    # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {
         checked_path(root, relative, required=False): payload

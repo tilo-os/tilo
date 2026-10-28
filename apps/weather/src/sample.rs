@@ -386,7 +386,6 @@ mod tests {
 
     #[test]
     fn sample_is_fully_populated_with_clean_hourly_and_daily_series() {
-        // Case `sample_is_fully_populated`.
         {
             let m = sample_model();
             assert!(m.locations.len() >= 3);
@@ -398,7 +397,6 @@ mod tests {
                 assert_eq!(snap.daily.len(), 7);
             }
         }
-        // Case `sample_carries_air_quality_for_every_place`.
         {
             let m = sample_model();
             for loc in &m.locations {
@@ -412,7 +410,6 @@ mod tests {
                 assert!(aq.european_aqi.is_some());
             }
         }
-        // Case `hourly_starts_at_current_hour`.
         {
             let m = sample_model();
             let snap = m.selected_snapshot().unwrap();
@@ -422,7 +419,6 @@ mod tests {
                 ui::format::time(&chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap())
             );
         }
-        // Case `daily_dates_are_clean_sequence`.
         {
             let m = sample_model();
             let snap = m.selected_snapshot().unwrap();

@@ -1,6 +1,3 @@
-//! File identity and migration from former identities, over real files and
-//! real stores.
-
 use super::*;
 use crate::state::State;
 
@@ -19,8 +16,6 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).expect("write test file");
 }
-
-// ---- file identity ---------------------------------------------------
 
 #[test]
 fn file_identity_follows_the_file_not_its_path_or_bytes() {
@@ -83,7 +78,7 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         write(&file, b"%PDF-1.7 synced");
         let fs_id = uuid::Uuid::new_v4();
         let path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
-        let name = std::ffi::CString::new(file_identity::ATTRIBUTE).unwrap();
+        let name = std::ffi::CString::new(fs_protocol::RECORD_ID_XATTR).unwrap();
         // SAFETY: NUL-terminated strings and a 16-byte value.
         let rc = unsafe {
             libc::setxattr(
@@ -133,8 +128,6 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         assert_eq!(id.file_path(), None);
     }
 }
-
-// ---- migration from former identities --------------------------------
 
 fn markup_checkouts(path: &str, file: &RecordId) -> (RecordCheckout, RecordCheckout) {
     let by_path = RecordId::for_file(path);
@@ -203,7 +196,6 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             store
                 .with(&old.id, |doc| {
                     put_text(doc, "note", "check the proof");
-                    // What the path-era reader declared about its file.
                     add_reference(doc, &RecordRef::new(RecordId::for_file(path), "marks-up"));
                 })
                 .unwrap();
@@ -335,4 +327,15 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             })
             .unwrap();
     }
+}
+
+#[test]
+fn a_record_has_one_route_and_the_custody_key_is_none() {
+    let primary = RecordId::package_primary();
+    assert_eq!(primary.route(), "");
+    assert_eq!(RecordId::from_route(""), Some(primary.clone()));
+    assert_eq!(RecordId::from_route(primary.as_str()), None);
+    let window = RecordId::room_default();
+    assert_eq!(window.route(), window.as_str());
+    assert_eq!(RecordId::from_route(window.route()), Some(window));
 }

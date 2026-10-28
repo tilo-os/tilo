@@ -1,9 +1,12 @@
 //! Shared Tilo rooms next to a website: short-lived rooms on request, or
 //! one persistent public room. See README.md.
 mod config;
+mod discord_sign_in;
 mod guests;
 mod limits;
+mod mail;
 mod ops;
+mod outbox;
 mod persistent;
 mod room;
 mod tls;
@@ -28,7 +31,6 @@ type Body = BoxBody<Bytes, Infallible>;
 struct Service {
     config: Arc<Config>,
     identity: tls::HostIdentity,
-    /// The one persistent room, in persistent mode.
     persistent: Option<Arc<persistent::Persistent>>,
     rooms: Mutex<BTreeMap<String, Arc<Room>>>,
     /// Rooms being created count against the limit before they exist.
@@ -226,6 +228,54 @@ impl Service {
         let mut response = Response::new(full(Bytes::new()));
         *response.status_mut() = StatusCode::FOUND;
         response.headers_mut().insert(header::LOCATION, location);
+        response
+    }
+
+    /// `GET /discord/callback`: back from Discord's consent page, on to the
+    /// web entry, or a page saying what went wrong.
+    async fn discord_callback(
+        &self,
+        persistent: &persistent::Persistent,
+        query: &str,
+    ) -> Response<Body> {
+        let web_entry = self
+            .config
+            .persistent
+            .as_ref()
+            .and_then(|persistent| persistent.web_entry.clone())
+            .unwrap_or_default();
+        match persistent.discord_callback(query, &web_entry).await {
+            None => Self::error(StatusCode::NOT_FOUND, "not found"),
+            Some(Ok(onward)) => Self::front_door(Some(&onward)),
+            Some(Err(discord_sign_in::Failed::Declined)) => Self::front_door(Some(&web_entry)),
+            Some(Err(failed)) => Self::sign_in_failed(failed.said(), &web_entry),
+        }
+    }
+
+    /// A sign-in with Discord that linked nothing: a plain page saying why
+    /// and what to do, with the way back into Tilo.
+    fn sign_in_failed(said: &str, web_entry: &str) -> Response<Body> {
+        let escape = |text: &str| {
+            text.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        };
+        let page = format!(
+            "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
+             <title>Linking Discord didn't work</title>\
+             <body style=\"font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1c1c1e\">\
+             <h1 style=\"font-size:1.4rem\">Linking Discord didn't work</h1><p>{}</p>\
+             <p><a href=\"{}\" style=\"color:#5865f2\">Back to Tilo</a></p>",
+            escape(said),
+            escape(web_entry)
+        );
+        let mut response = Response::new(full(Bytes::from(page)));
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
         response
     }
 
@@ -516,22 +566,40 @@ impl Service {
             .map_err(|_| Self::error(StatusCode::BAD_REQUEST, "invalid request"))
     }
 
-    fn refusal(refusal: persistent::JoinRefusal) -> Response<Body> {
+    /// What the door answers a visitor it turned away. A room taking people
+    /// by invitation says whether the visitor may leave an address to be
+    /// invited at (`waitList`), and where they ask to be taken off that
+    /// list (`contact`), so its door page offers that.
+    fn refusal(
+        refusal: persistent::JoinRefusal,
+        wait_list: Option<persistent::WaitListDoor<'_>>,
+    ) -> Response<Body> {
         use persistent::JoinRefusal;
         if let Some(ops) = ops::get() {
             ops.join_failed(match refusal {
                 JoinRefusal::Invalid(_) => JoinFailure::Invalid,
-                JoinRefusal::CoolingDown => JoinFailure::CoolingDown,
+                JoinRefusal::CoolingDown | JoinRefusal::Removed => JoinFailure::CoolingDown,
                 JoinRefusal::TooMany { .. } => JoinFailure::RateLimited,
                 JoinRefusal::Full { .. } => JoinFailure::Full,
                 JoinRefusal::Unavailable => JoinFailure::RelayUnavailable,
+                JoinRefusal::InviteOnly => JoinFailure::Refused,
             });
         }
         let (status, message, retry_after) = match refusal {
             JoinRefusal::Invalid(message) => (StatusCode::BAD_REQUEST, message, None),
             JoinRefusal::CoolingDown => (
                 StatusCode::FORBIDDEN,
-                "you were removed from the room; you can join again tomorrow",
+                "someone who joined from your address was removed from the room; try again tomorrow",
+                None,
+            ),
+            JoinRefusal::Removed => (
+                StatusCode::FORBIDDEN,
+                "you were removed from this room; you can join again tomorrow",
+                None,
+            ),
+            JoinRefusal::InviteOnly => (
+                StatusCode::FORBIDDEN,
+                "this room takes people by invitation for now; ask someone in it for an invite",
                 None,
             ),
             JoinRefusal::TooMany { retry_after_secs } => (
@@ -550,7 +618,75 @@ impl Service {
                 None,
             ),
         };
-        let mut response = Self::error(status, message);
+        // The person themselves, rather than their address, is named apart,
+        // so the page says they were removed instead of blaming their network;
+        // and a room taking people by invitation, so it says they need one.
+        let code = match refusal {
+            JoinRefusal::Removed => Some("removed"),
+            JoinRefusal::InviteOnly => Some("invitation-only"),
+            _ => None,
+        };
+        let mut response = if let Some(code) = code {
+            let mut body = serde_json::json!({"error": message, "code": code});
+            if let (JoinRefusal::InviteOnly, Some(door), Some(fields)) =
+                (refusal, wait_list, body.as_object_mut())
+            {
+                fields.insert("waitList".into(), true.into());
+                fields.insert("contact".into(), door.contact.into());
+                fields.insert("mail".into(), door.mail.into());
+            }
+            Self::json(status, &body)
+        } else {
+            Self::error(status, message)
+        };
+        if let Some(seconds) = retry_after
+            && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
+    }
+
+    /// What `POST /wait-list` answers an address it did not keep: `code`
+    /// names the case for the door page, `error` says it.
+    fn wait_refusal(refusal: persistent::WaitRefusal) -> Response<Body> {
+        use persistent::WaitRefusal;
+        let (status, code, message, retry_after) = match refusal {
+            WaitRefusal::NoWaitList => (
+                StatusCode::NOT_FOUND,
+                "no-wait-list",
+                "this room keeps no wait list",
+                None,
+            ),
+            WaitRefusal::Invalid(message) => {
+                (StatusCode::BAD_REQUEST, "invalid-email", message, None)
+            }
+            WaitRefusal::NotASecret => (
+                StatusCode::BAD_REQUEST,
+                "invalid-secret",
+                "not a secret this door handed out",
+                None,
+            ),
+            WaitRefusal::TooMany { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many",
+                "too many addresses from your network; try again later",
+                Some(retry_after_secs),
+            ),
+            WaitRefusal::Full => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "wait-list-full",
+                "the wait list is full for now",
+                None,
+            ),
+            WaitRefusal::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "the room is restarting; try again in a moment",
+                None,
+            ),
+        };
+        let mut response = Self::json(status, &serde_json::json!({"error": message, "code": code}));
         if let Some(seconds) = retry_after
             && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
         {
@@ -639,6 +775,52 @@ impl Service {
         response
     }
 
+    /// `POST /wait-list`, `/wait-list/remove`, `/wait-list/confirm` and
+    /// `/wait-list/standing`. Taking an entry off with its secret is
+    /// answered alike whether or not an entry had it.
+    async fn wait_list_route(
+        persistent: &persistent::Persistent,
+        client: std::net::IpAddr,
+        request: Request<hyper::body::Incoming>,
+        act: &str,
+    ) -> Response<Body> {
+        let body = request.into_body();
+        let answer = match act {
+            "remove" => match Self::decode::<persistent::UnlistRequest>(body).await {
+                Ok(asked) => persistent
+                    .unlist(client, asked)
+                    .await
+                    .map(|()| serde_json::json!({})),
+                Err(response) => return response,
+            },
+            "confirm" => match Self::decode::<persistent::ConfirmRequest>(body).await {
+                Ok(asked) => persistent
+                    .confirm(client, asked)
+                    .await
+                    .map(|confirmed| serde_json::json!({"confirmed": confirmed})),
+                Err(response) => return response,
+            },
+            "standing" => match Self::decode::<persistent::UnlistRequest>(body).await {
+                Ok(asked) => persistent
+                    .standing(client, asked)
+                    .await
+                    .map(|standing| serde_json::json!({"standing": standing})),
+                Err(response) => return response,
+            },
+            _ => match Self::decode::<persistent::WaitListRequest>(body).await {
+                Ok(asked) => persistent
+                    .wait(client, asked)
+                    .await
+                    .map(|answer| serde_json::to_value(answer).unwrap_or_default()),
+                Err(response) => return response,
+            },
+        };
+        match answer {
+            Ok(answer) => Self::json(StatusCode::OK, &answer),
+            Err(refusal) => Self::wait_refusal(refusal),
+        }
+    }
+
     /// The persistent room's routes; `None` passes to the shared ones.
     async fn persistent_route(
         &self,
@@ -655,6 +837,10 @@ impl Service {
                     .as_ref()
                     .and_then(|persistent| persistent.web_entry.as_deref()),
             ),
+            (&Method::GET, ["discord", "callback"]) => {
+                let query = request.uri().query().unwrap_or_default().to_owned();
+                self.discord_callback(persistent, &query).await
+            }
             (&Method::POST, ["join"]) => match Self::paused() {
                 Some(refused) => refused,
                 None => match Self::decode::<persistent::JoinRequest>(request.into_body()).await {
@@ -665,11 +851,18 @@ impl Service {
                             }
                             Self::json(StatusCode::OK, &answer)
                         }
-                        Err(refusal) => Self::refusal(refusal),
+                        Err(refusal) => Self::refusal(refusal, persistent.wait_list()),
                     },
                     Err(response) => response,
                 },
             },
+            (&Method::POST, ["wait-list"]) => {
+                Self::wait_list_route(persistent, client, request, "").await
+            }
+            (&Method::POST, ["wait-list", act @ ("remove" | "confirm" | "standing")]) => {
+                let act = *act;
+                Self::wait_list_route(persistent, client, request, act).await
+            }
             (&Method::POST, ["spectate"])
                 if ops::get().is_some_and(|ops| !ops.mode().allows_spectators()) =>
             {
@@ -681,15 +874,30 @@ impl Service {
                 match Self::decode::<persistent::SpectateRequest>(request.into_body()).await {
                     Ok(spectate) => match persistent.spectate(client, spectate).await {
                         Ok(answer) => Self::json(StatusCode::OK, &answer),
-                        Err(refusal) => Self::refusal(refusal),
+                        Err(refusal) => Self::refusal(refusal, None),
                     },
                     Err(response) => response,
                 }
             }
             (&Method::GET, ["presence"]) => {
+                let joins = ops::get().is_none_or(|ops| ops.mode().allows_joins());
                 let mut response = Self::json(
                     StatusCode::OK,
-                    &serde_json::json!({"online": persistent.online(), "watching": persistent.watching()}),
+                    // `admission`: whether the door lets anyone in as a
+                    // guest (`open`) or only the room's members (`invite`),
+                    // so a member's page offers an invitation, not the link.
+                    // `joins`: whether anyone joins at all now (not while the
+                    // room is watch-only), so a watching page never promises
+                    // a join the door will not give.
+                    &serde_json::json!({
+                        "online": persistent.online(),
+                        "watching": persistent.watching(),
+                        // Whether a guest would get in now, so a watching
+                        // page reloads to join only then.
+                        "open": joins && persistent.seat_free(),
+                        "joins": joins,
+                        "admission": if persistent.invite_only() { "invite" } else { "open" },
+                    }),
                 );
                 response.headers_mut().insert(
                     header::CACHE_CONTROL,
@@ -873,6 +1081,26 @@ async fn serve(service: Arc<Service>, socket: tokio::net::TcpStream, peer: Socke
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|command| command == "mail-preview")
+    {
+        let dir = args
+            .get(1)
+            .context("usage: tilo-room-service mail-preview <dir>")?;
+        // The same words the door would send: a configured directory is
+        // read and checked here too, never quietly replaced by the built-in
+        // ones.
+        let templates = match std::env::var_os("TILO_ROOMS_MAIL_TEMPLATES") {
+            Some(templates) => mail::Templates::load(std::path::Path::new(&templates))
+                .context("TILO_ROOMS_MAIL_TEMPLATES")?,
+            None => mail::Templates::baked(),
+        };
+        for path in mail::preview(std::path::Path::new(dir), &templates)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     if args.first().is_some_and(|command| command == "mode") {
         let state = std::env::var("TILO_ROOMS_STATE").unwrap_or_else(|_| "/run/tilo-rooms".into());
         return ops::mode_command(

@@ -183,11 +183,6 @@ pub enum Response {
 ///
 /// `timeout` bounds each read and write; opening a drive checks the volume
 /// first, so callers that open give it tens of seconds.
-///
-/// # Errors
-///
-/// Returns the I/O error if the service is unreachable, does not answer in
-/// time, or answers with something that is not a [`Response`].
 pub fn call(socket: &Path, request: Request, timeout: Duration) -> io::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(timeout))?;

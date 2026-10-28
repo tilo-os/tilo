@@ -188,7 +188,6 @@ impl DropboxSource {
         self.paths.lock_recover()
     }
 
-    /// The API `path` argument for an item.
     fn api_path(&self, id: &ItemId) -> Result<String> {
         if id.as_str().is_empty() {
             Ok(self.config.root.clone())
@@ -258,7 +257,6 @@ impl DropboxSource {
         }
     }
 
-    /// The id of the folder at `path_lower`.
     fn id_at(&self, path_lower: &str) -> Result<ItemId> {
         if path_lower == self.root_lower {
             return Ok(self.root());

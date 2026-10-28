@@ -35,7 +35,7 @@ fn deferred_fixture() -> (
             handler: ContinuationKey::new("creation-handler", [b"v1"]),
         })
     });
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
     let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
     let binding = ActionBinding::unit(&resource, &resource.actions[0]).unwrap();
     let widget = Fixture {
@@ -74,8 +74,7 @@ fn deferred_native_and_driver_confirmation_mint_once_only_at_handler() {
                 expected,
                 "control and repeated confirmation preparation must be inert"
             );
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 expected + 1,
@@ -99,8 +98,7 @@ fn deferred_changed_draft_and_current_permission_refuse_without_building() {
             } else {
                 host.revoke();
             }
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
             assert!(ledger.borrow().is_empty());
         }
@@ -115,15 +113,13 @@ fn deferred_history_retains_draft_without_mint_and_checks_on_resume() {
             let ledger = widget.ledger.clone();
             let mut host = Host::new(native, managed(Box::new(widget)));
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("History");
             if changed {
                 domain.store(1, Ordering::SeqCst);
             }
             host.activate("History");
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 usize::from(!changed),
@@ -143,8 +139,7 @@ fn deferred_actual_component_close_refuses_before_mint() {
         let mut host = Host::new(native, guard.managed(root));
         host.activate("Emit request");
         guard.close();
-        host.value("CONFIRM");
-        host.activate("Confirm");
+        host.activate("Run fixture");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(ledger.borrow().is_empty());
     }
@@ -172,8 +167,7 @@ fn deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_door() {
     assert!(app.invoke_semantic_action(&id, "run", None).unwrap());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     layout(app);
-    host.value("CONFIRM");
-    host.activate("Confirm");
+    host.activate("Run fixture");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
 }
@@ -183,6 +177,7 @@ fn deferred_semantic_no_confirmation_reaches_final_owner_once() {
     use std::sync::atomic::Ordering;
     let (widget, calls, _) = deferred_fixture();
     widget.resources.borrow_mut()[0].actions[0]
+        .type_mut()
         .contract
         .confirmation = tilo_actions::ConfirmationPolicy::None;
     let ledger = widget.ledger.clone();
@@ -214,8 +209,8 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     {
         let mut resources = widget.resources.borrow_mut();
         let spec = &mut resources[0].actions[0];
-        spec.kind = tilo_actions::OperationKind::View;
-        spec.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+        spec.type_mut().kind = tilo_actions::OperationKind::View;
+        spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::None;
     }
     let ledger = widget.ledger.clone();
     let (root, guard) = owned(widget, true);

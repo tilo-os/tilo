@@ -116,7 +116,6 @@ impl LifetimeKey<'_> {
         match self.0 {
             Lifetime::UntilRevoked => (0, "", 0),
             Lifetime::Session(session) => (1, session, 0),
-            Lifetime::Task(task) => (2, task, 0),
             Lifetime::Until(at) => (3, "", *at),
             Lifetime::Once => (4, "", 0),
         }
@@ -126,7 +125,6 @@ impl LifetimeKey<'_> {
         match self.0 {
             Lifetime::UntilRevoked => String::new(),
             Lifetime::Session(_) => " (this session)".to_owned(),
-            Lifetime::Task(task) => format!(" (while task {task} is open)"),
             Lifetime::Until(at) => format!(" (until {at} ms)"),
             Lifetime::Once => " (once)".to_owned(),
         }
@@ -142,5 +140,61 @@ impl PartialOrd for LifetimeKey<'_> {
 impl Ord for LifetimeKey<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.rank().cmp(&other.rank())
+    }
+}
+
+/// One sentence per grant, in the words of the person who gave it: where it
+/// applies, then what it answers for the kinds of action it covers.
+///
+/// [`describe`] merges a grant set into what each node finally answers;
+/// this keeps the grants apart, so a person reads the exception and the rule
+/// it narrows as the two records they are, and an agent handed the same
+/// sentences knows what it holds. Grants come from the most specific node to
+/// the least, so an exception sits beside the grant it excepts.
+#[must_use]
+pub fn sentences(grants: &[Grant], labels: &dyn Labels) -> String {
+    if grants.is_empty() {
+        return "Nothing is granted.".to_owned();
+    }
+    let mut ordered: Vec<&Grant> = grants.iter().collect();
+    // Deepest first: what a person checks is the exception on top of the
+    // broad grant below it.
+    ordered.sort_by(|a, b| {
+        b.node
+            .segments()
+            .len()
+            .cmp(&a.node.segments().len())
+            .then_with(|| b.node.cmp(&a.node))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    ordered
+        .iter()
+        .map(|grant| {
+            format!(
+                "{}{}: {}.",
+                describe_node(&grant.node, labels),
+                LifetimeKey(&grant.lifetime).suffix(),
+                grant_clauses(grant)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What one grant answers for each kind of action it covers: "everything
+/// allowed", "reading allowed", "undoable changes and outside effects allowed".
+fn grant_clauses(grant: &Grant) -> String {
+    if grant.kinds == crate::KindSet::ALL {
+        return match grant.answer {
+            Answer::Ask => "everything asks first".to_owned(),
+            answer => format!("everything {}", answer.phrase()),
+        };
+    }
+    let kinds: Vec<&str> = grant.kinds.iter().map(ActionKind::phrase).collect();
+    let what = join_and(&kinds);
+    if grant.answer == Answer::Deny {
+        format!("{what} not allowed")
+    } else {
+        format!("{what} {}", grant.answer.phrase())
     }
 }

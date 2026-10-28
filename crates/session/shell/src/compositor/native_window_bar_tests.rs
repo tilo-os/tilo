@@ -119,11 +119,12 @@ fn app_reads(app: &mut FloatingSurfaceServiceClient) -> Vec<FloatingSurfaceHostM
     read
 }
 
-// USER REQUIREMENT (2026-10-19): "search right next to the title (clicking it
-// expands into an in-place search field)" and History as "a right-side panel
-// per window or active tab" -- for an app that runs as its own window.
 #[test]
 #[serial_test::serial(process_env)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_history() {
     let runtime = tempfile::tempdir().expect("temporary runtime");
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -140,9 +141,10 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         search: SearchOffer::Document,
         count: None,
         history: Some(HistoryOffer::Closed),
+        ..WindowOffer::default()
     };
     app.send(&FloatingSurfaceClientMessage::WindowOffer {
-        offer,
+        offer: offer.clone(),
         instance: None,
     })
     .expect("send the offer");
@@ -204,7 +206,10 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         frame.host_mut().receive_window_bar_message(
             connection + 1,
             "org.example.Other",
-            &FloatingSurfaceClientMessage::OpenSearch { instance: None },
+            &FloatingSurfaceClientMessage::OpenSearch {
+                instance: None,
+                opening: ui::window_toolbar::SearchOpening::Find,
+            },
         ),
         Some(false)
     );

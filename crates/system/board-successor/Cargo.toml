@@ -34,3 +34,4 @@ workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }

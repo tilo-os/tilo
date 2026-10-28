@@ -118,7 +118,9 @@ pub enum AttrSeverity {
 /// One row in the SMART attribute table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SmartAttr {
-    pub id: u16,
+    /// The ATA attribute number; `None` for a reading with no number, such as
+    /// one from the `NVMe` health log.
+    pub id: Option<u16>,
     pub name: String,
     pub value: String,
     pub severity: AttrSeverity,
@@ -192,6 +194,30 @@ pub struct Partition {
     /// Bytes used on the filesystem, if mounted + measurable.
     pub used: Option<u64>,
     pub uuid: Option<String>,
+    /// How the partition is encrypted, when it is. Once unlocked, the fields
+    /// above describe the filesystem inside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<Encryption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_type: Option<String>,
+    /// What its type is called (`Microsoft reserved`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_type_name: Option<String>,
+}
+
+/// The EFI system partition's type GUID.
+const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+/// The extended boot loader partition's type GUID (`/boot`).
+const XBOOTLDR_TYPE: &str = "bc13c2ff-59e6-4262-a352-b275fd6f7172";
+
+/// An encrypted partition's container.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Encryption {
+    /// `LUKS2`, `LUKS1`, `BitLocker`.
+    pub scheme: String,
+    /// The unlocked mapping's kernel name (`dm-1`), which is where its
+    /// filesystem is mounted from; `None` while it is locked.
+    pub unlocked_as: Option<String>,
 }
 
 impl Partition {
@@ -203,10 +229,20 @@ impl Partition {
         if fs == "swap" || fs == "linux-swap" || label.contains("swap") {
             return PartRole::Swap;
         }
-        if mp == "/boot/efi" || mp.contains("efi") || (fs == "vfat" && label.contains("efi")) {
+        let part_type = self.part_type.as_deref().unwrap_or("").to_ascii_lowercase();
+        if part_type == ESP_TYPE
+            || mp == "/boot/efi"
+            || mp.contains("efi")
+            || (fs == "vfat" && label.contains("efi"))
+        {
             return PartRole::Efi;
         }
-        if mp == "/boot" || label == "boot" {
+        if part_type == XBOOTLDR_TYPE
+            || mp == "/boot"
+            || label == "boot"
+            || label.ends_with("_boot")
+            || label.ends_with("-boot")
+        {
             return PartRole::Boot;
         }
         if mp == "/" || mp == "/sysroot" {
@@ -228,18 +264,27 @@ impl Partition {
         Some((used / self.size as f64).clamp(0.0, 1.0))
     }
 
-    /// Display name for the filesystem: its label, else the filesystem type,
-    /// else the kernel name of the partition.
+    /// What the partition is called: its label, else what its type is
+    /// called ("Microsoft reserved"), else its filesystem, else its device.
     pub fn display_label(&self) -> String {
-        if let Some(l) = &self.label
-            && !l.is_empty()
-        {
-            return l.clone();
-        }
-        self.fstype
-            .clone()
-            .filter(|fs| !fs.is_empty())
+        [&self.label, &self.part_type_name, &self.fstype]
+            .into_iter()
+            .flatten()
+            .find(|name| !name.is_empty())
+            .cloned()
             .unwrap_or_else(|| self.name.clone())
+    }
+
+    /// Why this partition must not be formatted or unmounted, when it serves
+    /// the running system: its root, its home folders, or (on the drive the
+    /// system runs from, `system_drive`) what starts it.
+    pub fn system_use(&self, system_drive: bool) -> Option<&'static str> {
+        match self.role() {
+            PartRole::Root => Some(HOLDS_SYSTEM),
+            PartRole::Home => Some("Holds the home folders"),
+            PartRole::Efi | PartRole::Boot if system_drive => Some("Starts this device"),
+            _ => None,
+        }
     }
 
     /// Where the filesystem is mounted, as a person reads it: the kernel's
@@ -269,7 +314,29 @@ pub struct Drive {
     pub smart: Option<SmartInfo>,
 }
 
+/// Why the drive the system runs from cannot be formatted.
+pub const HOLDS_SYSTEM: &str = "Holds the running system";
+
 impl Drive {
+    /// Whether the running system or the home folders live on this drive.
+    pub fn is_system_drive(&self) -> bool {
+        self.partitions
+            .iter()
+            .any(|part| matches!(part.role(), PartRole::Root | PartRole::Home))
+    }
+
+    /// Why the whole drive must not be formatted, when it holds the running
+    /// system.
+    pub fn system_use(&self) -> Option<&'static str> {
+        self.is_system_drive().then_some(HOLDS_SYSTEM)
+    }
+
+    /// Why `part` must not be formatted or unmounted, when it serves the
+    /// running system.
+    pub fn partition_use(&self, part: &Partition) -> Option<&'static str> {
+        part.system_use(self.is_system_drive())
+    }
+
     /// Total bytes claimed by partitions.
     pub fn allocated(&self) -> u64 {
         self.partitions.iter().map(|p| p.size).sum()
@@ -334,6 +401,9 @@ impl Topology {
                     mountpoint: Some("/boot/efi".into()),
                     used: Some(96_468_992),
                     uuid: Some("9C33-6Bled".into()),
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
                 },
                 Partition {
                     name: "nvme0n1p2".into(),
@@ -343,6 +413,9 @@ impl Topology {
                     mountpoint: Some("/".into()),
                     used: Some(142_300_000_000),
                     uuid: Some("a1b2c3d4-...-root".into()),
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
                 },
                 Partition {
                     name: "nvme0n1p3".into(),
@@ -352,6 +425,9 @@ impl Topology {
                     mountpoint: Some("/home".into()),
                     used: Some(410_900_000_000),
                     uuid: Some("e5f6a7b8-...-home".into()),
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
                 },
                 Partition {
                     name: "nvme0n1p4".into(),
@@ -361,6 +437,9 @@ impl Topology {
                     mountpoint: Some("[SWAP]".into()),
                     used: Some(1_073_741_824),
                     uuid: Some("c0ffee00-...-swap".into()),
+                    encryption: None,
+                    part_type: None,
+                    part_type_name: None,
                 },
             ],
             smart: Some(SmartInfo {
@@ -372,12 +451,10 @@ impl Topology {
                 pct_used: Some(3),
                 written_gb: Some(48_210),
                 attrs: vec![
-                    attr(5, "Available spare", "100 %", AttrSeverity::Ok),
-                    attr(9, "Percentage used", "3 %", AttrSeverity::Ok),
-                    attr(12, "Power cycles", "412", AttrSeverity::Ok),
-                    attr(14, "Unsafe shutdowns", "14", AttrSeverity::Ok),
-                    attr(1, "Media and data errors", "0", AttrSeverity::Ok),
-                    attr(2, "Critical warning", "0x00", AttrSeverity::Ok),
+                    health_row("Available spare", "100 %", AttrSeverity::Ok),
+                    health_row("Percentage used", "3 %", AttrSeverity::Ok),
+                    health_row("Media and data errors", "0", AttrSeverity::Ok),
+                    health_row("Unsafe shutdowns", "14", AttrSeverity::Ok),
                 ],
                 detail: None,
             }),
@@ -403,6 +480,9 @@ impl Topology {
                 mountpoint: Some("/mnt/backup".into()),
                 used: Some(213_400_000_000),
                 uuid: Some("7E5A9C2B5A9C1F00".into()),
+                encryption: None,
+                part_type: None,
+                part_type_name: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Passed),
@@ -443,6 +523,9 @@ impl Topology {
                 mountpoint: Some("/mnt/media".into()),
                 used: Some(1_461_000_000_000),
                 uuid: Some("d34db33f-...-media".into()),
+                encryption: None,
+                part_type: None,
+                part_type_name: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Warning),
@@ -485,6 +568,9 @@ impl Topology {
                 mountpoint: Some("/run/media/tilo/Ultra".into()),
                 used: Some(8_240_000_000),
                 uuid: Some("64ED-1A2B".into()),
+                encryption: None,
+                part_type: None,
+                part_type_name: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Unknown),
@@ -505,7 +591,17 @@ impl Topology {
 
 fn attr(id: u16, name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
     SmartAttr {
-        id,
+        id: Some(id),
+        name: name.into(),
+        value: value.into(),
+        severity,
+    }
+}
+
+/// A health reading with no attribute number (the `NVMe` health log).
+fn health_row(name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
+    SmartAttr {
+        id: None,
         name: name.into(),
         value: value.into(),
         severity,
@@ -577,6 +673,9 @@ mod tests {
                 mountpoint: None,
                 used: Some(150),
                 uuid: None,
+                encryption: None,
+                part_type: None,
+                part_type_name: None,
             };
             assert_eq!(p.used_frac(), Some(1.0));
         }
@@ -604,6 +703,9 @@ mod tests {
                 mountpoint: Some(mp.into()),
                 used: None,
                 uuid: None,
+                encryption: None,
+                part_type: None,
+                part_type_name: None,
             };
             // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
             assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);
@@ -616,7 +718,6 @@ mod tests {
 
         // --- phase: kind_from_lsblk_covers_media_and_virtual_devices ---
         {
-            // Physical media by transport / rotation.
             assert_eq!(
                 DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
                 DriveKind::Nvme
@@ -636,7 +737,6 @@ mod tests {
             // A zram swap device is non-rotational but must NOT read as an SSD.
             assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
             assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
-            // Loop / device-mapper / MD are virtual.
             assert_eq!(
                 DriveKind::from_lsblk("loop0", false, None),
                 DriveKind::Virtual

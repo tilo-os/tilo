@@ -25,10 +25,10 @@ import json
 import re
 import time
 
-from .. import core
+from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
-from .basics import _settings
+from .basics import _settings, search_query, seat_keyboard, write_input_settings
 from .window import _app_groups, _ensure_unlocked, _group_rect, _locked, _two_windows
 
 AREA = "input"
@@ -76,32 +76,77 @@ def layouts(ctx, layout: str = "de:nodeadkeys", *more: str):
     """The session's keyboard layout set to `layout` (and `more`, in order) for the block."""
     doc = _settings(ctx)
     saved = dict(doc.get("input") or {})
-
-    def write(document):
-        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(document, indent=2).encode())
-        time.sleep(2.5)
-
+    keyboard = seat_keyboard(ctx)
     doc.setdefault("input", {}).update(keyboard_layout=layout, keyboard_layouts=[layout, *more])
-    write(doc)
     try:
+        write_input_settings(ctx, doc)
         yield
     finally:
         doc = _settings(ctx)
         doc["input"] = saved
-        write(doc)
+        write_input_settings(ctx, doc, back_to=keyboard)
 
 
 def search_text(ctx, *combos: str) -> str:
     """What these physical key presses put into the search field, read back from the state dump."""
     ctx.close_overlays()
     ctx.vm.key("super+space")
-    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    try:
+        ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    except CheckFailed as exc:
+        raise CheckFailed(f"{exc}: {keyboard_diagnosis(ctx)}") from exc
     for combo in combos:
         ctx.vm.key(combo)
-    ctx.settle(0.8)
-    query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    # Each combo types one character: the field holds as many once all of them arrived.
+    got = {"query": ""}
+
+    def arrived():
+        got["query"] = search_query(ctx)
+        return len(got["query"]) >= len(combos)
+
+    wait_until(arrived, 3, 0.2)
     ctx.close_overlays()
-    return query
+    return got["query"]
+
+
+def keyboard_diagnosis(ctx) -> str:
+    """Why Super+Space may not have reached the compositor: the keyboards it has opened (its
+    published input snapshot, `$XDG_RUNTIME_DIR/tilo/input-state.json`), the one it last
+    took keys from, and how udev tagged the profile keyboard. Kept as evidence too."""
+    found = {}
+    try:
+        found["compositor"] = json.loads(ctx.vm.exec(
+            'cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo/input-state.json" 2>/dev/null || echo "{}"'))
+    except (VmError, ValueError) as exc:
+        found["compositor"] = {"unreadable": str(exc)[:200]}
+    try:
+        dev = find_device(parse_input_devices(ctx.vm.root_exec("cat /proc/bus/input/devices")), KEYBOARD_ID)
+        node = dev and event_node(dev)
+        found["udev"] = ({p: v for p, v in parse_properties(ctx.vm.root_exec(
+            f"udevadm info -q property -n /dev/input/{node}")).items()
+            if p.startswith(("ID_INPUT", "ID_SEAT", "ID_INTEGRATION", "LIBINPUT", "TAGS", "CURRENT_TAGS"))}
+            if node else "the profile keyboard is not registered")
+    except VmError as exc:
+        found["udev"] = {"unreadable": exc.reason()}
+    # What libinput (its own stderr, in the session unit's journal) and logind (whose
+    # TakeDevice opens every input node for the compositor) said lately: a device either
+    # refuses is never added, and neither reaches the compositor's own log.
+    try:
+        found["journal"] = ctx.vm.root_exec(
+            f"journalctl --since -2min --no-pager -o cat -u {session_unit.unit(ctx.vm.slot)} "
+            "-u systemd-logind.service | grep -aiE 'libinput|evdev|event[0-9]|device|seat|048d' "
+            "| tail -n 30 | cut -c1-300 || true", timeout=60).splitlines()
+    except VmError as exc:
+        found["journal"] = [f"unreadable: {exc.reason()}"]
+    if ctx.current is not None:
+        ctx.write(f"{ctx.current.id}-keyboards.json", json.dumps(found, indent=1))
+    compositor = found["compositor"] if isinstance(found["compositor"], dict) else {}
+    names = [d.get("name") for d in compositor.get("devices", []) if isinstance(d, dict)]
+    seen = KEYBOARD_ID["name"] in names
+    return (f"the compositor {'has' if seen else 'has not'} opened the profile keyboard "
+            f"{KEYBOARD_ID['name']!r} (its devices: {names}; it last typed from "
+            f"{compositor.get('active_keyboard')!r}); journal: {found['journal'][-6:]}; "
+            f"udev: {found['udev']}")
 
 
 # -- what the guest kernel and udev say --------------------------------------------------------
@@ -217,9 +262,10 @@ def stuck_modifiers(ctx, res):
                 held.append(modifier)
                 ctx.vm.invoke("session", "lock")
                 ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, f"locked with {modifier} down")
-                ctx.vm.input("release", modifier)  # the key comes up behind the lock
+                # The key comes up behind the lock: the release reaches the compositor before
+                # the passcode typed on the same keyboard.
+                ctx.vm.input("release", modifier)
                 held.remove(modifier)
-                ctx.settle(0.5)
                 result[f"unlock_{modifier}"] = _ensure_unlocked(ctx, PASSCODE)
                 expect(_locked(ctx) is False, f"could not unlock after {modifier} was held into the lock")
                 # A stuck Shift types a capital, a stuck Ctrl/Alt/Super is a shortcut, not a letter.
@@ -261,8 +307,7 @@ def touchpad_tap_click(ctx, res):
             ctx.vm.input("move", "8", "300")
             x, y = _launchpad_card(ctx)
             ctx.vm.input("move", str(x), str(y))
-            ctx.settle(0.5)
-            before = len(_notes_groups(ctx.state()))
+            before = len(_notes_groups(ctx.wait_still()))
             ctx.vm.input(*args)
             ctx.wait_state(lambda s: len(_notes_groups(s)) > before, 25,
                            f"Notes opened by a touchpad {how} on its launchpad card at {x},{y}")
@@ -287,7 +332,9 @@ def touchpad_scroll(ctx, res):
             before = scroll_x()
             ctx.vm.input("move", str(x), str(y))
             ctx.vm.input("touchpad", "swipe", str(dx), "0", "--fingers", "2")
-            ctx.settle(1.2)
+            # A clamped direction never moves: bounded, then the other one.
+            wait_until(lambda: abs(scroll_x() - before) > 20, 2, 0.2)
+            ctx.wait_still()
             moved[dx] = [round(before, 1), round(scroll_x(), 1)]
             if abs(moved[dx][1] - moved[dx][0]) > 20:
                 break
@@ -306,24 +353,227 @@ def disable_while_typing(ctx, res):
         # Baseline: with no key in use the pad moves the pointer.
         ctx.vm.key("Escape")
         ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use after a key")
-        ctx.settle(1.5)
+        # libinput's disable-while-typing runs on timers of its own, which the session does
+        # not report: the pauses here are those timers, not waits for the session.
+        time.sleep(1.5)
         ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
         ctx.wait_state(lambda s: _modality(s) == "pointer", 5, "the pad moved the pointer with no key in use")
         # A key held down: libinput keeps the pad off while it is, and for a moment after.
         ctx.vm.input("hold", "a")
         try:
             ctx.wait_state(lambda s: _modality(s) == "keyboard", 5, "keyboard in use while a key is held")
-            ctx.settle(0.5)
+            time.sleep(0.5)
             ctx.vm.input("touchpad", "swipe", "20", "0", "--duration", "100")
-            ctx.settle(0.8)
+            # Suppression is the pad's motion not arriving: watched for a fixed window.
+            time.sleep(0.8)
             suppressed = _modality(ctx.state()) == "keyboard"
         finally:
             ctx.vm.input("release", "a")
         res.metrics["suppressed_while_typing"] = suppressed
         expect(suppressed, "the touchpad moved the pointer while a key of the internal keyboard was held: "
                            "disable-while-typing did not engage")
-        ctx.settle(2.0)
+        # Past libinput's disable-while-typing timeout after the release.
+        time.sleep(2.0)
         ctx.vm.input("touchpad", "swipe", "-20", "0", "--duration", "100")
         ctx.wait_state(lambda s: _modality(s) == "pointer", 5,
                        "the pad moved the pointer again after the key was released")
         ctx.close_overlays()
+
+
+def _log_lines_after(ctx, mark: int, pattern: str) -> list[str]:
+    """The session log's lines past `mark` that match the extended regex `pattern`."""
+    out = ctx.vm.exec(f'tail -n +{mark + 1} "{core.SESSION_LOG}" 2>/dev/null '
+                      f"| grep -a -E '{pattern}'; true", check=False)
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def parse_kms_state(text: str) -> list[dict]:
+    """The blocks of the kernel's atomic state dump (`/sys/kernel/debug/dri/<minor>/state`):
+    one per plane, CRTC and connector, with its `kind`, `name` and first-level properties."""
+    blocks, current = [], None
+    for line in text.splitlines():
+        if line and not line[0].isspace() and "]: " in line:
+            current = {"kind": line.split("[", 1)[0], "name": line.split("]: ", 1)[1].strip()}
+            blocks.append(current)
+        elif current is not None and line.startswith("\t") and not line.startswith("\t\t"):
+            key, eq, value = line.strip().partition("=")
+            if eq:
+                current.setdefault(key.strip(), value.strip())
+    return blocks
+
+
+def scanning_out(blocks: list[dict], connectors) -> dict:
+    """For each named connector: the CRTC it is bound to, if that CRTC is active and a plane
+    on it holds a framebuffer, else None."""
+    crtcs = {b["name"]: b for b in blocks if b["kind"] == "crtc"}
+    planes = [b for b in blocks if b["kind"] == "plane"]
+    out = {}
+    for block in blocks:
+        if block["kind"] != "connector" or block["name"] not in connectors:
+            continue
+        crtc = crtcs.get(block.get("crtc", ""))
+        lit = (crtc is not None and crtc.get("active") == "1"
+               and any(p.get("crtc") == crtc["name"] and p.get("fb", "0") not in ("0", "")
+                       for p in planes))
+        out[block["name"]] = crtc["name"] if lit else None
+    return out
+
+
+class Kms:
+    """The slot's DRM card as the kernel holds it, read from outside the compositor: its atomic
+    state and its CRTCs' output CRCs (vkms computes one per composed frame), from debugfs in
+    this throwaway VM."""
+
+    def __init__(self, ctx, connectors: list[str]):
+        cards = set()
+        for name in connectors:
+            for path in ctx.vm.root_exec(f"ls -d /sys/class/drm/card*-{name} 2>/dev/null").split():
+                cards.add(path.rsplit("/", 1)[1].split("-", 1)[0])
+        if len(cards) != 1:
+            raise Unobservable(f"the slot's connectors {connectors} are not on one DRM card: {cards}")
+        self.ctx, self.connectors = ctx, connectors
+        self.dri = f"/sys/kernel/debug/dri/{cards.pop().removeprefix('card')}"
+        ctx.vm.root_exec("mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug; true")
+        if "state" not in ctx.vm.root_exec(f"ls {self.dri} 2>/dev/null; true").split():
+            raise Unobservable(f"the kernel shows no atomic state at {self.dri}")
+
+    def scanning_out(self) -> dict:
+        return scanning_out(parse_kms_state(self.ctx.vm.root_exec(f"cat {self.dri}/state")),
+                            self.connectors)
+
+    def crc(self, crtc: str) -> str | None:
+        """The output CRC of the newest frame `crtc` composed in a short capture."""
+        crc = f"{self.dri}/{crtc}/crc"
+        out = self.ctx.vm.root_exec(f"echo auto > {crc}/control 2>/dev/null && "
+                                    f"timeout 2 cat {crc}/data 2>/dev/null; true")
+        rows = [l.split()[1:] for l in out.splitlines() if len(l.split()) > 1]
+        return " ".join(rows[-1]) if rows else None
+
+
+def _suspend_and_resume(ctx, res) -> None:
+    """Suspend the VM through logind, so the session sees both edges of PrepareForSleep as on
+    a laptop whose lid closes, and have it resume by itself: the kernel's suspend test mode
+    when it has one (devices suspend, a pause, then resume), else an RTC alarm."""
+    caps = ctx.vm.root_exec("echo state=$(cat /sys/power/state 2>/dev/null); "
+                            "test -w /sys/power/pm_test && echo pm_test=yes; "
+                            "test -w /sys/class/rtc/rtc0/wakealarm && echo rtc=yes; true")
+    res.metrics["suspend_support"] = caps.strip()
+    states = next((l.split("=", 1)[1].split() for l in caps.splitlines() if l.startswith("state=")), [])
+    if not {"mem", "freeze", "standby"} & set(states):
+        raise Unobservable(f"the VM kernel cannot suspend (/sys/power/state: {states})")
+    if "pm_test=yes" in caps:
+        res.metrics["resumed_by"] = "pm_test devices"
+        try:
+            ctx.vm.root_exec("echo devices > /sys/power/pm_test && systemctl suspend", timeout=60)
+            if not wait_until(lambda: _log_lines_after(ctx, res.metrics["log_mark"],
+                                                       "session power Woke applied"), 60,
+                              interval=1.0):
+                raise Unobservable("the session logged nothing of a suspend within 60 s")
+        finally:
+            with contextlib.suppress(VmError):
+                ctx.vm.root_exec("echo none > /sys/power/pm_test", timeout=60)
+    elif "rtc=yes" in caps:
+        res.metrics["resumed_by"] = "rtc alarm"
+        ctx.vm.root_exec("rtcwake -m no -s 15 && systemctl suspend", timeout=60)
+    else:
+        raise Unobservable("the VM has neither the kernel's suspend test mode nor an RTC alarm "
+                           "to wake it")
+
+
+@check("I08", AREA, "Waking from sleep while blanked: the flight record shows the post-wake state, a forced "
+                    "failure to light up is detected and recovered, and the keyboard works after it",
+       calibrating=CALIBRATING)
+def wake_from_sleep(ctx, res):
+    ctx.reset()
+    # Suspend locks the session; it is unlocked with the slot user's password, as in I04.
+    ctx.vm.root_exec(f'user=$(getent passwd {ctx.vm.slot_uid()} | cut -d: -f1) && '
+                     f'echo "$user:{PASSCODE}" | chpasswd')
+    try:
+        with plugged(ctx, KEYBOARD):
+            # A client that keeps committing while the display is dark: the paint loop draws
+            # nothing then and owes the change to the frame that wakes it.
+            shells = core.terminal_shells(ctx)
+            ctx.new_terminal_window()
+            if core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S) is None:
+                raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s")
+            ctx.vm.input("type", "i=0; while :; do i=$((i+1)); echo wake-$i; sleep 0.2; done")
+            ctx.vm.key("Return")
+            displays = ctx.state()["workspace_tree"]["outputs"]["displays"]
+            connectors = [d.get("monitor", "").removeprefix("connector:") for d in displays]
+            kms = Kms(ctx, connectors)
+            before = kms.scanning_out()
+            res.metrics["kms_before"] = before
+            expect(before and all(before.values()), f"every output scans out before the test: {before}")
+            mark = core.session_log_mark(ctx)
+            res.metrics["log_mark"] = mark
+            ctx.vm.raw({"op": "display_blank"})
+            expect(wait_until(lambda: _log_lines_after(ctx, mark, "session power Blanked applied"),
+                              10, interval=0.5),
+                   "the display blanked on request")
+
+            def all_off():
+                now = kms.scanning_out()
+                return now if not any(now.values()) else None
+
+            blanked = wait_until(all_off, 10, interval=0.5)
+            res.metrics["kms_blanked"] = blanked or kms.scanning_out()
+            expect(blanked is not None, "the kernel shows every CRTC off while blanked: "
+                                        f"{res.metrics['kms_blanked']}")
+            # The next wake takes the CRTC as dark whatever it reads back: the check must
+            # see that and redo the modeset.
+            ctx.vm.raw({"op": "display_wake_fault", "stage": "crtc"})
+            _suspend_and_resume(ctx, res)
+
+            def recovered():
+                return _log_lines_after(ctx, mark, "DRM wake check: .*outcome=lit .*redone=true")
+
+            lit = wait_until(recovered, 90, interval=1.0)
+            checks = _log_lines_after(ctx, mark, "DRM wake check: ")
+            res.metrics["wake_checks"] = checks
+            res.metrics["power"] = _log_lines_after(ctx, mark, "session power ")
+            expect(any("outcome=redoing-modeset stage=crtc" in l for l in checks),
+                   f"the forced dark CRTC was detected after the wake: {checks}")
+            expect(bool(lit), f"the redone modeset lit the output: {checks}")
+            expect(all("outcome=failed" not in l for l in checks), f"no output failed to light: {checks}")
+            expect(_log_lines_after(ctx, mark, "session power Woke applied"),
+                   "the session woke the display after the resume")
+            # From outside the compositor: the kernel scans every output out again, and a
+            # new frame reaches each CRTC after the recovery.
+            after = kms.scanning_out()
+            res.metrics["kms_after"] = after
+            expect(all(after.get(c) for c in connectors),
+                   f"every output's CRTC is active with a framebuffer after the recovery: {after}")
+            locked_crcs = {c: kms.crc(after[c]) for c in connectors}
+            res.metrics["crc_locked"] = locked_crcs
+            if not all(locked_crcs.values()):
+                raise Unobservable(f"the kernel gives no output CRCs for the slot's CRTCs: {locked_crcs}")
+            held = _log_lines_after(ctx, mark, "DRM input: wake=resume seat_session=active")
+            res.metrics["input_after_wake"] = held
+            expect(any(KEYBOARD_ID["name"] in l for l in held),
+                   f"the session still holds the keyboard after the resume: {held}")
+            ctx.vm.key("shift")
+            first = wait_until(lambda: _log_lines_after(ctx, mark, "DRM input: first event after wake="),
+                               10, interval=0.5)
+            res.metrics["first_input"] = first
+            expect(bool(first), "a key pressed after the resume reached the compositor")
+            res.metrics["unlock"] = _ensure_unlocked(ctx, PASSCODE)
+            expect(_locked(ctx) is False, "the keyboard unlocks the session after the resume")
+            # The desktop replaced the lock screen: each CRTC composes a different frame.
+
+            def new_frame(connector):
+                crc = kms.crc(after[connector])
+                return crc if crc and crc != locked_crcs[connector] else None
+
+            changed = {c: wait_until(lambda c=c: new_frame(c), 10, interval=0.5) for c in connectors}
+            res.metrics["crc_unlocked"] = changed
+            expect(all(changed.values()), f"a new frame reached every output after the recovery: {changed}")
+            # The terminal committed all through the blank and the sleep; its output keeps
+            # reaching the screen after the wake, frame after frame.
+            locked_crcs = changed
+            moving = {c: wait_until(lambda c=c: new_frame(c), 10, interval=0.5) for c in connectors}
+            res.metrics["crc_moving"] = moving
+            expect(any(moving.values()),
+                   f"the terminal that kept committing while dark keeps drawing after the wake: {moving}")
+            ctx.shot("I08-woken")
+    finally:
+        _ensure_unlocked(ctx, PASSCODE)

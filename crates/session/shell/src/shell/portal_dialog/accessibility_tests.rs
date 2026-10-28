@@ -1,8 +1,8 @@
 use super::*;
 use crate::shell::portal_dialog::{
     AuthenticationDecision, AuthenticationRequest, NetworkSecretsDecision, NetworkSecretsRequest,
-    ReviewDecision, ReviewRequest, SecretFieldRule, SecretFieldSpec, UsbDeviceRequest,
-    UsbDeviceRow,
+    PortalDialogQueue, ReviewDecision, ReviewRequest, SecretFieldRule, SecretFieldSpec,
+    UsbDeviceRequest, UsbDeviceRow,
 };
 
 const SCREEN: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -165,6 +165,7 @@ fn portal_sheets_publish_their_parts_and_answer_through_accessibility_actions() 
                     masked("password", "Password"),
                 ],
                 remember: Some(false),
+                sim: None,
             })
             .expect("queued");
         let mut sheet = PortalDialogController::new(queue);
@@ -223,6 +224,7 @@ fn portal_sheets_publish_their_parts_and_answer_through_accessibility_actions() 
                     ..masked("psk", "Password")
                 }],
                 remember: None,
+                sim: None,
             })
             .expect("queued");
         let mut sheet = PortalDialogController::new(queue);
@@ -337,13 +339,66 @@ fn the_drive_sheet_offers_its_remember_row_as_a_checkbox() {
     assert_eq!(remember.state.checked, Some(false));
     let target = target_of(&dialog, "Remember this drive and suggest opening it safely");
     assert!(sheet.perform_accessibility_action(&target, &Action::ToggleCheck));
-    let confirm = target_of(&dialog, "Open drive");
-    assert!(sheet.perform_accessibility_action(&confirm, &Action::Activate));
+    // The two ways to open are the sheet's two buttons; each answers.
+    assert_eq!(node(&dialog, "Open safely").role, Role::Button);
+    assert_eq!(node(&dialog, "Open").role, Role::Button);
+    let open_safely = target_of(&dialog, "Open safely");
+    assert!(sheet.perform_accessibility_action(&open_safely, &Action::Activate));
     assert_eq!(
         answer.blocking_recv(),
         Ok(DriveConsentDecision::Chosen {
             choice: 0,
             remember: true
+        })
+    );
+}
+
+#[test]
+fn the_drive_sheet_answers_with_two_buttons_and_no_choice_rows() {
+    use crate::shell::portal_dialog::{DriveConsentDecision, DriveConsentRequest};
+    let queue = PortalDialogQueue::default();
+    let answer = queue
+        .enqueue_drive_consent(DriveConsentRequest {
+            handle: "tilo-drive-1-nvme0n1p3:1".into(),
+            title: "Open Windows?".into(),
+            drive: "Inside this computer, 475 GB".into(),
+            detail: "Open it at full speed only for your own drives.".into(),
+            choices: vec!["Open safely".into(), "Open at full speed".into()],
+            preselect: 1,
+            remember: None,
+            confirm_label: "Open".into(),
+            cancel_label: "Not now".into(),
+        })
+        .expect("queued");
+    let mut sheet = PortalDialogController::new(queue);
+    assert!(sheet.pump());
+    let layout = sheet.layout(SCREEN).expect("the sheet fits");
+    assert!(
+        layout.choices.is_empty(),
+        "no choice rows above the buttons"
+    );
+    assert_eq!(layout.answers.len(), 2, "one button per way to open");
+    assert_eq!(
+        layout.confirm, layout.answers[1],
+        "the suggested way is the primary button"
+    );
+    assert!(
+        layout.answers[0].x1 < layout.answers[1].x0,
+        "the secondary sits beside the primary, neither over the other"
+    );
+    assert!(
+        layout.answers[0].width() >= 200.0,
+        "each button has room for its whole label"
+    );
+    // "Not now" is the sheet's close button, still one tap away.
+    let dialog = sheet.accessibility(SCREEN).expect("a sheet is up");
+    assert_eq!(node(&dialog, "Not now").role, Role::Button);
+    assert!(sheet.click(layout.answers[0].center(), &layout));
+    assert_eq!(
+        answer.blocking_recv(),
+        Ok(DriveConsentDecision::Chosen {
+            choice: 0,
+            remember: false
         })
     );
 }

@@ -116,6 +116,8 @@ files-replica-counts = Auf { $durable } { $durable ->
    *[other] anderen Geräten
 } gespeichert
 files-transfer-state = Übertragung: { $state }
+files-unavailable = Nicht verfügbar
+files-unavailable-offline = Nicht verfügbar, bis ein Gerät mit dieser Datei online ist
 files-transfer-idle = inaktiv
 files-transfer-queued = eingereiht
 files-transfer-downloading = wird heruntergeladen
@@ -294,6 +296,7 @@ files-history-current-version-label = Aktuelle Version
 
 ## Barrierefreier kollaborativer Status
 files-a11y-transfer-failed = Übertragung fehlgeschlagen
+files-a11y-unavailable = Nicht verfügbar, bis ein Gerät mit dieser Datei online ist
 files-a11y-transfer-queued = Übertragung eingereiht
 files-a11y-downloading = Wird heruntergeladen
 files-a11y-uploading = Wird hochgeladen
@@ -387,6 +390,7 @@ files-drive-gone = Dieses Laufwerk ist nicht mehr verbunden.
 files-drive-open-failed = Das Laufwerk konnte nicht geöffnet werden: { $error }
 files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
+files-place-desktop = Schreibtisch
 files-place-documents = Dokumente
 files-place-downloads = Downloads
 files-place-pictures = Bilder
@@ -394,9 +398,6 @@ files-place-music = Musik
 files-place-videos = Videos
 
 ## Liste, Leer-/Fehlerstatus und Barrierefreiheit
-files-column-name = Name
-files-column-size = Größe
-files-column-modified = Geändert
 files-try-again = Erneut versuchen
 files-loading = Wird geladen…
 files-loading-folder = { $path } wird geladen
@@ -487,6 +488,19 @@ files-menu-paste = Einfügen
 files-menu-new-folder = Neuer Ordner
 files-menu-new-file = Neue Datei  ›
 files-menu-move-trash = In den Papierkorb verschieben
+files-rename-selected = „{ $name }“ umbenennen
+files-trash-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} in den Papierkorb verschieben
+files-copy-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} kopieren
+files-cut-selected = { $count ->
+    [one] „{ $name }“
+   *[other] { $count } Objekte
+} ausschneiden
 files-menu-add-favourite = Zu Favoriten hinzufügen
 files-menu-remove-favourite = Aus Favoriten entfernen
 files-menu-hide-hidden = Verborgene Dateien ausblenden
@@ -506,21 +520,20 @@ files-new-from-template = Neu: { $name }
 files-drag-items = { $count } Elemente
 
 ## Archive
-files-archive-extract = Archiv entpacken…
+files-archive-extract = Entpacken
 files-archive-extract-here = Hier entpacken
-files-archive-compress = Als ZIP komprimieren
 files-archive-select-compress = Wähle Dateien oder Ordner zum Komprimieren aus
 files-archive-read-only = Archive können erst nach dem Entpacken geändert werden
-files-archive-select = Wähle zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
-files-archive-extracted =
-    { $count ->
-        [one] 1 Datei entpackt
-       *[other] { $count } Dateien entpackt
-}
-files-archive-extracted-partial = { $count } Dateien entpackt; { $failures }
-files-archive-extract-failed = Archiv konnte nicht entpackt werden: { $error }
-files-archive-created = { $name } erstellt
-files-archive-create-failed = Archiv konnte nicht erstellt werden: { $error }
+files-archive-select = Wähle ein Archiv zum Entpacken aus
+files-archive-extract-to = Entpacken nach…
+files-archive-extract-to-title = Entpacken nach
+files-archive-extract-to-accept = Hierhin entpacken
+files-archive-extract-to-closed = Die Ordnerauswahl wurde ohne Antwort geschlossen
+files-archive-extract-failed-title = Entpacken fehlgeschlagen
+files-archive-extract-failed-named = „{ $name }“ konnte nicht entpackt werden
+files-archive-compress-zip = Als ZIP komprimieren
+files-archive-compress-tar-zst = Als TAR.ZST komprimieren
+files-archive-create-failed-title = Komprimieren fehlgeschlagen
 
 ## Validierung von Dateivorgängen
 files-folder-name-empty = Ordnername darf nicht leer sein
@@ -658,7 +671,8 @@ file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } e
 ## Hinweise
 files-notice-undo = Rückgängig
 files-notice-open-with = Öffnen mit …
-files-notice-dismiss = Schließen
+files-notice-try-again = Erneut versuchen
+files-notice-open-history = Versionsverlauf öffnen
 files-menu-undo = Rückgängig
 files-open-failed = „{ $name }“ konnte nicht geöffnet werden
 files-open-unavailable = Dateien kann in diesem Fenster keine Dokumente öffnen.
@@ -688,6 +702,11 @@ files-moving = { $count } { $count ->
     [one] Element wird
    *[other] Elemente werden
 } nach „{ $folder }“ verschoben
+files-extracting = „{ $folder }“ wird entpackt
+files-compressing = { $count } { $count ->
+    [one] Element wird
+   *[other] Elemente werden
+} in „{ $folder }“ komprimiert
 files-transfer-progress = { $done } von { $total }
 files-transfer-stopped = Angehalten
 files-clash-title-one = „{ $name }“ gibt es in „{ $folder }“ schon
@@ -698,3 +717,16 @@ files-clash-keep-both = Beide behalten
 files-clash-replace = Ersetzen
 files-preview-detail = { $what }, geändert { $modified }
 files-drop-nowhere = Öffne einen Ordner, um Dateien hineinzulegen.
+files-place-applications = Programme
+files-empty-applications = Noch keine Apps
+files-menu-uninstall = Deinstallieren
+files-menu-remove-from-apps = Aus Apps entfernen
+files-applications-not-a-folder = „Programme“ ist kein Ordner; öffne einen, um Dateien hinzuzufügen
+files-applications-not-a-file = Apps lassen sich hier nur öffnen oder deinstallieren
+files-applications-gone = Diese App ist nicht mehr unter deinen Apps.
+files-applications-failed = Deine Apps sind nicht erreichbar: { $error }
+files-app-kind-tilo = Tilo-App
+files-app-kind-flatpak = Flatpak
+files-app-kind-appimage = AppImage
+files-app-kind-program = Programm
+files-app-kind-system = System

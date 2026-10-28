@@ -20,12 +20,15 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "net", "process"] }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 getrandom.workspace = true
+# WireGuard key pairs for tunnels Settings sets up (src/network_settings.rs).
+tilo-seal = { path = "../tilo-seal" }
+base64.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
 tilo-crypto = { path = "../tilo-crypto" }
@@ -40,6 +43,8 @@ tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 zbus = { workspace = true, features = ["tokio"] }
+# Following a service's signals (src/bus_follow.rs).
+futures-util.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

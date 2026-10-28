@@ -15,7 +15,7 @@
 //! that scales an expression scales all of it together. [`layout_wrapped`]
 //! breaks a long expression before its top-level operators.
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
+use crate::text_render::{FontChoice, TextKind, TextRenderer, TextStyle, UI_MATH_FAMILY};
 
 use super::model::{Node, Row, Slot};
 
@@ -97,6 +97,10 @@ impl Frag {
 pub const BASE_SIZE: f32 = 22.0;
 const SCRIPT_RATIO: f32 = 0.72;
 const MIN_SIZE: f32 = 11.0;
+/// How far a superscript's baseline sits above its base's, in ems: high
+/// enough that a script of several characters (`x^(2-2)`) reads as raised,
+/// not as text on the line.
+const SUP_SHIFT: f32 = 0.38;
 
 fn line_h(size: f32) -> f64 {
     f64::from(size * 1.25)
@@ -132,9 +136,15 @@ fn delimiter_padding(size: f32) -> f64 {
 
 /// The math face at exactly `size`, as content: measured and painted at the
 /// size the layout's geometry uses.
+///
+/// A caller sets the size itself — a theme role, or the formula size the
+/// screen resolves — so it already includes the reader's text scale. The
+/// style is content-sized (the text scale is never applied again on top of
+/// it) and only the caller's own zoom belongs in the transform.
 pub(crate) fn math_style(size: f32) -> TextStyle {
     TextStyle::new(size)
         .with_family(FontChoice::Named(UI_MATH_FAMILY.into()))
+        .with_kind(TextKind::Numeric)
         .with_content_size(size)
 }
 
@@ -871,18 +881,18 @@ fn layout_sup(
     tr: &mut TextRenderer,
     size: f32,
 ) -> NodeFrag {
-    // Exponent is raised and smaller, sitting above the row baseline.
+    // Exponent is raised and smaller: its baseline sits [`SUP_SHIFT`] above
+    // the row's.
     let exp_size = (size * SCRIPT_RATIO).max(MIN_SIZE);
     let exp_steps = child_steps(steps, idx, Slot::Exp);
     let inner = layout_row(exp, &exp_steps, tr, exp_size);
     let (base_ascent, base_descent) = metrics(size);
-    // Raise the exponent so its bottom sits ~ at 55% of base ascent.
-    let raise = base_ascent * 0.55;
-    let ascent = (inner.height() + raise).max(base_ascent);
-    let descent = base_descent;
+    let shift = f64::from(size * SUP_SHIFT);
+    let ascent = base_ascent.max(shift + inner.ascent);
+    let descent = base_descent.max(inner.descent - shift);
     let mut boxes = Vec::new();
     let mut gaps = Vec::new();
-    let dy = ascent - inner.height();
+    let dy = ascent - shift - inner.ascent;
     for mut b in inner.boxes {
         b.y += dy;
         boxes.push(b);
@@ -948,8 +958,8 @@ fn layout_subsup(
     let lower = layout_row(sub, &sub_steps, tr, script_size);
     let upper = layout_row(sup, &superscript_steps, tr, script_size);
     let (base_ascent, base_descent) = metrics(size);
-    let raise = base_ascent * 0.55;
-    let ascent = (upper.height() + raise).max(base_ascent);
+    let shift = f64::from(size * SUP_SHIFT);
+    let ascent = base_ascent.max(shift + upper.ascent);
     let lower_top = ascent + f64::from(size) * 0.28 - lower.ascent;
     let descent = base_descent.max(lower_top + lower.height() - ascent);
     let width = lower
@@ -959,7 +969,7 @@ fn layout_subsup(
     let mut boxes = Vec::new();
     let mut gaps = Vec::new();
     let upper_x = (width - upper.width) * 0.5;
-    let upper_y = ascent - upper.height();
+    let upper_y = ascent - shift - upper.ascent;
     for mut math_box in upper.boxes {
         math_box.x += upper_x;
         math_box.y += upper_y;
@@ -1372,6 +1382,34 @@ mod layout_tests {
     }
 
     #[test]
+    fn an_exponent_of_any_length_sits_raised_above_its_base() {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let size = 22.0_f32;
+        for source in ["x^2", "x^(2-2)", "x^(n+1)"] {
+            let laid = layout(&parse(source).root, &mut tr, size);
+            let glyphs: Vec<_> = laid
+                .boxes
+                .iter()
+                .filter(|math_box| matches!(math_box.kind, BoxKind::Glyph { .. }))
+                .collect();
+            let (base, exponent) = glyphs.split_first().expect("x and its exponent");
+            let base_line = base.y + base.baseline;
+            assert!(!exponent.is_empty(), "{source} has an exponent");
+            for script in exponent {
+                assert!(
+                    box_size(&script.kind) < box_size(&base.kind),
+                    "{source}: smaller"
+                );
+                let raised = base_line - (script.y + script.baseline);
+                assert!(
+                    raised >= f64::from(size) * 0.3,
+                    "{source}: the exponent sits {raised:.1}px above the base line"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn functions_operators_scripts_and_delimiters_get_math_spacing_and_baselines() {
         // phase: func_name_and_argument_share_size_and_baseline
         // The 3D default surface `sin(√(x²+y²))` used to render its `sin` at the
@@ -1616,7 +1654,6 @@ mod layout_tests {
         let wrapped = layout_wrapped(&row, &mut tr, 20.0, whole.width / 2.0);
         assert!(wrapped.height > whole.height * 1.5, "it takes more lines");
         assert!(wrapped.width <= whole.width / 2.0 + 20.0);
-        // Every top-level caret stop survives exactly once.
         for index in 0..=row.len() {
             assert_eq!(
                 wrapped

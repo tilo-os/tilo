@@ -43,9 +43,6 @@ fn mark_scalar(value: MarkVal) -> ScalarValue {
 
 /// The body under `root` as the editor shows it, a block per paragraph:
 /// for an export or a projection written in the editor's terms.
-///
-/// # Errors
-/// Returns [`ModelError`] when `root` holds no rich text.
 pub fn blocks_under(doc: &Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
     let containers =
         tilo_doc::model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))?;
@@ -225,9 +222,6 @@ pub fn fill_clips_under(
 /// Put fresh rich text holding `clips` at `key` of the map `parent`,
 /// replacing what was there: a record's rich-text field (a comment body, a
 /// note) written whole by the record's action.
-///
-/// # Errors
-/// Returns the document's refusal.
 pub fn put_rich_text(
     doc: &mut Doc,
     parent: &ObjId,
@@ -352,7 +346,6 @@ mod tests {
                 old
             },
             {
-                // Who wrote what comes across with the text.
                 let mut authored = block(BlockKind::Paragraph, "éλ and more");
                 authored.authors = vec![(0..4, "ada".into()), (4..13, "grace".into())];
                 authored

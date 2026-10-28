@@ -1,15 +1,28 @@
-//! Find in the buffer: the view is [`Findable`], the framework's
-//! [`FindBar`](ui::widget::FindBar) is its bar.
+//! Find and replace in the buffer, for the window bar's search: the view is
+//! the [`Findable`] the bar drives in place.
 //!
 //! A hex query is a byte pattern (`de ad be ef`); a text query is matched as
-//! UTF-8, honouring the bar's Match case and Whole word. Matches are byte
+//! UTF-8, honouring the search's Match case and Whole word. Matches are byte
 //! ranges; the grid paints each with `paint_find_match` over the matched
-//! cells only.
+//! cells only. A replacement is bytes in the same mode as the query, and
+//! goes through the view's own edit path as one undoable action. Find
+//! (Ctrl+F) and Replace (Ctrl+H) open the bar's search; the view draws no
+//! find field of its own.
 
 use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
+use ui::window_toolbar::SearchOpening;
 
-use super::HexView;
+use super::{HexView, byte_edit};
+use crate::model::ChangesLength;
 use crate::search::{self, MatchRules, SearchKind};
+
+/// The query the search last ran: its bytes and how they match.
+#[derive(Clone, Debug, Default)]
+pub(super) struct FindQuery {
+    needle: Option<Vec<u8>>,
+    rules: Option<MatchRules>,
+    mode: FindMode,
+}
 
 impl Findable for HexView {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
@@ -24,11 +37,13 @@ impl Findable for HexView {
                 },
             ),
         };
-        self.matches = search::needle(query, kind)
+        let needle = search::needle(query, kind);
+        self.matches = needle
+            .as_ref()
             .map(|needle| {
                 let (hits, _) = search::find_matches(
                     self.model.bytes(),
-                    &needle,
+                    needle,
                     rules,
                     search::MAX_RETAINED_MATCHES,
                 );
@@ -37,9 +52,18 @@ impl Findable for HexView {
                     .collect()
             })
             .unwrap_or_default();
+        self.query = FindQuery {
+            needle,
+            rules: Some(rules),
+            mode: options.mode,
+        };
         self.match_idx = None;
         self.dirty = true;
         self.matches.clone()
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.revision
     }
 
     fn reveal(&mut self, index: usize) {
@@ -57,7 +81,39 @@ impl Findable for HexView {
     fn clear_find(&mut self) {
         self.matches.clear();
         self.match_idx = None;
+        self.query = FindQuery::default();
         self.dirty = true;
+    }
+
+    fn supports_replace(&self) -> bool {
+        self.has_file
+    }
+
+    fn replace(&mut self, index: usize, with: &str) -> bool {
+        let Some(found) = self.matches.get(index) else {
+            return false;
+        };
+        let span = (found.start, found.end);
+        self.replace_spans(&[span], with) > 0
+    }
+
+    fn replace_all(&mut self, with: &str) -> usize {
+        // Every match in the buffer, not only the ones kept to paint.
+        let (Some(needle), Some(rules)) = (&self.query.needle, self.query.rules) else {
+            return 0;
+        };
+        let (hits, _) = search::find_matches(self.model.bytes(), needle, rules, usize::MAX);
+        let spans: Vec<(usize, usize)> = hits
+            .into_iter()
+            .map(|start| (start, start + needle.len()))
+            .collect();
+        let count = self.replace_spans(&spans, with);
+        match count {
+            0 => {}
+            1 => self.notice("Replaced 1 match"),
+            n => self.notice(&format!("Replaced {n} matches")),
+        }
+        count
     }
 
     fn supports_hex(&self) -> bool {
@@ -66,54 +122,70 @@ impl Findable for HexView {
 }
 
 impl HexView {
-    /// Open the find band (Ctrl+F) with its query focused.
-    pub(super) fn open_find(&mut self) {
-        self.find_open = true;
-        self.find_bar.focus_query();
-        self.relayout_now();
-        self.drive_find();
-        self.dirty = true;
+    /// Open the window bar's search on the buffer: on its query for Find,
+    /// on its replacement for Replace.
+    pub(super) fn open_find(opening: SearchOpening) {
+        ui::window_toolbar::open_search(opening);
     }
 
-    /// Close the band and clear the matches. The query is kept, so Ctrl+F
-    /// again finds the same thing.
-    /// Close the bar. It keeps its query, mode and options for the next
-    /// time it opens.
-    pub(super) fn close_find(&mut self) {
-        self.clear_find();
-        self.find_open = false;
-        self.relayout_now();
-        self.dirty = true;
-    }
-
-    /// Carry what the bar asked for into the view: re-run the query, step
-    /// the current match, or close.
-    pub(super) fn drive_find(&mut self) {
-        let mut bar = std::mem::take(&mut self.find_bar);
-        bar.drive(self);
-        let closed = bar.take_close_requested();
-        self.find_bar = bar;
-        if closed {
-            self.close_find();
+    /// The bytes `with` stands for in the mode of the last query: hex bytes
+    /// in hex mode, its UTF-8 bytes in text mode.
+    fn replacement(&self, with: &str) -> Option<Vec<u8>> {
+        match self.query.mode {
+            FindMode::Hex => crate::actions::parse_bytes(with).ok(),
+            FindMode::Text | FindMode::Regex => Some(with.as_bytes().to_vec()),
         }
     }
 
-    /// The bytes changed under an edit: find again, keeping the current
-    /// match where it still is.
-    pub(super) fn refind(&mut self) {
-        if !self.find_open {
-            self.matches.clear();
-            self.match_idx = None;
+    /// Replace `spans` with `with` in the view's copy and submit what that
+    /// did as one action of the record, one undo step. Returns how many
+    /// spans changed.
+    fn replace_spans(&mut self, spans: &[(usize, usize)], with: &str) -> usize {
+        let Some(bytes) = self.replacement(with) else {
+            self.problem(
+                "Couldn't replace",
+                "Write the replacement as hexadecimal bytes, like de ad be ef.",
+            );
+            return 0;
+        };
+        match self.model.replace_spans(spans, &bytes) {
+            Ok(0) => 0,
+            Ok(count) => {
+                self.submit_one_step();
+                count
+            }
+            Err(ChangesLength) => {
+                self.problem(
+                    "Couldn't replace in Overwrite mode",
+                    "The replacement has another length than the match. Switch to Insert to change the file's length.",
+                );
+                0
+            }
+        }
+    }
+
+    /// Submit the edits a replacement or a paste made as one action: a step
+    /// of its own, never joined to typing before or after it.
+    pub(super) fn submit_one_step(&mut self) {
+        let edits = self.model.take_edits();
+        self.content_changed();
+        let (row, _) = self.model.cursor_cell();
+        self.model.scroll_into_view(row, self.visible_rows);
+        let Some(dispatch) = &self.dispatch else {
             return;
-        }
-        self.find_bar.refresh();
-        self.drive_find();
+        };
+        dispatch.settle();
+        dispatch.group(|| {
+            for edit in edits.iter().filter_map(byte_edit) {
+                dispatch.submit(edit);
+            }
+        });
+        dispatch.settle();
     }
-}
 
-/// The find bar of a byte view: text and hex modes, opening on hex.
-pub(super) fn new_find_bar() -> ui::widget::FindBar {
-    ui::widget::FindBar::new()
-        .with_hex_mode()
-        .with_mode(FindMode::Hex)
+    /// The bytes changed: an open search finds again, keeping its place.
+    pub(super) fn content_changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.dirty = true;
+    }
 }

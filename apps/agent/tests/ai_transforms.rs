@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
@@ -29,7 +30,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent::transform::{self, TransformModel};
 use tilo_automation::{
-    AGENT_APP_ID, ActionCatalog, AiTransform, AskRequest, Binding, CheckErrorKind,
+    AGENT_APP_ID, AGENT_TASK_ACTION, ActionCatalog, AskRequest, Binding, CheckErrorKind,
     ConfirmationRequest, NoShortcuts, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
     RunTrigger, Shortcut, Step, StepFailure, StepKind, check, run,
 };
@@ -56,6 +57,7 @@ impl Scripted {
 impl TransformModel for Scripted {
     fn answer(
         &self,
+        _kind: Interaction,
         _instructions: &str,
         input: &str,
         _max_output_tokens: u32,
@@ -132,7 +134,7 @@ impl AgentHost {
         if self.answering == Answering::Unchecked {
             let raw = self
                 .model
-                .answer("", "", 1, Duration::from_secs(1))
+                .answer(Interaction::OneShot, "", "", 1, Duration::from_secs(1))
                 .unwrap();
             let value: Value = serde_json::from_str(&raw).unwrap();
             return InvocationUpdate::Succeeded {
@@ -197,10 +199,14 @@ impl ActionHost for AgentHost {
             .map(|update| InvocationState::new(*id, update.clone()))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::NotCancellable {
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "finished".into(),
-        })
+        }))
     }
 }
 
@@ -231,12 +237,20 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn ai_shortcut(transform: AiTransform, input: Binding) -> Shortcut {
+fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> Shortcut {
     Shortcut {
         id: "digest".into(),
         name: "Digest".into(),
         inputs: Vec::new(),
-        steps: vec![Step::new("ai", StepKind::Ai { transform, input })],
+        steps: vec![Step::new(
+            "ai",
+            StepKind::Ai {
+                prompt: prompt.into(),
+                output,
+                input,
+            },
+        )],
+        step_timeout_secs: None,
         output: Some(Binding::step("ai", "")),
         grant: vec![tilo_action_policy::Rule::new(
             tilo_action_policy::TreePath::root()
@@ -262,13 +276,17 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             trigger: RunTrigger::Manual,
             inputs,
             caused_by: None,
+            parent: None,
+            chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ))
 }
 
 fn failure(report: &RunReport) -> Option<&StepFailure> {
     match &report.outcome {
-        RunOutcome::Completed => None,
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
         RunOutcome::Failed { failure, .. } => Some(failure),
     }
 }
@@ -277,10 +295,11 @@ fn failure(report: &RunReport) -> Option<&StepFailure> {
 fn a_summary_step_succeeds_against_the_published_descriptor() {
     let host = AgentHost::new(&[r#"{"result": "Two notes, both about the launch."}"#]);
     let digest = ai_shortcut(
-        AiTransform::Summarise,
-        Binding::Literal(json!(
+        "Summarise this briefly",
+        None,
+        Some(Binding::Literal(json!(
             "A long note about the launch. Another about the launch."
-        )),
+        ))),
     );
     assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
 
@@ -306,8 +325,9 @@ fn an_extraction_is_repaired_once_when_it_misses_the_schema() {
         r#"{"result": {"due": "Friday", "owner": "Ada"}}"#,
     ]);
     let extract = ai_shortcut(
-        AiTransform::Extract { schema },
-        Binding::Literal(json!("Ada ships it by Friday.")),
+        "Pull out the due date and owner",
+        Some(schema),
+        Some(Binding::Literal(json!("Ada ships it by Friday."))),
     );
     assert_eq!(check(&extract, &host.catalog(), &NoShortcuts), Ok(()));
 
@@ -326,14 +346,13 @@ fn an_extraction_is_repaired_once_when_it_misses_the_schema() {
 fn an_answer_that_misses_the_schema_twice_fails_the_step() {
     let host = AgentHost::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
     let extract = ai_shortcut(
-        AiTransform::Extract {
-            schema: json!({
-                "type": "object",
-                "properties": {"due": {"type": "string"}},
-                "required": ["due"]
-            }),
-        },
-        Binding::Literal(json!("Ada ships it by Friday.")),
+        "Pull out the due date",
+        Some(json!({
+            "type": "object",
+            "properties": {"due": {"type": "string"}},
+            "required": ["due"]
+        })),
+        Some(Binding::Literal(json!("Ada ships it by Friday."))),
     );
     let report = run_shortcut(&host, &extract, Map::new());
     match failure(&report) {
@@ -351,7 +370,11 @@ fn the_published_result_spec_fails_a_step_whose_answer_skipped_the_check() {
     // A publisher returning the model's value without checking it is caught
     // by the result spec the agent declares.
     let host = AgentHost::unchecked(&[r#"{"result": 42}"#]);
-    let digest = ai_shortcut(AiTransform::Summarise, Binding::Literal(json!("text")));
+    let digest = ai_shortcut(
+        "Summarise this",
+        None,
+        Some(Binding::Literal(json!("text"))),
+    );
     let report = run_shortcut(&host, &digest, Map::new());
     assert!(
         matches!(failure(&report), Some(StepFailure::Contract { .. })),
@@ -363,10 +386,9 @@ fn the_published_result_spec_fails_a_step_whose_answer_skipped_the_check() {
 fn a_classification_is_one_of_the_labels() {
     let host = AgentHost::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
     let triage = ai_shortcut(
-        AiTransform::Classify {
-            choices: vec!["urgent".into(), "later".into()],
-        },
-        Binding::Literal(json!("The server is down.")),
+        "Label this urgent or later",
+        Some(json!({"type": "string", "enum": ["urgent", "later"]})),
+        Some(Binding::Literal(json!("The server is down."))),
     );
     assert_eq!(check(&triage, &host.catalog(), &NoShortcuts), Ok(()));
     let report = run_shortcut(&host, &triage, Map::new());
@@ -377,7 +399,7 @@ fn a_classification_is_one_of_the_labels() {
 #[test]
 fn a_secret_never_reaches_the_agent() {
     let host = AgentHost::new(&[r#"{"result": "leaked"}"#]);
-    let mut leak = ai_shortcut(AiTransform::Summarise, Binding::Input("token".into()));
+    let mut leak = ai_shortcut("Summarise this", None, Some(Binding::Input("token".into())));
     leak.inputs = vec![ActionParam::required(
         "token",
         ParamType::Secret,
@@ -400,4 +422,67 @@ fn a_secret_never_reaches_the_agent() {
         "{report:?}"
     );
     assert!(host.model.asked().is_empty());
+}
+
+/// A shortcut whose only step starts a task.
+fn task_shortcut(instruction: &str, output: Option<Value>) -> Shortcut {
+    let mut shortcut = ai_shortcut(instruction, None, None);
+    shortcut.steps = vec![Step::new(
+        "task",
+        StepKind::Task {
+            instruction: instruction.into(),
+            allow: Vec::new(),
+            output,
+        },
+    )];
+    shortcut.output = Some(Binding::step("task", ""));
+    shortcut
+}
+
+#[test]
+fn a_task_step_runs_against_the_published_task_descriptor() {
+    let host = AgentHost::new(&[r#"{"result": {"tidied": 3}}"#]);
+    let tidy = task_shortcut(
+        "Tidy the inbox",
+        Some(json!({
+            "type": "object",
+            "properties": {"tidied": {"type": "integer"}},
+            "required": ["tidied"]
+        })),
+    );
+    assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
+
+    let report = run_shortcut(&host, &tidy, Map::new());
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!({"tidied": 3})));
+    assert_eq!(host.model.asked().len(), 1);
+}
+
+#[test]
+fn a_task_says_what_it_may_not_do_when_it_has_no_authority() {
+    let host = AgentHost::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
+    let tidy = task_shortcut("Tidy the inbox", None);
+    let report = run_shortcut(&host, &tidy, Map::new());
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(report.output, Some(json!("I cannot reach the mailbox.")));
+    let asked = host.model.asked();
+    assert_eq!(
+        asked.len(),
+        1,
+        "a task reads no caller input, so it is asked once"
+    );
+    assert!(
+        !asked[0].contains("Input:"),
+        "a task is handed no input: {asked:?}"
+    );
+    let published = transform::descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == AGENT_TASK_ACTION)
+        .expect("the agent publishes the task action");
+    assert!(
+        published
+            .params
+            .iter()
+            .any(|param| param.name == "instruction")
+    );
 }

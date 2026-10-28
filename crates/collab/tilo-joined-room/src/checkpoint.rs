@@ -4,7 +4,10 @@ use crate::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, RoomId, Sto
 use automerge::{ROOT, ReadDoc};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, time::SystemTime};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::SystemTime,
+};
 use tilo_owner_commit::{CommitBinding, CommitTarget};
 use tilo_user_identity::DeviceCert;
 
@@ -13,6 +16,7 @@ const MAX_CHECKPOINTS: usize = 128;
 const MAX_BLOCK: usize = 256 * 1024;
 const MAX_DOCUMENT: usize = 3 * 1024 * 1024;
 const MAX_CAPTURE: usize = 16 * 1024 * 1024;
+const MAX_DESCRIPTION: usize = 280;
 
 pub use tilo_peer_state::workspace_checkpoint::CheckpointRoute;
 use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
@@ -49,7 +53,45 @@ pub struct NativeCheckpoint {
     /// Person identity from authenticated admission, not an argument or grant copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<[u8; 32]>,
+    /// The person's own words for what this snapshot is; never inferred.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// What the manifest does not hold. Native app records only: an absent facet
+    /// is a refusal, never a promise that something else was covered.
+    pub completeness: CheckpointCompleteness,
     pub entries: Vec<CheckpointEntry>,
+}
+/// The documented reach of a native manifest. Files, directories, retained media
+/// and governance records are never part of one, so every capture says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field answers one separate question a reader asks of a manifest (is it \
+              complete, of what, and which three things it leaves out); they are not \
+              independent switches but one documented answer, and an enum would have to \
+              name every future combination of what a capture can reach"
+)]
+pub struct CheckpointCompleteness {
+    /// Every named route carries an exactly pinned admitted revision and retained bytes.
+    pub complete: bool,
+    /// Complete for the native app records it names, and for nothing outside them.
+    pub native_app_records_only: bool,
+    /// Directories, files, symlinks and executable bits: never captured here.
+    pub file_topology: bool,
+    /// Content an app document references (media, blobs): never captured here.
+    pub referenced_content: bool,
+    /// Room governance, membership and the checkpoint index itself: excluded.
+    pub governance: bool,
+}
+impl CheckpointCompleteness {
+    pub(crate) const NATIVE_RECORDS: Self = Self {
+        complete: true,
+        native_app_records_only: true,
+        file_topology: false,
+        referenced_content: false,
+        governance: false,
+    };
 }
 /// Durable owner acknowledgement, returned only after metadata publication.
 /// The manifest address and id stay fixed when names move or records mutate.
@@ -71,8 +113,24 @@ pub struct MaterializedCheckpoint {
 struct Index {
     checkpoints: BTreeMap<uuid::Uuid, CheckpointAcknowledgement>,
     names: BTreeMap<String, uuid::Uuid>,
+    /// Every move of a movable name, oldest first, in publication order.
+    /// Names are the only mutable part of a checkpoint index, so this is what
+    /// lets a person say who renamed what and when without a second authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    name_history: Vec<NameBinding>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     invocations: BTreeMap<uuid::Uuid, InvocationResult>,
+}
+/// One auditable name movement: the exact person, checkpoint and publication
+/// generation it was acknowledged at. Never inferred from the current mapping.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameBinding {
+    pub name: String,
+    pub id: uuid::Uuid,
+    /// Person identity from authenticated admission, not an argument or grant copy.
+    pub author: [u8; 32],
+    pub generation: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +176,15 @@ fn retain_result(
 fn name_valid(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
         return Err("invalid native checkpoint name".into());
+    }
+    Ok(())
+}
+fn description_valid(description: &str) -> Result<(), String> {
+    if description.len() > MAX_DESCRIPTION
+        || description.chars().any(|c| c.is_control() && c != '\n')
+        || description.trim() != description
+    {
+        return Err("invalid native checkpoint description".into());
     }
     Ok(())
 }
@@ -199,6 +266,22 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
             return Err("dangling native checkpoint name".into());
         }
     }
+    let mut bound = BTreeSet::new();
+    for entry in &index.name_history {
+        name_valid(&entry.name)?;
+        if !index.checkpoints.contains_key(&entry.id)
+            || !bound.insert((entry.name.clone(), entry.id))
+            || entry.generation == 0
+            || (view.device() == view.governor() && entry.generation > view.generation())
+        {
+            return Err("invalid native checkpoint name binding".into());
+        }
+    }
+    for (name, id) in &index.names {
+        if !bound.contains(&(name.clone(), *id)) {
+            return Err("native checkpoint name lacks its auditable binding".into());
+        }
+    }
     Ok(index)
 }
 fn manifest(
@@ -215,6 +298,10 @@ fn manifest(
         return Err("native checkpoint identity mismatch".into());
     }
     name_valid(&manifest.original_name)?;
+    description_valid(&manifest.description)?;
+    if manifest.completeness != CheckpointCompleteness::NATIVE_RECORDS {
+        return Err("native checkpoint completeness is not the documented reach".into());
+    }
     routes_valid(
         &manifest
             .entries
@@ -353,6 +440,8 @@ fn retain_manifest(
         captured_generation: candidate.generation(),
         captured_aggregate: *blake3::hash(&candidate.record.peer).as_bytes(),
         author: Some(caller.user_public_key),
+        description: capture.description.trim().to_owned(),
+        completeness: CheckpointCompleteness::NATIVE_RECORDS,
         entries: Vec::new(),
     };
     let mut total = 0usize;
@@ -409,7 +498,11 @@ impl NativeWorkspaceOwner {
             view.peer.workspace().check_checkpoint_writer(key, now)
         })?;
         match &request.command {
-            CheckpointCommand::Capture { name, routes } => {
+            CheckpointCommand::Capture {
+                name,
+                description,
+                routes,
+            } => {
                 let ack = self.capture_checkpoint_bound(
                     room,
                     &request.caller,
@@ -417,6 +510,7 @@ impl NativeWorkspaceOwner {
                     CheckpointCapture {
                         id: request.invocation,
                         name,
+                        description,
                         routes,
                     },
                     now,
@@ -475,6 +569,7 @@ impl NativeWorkspaceOwner {
         request: Option<&CheckpointRequest>,
     ) -> Result<CheckpointAcknowledgement, String> {
         name_valid(capture.name)?;
+        description_valid(capture.description)?;
         routes_valid(capture.routes)?;
         if capture.id.is_nil() {
             return Err("nil native checkpoint id".into());
@@ -526,6 +621,9 @@ impl NativeWorkspaceOwner {
             if existing.original_name != capture.name {
                 return Err("native checkpoint id is already bound to another capture name".into());
             }
+            if existing.description != capture.description.trim() {
+                return Err("native checkpoint id already carries another description".into());
+            }
             for entry in &existing.entries {
                 document(self.0.store.as_ref(), entry)?;
             }
@@ -550,6 +648,12 @@ impl NativeWorkspaceOwner {
         };
         index.checkpoints.insert(capture.id, ack.clone());
         index.names.insert(capture.name.into(), capture.id);
+        index.name_history.push(NameBinding {
+            name: capture.name.into(),
+            id: capture.id,
+            author: caller.user_public_key,
+            generation,
+        });
         retain_result(&mut index, request, &ack)?;
         self.publish_checkpoint_index(room, candidate, &index, key, now)?;
         Ok(ack)
@@ -572,9 +676,12 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("checkpoint generation exhausted")?;
         self.with_current(room, |previous| {
-            candidate
-                .peer
-                .durable_mutation_messages(&previous.peer, key, now, generation)?;
+            candidate.peer.publication_mut().durable_mutation_messages(
+                &previous.peer,
+                key,
+                now,
+                generation,
+            )?;
             Ok(())
         })?;
         candidate.record.peer = candidate.peer.durable()?;
@@ -655,10 +762,42 @@ impl NativeWorkspaceOwner {
         if index.names.len() >= MAX_CHECKPOINTS && !index.names.contains_key(name) {
             return Err("native checkpoint name capacity".into());
         }
+        index.name_history.push(NameBinding {
+            name: name.into(),
+            id,
+            author: caller.user_public_key,
+            generation: candidate
+                .generation()
+                .checked_add(1)
+                .ok_or("checkpoint generation exhausted")?,
+        });
         index.names.insert(name.into(), id);
         retain_result(&mut index, request, &ack)?;
         self.publish_checkpoint_index(room, candidate, &index, key, now)?;
         Ok(ack)
+    }
+    /// Every move of the movable `name`, oldest first, so a person can see who
+    /// pointed it where and at which acknowledged publication generation.
+    ///
+    /// # Errors
+    /// Unknown name, or a retained index that is not the accepted one.
+    pub fn checkpoint_name_history(
+        &self,
+        room: RoomId,
+        name: &str,
+    ) -> Result<Vec<NameBinding>, String> {
+        name_valid(name)?;
+        self.with_current(room, |view| {
+            let index = index(view, self.0.store.as_ref())?;
+            if !index.names.contains_key(name) {
+                return Err("native checkpoint name absent".into());
+            }
+            Ok(index
+                .name_history
+                .into_iter()
+                .filter(|entry| entry.name == name)
+                .collect())
+        })
     }
     /// Resolve a movable name only if every retained route is currently readable
     /// and all retained snapshots verify against the authenticated manifest.
@@ -737,6 +876,8 @@ impl NativeWorkspaceOwner {
 pub struct CheckpointCapture<'a> {
     pub id: uuid::Uuid,
     pub name: &'a str,
+    /// The person's own words, empty when they gave none. Never generated.
+    pub description: &'a str,
     pub routes: &'a [CheckpointRoute],
 }
 

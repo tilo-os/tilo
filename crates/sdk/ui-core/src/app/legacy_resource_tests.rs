@@ -14,7 +14,11 @@ impl crate::collaboration::PeerTransport for DocumentRouteTransport {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
-    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+    fn join_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::record::RecordKind,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(
@@ -176,6 +180,13 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
                 "ordinary draining records without writing"
             );
             assert_eq!(f.snapshot().1, before.1 + 1);
+            // The refused press is said over the window, never dropped
+            // unseen; the person dismisses the notice and presses again.
+            assert!(
+                app.action_palette()
+                    .is_some_and(|palette| palette.refusal().is_some())
+            );
+            app.close_action_palette();
             probe.offer();
             assert!(app.controlled_local_idle_for_test());
             assert_eq!(probe.acks.get(), 1);
@@ -258,7 +269,7 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         .execution(tilo_actions::ExecutionMode::Background { cancellable: true });
         *b.probe.spec.borrow_mut() = a.probe.spec.borrow().clone();
         if cancel {
-            b.probe.spec.borrow_mut().id = "other".into();
+            b.probe.spec.borrow_mut().type_mut().id = "other".into();
         }
         a.tile.register_document_history(&EFFECT_HISTORY).unwrap();
         let before_a = a.snapshot();
@@ -431,7 +442,8 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
     )
     .unwrap()
     .execution(tilo_actions::ExecutionMode::Background { cancellable: true });
-    f.probe.spec.borrow_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+    f.probe.spec.borrow_mut().type_mut().contract.confirmation =
+        tilo_actions::ConfirmationPolicy::Confirm;
     let root = f.take_tile();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     app.init_layout();
@@ -523,9 +535,9 @@ fn component_bare_address(lazy: bool, duplicate: bool) {
             probe_definition(),
             721,
             &LaunchTarget::New,
-            std::rc::Rc::new(std::cell::RefCell::new(
+            crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
         )
         .unwrap();
     context

@@ -5,6 +5,11 @@
 //! own profile, record store and harness), so they run on several threads;
 //! the test reserves the runner in `.config/nextest.toml`.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "the capture's instant is the clock plus a notice's lifetime"
+)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use notes::NotesShell;
@@ -40,24 +45,47 @@ const NARROW_SCENARIOS: &[&str] = &[
 
 #[test]
 fn semantic_markdown_import_reports_original_success_notification() {
+    // A capture pins the process's clock to 10:42 so its frame is the same
+    // on every run, and this test builds captures: it takes the process to
+    // itself, and no test beside it reads that time.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "semantic_markdown_import_reports_original_success_notification",
+        semantic_markdown_import_at_the_capture_instant,
+    );
+}
+
+fn semantic_markdown_import_at_the_capture_instant() {
     ui::clock::freeze_for_capture();
-    check(Some("import_success"), (1280, 720)).unwrap();
     let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
-    // A capture retains its original notification even when frame preparation
-    // exceeds the live toast lifetime. Draw the real app after that delay.
-    std::thread::sleep(ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100));
-    app.harness().relayout();
-    assert!(observed(app.harness(), |node| {
-        node.name.as_deref() == Some("Notifications")
-            && node.value.as_deref() == Some("Imported Project brief")
-    }));
+    // A capture retains its original notice in the window's bar even when
+    // frame preparation exceeds the live notice lifetime. Draw the real app
+    // as it would be after that delay.
+    let late =
+        ui::time::now() + ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_millis(100);
+    ui::time::testing::with_monotonic_time(late, || app.harness().relayout());
+    assert_eq!(
+        ui::window_toolbar::notice().map(|notice| notice.text),
+        Some("Imported Project brief".to_owned())
+    );
 }
 
 #[test]
 fn every_scenario_reaches_its_state() {
+    // A capture pins the process's clock to 10:42 so its frame is the same
+    // on every run, and this test builds many: it takes the process to
+    // itself, and no test beside it reads that time.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "every_scenario_reaches_its_state",
+        every_scenario_reaches_its_state_at_the_capture_instant,
+    );
+}
+
+fn every_scenario_reaches_its_state_at_the_capture_instant() {
+    ui::clock::freeze_for_capture();
     // Match --shots before starting capture workers: transient notifications
     // belong to the captured scene and must not expire while it is prepared.
-    ui::clock::freeze_for_capture();
     let mut captures = NotesShell::scenarios()
         .iter()
         .map(|scenario| (Some(*scenario), NotesShell::shot_viewport(Some(scenario))))
@@ -102,9 +130,15 @@ fn every_scenario_reaches_its_state() {
 
 #[test]
 fn imported_note_keeps_its_success_notification_in_capture() {
-    ui::clock::freeze_for_capture();
-    check(Some("import_success"), (1280, 720))
-        .expect("the imported document and its notification are both captured");
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "imported_note_keeps_its_success_notification_in_capture",
+        || {
+            ui::clock::freeze_for_capture();
+            check(Some("import_success"), (1280, 720))
+                .expect("the imported document and its notification are both captured");
+        },
+    );
 }
 
 #[test]
@@ -176,6 +210,14 @@ fn shown_title(scenario: Option<&str>) -> Option<&'static str> {
         Some("title_edit") => Some("Launch checklist"),
         _ => notes::scenario::shown_note(scenario),
     }
+}
+
+/// Whether the window's bar says `text`, with the button `action` beside
+/// it.
+fn bar_says(text: &str, action: Option<&str>) -> bool {
+    ui::window_toolbar::notice().is_some_and(|notice| {
+        notice.text == text && notice.actions.first().map(|button| button.name.as_str()) == action
+    })
 }
 
 #[allow(
@@ -444,37 +486,35 @@ fn reached(
                 && node.name.as_deref() == Some("Keyboard shortcuts")
                 && !node.state.hidden
         }),
-        Some("find") => observed(driver, |node| {
-            node.role == ui::a11y::Role::TextInput
-                && node.name.as_deref() == Some("Find in note")
-                && node.value.as_deref() == Some("migration")
-                && node.state.focused
-        }),
+        Some("find") => driver.window_search_position() == Some((1, 4)),
         Some("sidebar_scroll") => observed(driver, |node| {
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
-        Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
+        Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved"))
+            && bar_says("Saved", None),
         Some("save_retrying") => {
             observed(driver, |node| node.name.as_deref() == Some("Saving…"))
+                && bar_says("Couldn't save yet. Retrying…", None)
         }
-        Some("save_not_saved") => observed(driver, |node| {
-            node.name.as_deref() == Some("Not saved")
-                && node
-                    .children
-                    .iter()
-                    .any(|child| child.name.as_deref() == Some("Try again"))
-        }),
-        Some("save_error") => observed(driver, |node| node.name.as_deref() == Some("Save failed")),
+        Some("save_not_saved") => bar_says("Not saved", Some("Try again")),
+        Some("save_error") => {
+            observed(driver, |node| node.name.as_deref() == Some("Save failed"))
+                && ui::window_toolbar::notice().is_some_and(|notice| {
+                    notice.text.starts_with("Save failed")
+                        && notice
+                            .actions
+                            .first()
+                            .is_some_and(|action| action.name == "Try again")
+                })
+        }
         Some("import_success") => {
             !blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Project brief"
             }) && blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Paragraph)
                     && block.text() == "Imported through Notes' semantic Markdown action."
-            }) && observed(driver, |node| {
-                node.name.as_deref() == Some("Notifications")
-                    && node.value.as_deref() == Some("Imported Project brief")
-            })
+            }) && ui::window_toolbar::notice()
+                .is_some_and(|notice| notice.text == "Imported Project brief")
         }
         _ => driver
             .expect(&SemanticExpectation::named("note_title").value("Launch checklist"))

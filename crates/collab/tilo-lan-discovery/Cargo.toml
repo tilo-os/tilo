@@ -1,0 +1,40 @@
+[package]
+name = "tilo-lan-discovery"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Private LAN discovery of a person's own devices: sealed probes only their devices can read."
+
+[lib]
+name = "tilo_lan_discovery"
+path = "src/lib.rs"
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+iroh.workspace = true
+n0-future = "0.3.2"
+postcard = { workspace = true, features = ["alloc"] }
+serde_json.workspace = true
+socket2 = "0.6"
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+[lints]
+workspace = true

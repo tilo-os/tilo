@@ -323,10 +323,8 @@ mod tests {
         infer_entry(s, Currency::USD)
     }
 
-    /// Percent and currency input inference.
     #[test]
     fn percent_and_currency_inputs_infer_their_format() {
-        // Case `percent_stores_fraction`.
         {
             let r = infer("90%");
             assert_eq!(r.raw, "0.9");
@@ -338,21 +336,18 @@ mod tests {
             );
         }
 
-        // Case `percent_with_decimals`.
         {
             let r = infer("12.5%");
             assert_eq!(r.raw, "0.125");
             assert_eq!(r.format, CellFormat::Percent);
         }
 
-        // Case `leading_dollar_is_usd_currency`.
         {
             let r = infer("$1,200");
             assert_eq!(r.raw, "1200");
             assert_eq!(r.format, CellFormat::Currency(Currency::USD));
         }
 
-        // Case `trailing_euro_is_eur_currency`.
         {
             let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
             // Euro grouping uses '.' for thousands and ',' for decimal, but our
@@ -366,14 +361,12 @@ mod tests {
             let _ = r;
         }
 
-        // Case `currency_code_prefix`.
         {
             let r = infer("CHF 50");
             assert_eq!(r.raw, "50");
             assert_eq!(r.format, CellFormat::Currency(Currency::CHF));
         }
 
-        // Case `dollar_respects_document_default_when_symbol_shared`.
         {
             // A CAD document typing "$5" keeps CAD (both use $).
             let r = infer_entry("$5", Currency::CAD);
@@ -384,11 +377,9 @@ mod tests {
     /// ISO/US/EU dates and 24h/12h times.
     #[test]
     fn date_and_time_inputs_infer_their_format() {
-        // Case `iso_date`.
         {
             let r = infer("2023-03-15");
             assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-            // Round-trips back to the same ISO string.
             let n: f64 = r.raw.parse().unwrap();
             assert_eq!(
                 crate::model::serial_to_date(n, DateStyle::Iso),
@@ -396,7 +387,6 @@ mod tests {
             );
         }
 
-        // Case `us_slash_date`.
         {
             let r = infer("03/15/2023");
             assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
@@ -407,7 +397,6 @@ mod tests {
             );
         }
 
-        // Case `eu_slash_date_when_unambiguous`.
         {
             // 25/03/2023 can only be D/M/Y.
             let r = infer("25/03/2023");
@@ -436,45 +425,38 @@ mod tests {
         }
     }
 
-    /// Grouped, plain, negative numbers, booleans, text, forced text and formulas.
     #[test]
     fn numbers_booleans_text_and_formulas_infer_their_kind() {
-        // Case `grouped_number_becomes_number_format`.
         {
             let r = infer("1,234.5");
             assert_eq!(r.raw, "1234.5");
             assert_eq!(r.format, CellFormat::Number);
         }
 
-        // Case `plain_integer_stays_general`.
         {
             let r = infer("42");
             assert_eq!(r.raw, "42");
             assert_eq!(r.format, CellFormat::General);
         }
 
-        // Case `parenthesised_negative`.
         {
             let r = infer("(1,200)");
             assert_eq!(r.raw, "-1200");
             assert_eq!(r.format, CellFormat::Number);
         }
 
-        // Case `booleans`.
         {
             assert_eq!(infer("true").format, CellFormat::Boolean);
             assert_eq!(infer("FALSE").format, CellFormat::Boolean);
             assert_eq!(infer("true").raw, "TRUE");
         }
 
-        // Case `plain_text`.
         {
             let r = infer("Hello");
             assert_eq!(r.raw, "Hello");
             assert_eq!(r.format, CellFormat::Text);
         }
 
-        // Case `leading_apostrophe_forces_text`.
         {
             // '0123 stays text, keeping the leading zero.
             let r = infer("'0123");
@@ -482,7 +464,6 @@ mod tests {
             assert_eq!(r.format, CellFormat::Text);
         }
 
-        // Case `formula_is_passed_through`.
         {
             let r = infer("=SUM(A1:A3)");
             assert_eq!(r.raw, "=SUM(A1:A3)");

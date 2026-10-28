@@ -21,6 +21,9 @@ anyhow.workspace = true
 serde.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
+# The reach test walks every published action (framework::testing).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

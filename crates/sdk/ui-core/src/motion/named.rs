@@ -33,7 +33,6 @@ pub fn stage(progress: f64, from: f64, to: f64) -> f64 {
     ((progress - from) / (to - from)).clamp(0.0, 1.0)
 }
 
-/// A scale of `scale` about `origin`.
 fn scale_about(origin: Point, scale: f64) -> Affine {
     Affine::scale_about(scale, origin)
 }
@@ -112,6 +111,16 @@ pub struct Drill;
 impl Drill {
     pub const SPEC: MotionSpec = MotionSpec {
         enter: Pace::Base,
+        exit: Pace::Base,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Lands,
+    };
+    /// Switching to another workspace by pointer (its menu, a banner): the
+    /// whole view goes along the same shared axis, at `slow` toward a later
+    /// workspace and `base` back, as a whole-view change. A shortcut lands;
+    /// reduced motion cross-fades at `fast`.
+    pub const WORKSPACE: MotionSpec = MotionSpec {
+        enter: Pace::Slow,
         exit: Pace::Base,
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
@@ -216,7 +225,6 @@ impl DrillDepth {
         self.depth.release(level_f64(level), velocity, timing, now);
     }
 
-    /// The drawn depth at `now`.
     #[track_caller]
     pub fn get(&self, now: Instant) -> f64 {
         self.depth.get(now)
@@ -455,6 +463,26 @@ impl<K: Clone + PartialEq> CrossFade<K> {
             return;
         }
         let timing = Self::SPEC.timing(Direction::Enter, motion, source);
+        self.show_with(next, timing, now);
+    }
+
+    /// Show `next`, data that arrived (a read's answer replacing its
+    /// placeholder). No hand caused it, so it neither lands at once like a
+    /// shortcut's result nor waits on input: it fades at `fast`, under
+    /// reduced motion too. A no-op when it is already shown.
+    #[track_caller]
+    pub fn arrive(&mut self, next: K, motion: EffectiveMotion, now: Instant) {
+        if next == self.shown {
+            return;
+        }
+        let timing = Timing::Spring(SpringSpec::settling_within(
+            motion.tokens().durations.fast(),
+        ));
+        self.show_with(next, timing, now);
+    }
+
+    #[track_caller]
+    fn show_with(&mut self, next: K, timing: Timing, now: Instant) {
         if timing.is_instant() {
             self.shown = next;
             self.previous = None;
@@ -564,6 +592,18 @@ impl Snap {
         reduced: Reduced::Lands,
         shortcut: Shortcut::Context,
     };
+    /// A thrown surface coasting on after the fingers lift (a strip flung
+    /// sideways): released with the fingers' velocity toward where the
+    /// release projects ([`Self::rest_for`]), it slows exponentially over
+    /// the gesture token's coast and comes to rest there without turning
+    /// back. Reduced motion: it stops where the fingers left it, so it
+    /// lands. Only a gesture throws; a shortcut lands.
+    pub const COAST: MotionSpec = MotionSpec {
+        enter: Pace::Coast,
+        exit: Pace::Coast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
 
     /// Where a release at `position` moving at `velocity` (per second) would
     /// come to rest: the projection a flick is judged by.
@@ -573,7 +613,6 @@ impl Snap {
         position + velocity * coast
     }
 
-    /// The detent nearest `position`.
     #[must_use]
     pub fn nearest(detents: impl IntoIterator<Item = f64>, position: f64) -> Option<f64> {
         detents
@@ -739,20 +778,6 @@ impl WindowMotion {
             ),
         }
     }
-
-    /// How a rect move from `from` to `to` is timed: one window width of
-    /// travel takes the spring's own time, further takes longer.
-    #[must_use]
-    pub fn move_timing(
-        from: Rect,
-        to: Rect,
-        motion: EffectiveMotion,
-        source: MotionSource,
-    ) -> Timing {
-        let travel = (to.center() - from.center()).hypot();
-        let reference = from.width().max(to.width()).max(1.0);
-        Self::MOVE.timing_over(Direction::Enter, motion, source, travel / reference)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -908,6 +933,17 @@ impl Follow {
         shortcut: Shortcut::Context,
     };
 
+    /// The longest a glide between two samples takes: a pointer that sat
+    /// still for a while goes to where it was just put without drifting
+    /// lazily there. A stream heard thirty times a second glides over the
+    /// gap between its samples (~33 ms), well under this.
+    pub const GLIDE_MAX: crate::time::Duration = crate::time::Duration::from_millis(100);
+
+    /// How long something whose stream went quiet takes to fade out, at the
+    /// end of its owner's retirement window: a peer's pointer that stopped
+    /// being heard about, the name beside a pointer at rest.
+    pub const FADE: crate::time::Duration = crate::time::Duration::from_millis(400);
+
     /// How far a glide that started at `since` and spans `span` has come at
     /// `now`, eased, `0..=1`.
     #[must_use]
@@ -928,6 +964,50 @@ impl Follow {
             return 1.0;
         }
         unit_opacity(left.as_secs_f64() / fade.as_secs_f64())
+    }
+}
+
+/// A mark a collaborator just left (the run a peer typed) going on its own:
+/// whole when made, it steps down evenly over [`Self::LIFE`] in
+/// [`Self::STEPS`] steps. Each step is a wake deadline, so while a peer types
+/// the window repaints a few times a second rather than at every refresh; a
+/// slow taper reads the same in steps of a quarter second. Its life is fixed
+/// rather than a token pace: the mark says who wrote what just now, and has
+/// to stay long enough to be seen.
+pub struct Trace;
+
+impl Trace {
+    /// How long a mark shows, its taper included.
+    pub const LIFE: crate::time::Duration = crate::time::Duration::from_millis(2500);
+    /// How many steps it tapers in.
+    pub const STEPS: u32 = 10;
+    /// One step of the taper.
+    const STEP: crate::time::Duration = match Self::LIFE.checked_div(Self::STEPS) {
+        Some(step) => step,
+        None => crate::time::Duration::ZERO,
+    };
+
+    /// Which step a mark `age` old is in; `None` once it has gone.
+    #[must_use]
+    pub fn step(age: crate::time::Duration) -> Option<u32> {
+        (age < Self::LIFE).then(|| {
+            u32::try_from(age.as_nanos() / Self::STEP.as_nanos().max(1)).unwrap_or(u32::MAX)
+        })
+    }
+
+    /// The opacity of a mark `age` old: `1.0` just made, down a step at a
+    /// time; `None` once it has gone.
+    #[must_use]
+    pub fn alpha(age: crate::time::Duration) -> Option<f32> {
+        Self::step(age).map(|step| (1.0 - step as f32 / Self::STEPS as f32).clamp(0.0, 1.0))
+    }
+
+    /// When a mark made at `born` leaves the step it is in at `now` (steps
+    /// down, or goes); `None` once it has gone.
+    #[must_use]
+    pub fn next_step(born: Instant, now: Instant) -> Option<Instant> {
+        let step = Self::step(now.saturating_duration_since(born))?;
+        born.checked_add(Self::STEP.saturating_mul(step.saturating_add(1)))
     }
 }
 
@@ -1184,5 +1264,187 @@ impl Attention {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 12. Controls
+// ---------------------------------------------------------------------------
+
+/// A control showing its new value: a switch's knob and tint, a checkbox's
+/// fill and mark, a slider's thumb gliding to where its track was pressed,
+/// a badge's count.
+///
+/// [`Self::MOVE`] is where the moving part is: `fast`, critically damped;
+/// reduced motion and a shortcut land it. [`Self::SHOW`] is what the control
+/// shows for its state (a tint, a fill, a mark): `fast`, still a fade at
+/// `fast` under reduced motion; a shortcut lands it. Only a click or a
+/// finger moves a control: a key, an assistive action or a value the person
+/// did not just cause (a sync) shows on the next frame.
+pub struct ControlChange;
+
+impl ControlChange {
+    pub const MOVE: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
+    pub const SHOW: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Lands,
+    };
+}
+
+/// Ask the frame pump for frames until a motion that just started settles.
+fn ask_frames_until(settles: Option<Instant>) {
+    if let Some(until) = settles {
+        super::clock::want_frames_until(until);
+    }
+}
+
+/// A control's moving part (a switch's knob, a slider's thumb) as a share
+/// of its travel, `0..=1`.
+///
+/// Sent somewhere by a click it moves on [`ControlChange::MOVE`], and a
+/// second click mid-flight retargets from where it is drawn. Held by the
+/// hand it is exactly where the hand is ([`Self::track`]); let go, it
+/// settles carrying the hand's velocity ([`Self::release`]). At rest it
+/// asks for nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Thumb {
+    at: MotionValue<f64>,
+}
+
+impl Default for Thumb {
+    fn default() -> Self {
+        Self::at(0.0)
+    }
+}
+
+impl Thumb {
+    /// Resting at `position`.
+    #[must_use]
+    pub fn at(position: f64) -> Self {
+        Self {
+            at: MotionValue::new(position.clamp(0.0, 1.0)),
+        }
+    }
+
+    /// Go to `to` as `source` asked: a click or a finger moves it, a key or
+    /// an action lands it.
+    #[track_caller]
+    pub fn go(&mut self, to: f64, motion: EffectiveMotion, source: MotionSource, now: Instant) {
+        let timing = ControlChange::MOVE.timing(Direction::Enter, motion, source);
+        self.at.set(to.clamp(0.0, 1.0), timing, now);
+        ask_frames_until(self.at.settles_at());
+    }
+
+    /// Held by the hand at `to`: drawn exactly there, from this frame.
+    pub fn track(&mut self, to: f64) {
+        self.at.snap(to.clamp(0.0, 1.0));
+    }
+
+    /// Let go, settling on `to` with the hand's `velocity` (travel per
+    /// second). Reduced motion lands it.
+    #[track_caller]
+    pub fn release(&mut self, to: f64, velocity: f64, motion: EffectiveMotion, now: Instant) {
+        let timing = ControlChange::MOVE.timing(Direction::Enter, motion, MotionSource::Gesture);
+        self.at.release(to.clamp(0.0, 1.0), velocity, timing, now);
+        ask_frames_until(self.at.settles_at());
+    }
+
+    /// Rest at `to` at once.
+    pub fn snap(&mut self, to: f64) {
+        self.at.snap(to.clamp(0.0, 1.0));
+    }
+
+    /// Where it is drawn at `now`, never past either end of its travel.
+    #[track_caller]
+    pub fn get(&self, now: Instant) -> f64 {
+        self.at.get(now).clamp(0.0, 1.0)
+    }
+
+    /// Where it is going (or is, at rest).
+    pub fn target(&self) -> f64 {
+        self.at.target()
+    }
+
+    #[track_caller]
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.at.is_moving(now)
+    }
+
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.at.settles_at()
+    }
+}
+
+/// What a control shows for its state, `0` (off) to `1` (on): a switch's
+/// tint, a checkbox's fill and mark, a radio's dot.
+///
+/// It comes in over `fast` and goes quicker (exits are shorter), on
+/// [`ControlChange::SHOW`]; under reduced motion it still fades at `fast`;
+/// a shortcut lands it. A change mid-flight continues from what is drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct Mark {
+    level: MotionValue<f64>,
+}
+
+impl Default for Mark {
+    fn default() -> Self {
+        Self::at(false)
+    }
+}
+
+impl Mark {
+    /// How much quicker the mark goes than it comes: the cross-fade's
+    /// outgoing share.
+    const OUT_BY: f64 = 0.6;
+
+    /// Resting on or off.
+    #[must_use]
+    pub fn at(on: bool) -> Self {
+        Self {
+            level: MotionValue::new(if on { 1.0 } else { 0.0 }),
+        }
+    }
+
+    /// Show `on` as `source` asked.
+    #[track_caller]
+    pub fn set(&mut self, on: bool, motion: EffectiveMotion, source: MotionSource, now: Instant) {
+        let timing = match ControlChange::SHOW.timing(Direction::of(on), motion, source) {
+            Timing::Spring(spring) if !on => Timing::Spring(spring.slowed(Self::OUT_BY)),
+            timing => timing,
+        };
+        self.level.set(if on { 1.0 } else { 0.0 }, timing, now);
+        ask_frames_until(self.level.settles_at());
+    }
+
+    /// Rest on or off at once.
+    pub fn snap(&mut self, on: bool) {
+        self.level.snap(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Whether it is on (or turning on).
+    pub fn is_on(&self) -> bool {
+        self.level.target() >= 0.5
+    }
+
+    /// How much of the on state shows at `now`, `0..=1`.
+    #[track_caller]
+    pub fn level(&self, now: Instant) -> f32 {
+        unit_opacity(self.level.get(now))
+    }
+
+    #[track_caller]
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.level.is_moving(now)
+    }
+
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.level.settles_at()
     }
 }

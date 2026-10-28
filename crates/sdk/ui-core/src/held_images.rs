@@ -68,7 +68,6 @@ impl HeldImages {
         address
     }
 
-    /// Whether `address` is held.
     #[must_use]
     pub fn holds(&self, address: &str) -> bool {
         self.bytes.read_recover().contains_key(address)
@@ -358,7 +357,6 @@ mod tests {
         }
         assert_eq!(mosaic(&[b"nothing".as_slice()]), None);
 
-        // Decoded covers compose the same way, without encoding anything.
         let decoded: Vec<crate::peniko::ImageData> = colours
             .iter()
             .map(|&[r, g, b]| crate::peniko::ImageData {

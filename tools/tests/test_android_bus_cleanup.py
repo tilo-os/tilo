@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from hang import HANG_BOUND
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'android'))
 from run_integration_journey import stop_bus_helpers
@@ -29,7 +30,7 @@ class AndroidBusCleanup(unittest.TestCase):
 
     def reap(self, process):
         if process.poll() is None: process.kill()
-        process.wait(timeout=5)
+        process.wait(timeout=HANG_BOUND)
         process.stdout.close()
 
     def cleanup_one(self, process, runtime):
@@ -40,7 +41,7 @@ class AndroidBusCleanup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime:
             process = self.helper(runtime)
             self.cleanup_one(process, runtime)
-            self.assertEqual(process.wait(timeout=5), -signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=HANG_BOUND), -signal.SIGTERM)
 
     def test_unrelated_live_helper_is_preserved(self):
         with tempfile.TemporaryDirectory() as runtime:
@@ -87,7 +88,7 @@ class AndroidBusCleanup(unittest.TestCase):
             try:
                 with patch.object(Path, 'read_bytes', exit_before_read):
                     self.cleanup_one(process, runtime)
-                self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+                self.assertEqual(process.wait(timeout=HANG_BOUND), -signal.SIGKILL)
             finally:
                 os.close(descriptor)
 
@@ -107,6 +108,6 @@ class AndroidBusCleanup(unittest.TestCase):
             try:
                 with patch.object(Path, 'read_bytes', lost_environment_before_exit):
                     self.cleanup_one(process, runtime)
-                self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+                self.assertEqual(process.wait(timeout=HANG_BOUND), -signal.SIGKILL)
             finally:
-                if timer.ident is not None: timer.join(timeout=5)
+                if timer.ident is not None: timer.join(timeout=HANG_BOUND)

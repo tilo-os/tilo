@@ -27,7 +27,6 @@ const SHEET_ASPECT: f64 = std::f64::consts::SQRT_2;
 /// How far each placeholder line runs across the sheet.
 const LINE_SHARES: [f64; 5] = [0.82, 0.9, 0.7, 0.86, 0.6];
 
-/// The preview's geometry in `theme`.
 struct Geometry {
     sheet_w: f64,
     sheet_h: f64,

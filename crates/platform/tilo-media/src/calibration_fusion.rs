@@ -45,7 +45,6 @@ pub const CLOCK_SCALE_NS: f64 = 250_000.0;
 /// A listening reading this far from the other microphones' prediction is a
 /// gross error rather than geometry.
 pub const ARRIVAL_OUTLIER_NS: f64 = 15_000_000.0;
-/// The same for levels.
 pub const LEVEL_OUTLIER_DB: f64 = 10.0;
 /// Median polish passes; it settles in a handful.
 const POLISH_PASSES: usize = 32;
@@ -71,7 +70,6 @@ pub struct FusionInput<'a> {
     pub speakers: usize,
     pub microphones: usize,
     pub hearings: &'a [Hearing],
-    /// The microphone at the listening position.
     pub listening: usize,
     /// Per speaker: the microphone on that speaker's own device, if it takes
     /// part.

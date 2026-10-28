@@ -17,7 +17,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
-const LAUNCHER: &str = "/usr/bin/tilo-launcher";
+const LAUNCHER: &str = "/usr/libexec/tilo/tilo-launcher";
 const PACKAGE: &str = "so.tilo.browser";
 const MAX_URL_BYTES: usize = 16 * 1024;
 const STARTUP_GRACE: Duration = Duration::from_millis(750);

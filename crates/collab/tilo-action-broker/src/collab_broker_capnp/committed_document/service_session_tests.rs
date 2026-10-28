@@ -1,4 +1,3 @@
-//! Exercises actual private delegation, including a provider revoking custody mid-request.
 use super::NativeDocumentReadContext;
 use crate::collab_broker_capnp::delegate_browser_service_session_command;
 use crate::services::{

@@ -1,0 +1,14 @@
+tilo shell panic
+================
+timestamp: 2026-10-24-210000
+version:   0.1.0
+binary:    /usr/bin/tilo-shell
+build-id:  9f2c41d07be3a65e
+thread:    main
+contained: no: the session ends
+location:  crates/session/shell/src/shell/frame.rs:812:9
+message:   a window group lost its strip
+
+backtrace:
+   0: shell::shell::frame::place
+             at ./crates/session/shell/src/shell/frame.rs:812:9

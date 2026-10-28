@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The settings section the policy lives in.
+pub const SECTION: &str = "notifications";
+
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
@@ -48,20 +51,30 @@ crate::read_through_json_value!(AppNotificationRule);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct FocusSchedule {
+    /// Hold notifications back during the scheduled hours.
     #[serde(default)]
     pub enabled: bool,
-    /// Minutes after local midnight, clamped to a valid day on load.
+    /// When focus starts, in minutes after local midnight.
     #[serde(default = "default_focus_start")]
+    #[cfg_attr(feature = "model", model(range = 0..=MINUTE_OF_DAY_MAX))]
     pub start_minute: u16,
+    /// When focus ends, in minutes after local midnight.
     #[serde(default = "default_focus_end")]
+    #[cfg_attr(feature = "model", model(range = 0..=MINUTE_OF_DAY_MAX))]
     pub end_minute: u16,
-    /// Monday is bit zero; zero means every day for backwards-compatible
-    /// hand-written settings.
+    /// The days focus applies, Monday as bit zero; zero means every day for
+    /// backwards-compatible hand-written settings.
     #[serde(default)]
+    #[cfg_attr(feature = "model", model(range = 0..=0b111_1111))]
     pub weekdays: u8,
+    /// Priority apps and people still come through during focus.
     #[serde(default = "default_true")]
     pub allow_priority: bool,
 }
+
+/// The last minute of a day.
+#[cfg(feature = "model")]
+const MINUTE_OF_DAY_MAX: u16 = 24 * 60 - 1;
 
 crate::read_through_json_value!(FocusSchedule);
 
@@ -194,16 +207,7 @@ impl NotificationPolicy {
     /// Returns an error if no config directory is available or the settings
     /// document cannot be written.
     pub fn save_do_not_disturb(on: bool) -> std::io::Result<()> {
-        crate::update_section("notifications", Self::do_not_disturb_values(on))
-    }
-
-    /// [`Self::save_do_not_disturb`] against an explicit settings document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document cannot be written.
-    pub fn save_do_not_disturb_at(path: &std::path::Path, on: bool) -> std::io::Result<()> {
-        crate::update_section_at(path, "notifications", Self::do_not_disturb_values(on))
+        crate::update_section(SECTION, Self::do_not_disturb_values(on))
     }
 
     fn do_not_disturb_values(on: bool) -> serde_json::Map<String, serde_json::Value> {
@@ -214,17 +218,24 @@ impl NotificationPolicy {
 
     pub fn load_at(path: &std::path::Path) -> Self {
         serde_json::from_value(serde_json::Value::Object(crate::load_section_at(
-            path,
-            "notifications",
+            path, SECTION,
         )))
         .unwrap_or_default()
     }
 
     pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(crate::load_section(
-            "notifications",
-        )))
-        .unwrap_or_default()
+        serde_json::from_value(serde_json::Value::Object(crate::load_section(SECTION)))
+            .unwrap_or_default()
+    }
+
+    /// The policy in `document`, an already loaded settings document.
+    #[must_use]
+    pub fn from_document(document: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let section = match document.get(SECTION) {
+            Some(serde_json::Value::Object(section)) => section.clone(),
+            _ => serde_json::Map::new(),
+        };
+        serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default()
     }
 
     pub fn effective_for(
@@ -282,25 +293,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn do_not_disturb_persists_without_touching_other_notification_keys() {
-        let dir = std::env::temp_dir().join(format!("tilo-dnd-{}-{}", std::process::id(), line!()));
-        let path = dir.join("settings.json");
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut values = serde_json::Map::new();
-        values.insert("show_banners".into(), serde_json::Value::Bool(false));
-        crate::update_section_at(&path, "notifications", values).unwrap();
-        NotificationPolicy::save_do_not_disturb_at(&path, true).unwrap();
-        let policy = NotificationPolicy::load_at(&path);
-        assert!(policy.do_not_disturb);
-        assert!(!policy.show_banners);
-        NotificationPolicy::save_do_not_disturb_at(&path, false).unwrap();
-        assert!(!NotificationPolicy::load_at(&path).do_not_disturb);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn focus_priority_and_mutes_follow_user_policy() {
-        // Phase `focus_reports_when_its_period_ends`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -316,7 +309,6 @@ mod tests {
             };
             assert_eq!(all_day.active_until(12 * 60, 0), None);
         }
-        // Phase `overnight_focus_crosses_midnight`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -326,7 +318,6 @@ mod tests {
             assert!(f.active_at(6 * 60, 0));
             assert!(!f.active_at(12 * 60, 0));
         }
-        // Phase `app_priority_is_user_policy_not_sender_metadata`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -347,7 +338,6 @@ mod tests {
             assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
             assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
         }
-        // Phase `temporary_mute_expires_without_a_cleanup_write`.
         {
             let mut p = NotificationPolicy::default();
             p.per_app.insert(
@@ -364,7 +354,6 @@ mod tests {
 
     #[test]
     fn breakthroughs_require_verified_identity_and_authorized_apps() {
-        // Phase `contact_only_pierces_for_a_verified_match_and_authorized_app`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -395,7 +384,6 @@ mod tests {
                     .quiet
             );
         }
-        // Phase `cross_device_requires_verified_identity_and_honours_per_app_policy`.
         {
             let mut policy = NotificationPolicy::default();
             assert!(

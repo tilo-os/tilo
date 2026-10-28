@@ -17,7 +17,7 @@ use shell::compositor::backend::drm::paint::{
 use shell::compositor::backend::drm::scanout::ScanoutFormat;
 use shell::shell::color_pipeline::{SdrToPqEncoder, map_sdr_pixel_to_pq_bt2020_at};
 use shell::shell::hdr_display::DisplayCapabilities;
-use shell::wayland::edid::parse_hdr_display_info;
+use tilo_wayland_ext::edid::parse_hdr_display_info;
 
 /// A 256-byte EDID: BT.2020 chromaticities in the base block and a CTA-861
 /// extension whose HDR static metadata block advertises SDR + PQ, a ~1000

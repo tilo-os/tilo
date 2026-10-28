@@ -133,9 +133,6 @@ impl FrameHarness {
     }
     /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order.
     /// Accepted means only admission, never successful completion of a background job.
-    ///
-    /// # Errors
-    /// Fails when recording was not enabled or serialization fails.
     pub fn invocation_results_json(&self) -> Result<String, String> {
         let results = self
             .invocation_results

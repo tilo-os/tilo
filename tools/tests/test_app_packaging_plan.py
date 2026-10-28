@@ -12,15 +12,22 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app_packaging_plan as plan
-import app_packaging_product as product
+from ci.resolve_builder import resolve
 
 
 class PlanProducerTests(unittest.TestCase):
     def setUp(self):
-        self.desired = {'source_sha': 'a' * 40, 'builder_image': product.resolve('registry.tilo.so/tilo/tilo-builder@sha256:' + 'b' * 64),
+        self.desired = {'source_sha': 'a' * 40, 'builder_image': resolve('registry.tilo.so/tilo/tilo-builder@sha256:' + 'b' * 64),
                         'collection': 'default', 'architectures': ['x86_64', 'aarch64'], 'policy_sha256': 'c' * 64}
         self.intent = {'id': '12345678-1234-4234-8234-123456789abc', 'desired': self.desired, 'baseline': None}
-        self.env = {variable: product.dispatch_inputs(self.intent)[name] for name, variable in plan.INPUT_ENV.items()}
+        # The inputs a qualification dispatch of release-apps.yml carries, with no baseline.
+        self.inputs = {'apps': '', 'collection': 'default', 'architectures': 'x86_64,aarch64',
+                       'publish': 'false', 'coordinator_intent': self.intent['id'],
+                       'builder_image': self.desired['builder_image'],
+                       'coordinator_policy_sha256': self.desired['policy_sha256'],
+                       'baseline_sha': '', 'baseline_run_id': '', 'baseline_evidence': '',
+                       'baseline_receipt_sha256': ''}
+        self.env = {variable: self.inputs[name] for name, variable in plan.INPUT_ENV.items()}
         self.env.update(COORDINATOR_ENABLED='true', GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='2',
                         GITHUB_SHA=self.desired['source_sha'], GITHUB_REF=self.desired['source_sha'],
                         GITHUB_EVENT_NAME='workflow_dispatch', RESOLVED_BUILDER=self.desired['builder_image'])
@@ -38,7 +45,7 @@ class PlanProducerTests(unittest.TestCase):
                 raw = (root / 'coordinator-plan.json').read_bytes()
                 self.assertEqual(result.stdout.strip(), 'TILO_COORDINATOR_PLAN ' + self.intent['id'] + ' ' + hashlib.sha256(raw).hexdigest())
                 document = json.loads(raw)
-                self.assertEqual(document['inputs'], product.dispatch_inputs(self.intent))
+                self.assertEqual(document['inputs'], self.inputs)
                 self.assertEqual(document['plan_attempt'], 2)
                 self.assertEqual(document['plan'], self.zero)
         with self.subTest(phase='isolated production plan ignores candidate imports and bytecode'):
@@ -55,11 +62,6 @@ class PlanProducerTests(unittest.TestCase):
                              'app_packaging_contract.py'):
                     shutil.copyfile(Path(plan.__file__).parent / name, tools / name)
                 poison = "open('shadow-executed', 'w').write('bad'); raise RuntimeError('candidate module executed')\n"
-                # Workflow planning must not import controller implementation, even
-                # when candidate copies are present and would execute if imported.
-                for name in ('app_packaging_product.py', 'app_packaging_coordinator.py',
-                             'app_packaging_service.py', 'accept_app_artifacts.py'):
-                    (tools / name).write_text(poison)
                 for name in ('hashlib.py', 'json.py', 'sitecustomize.py', 'msvcrt.py', '_winapi.py'):
                     (tools / name).write_text(poison)
                     (root / name).write_text(poison)
@@ -130,8 +132,6 @@ class PlanProducerTests(unittest.TestCase):
                     'tools/app_packaging_plan.py',
                 ]),
             )
-            self.assertIn('tools/ci/python.py', product.REQUIRED_PATHS)
-            self.assertIn('tools/ci/__init__.py', product.REQUIRED_PATHS)
 
     def test_relocated_helpers_run_isolated_from_pinned_sources_only(self):
         with self.subTest(phase='moved resolver runs isolated without legacy helper files'):
@@ -172,10 +172,8 @@ class PlanProducerTests(unittest.TestCase):
             self.setUp()
             for module, relative in (
                 ('app_channel_manifest', 'apps/app_channel_manifest.py'),
-                ('app_packaging_product', 'app_packaging_product.py'),
                 ('app_packaging_contract', 'app_packaging_contract.py'),
                 ('ci.resolve_builder', 'ci/resolve_builder.py'),
-                ('ci.affected_packages', 'ci/affected_packages.py'),
                 ('ci.workspace_graph', 'ci/workspace_graph.py'),
             ):
                 with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:

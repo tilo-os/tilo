@@ -7,7 +7,7 @@
 # Runs in the buildah image, like oci-build.sh. The command runs with the image's user,
 # environment and working directory.
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
 archive=${1:?usage: oci-run.sh ARCHIVE COMMAND [ARG]...}
 shift
 (($#)) || die 'no command'

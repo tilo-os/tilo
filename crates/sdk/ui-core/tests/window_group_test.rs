@@ -13,6 +13,9 @@ const DISPLAYS: [(&str, f64); 3] = [
     ("3840x2160", 3840.0),
 ];
 
+/// The widest a default (`Normal`) window resolves to.
+const NORMAL_MAX_PX: f64 = 1280.0;
+
 fn group(width: WindowWidth, usable: f64) -> WindowGroup {
     let mut g = WindowGroup::new(
         1,
@@ -42,10 +45,12 @@ fn width_tiers_are_ordered_shares_of_every_display() {
                 (usable * 0.333).round(),
                 "Narrow must be a third of {name}",
             );
+            // Two thirds, until that is wider than reads well (the default
+            // width's cap, two thirds of a 1920 px display).
             assert_eq!(
                 WindowWidth::Normal.resolve(usable),
-                (usable * 0.667).round(),
-                "Normal must be two thirds of {name}",
+                (usable * 0.667).round().min(NORMAL_MAX_PX),
+                "Normal must be two thirds of {name}, at most {NORMAL_MAX_PX}",
             );
             assert_eq!(
                 WindowWidth::Wide.resolve(usable),
@@ -76,16 +81,18 @@ fn width_tiers_are_ordered_shares_of_every_display() {
 
     // Case `a_launched_window_is_a_dominant_share_of_every_display`.
     // A launched app defaults to `Normal`, which must be a dominant share of
-    // the screen on every display.
+    // the screen on every display, and on a big one a width that still reads
+    // well rather than a mostly empty pane.
     {
         for (name, usable) in DISPLAYS {
             let px = group(WindowWidth::Normal, usable).resolved_width_px();
             let share = px / usable;
             assert!(
-                (0.6..=0.7).contains(&share),
-                "a launched window must take 60-70% of {name}; got {px} px of \
+                (0.6..=0.7).contains(&share) || px == NORMAL_MAX_PX,
+                "a launched window must take 60-70% of {name}, or the cap; got {px} px of \
              {usable} ({share:.2})",
             );
+            assert!(px <= NORMAL_MAX_PX, "{name}: {px}");
         }
     }
 
@@ -128,7 +135,7 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         );
         assert_eq!(
             g.take_pending_width_change(),
-            Some(750),
+            Some(WindowWidth::Fraction(750)),
             "and hands the shell that same share to persist",
         );
 

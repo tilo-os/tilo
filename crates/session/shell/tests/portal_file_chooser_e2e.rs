@@ -212,9 +212,7 @@ async fn pump_until(
     what: &str,
     mut f: impl FnMut(&mut ShellOverlayHost) -> bool,
 ) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if f(host) {
@@ -238,9 +236,7 @@ async fn await_response(
     what: &str,
     handle: tokio::task::JoinHandle<(u32, std::collections::HashMap<String, OwnedValue>)>,
 ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         host.pump_file_picker();
         if handle.is_finished() {
@@ -315,6 +311,12 @@ async fn file_chooser_opens_and_saves_what_the_user_picked() {
             picker.navigate_to(dir.path());
             picker.set_rect(rect);
         }
+        // The chooser lists the folder on a worker; the person sees the rows
+        // a moment later, and only then can click one.
+        pump_until(&mut host, "the chooser to list the folder", |h| {
+            h.file_picker().is_some_and(|picker| !picker.reading())
+        })
+        .await;
         let row = {
             let picker = host.file_picker().expect("dialog");
             let idx = picker
@@ -430,8 +432,6 @@ async fn file_chooser_opens_and_saves_what_the_user_picked() {
             picker.navigate_to(&fresh);
             picker.set_rect(rect);
         }
-        // Type the filename, character by character, through the host's
-        // modal keyboard route.
         for ch in "notes.md".chars() {
             dispatch(&mut host, &key_press(ch));
         }
@@ -683,7 +683,7 @@ async fn writable_directory_backend_requires_visible_consent_and_keeps_room_priv
                 .await
                 .unwrap()
         });
-        let request = tokio::time::timeout(crate::support::HANG_BOUND, async {
+        let request = tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if let Some(request) = pickers.drain().pop() {
                     break request;

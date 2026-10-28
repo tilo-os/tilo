@@ -138,9 +138,9 @@ def main() -> int:
     if violations:
         print("Formats contract FAILED: format through ui::format", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("Formats contract OK (dates, times, numbers and sizes go through ui::format)")
+    print("Formats contract OK (dates, times, numbers and sizes go through ui::format)", file=sys.stderr)
     return 0
 
 

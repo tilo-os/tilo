@@ -22,6 +22,8 @@ pub(crate) struct FrameMetrics {
     /// Retained layout passes that re-solved sizes, by each widget that
     /// asked for it (`FrameHarness::layout_measure_requesters`).
     measured_by: BTreeMap<String, u64>,
+    /// What each presented frame repainted ([`Self::damaged`]).
+    damage: VecDeque<String>,
 }
 
 impl FrameMetrics {
@@ -31,6 +33,23 @@ impl FrameMetrics {
         self.dropped = 0;
         self.requesters.clear();
         self.measured_by.clear();
+        self.damage.clear();
+    }
+
+    /// What a presented frame repainted, oldest first, the last
+    /// [`LIMIT`] kept.
+    pub fn damaged(&mut self, what: String) {
+        if !self.enabled {
+            return;
+        }
+        if self.damage.len() == LIMIT {
+            self.damage.pop_front();
+        }
+        self.damage.push_back(what);
+    }
+
+    pub fn take_damage(&mut self) -> Vec<String> {
+        self.damage.drain(..).collect()
     }
 
     /// Count one measured layout pass for each widget of `requesters`.
@@ -58,7 +77,6 @@ impl FrameMetrics {
         self.enabled.then(Instant::now)
     }
 
-    /// Count one presented frame for each of `reasons`.
     pub fn presented(&mut self, reasons: Vec<String>) {
         if !self.enabled {
             return;

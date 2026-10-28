@@ -23,6 +23,7 @@
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
 //! - [`icon_theme`] — resolving `Icon=` through the icon-theme search path.
 //! - [`launch`] — spawning a host application, and what that costs.
+//! - [`downloaded`] — `AppImage`s, tarball programs and loose binaries the person downloaded.
 //! - [`autostart`] — the XDG autostart entries a session starts at login.
 
 #![cfg_attr(
@@ -36,6 +37,7 @@
 
 pub mod autostart;
 pub mod cache;
+pub mod downloaded;
 pub mod entry;
 pub mod exec;
 pub mod icon_theme;
@@ -45,5 +47,5 @@ pub mod locale;
 pub mod migration_startup;
 pub mod scan;
 
-pub use entry::{DesktopAction, DesktopEntry, EntrySource, EntryType};
+pub use entry::{DesktopAction, DesktopEntry, EntryKind, EntrySource, EntryType, MainWindows};
 pub use scan::{Scan, ScanStats, scan, scan_dirs};

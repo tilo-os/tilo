@@ -17,20 +17,34 @@
 # Options:
 #   --apps "NAME ..."  apps to install (directory names under apps/; "files"
 #                      means file-explorer): the set nested-session-build.sh
-#                      builds (the default) or a subset of it.
+#                      builds (the default) or a subset of it, possibly none.
+#   --install-tapp FILE  also install this signed package (repeatable): a
+#                      tilolang app `tilolang run` built for this session.
 #   --state DIR        state directory (default: $XDG_STATE_HOME/tilo-nested)
-#   --no-build         use the last build in target/nested-session
+#   --no-build         use the last build in target/nested-session (or in
+#                      $TILO_NESTED_SESSION_BUILD, where a check hands its
+#                      build over in a read-only tree)
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
+#   --software         render with Mesa's software Vulkan driver (lavapipe)
+#                      only, and never open this machine's GPU: the shell
+#                      and every app it launches load lavapipe alone, and
+#                      the shell advertises no render node, so it neither
+#                      probes the GPU's drivers nor exchanges a buffer with
+#                      it. For agents and tests beside a live desktop.
 #   --community SITE   the community site this session is in (a site's
 #                      address, as /etc/tilo/community.toml names one): it
 #                      joins the site's home workspace through the site's door
 #                      as a computer joins tilo.coffee's Lounge. Without it
 #                      the session follows this machine's configuration.
 #                      nested-pair.sh points two sessions at a local site.
+#   --ready FILE       once the shell answers on its control socket, write the
+#                      socket, the runtime directory and the state directory to
+#                      FILE as JSON (also kept as session.json in the runtime
+#                      directory)
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -54,7 +68,10 @@ prepare_only=0
 reset_identity=0
 fresh_desktop=0
 headless=0
+software=0
 community=
+install_tapps=()
+ready_out=
 shell_args=()
 
 die() { printf 'nested-session: %s\n' "$*" >&2; exit 1; }
@@ -62,13 +79,16 @@ say() { printf '==> %s\n' "$*" >&2; }
 
 while (($#)); do
     case $1 in
-        --apps) apps=${2:?--apps needs a list}; shift 2 ;;
+        --apps) apps=${2?--apps needs a list}; shift 2 ;;
+        --install-tapp) install_tapps+=("$(realpath -m "${2:?--install-tapp needs a file}")"); shift 2 ;;
+        --ready) ready_out=$(realpath -m "${2:?--ready needs a file}"); shift 2 ;;
         --state) state=${2:?--state needs a directory}; shift 2 ;;
         --no-build) build=0; shift ;;
         --prepare-only) prepare_only=1; shift ;;
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
+        --software) software=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
@@ -112,7 +132,6 @@ for app in $apps; do
         || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
     selected+=("$app")
 done
-((${#selected[@]})) || die "no apps selected"
 
 state=$(realpath -m "$state")
 [[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
@@ -130,7 +149,7 @@ fi
 # --- 1. Build -------------------------------------------------------------------
 # One check builds the host programs, the thin apps and the runtime library
 # they link, on a t node; its outputs land in target/nested-session.
-build_out=$repo_root/target/nested-session
+build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
@@ -167,8 +186,10 @@ python3 "$repo_root/tools/font-catalog.py" prepare \
 ln -sfn "$fonts" "$bin/fonts"
 
 # --- 2. Plans -------------------------------------------------------------------
+# The plan of every built app names the runtime they link, whichever of them
+# (possibly none) this session installs.
 plan=$state/plan.json
-python3 "$repo_root/tools/apps/app_release.py" --apps "${selected[*]}" > "$plan"
+python3 "$repo_root/tools/apps/app_release.py" --apps "$built_apps" > "$plan"
 
 # --- 3. Keys -----------------------------------------------------------------
 keys=$state/keys
@@ -217,7 +238,51 @@ if [[ -z $runtime_version ]]; then
 fi
 runtime_id=tilo-runtime/$runtime_version
 
+# The tilolang runtime bundle: the binary every tilolang app's entrypoint
+# executes (apps/tilolang/tilo-runtime.toml), built against the runtime above
+# and signed with the same key. Its version is the one the bundle provides,
+# and `tilolang run` reads it from .tilolang-version. It holds the binary
+# alone (--binaries-only): the launcher runs it on the app's runtime, whose
+# loader and libraries it links, so a loader set of its own is never read.
+tilolang_bin=$thin/tilolang-app
+if [[ -f $tilolang_bin ]]; then
+    tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
+        "$repo_root/apps/tilolang/tilo-runtime.toml")
+    [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
+    if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
+          || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
+        say "baking the tilolang runtime bundle"
+        chmod +x "$tilolang_bin"
+        rm -rf "$state/work/tilolang" "$runtimes/$tilolang_version"
+        mkdir -p "$state/work"
+        "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
+            --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
+            --identity "$identity" >/dev/null
+        mv "$state/work/tilolang" "$runtimes/$tilolang_version"
+        printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
+    fi
+    printf '%s\n' "$tilolang_version" > "$runtimes/.tilolang-version"
+fi
+
 # --- 5. Session environment ----------------------------------------------------
+if ((software)); then
+    # Lavapipe's loader manifest, where the Vulkan loader looks for drivers.
+    lavapipe=
+    for dir in /etc/vulkan/icd.d /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d; do
+        for icd in "$dir/lvp_icd.$(uname -m).json" "$dir/lvp_icd.json"; do
+            [[ -z $lavapipe && -f $icd ]] && lavapipe=$icd
+        done
+    done
+    [[ -n $lavapipe ]] || die "--software needs Mesa's lavapipe (no lvp_icd.json under */vulkan/icd.d)"
+    # The loader of the shell, and of every app it launches (they follow a
+    # compositor pinned to lavapipe), loads this driver alone; wgpu takes its
+    # adapter. An empty TILO_DMABUF_DEVICE advertises no render node, so the
+    # shell never opens /dev/dri to probe one.
+    export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
+    export TILO_DMABUF_DEVICE=
+fi
+
 for dir in home config data state cache identity; do mkdir -p "$state/$dir"; done
 mkdir -p -m 700 "$state/secrets"
 export HOME=$state/home
@@ -228,6 +293,11 @@ export TILO_APPS_DATA_DIR=$state/apps
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
+# A development session: a running app whose payload is its module (a
+# tilolang app) follows reinstalls of its package, verified by the launcher
+# as a launch is, so `tilolang dev` swaps a new build in without a restart
+# (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
+export TILO_LAUNCHER_LIVE_MODULES=1
 # The interfaces this build of the system provides, not the host's: on a Tilo
 # host /usr/share/tilo/system-interfaces.toml is that image's, which may be
 # newer or older than the apps built here.
@@ -248,7 +318,14 @@ fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 installed=$("$bin/tilo-install" list 2>/dev/null || true)
+# The selected apps' catalog entries, read before the loop: a failing filter
+# in a process substitution would install nothing and say nothing.
+catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
+    | [.name,.binary,.id,.version,.manifest] | @tsv' \
+    --args ${selected[@]+"${selected[@]}"} < "$plan") \
+    || die "cannot read the selected apps from $plan"
 while IFS=$'\t' read -r name binary id version manifest; do
+    [[ -n $name ]] || continue
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
     work=$state/work/app-$name
@@ -279,7 +356,12 @@ while IFS=$'\t' read -r name binary id version manifest; do
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
-done < <(jq -r '.catalog[] | [.name,.binary,.id,.version,.manifest] | @tsv' "$plan")
+done <<<"$catalog"
+for tapp in "${install_tapps[@]}"; do
+    [[ -f $tapp ]] || die "no package $tapp"
+    say "installing $(basename "$tapp")"
+    "$bin/tilo-install" install "$tapp" --allow-self-signed --force >/dev/null
+done
 
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
@@ -307,6 +389,9 @@ stop_groups() {
     for pid in "$@"; do wait "$pid" 2>/dev/null || true; done
 }
 cleanup() {
+    # A second signal (the pair stops its whole group, then stops this
+    # script again) must not cut the cleanup short and leave the shell up.
+    trap '' INT TERM HUP
     stop_groups "${children[@]}"
     rm -f "$pidfile"
     # The document portal's FUSE mount under the runtime directory goes away
@@ -474,6 +559,25 @@ confirm_native() {
 }
 if [[ -n $join_file ]]; then
     TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
+fi
+# Where this session is, for tools that attach to it by its runtime directory
+# or control socket (`tilolang dev --session`): the same JSON as --ready.
+jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \
+    '{control: $control, runtime: $runtime, state: $state}' > "$runtime/session.json"
+# Tell whoever drives the session that it answers: the shell serves its
+# control socket once it is up.
+if [[ -n $ready_out ]]; then
+    rm -f "$ready_out"
+    (
+        wait_for_socket "$control" "$shell_pid" || exit 1
+        tries=600
+        until TILO_TEST_CONTROL=$control "$bin/tilo-control" state-dump >/dev/null 2>&1; do
+            ((tries--)) && kill -0 "$shell_pid" 2>/dev/null || exit 1
+            sleep 0.2
+        done
+        cp "$runtime/session.json" "$ready_out.partial"
+        mv "$ready_out.partial" "$ready_out"
+    ) &
 fi
 status=0
 wait "$shell_pid" || status=$?

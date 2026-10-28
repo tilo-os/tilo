@@ -99,10 +99,6 @@ impl Request {
 
     /// Parse a closed, bounded intent; head/hash sets must be canonical, so
     /// reordering or duplicate entries cannot create ambiguous commitments.
-    ///
-    /// # Errors
-    ///
-    /// When the report is too large, malformed, or not canonical.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("local document report exceeds byte budget".into());

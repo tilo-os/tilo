@@ -41,7 +41,10 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
     )
     .unwrap();
     let origin = native(&browser);
-    let messages = host.bootstrap_messages(&key, now).unwrap();
+    let messages = host
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     let mut live = browser.clone();
     let mut live_rejected_document = false;
     for message in messages {
@@ -72,6 +75,7 @@ fn native_publication_preserves_original_member_author_and_exact_retry() {
         .unwrap();
     doc.commit_edit("fixture", "member-published");
     let message = host
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let origin = native(&receiver);
@@ -117,6 +121,7 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
         .unwrap();
     doc.commit_edit("fixture", "member-change");
     let message = host
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let origin = native(&baseline);
@@ -154,6 +159,7 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
                     revocations: vec![revocation(target)],
+                    successions: Vec::new(),
                 },
                 now,
             )
@@ -195,6 +201,7 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert.clone()),
             revocations: vec![revocation([99; 32])],
+            successions: Vec::new(),
         },
         now,
     )
@@ -212,7 +219,8 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bad),
-                revocations: vec![]
+                revocations: vec![],
+                successions: Vec::new()
             },
             now
         )
@@ -265,12 +273,14 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     doc.put(ROOT, "predecessor", true).unwrap();
     doc.commit_edit("fixture", "predecessor");
     let predecessor = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "native-descendant", true).unwrap();
     doc.commit_edit("fixture", "native-descendant");
     let descendant = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     {
@@ -297,6 +307,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(member_cert.clone()),
                     revocations: vec![revocation(receiver.authority().device_public_key)],
+                    successions: Vec::new(),
                 },
                 now,
             )
@@ -335,12 +346,14 @@ fn native_publication_streaming_cut_accepts_complete_out_of_order_original_packe
     doc.put(ROOT, "parent", true).unwrap();
     doc.commit_edit("fixture", "parent");
     let parent = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "child", true).unwrap();
     doc.commit_edit("fixture", "child");
     let child = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let publisher = receiver.authority().device_public_key;
@@ -380,7 +393,8 @@ fn native_publication_streaming_cut_rolls_back_on_governor_revocation() {
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(member_cert),
-                revocations: vec![revocation(publisher)]
+                revocations: vec![revocation(publisher)],
+                successions: Vec::new()
             },
             now
         )
@@ -408,6 +422,7 @@ fn native_publication_streaming_cut_checks_expiry_at_push_and_finish() {
         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(other),
         revocations: vec![],
+        successions: Vec::new(),
     };
     let expired = now + Duration::from_secs(2);
     let cut = short
@@ -431,12 +446,14 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
     doc.put(ROOT, "pending-parent", "parent").unwrap();
     doc.commit_edit("fixture", "pending-parent");
     let _parent = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "pending-child", "child").unwrap();
     doc.commit_edit("fixture", "pending-child");
     let child = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     receiver
@@ -456,6 +473,7 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: vec![],
+                successions: Vec::new(),
             },
             now,
         )
@@ -489,12 +507,14 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
     doc.put(ROOT, "governor-parent", "parent").unwrap();
     doc.commit_edit("fixture", "governor-parent");
     let parent = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &governor, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "revoked-member-child", "child").unwrap();
     doc.commit_edit("fixture", "revoked-member-child");
     let child = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let cut = receiver
@@ -507,6 +527,7 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(receiver.core.authority.clone()),
                 revocations: vec![revocation(cert.device_public_key)],
+                successions: Vec::new(),
             },
             now,
         )

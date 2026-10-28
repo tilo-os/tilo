@@ -15,12 +15,25 @@ and log. `summarize` reads a sweep's reports and derives:
 - what 100 concurrent guests cost on each `[room_node.*]` of
   tools/perf/prices.toml.
 
-The Perf / room host capacity workflow (.forgejo/workflows/perf-room-capacity.yml)
-runs both on a runner of known size; docs/benchmarks/room-host-capacity-2026-10.md
-records a run.
+`degraded` runs the same bench under a schedule the host does not control —
+CPU stolen from the host's process tree, the link to it slower — and reads
+whether the workload still meets the public room's service level: joins by
+their ninety-ninth percentile, chat delivery by its own. It is what a host
+at its declared capacity is asked for, beside a run with nothing else on it
+and a run that passes the room's own guest cap and so refuses. `summarize`
+reports the three as the workload's budget; a run that breaks it fails the
+fast, dispatched check.
+
+t's perf-room-capacity check (t.toml) runs the sweep on a node of known size;
+docs/benchmarks/room-host-capacity-2026-10.md records a run. The degraded
+probe is `perf-room-degraded` (t.toml, tools/ci/perf-room-degraded.sh), in
+the performance run, and docs/architecture/hosting-capacity.md states the
+budget it holds and what it establishes.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep
+    python3 tools/perf/room_capacity.py degraded --bin target/release/tilo-room-load --out probe
     python3 tools/perf/room_capacity.py summarize sweep --json summary.json --markdown summary.md
+    python3 tools/perf/room_capacity.py summarize probe --degraded
 """
 
 from __future__ import annotations
@@ -41,6 +54,8 @@ from pathlib import Path
 from typing import Any
 
 PRICES = Path(__file__).with_name("prices.toml")
+# The degradation a public room host is probed under (tools/ci/perf-room-degraded.sh).
+DEGRADATION = Path(__file__).resolve().parents[1] / "ci" / "perf-room-degraded.sh"
 CGROUP = Path("/sys/fs/cgroup")
 # The share of the job's memory a run may take before it is stopped.
 MEMORY_GUARD = 0.8
@@ -54,6 +69,25 @@ SPECTATOR_BASE_GUESTS = 50
 # eu1's deployed caps (TILO_ROOMS_MAX_GUESTS, TILO_ROOMS_MAX_SPECTATORS).
 CAP_GUESTS = 500
 CAP_SPECTATORS = 2000
+
+# Guests a public room host is declared to carry (docs/architecture/hosting-capacity.md,
+# measured in the write-up this module's sweep produced). Admission caps above
+# that are a backstop, not a capacity claim.
+DECLARED_GUESTS = 100
+# The public room's service level at that capacity, as the workload measures it
+# (`tilo-room-load bench`: a 300-byte chat post every 60 s a guest, cursors at
+# 30 Hz while moving 30 % of the time). A join past the first percentile is
+# the wait a newcomer meets; a chat p99 past the second is a conversation the
+# host made slow.
+SLO_JOIN_P99_MS = 10_000.0
+SLO_CHAT_P99_MS = 6_000.0
+# Stolen CPU as a ceiling of the host's busiest second, and the link to it.
+STOLEN_CPU_PERCENT = 70
+THROTTLED_KBIT_S = (3_000, 3_000)
+# The probe's degradation must reach the host, or the run establishes nothing.
+LEAST_STOLEN_CORES = 0.8
+LEAST_THROTTLED_MBIT_S = 1.0
+REQUIRED_PROBE_RUNS = ("probe-g50", "probe-g100", "probe-g500")
 
 
 @dataclass(frozen=True)
@@ -158,6 +192,15 @@ def bench(command: list[str], log: Path, timeout_s: float,
         if child.stdout:
             child.stdout.close()
     return (None if stopped else child.returncode), "".join(output), stopped
+
+
+def degraded_plan() -> list[Run]:
+    """The capacity workload under a host nobody else shares, under stolen CPU
+    and a slower link, and past the guest cap: what the service level says at
+    the declared capacity, and whether admission stays bounded there."""
+    return [Run("probe-g50", "plain", ("--guests", "50")),
+            Run("probe-g100", "degraded", ("--guests", str(DECLARED_GUESTS))),
+            Run("probe-g500", "capped", ("--guests", str(CAP_GUESTS), "--max-guests", str(DECLARED_GUESTS)))]
 
 
 def run_seconds(run: Run) -> float:
@@ -285,6 +328,101 @@ def node_cost(node: dict[str, Any], prices: dict[str, Any], per_guest: dict[str,
     }
 
 
+def degraded(prefix: list[str], binary: Path, out: Path) -> int:
+    """Run the degraded plan through `prefix`, which runs the bench and sets
+    the degradation around it (tools/ci/perf-room-degraded.sh: stolen CPU and a
+    slower link, and nothing removed from the rest of the machine). Each run's
+    report is kept and printed as the sweep keeps its own; the service level is
+    `summarize`'s to judge.
+
+    One process per run, so a degradation that lasts exactly as long as the
+    bench cannot outlive it or leak into the next run: `prefix ... binary bench
+    [common] [args]` is the child's whole command line."""
+    out.mkdir(parents=True, exist_ok=True)
+    failed = 0
+    for item in degraded_plan():
+        command = [*prefix, str(binary), "bench", *COMMON, *item.args]
+        print(f"== {item.name}: {' '.join(command)}", flush=True)
+        code, stdout, stopped = bench(command, out / f"{item.name}.log", run_seconds(item))
+        try:
+            report = json.loads(stdout) if stdout.strip() else None
+        except json.JSONDecodeError:
+            report = None
+        record = {"name": item.name, "kind": item.kind, "args": list(item.args), "env": dict(item.env),
+                  "exit": code, "stopped": stopped, "report": report}
+        if item.kind == "degraded":
+            record["degraded"] = {"stolen_cpu_percent": STOLEN_CPU_PERCENT,
+                                  "throttled_kbit_s": list(THROTTLED_KBIT_S)}
+        (out / f"{item.name}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+        if code != 0:
+            failed += 1
+            print(f"   {item.name}: {stopped or f'exited {code}'}; see {item.name}.log", flush=True)
+            tail = (out / f"{item.name}.log").read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            for line in tail:
+                print(f"   | {line}", flush=True)
+    return failed
+
+
+def budget_of(report: dict[str, Any]) -> dict[str, Any]:
+    """Whether one run met the public room's service level at the declared
+    capacity: its answers against [`SLO_JOIN_P99_MS`] and [`SLO_CHAT_P99_MS`],
+    each with the reason it broke, and whether the degradation reached it."""
+    host = report.get("host") or {}
+    join = (report.get("join_ms") or {}).get("p99", math.inf)
+    chat = (report.get("chat_ms") or {}).get("p99", math.inf)
+    cores = float(host.get("hold_cpu_cores") or 0.0)
+    # The busiest second carries the most, so the stolen share of the busiest
+    # second is what the degradation gave up.
+    stolen_cores = cores * STOLEN_CPU_PERCENT / 100
+    egress = float(host.get("egress_bytes_per_s") or 0.0) * 8 / 1e6
+    throttled_mbit = min(THROTTLED_KBIT_S) / 1e3
+    reached = []
+    if stolen_cores < LEAST_STOLEN_CORES:
+        reached.append(f"the host used {stolen_cores:.2f} cores, so {STOLEN_CPU_PERCENT} % of it is "
+                       f"under the {LEAST_STOLEN_CORES:g} the probe needs")
+    if egress > throttled_mbit:
+        reached.append(f"egress {egress:.2f} Mbit/s is above the {throttled_mbit:.1f} Mbit/s link, "
+                       "so the throttle was not what the host met")
+    return {"name": report["name"], "join_p99_ms": join, "chat_p99_ms": chat,
+            "failed_sessions": failures(report),
+            "join_met": join <= SLO_JOIN_P99_MS, "chat_met": chat <= SLO_CHAT_P99_MS,
+            "degradation_reached": not reached, "degradation_notes": reached}
+
+
+def judge_probe(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The degraded plan's verdict. Every required run must have finished
+    under its degradation; the run at the declared capacity must meet the
+    service level, the run past the cap must refuse and keep answering, and
+    the run with nothing else on the machine is the reference the others are
+    read against."""
+    by_name = {run["name"]: run for run in runs}
+    missing = [name for name in REQUIRED_PROBE_RUNS if not (by_name.get(name) or {}).get("report")]
+    if missing:
+        return {"met": False, "missing": missing, "notes": [f"no report from {', '.join(missing)}"]}
+    budgets = {name: budget_of(by_name[name]["report"]) for name in REQUIRED_PROBE_RUNS}
+    notes: list[str] = []
+    for name in REQUIRED_PROBE_RUNS:
+        budget = budgets[name]
+        if name == "probe-g100" and not budget["degradation_reached"]:
+            notes += budget["degradation_notes"]
+        if name == "probe-g100" and not budget["join_met"]:
+            notes.append(f"joins at the declared {DECLARED_GUESTS} guests took {budget['join_p99_ms']:.0f} ms "
+                         f"p99, past the {SLO_JOIN_P99_MS:.0f} ms the room promises")
+        if name == "probe-g100" and not budget["chat_met"]:
+            notes.append(f"chat at the declared {DECLARED_GUESTS} guests was delivered in "
+                         f"{budget['chat_p99_ms']:.0f} ms p99, past the {SLO_CHAT_P99_MS:.0f} ms the room promises")
+    capped = by_name["probe-g500"]["report"]
+    watches = (capped.get("spectators") or {}).get("joined", 0)
+    if not (capped.get("join_ms") or {}).get("p99", math.inf) <= SLO_JOIN_P99_MS:
+        notes.append(f"a room past its cap answered joins in {(capped.get('join_ms') or {}).get('p99', 0):.0f} ms p99")
+    if not (capped.get("chat_ms") or {}).get("p99", math.inf) <= SLO_CHAT_P99_MS:
+        notes.append(f"a room past its cap delivered chat in {(capped.get('chat_ms') or {}).get('p99', 0):.0f} ms p99")
+    for name in REQUIRED_PROBE_RUNS:
+        if budgets[name]["failed_sessions"]:
+            notes.append(f"{name}: {budgets[name]['failed_sessions']} sessions failed")
+    return {"met": not notes, "missing": [], "budgets": budgets, "capped_watching": watches, "notes": notes}
+
+
 def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, Any]:
     order = {item.name: index for index, item in enumerate(plan("full"))}
     runs = sorted(runs, key=lambda run: order.get(run["name"], len(order)))
@@ -408,6 +546,27 @@ def markdown(summary: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def probe_markdown(result: dict[str, Any]) -> str:
+    """The degraded probe's verdict in words: each run's answers beside the
+    service level, and every reason the probe did or did not pass."""
+    budget = result["budget"]
+    lines = [f"- declared capacity: {DECLARED_GUESTS} guests; service level: join p99 "
+             f"{SLO_JOIN_P99_MS:.0f} ms, chat p99 {SLO_CHAT_P99_MS:.0f} ms"]
+    if budget["missing"]:
+        lines.append(f"- missing runs: {', '.join(budget['missing'])}")
+    for name, item in (budget.get("budgets") or {}).items():
+        lines.append(f"- {name}: join p99 {item['join_p99_ms']:.0f} ms "
+                     f"({'met' if item['join_met'] else 'past'}), chat p99 {item['chat_p99_ms']:.0f} ms "
+                     f"({'met' if item['chat_met'] else 'past'}), {item['failed_sessions']} failed"
+                     + ("" if item["degradation_reached"] else ", degradation not reached"))
+    if "capped_watching" in budget:
+        lines.append(f"- the room past its cap: {budget['capped_watching']} watching, "
+                     f"{CAP_GUESTS} guests offered")
+    lines.append(f"- service level {'met' if budget['met'] else 'not met'}")
+    lines += [f"- {note}" for note in budget["notes"]]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -420,21 +579,40 @@ def main(argv: list[str] | None = None) -> int:
     summary.add_argument("--prices", type=Path, default=PRICES)
     summary.add_argument("--json", type=Path)
     summary.add_argument("--markdown", type=Path)
+    summary.add_argument("--degraded", action="store_true",
+                         help="the dir is a degraded probe: judge its service level")
+    probe = commands.add_parser("degraded", help="run the capacity workload under a degraded host")
+    probe.add_argument("--bin", required=True, type=Path)
+    probe.add_argument("--out", required=True, type=Path)
+    probe.add_argument("--degrade", action="append", default=[], metavar="COMMAND",
+                       help="a command put in front of every bench, which sets the degradation around it "
+                            "(default: tools/ci/perf-room-degraded.sh)")
     args = parser.parse_args(argv)
     try:
         if args.command == "sweep":
             return sweep(args.bin, args.out, args.plan)
+        if args.command == "degraded":
+            prefix = args.degrade or [str(DEGRADATION)]
+            return degraded(prefix, args.bin, args.out)
         runs = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(args.dir.glob("*.json"))]
-        result = summarize(runs, tomllib.loads(args.prices.read_text(encoding="utf-8")))
+        if args.degraded:
+            result = {"budget": judge_probe(runs), "rows": [row(run) for run in runs if run.get("report")]}
+            if args.json:
+                args.json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            text = probe_markdown(result)
+        else:
+            result = summarize(runs, tomllib.loads(args.prices.read_text(encoding="utf-8")))
+            text = markdown(result)
+            if args.json:
+                args.json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            if args.markdown:
+                args.markdown.write_text(text, encoding="utf-8")
+        print(text)
     except (ValueError, KeyError) as error:
         print(f"room_capacity.py: {error}", file=sys.stderr)
         return 1
-    text = markdown(result)
-    if args.json:
-        args.json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if args.markdown:
-        args.markdown.write_text(text, encoding="utf-8")
-    print(text)
+    if args.degraded:
+        return 0 if result["budget"]["met"] else 1
     return 0
 
 

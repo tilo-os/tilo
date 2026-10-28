@@ -76,17 +76,21 @@ mod pump {
         room.queues.lock().unwrap().get(&id).map_or(0, Vec::len)
     }
 
-    /// Wait up to half the live interval for `done`: a pump that only ran
-    /// on a timer would miss it.
-    fn promptly(mut done: impl FnMut() -> bool) -> bool {
-        let start = Instant::now();
-        while start.elapsed() < LIVE_INTERVAL.div_f64(2.0) {
-            if done() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        done()
+    /// The pump, and on Linux its thread once it has parked: with no live
+    /// channel it has no timer, so from there only a poke runs it again.
+    fn parked_thread(
+        start: impl FnOnce() -> (ChannelKeyAccess, Arc<PumpWake>, Pump),
+    ) -> ((ChannelKeyAccess, Arc<PumpWake>, Pump), Option<String>) {
+        #[cfg(target_os = "linux")]
+        let (pump, tid) = {
+            let (pump, tid) = tilo_test_env::idle::spawned_thread("tilo-runtime-ch", start);
+            tilo_test_env::wait_until("the pump to park", || tilo_test_env::idle::blocked(&tid));
+            (pump, Some(tid))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (pump, tid) = (start(), None);
+        assert!(!pump.0.has_live_channels());
+        (pump, tid)
     }
 
     #[test]
@@ -95,15 +99,16 @@ mod pump {
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
         let listener = Endpoint::join(&room, room_id, 1);
-        let (access, _, _pump) = parked(&room, room_id, 0, service((1, 1), dir.path()));
-        assert!(!access.has_live_channels());
-        std::thread::sleep(Duration::from_millis(50));
+        let ((access, _, _pump), _) =
+            parked_thread(|| parked(&room, room_id, 0, service((1, 1), dir.path())));
         assert_eq!(queued(&room, listener.id), 0);
 
+        // Parked without a timer: only the poke the new channel gives can
+        // announce it.
         access.access(room_id, ChannelId::new());
-        assert!(
-            promptly(|| queued(&room, listener.id) > 0),
-            "the parked pump never announced the new channel's genesis"
+        tilo_test_env::wait_until(
+            "the parked pump to announce the new channel's genesis",
+            || queued(&room, listener.id) > 0,
         );
     }
 
@@ -113,22 +118,23 @@ mod pump {
         let room_id = RoomId::new();
         let steward_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
-        let (_access, wake, _pump) = parked(&room, room_id, 0, service((2, 1), member_dir.path()));
-        std::thread::sleep(Duration::from_millis(50));
+        let ((_access, wake, _pump), tid) =
+            parked_thread(|| parked(&room, room_id, 0, service((2, 1), member_dir.path())));
 
         let steward = Endpoint::join(&room, room_id, 1);
         let mut governor = service((1, 1), steward_dir.path());
         governor.access(room_id, ChannelId::new(), Instant::now());
         governor.pump(&steward, Instant::now(), 1_000);
         assert!(queued(&room, 0) > 0, "the steward announced nothing");
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(queued(&room, 0) > 0, "the parked pump ran without a poke");
+        assert!(
+            tid.is_none_or(|tid| tilo_test_env::idle::blocked(&tid)) && queued(&room, 0) > 0,
+            "the parked pump ran without a poke"
+        );
 
         wake.poke();
-        assert!(
-            promptly(|| queued(&room, 0) == 0),
-            "the poked pump left the arrived governance unread"
-        );
+        tilo_test_env::wait_until("the poked pump to read the arrived governance", || {
+            queued(&room, 0) == 0
+        });
     }
 
     /// Linux only: it reads the thread's context switches from

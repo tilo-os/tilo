@@ -26,7 +26,6 @@ mod steward;
 mod support;
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
@@ -42,7 +41,7 @@ use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{ROOM, enrol, start_host, wait_for};
 
-const CALCULATOR: &str = "so.tilo.calculator";
+const EBOOK: &str = "so.tilo.ebook";
 
 /// The person's host: it records each question and answers with what the
 /// test hands it, when the test hands it.
@@ -73,8 +72,12 @@ impl ActionHost for PersonHost {
         None
     }
 
-    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 
     fn confirm(
@@ -99,20 +102,29 @@ impl PersonHost {
     }
 }
 
-/// Work out one sum, then clear the calculator's history: an action that
-/// asks a person first.
-fn clear_history() -> String {
+/// Put a book on the shelf, then take it off again: Undo puts the row back
+/// but not this device's access to the book's file, so its contract asks a
+/// person first (`#[action(irreversible)]`). Clearing the calculator's
+/// history no longer does: Undo takes that back, so it runs at once.
+fn shelve_then_remove() -> String {
     serde_json::json!([
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "commit-history",
-            "arguments": {"expr": "1+1", "result": "2"},
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "shelve",
+            "arguments": {
+                "book": "book:dusk",
+                "title": "Dusk",
+                "author": "Ada",
+                "subject": "",
+                "shared": false,
+            },
         },
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "clear-history",
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "remove-from-library",
+            "arguments": {"book": "book:dusk"},
         },
     ])
     .to_string()
@@ -124,7 +136,7 @@ fn last_task(control: &AgentControl) -> tilo_relay_protocol::agents::AgentTask {
 
 /// Pump `agent` until the last task ends.
 fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| {
         !matches!(
             last_task(control).state,
@@ -137,7 +149,7 @@ fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
 async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -162,7 +174,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         [0x7c, 0x3a, 0xed],
         DelegateScope {
             rooms: vec![ROOM.into()],
-            apps: vec![CALCULATOR.into()],
+            apps: vec![EBOOK.into()],
         },
         now,
         now + 3_600_000_000_000,
@@ -175,6 +187,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
             key: agent_device.key.clone(),
@@ -194,7 +207,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     .await;
 
     // 1. Nobody to ask: the agent does not confirm for the person.
-    control.message(&clear_history()).unwrap();
+    control.message(&shelve_then_remove()).unwrap();
     until_done(&mut agent, &control);
     let refused = last_task(&control);
     assert_eq!(refused.state, TaskState::Failed, "{refused:?}");
@@ -210,8 +223,8 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     // step runs once the person's device witnessed it.
     let person = Arc::new(PersonHost::default());
     control.set_witness(Some(person.clone()));
-    control.message(&clear_history()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    control.message(&shelve_then_remove()).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| !person.asked.lock().unwrap().is_empty());
     {
         let asked = person.asked.lock().unwrap();
@@ -225,7 +238,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
             caller.user_public_key(),
             Some(&root.verifying_key().to_bytes())
         );
-        assert_eq!(request.target.address.action, "clear-history");
+        assert_eq!(request.target.address.action, "remove-from-library");
         assert_eq!(request.confirmation, None, "it offers no word of its own");
     }
     assert!(
@@ -242,8 +255,8 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     assert_eq!(confirmed.state, TaskState::Completed, "{confirmed:?}");
 
     // 3. The person says no: nothing runs.
-    control.message(&clear_history()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    control.message(&shelve_then_remove()).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| person.asked.lock().unwrap().len() == 2);
     person.answer(Err(ActionHostError::NotPermitted));
     until_done(&mut agent, &control);

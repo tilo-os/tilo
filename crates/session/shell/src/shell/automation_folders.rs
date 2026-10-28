@@ -5,21 +5,38 @@
 //! resolved from each trigger's capability) and reports what changed inside
 //! them since the last look, as
 //! [`FolderChange`]s for the file-changed trigger source.
+//!
+//! A file is reported once, and only after it has stopped changing: dropping
+//! one file into a folder makes the kernel announce its creation and then
+//! every chunk written into it, so a shortcut watching the folder would
+//! otherwise run again and again on a file it already has. A first sighting
+//! of a file restarts its `SETTLE` timer; the change it is reported as is the
+//! first one seen (a file that is written and then renamed into the folder is
+//! there as a creation), and a change seen while a file settles keeps it
+//! settling.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::shell::automation_triggers::{FileChange, FolderChange, WatchedFolder};
 
+/// How long a file must go untouched before the change is reported, so one
+/// write of a file is one change.
+pub const SETTLE: Duration = Duration::from_millis(1500);
+
 /// A watcher over the folders file-changed triggers name.
 #[derive(Default)]
 pub struct FolderWatch {
     folders: Vec<WatchedFolder>,
     watcher: Option<(RecommendedWatcher, mpsc::Receiver<notify::Event>)>,
+    /// Changes seen but not yet reported, and when each file was last seen
+    /// changing.
+    settling: BTreeMap<FolderChange, Instant>,
 }
 
 impl FolderWatch {
@@ -31,6 +48,7 @@ impl FolderWatch {
         }
         self.watcher = None;
         self.folders = folders;
+        self.settling.clear();
         let paths: BTreeSet<&PathBuf> = self.folders.iter().map(|folder| &folder.path).collect();
         if paths.is_empty() {
             return;
@@ -56,28 +74,58 @@ impl FolderWatch {
         self.watcher = Some((watcher, receiver));
     }
 
-    /// Every file changed inside a watched folder since the last look, once
-    /// per file and kind of change.
+    /// Every file that changed inside a watched folder and has since
+    /// settled, once per file: rewriting a file, or removing it and writing
+    /// it again, reports the first change seen, so one file is one run.
     pub fn changes(&mut self) -> Vec<FolderChange> {
-        let Some((_, receiver)) = &self.watcher else {
-            return Vec::new();
-        };
-        let mut changes: Vec<FolderChange> = Vec::new();
-        while let Ok(event) = receiver.try_recv() {
-            let Some(change) = file_change(event.kind) else {
-                continue;
-            };
-            for path in &event.paths {
-                for folder in &self.folders {
-                    if let Some(found) = FolderChange::inside(folder, path, change)
-                        && !changes.contains(&found)
-                    {
-                        changes.push(found);
+        self.changes_at(Instant::now())
+    }
+
+    /// [`Self::changes`], with `now` deciding which files have settled.
+    pub fn changes_at(&mut self, now: Instant) -> Vec<FolderChange> {
+        let mut seen = Vec::new();
+        if let Some((_, receiver)) = self.watcher.as_ref() {
+            while let Ok(event) = receiver.try_recv() {
+                let Some(change) = file_change(event.kind) else {
+                    continue;
+                };
+                for path in &event.paths {
+                    for folder in &self.folders {
+                        if let Some(found) = FolderChange::inside(folder, path, change) {
+                            seen.push(found);
+                        }
                     }
                 }
             }
         }
+        for found in seen {
+            self.settle(found, now);
+        }
+        let mut changes = Vec::new();
+        self.settling.retain(|change, last_seen| {
+            if now.saturating_duration_since(*last_seen) < SETTLE {
+                return true;
+            }
+            changes.push(change.clone());
+            false
+        });
+        changes.sort();
         changes
+    }
+
+    /// Record that `found` was seen changing at `now`, keeping the change a
+    /// file is first reported as.
+    fn settle(&mut self, found: FolderChange, now: Instant) {
+        let seen = self
+            .settling
+            .iter_mut()
+            .find(|(settling, _)| settling.same_file() == found.same_file());
+        match seen {
+            Some((_, at)) => *at = now,
+            None => {
+                self.settling.insert(found, now);
+            }
+        }
     }
 }
 
@@ -102,6 +150,7 @@ fn file_change(kind: EventKind) -> Option<FileChange> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -136,5 +185,53 @@ mod tests {
             !seen.iter().any(|change| change.file.contains("outside")),
             "nothing outside the folder is reported: {seen:?}"
         );
+        assert_eq!(
+            seen.len(),
+            1,
+            "a file is reported once, however many writes it took: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_is_reported_once_it_stops_changing() {
+        let folder = WatchedFolder {
+            room: "room".into(),
+            capability: "inbox-read".into(),
+            path: PathBuf::from("/var/workspace/inbox"),
+        };
+        let start = Instant::now();
+        let write = |change| {
+            FolderChange::inside(&folder, Path::new("/var/workspace/inbox/scan.pdf"), change)
+                .expect("inside the folder")
+        };
+        let mut seen = Vec::new();
+        let mut watch = FolderWatch::default();
+        // A file written, and written again a moment later, settles from the
+        // second write: the first one's window passing reports nothing.
+        watch.settle(write(FileChange::Created), start);
+        watch.settle(write(FileChange::Modified), start + SETTLE / 2);
+        seen.extend(watch.changes_at(start + SETTLE));
+        assert!(
+            seen.is_empty(),
+            "the file was written again half a settle before: {seen:?} {:?}",
+            watch.settling
+        );
+        seen.extend(watch.changes_at(start + SETTLE * 2));
+        assert_eq!(
+            seen,
+            [write(FileChange::Created)],
+            "one report, as first seen, once it stops"
+        );
+        assert!(watch.changes_at(start + SETTLE * 4).is_empty(), "once only");
+
+        // A file removed and written again is the same one file.
+        let mut watch = FolderWatch::default();
+        watch.settle(write(FileChange::Removed), start);
+        watch.settle(write(FileChange::Created), start);
+        assert_eq!(
+            watch.changes_at(start + SETTLE),
+            [write(FileChange::Removed)]
+        );
+        assert!(watch.settling.is_empty());
     }
 }

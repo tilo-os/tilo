@@ -25,7 +25,6 @@ pub(super) fn plan(held: &[Option<u64>]) -> Option<Vec<u64>> {
         match place(held, &keep) {
             Placement::Done(ordinals) => return Some(ordinals),
             Placement::Crowded { before, after } => {
-                // Free the run's neighbours and try the wider run.
                 let mut widened = false;
                 for at in [before, after].into_iter().flatten() {
                     if let Some(kept) = keep.get_mut(at) {
@@ -176,7 +175,6 @@ mod tests {
 
     #[test]
     fn a_moved_record_takes_a_new_ordinal_and_the_rest_keep_theirs() {
-        // The last record moved to the front.
         let held = [Some(gap(4)), Some(GAP), Some(gap(2)), Some(gap(3))];
         let planned = plan(&held).unwrap();
         assert!(increasing(&planned));

@@ -42,7 +42,6 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
         },
     );
 
-    // Apply page-number fields now that all text is present.
     for (b, start) in field_marks {
         doc.add_mark_in(
             region,

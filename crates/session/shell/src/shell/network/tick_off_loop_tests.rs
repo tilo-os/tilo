@@ -47,7 +47,7 @@ fn shell_with_a_claimed_editor(
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.strips.first_mut())
         .and_then(|strip| strip.window_groups.first_mut())
         .unwrap();
@@ -58,6 +58,7 @@ fn shell_with_a_claimed_editor(
             app_id: EDITOR.into(),
             surface_id: 7,
         },
+        app_title: None,
     });
     tree.continuation_closed_tabs.insert(CLOSED_TAB, room);
     let (mut net, commands) = personal_continuity_network_for_test([0x7C; 32]);
@@ -251,7 +252,7 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     net.frame_tick();
     // The first tick's other upkeep wrote the tree after its push; the
     // fallback projection takes that in, and from then on nothing moves.
-    std::thread::sleep(super::ROOM_PUSH_FALLBACK_INTERVAL + Duration::from_millis(50));
+    std::thread::sleep(super::room_push::ROOM_PUSH_FALLBACK_INTERVAL + Duration::from_millis(50));
     net.frame_tick();
     let _ = pushes(&mut commands);
     let idle = net.replica.lock().unwrap().tree.generation();
@@ -269,22 +270,15 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     let holder = {
         std::thread::spawn(move || {
             let mut guard = tree.write();
-            let group = guard
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-                .and_then(|workspace| workspace.strips.first_mut())
-                .and_then(|strip| strip.window_groups.first_mut())
-                .unwrap();
-            group.tabs.push(Tab {
-                id: tilo_desktop_model::compose_id(SALT, 99),
-                title: "Held".into(),
-                tile: TileContent::Stub {
-                    kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
-                    label: "Notes".into(),
-                },
-            });
+            // A record the room holds now: every member writes it into the
+            // room's document.
+            guard.set_room_records(
+                room,
+                std::collections::BTreeMap::from([(
+                    "file:/held.md".to_owned(),
+                    "document".to_owned(),
+                )]),
+            );
             guard.seed_doc_from_cache();
             drop(guard);
             // Still writing: the change above is visible, the tree is held.
@@ -312,4 +306,98 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     net.frame_tick();
     assert_eq!(pushes(&mut commands), 1, "the deferred change goes out");
     assert_eq!(net.next_deadline(), None);
+}
+
+/// The heads of `room`'s document in `tree`.
+fn room_heads(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+) -> Vec<automerge::ChangeHash> {
+    tree.write().room_heads(room)
+}
+
+/// A peer's batch for a room is admitted by decoding it in a worker process
+/// and checking a copy of the room's whole document: on a slow machine that
+/// is longer than many frames. The loop hands it to the peer-sync worker and
+/// goes on, and the tree stays free for the loop while the batch waits.
+#[test]
+fn a_peers_room_batch_merges_off_the_loop() {
+    use crate::shell::state::{PeerOrigin, Workspace, WorkspaceId};
+    const LAPTOP: u16 = 0x1A97;
+    const BOARD: u16 = 0xB0A2;
+    let identity = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32])
+        .verifying_key()
+        .to_bytes();
+    let person = crate::shell::state::person_id_of(identity).unwrap();
+    let laptop_key = iroh::SecretKey::from_bytes(&[0x42; 32]);
+    let room = RoomId::new();
+
+    let mut laptop = WorkspaceTree::default();
+    laptop.set_salt_override(LAPTOP);
+    laptop.local_person = Some(identity);
+    let id = WorkspaceId(tilo_desktop_model::compose_id(LAPTOP, 1));
+    let mut workspace = Workspace::in_room(id, room, "Research");
+    workspace.set_owner(person.clone());
+    laptop.desktop.workspaces.push(workspace);
+    laptop.desktop.active = id;
+    laptop.sync_room_doc(room);
+    let changes = laptop.export_room_changes_since(room, &[]).unwrap();
+    let laptop_heads = laptop.room_heads(room);
+    assert!(!laptop_heads.is_empty(), "the laptop wrote the room");
+
+    let mut board = WorkspaceTree::default();
+    board.set_salt_override(BOARD);
+    board.local_person = Some(identity);
+    board
+        .authenticated_persons
+        .insert(PeerOrigin::peer(&laptop_key.public()), identity);
+    assert!(board.adopt_personal_room(room, "Research", &person, None));
+    let tree = board.shared();
+    let (net, _commands) = super::shell_network_for_test(tree.clone(), 0xB0A2);
+    let net = Arc::new(net);
+    net.start_peer_sync_worker();
+
+    // The worker is busy with something else when the batch arrives.
+    let (release, parked) = mpsc::channel::<()>();
+    let (started, running) = mpsc::channel::<()>();
+    assert!(
+        net.run_off_loop(Box::new(move || {
+            started.send(()).unwrap();
+            let _ = parked.recv();
+        }))
+        .is_ok()
+    );
+    running.recv().unwrap();
+    net.event_tx
+        .try_send(crate::network::NetEvent::Msg {
+            ws: super::room_topic_id(room),
+            peer: laptop_key.public(),
+            membership_epoch: None,
+            replayed: false,
+            msg: NeighbourMsg::SyncResp {
+                changes,
+                room: room.to_string(),
+            },
+        })
+        .unwrap();
+    net.frame_tick();
+    let during = room_heads(&tree, room);
+    assert!(
+        !laptop_heads.iter().all(|head| during.contains(head)),
+        "the loop hands the batch over rather than admitting it itself: {during:?} holds {laptop_heads:?}"
+    );
+
+    release.send(()).unwrap();
+    let (done, finished) = mpsc::channel::<()>();
+    assert!(
+        net.run_off_loop(Box::new(move || done.send(()).unwrap()))
+            .is_ok()
+    );
+    finished.recv().unwrap();
+    drop(net);
+    let after = room_heads(&tree, room);
+    assert!(
+        laptop_heads.iter().all(|head| after.contains(head)),
+        "the batch landed from the worker: {after:?} holds {laptop_heads:?}"
+    );
 }

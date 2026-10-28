@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 /// Per-app bounds the service enforces on records and resources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
-    /// Bytes of one frame record in the ring.
     pub frame_bytes: u32,
     /// Bytes of the ring an app may map into the service.
     pub ring_bytes: u32,
@@ -20,17 +19,14 @@ pub struct Limits {
     pub paths: u32,
     /// Path segments in one frame, after glyphs are expanded estimates.
     pub segments: u32,
-    /// Draw objects in one frame.
     pub draw_objects: u32,
     /// Glyphs in one frame.
     pub glyphs: u32,
-    /// Nesting of clips and layers.
     pub clip_depth: u32,
     /// Layers one surface keeps.
     pub layers: u32,
     /// Surfaces one connection keeps.
     pub surfaces: u32,
-    /// Longest edge of a surface, in pixels.
     pub surface_edge: u32,
     /// Pixels of all of a connection's surfaces together; their render
     /// targets and buffers are the service's GPU memory spent on the app.
@@ -39,7 +35,6 @@ pub struct Limits {
     /// memfds the app created, so its cgroup pays for them; this bounds what
     /// the service maps and uploads.
     pub image_bytes: u64,
-    /// Images one connection keeps registered.
     pub images: u32,
     /// Fonts one connection keeps registered.
     pub fonts: u32,

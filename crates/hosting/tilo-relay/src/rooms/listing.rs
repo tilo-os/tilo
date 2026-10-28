@@ -97,7 +97,7 @@ impl Listings {
     }
 
     /// List `room` with `listing`, or take it out of the directory.
-    fn set(&self, room: &str, listing: Option<Listing>) -> Result<(), String> {
+    pub(super) fn set(&self, room: &str, listing: Option<Listing>) -> Result<(), String> {
         let mut stored = self.stored.lock_recover();
         let changed = match listing {
             Some(listing) => stored.rooms.insert(room.to_owned(), listing.clone()) != Some(listing),
@@ -155,12 +155,6 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 impl Rooms {
     /// Make `room` public with `listing`, as `device` asks: the room's
     /// governance must let its person change the room's settings.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here, the person may not change its
-    /// settings, the listing is not one that may be published, or it could
-    /// not be kept.
     pub async fn publish(
         &self,
         room: &str,
@@ -185,6 +179,12 @@ impl Rooms {
             .set(room, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
         tracing::info!(%room, role = ?listing.default_role, "workspace made public");
+        // Strangers come in through its door from now on: unless its
+        // governor chose otherwise, its members' windows are theirs alone
+        // (`layout_scope`).
+        if let Err(error) = self.default_to_personal(room).await {
+            tracing::warn!(%room, %error, "a listed room still shares its layout");
+        }
         Ok(listing)
     }
 
@@ -217,7 +217,6 @@ impl Rooms {
         Ok(())
     }
 
-    /// The listing `room` is public with, if it is.
     #[must_use]
     pub fn listing(&self, room: &str) -> Option<Listing> {
         self.inner.listings.get(room)
@@ -265,10 +264,6 @@ impl Rooms {
     /// Who of `room`'s members is in it now by `online` (user roots with an
     /// open session here): some of their faces, how many they are, and how
     /// many people belong to the room.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here.
     pub async fn presence(
         &self,
         room: &str,
@@ -319,11 +314,6 @@ impl Rooms {
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the room's default role, under the owner's listing. The door answers
     /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
-    ///
-    /// # Errors
-    ///
-    /// The room is not public here, the person is banned from it, or the
-    /// invitation could not be issued and kept.
     pub async fn admit_listed(
         &self,
         room: &str,
@@ -423,11 +413,6 @@ impl Rooms {
     /// Tell the people who run the public room `room` that someone reported
     /// it: a notice its owner and moderators read beside the room's
     /// admissions.
-    ///
-    /// # Errors
-    ///
-    /// The room is not public here, the report is not one, or it could not
-    /// be kept.
     pub async fn report_listed(
         &self,
         room: &str,
@@ -568,12 +553,14 @@ mod door_tests {
         owner: &DeviceCert,
         request: InvokeRequest,
     ) -> serde_json::Value {
-        let host = HostRoomActions::new();
-        host.attach(rooms.clone());
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key);
-        let receipt = settled(host.in_workspace(workspace).invoke(&caller, request))
-            .await
-            .unwrap();
+        let receipt = {
+            let host = HostRoomActions::new();
+            host.attach(rooms.clone());
+            settled(host.in_workspace(workspace).invoke(&caller, request))
+                .await
+                .unwrap()
+        };
         match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             other => panic!("governance completes at once: {other:?}"),
@@ -639,6 +626,13 @@ mod door_tests {
     type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -709,7 +703,6 @@ mod door_tests {
             );
         }
 
-        // The door's own grant, as the host signed it, admits.
         let (guest_key, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
@@ -722,12 +715,14 @@ mod door_tests {
         relay.shutdown().await;
     }
 
-    // USER REQUIREMENT (2026-10-19): "you just set a default role for people,
-    // all of this has been solved hundreds of times by hundreds of
-    // applications" — the owner makes the workspace public with a default
-    // role, and everyone who joins from the directory gets exactly that role,
-    // with nobody deciding each join.
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn whoever_joins_a_public_workspace_gets_the_default_role_its_owner_set() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -819,9 +814,14 @@ mod door_tests {
             .app_authors(CHAT, &tilo_action_policy::Context::at_time(now))
     }
 
-    // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
-    // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
         use std::collections::BTreeSet;
         let dir = tempfile::tempdir().unwrap();
@@ -869,7 +869,6 @@ mod door_tests {
                 .await
                 .unwrap()
         );
-        // Whoever joins later talks too.
         let (_, later) = walk_in(rooms, &room).await;
         assert!(writes_in_chat(rooms, &room, &later).await);
 
@@ -913,6 +912,13 @@ mod door_tests {
     /// person, with the same device, and is a member again (the shell's
     /// `readmit_site_room`).
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_pruned_guest_comes_back_through_the_door_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -970,6 +976,13 @@ mod door_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_private_workspace_has_no_door_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -1009,7 +1022,6 @@ mod door_tests {
         let (reply, _) = walk_in(rooms, &room).await;
         assert!(reply.is_err(), "unpublished: the door is shut again");
 
-        // A moderator handed out at the door is refused outright.
         assert!(
             rooms
                 .publish(
@@ -1027,6 +1039,13 @@ mod door_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+        )
+    )]
     async fn a_banned_person_is_turned_away_at_the_door_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();

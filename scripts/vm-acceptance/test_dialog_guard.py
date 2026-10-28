@@ -192,6 +192,9 @@ class ScratchpadVm(ShellVm):
         }]}]
         return st
 
+    def foreign_frames(self):
+        return [{"app_id": "so.tilo.scratchpad", "presented": True, "frame_seq": 1}] if self.scratchpad else []
+
     def targets(self):
         if not self.scratchpad:
             return []
@@ -246,9 +249,12 @@ class GuardTest(unittest.TestCase):
             p = patch(target, lambda _s: None)
             p.start()
             self.addCleanup(p.stop)
-        p = patch.object(context_mod, "wait_until", fast_wait_until)
-        p.start()
-        self.addCleanup(p.stop)
+        # The harness's dismissal waits too (core.dismiss_surfaces): with sleep stubbed out a
+        # real wait_until would spin on the wall clock for its whole bound.
+        for module in (context_mod, core):
+            p = patch.object(module, "wait_until", fast_wait_until)
+            p.start()
+            self.addCleanup(p.stop)
 
     def vm(self, **kw):
         return ShellVm(**kw)

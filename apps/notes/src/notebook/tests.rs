@@ -3,8 +3,14 @@
 
 use super::*;
 use tilo_document::action::RegionKind;
-use ui::tilo_resource::{Edit, Invoke, Replica, Resource};
+use ui::tilo_resource::{Edit, Fields, Invoke, Replica, Resource};
 use ui::widget::marks::MarkSpan;
+
+// Count the owned editor blocks made on this test's thread, excluding setup
+// and assertions. A rename should inspect the already-read shared paragraphs.
+thread_local! {
+    pub(super) static MATERIALIZED_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn edit(notebook: &mut Replica<Notebook>, edit: &Edit<Notebook>) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
@@ -182,14 +188,10 @@ fn verbs_make_move_and_delete_notes_and_keep_the_tree_a_tree() {
         "a note's parent exists"
     );
 
-    // Deleting a note deletes the notes under it, and nothing else.
-    assert!(
-        apply(&mut notebook, Notebook::DELETE.with(a.clone())).is_err(),
-        "deleting asks for confirmation"
-    );
-    notebook
-        .apply_confirmed(Notebook::DELETE.with(a.clone()))
-        .unwrap();
+    // Deleting a note deletes the notes under it, and nothing else; Undo
+    // takes it back, so it asks nothing.
+    apply(&mut notebook, Notebook::DELETE.with(a.clone()))
+        .expect("an undoable delete asks nothing");
     assert_eq!(children(&notebook, None), [c, b]);
     assert_eq!(notebook.state().unwrap().pages.len(), 2);
 }
@@ -226,8 +228,6 @@ fn titles_and_parents_change_only_through_verbs() {
     assert_eq!(texts(&notebook, &a), ["Hello"]);
 }
 
-/// Renaming a note relabels every link to it in every note, keeping each
-/// link a link to the same note.
 #[test]
 fn a_rename_relabels_the_links_to_the_note() {
     let mut notebook = Replica::<Notebook>::new();
@@ -256,6 +256,113 @@ fn a_rename_relabels_the_links_to_the_note() {
             MarkSpan::new(18..27, Mark::Transclusion(uuid(&target))),
         ]
     );
+}
+
+/// Only two of 300 pages link to the renamed note. Scanning must not copy
+/// their prose into editor blocks, or write unrelated or already-right labels.
+#[test]
+fn a_rename_scans_shared_marks_without_materializing_editor_blocks() {
+    let target = page_id(PageId::from_u128(1));
+    let other = PageId::from_u128(300);
+    let mut seed = Notebook::default();
+    for number in 1..=300 {
+        let mut page = Page::titled(if number == 1 { "Old" } else { "Source" }, None);
+        page.body = if number == 2 || number == 3 {
+            let mut linked = BlockContent::paragraph("", "é Old / Old / Néw title / other");
+            linked.marks = vec![
+                MarkSpan::new(3..6, Mark::Link(uuid(&target))),
+                MarkSpan::new(9..12, Mark::Transclusion(uuid(&target))),
+                MarkSpan::new(15..25, Mark::Link(uuid(&target))),
+                MarkSpan::new(28..33, Mark::Link(other)),
+            ];
+            written(&[linked])
+        } else {
+            RichText::from_markdown("Unrelated prose. ".repeat(128))
+        };
+        seed.pages.push(page_id(PageId::from_u128(number)), page);
+    }
+    let mut doc = tilo_resource::Doc::new();
+    seed.write_fields(&mut doc, &automerge::ROOT).unwrap();
+    tilo_resource::evolution::write_version(&mut doc, Notebook::VERSION).unwrap();
+    doc.commit();
+    let mut notebook = Replica::<Notebook>::from_doc(doc);
+    let before = notebook.state().unwrap();
+    let mut tracker = tilo_resource::Tracker::new();
+    tracker.start(notebook.doc_mut());
+    MATERIALIZED_BLOCKS.with(|count| count.set(0));
+    apply(
+        &mut notebook,
+        Notebook::RENAME.with(notebook::Rename {
+            page: target.clone(),
+            title: "Néw title".into(),
+        }),
+    )
+    .unwrap();
+    let materialized = MATERIALIZED_BLOCKS.with(std::cell::Cell::get);
+    let delta = tracker.delta(notebook.doc_mut());
+    let after = notebook.state().unwrap();
+    assert_eq!(after.pages.get(&target).unwrap().title, "Néw title");
+    for (id, page) in after.pages.iter() {
+        let body = page.body.state().unwrap();
+        if id == &page_id(PageId::from_u128(2)) || id == &page_id(PageId::from_u128(3)) {
+            let blocks = page.blocks();
+            assert_eq!(
+                blocks[0].text,
+                "é Néw title / Néw title / Néw title / other"
+            );
+            assert_eq!(
+                blocks[0].marks,
+                [
+                    MarkSpan::new(3..13, Mark::Link(uuid(&target))),
+                    MarkSpan::new(16..26, Mark::Transclusion(uuid(&target))),
+                    MarkSpan::new(29..39, Mark::Link(uuid(&target))),
+                    MarkSpan::new(42..47, Mark::Link(other)),
+                ]
+            );
+            assert!(delta.touches(&body.containers().root));
+        } else {
+            assert_eq!(page.body, before.pages.get(id).unwrap().body);
+            assert!(
+                !delta.touches(&body.containers().root),
+                "unrelated body {id}"
+            );
+        }
+    }
+    assert_eq!(
+        materialized, 0,
+        "rename copied editor blocks across the notebook"
+    );
+}
+
+/// A link or embed may already carry the new title (for example after a
+/// collaborator edited it). Renaming must leave that body's CRDT untouched.
+#[test]
+fn a_rename_does_not_rewrite_labels_already_matching_the_new_title() {
+    let mut notebook = Replica::<Notebook>::new();
+    let target = note(&mut notebook, "Old", None);
+    let source = note(&mut notebook, "Source", None);
+    let mut linked = BlockContent::paragraph("", "Brand new and Brand new");
+    linked.marks = vec![
+        MarkSpan::new(0..9, Mark::Link(uuid(&target))),
+        MarkSpan::new(14..23, Mark::Transclusion(uuid(&target))),
+    ];
+    write(&mut notebook, &source, &[linked]);
+    let before = page(&notebook, &source).body;
+    let body = body_object(notebook.doc(), uuid(&source)).unwrap();
+    let mut tracker = tilo_resource::Tracker::new();
+    tracker.start(notebook.doc_mut());
+    apply(
+        &mut notebook,
+        Notebook::RENAME.with(notebook::Rename {
+            page: target.clone(),
+            title: "Brand new".into(),
+        }),
+    )
+    .unwrap();
+    let delta = tracker.delta(notebook.doc_mut());
+    assert_eq!(page(&notebook, &target).title, "Brand new");
+    assert_eq!(page(&notebook, &source).body, before);
+    assert!(!delta.touches(&body), "already-right labels were rewritten");
 }
 
 /// A copy of a note copies the notes under it and their bodies; links

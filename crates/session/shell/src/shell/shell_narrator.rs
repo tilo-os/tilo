@@ -33,6 +33,10 @@ pub struct ShellNarrator {
     /// False until the first snapshot after enabling: live regions already
     /// on screen are recorded, not replayed.
     primed: bool,
+    /// The reader the chord turned off, kept until it is turned on again:
+    /// a speech backend cuts an utterance off when dropped, and it is still
+    /// saying that the screen reader is off.
+    parting: Option<ScreenReader>,
 }
 
 impl std::fmt::Debug for ShellNarrator {
@@ -63,6 +67,7 @@ impl ShellNarrator {
     pub fn set_enabled(&mut self, enabled: bool) {
         match (enabled, self.reader.is_some()) {
             (true, false) => {
+                self.parting = None;
                 // Rate and voice follow the same `accessibility` settings the
                 // apps read, so the desktop speaks with one voice.
                 let mut reader = ScreenReader::new();
@@ -76,6 +81,24 @@ impl ShellNarrator {
                 *self = Self::default();
             }
             _ => {}
+        }
+    }
+
+    /// Follow the screen reader chord to `on`, saying so in words. Turning
+    /// it off is heard too: the reader says it and is kept, not stopped.
+    pub fn turned_by_chord(&mut self, on: bool) {
+        let words = ui::screen_reader_chord::state_words(on);
+        if on {
+            self.set_enabled(true);
+            if let Some(reader) = self.reader.as_mut() {
+                reader.announce(words, tts::Priority::Important, true);
+            }
+        } else if let Some(mut reader) = self.reader.take() {
+            reader.announce(words, tts::Priority::Important, true);
+            *self = Self {
+                parting: Some(reader),
+                ..Self::default()
+            };
         }
     }
 
@@ -159,6 +182,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::compositor::lock_controller::LockPrompt;
     use crate::compositor::lock_screen::{LockView, narration_tree};
 
     #[derive(Clone, Default)]
@@ -181,15 +205,20 @@ mod tests {
         }
     }
 
-    fn view(password_len: usize, error: Option<&str>) -> LockView<'_> {
+    /// The lock screen with `typed` in its password field.
+    fn view<'a>(prompt: &'a LockPrompt, typed: &str, error: Option<&'a str>) -> LockView<'a> {
+        if let Some(field) = prompt.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+            field.set_text(typed);
+        }
         LockView {
-            password_len,
+            prompt: Some(prompt),
             error,
             clock: "09:41",
             date: "Friday, 11 July",
             notification_count: 0,
             verifying: false,
             now_playing: None,
+            media_focus: None,
             keyboard: None,
             alert: None,
         }
@@ -200,9 +229,14 @@ mod tests {
         let recorder = Recorder::default();
         let mut narrator =
             ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
-        narrator.observe(&narration_tree(&view(0, None)));
-        narrator.observe(&narration_tree(&view(5, None)));
-        narrator.observe(&narration_tree(&view(0, Some("Authentication failure"))));
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
+        narrator.observe(&narration_tree(&view(&prompt, "typed", None)));
+        narrator.observe(&narration_tree(&view(
+            &prompt,
+            "",
+            Some("Authentication failure"),
+        )));
         let spoken = recorder.0.lock().unwrap().clone();
         assert!(
             spoken
@@ -218,13 +252,34 @@ mod tests {
     }
 
     #[test]
+    fn the_chord_turning_the_reader_off_is_still_heard() {
+        let recorder = Recorder::default();
+        let mut narrator =
+            ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
+        narrator.turned_by_chord(false);
+        assert!(!narrator.enabled());
+        assert_eq!(*recorder.0.lock().unwrap(), ["Screen reader off"]);
+        assert!(narrator.parting.is_some(), "not dropped mid-sentence");
+        // The settings poll that follows changes nothing.
+        narrator.set_enabled(false);
+        assert!(narrator.parting.is_some());
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
+        assert_eq!(recorder.0.lock().unwrap().len(), 1, "silent while off");
+        narrator.turned_by_chord(true);
+        assert!(narrator.enabled());
+        assert!(narrator.parting.is_none());
+    }
+
+    #[test]
     fn turning_the_reader_off_silences_it() {
         let recorder = Recorder::default();
         let mut narrator =
             ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
         narrator.set_enabled(false);
         assert!(!narrator.enabled());
-        narrator.observe(&narration_tree(&view(0, None)));
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
         assert!(recorder.0.lock().unwrap().is_empty());
     }
 }

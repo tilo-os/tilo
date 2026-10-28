@@ -32,19 +32,16 @@ use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 /// means an unreachable relay: the action then runs locally.
 pub const PLACEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A boxed placement answer.
 pub type PlacementAnswer<'a> = Pin<Box<dyn Future<Output = Result<Placed, String>> + Send + 'a>>;
 
 /// What a requester asks placement about one job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlacementQuery<'a> {
-    /// The workspace the job runs in.
     pub workspace_id: u64,
     /// The installed app whose entrypoint it runs.
     pub app: &'a str,
     /// Whether it needs a GPU.
     pub gpu: bool,
-    /// The bytes of its inputs.
     pub input_bytes: u64,
     /// Its distinct inputs by digest, each with its bytes, so a device
     /// already holding some is not weighed as receiving them. Named only
@@ -105,7 +102,6 @@ struct Waiting {
     answer: oneshot::Sender<Result<Placed, String>>,
 }
 
-/// Aborts a task when dropped.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
 impl Drop for AbortOnDrop {

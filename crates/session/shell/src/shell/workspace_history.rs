@@ -34,7 +34,7 @@ mod tests {
 
     fn tree_and_room() -> (WorkspaceTree, RoomId) {
         let workspace = Workspace::new(WorkspaceId::new(), "Research");
-        let room = workspace.room;
+        let room = workspace.room();
         let mut tree = WorkspaceTree {
             desktop: crate::shell::state::DesktopTree {
                 active: workspace.id,
@@ -72,7 +72,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn history_projection_joins_tree_and_room_records_with_provenance() {
-        // Phase `joins_tree_and_room_records_with_action_provenance`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -106,7 +105,6 @@ mod tests {
             assert!(index.coverage().is_complete());
         }
 
-        // Phase `refresh_is_cached_and_projected_ids_include_document_identity`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -139,7 +137,6 @@ mod tests {
             }));
         }
 
-        // Phase `history_observation_preserves_pending_record_action_and_attribution`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -218,7 +215,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `reports_referenced_documents_that_are_not_local`.
         {
             let (mut tree, room) = tree_and_room();
             let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
@@ -238,7 +234,6 @@ mod tests {
             assert_eq!(index.coverage().unavailable_records, vec![missing]);
         }
 
-        // Phase `multi_workspace_scope_excludes_open_records_outside_the_tree`.
         {
             let (mut tree, room) = tree_and_room();
             let represented = RoomId::new();
@@ -283,7 +278,6 @@ mod tests {
 
     #[test]
     fn cold_history_indexes_without_the_record_store_and_marks_corruption() {
-        // Phase `indexes_cold_local_history_without_opening_the_record_store`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -320,7 +314,6 @@ mod tests {
             }));
         }
 
-        // Phase `corrupt_cold_record_remains_explicitly_unavailable`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -351,7 +344,6 @@ mod tests {
 
     #[test]
     fn causal_frontier_detects_persists_and_unions_changes() {
-        // Phase `causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -387,7 +379,6 @@ mod tests {
             ));
         }
 
-        // Phase `causal_frontier_persistence_round_trips_full_heads`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -402,7 +393,6 @@ mod tests {
             assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
         }
 
-        // Phase `mark_seen_retains_an_origin_omitted_from_the_current_index`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -423,7 +413,6 @@ mod tests {
             );
         }
 
-        // Phase `bounded_room_projection_unions_prior_tree_exceptions`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -451,7 +440,6 @@ mod tests {
 
     #[test]
     fn history_ranges_stay_contiguous_and_aggregate_oldest_first() {
-        // Phase `named_range_cannot_absorb_an_interleaved_foreign_record`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
@@ -483,7 +471,6 @@ mod tests {
             assert!(index.origin_safe_named_ranges(&[range]).is_empty());
         }
 
-        // Phase `aggregate_is_oldest_first_while_retaining_the_newest_bound`.
         {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();

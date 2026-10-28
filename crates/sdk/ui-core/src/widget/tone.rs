@@ -25,7 +25,6 @@ pub enum Tone {
 }
 
 impl Tone {
-    /// The tone's colour under `theme`.
     #[must_use]
     pub fn colour(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;

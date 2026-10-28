@@ -487,17 +487,14 @@ impl QuicTransportConfigBuilder {
     /// interact with the [`QuicTransportConfigBuilder::max_idle_timeout`], if the last path is
     /// abandoned the entire connection will be closed.
     ///
-    /// Note: values higher than `PATH_MAX_IDLE_TIMEOUT` (15 seconds) are clamped and a warning is logged.
+    /// The default is `PATH_MAX_IDLE_TIMEOUT` (15 seconds). A longer timeout goes with a
+    /// longer [`Self::default_path_keep_alive_interval`]: it must exceed the keep-alive
+    /// interval with room for a lost keep-alive to be retransmitted. Relay paths never get
+    /// a shorter timeout than this.
+    // TILO PATCH: a longer timeout is accepted rather than clamped to 15 s, so an
+    // endpoint can keep idle connections alive with fewer keep-alives (see
+    // `TILO-PATCH.md`).
     pub fn default_path_max_idle_timeout(mut self, timeout: Duration) -> Self {
-        if timeout > PATH_MAX_IDLE_TIMEOUT {
-            warn!(
-                "QuicTransportConfig::default_path_max_idle must be at most {:?}, clamping",
-                PATH_MAX_IDLE_TIMEOUT
-            );
-            self.0
-                .default_path_max_idle_timeout(Some(PATH_MAX_IDLE_TIMEOUT));
-            return self;
-        }
         self.0.default_path_max_idle_timeout(Some(timeout));
         self
     }
@@ -509,15 +506,12 @@ impl QuicTransportConfigBuilder {
     /// [`QuicTransportConfigBuilder::keep_alive_interval`] will keep the connection active, with no
     /// control over which path is used for this.
     ///
-    /// Note: this method will ignore values higher than the recommended 5 seconds and will log a warning.
+    /// The default is `HEARTBEAT_INTERVAL` (5 seconds). A longer interval needs a longer
+    /// [`Self::default_path_max_idle_timeout`] and stays below the NAT binding timeouts
+    /// of the networks in use (commonly 30 s for UDP).
+    // TILO PATCH: a longer interval is accepted rather than ignored (see
+    // `TILO-PATCH.md`).
     pub fn default_path_keep_alive_interval(mut self, interval: Duration) -> Self {
-        if interval > HEARTBEAT_INTERVAL {
-            warn!(
-                "QuicTransportConfig::default_path_keep_alive must be at most {:?}, ignoring user supplied value",
-                HEARTBEAT_INTERVAL
-            );
-            return self;
-        }
         self.0.default_path_keep_alive_interval(Some(interval));
         self
     }

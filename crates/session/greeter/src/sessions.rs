@@ -180,7 +180,6 @@ Type=Application
 
     #[test]
     fn session_desktop_files_are_discovered_and_parsed() {
-        // Phase `parses_default_tilo_session`.
         {
             let s = parse_desktop_entry(TILO).expect("should parse");
             assert_eq!(s.name, "Tilo");
@@ -189,13 +188,11 @@ Type=Application
                 vec!["/usr/libexec/tilo-session", "--backend", "drm"]
             );
         }
-        // Phase `parses_another_session`.
         {
             let s = parse_desktop_entry(WESTON).expect("should parse");
             assert_eq!(s.name, "Weston");
             assert_eq!(s.argv, vec!["/usr/bin/weston"]);
         }
-        // Phase `comments_and_localized_names_are_ignored`.
         {
             let entry = "\
     [Desktop Entry]
@@ -208,12 +205,10 @@ Type=Application
             assert_eq!(s.name, "Real Name");
             assert_eq!(s.argv, vec!["/usr/bin/foo", "--bar"]);
         }
-        // Phase `missing_exec_yields_none`.
         {
             let entry = "[Desktop Entry]\nName=No Exec\nType=Application\n";
             assert!(parse_desktop_entry(entry).is_none());
         }
-        // Phase `read_sessions_reads_a_directory`.
         {
             let dir =
                 std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
@@ -231,7 +226,6 @@ Type=Application
             assert_eq!(sessions[0].name, "Tilo");
             assert_eq!(sessions[1].name, "Weston");
         }
-        // Phase `missing_directory_is_empty`.
         {
             let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
             assert!(sessions.is_empty());

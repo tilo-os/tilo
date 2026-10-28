@@ -56,14 +56,23 @@ adapter selection or driver-native pipeline creation. Linux rendering is unchang
 
 ## Simulated device loss (Vulkan)
 
-`vulkan::Device::simulate_device_loss` makes every later fence wait on that
-device return `DeviceError::Lost`, which is what the driver's
+`vulkan::Device::simulate_device_loss` makes every later fence wait and fence
+read on that device return `DeviceError::Lost`, which is what the driver's
 `VK_ERROR_DEVICE_LOST` becomes when the GPU is reset under in-flight work. wgpu-core then does what it
 does for a real reset: marks the device invalid and runs its device-lost
 callback. The compositor's tests reach it through `wgpu::Device::as_hal` to
 prove it survives a reset. It is a per-device flag that only that method sets,
 so it is inert in every other build; the change is `DeviceShared::simulated_loss`
-and an early return in `Device::wait` (`src/vulkan/device.rs`).
+and early returns in `Device::{wait, get_fence_value}` (`src/vulkan/device.rs`).
+
+`vulkan::Device::simulate_hang` makes that device's GPU stop finishing work without
+reporting anything, as a GPU whose firmware stopped answering does while its kernel
+driver cannot reset it: `get_fence_value` stays at the last value it read before the
+call, and a wait for a later value sleeps out its timeout and reports it unreached
+(one without a timeout never returns). Toolkit and compositor tests use it to prove a
+GPU that stopped making progress is detected as lost. Like the loss switch it is a
+per-device flag only that method sets; the change is `DeviceShared::{fence_value_seen,
+hung_at}` and early returns in `Device::{get_fence_value, wait}`.
 
 ## Vulkan presentation damage
 

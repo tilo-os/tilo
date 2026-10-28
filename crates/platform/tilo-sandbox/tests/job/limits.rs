@@ -210,13 +210,7 @@ fn cgroup_kill_removes_a_daemon_the_job_left_running() {
         "the setsid daemon did not stay in the cgroup"
     );
     cg.kill().expect("cgroup.kill");
-    // It is gone within a moment.
-    let mut tries = 0;
-    while !cg.pids().is_empty() && tries < 500 {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        tries += 1;
-    }
-    assert!(cg.pids().is_empty(), "cgroup.kill left the daemon running");
+    tilo_test_env::wait_until("cgroup.kill to end the daemon", || cg.pids().is_empty());
     drop(cg);
     cleanup();
 }

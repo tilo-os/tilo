@@ -25,7 +25,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
     };
     let at = |time| {
         let moved = fixture.permissions.borrow().clone().at_unix_time(time);
-        *fixture.permissions.borrow_mut() = moved;
+        fixture.permissions.set(moved);
     };
     let outline = |resources: &[Resource]| {
         fn walk(resource: &Resource, out: &mut Vec<String>) {
@@ -148,7 +148,6 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
                 token = crate::published::fresh_token();
             }
             9 => {
-                // The repeated ids go again, and updates resume.
                 let mut seen = std::collections::HashSet::new();
                 items.retain(|item| seen.insert(item.id().to_owned()));
             }

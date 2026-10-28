@@ -132,7 +132,6 @@ impl ConnectionWait {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn waiting() -> (UnixStream, ConnectionWait, Nudge) {
         let (compositor, client) = UnixStream::pair().expect("socketpair");
@@ -140,26 +139,24 @@ mod tests {
         (compositor, wait, nudge)
     }
 
-    /// Run `wait` on a thread; fail if it is still asleep after `patience`.
-    fn woken_within(wait: ConnectionWait, patience: Duration) -> (Woken, ConnectionWait) {
+    /// Run `wait` on a thread; fail if it is still asleep after the shared
+    /// hang bound.
+    fn woken_within(wait: ConnectionWait) -> (Woken, ConnectionWait) {
         let (send, receive) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
             let woken = wait.wait();
             let _ = send.send(());
             (woken, wait)
         });
-        let finished = receive.recv_timeout(patience).is_ok();
-        assert!(finished, "the wait did not return within {patience:?}");
+        tilo_test_env::recv("the wait to return", &receive);
         thread.join().expect("waiter")
     }
 
     #[test]
     fn a_wait_returns_for_data_a_nudge_a_hangup_and_a_dropped_nudge() {
-        let patience = Duration::from_secs(5);
-        // Phase `readable_socket`.
         let (compositor, wait, nudge) = waiting();
         (&compositor).write_all(&[7]).expect("write");
-        let (woken, wait) = woken_within(wait, patience);
+        let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready);
         // Phase `nudge`: drains it, so the next wait would sleep again.
         let mut byte = [0u8; 1];
@@ -172,17 +169,15 @@ mod tests {
             .expect("drain the data");
         nudge.nudge();
         nudge.nudge();
-        let (woken, wait) = woken_within(wait, patience);
+        let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready);
         assert!(wait.drain_nudges(), "both nudges were drained at once");
-        // Phase `hangup_reads_once_more_then_closes`.
         drop(compositor);
-        let (woken, wait) = woken_within(wait, patience);
+        let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready, "one last read after a hangup");
         assert_eq!(wait.wait(), Woken::Closed);
-        // Phase `dropped_nudge_closes`.
         let (_compositor, wait, nudge) = waiting();
         drop(nudge);
-        assert_eq!(woken_within(wait, patience).0, Woken::Closed);
+        assert_eq!(woken_within(wait).0, Woken::Closed);
     }
 }

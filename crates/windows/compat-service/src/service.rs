@@ -1727,7 +1727,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn vm_routing_is_explicit_visible_and_publication_bound() {
-        // Phase `matching_vm_recipe_does_not_auto_route_without_explicit_action`.
         {
             let directory = TempDir::new().unwrap();
             let service = service(&directory);
@@ -1749,7 +1748,6 @@ mod tests {
             assert!(matches!(result, Err(ServiceError::ProgramNotRegistered(_))));
             assert_eq!(service.vm.calls.load(Ordering::SeqCst), 0);
         }
-        // Phase `explicit_vm_escalation_reuses_the_digest_pinned_capsule_installer`.
         {
             let directory = TempDir::new().unwrap();
             let service = service(&directory);
@@ -1782,7 +1780,6 @@ mod tests {
             assert_eq!(status.phase, VmInstallationPhase::Starting);
             assert_eq!(service.vm.install_calls.load(Ordering::SeqCst), 1);
         }
-        // Phase `explicit_vm_action_is_visible_before_delegate_is_called`.
         {
             let directory = TempDir::new().unwrap();
             let service = service(&directory);
@@ -1798,7 +1795,6 @@ mod tests {
             assert_eq!(status.route, RouteKind::Vm);
             assert!(status.vm_fallback_was_explicit);
         }
-        // Phase `protocol_launch_has_no_client_supplied_capability_field`.
         {
             let request = serde_json::json!({
                 "method": "launch",
@@ -1812,7 +1808,6 @@ mod tests {
             });
             assert!(serde_json::from_value::<crate::ProtocolRequest>(request).is_err());
         }
-        // Phase `published_vm_launch_uses_only_the_authenticated_publication_id`.
         {
             let directory = TempDir::new().unwrap();
             let calls = Arc::new(AtomicUsize::new(0));

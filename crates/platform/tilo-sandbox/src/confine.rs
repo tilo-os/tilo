@@ -21,6 +21,11 @@ use std::path::PathBuf;
 pub struct Policy {
     /// Files and directories (recursively) the helper may read.
     pub read_only: Vec<PathBuf>,
+    /// The helper may make connected `AF_UNIX` socket pairs, which a media
+    /// framework wakes its own threads through (every `GStreamer` bus and
+    /// clock makes one). A pair has no address and reaches nothing outside
+    /// the process; macOS allows them to every helper, Linux only with this.
+    pub socket_pairs: bool,
 }
 
 /// Why a start-up step failed.
@@ -55,6 +60,40 @@ pub fn detach() -> Result<(), ConfineError> {
 /// [`ConfineError::Setup`] when a limit cannot be set.
 pub fn limit_resources(max_open_files: u64) -> Result<(), ConfineError> {
     sys::limit_resources(max_open_files).map_err(ConfineError::Setup)
+}
+
+/// Cap the calling process's address space at `bytes`, so a helper that
+/// runs away with memory fails its own allocations instead of starving the
+/// host. Returns whether the platform enforces it: Linux does
+/// (`RLIMIT_AS`); macOS accepts the limit without enforcing it, and a
+/// process using the GPU maps far more address space than it touches, so it
+/// is not set there.
+///
+/// # Errors
+///
+/// [`ConfineError::Setup`] when Linux refuses the limit.
+pub fn limit_address_space(bytes: u64) -> Result<bool, ConfineError> {
+    sys::limit_address_space(bytes).map_err(ConfineError::Setup)
+}
+
+/// Bound the allocator's per-thread arenas, so the address space a process
+/// maps stops growing with the machine's core count. Call it first in `main`,
+/// before any thread starts, in a process that later sets
+/// [`limit_address_space`].
+///
+/// glibc gives threads arenas of their own, up to eight per core, each
+/// reserving 64 MiB of address space: a helper whose libraries start a
+/// thread per core (plugin loaders, shader compilation, a software
+/// rasterizer) maps gigabytes of reservations on a many-core machine before
+/// it allocates anything, more than a fixed cap allows. Elsewhere this does
+/// nothing.
+pub fn share_allocator_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt takes a parameter and a value; M_ARENA_MAX bounds the
+    // arenas created from then on and touches no memory.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
 }
 
 /// Confine the calling process to `policy`, irreversibly, for it and every
@@ -120,9 +159,25 @@ mod sys {
         super::set_limits(max_open_files)
     }
 
+    pub fn limit_address_space(bytes: u64) -> Result<bool, String> {
+        let value = bytes as libc::rlim_t;
+        let limit = libc::rlimit {
+            rlim_cur: value,
+            rlim_max: value,
+        };
+        // SAFETY: setrlimit with a valid struct.
+        if unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const limit) } != 0 {
+            return Err(format!(
+                "setrlimit(RLIMIT_AS): {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(true)
+    }
+
     pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
         confine_filesystem(policy).map_err(ConfineError::NotEnforced)?;
-        confine_syscalls().map_err(ConfineError::NotEnforced)
+        confine_syscalls(policy.socket_pairs).map_err(ConfineError::NotEnforced)
     }
 
     fn confine_filesystem(policy: &Policy) -> Result<(), String> {
@@ -141,8 +196,13 @@ mod sys {
         }
     }
 
-    fn confine_syscalls() -> Result<(), String> {
-        let program = sandbox_core::seccomp::parser_program().map_err(|e| e.to_string())?;
+    fn confine_syscalls(socket_pairs: bool) -> Result<(), String> {
+        let program = if socket_pairs {
+            sandbox_core::seccomp::parser_program_with_socket_pairs()
+        } else {
+            sandbox_core::seccomp::parser_program()
+        }
+        .map_err(|e| e.to_string())?;
         sandbox_core::seccomp::install(&program).map_err(|e| e.to_string())
     }
 }
@@ -248,6 +308,14 @@ mod sys {
         super::set_limits(max_open_files)
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the same signature as the Linux implementation, where setrlimit can fail"
+    )]
+    pub const fn limit_address_space(_bytes: u64) -> Result<bool, String> {
+        Ok(false)
+    }
+
     pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
         let profile = CString::new(profile(policy))
             .map_err(|_| ConfineError::NotEnforced("a path contains NUL".into()))?;
@@ -343,6 +411,10 @@ mod sys {
         Err(ConfineError::Unsupported.to_string())
     }
 
+    pub fn limit_address_space(_bytes: u64) -> Result<bool, String> {
+        Err(ConfineError::Unsupported.to_string())
+    }
+
     pub fn confine(_policy: &Policy) -> Result<(), ConfineError> {
         Err(ConfineError::Unsupported)
     }
@@ -393,6 +465,107 @@ mod tests {
         );
     }
 
+    /// A helper allowed socket pairs (a media framework's buses wake through
+    /// them) makes one while confined, and still reaches no endpoint.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn confined_child_with_socket_pairs_makes_a_pair_and_no_endpoint() {
+        if let Some(dir) = std::env::var_os(PAIR_PROBE_ENV) {
+            #[allow(
+                clippy::exit,
+                reason = "the re-executed probe reports through its exit status"
+            )]
+            std::process::exit(pair_probe(&PathBuf::from(dir)));
+        }
+        let root = std::env::temp_dir().join(format!("tilo-sandbox-pairs-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::confined_child_with_socket_pairs_makes_a_pair_and_no_endpoint",
+            ])
+            .env(PAIR_PROBE_ENV, &root)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        if cfg!(target_os = "linux") && status.code() == Some(PROBE_UNENFORCEABLE) {
+            eprintln!("skipped: this kernel cannot enforce the policy");
+            return;
+        }
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "pair probe failures (bit mask): {status}"
+        );
+    }
+
+    const PAIR_PROBE_ENV: &str = "TILO_SANDBOX_PAIR_PROBE_DIR";
+
+    fn pair_probe(root: &std::path::Path) -> i32 {
+        use std::os::unix::net::{UnixDatagram, UnixStream};
+        let policy = Policy {
+            read_only: vec![root.to_path_buf()],
+            socket_pairs: true,
+        };
+        if detach().is_err() {
+            return 200;
+        }
+        match confine(&policy) {
+            Ok(()) => {}
+            Err(ConfineError::NotEnforced(message)) => {
+                eprintln!("{message}");
+                return PROBE_UNENFORCEABLE;
+            }
+            Err(_) => return 201,
+        }
+        let mut failures = 0;
+        if UnixStream::pair().is_err() {
+            failures |= 1;
+        }
+        if UnixDatagram::bind(root.join("sock")).is_ok() {
+            failures |= 2;
+        }
+        if std::net::TcpStream::connect("127.0.0.1:9").is_ok() {
+            failures |= 4;
+        }
+        failures
+    }
+
+    /// The cap is enforced where the platform enforces it, and reported as
+    /// not set where it would not hold (macOS).
+    #[test]
+    fn address_space_cap_reports_whether_it_holds() {
+        if let Some(cap) = std::env::var_os(CAP_PROBE_ENV) {
+            let bytes: u64 = cap.to_string_lossy().parse().unwrap();
+            let code = match limit_address_space(bytes) {
+                Ok(true) => {
+                    // A 1 GiB allocation cannot fit under a 512 MiB cap.
+                    let mut big: Vec<u8> = Vec::new();
+                    i32::from(big.try_reserve_exact(1 << 30).is_ok())
+                }
+                Ok(false) => 2,
+                Err(_) => 3,
+            };
+            #[allow(
+                clippy::exit,
+                reason = "the re-executed probe reports through its exit status"
+            )]
+            std::process::exit(code);
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "confine::tests::address_space_cap_reports_whether_it_holds",
+            ])
+            .env(CAP_PROBE_ENV, (512_u64 << 20).to_string())
+            .status()
+            .unwrap();
+        let expected = if cfg!(target_os = "linux") { 0 } else { 2 };
+        assert_eq!(status.code(), Some(expected), "cap probe: {status}");
+    }
+
+    const CAP_PROBE_ENV: &str = "TILO_SANDBOX_CAP_PROBE";
+
     const PROBE_UNENFORCEABLE: i32 = 100;
 
     fn probe(root: &std::path::Path) -> i32 {
@@ -400,6 +573,7 @@ mod tests {
         let allowed = root.join("allowed");
         let policy = Policy {
             read_only: vec![allowed.clone()],
+            socket_pairs: false,
         };
         if detach().is_err() {
             return 200;

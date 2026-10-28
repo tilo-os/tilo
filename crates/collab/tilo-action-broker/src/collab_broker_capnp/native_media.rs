@@ -29,10 +29,6 @@ impl NativeMediaRequestContext {
         &self.record_id
     }
     /// Re-checks that the admitted connection, process and route are still live.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message once the connection, process or admission lapsed.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -146,7 +142,16 @@ impl PeerProcess {
     pub(super) async fn exited(&self) {
         let watch = |task: &Arc<std::os::fd::OwnedFd>| {
             task.try_clone().ok().and_then(|task| {
-                tokio::io::unix::AsyncFd::with_interest(task, tokio::io::Interest::READABLE).ok()
+                // SAFETY: `task` is a fresh duplicate of the pidfd, moved into
+                // the AsyncFd and held nowhere else, so it stays open until
+                // the AsyncFd deregisters it on drop.
+                unsafe {
+                    tokio::io::unix::AsyncFd::register_with_interest(
+                        task,
+                        tokio::io::Interest::READABLE,
+                    )
+                }
+                .ok()
             })
         };
         let task = watch(&self.task);
@@ -331,14 +336,20 @@ fn watch_death(
         .launcher
         .as_ref()
         .map(|task| {
-            tokio::io::unix::AsyncFd::new(PeerProcess {
+            let watched = PeerProcess {
                 task: Arc::clone(task),
                 executing: None,
                 launcher: None,
-            })
+            };
+            // SAFETY: `watched.task` is an `Arc<OwnedFd>`, and `as_raw_fd`
+            // returns that pidfd. The AsyncFd owns `watched` and so one strong
+            // reference, which keeps the pidfd open until it deregisters.
+            unsafe { tokio::io::unix::AsyncFd::register(watched) }.map_err(std::io::Error::from)
         })
         .transpose()?;
-    let process = tokio::io::unix::AsyncFd::new(process)?;
+    // SAFETY: as above. `process.task` is the `Arc<OwnedFd>` that
+    // `as_raw_fd` reports, kept open by the reference the AsyncFd owns.
+    let process = unsafe { tokio::io::unix::AsyncFd::register(process) }?;
     Ok(tokio::spawn(async move {
         // Death and monitor failure both revoke before the callback returns.
         tokio::select! {
@@ -378,7 +389,7 @@ impl CapnpChannelHandle {
             Ok(context) => context,
             Err(error) => {
                 if let Some(service) = &self.state.services.audio_output {
-                    service.disconnect(self.peer_id);
+                    service.disconnect(self.connection_id);
                 }
                 return Err(error);
             }
@@ -437,7 +448,7 @@ impl CapnpChannelHandle {
                 .map_err(|_| "local media admission ended".into())
         });
         Ok(NativeMediaRequestContext {
-            peer_id: self.peer_id,
+            peer_id: self.connection_id,
             app_id: route.app_id,
             workspace_id: route.cluster_id,
             record_id: route.record_id,
@@ -513,6 +524,7 @@ impl CapnpChannelHandle {
             request.command,
             runtime_collab::native_media::Command::Leave
                 | runtime_collab::native_media::Command::SetMuted { muted: true }
+                | runtime_collab::native_media::Command::SetDeafened { deafened: true }
         );
         let context = self.native_media_context(stopping).inspect_err(|_| {
             tracing::debug!("native media broker refused local context");

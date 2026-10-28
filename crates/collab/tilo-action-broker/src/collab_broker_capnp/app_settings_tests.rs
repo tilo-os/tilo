@@ -1,8 +1,5 @@
-//! An app's settings capability over the session's records.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use runtime_collab::AppSettingsHandle;
 use runtime_collab::settings::host::{AppSettingsServer, Revalidate};
@@ -52,6 +49,7 @@ fn an_apps_write_reaches_the_person_record_and_the_copy() {
             .update(
                 "app_personal",
                 br#"{"so.tilo.monitor": {"confirm_kill": false}}"#,
+                None,
             )
             .await
             .unwrap();
@@ -78,17 +76,26 @@ fn an_app_cannot_write_another_apps_entry_or_a_shared_section() {
     run(async {
         assert!(
             settings
-                .update("app_personal", br#"{"so.tilo.notes": {"font": "mono"}}"#)
+                .update(
+                    "app_personal",
+                    br#"{"so.tilo.notes": {"font": "mono"}}"#,
+                    None
+                )
                 .await
                 .is_err()
         );
         assert!(
             settings
-                .update("locale", br#"{"so.tilo.monitor": {"region": "US"}}"#)
+                .update("locale", br#"{"so.tilo.monitor": {"region": "US"}}"#, None)
                 .await
                 .is_err()
         );
-        assert!(settings.update("app_personal", br"[1, 2]").await.is_err());
+        assert!(
+            settings
+                .update("app_personal", br"[1, 2]", None)
+                .await
+                .is_err()
+        );
     });
     assert!(records.load().is_empty());
 }
@@ -118,13 +125,11 @@ fn a_record_change_reaches_a_waiting_reader_and_others_do_not() {
         records
             .update_section("power", object(json!({"auto_suspend": false})))
             .unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(600), &mut waiting)
-                .await
-                .is_err()
-        );
-        // Another device's write of the app's personal entry, as the device
-        // fabric applies it.
+        // The view's revision stays, and a read waiting for another one
+        // answers only when it changes.
+        let unchanged = settings.read(0).await.unwrap();
+        assert_eq!(unchanged.revision, first.revision);
+        assert_eq!(unchanged.document_json, first.document_json);
         records
             .update_section("app_personal", object(json!({APP: {"interval_ms": 3000}})))
             .unwrap();
@@ -162,7 +167,7 @@ fn a_withdrawn_admission_refuses_reads_and_writes() {
         assert!(settings.read(0).await.is_err());
         assert!(
             settings
-                .update("app_personal", br#"{"so.tilo.monitor": {"x": 1}}"#)
+                .update("app_personal", br#"{"so.tilo.monitor": {"x": 1}}"#, None)
                 .await
                 .is_err()
         );
@@ -256,6 +261,32 @@ fn dictionary_snapshot(
     delivery.snapshot
 }
 
+/// Send one dictionary edit the way Settings' dictionary pane does, as the
+/// dictionary's owner at `revision`; true when the host took it.
+#[allow(
+    clippy::future_not_send,
+    reason = "a capnp-rpc settings handle is single-threaded; `run` drives this on its \
+              current-thread `LocalSet`"
+)]
+async fn edit(
+    handle: &AppSettingsHandle,
+    revision: u64,
+    edit: settings_store::personal_dictionary::Edit,
+) -> bool {
+    use settings_store::personal_dictionary::host;
+    let command = host::Command {
+        owner: [1; 32],
+        revision,
+        edit,
+    };
+    let values =
+        serde_json::to_vec(&json!({ "so.tilo.settings": { host::EDIT_KEY: command } })).unwrap();
+    handle
+        .update("app_device_local", &values, None)
+        .await
+        .is_ok()
+}
+
 #[test]
 fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
     use settings_store::personal_dictionary::{Edit, Service, Word, host};
@@ -283,14 +314,11 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
         Some([1; 32]),
     );
     let visitor = dictionary_handle("so.tilo.settings", source, admitted(), None);
-    let command = |revision, edit| {
-        serde_json::to_vec(&json!({ "so.tilo.settings": { host::EDIT_KEY: host::Command { owner: [1; 32], revision, edit } } })).unwrap()
-    };
+    let tilo = || Word::new("Tilo", None).unwrap();
     run(async {
         let before = osk.read(0).await.unwrap();
-        let add = command(0, Edit::Add(Word::new("Tilo", None).unwrap()));
-        assert!(visitor.update("app_device_local", &add).await.is_err());
-        settings.update("app_device_local", &add).await.unwrap();
+        assert!(!edit(&visitor, 0, Edit::Add(tilo())).await);
+        assert!(edit(&settings, 0, Edit::Add(tilo())).await);
         let after = osk.read(before.revision).await.unwrap();
         assert!(after.revision > before.revision);
         assert_eq!(
@@ -309,20 +337,12 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
                 .get("app_device_local")
                 .is_none()
         );
-        assert!(settings.update("app_device_local", &add).await.is_err());
-        settings
-            .update(
-                "app_device_local",
-                &command(
-                    1,
-                    Edit::Replace {
-                        old: Word::new("Tilo", None).unwrap(),
-                        new: Word::new("TiLo", None).unwrap(),
-                    },
-                ),
-            )
-            .await
-            .unwrap();
+        assert!(!edit(&settings, 0, Edit::Add(tilo())).await);
+        let replace = Edit::Replace {
+            old: tilo(),
+            new: Word::new("TiLo", None).unwrap(),
+        };
+        assert!(edit(&settings, 1, replace).await);
         let edited = dictation.read(voice.revision).await.unwrap();
         assert_eq!(
             dictionary_snapshot(&edited, "so.tilo.dictation")
@@ -330,13 +350,7 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
                 .collect::<Vec<_>>(),
             ["TiLo"]
         );
-        settings
-            .update(
-                "app_device_local",
-                &command(2, Edit::Remove(Word::new("TiLo", None).unwrap())),
-            )
-            .await
-            .unwrap();
+        assert!(edit(&settings, 2, Edit::Remove(Word::new("TiLo", None).unwrap())).await);
         assert!(
             dictionary_snapshot(&osk.read(after.revision).await.unwrap(), "so.tilo.osk")
                 .words
@@ -344,13 +358,114 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
         );
         allowed.store(false, Ordering::Release);
         assert!(settings.read(0).await.is_err());
-        assert!(
-            settings
-                .update("app_device_local", &command(3, Edit::Reset))
-                .await
-                .is_err()
-        );
+        assert!(!edit(&settings, 3, Edit::Reset).await);
     });
     assert!(records.load().is_empty());
     assert!(load_at(&records.paths().copy).is_empty());
+}
+
+#[test]
+fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
+    use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let paths = records.paths().clone();
+    let reach = Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]);
+    assert_eq!(reach, Reach::System);
+    let channel = |app: &str, reach: Reach| -> AppSettingsHandle {
+        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+            AppSettingsServer::new(
+                app,
+                Arc::clone(&records) as Arc<dyn SettingsSource>,
+                admitted(),
+            )
+            .with_reach(reach),
+        );
+        client.into()
+    };
+    let settings = channel("so.tilo.settings", reach);
+    let notes = channel(
+        "so.tilo.notes",
+        Reach::of("so.tilo.notes", &[SYSTEM_SETTINGS_CAPABILITY]),
+    );
+    run(async {
+        let written = settings
+            .update(
+                "appearance",
+                br#"{"high_contrast": true, "text_scale": 1.3}"#,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            view(&written.document_json)["appearance"]["high_contrast"],
+            true
+        );
+        settings
+            .update("input", br#"{"keyboard_layout": "de"}"#, None)
+            .await
+            .unwrap();
+        assert!(
+            notes
+                .update("appearance", br#"{"high_contrast": false}"#, None)
+                .await
+                .is_err(),
+            "an app without the grant writes only its own entries"
+        );
+    });
+    let document = records.load();
+    assert_eq!(document["appearance"]["high_contrast"], true);
+    assert_eq!(document["appearance"]["text_scale"], 1.3);
+    assert_eq!(document["input"]["keyboard_layout"], "de");
+    let copy = load_at(&paths.copy);
+    assert_eq!(
+        copy["appearance"]["high_contrast"], true,
+        "every host reading the session's document sees it"
+    );
+}
+
+// The session's history keeps which action made a change an app wrote over
+// its channel, so "who changed this" stays answered; a write no action made
+// is kept without one. Who invoked it is not the app's to claim.
+#[test]
+fn a_write_over_the_channel_keeps_the_action_that_made_it() {
+    use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
+    let dir = tempfile::tempdir().unwrap();
+    let records = session(dir.path());
+    let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+        AppSettingsServer::new(
+            "so.tilo.settings",
+            Arc::clone(&records) as Arc<dyn SettingsSource>,
+            admitted(),
+        )
+        .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY])),
+    );
+    let settings: AppSettingsHandle = client.into();
+    run(async {
+        settings
+            .update(
+                "appearance",
+                br#"{"high_contrast": true}"#,
+                Some("appearance/high_contrast"),
+            )
+            .await
+            .unwrap();
+        settings
+            .update("appearance", br#"{"text_scale": 1.3}"#, None)
+            .await
+            .unwrap();
+    });
+    let log = records.change_log();
+    let entry = |leaf: &str| {
+        log.iter()
+            .rev()
+            .find(|entry| entry["section"] == "appearance" && entry["leaf"] == leaf)
+            .cloned()
+            .unwrap_or_else(|| panic!("the history has appearance.{leaf}: {log:?}"))
+    };
+    let contrast = entry("high_contrast");
+    assert_eq!(contrast["after"], true);
+    assert_eq!(contrast["action"], "appearance/high_contrast");
+    assert!(contrast["principal"].is_null(), "{contrast}");
+    assert!(entry("text_scale")["action"].is_null());
 }

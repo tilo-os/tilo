@@ -23,6 +23,9 @@ REPO="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib/containerfile.sh"
 
 fails=0
+# What the Containerfiles copy from outside os/: tools/ci/suites.toml lists each as an input of
+# this group, so deleting one runs it again.
+outside=()
 bad() { printf '[FAIL]   %s\n' "$*"; fails=$((fails+1)); }
 ok()  { printf '[ OK ]   %s\n' "$*"; }
 note() { printf '[info]   %s\n' "$*"; }
@@ -54,6 +57,8 @@ for spec in "os/Containerfile:$REPO" \
     [ "$stage" = context ] || continue
     # Build-arg-interpolated or stage-relative paths cannot be resolved from here.
     case "$src" in *'$'*|'') continue ;; esac
+    path="${ctx_rel:+$ctx_rel/}$src"; path="${path%/}"
+    case "$path" in os|os/*|.) ;; *) outside+=("$path") ;; esac
     [ -e "$ctx/$src" ] && { checked=$((checked+1)); continue; }
     if staged_at_build_time "${ctx_rel:+$ctx_rel/}$src"; then
       skipped=$((skipped+1)); continue
@@ -99,6 +104,19 @@ done
 if [ -e "$REPO/os/etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf" ]; then
   bad "sleep.conf has no FreezeUserSessions key; systemd-sleep only reads its environment"
 fi
+
+unlisted="$(printf '%s\n' "${outside[@]}" | sort -u | python3 -I -c '
+import sys, tomllib
+manifest = tomllib.load(open(sys.argv[1], "rb"))
+listed = next(group["inputs"] for group in manifest["group"] if group["name"] == "containerfile-sources")
+for path in sys.stdin.read().split():
+    if not any(path == entry.rstrip("/") or entry.endswith("/") and path.startswith(entry) for entry in listed):
+        print(path)
+' "$REPO/tools/ci/suites.toml")"
+for path in $unlisted; do
+  bad "a Containerfile copies $path, which tools/ci/suites.toml's containerfile-sources group doesn't list
+         among its inputs: add it, so a change that deletes it runs this suite"
+done
 
 if [ "$fails" -eq 0 ]; then
   printf '\nall Containerfile COPY sources resolve\n'

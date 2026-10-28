@@ -1,4 +1,3 @@
-//! The exact production `DeviceAuth` gate, including its adversarial tests.
 use getrandom as auth_random;
 use google_cast_protocol as protocol;
 use rand_core as auth_rng;

@@ -10,12 +10,19 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{DRAG_EDGE_BAND_PX, DRAG_EDGE_MAX_STEP, DRAG_EDGE_PAN_PX_PER_S, GroupRow};
-use crate::time::{Duration, Instant};
+use super::GroupRow;
+use crate::edge_autoscroll::{self, EdgeAutoscroll};
+use crate::time::Instant;
 use crate::widget::edge_resize::{
     DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, Seam, WindowEdge, seam_owner,
 };
 use crate::widget::{RESIZE_HANDLE_PX, Widget, WindowGroup};
+
+/// How deep the band along the display's edge is in which an edge resize
+/// scrolls the strip. Shallower than the strip's gutter
+/// ([`super::STRIP_EDGE_GUTTER_PX`]), where the outer edge of the first and
+/// last window rests: a drag into the gutter only resizes the window.
+pub(super) const RESIZE_AUTOSCROLL_BAND: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 /// An edge resize in flight, with its windows named by id: a window may
 /// close or move while the pointer is down.
@@ -26,7 +33,6 @@ pub(super) struct RowEdgeDrag {
     other_id: Option<u64>,
     /// The lane whose pan the drag holds.
     lane: usize,
-    /// The pointer's x when pressed, and now.
     press_x: f64,
     pointer_x: f64,
     /// The lane's pan when pressed.
@@ -34,8 +40,8 @@ pub(super) struct RowEdgeDrag {
     /// How far the strip has auto-scrolled under a pointer resting at the
     /// display's edge (positive: its canvas moved left).
     autoscroll: f64,
-    /// When the auto-scroll last advanced; `None` outside the edge bands.
-    edge_tick: Option<Instant>,
+    /// The auto-scroll's frame clock.
+    edge: EdgeAutoscroll,
 }
 
 impl RowEdgeDrag {
@@ -124,8 +130,11 @@ impl GroupRow {
             let last = shown
                 .get(k.saturating_add(1))
                 .is_none_or(|next| !adjacent(window, next));
-            let leading = Rect::new(r.x0, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
-            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1, r.y1);
+            // An outer edge reaches as far out over the empty canvas as it
+            // does into the window, so it is as easy a target as a seam
+            // without taking any more of the window's content.
+            let leading = Rect::new(r.x0 - RESIZE_HANDLE_PX, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
+            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1 + RESIZE_HANDLE_PX, r.y1);
             if first && leading.contains(p) {
                 return Some(EdgeGrab {
                     group: i,
@@ -152,7 +161,6 @@ impl GroupRow {
         .then_some(other)
     }
 
-    /// Whether an edge resize is in flight.
     pub fn edge_resize_in_flight(&self) -> bool {
         self.edge_drag.is_some()
     }
@@ -170,8 +178,8 @@ impl GroupRow {
             || self.groups.iter().any(WindowGroup::drag_in_flight)
     }
 
-    /// Show which window a press at `p` would change: the owner's edge grip,
-    /// and with Shift held the grip of the window it would trade with.
+    /// Show which window a press at `p` would change: the owner's edge, and
+    /// with Shift held the edge of the window it would trade with.
     fn hover_edge(&mut self, p: Point, shift: bool) {
         let hover = if self.edge_resize_blocked() {
             None
@@ -181,6 +189,16 @@ impl GroupRow {
         if hover != self.edge_hover {
             self.edge_hover = hover;
             self.show_edge_hover();
+        }
+    }
+
+    /// A window that moved under a still pointer (a drag let go, the strip
+    /// settling) no longer lights an edge the pointer has left.
+    pub(super) fn recheck_edge_hover(&mut self) {
+        if self.edge_drag.is_none()
+            && let Some((_, shift)) = self.edge_hover
+        {
+            self.hover_edge(self.last_cursor, shift);
         }
     }
 
@@ -310,7 +328,7 @@ impl GroupRow {
             pointer_x: x,
             origin_scroll,
             autoscroll: 0.0,
-            edge_tick: None,
+            edge: EdgeAutoscroll::default(),
         });
         self.edge_hover = None;
         self.show_edge_hover();
@@ -346,6 +364,11 @@ impl GroupRow {
         let Some(drag) = self.edge_drag.take() else {
             return;
         };
+        if commit {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::ResizedWindow,
+            );
+        }
         let mut settle = 0.0;
         for id in std::iter::once(drag.grabbed_id).chain(drag.other_id) {
             let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
@@ -362,8 +385,8 @@ impl GroupRow {
                 settle = change;
             }
         }
-        let now = crate::time::now();
-        let omega = self.move_omega;
+        let now = crate::motion::frame_now();
+        let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
         let pan = self.pan_of_lane_mut(drag.lane);
         pan.scroll_x = if commit {
@@ -379,7 +402,7 @@ impl GroupRow {
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {
-            pan.glide_to(rest, now, omega);
+            pan.glide_to(rest, now, timing);
         }
         self.scroll_dirty = true;
         self.hover_edge(self.last_cursor, false);
@@ -395,19 +418,14 @@ impl GroupRow {
             return false;
         };
         let velocity = self.edge_autoscroll_velocity(&drag);
-        if velocity.abs() < f64::EPSILON {
-            drag.edge_tick = None;
+        let step = drag.edge.advance(velocity, now);
+        if step == 0.0 {
             self.edge_drag = Some(drag);
             return false;
         }
-        let step = drag
-            .edge_tick
-            .map_or(Duration::ZERO, |last| now.saturating_duration_since(last))
-            .min(DRAG_EDGE_MAX_STEP);
-        drag.edge_tick = Some(now);
         let before = drag.drag.resize(drag.travel());
         let mut next = drag;
-        next.autoscroll += velocity * step.as_secs_f64();
+        next.autoscroll += step;
         let after = drag.drag.resize(next.travel());
         let pan = self.pan_of_lane(drag.lane);
         let scroll = drag.origin_scroll + after.pan + next.autoscroll;
@@ -436,21 +454,17 @@ impl GroupRow {
     }
 
     /// How fast (px/s, negative leftwards) the strip pans under an edge drag
-    /// whose pointer rests in the lane's edge band: from nothing at the
-    /// band's inner side to full speed against the edge.
+    /// pushed against the display's edge ([`RESIZE_AUTOSCROLL_BAND`]), past
+    /// where it was pressed: a window edge at the display's edge, grabbed and
+    /// held, stays as it is.
     fn edge_autoscroll_velocity(&self, drag: &RowEdgeDrag) -> f64 {
         let view = self.pan_of_lane(drag.lane).viewport;
-        if view.width() <= DRAG_EDGE_BAND_PX * 2.0 {
-            return 0.0;
-        }
-        let into_left = DRAG_EDGE_BAND_PX - (drag.pointer_x - view.x0);
-        let into_right = DRAG_EDGE_BAND_PX - (view.x1 - drag.pointer_x);
-        if into_left > 0.0 {
-            -DRAG_EDGE_PAN_PX_PER_S * (into_left / DRAG_EDGE_BAND_PX).min(1.0)
-        } else if into_right > 0.0 {
-            DRAG_EDGE_PAN_PX_PER_S * (into_right / DRAG_EDGE_BAND_PX).min(1.0)
-        } else {
-            0.0
-        }
+        edge_autoscroll::velocity_past_press(
+            drag.pointer_x,
+            drag.press_x,
+            view.x0,
+            view.x1,
+            RESIZE_AUTOSCROLL_BAND,
+        )
     }
 }

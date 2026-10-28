@@ -12,6 +12,7 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use automerge::{ObjId, ObjType, Value};
 
@@ -166,6 +167,34 @@ impl ModelTable {
             _ => None,
         }
     }
+
+    /// Whether a value of this table's type holds a value of `target`'s:
+    /// it is one, or a field of it is, an option's value, or an item of a
+    /// collection of it, at any depth a record nests.
+    pub(crate) fn holds(&'static self, target: &'static Self) -> bool {
+        fn within(table: &'static ModelTable, target: &'static ModelTable, depth: u8) -> bool {
+            if std::ptr::eq(table, target) {
+                return true;
+            }
+            // Records nest a handful deep; a type that holds itself (a tree
+            // of boxed nodes) is not walked without end.
+            if depth >= 16 {
+                return false;
+            }
+            if let Some(option) = table.option() {
+                return within(option.inner, target, depth.saturating_add(1));
+            }
+            table.record().is_some_and(|record| {
+                record.fields.iter().any(|field| {
+                    within(field.table, target, depth.saturating_add(1))
+                        || field.items.is_some_and(|items| {
+                            within(items.item_table, target, depth.saturating_add(1))
+                        })
+                })
+            })
+        }
+        within(self, target, 0)
+    }
 }
 
 /// A collection type's [`ItemSource`] functions, its type erased.
@@ -268,6 +297,9 @@ pub struct RecordDesc {
     pub label: Option<usize>,
     /// The positions of the fields its label joins (`#[model(label = "..")]`).
     pub label_parts: &'static [usize],
+    /// What names it, where its name is not a field's text as stored
+    /// (`#[model(label = path)]`).
+    pub label_with: Option<fn(&dyn Any) -> Option<String>>,
     /// Its type's name: what a deferred check is known by.
     pub name: fn() -> &'static str,
     /// Its stored shape.
@@ -381,8 +413,6 @@ pub fn replace_of<T: 'static>(
 pub(crate) fn mismatch() -> ModelError {
     ModelError::invalid("a value of another type")
 }
-
-// --- Tables of the types with their own `Model` functions ----------------
 
 /// The table of `T`, from its own [`Model`] functions.
 pub struct TableOf<T>(PhantomData<T>);
@@ -916,8 +946,6 @@ fn atom_collect_text(_: &ModelTable, value: &dyn Any, out: &mut Vec<String>) {
 fn atom_get_at<'a>(_: &ModelTable, value: &'a dyn Any, path: &[Segment]) -> Option<&'a dyn Any> {
     path.is_empty().then_some(value)
 }
-
-// --- Records ------------------------------------------------------------
 
 /// The functions of every record, over its [`RecordDesc`].
 pub static RECORD_OPS: ModelOps = ModelOps {
@@ -1515,12 +1543,33 @@ pub fn edit_fields(
     match path.split_first() {
         Some((Segment::Field(key), rest)) => {
             let Some(field) = record.fields.iter().find(|field| field.key == key) else {
-                return Err(ModelError::invalid(format!("no field `{key}`")));
+                let editable: Vec<&str> = record
+                    .fields
+                    .iter()
+                    .filter(|field| !field.readonly)
+                    .map(|field| field.key)
+                    .collect();
+                return Err(ModelError::invalid(format!(
+                    "no field `{key}`; the fields here are {}",
+                    editable.join(", ")
+                )));
             };
             // The outside settling an outbox entry, or forgetting a settled
             // one, is no edit of the field's content: a read-only outbox
-            // takes them.
-            if field.readonly && !matches!(op, EditOp::Settle { .. } | EditOp::Forget { .. }) {
+            // takes them. A reaction is always the invoker's own (the
+            // `Reactions` it reaches stores who invoked it), so it cannot
+            // forge anything a read-only field protects: a read-only
+            // message takes its reactions. Only a `Reactions` value accepts
+            // them; anything else refuses them as unsupported.
+            if field.readonly
+                && !matches!(
+                    op,
+                    EditOp::Settle { .. }
+                        | EditOp::Forget { .. }
+                        | EditOp::React { .. }
+                        | EditOp::Unreact { .. }
+                )
+            {
                 return Err(ModelError::Refused(format!(
                     "`{}` is changed only by the record's actions",
                     field.name
@@ -1666,10 +1715,14 @@ fn first_line(record: &RecordDesc, value: &dyn Any, index: usize) -> Option<Stri
     crate::__private::first_line_of(text)
 }
 
-/// [`Model::label`] of a record: the texts of its label fields joined by
-/// spaces, else its `#[model(label)]` field.
+/// [`Model::label`] of a record: what its `label = path` names it, else the
+/// texts of its label fields joined by spaces, else its `#[model(label)]`
+/// field.
 #[must_use]
 pub fn label(record: &RecordDesc, value: &dyn Any) -> Option<String> {
+    if let Some(name) = record.label_with {
+        return name(value).filter(|label| !label.is_empty());
+    }
     if !record.label_parts.is_empty() {
         let mut parts = Vec::new();
         for index in record.label_parts {
@@ -1920,8 +1973,6 @@ pub fn filled<T>(out: Option<T>) -> Result<T, ModelError> {
     }
 }
 
-// --- Edits of a value as a whole -------------------------------------------
-
 /// The value in a filled `Option` of its type.
 pub(crate) type Unstage = for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>;
 
@@ -1956,8 +2007,6 @@ pub(crate) fn edit_whole(
         other => Err(ModelError::unsupported(other)),
     }
 }
-
-// --- Option ---------------------------------------------------------------
 
 /// What `Option<T>`'s table reaches into one with.
 #[allow(
@@ -2355,8 +2404,6 @@ impl Run<'_> {
     }
 }
 
-// --- Enums of unit variants -----------------------------------------------
-
 /// A `#[derive(Model)]` enum of unit variants, each stored as its name.
 pub struct UnitDesc {
     /// The variants' stored names, in declaration order.
@@ -2526,8 +2573,6 @@ pub fn set_variant<T: 'static>(variant: Option<T>, target: &mut dyn Any) -> Resu
     Ok(())
 }
 
-// --- Values stored whole as JSON text -----------------------------------------
-
 /// A type stored whole through its serde form: as one JSON string, last
 /// writer winning ([`json_model!`](crate::json_model)), or as that form's
 /// maps, lists and scalars ([`value_model!`](crate::value_model)).
@@ -2539,7 +2584,7 @@ pub struct JsonDesc {
     /// The value's JSON form.
     pub to_value: fn(&dyn Any) -> serde_json::Value,
     /// The value's JSON form, or why it has none: what its stored text is
-    /// written from ([`json_text`]).
+    /// written from (`json_text`).
     pub try_value: fn(&dyn Any) -> Result<serde_json::Value, ModelError>,
     /// The value serialised, as compact JSON text: equal texts are equal
     /// JSON forms, so two values compare without building either form.
@@ -2550,7 +2595,7 @@ pub struct JsonDesc {
     /// such equality; unequal values are still compared by their forms.
     pub equal: Option<fn(&dyn Any, &dyn Any) -> bool>,
     /// Put the value of a JSON form into `out`, an `Option` of the type. The
-    /// stored text is read through it too ([`json_text`]).
+    /// stored text is read through it too (`json_text`).
     pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
     /// Put the type's default into `out`.
     pub default: fn(&mut dyn Any) -> Result<(), ModelError>,
@@ -2820,8 +2865,6 @@ pub static JSON_OPS: ModelOps = ModelOps {
     op_schemas: no_schemas,
 };
 
-// --- Vec ------------------------------------------------------------------
-
 /// A list's items, whatever their type.
 pub trait ListItems {
     fn count(&self) -> usize;
@@ -3062,8 +3105,6 @@ pub static VEC_OPS: ModelOps = ModelOps {
     op_lands: no_lands,
     op_schemas: no_schemas,
 };
-
-// --- Maps of string keys ---------------------------------------------------
 
 /// A map's entries, whatever their value type.
 pub trait MapEntries {
@@ -3340,7 +3381,7 @@ pub static MAP_OPS: ModelOps = ModelOps {
         // map holds it as a store left it: storing it writes nothing.
         let mut keys = differing;
         keys.extend(touched.keys());
-        keys.sort_unstable();
+        keys.compact_sort();
         keys.dedup();
         // What `store` writes: the stale keys deleted, then each entry
         // written, both in key order.

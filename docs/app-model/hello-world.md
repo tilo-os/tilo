@@ -167,7 +167,7 @@ the launcher supplies both, and a manifest that declares `sandbox.fs.read`
 or `sandbox.fs.write` is refused at install and at launch. See
 [`sandbox.md`](./sandbox.md).
 
-Notes on the placeholder `publisher.identity`: `tilo-app-package pack` with no
+Notes on the placeholder `publisher.identity`: `tilo package pack` with no
 `--identity` flag generates a fresh Ed25519 keypair, signs the package
 with it, and overwrites this field with the generated public key. What you
 put here is discarded. For repeatable publishing, pass
@@ -188,7 +188,7 @@ root.
 ## Step 8: pack
 
 ```
-$ tilo-app-package pack \
+$ tilo package pack \
     --manifest /tmp/hw-walkthrough/pkg-workdir/manifest.toml \
     --payload  /tmp/hw-walkthrough/pkg-workdir/payload \
     --output   /tmp/hw-walkthrough/my-example-hello.tapp
@@ -202,18 +202,19 @@ and the entrypoint binary.
 ## Step 9: install
 
 ```
-$ tilo-install install /tmp/hw-walkthrough/my-example-hello.tapp
-tilo-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+$ tilo app install /tmp/hw-walkthrough/my-example-hello.tapp
+my.example.hello 0.1.0 is from an unverified publisher (ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a): nobody you trust vouches for it.
+Install it anyway? [y/N] y
 installed: my.example.hello 0.1.0
   payload  : /tmp/tilo-hw-data/tilo-apps/pkgs/<package-id>
   pinned   : false
 run with:  tilo-install run my.example.hello
 ```
 
-The self-signed warning is expected — `tilo-app-package pack` generated a fresh
-keypair for this build. Everything works; add an attestor and use
-`--require-attestor` (see [`trust.md`](./trust.md)) when you're ready to
-harden.
+The question is expected — `tilo package pack` generated a fresh keypair for
+this build, so nobody you trust signed it. A script passes `--yes` instead of
+answering. Add an attestor and use `--require-attestor` (see
+[`trust.md`](./trust.md)) when you're ready to harden.
 
 ## Step 10: run
 
@@ -257,7 +258,7 @@ into your home directory:
 ```bash
 unset XDG_DATA_HOME XDG_CONFIG_HOME
 tilo-install runtime install --version 2026.07 --from-host --force
-tilo-install install /tmp/hw-walkthrough/my-example-hello.tapp
+tilo app install /tmp/hw-walkthrough/my-example-hello.tapp
 tilo-install list
 tilo-install run my.example.hello
 ```
@@ -266,8 +267,8 @@ The install tree lands under `~/.local/share/tilo-apps/` and
 `~/.local/share/tilo-runtime/`. Removal:
 
 ```bash
-tilo-install remove my.example.hello
-tilo-install runtime remove 2026.07
+tilo app remove my.example.hello
+tilo app runtime remove 2026.07
 ```
 
 ## Where to go next
@@ -275,7 +276,7 @@ tilo-install runtime remove 2026.07
 - **Add a `[cli]` block** to your manifest for PATH commands. See
   [`cli-apps.md`](./cli-apps.md).
 - **Get a real signing identity** and store it out-of-band. See
-  [`trust.md`](./trust.md) for `tilo-app-package pack --identity`.
+  [`trust.md`](./trust.md) for `tilo package pack --identity`.
 - **Ship for Linux, macOS and the web** from the same source. See
   [`cross-target.md`](./cross-target.md).
 - **Publish a format codec** as a WebAssembly module. See

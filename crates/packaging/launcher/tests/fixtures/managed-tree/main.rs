@@ -7,7 +7,6 @@ fn main() {
         io::{Read, Write},
         os::fd::{AsRawFd, FromRawFd},
         os::unix::net::UnixStream,
-        time::Duration,
     };
     fn service(name: &str) -> UnixStream {
         let fd: i32 = std::env::var(name)
@@ -22,7 +21,7 @@ fn main() {
     // svc_env_var currently uppercases the canonical service name verbatim.
     let mut model = service("TILO_SVC_MODEL-GATEWAY_FD");
     collab
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut challenge = [0; 32];
     collab.read_exact(&mut challenge).unwrap();
@@ -62,7 +61,6 @@ fn main() {
             unsafe { libc::_exit(42) };
         }
         let fd = collab.as_raw_fd();
-        // SO_PASSCRED on the host attaches this actual sender's outer PID.
         if unsafe { libc::write(fd, b"R".as_ptr().cast(), 1) } != 1 {
             unsafe { libc::_exit(43) };
         }

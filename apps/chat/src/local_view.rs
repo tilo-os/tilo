@@ -35,7 +35,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
             thread: self.thread_open.clone(),
             scroll: self.scroll,
             focus_thread: self.focus == crate::app::Focus::Thread,
-            left: self.left_flap_open(),
+            left: self.sidebar_open(),
             right: self.right_flap_open(),
             emoji: self.emoji_open,
             history: self.history_open.clone(),
@@ -91,7 +91,9 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         } else {
             crate::app::Focus::Main
         };
-        self.left_flap.snap(view.left);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(view.left);
+        }
         self.right_flap.snap(view.right);
         self.emoji_open = view.emoji;
         self.history_open = view.history.filter(|id| self.message(id).is_some());

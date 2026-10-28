@@ -250,7 +250,6 @@ mod tests {
 
     #[test]
     fn switch_control_scans_and_maps_only_the_configured_pair() {
-        // Phase `disabled_configuration_has_no_scan_deadline`.
         {
             let now = Instant::now();
             let mut runtime = fixed(
@@ -263,7 +262,6 @@ mod tests {
             );
             assert_eq!(runtime.tick(now + Duration::from_secs(2)), None);
         }
-        // Phase `automatic_scan_advances_and_reschedules`.
         {
             let now = Instant::now();
             let mut runtime = fixed(
@@ -285,7 +283,6 @@ mod tests {
                 Some(SwitchAction::Next)
             );
         }
-        // Phase `configured_pair_maps_next_and_activate_but_nothing_else`.
         {
             let now = Instant::now();
             let mut runtime = fixed(
@@ -309,7 +306,6 @@ mod tests {
                 None
             );
         }
-        // Phase `disabled_mode_preserves_even_the_configured_keys`.
         {
             let now = Instant::now();
             let mut runtime = fixed(

@@ -23,7 +23,6 @@ use super::{
 impl PhotosApp {
     /// Build the retained controls again, bound to their effects.
     pub(super) fn bind_controls(&mut self) {
-        self.invalidate_toolbar();
         let actions = self.actions.as_ref();
         self.directory_import_buttons = build_directory_import_buttons(actions);
         self.library_analysis_buttons = build_library_analysis_buttons(actions);
@@ -311,18 +310,18 @@ impl PhotosApp {
             Hit::PlacesList => self.places_list_mode = !self.places_list_mode,
             Hit::PlacesZoomIn => self.zoom_places_by(1.0),
             Hit::PlacesZoomOut => self.zoom_places_by(-1.0),
-            Hit::Selection(hit) => self.handle_selection_hit(hit),
-            Hit::More => {
-                if self.chrome.toolbar.shown_menu().is_some() {
-                    self.chrome.toolbar.close_menus();
-                } else {
-                    self.chrome.toolbar.open_overflow();
-                }
+            Hit::ZoomIn => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::In);
             }
-            Hit::Search => self
-                .chrome
-                .search_opener
-                .open(ui::search::SearchRequest::this_app()),
+            Hit::ZoomOut => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::Out);
+            }
+            Hit::ZoomReset => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::Reset);
+            }
+            Hit::Present => self.toggle_presentation(),
+            Hit::SlideShow => self.toggle_slide_show(),
+            Hit::Selection(hit) => self.handle_selection_hit(hit),
         }
     }
 }
@@ -381,7 +380,6 @@ impl Control {
             E::CropShownToView => Self::Toolbar(Hit::CropToView),
             E::ResetShownEdits => Self::Toolbar(Hit::Reset),
             E::ShareShown => Self::Toolbar(Hit::Share),
-            E::ToggleMoreMenu => Self::Toolbar(Hit::More),
             E::NewAlbum => Self::Album(AlbumEditorHit::New),
             E::EditAlbum => Self::Album(AlbumEditorHit::Edit),
             E::PreviousLibraryPage => Self::Album(AlbumEditorHit::PreviousPage),
@@ -488,7 +486,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         domain: &ui::ControlDomain,
         attachment: ui::control_custody::CustodyAttachment,
     ) {
-        ui::widget::controls::install_control_custody(&mut self.chrome.toolbar, domain, attachment);
         for button in self.retained_buttons_mut() {
             ui::widget::controls::install_control_custody(button, domain, attachment);
         }
@@ -498,15 +495,9 @@ impl ui::widget::controls::ActionControls for PhotosApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.chrome
-            .search_opener
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.chrome.toolbar))
-            .or_else(|| {
-                self.empty_state
-                    .as_mut()
-                    .and_then(|empty| ui::widget::controls::take_control_invocation(empty))
-            })
+        self.empty_state
+            .as_mut()
+            .and_then(|empty| ui::widget::controls::take_control_invocation(empty))
             .or_else(|| {
                 self.retained_buttons_mut()
                     .into_iter()
@@ -522,17 +513,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         // The buttons' canonical resources remain published by `resources`
         // and are dispatched through the same retained widgets.
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        bindings.extend(ui::widget::controls::control_action_bindings(
-            &self.chrome.toolbar,
-        ));
-        if self.header_back_visible() {
-            bindings.extend(ui::widget::controls::control_action_bindings(
-                &self.chrome.back,
-            ));
-        }
-        bindings.extend(ui::widget::controls::control_action_bindings(
-            &self.chrome.search,
-        ));
         if let Some(empty) = &self.empty_state {
             bindings.extend(ui::widget::controls::control_action_bindings(empty));
         }
@@ -542,10 +522,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         &mut self,
         allowed: &HashSet<tilo_actions::ActionAddress>,
     ) {
-        ui::widget::controls::refresh_control_action_availability(
-            &mut self.chrome.toolbar,
-            allowed,
-        );
         for button in self.retained_buttons_mut() {
             button.refresh_control_action_availability(allowed);
         }

@@ -185,7 +185,8 @@ pub const INSTALL_BIN_ENV: &str = "TILO_INSTALL_BIN";
 
 /// The installer binary. [`INSTALL_BIN_ENV`] overrides it in a developer
 /// build only (see [`package_store::dev_env`]), matching the compositor's
-/// launcher resolution; a release build runs `tilo-install` from `PATH`.
+/// launcher resolution; a release build runs Tilo OS's own, else the one on
+/// `PATH`.
 pub fn tilo_install_bin() -> String {
     tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
 }
@@ -194,7 +195,18 @@ pub fn tilo_install_bin() -> String {
 fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
     allowed_override
         .and_then(|value| value.into_string().ok())
-        .unwrap_or_else(|| "tilo-install".to_string())
+        .unwrap_or_else(installed_install_bin)
+}
+
+/// Where Tilo OS keeps `tilo-install`; elsewhere (another distribution, a
+/// development build) it is found on `PATH`.
+fn installed_install_bin() -> String {
+    const INSTALLED: &str = "/usr/libexec/tilo/tilo-install";
+    if Path::new(INSTALLED).is_file() {
+        INSTALLED.to_owned()
+    } else {
+        "tilo-install".to_owned()
+    }
 }
 
 /// The exact `tilo-install` invocation [`install`] runs. Split out so a
@@ -588,10 +600,6 @@ fn fetch_verified(
 }
 
 /// [`download_reporting`] for callers with nothing to report to.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`download_reporting`].
 pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
     download_reporting(url, dest, &mut |_| {})
 }
@@ -600,10 +608,6 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
 /// The staged file is removed either way: on success the bytes now
 /// live in the installed payload tree; on failure a half-written
 /// download isn't worth keeping.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`install_app_reporting`].
 pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
     install_app_reporting(app, &mut |_| {})
 }
@@ -627,9 +631,6 @@ pub fn install_app_reporting(
 /// Install an exact runtime from a configured repository without replacing an app.
 /// The normal downloader and installer retain registry, signature, payload and
 /// runtime publisher checks; an installed version follows the normal update policy.
-///
-/// # Errors
-/// Returns registry verification or offer errors, or the normal install refusal.
 pub fn install_runtime_reporting(
     runtime: &str,
     registry: &str,
@@ -688,6 +689,38 @@ pub fn install_runtime_from_enabled(
     Err(last_error.unwrap_or_else(|| InstallError::NotOffered {
         package_id: runtime.to_owned(),
     }))
+}
+
+/// Install the language pack for `locale` (`de-DE`) from the first enabled
+/// repository that offers it, through the verified pipeline apps and
+/// runtimes take; the caller names only the locale. Nothing is done when
+/// the newest offered version is installed already.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the locale, or the error of the install.
+pub fn install_language_pack_from_enabled(
+    locale: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    let package_id = crate::language_pack_id(locale);
+    let not_offered = || InstallError::NotOffered {
+        package_id: package_id.clone(),
+    };
+    let offers =
+        crate::language_pack_offers().map_err(|detail| InstallError::Download { detail })?;
+    let offer = offers
+        .into_iter()
+        .find(|offer| offer.offer.package_id == package_id)
+        .ok_or_else(not_offered)?
+        .offer;
+    match crate::installed_language_pack(locale) {
+        Some(installed) if installed == offer.version => Ok(()),
+        // An installed pack takes the update path apps and runtimes take.
+        Some(_) => update_app_reporting(&offer, on_progress),
+        None => install_or_update_app_reporting(&offer, on_progress, Change::Install),
+    }
 }
 
 /// What [`install_or_update_app_reporting`] does with the verified package.
@@ -753,30 +786,118 @@ fn ensure_app_runtime(
     }
 }
 
+/// A file in the staging directory that this process is downloading into or
+/// installing from. It goes when this is dropped; and since the process holds
+/// the file's lock for as long as it lives, a file nobody holds is one a
+/// process that died (killed, crashed, the machine switched off) left behind,
+/// and the next download removes it ([`sweep_abandoned_downloads`]).
+#[derive(Debug)]
+pub struct StagingFile {
+    path: PathBuf,
+    _lock: advisory_lock::FileLock,
+}
+
+impl StagingFile {
+    /// A new file in `staging` named after `stem`, locked by this process.
+    ///
+    /// # Errors
+    ///
+    /// When the staging directory cannot be written.
+    pub fn claim(staging: &Path, stem: &str) -> std::io::Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = staging.join(format!("{stem}.{}.{serial}.tapp", std::process::id()));
+            let file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            };
+            let lock = match advisory_lock::FileLock::try_exclusive(file) {
+                Ok(lock) => lock,
+                // A sweep took it between its creation and this lock, and
+                // removes it: take another name.
+                Err(advisory_lock::TryLockError::WouldBlock) => continue,
+                Err(advisory_lock::TryLockError::Error(error)) => return Err(error),
+            };
+            // A sweep may also have taken and removed it, and let go, before
+            // this lock: then the lock holds a file no name leads to.
+            if still_named(&lock, &path) {
+                return Ok(Self { path, _lock: lock });
+            }
+        }
+    }
+
+    /// Where the file is.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagingFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+fn still_named(lock: &advisory_lock::FileLock, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (lock.file().metadata(), std::fs::symlink_metadata(path)) {
+        (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn still_named(_lock: &advisory_lock::FileLock, path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Remove every file in `staging` no living process holds: downloads a
+/// process left behind when it died before it could remove them. Returns the
+/// bytes removed.
+pub fn sweep_abandoned_downloads(staging: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return 0;
+    };
+    let mut removed = 0u64;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let bytes = file.metadata().map_or(0, |meta| meta.len());
+        if let Ok(lock) = advisory_lock::FileLock::try_exclusive(file)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed = removed.saturating_add(bytes);
+            drop(lock);
+        }
+    }
+    removed
+}
+
 /// A package downloaded and checked against its signed offer, waiting in the
 /// staging directory for the installer. The file goes when this is dropped:
 /// once installed, its bytes live in the package store; after a failure it is
 /// not worth keeping.
 #[derive(Debug)]
 pub struct StagedPackage {
-    path: PathBuf,
+    file: StagingFile,
     bytes: u64,
-}
-
-impl Drop for StagedPackage {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 /// Download `app`'s package into the staging directory and check it against
 /// the signed offer: its length, then its BLAKE3.
-///
-/// # Errors
-///
-/// Returns an error if the offer's metadata is out of bounds, there is
-/// nowhere writable to stage, the download fails, or the bytes are not the
-/// signed ones.
 pub fn stage(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -797,9 +918,13 @@ pub fn stage(
             }
         })
         .collect();
-    let path = staging.join(format!("{safe_id}-{}.tapp", app.version.replace('/', "_")));
-    let bytes = fetch_verified(app, &path, on_progress)?;
-    Ok(StagedPackage { path, bytes })
+    sweep_abandoned_downloads(&staging);
+    let stem = format!("{safe_id}-{}", app.version.replace('/', "_"));
+    let file = StagingFile::claim(&staging, &stem).map_err(|error| InstallError::Download {
+        detail: format!("{}: {error}", staging.display()),
+    })?;
+    let bytes = fetch_verified(app, file.path(), on_progress)?;
+    Ok(StagedPackage { file, bytes })
 }
 
 /// Packages [`stage_each`] downloads at once.
@@ -865,7 +990,7 @@ fn install_staged(
     on_progress: &mut dyn FnMut(DownloadProgress),
     change: Change,
 ) -> Result<(), InstallError> {
-    let dest = staged.path.as_path();
+    let dest = staged.file.path();
     let downloaded = staged.bytes;
     install_optional_runtimes(app, dest, on_progress)?;
     let payload_from = payload_source(app);
@@ -990,11 +1115,6 @@ fn install_optional_runtimes(
 /// Progress includes download and installation phases; retry checks for an
 /// already verified installed bundle. A running app must be closed and relaunched
 /// through the normal launcher to receive the new read-only sandbox mount.
-///
-/// # Errors
-///
-/// Returns an error if the exact runtime is not offered, download or verification
-/// fails, or the installed runtime does not pass the launcher's verification.
 pub fn acquire_optional_runtime_reporting(
     app: &CatalogueApp,
     runtime: &str,
@@ -1011,10 +1131,6 @@ pub fn acquire_optional_runtime_reporting(
 /// Acquire an already admitted, exact runtime offer without resolving a newer offer.
 /// The host must validate the consuming app's signed optional declaration and
 /// revalidate this offer against its configured repository before calling.
-///
-/// # Errors
-/// Refuses a non-runtime offer, a different runtime, or any acquisition or
-/// post-install verification failure. No caller-selected source is admitted here.
 pub fn acquire_admitted_runtime_reporting(
     offer: &CatalogueApp,
     runtime: &str,
@@ -1057,10 +1173,6 @@ pub fn update_app_reporting(
 
 /// Download and atomically replace an installed app with an older version
 /// from a verified offer, keeping its saved state.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`update_app_reporting`].
 pub fn rollback_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -1069,10 +1181,6 @@ pub fn rollback_app_reporting(
 }
 
 /// Resolve `package_id` against the live catalogue, then install it.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`install_reporting`].
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
     install_reporting(package_id, &mut |_| {})
 }
@@ -1130,6 +1238,33 @@ fn installer_complaint(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_download_a_dead_process_left_goes_and_one_in_progress_stays() {
+        let staging = tempfile::tempdir().expect("staging dir");
+        // A process that died mid-download left its file and holds nothing.
+        let abandoned = staging.path().join("so.tilo.runtime-0.1.0.4242.0.tapp");
+        std::fs::write(&abandoned, vec![7_u8; 4096]).expect("abandoned download");
+        // This process is downloading another.
+        let current = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+        std::fs::write(current.path(), b"partial").expect("write");
+
+        assert_eq!(sweep_abandoned_downloads(staging.path()), 4096);
+        assert!(!abandoned.exists());
+        assert!(
+            current.path().exists(),
+            "a download in progress was removed"
+        );
+
+        // Two downloads of the same build never share a file.
+        let again = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+        assert_ne!(again.path(), current.path());
+
+        // Once the download is done with, its file goes with it.
+        let path = current.path().to_path_buf();
+        drop(current);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn an_install_that_would_fill_the_disk_is_refused_before_downloading() {
         let package = 1_000_000_000;
         assert!(room_for_install(package, 3_000_000_000).is_ok());
@@ -1144,11 +1279,10 @@ mod tests {
 
     #[test]
     fn the_installer_invocation_is_fixed_and_never_relaxes_signatures() {
-        // Phase `a_release_build_runs_the_installer_from_path`.
         {
             use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-            assert_eq!(tilo_install_bin_from(gated), "tilo-install");
+            assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
             let honoured =
                 dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
             assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
@@ -1280,7 +1414,6 @@ mod tests {
 
     #[test]
     fn package_downloads_are_explicit_bounded_and_match_signed_metadata() {
-        // Phase `staged_download_must_match_the_signed_registry_metadata`.
         {
             let bytes = b"signed package bytes";
             let app = registry_app_for(bytes);
@@ -1304,7 +1437,6 @@ mod tests {
                 Err(InstallError::Integrity { detail }) if detail.contains("outside")
             ));
         }
-        // Phase `streaming_download_stops_when_body_exceeds_the_offer_limit`.
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
@@ -1337,7 +1469,6 @@ mod tests {
                 "the over-limit chunk is rejected before it reaches disk"
             );
         }
-        // Phase `package_download_origin_is_explicit_and_credential_free`.
         {
             assert!(
                 safe_download_url("https://apps.tilo.so/artifacts/app.tapp?token=signed").is_ok()
@@ -1355,7 +1486,6 @@ mod tests {
                 );
             }
         }
-        // Phase `package_download_refuses_redirect_response`.
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
@@ -1477,7 +1607,6 @@ mod tests {
             assert!(fetch_verified(&app, &dest, &mut |_| {}).is_err());
             assert!(!dest.exists());
         }
-        // Phase `a_twin_of_other_bytes_fails_the_signed_hash`.
         {
             let mut other = package.clone();
             other[0] ^= 1;
@@ -1522,7 +1651,6 @@ mod tests {
 
     #[test]
     fn installer_errors_render_one_actionable_line() {
-        // Phase `errors_render_something_a_person_can_act_on`.
         {
             let cases = [
                 InstallError::NotOffered {
@@ -1577,7 +1705,6 @@ mod tests {
             .user_message();
             assert!(msg.contains('7'), "{msg:?}");
         }
-        // Phase `the_complaint_is_the_last_line_and_nothing_else`.
         {
             let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
             assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");

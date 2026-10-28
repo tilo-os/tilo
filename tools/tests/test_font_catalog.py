@@ -93,7 +93,7 @@ class CatalogBuildTest(unittest.TestCase):
         cls.directory.cleanup()
 
     def test_missing_python_identifies_the_interpreter_and_preparation_tool(self):
-        environment = dict(os.environ, PATH=self.directory.name)
+        environment = dict(os.environ, PATH=self.directory.name, OUT_DIR=self.directory.name)
         environment.pop("PYTHON", None)
         default_python = "python" if os.name == "nt" else "python3"
         for executable in [default_python, str(Path(self.directory.name) / "missing-python")]:
@@ -112,14 +112,19 @@ class CatalogBuildTest(unittest.TestCase):
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
         source = ROOT / "crates/sdk/ui-core/assets/fonts"
         fc.prepared_root(source, "fixtures")
-        environment = dict(os.environ, PYTHON=sys.executable, CARGO_NET_OFFLINE="true")
-        result = subprocess.run([str(self.build)], env=environment,
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        out = Path(self.directory.name) / "out"
+        out.mkdir()
+        environment = dict(os.environ, PYTHON=sys.executable, TILO_FONT_ASSETS_OFFLINE="1",
+                           OUT_DIR=str(out))
         prefix = "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT="
-        roots = [line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
-        self.assertEqual(len(roots), 1, result.stdout)
-        self.assertEqual(fc.verify(Path(roots[0]), "fixtures"), (37, 55771564))
+        # A second run replaces the first run's catalog, as cargo's rerun of the script does.
+        for _ in range(2):
+            result = subprocess.run([str(self.build)], env=environment,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            roots = [line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
+            self.assertEqual(roots, [str(out / "fonts")], result.stdout)
+            self.assertEqual(fc.verify(Path(roots[0]), "fixtures"), (37, 55771564))
 
 
 if __name__ == "__main__":

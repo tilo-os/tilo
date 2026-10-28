@@ -293,6 +293,7 @@ impl FileExplorerWidget {
         }
         once.extend(always);
         self.app_chooser.set_entries(once);
+        // window-bar: picker, the Open with chooser
         self.app_chooser
             .set_query_placeholder(t_args("files-open-with-search", &[arg("name", entry.name)]));
         self.app_chooser.open();
@@ -486,9 +487,9 @@ pub(super) fn append_open_with_actions(
         access: access.map(|access| access.as_str().to_owned()),
     }
     .bound_asking_params(params);
-    open_with.contract.kind = permission;
-    open_with.id = OPEN_WITH_ACTION.into();
-    open_with.label = t("files-menu-open-with");
+    open_with.type_mut().contract.kind = permission;
+    open_with.type_mut().id = OPEN_WITH_ACTION.into();
+    open_with.type_mut().label = t("files-menu-open-with");
     resource.actions.push(open_with);
     if let Some(chooser) = &facts.chooser {
         append_open_with_chooser_actions(candidates, chooser, resource_id, resource);
@@ -542,7 +543,7 @@ fn append_open_with_chooser_actions(
                 },
             };
             let spec = if let Some(access) = access.filter(|_| !always) {
-                let immediate = effect.bound().input;
+                let immediate = effect.bound().encode_immediate();
                 let mut spec = effect.bound_asking_params(vec![
                     ActionParam::optional_owned(
                         "access",
@@ -554,13 +555,15 @@ fn append_open_with_chooser_actions(
                         "type":"string", "const":access.as_str(), "default":access.as_str(),
                     })),
                 ]);
-                spec.contract.kind = permission;
+                spec.type_mut().contract.kind = permission;
                 // The existing chooser remains one click. Its immutable
                 // optional constant also describes the bound intent to the
                 // original host custody, without a second permission UI.
-                spec.input = immediate;
-                spec.id = format!("{prefix}{}", app.id);
-                spec.label = label;
+                if let Some(immediate) = immediate {
+                    spec = spec.with_immediate(std::sync::Arc::unwrap_or_clone(immediate));
+                }
+                spec.type_mut().id = format!("{prefix}{}", app.id);
+                spec.type_mut().label = label;
                 spec
             } else {
                 crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)
@@ -662,7 +665,7 @@ impl FileExplorerWidget {
     }
 
     /// The Recent list as stored.
-    fn recent_list(&self) -> crate::recent::RecentFiles {
+    pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
         self.recent_setting
             .as_ref()
             .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
@@ -670,38 +673,15 @@ impl FileExplorerWidget {
 
     /// The Recent listing: every remembered path that still exists, in
     /// recency order.
+    #[cfg(test)]
     pub(super) fn recent_entries(&self) -> Vec<Entry> {
-        self.recent_list()
+        let paths: Vec<PathBuf> = self
+            .recent_list()
             .items()
             .iter()
-            .filter_map(|item| {
-                let meta = std::fs::metadata(&item.path).ok()?;
-                let is_dir = meta.is_dir();
-                Some(Entry {
-                    name: item.path.file_name().map_or_else(
-                        || item.path.display().to_string(),
-                        |name| name.to_string_lossy().into_owned(),
-                    ),
-                    path: item.path.clone(),
-                    is_dir,
-                    size: meta.len(),
-                    modified: meta.modified().ok().map(chrono::DateTime::from),
-                    mime: if is_dir {
-                        "inode/directory".into()
-                    } else {
-                        tilo_mime::from_path_or_octet_stream(&item.path).to_string()
-                    },
-                    sync_state: None,
-                    content_hash: None,
-                    record_id: None,
-                    availability: None,
-                    share: None,
-                    history: None,
-                    rich_metadata: None,
-                    observed: host_fs::ObservedObject::from_metadata(&meta),
-                })
-            })
-            .collect()
+            .map(|item| item.path.clone())
+            .collect();
+        recent_entries_of(&paths)
     }
 
     /// `FileCommand::RevealInFolder` — go to the item's folder with it selected.
@@ -709,15 +689,12 @@ impl FileExplorerWidget {
         let Some(parent) = path.parent() else {
             return false;
         };
-        self.navigate(parent.to_path_buf());
-        if let Some(index) = self
-            .displayed_entries()
-            .iter()
-            .position(|entry| entry.path == path)
-        {
-            self.selection.select_only(index);
-            self.retain_shown_selection();
+        let parent = parent.to_path_buf();
+        if parent != self.current_path {
+            self.history.push(self.current_path.clone());
+            self.forward.clear();
         }
+        self.load_then(parent, super::Then::Select(path.to_path_buf()));
         true
     }
 
@@ -759,4 +736,39 @@ impl FileExplorerWidget {
         ));
         spec
     }
+}
+
+/// The Recent listing of `paths`: every one that still exists, in their order.
+pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            let is_dir = meta.is_dir();
+            Some(Entry {
+                name: path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+                path: path.clone(),
+                is_dir,
+                size: meta.len(),
+                modified: meta.modified().ok().map(chrono::DateTime::from),
+                mime: if is_dir {
+                    "inode/directory".into()
+                } else {
+                    tilo_mime::from_path_or_octet_stream(path).to_string()
+                },
+                sync_state: None,
+                content_hash: None,
+                record_id: None,
+                availability: None,
+                share: None,
+                history: None,
+                app: None,
+                rich_metadata: None,
+                observed: host_fs::ObservedObject::from_metadata(&meta),
+            })
+        })
+        .collect()
 }

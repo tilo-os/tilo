@@ -28,9 +28,6 @@ pub const MAX_PICTURE_SIDE: u32 = 8192;
 
 /// A PNG, JPEG or WebP decoded to straight RGBA, at most
 /// [`MAX_PICTURE_SIDE`] pixels a side.
-///
-/// # Errors
-/// Returns why the bytes are not a picture.
 pub fn decode(bytes: &[u8]) -> Result<ImageData, String> {
     let format = image::guess_format(bytes).map_err(|error| error.to_string())?;
     if !matches!(
@@ -53,9 +50,6 @@ pub fn decode(bytes: &[u8]) -> Result<ImageData, String> {
 }
 
 /// A picture's size in pixels, read from its header.
-///
-/// # Errors
-/// Returns why the bytes are not a picture.
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
     image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -64,7 +58,6 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
         .map_err(|error| error.to_string())
 }
 
-/// The picture behind a content address, from `content`.
 pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
     let hash = ui::tilo_actions::content_hash(address)?;
     content.read(hash)
@@ -475,7 +468,6 @@ impl Pictures {
         self.pyramid(address).map(|pyramid| pyramid.level(0))
     }
 
-    /// The picture's size in pixels.
     pub fn size(&mut self, address: &str) -> Option<(u32, u32)> {
         self.pyramid(address)
             .and_then(|pyramid| pyramid.levels.first())
@@ -490,9 +482,14 @@ impl Pictures {
                 return None;
             }
             let levels = match self.decoding.remove(address) {
-                // Already on its way: wait for it rather than decode twice.
-                Some(channel) => channel.recv().ok().flatten(),
-                None => bytes_of(&self.content(), address)
+                // Already on its way: wait for it rather than decode twice,
+                // where the thread can wait. A browser page cannot: its
+                // decode job runs only once this returns, so `recv` would
+                // never end; it decodes here instead.
+                Some(channel) if ui::rt::available(ui::rt::Feature::BlockOn) => {
+                    channel.recv().ok().flatten()
+                }
+                _ => bytes_of(&self.content(), address)
                     .and_then(|bytes| decode(&bytes).ok())
                     .map(|full| vec![full]),
             };

@@ -74,7 +74,7 @@ def main():
         print("Public reference inspection failed: " + str(error), file=sys.stderr)
         return 1
     if failures:
-        print("\n".join(failures), file=sys.stderr)
+        print("\n".join(failures))
         print(
             "\nThe repository is public: replace each internal tracker reference with what the reader"
             " needs, the behaviour or the reason in plain words. Citing a public pull request (#1234)"
@@ -82,7 +82,7 @@ def main():
             file=sys.stderr,
         )
         return 1
-    print("Public references OK: no internal tracker references in tracked files")
+    print("Public references OK: no internal tracker references in tracked files", file=sys.stderr)
     return 0
 
 

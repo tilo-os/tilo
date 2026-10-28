@@ -319,6 +319,7 @@ fn refresh_draft(source: &MorningSource) -> tilo_automation::Shortcut {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: Vec::new(),

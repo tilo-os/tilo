@@ -114,6 +114,8 @@ type Reply = (u64, Result<PeerSyncResponse, String>);
 pub(super) struct PeerSyncDispatch {
     inline: Option<PeerSyncBridge>,
     worker: Option<PeerSyncWorker>,
+    /// The session's network could not start: it is not coming.
+    failed: bool,
     next: u64,
     in_flight: BTreeMap<u64, FollowUp>,
     replies: mpsc::Sender<Reply>,
@@ -126,11 +128,71 @@ impl Default for PeerSyncDispatch {
         Self {
             inline: None,
             worker: None,
+            failed: false,
             next: 0,
             in_flight: BTreeMap::new(),
             replies,
             answered,
         }
+    }
+}
+
+/// A request's variant name, for the log: never its fields, which can
+/// carry an invitation.
+fn request_kind(request: &PeerSyncRequest) -> String {
+    let debug = format!("{request:?}");
+    debug
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Whether `request` joins a workspace: its way through the worker is
+/// logged, so a join that never answers says where it waited.
+const fn is_join(request: &PeerSyncRequest) -> bool {
+    matches!(
+        request,
+        PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::JoinListed(_)
+            | PeerSyncRequest::RetryJoin(_)
+    )
+}
+
+/// How long a request waited behind others on the worker before it is
+/// worth a warning: the worker is serial, so one slow request delays
+/// every join behind it.
+const SLOW_ON_WORKER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Log one request's way through the worker: joins always, the rest when
+/// they waited or ran long enough to hold others up.
+fn trace_answer(
+    kind: &str,
+    joins: bool,
+    queued: std::time::Instant,
+    started: std::time::Instant,
+    ok: bool,
+) {
+    let waited_ms = started.saturating_duration_since(queued).as_millis();
+    let took = started.elapsed();
+    let took_ms = took.as_millis();
+    if joins {
+        tracing::info!(
+            request = kind,
+            waited_ms,
+            took_ms,
+            ok,
+            "join request answered on the peer-sync worker"
+        );
+    } else if took >= SLOW_ON_WORKER || started.saturating_duration_since(queued) >= SLOW_ON_WORKER
+    {
+        tracing::warn!(
+            request = kind,
+            waited_ms,
+            took_ms,
+            ok,
+            "a slow peer-sync request held the worker; joins wait behind it"
+        );
     }
 }
 
@@ -156,7 +218,7 @@ fn execute(
 }
 
 /// What a request answers in a session with no peer-sync to run it.
-pub(super) const NOT_RUNNING: &str = "peer-sync is not running in this session";
+pub(super) use crate::shell::peer_sync_overlay::NOT_RUNNING;
 
 impl PeerSyncDispatch {
     /// Whether a request can run here at all, on the worker or inline.
@@ -167,11 +229,29 @@ impl PeerSyncDispatch {
     pub(super) fn set_bridge(&mut self, bridge: PeerSyncBridge) {
         self.inline = Some(bridge);
         self.worker = None;
+        self.failed = false;
     }
 
     pub(super) fn set_worker(&mut self, worker: PeerSyncWorker) {
         self.worker = Some(worker);
         self.inline = None;
+        self.failed = false;
+    }
+
+    /// The session's network could not start.
+    pub(super) fn set_failed(&mut self) {
+        self.failed = true;
+    }
+
+    /// Why nothing can be asked of the network now, in the person's terms,
+    /// with what they can do: it is still starting, or it could not start.
+    /// `enabled`: whether this session runs a network at all.
+    pub(super) fn unavailable_message(&self, enabled: bool) -> String {
+        crate::shell::i18n::t(if self.failed || !enabled {
+            "peer-sync-offline"
+        } else {
+            "peer-sync-connecting"
+        })
     }
 
     /// The rooms held as a site's workspace; none without a network.
@@ -238,12 +318,20 @@ impl PeerSyncDispatch {
             };
             let call = Arc::clone(&worker.call);
             let replies = self.replies.clone();
+            let kind = request_kind(&job.request);
+            let joins = is_join(&job.request);
+            let queued = std::time::Instant::now();
+            if joins {
+                tracing::info!(request = %kind, "join request queued on the peer-sync worker");
+            }
             let work: PeerSyncJob = Box::new(move || {
+                let started = std::time::Instant::now();
                 // A request that panics still answers, so nothing waits on it.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     execute(&|request| call(workspace, request), job)
                 }))
                 .unwrap_or_else(|_| Err("the peer-sync request failed".into()));
+                trace_answer(&kind, joins, queued, started, outcome.is_ok());
                 let _ = replies.send((ticket, outcome));
             });
             return match (worker.run)(work) {

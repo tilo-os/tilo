@@ -254,7 +254,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn shims_are_written_idempotently_safely_and_removed_with_their_sidecars() {
-        // Phase `write_shims_creates_binary_and_sidecar_per_command`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let shim = dummy_shim(tmp.path());
@@ -279,7 +278,6 @@ mod tests {
                 assert!(sidecar_text.contains(cmd));
             }
         }
-        // Phase `write_shims_honours_launcher_override`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let shim = dummy_shim(tmp.path());
@@ -301,7 +299,6 @@ mod tests {
             );
             assert!(text.contains("/tmp/dev/tilo-launcher"));
         }
-        // Phase `remove_shims_deletes_both_binary_and_sidecar`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let shim = dummy_shim(tmp.path());
@@ -320,7 +317,6 @@ mod tests {
             assert!(!bin_dir.join("notes").exists());
             assert!(!bin_dir.join("notes.tilo-shim").exists());
         }
-        // Phase `write_shims_refuses_path_traversal_names`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let shim = dummy_shim(tmp.path());
@@ -344,7 +340,6 @@ mod tests {
                 assert!(matches!(e, ShimError::BadCommandName(_)), "got {e:?}");
             }
         }
-        // Phase `write_shims_is_idempotent`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let shim = dummy_shim(tmp.path());

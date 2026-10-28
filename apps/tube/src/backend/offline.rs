@@ -76,7 +76,6 @@ mod tests {
 
     #[test]
     fn offline_backend_serves_search_video_related_and_trending() {
-        // Case `offline_search_matches_titles`.
         {
             let b = OfflineBackend::new();
             let BackendResult::Videos(v) = b.search("donut").unwrap() else {
@@ -84,7 +83,6 @@ mod tests {
             };
             assert!(v.iter().any(|v| v.title.to_lowercase().contains("donut")));
         }
-        // Case `offline_video_and_related_resolve`.
         {
             let b = OfflineBackend::new();
             assert!(matches!(
@@ -96,7 +94,6 @@ mod tests {
             };
             assert!(rel.iter().all(|v| v.id != "vid_rust_async"));
         }
-        // Case `offline_trending_is_view_sorted`.
         {
             let b = OfflineBackend::new();
             let BackendResult::Videos(v) = b.trending().unwrap() else {
@@ -106,7 +103,6 @@ mod tests {
                 assert!(w[0].views >= w[1].views, "trending sorted by views desc");
             }
         }
-        // Case `offline_missing_video_errors`.
         {
             let b = OfflineBackend::new();
             assert!(b.video("nope").is_err());

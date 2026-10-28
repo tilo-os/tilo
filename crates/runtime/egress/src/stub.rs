@@ -97,9 +97,6 @@ pub struct Stub {
 
 impl Stub {
     /// Serve `udp` and `tcp` (already bound inside the namespace).
-    ///
-    /// # Errors
-    /// Returns the error configuring the sockets or starting a thread.
     pub fn start(udp: UdpSocket, tcp: TcpListener, shared: &Arc<Shared>) -> std::io::Result<Self> {
         // The UDP socket stays blocking: its clones send the replies, and a
         // non-blocking send could drop one when the buffer is full.
@@ -538,7 +535,7 @@ mod tests {
     fn ask_udp(stub: SocketAddr, query: &[u8]) -> Vec<u8> {
         let client = UdpSocket::bind("127.0.0.1:0").unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         client.send_to(query, stub).unwrap();
         let mut buf = [0_u8; 4096];
@@ -565,28 +562,22 @@ mod tests {
     }
 
     #[test]
-    fn dropping_the_stub_ends_both_threads_promptly() {
+    fn dropping_the_stub_wakes_and_ends_both_threads() {
         let _one = STUBS.lock_recover();
         let shared = Arc::new(shared(EgressPolicy::none(), Vec::new()));
         let running = start(&shared);
-        // Both threads parked in poll(2), as on an idle desktop.
-        std::thread::sleep(Duration::from_millis(50));
-        let stopping = Instant::now();
+        // Both threads parked in poll(2), as on an idle desktop, where
+        // nothing but the stop wakes them (`an_idle_stub_does_not_wake`).
+        for tid in [&running.udp_thread, &running.tcp_thread] {
+            tilo_test_env::wait_until(format!("thread {tid} to park"), || idle::blocked(tid));
+        }
+        // Drop joins both threads, so returning at all means they ended.
         drop(running.stub);
-        let took = stopping.elapsed();
-        // Drop joins both threads, so returning at all means they ended. The
-        // stop-flag loop this replaced looked every 200 ms.
-        assert!(took < Duration::from_millis(100), "stopping took {took:?}");
         for tid in [running.udp_thread, running.tcp_thread] {
             let task = format!("/proc/self/task/{tid}");
-            let gone = Instant::now();
-            while std::path::Path::new(&task).exists() {
-                assert!(
-                    gone.elapsed() < Duration::from_secs(5),
-                    "{task} outlived the stub"
-                );
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            tilo_test_env::wait_until(format!("{task} to end with the stub"), || {
+                !std::path::Path::new(&task).exists()
+            });
         }
     }
 
@@ -616,10 +607,9 @@ mod tests {
         assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Udp));
         assert_eq!(asked.load(Ordering::SeqCst), 2);
 
-        // Over TCP, two queries on one connection.
         let mut client = TcpStream::connect(running.tcp).unwrap();
         client
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let denied = dns::query(13, "example.com", dns::TYPE_A);
         let reply = ask_tcp(&mut client, &denied);

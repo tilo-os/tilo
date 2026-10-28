@@ -59,6 +59,17 @@ impl Downlink {
 /// oldest instead of queueing behind it.
 const MAX_GROUPS_IN_FLIGHT: usize = 8;
 
+/// How a session's copy of a track reads the source.
+#[derive(Clone, Copy)]
+pub(crate) enum Start {
+    /// What the subscription asks for, as the source keeps it.
+    Requested,
+    /// As the relay reads its egress for a subscriber
+    /// ([`crate::live::egress_subscription`]): from the live edge, with the
+    /// relay's reorder budget.
+    Egress,
+}
+
 /// A session-owned copy of `source`. Drop it to cut the session off.
 pub(crate) struct Mirror {
     origin: moq_net::origin::Producer,
@@ -68,16 +79,18 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     /// Mirror every broadcast `source` announces, with the given cache bound
-    /// and retention for the session's copy. With a `downlink`, datagrams of
-    /// the voice track are re-bundled for that downlink's measured loss.
+    /// and retention for the session's copy, each track from `start`. With a
+    /// `downlink`, datagrams of the voice track are re-bundled for that
+    /// downlink's measured loss.
     pub(crate) fn start(
         source: moq_net::origin::Consumer,
         bytes: u64,
         retain: Duration,
+        start: Start,
         downlink: Option<Arc<Downlink>>,
     ) -> Self {
         let (origin, task) = OriginTask::produce(origin_config(bytes, retain));
-        let watch = Task::spawn(watch(source, origin.clone(), downlink));
+        let watch = Task::spawn(watch(source, origin.clone(), start, downlink));
         Self {
             origin,
             _watch: watch,
@@ -94,45 +107,74 @@ impl Mirror {
 async fn watch(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let mut announced = source.announced();
-    let mut broadcasts: HashMap<String, Task> = HashMap::new();
-    while let Some(update) = announced.next().await {
-        let path = update.prefix.as_str().to_owned();
-        broadcasts.retain(|_, task| !task.is_finished());
-        if update.kind.is_active() {
-            broadcasts.entry(path.clone()).or_insert_with(|| {
-                Task::spawn(broadcast(
-                    source.clone(),
-                    target.clone(),
-                    path,
-                    downlink.clone(),
-                ))
-            });
-        } else {
-            broadcasts.remove(&path);
+    let (ended_tx, mut ended) = tokio::sync::mpsc::unbounded_channel::<(String, u64)>();
+    // Each announced path's copy, numbered so a copy's end is told apart from
+    // that of the copy that replaced it.
+    let mut broadcasts: HashMap<String, (u64, Task)> = HashMap::new();
+    let mut copies = 0_u64;
+    let mut serve = |path: String| {
+        copies = copies.wrapping_add(1);
+        let copy = copies;
+        let ended = ended_tx.clone();
+        let task = Task::spawn({
+            let (source, target, downlink) = (source.clone(), target.clone(), downlink.clone());
+            async move {
+                if broadcast(source, target, path.clone(), start, downlink).await {
+                    let _ = ended.send((path, copy));
+                }
+            }
+        });
+        (copy, task)
+    };
+    loop {
+        tokio::select! {
+            update = announced.next() => {
+                let Some(update) = update else { break };
+                let path = update.prefix.as_str().to_owned();
+                if !update.kind.is_active() {
+                    broadcasts.remove(&path);
+                } else if broadcasts.get(&path).is_none_or(|(_, task)| task.is_finished()) {
+                    let copy = serve(path.clone());
+                    broadcasts.insert(path, copy);
+                }
+            }
+            Some((path, copy)) = ended.recv() => {
+                // The source ended the broadcast this copy read while it still
+                // announces the path (a re-announcement it did not splice, or
+                // one that raced the copy's start): the path is served afresh,
+                // from whatever the source routes it to now.
+                if broadcasts.get(&path).is_some_and(|(current, _)| *current == copy) {
+                    let copy = serve(path.clone());
+                    broadcasts.insert(path, copy);
+                }
+            }
         }
     }
 }
 
 /// Mirror one broadcast for as long as the source serves it. Tracks are
-/// copied on the session's demand.
+/// copied on the session's demand. True once it served and the source ended
+/// it; false when it could not start.
 async fn broadcast(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
     path: String,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
-) {
+) -> bool {
     let Ok(input) = source.routed_broadcast(path.as_str()).await else {
-        return;
+        return false;
     };
     let Ok(output) = target.create_broadcast(path.as_str()) else {
-        return;
+        return false;
     };
     let mut dynamic = output.dynamic();
     if output.announce(moq_net::origin::Route::default()).is_err() {
-        return;
+        return false;
     }
     let mut tracks: Vec<Task> = Vec::new();
     loop {
@@ -144,23 +186,31 @@ async fn broadcast(
                 let voice = downlink
                     .clone()
                     .filter(|_| request.name() == crate::relay::VOICE_TRACK);
-                tracks.push(Task::spawn(track(input.clone(), request, voice)));
+                tracks.push(Task::spawn(track(input.clone(), request, start, voice)));
             }
             _ = input.closed() => break,
         }
     }
     drop(tracks);
     output.finish();
+    true
 }
 
 async fn track(
     input: moq_net::broadcast::Consumer,
     request: moq_net::track::Request,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let subscription = request.subscription().unwrap_or_default();
     let attempt = match input.track(request.name()) {
-        Ok(track) => track.subscribe(subscription).await,
+        Ok(track) => {
+            let subscription = match start {
+                Start::Requested => subscription,
+                Start::Egress => crate::live::egress_subscription(&track, subscription),
+            };
+            track.subscribe(subscription).await
+        }
         Err(error) => Err(error),
     };
     let mut reader = match attempt {
@@ -206,7 +256,7 @@ async fn next(track: &mut moq_net::track::Subscriber) -> Next {
 
 /// SUBSCRIBE can exchange consumer handles. Match the shared relay's existing
 /// unused-demand grace; the caller then closes atomically with demand.
-async fn unused(output: &moq_net::track::Producer) {
+pub(crate) async fn unused(output: &moq_net::track::Producer) {
     loop {
         if output.unused().await.is_err() {
             return;
@@ -438,6 +488,67 @@ mod tests {
         }
         Ok(())
         }.await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    fn first_hop(id: u64) -> Result<moq_net::Hops, Box<dyn std::error::Error>> {
+        let mut hops = moq_net::Hops::new();
+        hops.push(moq_net::Hop::new(id)?)?;
+        Ok(hops)
+    }
+
+    #[tokio::test]
+    async fn a_path_whose_broadcast_ends_while_still_routed_is_served_from_the_next() {
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let (source, _source_task) =
+                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
+            let first = source.create_broadcast("member")?;
+            let _first_presence = first.create_track("presence", None)?;
+            first.announce(moq_net::origin::Route::default().with_hops(first_hop(7)?))?;
+            let mirror = Mirror::start(
+                source.consume(),
+                1024 * 1024,
+                Duration::from_secs(2),
+                Start::Requested,
+                None,
+            );
+            let view = mirror.consume();
+            let mirrored =
+                tilo_test_env::within("the mirrored broadcast", view.routed_broadcast("member"))
+                    .await?;
+            let mut reading = mirrored.track("presence")?.subscribe(None).await?;
+
+            let second = source.create_broadcast("member")?;
+            let second_presence = second.create_track("presence", None)?;
+            second.announce(moq_net::origin::Route::default().with_hops(first_hop(9)?))?;
+            first.finish();
+            tilo_test_env::within("the first broadcast's track to end", async {
+                while reading
+                    .recv_group()
+                    .await
+                    .is_ok_and(|group| group.is_some())
+                {}
+            })
+            .await;
+
+            let next =
+                tilo_test_env::within("the path served again", view.routed_broadcast("member"))
+                    .await?;
+            let mut reading = next.track("presence")?.subscribe(None).await?;
+            let mut group = second_presence.append_group()?;
+            group.write_frame(moq_net::Timestamp::ZERO, bytes::Bytes::from_static(b"here"))?;
+            group.finish()?;
+            let group = tilo_test_env::within("the next broadcast's group", reading.recv_group())
+                .await?
+                .ok_or("the view ended instead of serving the next broadcast")?;
+            let mut group = group;
+            let frame = tilo_test_env::within("its frame", group.read_frame())
+                .await?
+                .ok_or("an empty group")?;
+            assert_eq!(frame.payload, bytes::Bytes::from_static(b"here"));
+            Ok(())
+        }
+        .await;
         assert!(result.is_ok(), "{result:?}");
     }
 

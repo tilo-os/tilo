@@ -40,5 +40,7 @@ pub mod paths;
 pub mod schema;
 #[path = "shape.rs"]
 pub mod shape;
+#[path = "upsert.rs"]
+pub mod upsert;
 #[path = "verbs.rs"]
 pub mod verbs;

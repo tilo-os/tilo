@@ -1,4 +1,3 @@
-//! Drive the host import path over the production stdio Remote transport.
 use super::*;
 
 const PEER: &str = r#"
@@ -104,9 +103,7 @@ root,session,protocol=sys.argv[1:]
 def record(value):
  with open(root+'/calls','a') as file: file.write(session+':'+value+'\n')
 def disconnect():
- deadline=time.monotonic()+10
  while not os.path.exists(root+'/build-start'):
-  if time.monotonic()>deadline: os._exit(3)
   time.sleep(.01)
  os.close(0); os.close(1)
  open(root+'/disconnected','w').close()
@@ -157,11 +154,9 @@ fn host_app_build_disconnect_reconnects_before_upload_and_preserves_refusal() {
         "fixture-refused",
         |_runner| {
             std::fs::write(dir.path().join("build-start"), b"").unwrap();
-            let started = Instant::now();
-            while !dir.path().join("disconnected").exists() {
-                assert!(started.elapsed() < Duration::from_secs(5));
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            tilo_test_env::wait_until("the peer to disconnect", || {
+                dir.path().join("disconnected").exists()
+            });
             let package = dir.path().join("app.tapp");
             std::fs::write(&package, b"owned package transport fixture").unwrap();
             Ok(package)

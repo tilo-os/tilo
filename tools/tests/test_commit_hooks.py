@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -167,7 +168,7 @@ class CommitHookTests(unittest.TestCase):
                      "from pathlib import Path; import sys; from check_commit_policy import blob_reader\n"
                      "with blob_reader(Path(sys.argv[1])) as read: read(sys.argv[2].encode())",
                      str(self.root), oid],
-                    cwd=ROOT / "tools/policy", capture_output=True, text=True, timeout=10)
+                    cwd=ROOT / "tools/policy", capture_output=True, text=True, timeout=HANG_BOUND)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Cannot inspect exact changed blob", result.stderr)
 

@@ -8,9 +8,52 @@
 //! contrast floor is never applied or exported: the person sees which pair
 //! fails and fixes it here.
 
+use serde::{Deserialize, Serialize};
+use ui::storage::{Scope, SettingsSchema};
 use ui::theme::{
     CUSTOM_THEMES_KEY, DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY, Preset, ThemeDocument,
 };
+
+/// The person's theme choice as the appearance section holds it: the keys
+/// Settings and [`apply`] write, read (never written) through the section's
+/// typed door so the studio follows a choice made anywhere.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppearanceChoice {
+    /// `dark`, `light` or `automatic` (light by day, dark by night).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// The theme dark mode shows: a preset id or `custom:<id>`.
+    #[serde(default)]
+    pub dark_theme: Option<String>,
+    /// The theme light mode shows.
+    #[serde(default)]
+    pub light_theme: Option<String>,
+}
+
+impl SettingsSchema for AppearanceChoice {
+    const SCOPE: Scope = Scope::Shared("appearance");
+}
+
+impl AppearanceChoice {
+    /// Whether the system shows `reference` (a preset id or `custom:<id>`),
+    /// a theme of the polarity `dark`: it is the theme chosen for that
+    /// polarity, and the mode shows that polarity or follows the time of
+    /// day (then both chosen themes are in use, each for its part of the
+    /// day). Unset keys read as the runtime reads them: dark mode, the Dark
+    /// and Light presets.
+    #[must_use]
+    pub fn shows(&self, reference: &str, dark: bool) -> bool {
+        let mode = self.mode.as_deref();
+        let polarity_shown =
+            mode.is_some_and(ui::theme::is_automatic_mode) || dark == (mode != Some("light"));
+        let chosen = if dark {
+            self.dark_theme.as_deref().unwrap_or(Preset::Dark.id())
+        } else {
+            self.light_theme.as_deref().unwrap_or(Preset::Light.id())
+        };
+        polarity_shown && chosen == reference
+    }
+}
 
 /// What applying a theme writes into the appearance section: the theme for
 /// its polarity, the mode (unless the person follows the time of day), and
@@ -104,6 +147,36 @@ pub fn export(document: &ThemeDocument) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_preset_the_mode_shows_is_the_one_in_use() {
+        let choice =
+            |mode: Option<&str>, dark: Option<&str>, light: Option<&str>| AppearanceChoice {
+                mode: mode.map(str::to_owned),
+                dark_theme: dark.map(str::to_owned),
+                light_theme: light.map(str::to_owned),
+            };
+        let unset = AppearanceChoice::default();
+        assert!(unset.shows("dark", true), "nothing chosen shows Dark");
+        assert!(!unset.shows("light", false));
+
+        let graphite = choice(Some("dark"), Some("dark-graphite"), Some("light"));
+        assert!(graphite.shows("dark-graphite", true));
+        assert!(!graphite.shows("dark", true));
+        assert!(!graphite.shows("light", false), "light mode is not shown");
+
+        let light = choice(Some("light"), Some("dark-graphite"), Some("light"));
+        assert!(light.shows("light", false));
+        assert!(!light.shows("dark-graphite", true));
+
+        let automatic = choice(Some("automatic"), Some("dark-soft"), None);
+        assert!(automatic.shows("dark-soft", true), "by night");
+        assert!(automatic.shows("light", false), "by day");
+
+        let custom = choice(Some("dark"), Some("custom:ember"), None);
+        assert!(custom.shows("custom:ember", true));
+        assert!(!custom.shows("dark", true));
+    }
 
     #[test]
     fn applying_a_preset_names_it_and_sets_the_mode() {

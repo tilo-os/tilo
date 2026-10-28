@@ -15,9 +15,6 @@ use fs_protocol::{
 };
 use std::time::Duration;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
-
 async fn bind_certified_endpoint() -> (Endpoint, MemoryLookup, FsTransportIdentity) {
     bind_certified_test_endpoint().await
 }
@@ -1132,7 +1129,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
                 "authorized record blob must transfer through the real guard"
             );
         }
-        // A chunk is authorised through a manifest named in the same request.
         let connection = client_ep
             .connect(server_ep.addr(), iroh_blobs::ALPN)
             .await
@@ -1264,7 +1260,9 @@ fn identity(endpoint: &Endpoint) -> IdentityKey {
 }
 
 async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = std::time::Instant::now().checked_add(HANG_BOUND).unwrap();
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
     while std::time::Instant::now() < deadline {
         if cond() {
             return true;
@@ -1440,7 +1438,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             ws_a.sync.broadcast_delta(delta);
         }
 
-        // B sees the entry via gossip...
         assert!(
             wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
             "doc entry must sync to B"
@@ -1632,7 +1629,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
         let registry = Arc::new(Mutex::new(
             crate::availability::AvailabilityRegistry::open(&path).unwrap(),
         ));
-        // As a session's receipt collection records it.
         record_replica_observation(
             &mut registry.lock().unwrap(),
             revision,
@@ -3557,13 +3553,14 @@ async fn session_member_under(
     (router, endpoint.addr(), person)
 }
 
-/// A peer that takes session connections and never answers on them, as a
-/// device that hangs mid-handshake does.
-#[derive(Clone, Debug)]
-struct StalledPeer;
+/// A peer that takes session connections, counting them, and never answers
+/// on them, as a device that hangs mid-handshake does.
+#[derive(Clone, Debug, Default)]
+struct StalledPeer(Arc<std::sync::atomic::AtomicUsize>);
 
 impl ProtocolHandler for StalledPeer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         connection.closed().await;
         Ok(())
     }
@@ -3627,20 +3624,22 @@ const TIMER_PASS: PassPlan = PassPlan {
 };
 
 /// One stalled peer and three healthy ones: the pass exchanges with the
-/// healthy ones concurrently and is over within the per-peer deadline,
-/// not after the stalled one's handshake timeout; the next pass does not
-/// start the stalled peer again while its exchange is still running.
+/// healthy ones concurrently and is over at the per-peer deadline, while
+/// the stalled one's exchange still runs; the next pass does not start the
+/// stalled peer again while that exchange is still running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idle_pass_is_bounded_with_unreachable_peer() {
     let workspace = uuid::Uuid::new_v4();
     let (base, forks) = forks_of_a_shared_tree(&["from-a", "from-b", "from-c"]);
     let mut routers = Vec::new();
     let (stalled_endpoint, _lookup, _identity) = bind_certified_endpoint().await;
+    let stalled = StalledPeer::default();
     routers.push(
         Router::builder(stalled_endpoint.clone())
-            .accept(TILO_FS_SESSION_ALPN, StalledPeer)
+            .accept(TILO_FS_SESSION_ALPN, stalled.clone())
             .spawn(),
     );
+    let stalled_id = stalled_endpoint.addr().id;
     let mut peers = vec![stalled_endpoint.addr()];
     for fork in forks {
         let (router, addr, _person) = session_member(workspace, Arc::new(Mutex::new(fork))).await;
@@ -3658,27 +3657,27 @@ async fn idle_pass_is_bounded_with_unreachable_peer() {
         deadline,
     );
 
-    let started = Instant::now();
-    let changed = exchanges.run(peers.clone(), TIMER_PASS).await.changed;
-    let first = started.elapsed();
+    exchanges.run(peers.clone(), TIMER_PASS).await;
+    // The pass is over while the stalled peer's exchange still runs: it did
+    // not wait for that exchange to end.
     assert!(
-        first < deadline + Duration::from_secs(2) && first < Duration::from_secs(15),
-        "the pass waited {first:?} on a stalled peer"
+        exchanges.busy.lock().unwrap().contains(&stalled_id),
+        "the pass waited for the stalled peer's exchange to end"
     );
-    assert!(changed, "the healthy peers' changes arrived");
-    for name in ["from-a", "from-b", "from-c"] {
-        assert!(
-            namespace.lock().unwrap().entry_at(name).is_some(),
-            "{name} was exchanged with despite the stalled peer"
-        );
-    }
+    // Exchanges that outlive their pass still land.
+    tilo_test_env::wait_until("the healthy peers' changes", || {
+        let namespace = namespace.lock().unwrap();
+        ["from-a", "from-b", "from-c"]
+            .iter()
+            .all(|name| namespace.entry_at(name).is_some())
+    });
+    let accepted = stalled.0.load(std::sync::atomic::Ordering::SeqCst);
 
-    let started = Instant::now();
     exchanges.run(peers, TIMER_PASS).await;
-    let second = started.elapsed();
-    assert!(
-        second < deadline,
-        "the stalled peer, still exchanging, was started again ({second:?})"
+    assert_eq!(
+        stalled.0.load(std::sync::atomic::Ordering::SeqCst),
+        accepted,
+        "the stalled peer, still exchanging, was started again"
     );
     for router in routers {
         router.shutdown().await.unwrap();
@@ -3755,6 +3754,73 @@ async fn read_only_member_never_downloads_full_snapshot() {
     }
 }
 
+/// A device that may only read the workspace keeps reading it across
+/// reconnects: the host's changes arrive into a reader that already holds
+/// a change of its own, a later reconnect with nothing new to take is a
+/// quiet pass rather than a failure, and the device that was never part of
+/// the exchange is left exactly as it was. The reader ends holding the
+/// host's files, so what an app reads through it is what the workspace has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_only_member_keeps_reading_across_reconnects() {
+    let workspace = uuid::Uuid::new_v4();
+    let (_base, mut forks) = forks_of_a_shared_tree(&["hosts-only", "reader-local", "untouched"]);
+    let reader_tree = forks.pop().unwrap();
+    let observer_tree = forks.pop().unwrap();
+    let host_tree = Arc::new(Mutex::new(forks.pop().unwrap()));
+    let (host_router, host, host_person) = session_member(workspace, Arc::clone(&host_tree)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    // The reader may read the whole workspace; only the host may write it.
+    let policy = Some(policy_read_write(
+        &[host_person],
+        &[identity.user_public_key(), identity.device_public_key()],
+    ));
+    let reader = Arc::new(Mutex::new(reader_tree));
+    let exchanges = exchanges_for(
+        &endpoint,
+        &identity,
+        (workspace, policy),
+        &reader,
+        PEER_DEADLINE,
+    );
+    let first_pass = PassPlan {
+        announce: false,
+        reconcile: crate::record_materializer::ReconcileScope::Everything,
+        quiet: false,
+    };
+    for plan in [first_pass, TIMER_PASS] {
+        exchanges.run(vec![host.clone()], plan).await;
+    }
+
+    let names = |namespace: &Arc<Mutex<Namespace>>| {
+        let namespace = namespace.lock().unwrap();
+        ["hosts-only", "reader-local"]
+            .into_iter()
+            .filter(|path| namespace.entry_at(path).is_some())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&reader),
+        ["hosts-only"],
+        "the read-only device did not take the host's change"
+    );
+    assert_eq!(
+        names(&Arc::new(Mutex::new(observer_tree))),
+        ["reader-local"],
+        "the read-only device's own change reached the host"
+    );
+
+    // A later pass, and a session dropped and dialled again: both still
+    // answer, and the reader still lists exactly the host's files.
+    exchanges.run(vec![host.clone()], TIMER_PASS).await;
+    exchanges.run(vec![host.clone()], TIMER_PASS).await;
+    assert_eq!(
+        names(&reader),
+        ["hosts-only"],
+        "a reconnect changed what the read-only device lists"
+    );
+    host_router.shutdown().await.unwrap();
+}
+
 /// A namespace whose document holds `changes` changes, as months of saves
 /// leave one: a file per hundred changes, rewritten in a change of its own.
 fn namespace_with_history(changes: u64) -> Namespace {
@@ -3769,7 +3835,6 @@ fn namespace_with_history(changes: u64) -> Namespace {
             let content = Hash::new(change.to_le_bytes());
             assert!(namespace.set_content(file, Some(&content), change, change));
         }
-        // Reading the heads commits the edit as one change.
         namespace.heads();
     }
     namespace
@@ -4067,18 +4132,25 @@ async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
         .create_file(ROOT_INO, "from-device", None, 0, 1)
         .unwrap();
     sync().await.unwrap();
-    let announced = tokio::time::timeout(HANG_BOUND, announcements.recv())
+    let announced = tokio::time::timeout(tilo_test_env::hang_bound(), announcements.recv())
         .await
         .expect("the host's loop was woken")
         .unwrap();
     assert_eq!(announced, device_id);
     sync().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        announcements.try_recv().is_err(),
-        "an idle exchange woke the loop"
-    );
+    // Once the host is shut down and every request it was serving has
+    // ended, no sender of announcements is left: what has arrived by then is
+    // all that ever will.
     router.shutdown().await.unwrap();
+    let late = tilo_test_env::within("the host's requests to end", async {
+        let mut late = Vec::new();
+        while let Some(announced) = announcements.recv().await {
+            late.push(announced);
+        }
+        late
+    })
+    .await;
+    assert!(late.is_empty(), "an idle exchange woke the loop");
 }
 
 /// #4113. A timer pass skips the namespace exchange with a peer that
@@ -4319,7 +4391,6 @@ impl ConflictWatchFixture {
         }
     }
 
-    /// A record with one version, `base`.
     fn seed(&self) -> (FileRecordId, FileVersionV1) {
         let record_id = FileRecordId::new();
         let base = self.version(record_id, 1, &[]);

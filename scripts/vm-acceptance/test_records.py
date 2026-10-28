@@ -211,13 +211,15 @@ class IdleThreads(unittest.TestCase):
     def test_tilo_ush_is_judged_only_once_terminals_shell_ran(self):
         budgets = {"idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 5.0}
         ush = self.summary()["ush"]
-        cpu, woke = resources.ush_problems(ush, 3.5, budgets)
+        wrong, (cpu, woke) = resources.ush_problems(ush, 3.5, budgets)
+        self.assertEqual(wrong, [])
         self.assertEqual(cpu, "tilo-ush CPU 10.0% > 1.0% (broker 8.0%, tilo-ush 2.0%; exited threads 0.0%)")
         self.assertEqual(woke, "tilo-ush woke 63.0/s > 5.0/s (broker 60.0/s, tilo-ush 3.0/s)")
-        [unmeasured] = resources.ush_problems(ush, None, budgets)
+        [unmeasured], over = resources.ush_problems(ush, None, budgets)
+        self.assertEqual(over, [])
         self.assertIn("was not measured idle", unmeasured)
         quiet = {**ush, "cpu_pct": 0.2, "wakeups_per_s": 1.0}
-        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), [])
+        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), ([], []))
 
     def test_an_over_budget_compositor_names_its_busiest_threads_and_age(self):
         m = {**self.summary(), "frames_painted": 0, "shell_loop_ticks_per_s": 0.0}
@@ -281,6 +283,13 @@ class SoftwareRaster(unittest.TestCase):
     def test_a_gpu_renderer_counts_every_thread(self):
         [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
         self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
+
+    def test_an_idle_loop_over_budget_names_what_woke_it(self):
+        rows = [{"wake": "io"}, {"wake": "cadence"}, {"wake": "io"}, {}]
+        self.assertEqual(resources.loop_wakes(rows), {"io": 2, "cadence": 1, "unrecorded": 1})
+        m = {**self.window(1), "shell_loop_ticks_per_s": 2.5, "loop_woke_by": resources.loop_wakes(rows)}
+        [problem] = resources._budget_problems(m, self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "compositor loop woke 2.5/s > 2.0/s (woken by io 2, cadence 1, unrecorded 1)")
 
     def test_idle_frames_over_budget_name_why_and_whose(self):
         painted = [{"painted": 1, "paint_reasons": "revision", "paint_clients": ""},
@@ -393,7 +402,8 @@ class Gates(unittest.TestCase):
         self.assertLess(run.ORDER.index("R02"), run.ORDER.index("A15"))
         self.assertLess(run.ORDER.index("A16"), run.ORDER.index("R05"))
         # R08 starts a second compositor on seat0: after everything that measures the slot.
-        self.assertEqual(run.ORDER[-2:], ["R08", "P03"])
+        # C02 goes on with the account R08 signed in, measuring nothing.
+        self.assertEqual(run.ORDER[-3:], ["R08", "C02", "P03"])
 
 
 # systemd-analyze output from a plain reboot of the dev disk (vm-acceptance R99, run 94108).
@@ -459,8 +469,18 @@ class Boot(unittest.TestCase):
         self.assertEqual(a["greeter_chain"][-1], "dev-disk-by\\x2duuid-5594\\x2d590C.device")
         self.assertEqual((a["greeter_s"], a["userspace_to_greeter_s"]), (10.157, 4.459))
 
+    def test_the_chain_carries_each_units_start_and_the_boots_steal(self):
+        a = resources.parse_boot_analysis(BOOT_ANALYSIS_NM.replace(
+            "== end", "cpu_ticks=2000\nsteal_ticks=500\n== end"))
+        self.assertEqual(a["greeter_chain_timed"][:3], ["greetd.service @4.5s",
+                                                        "plymouth-quit-wait.service @4.4s +0.0s",
+                                                        "systemd-user-sessions.service @4.4s +0.0s"])
+        self.assertEqual(a["greeter_chain_timed"][4], "NetworkManager.service @3.9s +0.4s")
+        self.assertEqual(a["boot_steal_pct"], 25.0)
+
     def test_the_network_on_the_greeters_chain_fails_the_boot(self):
-        ctx, res, problems = self.attribution(BOOT_ANALYSIS_NM)
+        ctx, res, (problems, over) = self.attribution(BOOT_ANALYSIS_NM)
+        self.assertEqual(over, [])
         self.assertEqual(problems, ["network.target is on the greeter's critical chain",
                                     "NetworkManager.service is on the greeter's critical chain",
                                     "firewalld.service is on the greeter's critical chain"])
@@ -472,11 +492,14 @@ class Boot(unittest.TestCase):
         chain = BOOT_ANALYSIS_NM.replace(
             "    └─network.target @4.339s\n      └─NetworkManager.service @3.947s +391ms\n"
             "        └─network-pre.target @3.944s\n          └─firewalld.service @3.944s\n", "")
-        self.assertEqual(self.attribution(chain)[2], [])
+        self.assertEqual(self.attribution(chain)[2], ([], []))
 
     def test_a_slow_userspace_names_the_chain(self):
         slow = BOOT_ANALYSIS_NM.replace("greetd_us=10157000", "greetd_us=12698000")
-        [problem] = [p for p in self.attribution(slow)[2] if "userspace" in p]
+        # Over the userspace budget: reported as a budget, not as a broken boot.
+        wrong, over = self.attribution(slow)[2]
+        self.assertFalse([p for p in wrong if "userspace" in p])
+        [problem] = [p for p in over if "userspace" in p]
         self.assertTrue(problem.startswith("userspace took 7.0 s to the greeter > 6.0 s (chain: greetd.service"))
 
     def test_no_chain_is_unobservable(self):

@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 
 /// Typed readers for every [`ReadDoc`].
 pub trait ReadTyped: ReadDoc {
-    /// The string at `prop` of `obj`.
     fn str_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<String> {
         match self.get(obj, prop) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -65,7 +64,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The boolean at `prop` of `obj`.
     fn bool_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<bool> {
         match self.get(obj, prop) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -76,7 +74,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The bytes at `prop` of `obj`.
     fn bytes_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<Vec<u8>> {
         match self.get(obj, prop) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -87,7 +84,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The object of type `kind` at `prop` of `obj`.
     fn obj_at(&self, obj: &ObjId, prop: impl Into<Prop>, kind: ObjType) -> Option<ObjId> {
         match self.get(obj, prop) {
             Ok(Some((Value::Object(found), id))) if found == kind => Some(id),
@@ -98,7 +94,6 @@ pub trait ReadTyped: ReadDoc {
 
 impl<T: ReadDoc + ?Sized> ReadTyped for T {}
 
-/// The string at `obj[key]`.
 pub fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     doc.str_at(obj, key)
 }
@@ -115,7 +110,6 @@ pub fn int_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
     }
 }
 
-/// The map object at `obj[key]`.
 pub fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     doc.obj_at(obj, key, ObjType::Map)
 }
@@ -147,7 +141,6 @@ mod tests {
         let list = doc.put_object(&ROOT, "list", ObjType::List).unwrap();
         doc.insert(&list, 0, "entry").unwrap();
 
-        // Both mutable and immutable ReadDoc implementations share the readers.
         let doc = doc.document();
         assert_eq!(doc.int_at(&ROOT, "signed"), Some(7));
         assert_eq!(doc.int_at(&ROOT, "unsigned"), Some(7));
@@ -210,7 +203,6 @@ mod tests {
         assert_eq!(doc.bytes_at(&ROOT, "flag"), None);
         assert_eq!(doc.f64_at(&ROOT, "missing"), None);
 
-        // The blanket implementation also works on an immutable document.
         let immutable = automerge::Automerge::load(&doc.save()).unwrap();
         assert_eq!(immutable.str_at(&list, 0).as_deref(), Some("first"));
         assert_eq!(immutable.int_at(&ROOT, "huge"), None);

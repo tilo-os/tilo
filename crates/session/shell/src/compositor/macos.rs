@@ -27,14 +27,14 @@ pub struct Session {
 }
 
 /// Prepare the shell; invalid stored state is never replaced by a new tree.
-/// # Errors
-/// Returns invalid directory, session lock, state, record-store or construction errors.
 pub fn prepare(options: &Options) -> Result<Session, Error> {
     std::fs::create_dir_all(&options.state_dir)?;
     let state_dir = options.state_dir.canonicalize()?;
     // The apps this host mounts keep their records beside its state.
+    let person = crate::shell::settings_records::person_dir().ok_or("no data home")?;
     let apps = crate::shell::in_process::InProcessApps::at(
         &state_dir.join("apps"),
+        &person,
         &crate::shell::state::local_user_id(),
     )
     .map_err(|error| error.to_string())?;
@@ -171,7 +171,7 @@ fn run_session(options: Options) -> Result<(), Error> {
             .run();
     }
     records.try_flush()?;
-    persist::save_tree_to(&tree.read(), &options.state_dir.join("state.json"))?;
+    persist::save_shared_tree_to(&tree, &options.state_dir.join("state.json"))?;
     persist::wait_for_saves();
     Ok(())
 }

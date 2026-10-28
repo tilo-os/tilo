@@ -16,7 +16,6 @@ use super::{caption, icon_button, percent};
 use crate::model::Artwork;
 use crate::tools::Tools;
 
-/// A layer as its row shows it.
 #[derive(Clone, Default, PartialEq)]
 struct LayerRow {
     id: String,
@@ -31,7 +30,6 @@ struct LayerRow {
     clip: bool,
 }
 
-/// A layer's mask, as its layer's row shows it.
 #[derive(Clone, Default, PartialEq)]
 struct MaskRow {
     id: String,
@@ -177,7 +175,6 @@ fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
     Box::new(
         TreeView::new(TreeNode::branch(0, "", (), children))
             .hide_root()
-            .with_id("canvas-layer-tree")
             .with_row_decoration(move |_, row, _| {
                 media
                     .get(&row.id)
@@ -190,7 +187,7 @@ fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
             .with_selected(selected)
             .with_expanded(expanded)
             .with_viewport(LIST, ui::tokens::Metrics::BASE.panel_row_height)
-            .on_select(move |node| {
+            .on_view("canvas-layer-tree", move |node| {
                 if let Some(id) = targets.get(&node) {
                     chosen.set(id.clone());
                 }
@@ -646,10 +643,9 @@ fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
         Box::new(
             TreeView::new(TreeNode::branch(0, "", (), children))
                 .hide_root()
-                .with_id("canvas-objects")
                 .with_viewport(232.0, 28.0)
                 .with_heading(ui::i18n::I18nManager::lookup_plain("canvas-objects"))
-                .on_select(move |node| {
+                .on_view("canvas-objects", move |node| {
                     if let Some(ids) = targets.get(&node) {
                         picked.set(Some(ids.clone()));
                     }

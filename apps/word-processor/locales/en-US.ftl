@@ -5,7 +5,10 @@
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
 ## Toolbar button faces (the terse, visible labels)
-toolbar-new = New
+toolbar-format = Format
+toolbar-insert = Insert
+document-untitled = Document
+toolbar-file = File
 toolbar-table = Table
 toolbar-link = Link
 toolbar-styles = Styles
@@ -25,25 +28,22 @@ toolbar-size-down = Smaller
 toolbar-size-up = Larger
 toolbar-image = Image
 toolbar-table-delete = Delete table
+toolbar-font-sans = Sans
+toolbar-font-serif = Serif
+toolbar-font-mono = Mono
+toolbar-bulleted-list = Bulleted list
+toolbar-numbered-list = Numbered list
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
-a11y-group-formatting = Formatting
 a11y-bold = Bold
 a11y-italic = Italic
 a11y-underline = Underline
 a11y-strikethrough = Strikethrough
 a11y-superscript = Superscript
 a11y-subscript = Subscript
-a11y-body-text = Body text
-a11y-bulleted-list = Bulleted list
-a11y-align-left = Align left
-a11y-align-center = Align center
-a11y-align-right = Align right
 a11y-line-spacing = Line spacing
-a11y-font = Font
 a11y-size-up = Increase font size
 a11y-size-down = Decrease font size
-a11y-font-size = Font size
 a11y-insert-image = Insert image
 a11y-hyperlink = Add or change hyperlink
 a11y-insert-table = Insert table
@@ -56,12 +56,10 @@ a11y-styles-panel = Styles panel
 a11y-ruler = Ruler
 a11y-document-outline = Document outline
 a11y-insert-toc = Insert table of contents
-a11y-new-from-template = New from template
 a11y-text-color = Text colour #{ $hex }
 a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
-
 
 ## Status bar
 status-untitled = Untitled
@@ -103,6 +101,13 @@ template-letter = Letter
 template-report = Report
 template-resume = Resume
 template-meeting-notes = Meeting notes
+file-menu-open = Open…
+file-menu-save = Save
+file-menu-save-as = Save as or export…
+file-menu-templates = Start from a template
+file-menu-replace-question = Replace this document with { $template }? Undo brings it back.
+file-menu-replace = Replace document
+file-menu-keep = Keep this document
 
 ## Built-in style display names (localized). Blocks store a stable English name
 ## for export interop; these are what the picker + style header actually show.
@@ -121,15 +126,6 @@ panel-style = Paragraph style
 # the toolbar formats the selection; this section edits the shared style.
 panel-style-hint = Edits below change every paragraph in this style.
 panel-caret-hint = Place the caret in a paragraph
-panel-paragraph-styles = Paragraph styles
-panel-style-properties = Style properties
-panel-font = Font
-panel-font-serif = Serif
-panel-font-mono = Mono
-panel-font-sans = Sans
-panel-weight = Emphasis
-panel-bold = Bold
-panel-italic = Italic
 panel-colour = Colour
 panel-colour-custom = Custom colour
 panel-align = Alignment
@@ -142,7 +138,6 @@ panel-num-indent = Indent
 ## Image inspector (styles panel, when an image is selected)
 panel-image = Image
 panel-image-size = Size
-panel-image-width = Width
 panel-image-flip = Flip
 panel-image-flip-h = Horizontal
 panel-image-flip-v = Vertical
@@ -164,7 +159,6 @@ style-menu-duplicate = Duplicate style
 ## Transient toasts (confirmation cues)
 toast-toc-empty = Add headings first — a table of contents lists them
 toast-save-failed = Could not save the document
-toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
 toast-file-dialog-failed = Could not open the file chooser
 
@@ -180,6 +174,7 @@ layout-margins-readout = Left { $l } px   Top { $t } px   Right { $r } px   Bott
 layout-spacing-readout = { $name } paragraphs: { $px } px after
 
 ## Canvas
+a11y-group-view = View
 a11y-document-editor = Document editor
 a11y-group-review = Review suggestions
 a11y-group-image-placement = Image position
@@ -214,7 +209,6 @@ color-yellow = yellow
 color-cyan = cyan
 color-pink = pink
 color-orange = orange
-a11y-version-history = Version history
 panel-close = Close
 
 # A selected file differs from the current admitted workspace document.
@@ -239,7 +233,6 @@ panel-align-left = Left
 panel-align-center = Centre
 panel-align-right = Right
 panel-align-justify = Justify
-a11y-more-tools = More formatting and document tools
 
 ## History: what each change did, by field and by verb
 word-processor-document-body = { $op ->
@@ -271,6 +264,7 @@ word-processor-document-body = { $op ->
    *[other] Edited the text
 }
 word-processor-append-paragraph = Added a paragraph
+word-processor-replace-text = Replaced { $find } with { $replace }
 word-processor-insert-table = Inserted a table of { $rows } by { $columns }
 word-processor-add-row = Added a row to a table
 word-processor-add-column = Added a column to a table
@@ -288,3 +282,4 @@ word-processor-resolve-comment = Resolved a comment
 word-processor-set-page-margins = Changed the page margins
 word-processor-generate-toc = Added a table of contents
 word-processor-note-file-written = Saved to its file
+status-page = Page { $page } of { $pages }

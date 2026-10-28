@@ -101,6 +101,11 @@ pub enum Material {
     /// show through, such as a prompt for a secret over content the user
     /// does not own.
     Opaque,
+    /// `surfaces.overlay` at `surfaces.see_through_opacity` (half), over an
+    /// unblurred backdrop: chrome that must leave the exact pixels under it
+    /// visible, such as the capture bar over what is being chosen. Opaque
+    /// under reduced transparency, forced colours and high contrast.
+    SeeThrough,
 }
 
 /// Paint a floating surface's body: `shape` filled with `material`. Edges,
@@ -182,8 +187,34 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 10;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 17;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
+
+/// What a model may know about one change it is asked to describe: the
+/// change's id as History lists it (32 lowercase hex characters), its own
+/// summary, the action and resource it named, and what it wrote. Never who
+/// made it: History shows that beside the description.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryChangeFacts {
+    pub change: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wrote: String,
+}
+
+/// One change described: its id, the sentence, and which provider and model
+/// wrote it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryChangeDescription {
+    pub change: String,
+    pub text: String,
+    pub generator: String,
+}
+
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
@@ -402,16 +433,26 @@ pub enum FloatingSurfaceClientMessage {
         instance: Option<u64>,
     },
     /// Open the search in this app's window's bar, as a click on its control
-    /// does (the app's Ctrl+F).
+    /// does (the app's Ctrl+F), or with its replacement field holding the
+    /// keyboard (the app's Ctrl+H).
     OpenSearch {
         instance: Option<u64>,
+        #[serde(default)]
+        opening: crate::window_toolbar::SearchOpening,
     },
-    /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
-    /// (sent once). An app that never says so is never asked, so an older
-    /// one does not receive a message it cannot read.
+    /// Describe these changes of the resource whose History is open: the
+    /// shell asks the model on this device and answers with
+    /// [`FloatingSurfaceHostMessage::HistoryDescriptions`]. The app holds no
+    /// model and needs none.
+    DescribeHistory {
+        changes: Vec<HistoryChangeFacts>,
+    },
+    /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`] and
+    /// [`FloatingSurfaceHostMessage::PointAt`] (sent once). An app that never
+    /// says so is never asked.
     SelectionCapable,
     /// The person asked an agent about what they selected in this app's
-    /// window (an "Ask agent…" entry, or the shell's chord answered through
+    /// window (an "Tell an agent…" entry, or the shell's chord answered through
     /// [`FloatingSurfaceHostMessage::ShareSelection`]); `None` when nothing
     /// is selected. The shell opens its agent composer seeded with it. The
     /// app's identity is the launcher's, never the message's.
@@ -423,6 +464,59 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bounds: Option<[f64; 4]>,
     },
+    /// The resource this window shows (the first it publishes), sent when it
+    /// changes: the desktop's own menus for the window (its window menu)
+    /// attach it, as the app's own menus do. `None` when it publishes none.
+    WindowResource {
+        resource: Option<tilo_actions::ActionResource>,
+    },
+    /// The answer to [`FloatingSurfaceHostMessage::PointAt`] `request`: the
+    /// control at that point, `None` where there is none.
+    Pointed {
+        request: u64,
+        control: Option<PointedControl>,
+    },
+    /// The answer to [`FloatingSurfaceHostMessage::Pick`] `request`, read
+    /// from this window's retained tree ([`crate::pick_wire::answer`]).
+    PickAnswered {
+        request: u64,
+        answer: crate::pick_wire::PickAnswer,
+    },
+    /// The record this window shows, as its route names it (empty for the
+    /// app's own record of the workspace), and the kind of resource it
+    /// keeps: the desktop lists the window among those a person may share
+    /// ([`crate::window_share`]). Sent once per connection.
+    WindowRecord {
+        record: String,
+        kind: String,
+        instance: Option<u64>,
+    },
+    /// Where this window wants other apps' views of resources drawn, at most
+    /// [`crate::window_share::MAX_EMBEDS`] (`crate::window_share::declare`):
+    /// sent whenever they change. The shell answers with
+    /// [`FloatingSurfaceHostMessage::EmbedStates`]. Only the sharing app's
+    /// embeds are drawn.
+    Embeds {
+        embeds: Vec<crate::window_share::DeclaredEmbed>,
+        instance: Option<u64>,
+    },
+    /// The windows this app shares (`crate::window_share::publish_shared`),
+    /// sent whenever they change, so the desktop offers "Stop sharing" on
+    /// them. Only the sharing app's are taken.
+    SharedWindows {
+        shared: Vec<crate::window_share::SharedWindow>,
+    },
+}
+
+/// One control of an app's window as the shell names it when a person
+/// points at it: its semantic id, its role and its accessible name. What a
+/// field holds is never part of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointedControl {
+    pub id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.
@@ -491,11 +585,34 @@ pub enum FloatingSurfaceHostMessage {
     /// selection. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
     ShareSelection,
+    /// The person pointed at `point` of this app's focused window, in its
+    /// logical coordinates, to say what something is about (feedback on one
+    /// control): answer with [`FloatingSurfaceClientMessage::Pointed`].
+    /// Sent only to an app that announced
+    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
+    PointAt {
+        request: u64,
+        point: [f64; 2],
+    },
+    /// The person is picking parts of the screen to report a problem with
+    /// them, over this app's window: answer `query` with
+    /// [`FloatingSurfaceClientMessage::PickAnswered`]. Sent only to an app
+    /// that announced [`FloatingSurfaceClientMessage::SelectionCapable`].
+    Pick {
+        request: u64,
+        query: crate::pick_wire::PickQuery,
+    },
     /// The person used this app's slots in its window's bar
     /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or
     /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).
     ToolbarEvent {
         event: crate::window_toolbar::ToolbarEvent,
+    },
+    /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`]
+    /// did, as the model on this device described them. A change it could
+    /// not describe is left out.
+    HistoryDescriptions {
+        described: Vec<HistoryChangeDescription>,
     },
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
@@ -556,11 +673,35 @@ pub enum FloatingSurfaceHostMessage {
         /// host, and from older shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room_sync: Option<crate::room_sync::RoomSync>,
+        /// How round the shell draws the window's corners, in logical
+        /// pixels: its window radius while the window is framed among
+        /// others, 0 while it is drawn edge to edge. Absent from older
+        /// shells.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner_radius: Option<f32>,
+    },
+    /// This shell draws the views windows embed of other apps' resources
+    /// ([`FloatingSurfaceClientMessage::Embeds`]): sent when the app
+    /// connects, so the app draws no stand-in for them.
+    DrawsEmbeds,
+    /// How each embed of this app's window is coming along, every one the
+    /// shell draws: sent whenever one changes.
+    EmbedStates {
+        states: Vec<crate::window_share::KeyedEmbedState>,
+    },
+    /// The windows the person has open on a record, for the sharing app's
+    /// picker: sent to the sharing app alone, whenever they change.
+    OpenWindows {
+        windows: Vec<crate::window_share::OpenWindow>,
+    },
+    /// A window's menu asked the sharing app to share it, or to stop
+    /// sharing it.
+    WindowShareAsk {
+        ask: crate::window_share::Ask,
     },
 }
 
 impl FloatingSurfaceHostMessage {
-    /// The message that tells a window `appearance`.
     #[must_use]
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
@@ -569,6 +710,7 @@ impl FloatingSurfaceHostMessage {
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
             room_sync: None,
+            corner_radius: appearance.corner_radius.filter(|radius| radius.is_finite()),
         }
     }
 
@@ -609,12 +751,14 @@ impl FloatingSurfaceHostMessage {
         let Self::Appearance {
             workspace_hue,
             your_colour,
+            corner_radius,
             ..
         } = self
         else {
             return None;
         };
         Some(crate::theme::WindowAppearance {
+            corner_radius: corner_radius.filter(|radius| radius.is_finite() && *radius >= 0.0),
             workspace_hue: workspace_hue
                 .filter(|hue| hue.is_finite())
                 .map(|hue| hue.rem_euclid(360.0)),
@@ -640,7 +784,7 @@ pub struct FloatingSurfaceServiceClient {
     /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
-    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
+    rearm_wake: Option<readable_watcher::Rearm>,
     /// The last appearance the shell told: the shell says it once per
     /// change, so a window this connection is handed to next
     /// ([`Self::hand_to_next_window`]) hears it from here.
@@ -680,6 +824,15 @@ impl FloatingSurfaceServiceClient {
     /// handed over ([`Self::hand_over`]), else the one the launcher handed
     /// this process ([`Self::discover`]).
     pub(crate) fn for_window() -> Option<Self> {
+        // A window the shell opened in this running process has a
+        // connection of its own (`crate::window_door`).
+        #[cfg(feature = "local-daemons")]
+        if crate::window_door::is_building() {
+            let connection = crate::window_door::take_shell_ui()?;
+            let wake = crate::wake::WakeHandle::new();
+            return Self::from_stream_waking(UnixStream::from(connection), move || wake.wake())
+                .ok();
+        }
         #[cfg(feature = "local-daemons")]
         if let Some(mut client) = HANDED_OVER.with(|slot| slot.borrow_mut().take()) {
             client.hand_to_next_window();
@@ -709,7 +862,7 @@ impl FloatingSurfaceServiceClient {
     #[cfg(feature = "local-daemons")]
     fn hand_to_next_window(&mut self) {
         let wake = crate::wake::WakeHandle::new();
-        match spawn_readable_watcher(&self.stream, move || wake.wake()) {
+        match readable_watcher::spawn_readable_watcher(&self.stream, move || wake.wake(), || {}) {
             Ok(rearm) => self.rearm_wake = Some(rearm),
             Err(error) => {
                 tracing::warn!(%error, "the next window does not wake for the shell's messages");
@@ -721,13 +874,24 @@ impl FloatingSurfaceServiceClient {
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
     /// something the app has not read yet: one wake, then nothing until the
     /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
-    /// it. Dropping the client stops the watcher within one poll interval.
+    /// it. Dropping the client stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream_waking(
         stream: UnixStream,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let rearm = spawn_readable_watcher(&stream, wake)?;
+        Self::from_stream_watched(stream, wake, || {})
+    }
+
+    /// [`Self::from_stream_waking`], also calling `parked` each time the
+    /// watcher, having woken the app, waits for it to read.
+    #[cfg(any(test, feature = "local-daemons"))]
+    fn from_stream_watched(
+        stream: UnixStream,
+        wake: impl Fn() + Send + 'static,
+        parked: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let rearm = readable_watcher::spawn_readable_watcher(&stream, wake, parked)?;
         let mut client = Self::from_stream(stream)?;
         client.rearm_wake = Some(rearm);
         Ok(client)
@@ -740,8 +904,6 @@ impl FloatingSurfaceServiceClient {
     }
 
     /// Construct an explicit fixture connection through the production stream adapter.
-    /// # Errors
-    /// Returns the same stream configuration failures as native service admission.
     #[cfg(feature = "test-support")]
     pub fn from_test_stream(stream: UnixStream) -> std::io::Result<Self> {
         Self::from_stream(stream)
@@ -804,11 +966,6 @@ impl FloatingSurfaceServiceClient {
 
     /// Flush queued writes and collect every complete host message currently
     /// available. `WouldBlock` is ordinary idle state, never a disconnect.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when queued writes or incoming reads fail, the peer
-    /// disconnects, a frame exceeds the protocol limit, or JSON is invalid.
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         self.flush_outgoing()
             .map_err(|error| format!("send floating-surface message: {error}"))?;
@@ -831,7 +988,7 @@ impl FloatingSurfaceServiceClient {
         }
         #[cfg(any(test, feature = "local-daemons"))]
         if let Some(rearm) = &self.rearm_wake {
-            let _ = rearm.send(());
+            rearm.rearm();
         }
 
         let mut messages = std::mem::take(&mut self.replay);
@@ -883,62 +1040,8 @@ impl FloatingSurfaceServiceClient {
     }
 }
 
-/// Watch `stream` for what the shell writes, calling `wake` once each time
-/// it has written something the app has not read yet; the app rearms the
-/// watch through the returned sender after reading, and dropping it stops
-/// the watcher within one poll interval.
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
-fn spawn_readable_watcher(
-    stream: &UnixStream,
-    wake: impl Fn() + Send + 'static,
-) -> std::io::Result<std::sync::mpsc::Sender<()>> {
-    use std::os::fd::AsRawFd as _;
-    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
-    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-    // Its own descriptor for the same socket: closing the client's never
-    // leaves the watcher polling a number the process reused.
-    let watched = stream.try_clone()?;
-    let (rearm, armed) = std::sync::mpsc::channel::<()>();
-    tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
-        loop {
-            let mut readable = libc::pollfd {
-                fd: watched.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
-            // SAFETY: one valid pollfd for a descriptor this thread owns.
-            let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
-            if ready < 0 {
-                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return;
-            }
-            if ready == 0 {
-                // Idle: stop once the client is gone. A rearm that
-                // arrives while armed means nothing.
-                match armed.try_recv() {
-                    Err(TryRecvError::Disconnected) => return,
-                    Ok(()) | Err(TryRecvError::Empty) => continue,
-                }
-            }
-            wake();
-            if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                return;
-            }
-            loop {
-                match armed.recv_timeout(POLL) {
-                    Ok(()) => break,
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            }
-            while armed.try_recv().is_ok() {}
-        }
-    })?;
-    Ok(rearm)
-}
+mod readable_watcher;
 
 /// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
 /// the optional client API available so applications compile and naturally
@@ -1156,11 +1259,6 @@ impl TryFrom<FloatingSurfaceProtocolSource> for FloatingSource {
 }
 
 /// Convert protocol coordinates into a validated rectangle.
-///
-/// # Errors
-///
-/// Returns an error when any coordinate is non-finite or the rectangle has
-/// non-positive width or height.
 pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
     let [x0, y0, x1, y1] = coords;
     if coords.iter().any(|value| !value.is_finite()) || x1 <= x0 || y1 <= y0 {
@@ -1170,9 +1268,6 @@ pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
 }
 
 /// Validate optional interactive geometry without enlarging the native window.
-///
-/// # Errors
-/// Returns an error for malformed geometry or an input region outside `window`.
 pub fn protocol_input_rect(window: Rect, coords: Option<[f64; 4]>) -> Result<Option<Rect>, String> {
     coords
         .map(|coords| {
@@ -1894,7 +1989,6 @@ mod tests {
 
     #[test]
     fn attached_and_detached_surfaces_stay_inside_their_owner() {
-        // Case `attached_surface_follows_the_app`.
         {
             let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -1904,7 +1998,6 @@ mod tests {
             assert_eq!(b.y0 - a.y0, 40.0);
         }
 
-        // Case `inline_attached_region_is_the_single_source_geometry`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -1916,7 +2009,6 @@ mod tests {
             assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
         }
 
-        // Case `programmatic_return_requires_confirmed_desktop_ownership`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -1958,7 +2050,6 @@ mod tests {
             );
         }
 
-        // Case `attached_chrome_keeps_the_complete_surface_inside_its_app`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -1977,7 +2068,6 @@ mod tests {
             assert_eq!(complete.x1, app.x1 - 16.0);
         }
 
-        // Case `drag_crossing_app_edge_hands_surface_to_desktop`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2004,7 +2094,6 @@ mod tests {
             );
         }
 
-        // Case `detached_surface_uses_real_desktop_reachability_bounds`.
         {
             let app = Rect::new(100.0, 100.0, 700.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2019,7 +2108,6 @@ mod tests {
             assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
         }
 
-        // Case `edge_snap_eases_from_the_release_rect_instead_of_jumping`.
         {
             let app = Rect::new(100.0, 100.0, 700.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2044,7 +2132,6 @@ mod tests {
 
     #[test]
     fn handoff_motion_is_continuous_across_owners() {
-        // Case `handoff_flourish_keeps_the_surface_center_fixed`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2061,7 +2148,6 @@ mod tests {
             );
         }
 
-        // Case `visual_review_can_compare_both_owners_at_the_exact_same_handoff_phase`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2092,7 +2178,6 @@ mod tests {
             );
         }
 
-        // Case `handoff_flourish_follows_recent_pointer_velocity`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2118,7 +2203,6 @@ mod tests {
             assert!(motion.strength > 0.9, "a quick throw gets the full cue");
         }
 
-        // Case `reattachment_preserves_the_dragged_rect_on_the_transfer_frame`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2145,7 +2229,6 @@ mod tests {
             assert_eq!(p.rect(app, desk), initial + (returned - origin));
         }
 
-        // Case `shell_to_app_adoption_preserves_pointer_velocity_and_next_drag_delta`.
         {
             let app = Rect::new(0.0, 0.0, 700.0, 600.0);
             let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
@@ -2206,7 +2289,6 @@ mod tests {
             assert!(!p.is_dragging());
         }
 
-        // Case `reduced_motion_lands_a_declined_handoff_home_at_once`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2227,7 +2309,6 @@ mod tests {
             );
         }
 
-        // Case `declined_handoff_animates_back_without_a_first_frame_jump`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2273,7 +2354,6 @@ mod tests {
 
     #[test]
     fn surface_protocol_carries_explicit_geometry_and_rejects_invalid_frames() {
-        // Case `composite_sources_make_multi_window_pip_a_first_class_request`.
         {
             let req = FloatingSurfaceRequest {
                 id: "pair".into(),
@@ -2292,7 +2372,6 @@ mod tests {
             assert!(matches!(req.source, FloatingSource::Composite(ref v) if v.len() == 2));
         }
 
-        // Case `protocol_round_trip_preserves_composite_source_geometry`.
         {
             let request = FloatingSurfaceRequest {
                 id: "comparison".into(),
@@ -2327,7 +2406,6 @@ mod tests {
             assert_eq!(FloatingSurfaceRequest::try_from(wire).unwrap(), request);
         }
 
-        // Case `native_surface_protocol_carries_outer_and_content_geometry`.
         {
             let messages = [
                 FloatingSurfaceHostMessage::PrepareSurface {
@@ -2389,7 +2467,6 @@ mod tests {
             );
         }
 
-        // Case `protocol_rejects_invalid_geometry`.
         {
             let base = FloatingSurfaceProtocolRequest {
                 id: "call".into(),
@@ -2412,7 +2489,6 @@ mod tests {
             assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
         }
 
-        // Case `host_protocol_makes_bounds_and_ownership_explicit`.
         {
             let bounds = FloatingSurfaceHostMessage::DesktopBounds {
                 bounds: [0.0, 0.0, 3200.0, 1080.0],
@@ -2435,7 +2511,6 @@ mod tests {
 
     #[test]
     fn prepare_rebases_the_live_handoff_without_frame_jumps() {
-        // Case `prepare_applies_clamping_without_ending_the_live_handoff`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2463,7 +2538,6 @@ mod tests {
             );
         }
 
-        // Case `prepare_rebases_a_held_drag_without_moving_its_first_native_frame`.
         {
             let app = Rect::new(0.0, 0.0, 700.0, 600.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2488,7 +2562,6 @@ mod tests {
             assert_eq!(placement.rect(app, desk), prepared);
         }
 
-        // Case `prepare_preserves_pointer_motion_that_arrived_after_the_handoff_request`.
         {
             let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
             let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
@@ -2524,7 +2597,6 @@ mod tests {
             assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
         }
 
-        // Case `proxy_phase_primary_motion_stays_in_desktop_pointer_space`.
         {
             let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
             let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
@@ -2563,7 +2635,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn nonblocking_service_client_bounds_output_and_completes_lifecycles() {
-        // Case `nonblocking_service_client_bounds_queued_output`.
         {
             let (app_side, _shell_side) = UnixStream::pair().unwrap();
             let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
@@ -2579,7 +2650,6 @@ mod tests {
             );
         }
 
-        // Case `nonblocking_service_client_exchanges_complete_lifecycle_frames`.
         {
             use std::io::{BufRead, BufReader};
 
@@ -2649,6 +2719,7 @@ mod tests {
         let told = WindowAppearance {
             workspace_hue: Some(40.0),
             your_colour: Some(PresenceHue::Violet),
+            corner_radius: None,
         };
         let message = FloatingSurfaceHostMessage::appearance(&told);
         let wire = serde_json::to_value(&message).unwrap();
@@ -2675,12 +2746,65 @@ mod tests {
             Some(WindowAppearance {
                 workspace_hue: Some(40.0),
                 your_colour: None,
+                corner_radius: None,
             })
         );
         assert_eq!(
             FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
             None
         );
+    }
+
+    /// The watcher is never scheduled while nothing arrives: armed, or
+    /// parked over bytes the app has not read. Dropping the client ends it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_watcher_is_never_scheduled_and_ends_with_its_client() {
+        use std::sync::{Arc, Mutex};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let watcher = Arc::new(Mutex::new(None::<String>));
+        let seen = Arc::clone(&watcher);
+        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+            app_side,
+            move || {
+                let tid = tilo_test_env::idle::current_thread_id().unwrap();
+                *seen.lock().unwrap() = Some(tid.to_string());
+            },
+            || {},
+        )
+        .unwrap();
+        let mut bytes =
+            serde_json::to_vec(&FloatingSurfaceHostMessage::Closed { id: "pip".into() }).unwrap();
+        bytes.push(b'\n');
+        shell_side.write_all(&bytes).unwrap();
+        let tid = tilo_test_env::wait_for("the watcher wakes the app", || {
+            watcher.lock().unwrap().clone()
+        });
+        // Two windows back to back outlast any poll interval a watcher could
+        // hide in one of them.
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "watcher parked over unread bytes");
+        }
+        assert_eq!(client.pump().unwrap().len(), 1);
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "armed watcher with nothing to read");
+        }
+        // Every frame pumps the connection; reading while the watcher is
+        // armed does not wake it.
+        let settled = tilo_test_env::idle::asleep_switches(&tid);
+        for _ in 0..10 {
+            assert!(client.pump().unwrap().is_empty());
+        }
+        assert_eq!(
+            tilo_test_env::idle::asleep_switches(&tid),
+            settled,
+            "pumping an armed connection woke its watcher"
+        );
+        drop(client);
+        tilo_test_env::wait_until("the watcher ends with its client", || {
+            !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
+        });
     }
 
     #[cfg(unix)]
@@ -2692,15 +2816,24 @@ mod tests {
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
         let wakes = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&wakes);
-        let mut client = FloatingSurfaceServiceClient::from_stream_waking(app_side, move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-        })
+        let parks = Arc::new(AtomicUsize::new(0));
+        let parked = Arc::clone(&parks);
+        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+            app_side,
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                parked.fetch_add(1, Ordering::SeqCst);
+            },
+        )
         .unwrap();
         let send = |shell_side: &mut UnixStream| {
             let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::appearance(
                 &crate::theme::WindowAppearance {
                     workspace_hue: Some(40.0),
                     your_colour: None,
+                    corner_radius: None,
                 },
             ))
             .unwrap();
@@ -2708,10 +2841,10 @@ mod tests {
             shell_side.write_all(&bytes).unwrap();
         };
         send(&mut shell_side);
-        tilo_test_env::wait_until("the shell's write wakes the app", || {
-            wakes.load(Ordering::SeqCst) >= 1
+        tilo_test_env::wait_until("the watcher waits for the app to read", || {
+            parks.load(Ordering::SeqCst) >= 1
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(parks.load(Ordering::SeqCst), 1);
         assert_eq!(
             wakes.load(Ordering::SeqCst),
             1,

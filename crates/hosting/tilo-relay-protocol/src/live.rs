@@ -23,6 +23,11 @@ use collab_types::{
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+mod layout;
+mod pointer;
+pub use layout::{LAYOUT_UNITS, LiveLayout, LiveWindow, MAX_LAYOUT_APP_BYTES, MAX_LAYOUT_WINDOWS};
+pub use pointer::{LivePointer, PointerLayout, ShownStrip};
+
 /// Largest encoded presence frame. Kept at datagram size so presence can
 /// move to QUIC datagrams without a format change.
 pub const MAX_PRESENCE_FRAME_BYTES: usize = 1100;
@@ -127,7 +132,6 @@ fn finite(values: &[f32]) -> Result<()> {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveRecord {
-    /// Application identifier.
     #[serde(deserialize_with = "text128")]
     pub app: String,
     /// Record identifier within the application; empty names its package-primary record.
@@ -179,7 +183,6 @@ pub struct LiveAnchor {
 /// 16-byte scope digest when the scoped form would not fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorScope<'a> {
-    /// The editor's postcard scope key.
     Key(&'a [u8]),
     /// The 16-byte digest of the editor's scope key.
     Digest([u8; 16]),
@@ -329,8 +332,9 @@ pub struct PresenceFrame {
     pub sent_at_ms: u64,
     /// Record the publisher is focused on.
     pub focus: Option<LiveRecord>,
-    /// Pointer in the focused surface's coordinate space.
-    pub pointer: Option<[f32; 2]>,
+    /// Where the pointer is, relative to the window or strip it is over, so
+    /// every member places it in their own layout ([`PointerLayout`]).
+    pub pointer: Option<LivePointer>,
     /// Text selection as (anchor, head).
     pub selection: Option<(LiveAnchor, LiveAnchor)>,
     /// Object being dragged or resized.
@@ -352,6 +356,21 @@ pub struct PresenceFrame {
     /// frame restates the same reaction, which plays nothing.
     #[serde(default)]
     pub reaction: Option<LiveReaction>,
+    /// The publisher's latest wave at someone in the room. Only the person
+    /// waved at shows it, once per new [`LiveWave::seq`]; restating the
+    /// frame restates the same wave, which shows nothing.
+    #[serde(default)]
+    pub wave: Option<LiveWave>,
+    /// Where the publisher's windows are on its screen, by app and record
+    /// digest only: others draw a mini view of it from what they hold.
+    /// Sent under the same rule as [`Self::focus`].
+    #[serde(default)]
+    pub layout: Option<LiveLayout>,
+    /// Whose view the publisher follows: their live publisher, lower-case
+    /// hex, 1..=[`MAX_WAVE_TARGET_BYTES`] bytes. Restated with every frame
+    /// while it lasts, so every member's roster can say who follows whom.
+    #[serde(default)]
+    pub following: Option<String>,
 }
 
 /// Largest presence place.
@@ -399,6 +418,41 @@ impl CursorChat {
     }
 }
 
+/// Largest wave target: a member's live publisher, as hex.
+pub const MAX_WAVE_TARGET_BYTES: usize = 64;
+
+/// A wave at one member of the room: "hello", to them, from the publisher.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveWave {
+    /// Per-publisher counter; a new value is a new wave.
+    pub seq: u32,
+    /// Whom it is for: their live publisher, lower-case hex,
+    /// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
+    pub target: String,
+}
+
+impl LiveWave {
+    fn validate(&self) -> Result<()> {
+        publisher(&self.target)
+    }
+}
+
+/// A member named by their live publisher: lower-case hex,
+/// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
+fn publisher(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.len() > MAX_WAVE_TARGET_BYTES
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Err(LiveWireError::Invalid)
+    } else {
+        Ok(())
+    }
+}
+
 /// One emoji sent as a reaction from the publisher's pointer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -443,6 +497,15 @@ impl PresenceFrame {
         if let Some(reaction) = &self.reaction {
             reaction.validate()?;
         }
+        if let Some(wave) = &self.wave {
+            wave.validate()?;
+        }
+        if let Some(layout) = &self.layout {
+            layout.validate()?;
+        }
+        if let Some(following) = &self.following {
+            publisher(following)?;
+        }
         if self
             .place
             .as_ref()
@@ -454,7 +517,7 @@ impl PresenceFrame {
             record.validate()?;
         }
         if let Some(pointer) = &self.pointer {
-            finite(pointer)?;
+            pointer.validate()?;
         }
         if let Some((anchor, head)) = &self.selection {
             object_id(&anchor.cursor)?;
@@ -504,7 +567,6 @@ pub enum OpsFrame {
     Preview {
         /// Monotonic per-publisher, per-record sequence.
         seq: u64,
-        /// Record the preview applies to.
         record: LiveRecord,
         /// 1..=[`MAX_PREVIEW_OPS`] operations.
         ops: Vec<PreviewOp>,
@@ -599,10 +661,6 @@ impl LiveFrame {
     }
 
     /// Canonical encoding after checking every bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the value violates its bounds.
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let bytes = postcard::to_allocvec(self).map_err(|_| LiveWireError::Codec)?;
@@ -613,11 +671,6 @@ impl LiveFrame {
     }
 
     /// Decode, rejecting oversize and noncanonical input.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` is not a canonical encoding within
-    /// bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_OPS_FRAME_BYTES {
             return Err(LiveWireError::Codec);
@@ -737,7 +790,6 @@ impl SealedLiveFrame {
         self.open(open)
     }
 
-    /// The channel that sealed the frame.
     pub fn channel_id(&self) -> ChannelId {
         ChannelId(uuid::Uuid::from_bytes(self.channel))
     }
@@ -816,10 +868,6 @@ impl SealedLiveFrame {
     }
 
     /// Canonical encoding within the kind's bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the encoding exceeds the bound.
     pub fn encode(&self) -> Result<Vec<u8>> {
         if self.payload.is_empty() {
             return Err(LiveWireError::Invalid);
@@ -833,11 +881,6 @@ impl SealedLiveFrame {
 
     /// Decode, rejecting oversize, noncanonical and unsealed input. A
     /// cleartext [`LiveFrame`] never decodes as a sealed one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` is not a canonical sealed frame within
-    /// bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_SEALED_OPS_FRAME_BYTES {
             return Err(LiveWireError::Codec);
@@ -949,7 +992,6 @@ mod tests {
         assert!(event.validate().is_err());
         event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
         assert!(event.validate().is_err());
-        // Existing preview-end discriminants and payload remain unchanged.
         assert_eq!(
             LiveFrame::Ops(OpsFrame::End { record: record() })
                 .encode()
@@ -1040,10 +1082,16 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1062,10 +1110,16 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1160,10 +1214,16 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1201,10 +1261,16 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
-            pointer: Some([1.5, 2.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [1.5, 2.0],
+            }),
             selection: Some((
                 LiveAnchor {
                     cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
@@ -1240,6 +1306,9 @@ mod tests {
             place: Some("4242".into()),
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
         });
         for frame in [
             presence,
@@ -1262,7 +1331,10 @@ mod tests {
                 seq: 4,
                 sent_at_ms: 1,
                 focus: Some(record()),
-                pointer: Some([10.0, 20.0]),
+                pointer: Some(LivePointer::Strip {
+                    strip: 1,
+                    at: [10.0, 20.0],
+                }),
                 chat: Some(CursorChat {
                     text: text.into(),
                     sent,
@@ -1311,16 +1383,54 @@ mod tests {
         }
     }
 
+    /// A wave rides the presence frame to one member, named by their
+    /// publisher in hex; anything else is refused.
+    #[test]
+    fn a_wave_rides_presence_to_one_member() {
+        let waving = |target: &str| {
+            LiveFrame::Presence(PresenceFrame {
+                seq: 9,
+                sent_at_ms: 1,
+                wave: Some(LiveWave {
+                    seq: 3,
+                    target: target.into(),
+                }),
+                ..PresenceFrame::default()
+            })
+        };
+        let frame = waving(&"ab".repeat(32));
+        let bytes = frame.encode().unwrap();
+        assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
+        for refused in [
+            "",
+            "not hex",
+            "ABCD",
+            &"a".repeat(MAX_WAVE_TARGET_BYTES + 1),
+        ] {
+            assert_eq!(
+                waving(refused).encode(),
+                Err(LiveWireError::Invalid),
+                "{refused:?}"
+            );
+        }
+    }
+
     #[test]
     fn out_of_bounds_frames_are_refused() {
         let nan = LiveFrame::Presence(PresenceFrame {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
-            pointer: Some([f32::NAN, 0.0]),
+            pointer: Some(LivePointer::Strip {
+                strip: 1,
+                at: [f32::NAN, 0.0],
+            }),
             selection: None,
             drag: None,
             participant: None,
@@ -1330,6 +1440,9 @@ mod tests {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1356,6 +1469,9 @@ mod tests {
                 place: Some(place),
                 chat: None,
                 reaction: None,
+                wave: None,
+                layout: None,
+                following: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }

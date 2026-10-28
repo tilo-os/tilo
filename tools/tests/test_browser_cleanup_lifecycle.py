@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from hang import HANG_BOUND
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -71,6 +72,9 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         environment = dict(os.environ, CHROME=str(self.root / 'chrome'), RUNNER_TEMP=str(self.root),
                            FIXTURE_ROOT=str(self.root), DETACHED='1' if self.detached else '0',
                            PROBE_STATUS='7' if self.failure else '0', TILO_WEB_SMOKE_SHARDS='1',
+                           # The fixture browser always honours TERM; its close
+                           # must not race the supervisor's escalation to KILL.
+                           TILO_OWNED_BROWSER_TERM_GRACE_SECS=str(HANG_BOUND),
                            PATH=f'{self.root}:{os.environ["PATH"]}')
         self.process = subprocess.Popen(['bash', str(DRIVER), 'http://fixture', 'calculator'],
                                         cwd=REPO, env=environment, stdout=subprocess.PIPE,
@@ -79,7 +83,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         return self.process
 
     def wait(self, name):
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_BOUND
         while not (self.root / name).exists():
             if self.process.poll() is not None or time.monotonic() >= deadline:
                 raise AssertionError(f'driver did not reach {name}')
@@ -94,7 +98,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         if duplicate:
             self.process.terminate()
         (self.root / 'release-browser').touch()
-        stdout, stderr = self.process.communicate(timeout=5)
+        stdout, stderr = self.process.communicate(timeout=HANG_BOUND)
         return self.process.returncode, stdout + stderr
 
     def __enter__(self):
@@ -106,7 +110,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
-            self.process.communicate(timeout=5)
+            self.process.communicate(timeout=HANG_BOUND)
         self.directory.cleanup()
 
 
@@ -250,6 +254,12 @@ class BrowserProcessDiscovery(unittest.TestCase):
             send.assert_not_called()
             close.assert_called_once_with(42)
 
+    def test_failure_names_each_thread_and_its_kernel_wait(self):
+        supervisor = self.supervisor()
+        described = supervisor.describe_threads(os.getpid())
+        self.assertRegex(described, rf'^ threads={os.getpid()}:[A-Z]')
+        self.assertEqual(supervisor.describe_threads(2 ** 22 + 1), '')
+
     def test_unreadable_proc_stat_fails_discovery(self):
         supervisor = self.supervisor()
         with patch.object(Path, 'iterdir', return_value=[Path('/proc/123')]), \
@@ -271,22 +281,23 @@ if child == 0:
     grandchild = os.fork()
     if grandchild != 0:
         pathlib.Path(sys.argv[1]).write_text(f'{os.getppid()} {os.getpid()} {grandchild}')
-# A failsafe bounds the fixture's life even if supervision is broken.
-time.sleep(15)
+# A failsafe bounds the fixture's life even if supervision is broken; it
+# outlasts the test's own waits, so it never stands in for the supervisor.
+time.sleep(float(sys.argv[2]))
 '''
             process = subprocess.Popen(
                 [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
-                 sys.executable, '-c', script, str(ready)],
+                 sys.executable, '-c', script, str(ready), str(2 * HANG_BOUND)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + HANG_BOUND
                 while not ready.exists():
                     self.assertIsNone(process.poll(), 'supervisor exited before fixture startup')
                     self.assertLess(time.monotonic(), deadline, 'owned tree did not start')
                     time.sleep(.005)
                 pids = [int(pid) for pid in ready.read_text().split()]
                 process.terminate()
-                stdout, stderr = process.communicate(timeout=8)
+                stdout, stderr = process.communicate(timeout=HANG_BOUND)
                 self.assertEqual(process.returncode, 0, stdout + stderr)
                 self.assertIn('owned browser KILL phase:', stderr)
                 for pid in pids:
@@ -294,7 +305,36 @@ time.sleep(15)
             finally:
                 if process.poll() is None:
                     process.terminate()
-                process.communicate(timeout=20)
+                process.communicate(timeout=HANG_BOUND)
+
+    def test_close_requests_during_its_exit_never_end_the_supervisor_by_signal(self):
+        # The caller sends TERM while waiting for the supervisor's exit; one
+        # landing as the interpreter shuts down must not turn a proven clean
+        # close into an exit by signal.
+        process = subprocess.Popen(
+            [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+             sys.executable, '-c', 'import time; time.sleep(60)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + HANG_BOUND
+            status = Path(f'/proc/{process.pid}/status')
+            while not any(line.startswith('SigCgt:') and int(line.split()[1], 16) & (1 << (signal.SIGTERM - 1))
+                          for line in status.read_text().splitlines()):
+                self.assertIsNone(process.poll(), 'supervisor exited before handling TERM')
+                self.assertLess(time.monotonic(), deadline, 'supervisor never handled TERM')
+                time.sleep(.001)
+            while process.poll() is None:
+                self.assertLess(time.monotonic(), deadline, 'supervisor did not exit')
+                try:
+                    process.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    break
+            stdout, stderr = process.communicate(timeout=HANG_BOUND)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=HANG_BOUND)
 
 
 if __name__ == '__main__':

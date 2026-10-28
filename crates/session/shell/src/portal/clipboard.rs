@@ -716,11 +716,9 @@ mod tests {
 
     #[test]
     fn clipboard_broker_bounds_mimes_and_payloads() {
-        // Phase `mime_policy_rejects_hostile_values`.
         assert!(valid_mime("text/plain"));
         assert!(!valid_mime("text/plain\n"));
         assert!(!valid_mime("not-a-mime"));
-        // Phase `broker_enforces_payload_cap`.
         {
             let broker = MemoryClipboardBroker::default();
             assert!(
@@ -729,7 +727,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `bounded_reader_rejects_an_oversize_stream`.
         {
             let (reader, mut writer) = UnixStream::pair().unwrap();
             let writer_thread = std::thread::spawn(move || {

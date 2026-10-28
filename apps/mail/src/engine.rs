@@ -554,7 +554,10 @@ pub mod live {
     /// only place the app opens a socket.
     pub struct LiveEngine {
         rt: &'static ui::rt::AppRuntime,
-        tls: Arc<rustls::ClientConfig>,
+        /// The system's trust, read when the engine first connects: an
+        /// engine that never reaches a server (one confined with no files to
+        /// read) does without it.
+        tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
         /// Where draft attachment bytes are read from when building MIME.
         content: tilo_content::ContentStore,
         /// Holds OAuth grants: seals sign-ins, hands out current access
@@ -598,7 +601,7 @@ pub mod live {
             let rt = ui::rt::try_app().map_err(|e| e.to_string())?;
             Ok(Self {
                 rt,
-                tls: build_tls_config(),
+                tls: std::sync::OnceLock::new(),
                 content,
                 custodian: Custodian::live(),
                 sessions: std::collections::HashMap::new(),
@@ -617,8 +620,17 @@ pub mod live {
             tls: Arc<rustls::ClientConfig>,
         ) -> Result<Self, String> {
             let mut engine = Self::new(content, wake)?;
-            engine.tls = tls;
+            engine.tls = std::sync::OnceLock::from(tls);
             Ok(engine)
+        }
+
+        /// The client config servers are verified with, built on first use.
+        fn tls(&self) -> Result<Arc<rustls::ClientConfig>, String> {
+            if let Some(tls) = self.tls.get() {
+                return Ok(Arc::clone(tls));
+            }
+            let built = build_tls_config()?;
+            Ok(Arc::clone(self.tls.get_or_init(|| built)))
         }
 
         /// Watch `account`'s inbox from now on, in place of any earlier
@@ -643,9 +655,14 @@ pub mod live {
                 wake();
             };
             let key = account.email.clone();
-            let task = self
-                .rt
-                .spawn(watch_inbox(account, self.tls.clone(), arrived));
+            let tls = match self.tls() {
+                Ok(tls) => tls,
+                Err(error) => {
+                    tracing::debug!(%error, "mail: the inbox is not watched");
+                    return;
+                }
+            };
+            let task = self.rt.spawn(watch_inbox(account, tls, arrived));
             self.watches.insert(key, task);
         }
 
@@ -671,7 +688,7 @@ pub mod live {
             }
             if !self.sessions.contains_key(&key) {
                 let creds = resolve_auth(&self.custodian, account)?;
-                let session = self.block_on(connect_session(account, &creds, self.tls.clone()))?;
+                let session = self.block_on(connect_session(account, &creds, self.tls()?))?;
                 self.sessions
                     .insert(key.clone(), (session, std::time::Instant::now()));
             }
@@ -995,16 +1012,12 @@ pub mod live {
 
     /// Build the shared rustls client config against the system trust bundle.
     ///
-    /// # Panics
-    /// Never in practice: the ring provider always advertises the default
-    /// protocol versions, so this only fails against a provider built
-    /// without TLS 1.2/1.3 support.
-    #[allow(
-        clippy::expect_used,
-        reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the mail engine can degrade to"
-    )]
-    fn build_tls_config() -> Arc<rustls::ClientConfig> {
-        Arc::new(tilo_net::client_config().expect("rustls default protocol versions"))
+    /// # Errors
+    /// The system's trust could not be read.
+    fn build_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+        tilo_net::client_config()
+            .map(Arc::new)
+            .map_err(|error| format!("the system's trusted certificates are unreadable: {error}"))
     }
 
     /// The login user for an account (the explicit username, or the email).
@@ -1226,8 +1239,7 @@ pub mod live {
                 uids.into_iter().rev().take(PAGE as usize).collect()
             };
             synced.reset = true;
-            synced.messages =
-                fetch_uids(session, account, folder, validity, &uids, now_min).await?;
+            synced.receive(fetch_uids(session, account, folder, validity, &uids, now_min).await?);
             return Ok(synced);
         }
         if exists == 0 {
@@ -1243,11 +1255,15 @@ pub mod live {
                 // answers with the last message, even an older one: keep
                 // only the new.
                 let range = format!("{}:*", known.newest + 1);
-                synced.messages = fetch_set(session, account, folder, validity, &range, now_min)
-                    .await?
-                    .into_iter()
-                    .filter(|message| message.server.is_some_and(|at| at.uid > known.newest))
-                    .collect();
+                synced.receive(
+                    fetch_set(session, account, folder, validity, &range, now_min)
+                        .await?
+                        .into_iter()
+                        .filter(|(message, _)| {
+                            message.server.is_some_and(|at| at.uid > known.newest)
+                        })
+                        .collect(),
+                );
                 synced.flags = fetch_flags(session, known.oldest, known.newest).await?;
                 synced.window = Some((known.oldest, known.newest));
             }
@@ -1256,8 +1272,9 @@ pub mod live {
                 // start from the newest page.
                 synced.reset = true;
                 let first = exists.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
             Want::Older { known } if known.uid_validity == validity => {
@@ -1277,15 +1294,17 @@ pub mod live {
                 };
                 let last = position - 1;
                 let first = last.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, last, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, last, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
             Want::Older { .. } => {
                 synced.reset = true;
                 let first = exists.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
         }
@@ -1300,7 +1319,7 @@ pub mod live {
         first: u32,
         last: u32,
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         let stream = session
             .fetch(format!("{first}:{last}"), FETCH_ITEMS)
             .await
@@ -1317,7 +1336,7 @@ pub mod live {
         validity: u32,
         uid_set: &str,
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         let stream = session
             .uid_fetch(uid_set, FETCH_ITEMS)
             .await
@@ -1334,7 +1353,7 @@ pub mod live {
         validity: u32,
         uids: &[u32],
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1406,8 +1425,13 @@ pub mod live {
                 .collect();
             uids.sort_unstable();
             let newest: Vec<u32> = uids.into_iter().rev().take(SEARCH_PAGE).collect();
-            let mut messages =
-                fetch_uids(session, account, folder, validity, &newest, now_min).await?;
+            // A search hit is shown, not kept: its bytes go no further.
+            let mut messages: Vec<Message> =
+                fetch_uids(session, account, folder, validity, &newest, now_min)
+                    .await?
+                    .into_iter()
+                    .map(|(message, _)| message)
+                    .collect();
             // Outside the window this device syncs: no server place, so a
             // refresh neither counts nor removes them.
             for message in &mut messages {
@@ -1421,13 +1445,14 @@ pub mod live {
     /// What a fetch asks for: the whole message, without marking it read.
     const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
 
+    /// Each fetched message, read, beside the bytes its server sent.
     fn parse_all(
         fetches: &[async_imap::types::Fetch],
         account: &AccountConfig,
         folder: Folder,
         validity: u32,
         now_min: i64,
-    ) -> Vec<Message> {
+    ) -> Vec<(Message, Vec<u8>)> {
         fetches
             .iter()
             .filter_map(|fetch| {
@@ -1446,7 +1471,7 @@ pub mod live {
                     uid,
                     uid_validity: validity,
                 });
-                Some(message)
+                Some((message, body.to_vec()))
             })
             .collect()
     }
@@ -1603,7 +1628,7 @@ pub mod live {
         let envelope = build_envelope(account, draft)?;
         // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
         // upgrade. The connection races the host's addresses.
-        let mut connection = crate::connect::smtp(host, port, build_tls_config(), params).await?;
+        let mut connection = crate::connect::smtp(host, port, build_tls_config()?, params).await?;
         let sent = async {
             connection
                 .auth(&[mech], &creds_l)
@@ -1873,7 +1898,6 @@ pub mod live {
             let (rd, mut wr) = tokio::io::split(stream);
             let mut reader = BufReader::new(rd);
 
-            // ---- encrypted phase: EHLO, AUTH LOGIN, MAIL/RCPT/DATA ----
             let mut line = String::new();
             loop {
                 line.clear();
@@ -2010,13 +2034,19 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 .unwrap();
                 let (requests, events) = super::super::spawn_with(Box::new(engine));
 
-                // The newest page, with each message's place on the server.
                 requests
                     .send(super::EngineRequest::fetch(account.clone(), Folder::Inbox))
                     .unwrap();
                 let first = fetched(&events);
                 assert!(first.reset, "{layout:?}");
                 assert_eq!(first.messages.len(), 3);
+                // What the server sent for each message comes with it, for
+                // the person's other devices.
+                assert_eq!(first.originals.len(), 3);
+                for (id, original) in &first.originals {
+                    let read = crate::transport::parse_eml(original, 0, Folder::Inbox).unwrap();
+                    assert_eq!(read.id, *id);
+                }
                 let mut held = crate::model::Mailbox::default();
                 for message in first.messages {
                     held.insert(message);
@@ -2024,7 +2054,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 let known = Window::of(&held, "me@example.com", Folder::Inbox).unwrap();
                 assert_eq!((known.oldest, known.newest), (1, 3));
 
-                // New mail is pushed to a watching connection.
                 requests
                     .send(super::EngineRequest::watch(account.clone()))
                     .unwrap();
@@ -2055,13 +2084,16 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 assert!(!refresh.reset);
                 assert_eq!(refresh.messages.len(), 1, "{:?}", refresh.messages);
                 assert_eq!(refresh.messages[0].subject, "Fresh");
+                assert_eq!(refresh.originals.len(), 1);
+                assert!(
+                    String::from_utf8_lossy(&refresh.originals[0].1).contains("Subject: Fresh")
+                );
                 assert!(
                     refresh.flags.contains(&(1, true, false)),
                     "{:?}",
                     refresh.flags
                 );
 
-                // Archiving moves it to where this provider archives.
                 let archived = held
                     .messages
                     .values()
@@ -2126,7 +2158,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
             reason = "one scenario test keeps each merged phase and its fresh fixture visible"
         )]
         fn imap_fetch_and_smtp_send_work_over_real_sockets() {
-            // Phase `imap_fetch_over_a_real_socket_parses_a_message`.
             {
                 let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
     To: you@example.test\r\n\
@@ -2220,7 +2251,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 .unwrap();
             }
 
-            // Phase `smtp_send_over_a_real_socket_delivers_the_mime`.
             {
                 ui::rt::block_on(async move {
                     let server_tls = server_tls_config();
@@ -2299,7 +2329,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn stub_engine_reports_offline_and_never_claims_delivery() {
-        // Phase `stub_send_never_claims_delivery`.
         {
             let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
             let account = AccountConfig {
@@ -2327,7 +2356,6 @@ mod tests {
             ));
         }
 
-        // Phase `stub_connect_reports_offline_honestly`.
         {
             let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
             tx.send(EngineRequest::connect(AccountConfig {

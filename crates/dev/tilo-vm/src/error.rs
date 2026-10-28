@@ -38,7 +38,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R tilo/tilo, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "t publishes main's dev disks, each architecture on its own: t dispatch publish-os-dev-disk-x86_64 --ref main (publish-os-dev-disk-aarch64 for ARM) if you may dispatch t, or ask a human who may   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -1108,17 +1108,8 @@ mod tests {
                 local_build: None,
             }
             .hint();
-            assert!(without.contains("Release / Dev VM disk"), "{without}");
             assert!(
-                without.contains(".forgejo/workflows/build-image.yml"),
-                "{without}"
-            );
-            assert!(
-                without.contains(".forgejo/workflows/dev-disk.yml"),
-                "{without}"
-            );
-            assert!(
-                without.contains("fgj workflow run dev-disk.yml"),
+                without.contains("t dispatch publish-os-dev-disk-x86_64 --ref main"),
                 "{without}"
             );
             assert!(without.contains("tilo-vm vm use <name>"), "{without}");

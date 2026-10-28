@@ -138,7 +138,6 @@ impl Message {
         }
     }
 
-    /// `self` with `$name` set to `value`.
     #[must_use]
     pub fn with(mut self, name: &'static str, value: impl Into<Line>) -> Self {
         self.args.push((name, value.into()));
@@ -231,6 +230,19 @@ enum ResponseShape {
     VpnSecrets,
 }
 
+/// What a request asks for, as far as the sheet asking it cares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RequestKind {
+    /// Secrets of the connection, in the fields the request names.
+    #[default]
+    Secrets,
+    /// The PIN of the SIM a mobile connection uses (the `gsm` setting's
+    /// `pin`). The SIM keeps it, not this agent: the sheet asks it as a
+    /// SIM PIN, offers no "Remember", and when the SIM is locked harder
+    /// (its PUK) the host unlocks it with `ModemManager` itself.
+    SimPin,
+}
+
 /// One `GetSecrets` call, understood: what to ask and how to answer.
 #[derive(Clone, Debug)]
 pub struct SecretRequest {
@@ -240,6 +252,7 @@ pub struct SecretRequest {
     pub connection_id: String,
     pub setting_name: String,
     pub flags: u32,
+    pub kind: RequestKind,
     pub title: Message,
     /// What the sheet says, one line each.
     pub detail: Vec<Line>,
@@ -374,6 +387,7 @@ struct Ask {
     remember_default: bool,
     roaming_wifi: Option<(String, os_actions::WifiSecurity)>,
     shape: ResponseShape,
+    kind: RequestKind,
 }
 
 impl Ask {
@@ -383,6 +397,7 @@ impl Ask {
             lead,
             fields,
             notes: Vec::new(),
+            kind: RequestKind::Secrets,
             remember_default: true,
             roaming_wifi: None,
             shape: ResponseShape::Flat,
@@ -565,6 +580,24 @@ fn ask_vpn(subject: &Subject<'_>, hinted: &[&str]) -> Ask {
     ask
 }
 
+/// The SIM's PIN: the SIM checks it and counts the wrong ones, so it is
+/// never remembered here.
+fn ask_sim_pin(subject: &Subject<'_>) -> Ask {
+    let mut ask = Ask::new(
+        "portal-network-sim-pin-title",
+        Message::new("portal-network-sim-pin-lead").with("network", subject.named()),
+        vec![masked(
+            "pin",
+            Message::new("portal-network-sim-pin"),
+            true,
+            SecretFieldRule::Any,
+        )],
+    );
+    ask.kind = RequestKind::SimPin;
+    ask.remember_default = false;
+    ask
+}
+
 fn ask_password(title: &'static str, subject: &Subject<'_>) -> Ask {
     Ask::new(
         title,
@@ -616,16 +649,7 @@ impl SecretRequest {
             "802-11-wireless-security" => ask_wifi(&subject)?,
             "802-1x" => ask_8021x(&subject),
             "vpn" => ask_vpn(&subject, &hinted),
-            "gsm" if hinted.contains(&"pin") => Ask::new(
-                "portal-network-sim-pin-title",
-                Message::new("portal-network-sim-pin-lead").with("network", subject.named()),
-                vec![masked(
-                    "pin",
-                    Message::new("portal-network-sim-pin"),
-                    true,
-                    SecretFieldRule::Any,
-                )],
-            ),
+            "gsm" if hinted.contains(&"pin") => ask_sim_pin(&subject),
             "gsm" | "cdma" => ask_password("portal-network-mobile-title", &subject),
             "pppoe" => ask_password("portal-network-dsl-title", &subject),
             other => {
@@ -656,6 +680,7 @@ impl SecretRequest {
             connection_id: id,
             setting_name: setting_name.to_string(),
             flags,
+            kind: ask.kind,
             title: ask.title,
             detail: lines,
             fields: ask.fields,
@@ -726,6 +751,10 @@ pub trait SecretPrompter: Send + Sync {
         &self,
         request: &SecretRequest,
     ) -> impl std::future::Future<Output = Option<SheetAnswer>> + Send;
+    /// `request` needs secrets this agent may not ask for now
+    /// (`NetworkManager` connecting on its own): the host tells the person,
+    /// who can join the network themselves and be asked then.
+    fn cannot_ask(&self, _request: &SecretRequest) {}
 }
 
 async fn blocking<T: Send + 'static>(
@@ -752,20 +781,58 @@ pub async fn request_secrets(
     if request.flags & FLAG_REQUEST_NEW == 0 {
         let lookup_store = Arc::clone(store);
         let lookup_key = key.clone();
-        let stored = blocking(move || lookup_store.load(&lookup_key)).await?;
-        if let Some(stored) = stored.filter(|stored| request.is_answered_by(stored)) {
-            tracing::debug!(
+        let (stored, rejected) = blocking(move || {
+            (
+                lookup_store.load(&lookup_key),
+                lookup_store.rejected(&lookup_key),
+            )
+        })
+        .await?;
+        match stored.filter(|stored| request.is_answered_by(stored)) {
+            // NetworkManager already turned these down: answering them again
+            // fails the same way every time it connects on its own.
+            Some(stored) if rejected.as_ref() == Some(&stored) => tracing::info!(
                 target: "shell::network_secrets",
                 connection = %request.connection_id,
                 setting = %request.setting_name,
-                "answered from remembered secrets"
+                "the remembered secrets were rejected before; not answering with them"
+            ),
+            Some(stored) => {
+                tracing::debug!(
+                    target: "shell::network_secrets",
+                    connection = %request.connection_id,
+                    setting = %request.setting_name,
+                    "answered from remembered secrets"
+                );
+                return Ok(stored);
+            }
+            None => {}
+        }
+    } else {
+        // NetworkManager wants new secrets: the ones it had did not work.
+        // When they are what this agent remembers (the vault, or the
+        // person's roaming Wi-Fi password), they are marked rejected, so no
+        // later request of NetworkManager's own is answered with them.
+        let reject_store = Arc::clone(store);
+        let reject_key = key.clone();
+        let marked = blocking(move || match reject_store.load(&reject_key) {
+            Some(stored) => reject_store.reject(&reject_key, &stored),
+            None => Ok(()),
+        })
+        .await?;
+        if let Err(error) = marked {
+            tracing::warn!(
+                target: "shell::network_secrets",
+                connection = %request.connection_id,
+                %error,
+                "could not remember that the secrets were rejected"
             );
-            return Ok(stored);
         }
     }
     if request.flags & FLAG_ALLOW_INTERACTION == 0 {
+        prompter.cannot_ask(request);
         return Err(AgentError::NoSecrets(
-            "nothing is remembered and asking is not allowed".into(),
+            "nothing usable is remembered and asking is not allowed".into(),
         ));
     }
     let Some(answer) = prompter.ask(request).await else {
@@ -781,6 +848,8 @@ pub async fn request_secrets(
     let kept = secrets.clone();
     let remember = answer.remember;
     let outcome = blocking(move || {
+        // What the person typed now supersedes whatever was rejected.
+        keep_store.clear_rejected(&key)?;
         if remember {
             keep_store.keep(&key, &kept)
         } else {
@@ -835,7 +904,6 @@ pub fn agent_owned_secrets(connection: &ConnectionDict) -> BTreeMap<String, Sett
     found
 }
 
-/// The connection's uuid, if it has one.
 pub fn connection_uuid(connection: &ConnectionDict) -> Option<String> {
     prop_str(connection, "connection", "uuid").filter(|uuid| !uuid.is_empty())
 }

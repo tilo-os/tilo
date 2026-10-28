@@ -102,9 +102,9 @@ def main() -> int:
     if violations:
         print("App content store contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("App content store contract OK (apps keep content in cx.content())")
+    print("App content store contract OK (apps keep content in cx.content())", file=sys.stderr)
     return 0
 
 

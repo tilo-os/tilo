@@ -3,7 +3,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
@@ -87,9 +86,11 @@ impl Widget for WorkspaceView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, _s: &AppModel, _p: &ModelPath) -> bool {
+    /// The slide is drawn, not laid out: it asks for frames and repaints.
+    fn needs_animation_frame(&self) -> bool {
         self.slide.is_moving(crate::motion::frame_now())
     }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -109,6 +110,12 @@ impl Widget for WorkspaceView {
         taffy.widget_leaf(style, node_map, self)
     }
     crate::rect_geometry!();
+    /// Sized by its style alone (no `measure`): nothing it changes needs
+    /// taffy to measure it again, and saying it does re-solved the layout of
+    /// everything above it on every frame.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
     fn draw(
         &mut self,
         scene: &mut Scene,

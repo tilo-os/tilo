@@ -20,6 +20,7 @@ use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_CHUNK_BYTES, MAX_REMOTE_CAPTURE_SESSIONS, RemoteAudioFormat,
     RemoteCaptureKind, RemoteCaptureProfile, RemoteVideoFormat,
 };
+use crate::shell::remote_capture::host::{CaptureHost, Probe};
 
 const MAX_DRAIN_PER_PUMP: usize = 32;
 
@@ -50,7 +51,7 @@ struct SourceProcess {
 }
 
 pub(crate) struct ProductionRemoteCaptureSource {
-    availability: RemoteCaptureAvailability,
+    host: CaptureHost,
     sessions: BTreeMap<[u8; 16], SourceProcess>,
     tx: mpsc::SyncSender<CapturedRemoteChunk>,
     rx: mpsc::Receiver<CapturedRemoteChunk>,
@@ -59,15 +60,11 @@ pub(crate) struct ProductionRemoteCaptureSource {
 }
 
 impl ProductionRemoteCaptureSource {
-    pub(crate) fn detect() -> Self {
+    pub(crate) fn new(host: CaptureHost) -> Self {
         let (tx, rx) = mpsc::sync_channel(MAX_REMOTE_CAPTURE_SESSIONS * 4);
         let (failure_tx, failure_rx) = mpsc::sync_channel(MAX_REMOTE_CAPTURE_SESSIONS);
         Self {
-            availability: RemoteCaptureAvailability {
-                camera: trusted_command("gst-launch-1.0").is_some() && physical_camera().is_some(),
-                microphone: trusted_command("pw-record").is_some(),
-                scanner: trusted_command("scanimage").is_some(),
-            },
+            host,
             sessions: BTreeMap::new(),
             tx,
             rx,
@@ -77,7 +74,7 @@ impl ProductionRemoteCaptureSource {
     }
 
     pub(crate) fn availability(&self) -> RemoteCaptureAvailability {
-        self.availability
+        availability_of(&self.host.current())
     }
 
     pub(crate) fn start(
@@ -98,7 +95,7 @@ impl ProductionRemoteCaptureSource {
         {
             return Err("the negotiated live frame exceeds the bounded fabric transport".into());
         }
-        let mut command = source_command(profile, self.availability)?;
+        let mut command = source_command(profile, &self.host.current())?;
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -214,10 +211,16 @@ impl Drop for ProductionRemoteCaptureSource {
     }
 }
 
-fn source_command(
-    profile: &RemoteCaptureProfile,
-    available: RemoteCaptureAvailability,
-) -> Result<Command, String> {
+fn availability_of(probe: &Probe) -> RemoteCaptureAvailability {
+    RemoteCaptureAvailability {
+        camera: probe.tool("gst-launch-1.0").is_some() && probe.physical_camera().is_some(),
+        microphone: probe.tool("pw-record").is_some(),
+        scanner: probe.tool("scanimage").is_some(),
+    }
+}
+
+fn source_command(profile: &RemoteCaptureProfile, probe: &Probe) -> Result<Command, String> {
+    let available = availability_of(probe);
     match profile {
         RemoteCaptureProfile::Camera {
             format: RemoteVideoFormat::Nv12,
@@ -225,12 +228,14 @@ fn source_command(
             height,
             frames_per_second,
         } if available.camera => {
-            let device = physical_camera()
+            let device = probe
+                .physical_camera()
                 .ok_or_else(|| "no local physical camera is available".to_string())?;
             // The camera through the OS media stack: raw NV12 frames of the
             // requested size and rate on stdout, nothing else (`-q`).
             let mut command = Command::new(
-                trusted_command("gst-launch-1.0")
+                probe
+                    .tool("gst-launch-1.0")
                     .ok_or_else(|| "gst-launch-1.0 is unavailable".to_string())?,
             );
             command
@@ -251,7 +256,8 @@ fn source_command(
             ..
         } if available.microphone => {
             let mut command = Command::new(
-                trusted_command("pw-record")
+                probe
+                    .tool("pw-record")
                     .ok_or_else(|| "pw-record is unavailable".to_string())?,
             );
             command
@@ -266,7 +272,8 @@ fn source_command(
         }
         RemoteCaptureProfile::DocumentScanner { .. } if available.scanner => {
             let mut command = Command::new(
-                trusted_command("scanimage")
+                probe
+                    .tool("scanimage")
                     .ok_or_else(|| "scanimage is unavailable".to_string())?,
             );
             command.args(["--format=png"]);
@@ -409,25 +416,6 @@ fn pump_scanner(
     }
 }
 
-fn trusted_command(name: &str) -> Option<std::path::PathBuf> {
-    ["/usr/bin", "/usr/libexec/tilo"]
-        .into_iter()
-        .map(std::path::Path::new)
-        .map(|directory| directory.join(name))
-        .find(|path| path.is_file())
-}
-
-fn physical_camera() -> Option<std::path::PathBuf> {
-    std::fs::read_dir("/sys/class/video4linux")
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let label = std::fs::read_to_string(entry.path().join("name")).ok()?;
-            (!label.trim().starts_with("Tilo Remote Camera"))
-                .then(|| std::path::Path::new("/dev").join(entry.file_name()))
-        })
-}
-
 #[cfg(target_os = "linux")]
 fn unnamed_spool() -> std::io::Result<File> {
     let runtime = format!("/run/user/{}\0", rustix::process::geteuid().as_raw());
@@ -466,7 +454,6 @@ mod tests {
 
     #[test]
     fn capture_sources_bound_chunks_spool_consistently_and_report_saturation() {
-        // Phase `live_profiles_are_bounded_by_the_wire_chunk`.
         {
             let camera = RemoteCaptureProfile::Camera {
                 format: RemoteVideoFormat::Nv12,
@@ -493,7 +480,6 @@ mod tests {
             );
         }
 
-        // Phase `scanner_spools_before_publishing_consistent_total_offsets`.
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
                 format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
@@ -520,7 +506,6 @@ mod tests {
             assert!(chunks.iter().all(|chunk| chunk.total_bytes == 130_000));
         }
 
-        // Phase `scanner_queue_saturation_reports_failure_instead_of_blocking`.
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
                 format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,

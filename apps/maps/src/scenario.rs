@@ -140,7 +140,6 @@ pub(crate) fn prepare(fixture: &mut Fixture<Workspace>) {
     fixture.provide(sample);
 }
 
-/// The viewport `scenario` is captured at.
 pub(crate) fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(name) if name.ends_with("-narrow") => (520, 820),

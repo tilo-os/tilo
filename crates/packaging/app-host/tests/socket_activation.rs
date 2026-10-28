@@ -1,11 +1,9 @@
 use std::{
-    io::Write,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{fs::MetadataExt, process::CommandExt},
     },
     process::{Command, Stdio},
-    time::Duration,
 };
 
 fn activation_child(
@@ -28,7 +26,7 @@ fn activation_child(
         .arg("-c")
         .arg("LISTEN_PID=$$; export LISTEN_PID; exec \"$@\"")
         .arg("tilo-app-host-activation-test")
-        .arg(env!("CARGO_BIN_EXE_tilo-app-host"))
+        .arg(tilo_test_env::package_binary!("tilo-app-host"))
         .arg("--socket")
         .arg(socket)
         .arg("--store")
@@ -64,7 +62,42 @@ fn consumes_systemd_listener_without_rebinding_it() {
     let mut child = activation_child(&listener, &socket, &store);
     drop(listener);
 
-    std::thread::sleep(Duration::from_millis(200));
+    // A request answered over the inherited listener: the daemon is past
+    // its startup, so a rebind would have happened by now.
+    let stream = std::os::unix::net::UnixStream::connect(&socket)
+        .expect("connect through inherited listener");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        use tokio::io::AsyncWriteExt as _;
+        stream.set_nonblocking(true).expect("nonblocking stream");
+        let mut stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+        let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
+        stream.write_all(b"QAH1").await.expect("write magic");
+        stream
+            .write_all(
+                &u32::try_from(handoff.len())
+                    .expect("bounded handoff")
+                    .to_be_bytes(),
+            )
+            .await
+            .expect("write length");
+        stream.write_all(handoff).await.expect("write handoff");
+        let client: app_host::app_host_capnp::app_host::Client =
+            runtime_portal::CapnpClient::from_connected_io(
+                stream,
+                capnp_rpc::rpc_twoparty_capnp::Side::Client,
+            )
+            .bootstrap();
+        tilo_test_env::within("the activated daemon to list packages", async {
+            client.list_request().send().promise.await
+        })
+        .await
+        .expect("list through the inherited listener");
+    });
     assert_eq!(child.try_wait().expect("poll child"), None);
     assert_eq!(
         std::fs::metadata(&socket)
@@ -73,18 +106,6 @@ fn consumes_systemd_listener_without_rebinding_it() {
         original_inode,
         "daemon unlinked and rebound the systemd-owned listener"
     );
-    let mut stream = std::os::unix::net::UnixStream::connect(&socket)
-        .expect("connect through inherited listener");
-    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
-    stream.write_all(b"QAH1").expect("write magic");
-    stream
-        .write_all(
-            &u32::try_from(handoff.len())
-                .expect("bounded handoff")
-                .to_be_bytes(),
-        )
-        .expect("write length");
-    stream.write_all(handoff).expect("write handoff");
 
     child.kill().expect("stop daemon");
     child.wait().expect("reap daemon");

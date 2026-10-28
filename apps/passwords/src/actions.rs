@@ -8,6 +8,7 @@
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::framework::LiveRow;
+use ui::tilo_actions::{ActionBinding, Resource};
 use ui::tilo_resource::{self, Effect};
 
 /// The prefix of an item row's id; the rest is the item's opaque vault id.
@@ -15,7 +16,7 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 
 /// What Passwords does with the vault.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "passwords.effect", device_only)]
+#[effect(operation = "passwords.effect")]
 pub enum PasswordsEffect {
     /// Show the current private credential permissions.
     #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
@@ -24,7 +25,7 @@ pub enum PasswordsEffect {
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
     RevokeAccess { grant: String },
     /// Approve one exact native request after protected confirmation.
-    #[effect(privileged, label = "passwords-approve-access")]
+    #[effect(attended, privileged, label = "passwords-approve-access")]
     ApproveAccess { proposal: String, lifetime: String },
     /// Decline one pending request without granting access.
     #[effect(idempotent, kind = "read", label = "passwords-deny-access")]
@@ -52,13 +53,13 @@ pub enum PasswordsEffect {
     ///
     /// Copies the item's password, key or note to the clipboard, which
     /// clears after 30 seconds.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     Copy {
         #[param("Opaque id of the vault item")]
         item: String,
     },
     /// Reveal secret for 10 seconds.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     Reveal {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -69,14 +70,26 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    /// Favorite.
+    ///
+    /// Adds the item to Favorites, or removes it.
+    #[effect(idempotent)]
+    Favorite {
+        #[param("Opaque id of the vault item")]
+        item: String,
+        #[param("Whether the item is a favorite")]
+        favorite: bool,
+    },
     /// Import passwords.
     ///
     /// Opens the system file chooser for a browser password CSV.
+    #[effect(attended)]
     Import,
     /// Export CSV…
     ///
     /// Asks for confirmation, then writes every item unencrypted to a file
     /// the person chooses.
+    #[effect(attended)]
     Export,
     /// Filter vault.
     #[effect(kind = "read")]
@@ -174,15 +187,36 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
         ),
     };
     let mut copy_spec = PasswordsEffect::Copy { item: id.clone() }.bound();
-    copy.clone_into(&mut copy_spec.label);
+    copy.clone_into(&mut copy_spec.type_mut().label);
     let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
-    reveal.clone_into(&mut reveal_spec.label);
+    reveal.clone_into(&mut reveal_spec.type_mut().label);
+    let favorite = crate::vault::is_favorite(item);
+    let mut favorite_spec = PasswordsEffect::Favorite {
+        item: id.clone(),
+        favorite: !favorite,
+    }
+    .bound();
+    if favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    }
+    .clone_into(&mut favorite_spec.type_mut().label);
     LiveRow::new(item_resource_id(&id), kind, name)
         .operation(PasswordsEffect::Open { item: id.clone() }.bound())
+        .operation(favorite_spec)
         .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
         .operation(copy_spec)
         .operation(reveal_spec)
         .operation(PasswordsEffect::Delete { item: id }.bound())
+}
+
+/// A control's binding to `action` of the item's published row
+/// ([`item_row`]): pressing it is what an agent addressing the item by its
+/// opaque id does, and it names the item by that id alone.
+pub(crate) fn item_binding(row: &Resource, action: &str) -> Option<ActionBinding<()>> {
+    let spec = row.actions.iter().find(|spec| spec.id == action)?;
+    ActionBinding::static_json(row, spec, serde_json::Map::new()).ok()
 }
 
 #[cfg(test)]
@@ -212,7 +246,10 @@ mod tests {
             assert!(!public.contains(private), "resource leaked {private:?}");
         }
         let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["open", "edit", "copy", "reveal", "delete"]);
+        assert_eq!(
+            ids,
+            ["open", "favorite", "edit", "copy", "reveal", "delete"]
+        );
         assert!(public.contains("Reveal password"));
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(

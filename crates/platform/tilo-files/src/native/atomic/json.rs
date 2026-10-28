@@ -39,7 +39,6 @@ mod tests {
 
     #[test]
     fn json_values_round_trip_and_missing_or_malformed_files_load_as_default() {
-        // Phase `a_missing_or_malformed_file_loads_as_the_default`.
         {
             let d = tempfile::tempdir().unwrap();
             let p = d.path().join("store.json");
@@ -49,7 +48,6 @@ mod tests {
             std::fs::write(&p, b"42").unwrap();
             assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
         }
-        // Phase `a_saved_value_round_trips`.
         {
             let d = tempfile::tempdir().unwrap();
             let p = d.path().join("nested/store.json");

@@ -38,8 +38,6 @@ fn now() -> NaiveDateTime {
     at(2026, 6, 30, 14, 0)
 }
 
-// USER REQUIREMENT (2026-10-18): "relative-in-lists ("16:02", "Yesterday",
-// "Sun", "Jun 30", "Jun 30, 2025")"
 #[test]
 fn the_list_style_reads_as_the_person_asked_in_english_and_german() {
     speak("en-US");
@@ -189,7 +187,9 @@ fn headings_name_the_day_and_month_in_the_language() {
         H24.day_range(day(2025, 12, 29), day(2026, 1, 4)),
         "Dec 29, 2025 – Jan 4, 2026"
     );
+    assert_eq!(H24.month_day_time(at(2026, 6, 30, 14, 5)), "Jun 30, 14:05");
     speak("de-DE");
+    assert_eq!(H24.month_day_time(at(2026, 6, 30, 14, 5)), "30. Juni 14:05");
     assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Di., 30. Juni");
     assert_eq!(
         H24.day_range(day(2026, 6, 23), day(2026, 6, 29)),

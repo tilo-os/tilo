@@ -1,10 +1,14 @@
-//! The library: a sheet over the video with the queue, recent videos and
-//! shared playlists and bookmarks.
+//! The library: the queue, recent videos and shared playlists and
+//! bookmarks, in the window's sidebar.
 //!
-//! The sheet is the toolkit's trailing drawer, so it slides in over a scrim,
-//! is floating material and dismisses on the scrim, `Escape` or Close. Its
-//! rows are list rows: choosing a row plays it, and the actions a row offers
-//! show on hover and focus.
+//! The library is the toolkit's leading drawer. Wide, it docks beside the
+//! picture at its own width and the picture is laid out beside it. Narrower,
+//! the library takes the window's content area as a screen of its own
+//! ([`PlayerApp::library_takes_the_window`]), with "Back to video" leading its
+//! tabs, so the picture is one press away and the sidebar toggle or `Escape`
+//! puts it away again. The window bar's sidebar toggle and `Escape` show and
+//! hide it, so it has no close of its own. Its rows are list rows: choosing a
+//! row plays it, and the actions a row offers show on hover and focus.
 
 use super::{
     Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerApp, Point,
@@ -124,11 +128,50 @@ impl PlayerApp {
         }
     }
 
+    /// Lay the library out for the window: docked beside the picture where
+    /// the picture keeps its minimum width, else taking the content area as
+    /// a screen of its own, else floating over the picture down to the
+    /// transport, which stays uncovered. A docked library that changed width
+    /// asks for the player to be laid out beside it again.
+    pub(super) fn resolve_library(&mut self) {
+        let content = self.drawer.resolve(self.rect);
+        if self.drawer.is_overlay()
+            && !self.library_takes_the_window()
+            && self.transport_top > self.rect.y0
+        {
+            self.drawer.resolve(Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.transport_top.min(self.rect.y1),
+            ));
+        }
+        let inset = if self.drawer.is_docked() {
+            (content.x0 - self.rect.x0).max(0.0)
+        } else {
+            0.0
+        };
+        if (inset - self.content_inset).abs() > 0.5 {
+            self.content_inset = inset;
+            self.content_inset_stale = true;
+            self.dirty = true;
+        }
+    }
+
+    /// Too narrow to dock, the library takes the window's content area as a
+    /// screen of its own, as the window bar's sidebar toggle does in every
+    /// other app: the picture is reachable from it with "Back to video", and
+    /// the sidebar sets the library wide enough that it fits a list and a
+    /// library's rows.
+    pub(super) fn library_takes_the_window(&self) -> bool {
+        self.drawer.is_push()
+    }
+
     fn clear_library_rects(&mut self) {
         self.library_row_hits.clear();
         self.shared_row_hits.clear();
-        self.library_close_rect = Rect::ZERO;
         self.library_clear_rect = Rect::ZERO;
+        self.library_back_rect = Rect::ZERO;
         self.library_queue_tab_rect = Rect::ZERO;
         self.library_recent_tab_rect = Rect::ZERO;
         self.library_shared_tab_rect = Rect::ZERO;
@@ -159,55 +202,45 @@ impl PlayerApp {
         let inner = Rect::new(sheet.x0 + s4, sheet.y0 + s4, sheet.x1 - s4, sheet.y1 - s4);
         let cursor = self.last_cursor;
 
-        // Header: the title, Clear on Recent, Close.
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let header = Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + control);
-        self.library_close_rect = Rect::new(header.x1 - control, header.y0, header.x1, header.y1);
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::icon_only(self.library_close_rect, Icon::X, "Close library")
-                .hovered(self.library_close_rect.contains(cursor))
-                .focused(self.library_focus_id.as_deref() == Some("library-close")),
-        );
-        let mut title_end = self.library_close_rect.x0 - s1;
-        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
-            let width = ButtonFace::new(Rect::ZERO, "Clear")
+        // Filling a narrow window's content area, the library leads with the
+        // way back to the picture, as a pushed screen does.
+        let mut inner = inner;
+        if self.library_takes_the_window() {
+            let control = ButtonFace::height(ControlSize::Regular, theme);
+            let width = ButtonFace::new(Rect::ZERO, "Back to video")
+                .icon(Icon::ChevronLeft)
                 .role(ButtonRole::Plain)
                 .intrinsic_width(text, theme);
-            self.library_clear_rect = Rect::new(title_end - width, header.y0, title_end, header.y1);
+            self.library_back_rect =
+                Rect::new(inner.x0, inner.y0, inner.x0 + width, inner.y0 + control);
             Button::paint(
                 scene,
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(self.library_clear_rect, "Clear")
+                &ButtonFace::new(self.library_back_rect, "Back to video")
+                    .icon(Icon::ChevronLeft)
                     .role(ButtonRole::Plain)
-                    .hovered(self.library_clear_rect.contains(cursor))
-                    .focused(self.library_focus_id.as_deref() == Some("library-clear")),
+                    .hovered(self.library_back_rect.contains(cursor))
+                    .focused(self.library_focus_id.as_deref() == Some("library-back")),
             );
-            title_end = self.library_clear_rect.x0 - s1;
+            inner.y0 = self.library_back_rect.y1 + sibling;
         }
-        PaintCtx::new(scene, transform, text, theme).text_role_in_band(
-            "Library",
-            TextRole::Heading,
-            theme.tokens.colors.text_primary,
-            header.x0,
-            header,
-            Some(ui::num::f32_of_f64((title_end - header.x0).max(0.0))),
-        );
 
-        // Tabs: one strip across the sheet.
+        // The library's views: tabs, each as wide as its label.
         let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let tabs_y0 = header.y1 + sibling;
-        let third = inner.width() / 3.0;
-        let tab_rects: [Rect; 3] = std::array::from_fn(|i| {
-            #[allow(clippy::cast_precision_loss, reason = "i is at most 3")]
-            let edge = |n: usize| inner.x0 + third * n as f64;
-            Rect::new(edge(i), tabs_y0, edge(i + 1), tabs_y0 + tab_h)
-        });
+        let tabs_y0 = inner.y0;
+        let segments = LibraryTab::LABELS.map(ui::widget::Segment::new);
+        let packed = SegmentedFace::partition_segments(
+            Rect::new(inner.x0, tabs_y0, inner.x1, tabs_y0 + tab_h),
+            &segments,
+            ui::widget::SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            text,
+            theme,
+        );
+        let tab_rects: [Rect; 3] =
+            std::array::from_fn(|i| packed.get(i).copied().unwrap_or_default());
         [
             self.library_queue_tab_rect,
             self.library_recent_tab_rect,
@@ -224,12 +257,35 @@ impl PlayerApp {
             text,
             theme,
             &SegmentedFace::new(&tab_rects, &LibraryTab::LABELS, self.library_tab.index())
+                .style(ui::widget::SegmentedStyle::Tabs)
                 .hovered(hovered_tab)
                 .focused(tab_focus),
         );
 
+        // Clear, on Recent with something to clear, at the trailing end of
+        // its own row under the tabs.
+        let mut list_top = tabs_y0 + tab_h + sibling;
+        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
+            let control = ButtonFace::height(ControlSize::Regular, theme);
+            let width = ButtonFace::new(Rect::ZERO, "Clear")
+                .role(ButtonRole::Plain)
+                .intrinsic_width(text, theme);
+            self.library_clear_rect =
+                Rect::new(inner.x1 - width, list_top, inner.x1, list_top + control);
+            Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::new(self.library_clear_rect, "Clear")
+                    .role(ButtonRole::Plain)
+                    .hovered(self.library_clear_rect.contains(cursor))
+                    .focused(self.library_focus_id.as_deref() == Some("library-clear")),
+            );
+            list_top = self.library_clear_rect.y1 + sibling;
+        }
+
         // The list under the tabs.
-        let list_top = tabs_y0 + tab_h + sibling;
         let list = Rect::new(
             sheet.x0 + s1,
             list_top,
@@ -273,6 +329,7 @@ impl PlayerApp {
         }
         let shown = entries.len().min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
         let entries = entries.get(..shown).unwrap_or(&entries);
+        let current_state = self.current_row_state();
         let specs: Vec<RowSpec<'_>> = entries
             .iter()
             .map(|entry| {
@@ -281,7 +338,7 @@ impl PlayerApp {
                 let remove_focus = format!("library-remove-{}", entry.id);
                 RowSpec {
                     title: &entry.title,
-                    meta: active.then_some("Playing"),
+                    meta: active.then_some(current_state),
                     selected: active,
                     focused: focus == Some(entry.id.as_str())
                         || focus == Some(remove_focus.as_str()),
@@ -377,6 +434,9 @@ impl PlayerApp {
         if library.playlists.is_empty() && library.annotations.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
+                message: Some(
+                    "Everyone in this workspace sees the playlists and bookmarks added here.",
+                ),
                 ..EmptyStateContent::new("No shared playlists or bookmarks yet")
             };
             let _ = EmptyState::paint(&mut ctx, region, &content, cursor);

@@ -20,7 +20,7 @@ int main() {
   std::string out[8];size_t count=0;
   assert(tilo::TakeDevToolsMessages(buffer,out,8,&count));
   assert(count==2 && out[0]=="{\"id\":1}" && out[1]=="{\"id\":2}" && buffer=="{\"id\"");
-  std::string huge(tilo::kMaxDevToolsMessage+2,'x');
+  std::string huge(tilo::kMaxPipeMessage+2,'x');
   assert(!tilo::TakeDevToolsMessages(huge,out,8,&count));
   return 0;
 }

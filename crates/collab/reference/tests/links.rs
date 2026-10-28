@@ -1,5 +1,3 @@
-//! The shared link corpus and the properties that keep the grammar one to one.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 use std::collections::BTreeMap;
@@ -178,7 +176,7 @@ fn scope() -> impl Strategy<Value = Scope> {
         (
             prop_oneof![
                 Just("https://tilo.so"),
-                Just("https://ada.tilo.example"),
+                Just("https://ada.tilo.cloud"),
                 Just("http://localhost:9700")
             ],
             any::<u128>(),
@@ -264,7 +262,7 @@ proptest! {
     /// Review focus R2: any string that parses is already in its one spelling.
     #[test]
     fn whatever_parses_is_canonical(parts in proptest::collection::vec(prop_oneof![
-        Just("/"), Just("me"), Just("w"), Just("-"), Just("@ada.tilo.example"), Just("@tilo.so"),
+        Just("/"), Just("me"), Just("w"), Just("-"), Just("@ada.tilo.cloud"), Just("@tilo.so"),
         Just("6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90"), Just("rg~"), Just("so.tilo.chat"), Just("uuid:1"),
         Just("chat.channel:general"), Just("k"), Just("%41"), Just("%2F"), Just("%20"), Just("?"), Just("&"),
         Just("view=v"), Just("chars=1-2"), Just("bytes=0-0"), Just("invite=x"), Just("token=y"), Just(":"),

@@ -82,7 +82,13 @@ pub fn body(
     for (tool, identity) in &record.receipt.tools {
         provenance.push(Property::new(
             tool,
-            format!("{} — {}", identity.version, identity.executable_sha256),
+            I18nManager::format(
+                "chip-flow-tool-identity",
+                &[
+                    ("version", identity.version.clone().into()),
+                    ("sha", identity.executable_sha256.clone().into()),
+                ],
+            ),
         ));
     }
     page = page
@@ -206,16 +212,22 @@ fn inspector(
             if edge.from == stage.id || edge.to == stage.id {
                 properties.push(property(
                     "chip-flow-dependency",
-                    &format!(
-                        "{} → {} / {} / {}",
-                        edge.from,
-                        edge.to,
-                        tr(match edge.kind {
-                            DependencyKind::Data => "chip-flow-data",
-                            DependencyKind::Build => "chip-flow-build",
-                            DependencyKind::Verification => "chip-flow-verification",
-                        }),
-                        edge.artifact
+                    &I18nManager::format(
+                        "chip-flow-dependency-line",
+                        &[
+                            ("from", edge.from.clone().into()),
+                            ("to", edge.to.clone().into()),
+                            (
+                                "kind",
+                                tr(match edge.kind {
+                                    DependencyKind::Data => "chip-flow-data",
+                                    DependencyKind::Build => "chip-flow-build",
+                                    DependencyKind::Verification => "chip-flow-verification",
+                                })
+                                .into(),
+                            ),
+                            ("artifact", edge.artifact.clone().into()),
+                        ],
                     ),
                 ));
             }

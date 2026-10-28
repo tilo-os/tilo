@@ -26,12 +26,23 @@ continuity-other-device = deinem anderen Gerät
 tab-closed-toast = { $title } geschlossen
 tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
+workspace-first-reached = Dies ist der erste Arbeitsbereich
+workspace-last-reached = Dies ist der letzte Arbeitsbereich
+strip-first-reached = Dies ist die erste Leiste
+strip-last-reached = Dies ist die letzte Leiste
 workspace-deleted-toast = { $name } gelöscht
 workspace-deleted-undo = Rückgängig
+workspace-left-toast = { $name } verlassen
+workspace-joined-name = Geteilter Arbeitsbereich
+workspace-personal-name = Persönlich
+workspace-needs-join-again = Erneut beitreten, um teilzunehmen
+workspace-not-joined-yet = Noch nicht beigetreten
+workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem Arbeitsbereich beizutreten
+workspace-kept-before-joining = { $name } vor dem Beitritt
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint. Super+P wechselt zur nächsten Option.
+display-sheet-subtitle = Wähle, wo dein Desktop erscheint.
 display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
 display-mode-extend = Erweitern
 display-mode-extend-detail = Ein Desktop über alle Bildschirme
@@ -41,10 +52,9 @@ display-mode-builtin-only = Nur dieser Bildschirm
 display-mode-builtin-only-detail = Externe Bildschirme werden ausgeschaltet
 display-mode-external-only = Nur extern
 display-mode-external-only-detail = Der eingebaute Bildschirm wird ausgeschaltet
+display-sheet-one-display = Kein weiterer Bildschirm angeschlossen
+display-sheet-one-display-detail = Schließe einen per Kabel an oder wähle einen drahtlosen Bildschirm.
 display-mode-current = Aktuell
-display-mode-unavailable-single = Schließe einen weiteren Bildschirm an, um dies zu nutzen
-display-mode-unavailable-builtin = Dieses Gerät hat keinen eingebauten Bildschirm
-display-mode-unavailable-mirror = Diese Bildschirme haben keine gemeinsame Auflösung
 display-confirm-title = Diese Anzeigeeinstellungen behalten?
 display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
 display-confirm-applying = Wird angewendet …
@@ -73,9 +83,21 @@ wireless-credential-placeholder = PIN oder Empfängerpasswort
 wireless-credential-hint = Leer lassen, außer der Empfänger fragt danach. Eingabe verbindet.
 wireless-scanning = Bildschirme werden gesucht …
 wireless-scanning-detail = Halte den Empfänger wach und im selben Netzwerk.
-wireless-scan-failed = Suche fehlgeschlagen
 wireless-none = Keine Bildschirme gefunden
-wireless-none-detail = Versuche „Aktualisieren“ oder prüfe das WLAN und den Übertragungsmodus des Empfängers.
+wireless-none-detail = Prüfe, ob WLAN an ist und der Bildschirm zum Übertragen bereit ist.
+wireless-search-again = Erneut suchen
+wireless-try-again = Erneut versuchen
+wireless-device-detail = { $protocol }, { $detail }
+wireless-unavailable = Drahtlose Bildschirme sind gerade nicht verfügbar
+wireless-unavailable-detail = Versuche es gleich noch einmal.
+wireless-search-failed = Drahtlose Bildschirme konnten nicht gesucht werden
+wireless-search-failed-detail = Prüfe, ob WLAN an ist, und versuche es erneut.
+wireless-connect-failed = Verbindung fehlgeschlagen
+wireless-connect-failed-detail = Prüfe, ob der Bildschirm an und in der Nähe ist, und versuche es erneut.
+wireless-lost = Die Verbindung zum Bildschirm wurde getrennt
+wireless-lost-detail = Verbinde dich erneut, sobald er wieder da ist.
+wireless-stop-failed = Übertragung konnte nicht beendet werden
+wireless-stop-failed-detail = Versuche es erneut.
 wireless-connected = Verbunden
 wireless-connecting = Wird verbunden …
 wireless-connect = Verbinden
@@ -92,7 +114,6 @@ overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
 overview-strips-title = Leisten in diesem Arbeitsbereich
-overview-strip-empty = Keine Fenster
 overview-strip-rename = Umbenennen
 overview-strip-move-up = Nach oben
 overview-strip-move-down = Nach unten
@@ -119,6 +140,7 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastenkürzel
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-toggle-screen-reader = Bildschirmleser ein- oder ausschalten
 shortcut-vim-navigation = Vim-Navigation
 shortcut-dismiss = Schließen
 
@@ -181,6 +203,7 @@ shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Hier etwas sagen
+shortcut-name-report-problem = Problem melden
 shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
@@ -195,18 +218,9 @@ shortcut-category-accessibility = Bedienungshilfen
 keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Tastenkürzel auflisten
 keyboard-shortcuts-list-description = Jedes Tastenkürzel des Desktops mit Bezeichnung, aktueller und voreingestellter Belegung, Änderbarkeit und Kategorie
-keyboard-shortcuts-reset-all = Alle Tastenkürzel zurücksetzen
-keyboard-shortcuts-reset-all-description = Jedes änderbare Tastenkürzel des Desktops auf seine Voreinstellung zurücksetzen
-keyboard-shortcut-rebind = Tastenkürzel für { $shortcut } ändern
-keyboard-shortcut-rebind-description = { $shortcut } liegt auf { $chords } (Voreinstellung { $defaults }). Gib eine andere Belegung an; eine bereits vergebene wird abgelehnt und ihr Inhaber genannt.
-keyboard-shortcut-reset = Tastenkürzel für { $shortcut } zurücksetzen
-keyboard-shortcut-reset-description = { $shortcut } wieder auf { $defaults } legen
-keyboard-shortcut-conflict = { $chord } ist bereits für „{ $shortcut }“ belegt.
-keyboard-shortcut-invalid = Dieses Tastenkürzel wird nicht unterstützt.
-
-# Tastaturhilfe (F1)
 guide-title = Tastenkürzel
 guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
+guide-chord-row = Diese Tastenkombination ändern, belegt mit { $chord }
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken · Esc bricht ab
 guide-message-esc-cancels = { $message } · Esc bricht ab
@@ -266,131 +280,27 @@ guide-a11y-description = Fenster fokussieren mit { $window-back } oder { $window
 # Geräte und Medien, die Detailansicht der Schnelleinstellungen
 
 # Schnelleinstellungen
-qs-title = Schnelleinstellungen
-qs-a11y-description = Häufig verwendete Systemsteuerungen
-qs-on = An
-qs-off = Aus
-qs-connected = Verbunden
 qs-connecting = Wird verbunden …
 qs-not-connected = Nicht verbunden
-qs-tile-settings = Einstellungen
-qs-tile-settings-description = Geräteeinstellungen öffnen
-qs-tile-power = Ein/Aus
-qs-tile-power-description = Sperren, abmelden, neu starten oder herunterfahren
-qs-volume = Lautstärke
-qs-brightness = Helligkeit
-qs-brightness-display = Helligkeit, { $display }
-qs-slider-a11y-description = Mit Pfeil links und rechts anpassen
-qs-network = Netzwerk
-qs-wired-network = Kabelnetzwerk
-qs-cable-unplugged = Kabel nicht angeschlossen
-qs-bluetooth = Bluetooth
-qs-vpn = VPN
-qs-night-light = Nachtlicht
-qs-airplane-mode = Flugmodus
-qs-mobile-data = Mobile Daten
-qs-do-not-disturb = Bitte nicht stören
-qs-do-not-disturb-on = Benachrichtigungen zurückgehalten
-qs-rotation-lock = Drehsperre
-qs-rotation-locked = Gesperrt
-qs-rotation-unlocked = Dreht sich mit dem Gerät
 qs-devices = Geräte
-qs-devices-audio-and-media = Audio und Medien
-qs-devices-count = { $count ->
-    [one] 1 Gerät
-   *[other] { $count } Geräte
-}
-qs-devices-a11y-description = Persönliche Geräte, Audioausgänge und Medienziele
 qs-clipboard = Zwischenablage
-qs-clipboard-empty = Leer
-qs-clipboard-count = { $count ->
-    [one] 1 Eintrag
-   *[other] { $count } Einträge
-}
-qs-clipboard-a11y-description = Privater Verlauf der Zwischenablage
-qs-power-saver = Energiesparen
-qs-power-balanced = Ausgewogen
-qs-power-performance = Leistung
-qs-power-ac = Netzbetrieb
 
 # Schnelleinstellungen: Steuerungen bearbeiten
-qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Ziehen oder Strg + Auf/Ab drücken zum Anordnen
-qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
-qs-edit-active-heading = Aktive Steuerungen
-qs-edit-available-heading = Verfügbar
-qs-edit-reset = Standard wiederherstellen
-qs-edit-reset-a11y = Standard der Schnelleinstellungen wiederherstellen
-qs-edit-done = Fertig
-qs-edit-done-a11y = Bearbeiten der Schnelleinstellungen beenden
-qs-edit-required-a11y = Erforderliche Steuerung der Schnelleinstellungen
-qs-edit-remove-a11y = Steuerung aus den Schnelleinstellungen entfernen
-qs-edit-add-a11y = Steuerung zu den Schnelleinstellungen hinzufügen
-qs-edit-required-control-a11y = Erforderlich; mit Strg plus Pfeiltasten anordnen
-qs-edit-optional-control-a11y = Fügt dieses Steuerelement hinzu oder entfernt es. Strg plus Pfeiltasten ordnen es an.
 
 # Schnelleinstellungen: WLAN
 qs-wifi = WLAN
 qs-wifi-off = WLAN ist aus
 qs-wifi-scanning = Netzwerke werden gesucht …
-qs-wifi-scan-failed = Netzwerksuche fehlgeschlagen
-qs-wifi-none = Keine Netzwerke gefunden
-qs-wifi-secured = Gesichert
-qs-wifi-open = Offen
-qs-wifi-turn-on = WLAN einschalten
-qs-turning-on = Wird eingeschaltet …
-qs-turning-off = Wird ausgeschaltet …
-qs-wifi-problem-hardware-switch = Mit dem Hardwareschalter aus
-qs-wifi-problem-stayed-off = Ließ sich nicht einschalten
-qs-wifi-problem-failed = WLAN ließ sich nicht ändern
 qs-power-mode = Energiemodus
-qs-power = Energiemodus
-qs-lock-description = Bildschirm sperren; Apps laufen weiter
-qs-notifications = Benachrichtigungen
-qs-notifications-none = Keine
-qs-notifications-count = { $count }
 qs-battery = Akku
-qs-battery-charging = Wird geladen
-qs-battery-full = Voll geladen
-qs-battery-not-charging = Angeschlossen, lädt nicht
-qs-battery-on-battery = Im Akkubetrieb
-qs-battery-time-left = { $hours ->
-    [0] Noch { $minutes } min
-   *[other] Noch { $hours } h { $minutes } min
-}
-qs-battery-time-to-full = { $hours ->
-    [0] Voll in { $minutes } min
-   *[other] Voll in { $hours } h { $minutes } min
-}
-qs-battery-settings = Akku-Einstellungen
-qs-power-settings = Energie-Einstellungen
-qs-awake-app = { $app } hält den Bildschirm an
-qs-awake-apps = { $count } Apps halten den Bildschirm an
-qs-wifi-settings = WLAN-Einstellungen
-qs-wifi-known = Bekannt
 qs-wifi-password-for = Gib das Passwort des Netzwerks ein
-qs-bluetooth-off = Bluetooth ist aus
-qs-bluetooth-turn-on = Bluetooth einschalten
-qs-bluetooth-pair = Neues Gerät koppeln
-qs-bluetooth-paired = Gekoppelt
-qs-bluetooth-use-elsewhere = Auf einem anderen Gerät nutzen
-qs-vpn-settings = VPN-Einstellungen
-qs-vpn-details = VPN-Profile
-qs-sound-output = Tonausgabe
-qs-sound-settings = Ton-Einstellungen
-qs-devices-settings = Einstellungen für Geräte & Sync
-qs-clipboard-clear-history = Verlauf leeren
 qs-clipboard-copied = { $age }, von { $source }
-qs-hosted-row-a11y = { $title }. { $detail }
-qs-hosted-row-action-a11y = { $title }. { $detail }. { $action }
 
 # Schnelleinstellungen: Bluetooth
-qs-bluetooth-empty = Keine Geräte gefunden
-qs-bluetooth-device-connected-a11y = Verbunden; Geräteaktionen öffnen
-qs-bluetooth-device-paired-a11y = Gekoppelt; zum Verbinden aktivieren
 
 # Schnelleinstellungen: VPN
-qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
+qs-device-vpn-through = Über { $device }
+qs-device-vpn-unnamed = dein anderes Gerät
 
 # Fehler der Schnelleinstellungen als Benachrichtigungen
 qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
@@ -417,6 +327,7 @@ portal-shortcut-duplicate = In dieser Anfrage bereits vergeben. Wähle ein ander
 portal-shortcut-taken = Bereits von { $app } verwendet. Wähle ein anderes Tastenkürzel.
 portal-shortcut-another-app = einer anderen App
 portal-auth-heading = Administratorzugriff
+portal-auth-as = Als { $user }
 portal-auth-ended = Die Authentifizierung wurde unerwartet beendet.
 portal-auth-rejected = Dieses Passwort wurde nicht akzeptiert.
 portal-grant-title = { $app } möchte { $target } verwenden
@@ -428,8 +339,12 @@ portal-grant-once = Einmal erlauben
 portal-grant-session = Für diese Sitzung erlauben
 portal-grant-always = In diesem Arbeitsbereich immer erlauben
 portal-grant-deny = Ablehnen
+consent-notice-title = { $who } fragt vorher: { $action }
+consent-notice-answer = Antworten
 portal-confirm-title = { $who } möchte für dich handeln
 portal-confirm-detail = { $risk }. Nur dieses eine Mal; nichts wird gespeichert.
+portal-confirm-scope = Für „{ $scope }“ erlauben
+portal-confirm-scope-detail = { $risk }. Einmal erlauben lässt nur dies zu; für „{ $scope }“ erlauben lässt es dort ohne Nachfrage wieder zu, bis du es in den Arbeitsbereich-Einstellungen widerrufst.
 portal-moderation-report = Diese Meldung einmal mit deiner Signieridentität senden
 portal-moderation-appeal = Diesen Einspruch einmal mit deiner Signieridentität senden
 portal-moderation-destination = Ziel
@@ -461,12 +376,14 @@ portal-launcher-reason = Prüfe den Starter, bevor er zu deiner App-Bibliothek h
 portal-launcher-confirm = Starter hinzufügen
 portal-launcher-icon-supplied = Mitgeliefertes Bild (geprüft)
 portal-launcher-icon-monogram = Tilo-Monogramm
-portal-chooser-nothing-granted = Dieser App wurden keine Dateien zur Auswahl freigegeben.
+portal-chooser-cannot-give = Dieses Gerät kann Apps gerade keine Dateien geben, die Sie auswählen. Melden Sie sich ab und wieder an und versuchen Sie es dann erneut.
+portal-chooser-not-managed = Nur wer diesen Arbeitsbereich verwaltet, kann seinen Apps Ihre Dateien geben. Bitten Sie eine dieser Personen, die Datei im Arbeitsbereich zu teilen.
 portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
 portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
-portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
+portal-chooser-other-workspace = Der Arbeitsbereich dieser App wird gerade nicht angezeigt. Wechseln Sie zu ihm und versuchen Sie es dann erneut.
 portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
+portal-chooser-save-disabled = Speichern auf dem Datenträger ist auf diesem Gerät ausgeschaltet.
 portal-launcher-icon-compass = Tilo-Webkompass
 portal-background-title = Hintergrundaktivität erlauben?
 portal-background-resource = Die App kann weiterarbeiten, nachdem ihr Fenster geschlossen wurde.
@@ -493,6 +410,13 @@ portal-a11y-name = Name
 portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
+portal-sim-unlock = Entsperren
+portal-sim-unlocking = SIM wird entsperrt …
+portal-sim-unlock-failed = Die SIM konnte nicht entsperrt werden. Versuche es erneut.
+portal-sim-pin-wrong = Diese PIN ist falsch.
+portal-sim-puk-title = SIM gesperrt
+portal-sim-puk-lead = Zu viele falsche PINs haben die SIM für „{ $network }“ gesperrt. Gib die PUK vom Kartenhalter der SIM ein und wähle eine neue PIN.
+portal-sim-puk-wrong = Diese PUK ist falsch.
 portal-network-heading = Netzwerk
 portal-network-this-network = dieses Netzwerk
 portal-network-password = Passwort
@@ -526,6 +450,25 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
+host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
+host-activity-action-feed = Verlauf lesen
+host-activity-action-summary = Neues lesen
+host-activity-action-replay = Layout abspielen
+host-activity-action-detail = Änderungen lesen
+host-activity-action-focus = Lesen, was gezeigt werden soll
+host-activity-action-mark-viewed = Als gesehen markieren
+host-activity-action-focused = Melden, was gezeigt wurde
+host-activity-action-name = Änderungen benennen
+host-activity-action-split = Arbeitsgruppe teilen
+host-activity-action-merge = Arbeitsgruppen zusammenführen
+host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+host-activity-action-undo = Änderungen rückgängig machen
+host-activity-action-restore = Auf den Stand davor zurücksetzen
+host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-undo-record = Diese Änderung rückgängig machen
+host-activity-action-open = Öffnen
+host-activity-action-choose-source = Morgenquelle wählen
+host-activity-action-source = Morgenquelle verwenden
 host-activity-working-in = Arbeitet in { $app }
 host-activity-editing = Bearbeitet gemeinsame Inhalte
 host-activity-organizing = Ordnet gemeinsame Inhalte
@@ -538,13 +481,11 @@ host-activity-maintaining-history = Pflegt den Verlauf des Arbeitsbereichs
 host-activity-reviewing-sensitive = Prüft vertraulichen Verlauf
 
 # Bildschirmfreigabe, wie das Personen-Popover sie beschreibt
-host-exposure-kind-unidentified = nicht identifizierte Sitzung
-host-exposure-kind-agent = Agent
-host-exposure-kind-person = Person
+host-exposure-unidentified = { $handle }, eine nicht identifizierte Sitzung,
 host-exposure-surface = ein Fenster
 host-exposure-window-in-workspace = { $window } in { $workspace }
-host-exposure-controls = { $name } ({ $kind }) steuert { $target }
-host-exposure-views = { $name } ({ $kind }) sieht { $target }
+host-exposure-controls = { $name } steuert { $target }
+host-exposure-views = { $name } sieht { $target }
 
 # Einladungen
 host-invite-unavailable-title = Einladen nicht möglich
@@ -559,6 +500,10 @@ host-source-app-actions = App-Aktionen
 # App-Starts und Sitzungsaktionen
 host-app-did-not-open-title = Anwendung wurde nicht geöffnet
 host-app-did-not-open-body = Die App wurde gestartet, hat aber kein Fenster erstellt. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+live-view-not-installed = Die App dazu ist nicht auf diesem Computer
+live-view-gone = Es ist nicht mehr da
+live-view-did-not-open = Es hat sich hier nicht geöffnet
+live-view-closed = Die App dazu wurde geschlossen
 host-session-action-failed = Sitzungsaktion fehlgeschlagen
 host-session-lock-failed = Die Sitzung konnte nicht gesperrt werden. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-logout-failed = Abmelden fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
@@ -574,12 +519,16 @@ host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
 host-action-failed-status = Nicht ausgeführt
 host-action-check-values = Prüfe die Werte und versuche es erneut.
 host-action-try-again = Etwas hat nicht geklappt. Versuche es erneut.
+host-action-confirm = Das macht es weniger sicher. Drücke die Eingabetaste, um die Änderung zu bestätigen.
 uri-open-invalid = Dieser Link kann nicht geöffnet werden.
 uri-open-no-settings = Die Einstellungen sind auf diesem Gerät nicht installiert.
 uri-open-no-handler = Keine installierte App öffnet diese Art von Link.
+search-open-with-file-failed = { $app } konnte { $file } nicht öffnen. { $reason }
+search-open-with-link-other-app = { $app } öffnet keine Links wie { $link }.
 uri-open-no-workspace = Öffne einen Arbeitsbereich und versuche es dann erneut.
 launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
+host-app-chooser-placeholder = App wählen, um { $purpose }…
 host-search-in = In { $scope } suchen …
 host-search-in-resource-fallback = Ressource
 host-search-scope-app = App { $title }
@@ -640,10 +589,6 @@ host-fabric-asked-tethering = { $device } wurde gebeten, seine Verbindung zu tei
 host-fabric-asked-controller = { $device } wurde gebeten, diesen Controller einmal für die fokussierte App zu erlauben
 host-fabric-media-preparing = Medien für { $device } werden vorbereitet; dieses Gerät bleibt aktiv, bis sie dort geöffnet sind
 host-fabric-bluetooth-moving = { $accessory } wird auf { $device } verschoben; es bleibt hier, bis das Gerät seine Kopplung bestätigt
-host-fabric-place-left = { $device } wird nach der Bestätigung links von diesem Bildschirm angeordnet
-host-fabric-place-right = { $device } wird nach der Bestätigung rechts von diesem Bildschirm angeordnet
-host-fabric-place-above = { $device } wird nach der Bestätigung über diesem Bildschirm angeordnet
-host-fabric-place-below = { $device } wird nach der Bestätigung unter diesem Bildschirm angeordnet
 host-fabric-control-granted = { $device } darf dieses Gerät 15 Minuten lang steuern
 
 # Barrierefreiheitsbaum: Arbeitsbereich-Overlays
@@ -693,8 +638,6 @@ a11y-speaker-membership-description = Dieses Gerät spielt in dieser Lautspreche
 a11y-remote-audio-play-here = { $media } hier abspielen
 a11y-remote-audio-allow = Dieses entfernte Audio einmal erlauben
 a11y-remote-audio-decline = Dieses entfernte Audio ablehnen
-a11y-remote-capture-allow = Diese entfernte Eingabe einmal erlauben
-a11y-remote-capture-decline = Diese entfernte Eingabe ablehnen
 a11y-remote-capture-session = Entfernte Eingabe: { $input }
 a11y-remote-capture-provisioning = Privater lokaler Endpunkt wird vorbereitet
 a11y-remote-capture-unavailable = Entfernte Eingabe nicht verfügbar: { $input }
@@ -709,8 +652,6 @@ a11y-controller-use = { $controller } verwenden
 a11y-controller-allow = Diesen Controller einmal erlauben
 a11y-controller-decline = Diesen Controller ablehnen
 a11y-media-handoff = { $media } auf { $target }
-a11y-input-lower = Eingangspegel senken
-a11y-input-raise = Eingangspegel erhöhen
 a11y-tethering-allow = Tethering einmal erlauben
 a11y-tethering-decline = Tethering ablehnen
 a11y-control-revoke = Steuerung dieses Geräts entziehen
@@ -729,6 +670,22 @@ capability-system-info = Sehen, wie ausgelastet dieses Gerät ist
 capability-processes = Die laufenden Programme dieses Geräts sehen und eigene beenden
 capability-process-commands = Die Befehlszeilen laufender Programme sehen
 capability-io-uring = Die schnelle asynchrone Ein- und Ausgabe des Kernels nutzen (io_uring)
+capability-desktop-control = Deinen Desktop über seinen Arbeitsbereich hinaus steuern
+desktop-control-ask-terminal = Darf dieses Terminal deinen Desktop steuern? Es möchte: { $action }
+desktop-control-ask = Darf { $app } deinen Desktop steuern? Es möchte: { $action }
+desktop-control-confirm-terminal = Darf dieses Terminal das tun? { $action }
+desktop-control-confirm = Darf { $app } das tun? { $action }
+desktop-control-this-tab = Dieser Tab
+desktop-control-always = Immer hier
+desktop-control-allow = Erlauben
+desktop-control-deny = Nicht erlauben
+desktop-control-allows = { $app } kann deinen Desktop über diesen Arbeitsbereich hinaus nutzen
+desktop-control-until-tab-closes = Bis der Tab, der gefragt hat, geschlossen wird
+desktop-control-always-here = Immer in diesem Arbeitsbereich
+desktop-control-stop = Beenden
+desktop-control-locked = Der Desktop ist gesperrt.
+desktop-control-refused = Du hast das nicht erlaubt.
+desktop-control-only-actions = Aus einem Terminal listet der Desktop nur seine Aktionen auf und führt sie aus.
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
@@ -767,18 +724,14 @@ overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
 # Der Arbeitsbereich einer Website im Umschalter: die Community dieses Computers
 # oder die Website, von der er kommt.
-overview-site-community = Community · { $site }
+overview-site-community = Community { $site }
 overview-site-web = Im Web
+overview-two-facts = { $first }, { $second }
 overview-site-here = { $count ->
     [one] 1 Person hier
    *[other] { $count } Personen hier
 }
 a11y-leave-workspace = { $name } verlassen
-
-# Der Ansicht einer Person folgen
-follow-label = Du folgst { $person }
-follow-stopped = Folgen beendet
-follow-stop = Beenden
 
 # Filterchips der Suche
 search-filter-all = Alle
@@ -817,8 +770,6 @@ qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestät
 qs-devices-showing = { $first }–{ $last } von { $total }
 
 # Schnelleinstellungen: Bereich Geräte und Medien
-qs-devices-no-identity = Richte deine persönliche Identität ein, um Geräte zu verbinden
-qs-devices-empty = Keine Ausgänge oder Geräte
 qs-devices-place = { $display } { $side ->
         [left] links
         [right] rechts
@@ -858,8 +809,6 @@ qs-devices-audio-streaming = Streamt an { $peer }
 qs-devices-audio-interrupted = Auf { $peer } unterbrochen
 qs-devices-audio-syncing = Gleicht mit { $peer } ab…
 qs-devices-audio-clock-failed = Kann den Takt mit { $peer } nicht halten: { $reason }
-qs-devices-capture-share = { $input } dieses Geräts teilen
-qs-devices-capture-requested = { $source } hat das für { $app } angefragt
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
 qs-devices-capture-source-note = Wähle unten ein Gerät. Dort wird um Freigabe gebeten.
 qs-devices-capture-waiting-on = Warte auf Freigabe auf { $peer }
@@ -891,9 +840,6 @@ qs-devices-media-opened = Auf dem Ziel geöffnet
 qs-devices-media-failed = Konnte nicht verschoben werden: { $reason }
 qs-devices-media-playing = Wird abgespielt
 qs-devices-media-paused = Pausiert
-qs-devices-output-default = In Verwendung
-qs-devices-output-route = Nicht in Verwendung
-qs-devices-output-bluetooth = Bluetooth { $codec }
 qs-devices-tether-requesting = Warte auf Freigabe am Telefon
 qs-devices-tether-consent = Einmal erlauben oder ablehnen
 qs-devices-tether-preparing = Hotspot dieses Telefons wird gestartet
@@ -918,24 +864,18 @@ qs-devices-use-controller = Controller hier verwenden
 qs-devices-use-input = { $input } dieses Geräts verwenden
 qs-devices-play-audio-here = Audio hier abspielen
 qs-devices-no-audio = Dieses Gerät hat keinen Audioausgang
-qs-devices-place-this-left = Diesen Bildschirm links anordnen
-qs-devices-place-this-right = Diesen Bildschirm rechts anordnen
-qs-devices-place-this-above = Diesen Bildschirm oberhalb anordnen
-qs-devices-place-this-below = Diesen Bildschirm unterhalb anordnen
 
 # Schnelleinstellungen: Verlauf der Zwischenablage
 qs-clipboard-search-matches = { $count ->
         [one] Ein Eintrag passt zu „{ $query }“
        *[other] { $count } Einträge passen zu „{ $query }“
     }
-qs-clipboard-empty-hint = Noch nichts kopiert
 qs-clipboard-no-matches = Nichts passt zu „{ $query }“
 qs-clipboard-search-range = { $first } bis { $last } von { $total } Einträgen. Zum Suchen tippen.
 qs-clipboard-search-count = { $count ->
         [one] Ein Eintrag. Zum Suchen tippen.
        *[other] { $count } Einträge. Zum Suchen tippen.
     }
-qs-clipboard-clear-a11y = Nicht angeheftete Einträge der Zwischenablage löschen
 qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
 qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
 
@@ -951,6 +891,7 @@ osd-pause = Pause
 osd-next-track = Nächster Titel
 osd-previous-track = Vorheriger Titel
 osd-stop = Stopp
+osd-feedback-pointing = Klicke auf das, worum es in deinem Feedback geht, oder drücke Escape zum Abbrechen
 osd-percent = { $percent } %
 osd-off = Aus
 osd-muted = Stummgeschaltet
@@ -976,21 +917,14 @@ osd-pointer-held = Die App hält den Zeiger. { $chord } gibt ihn frei.
 osd-pointer-released = Zeiger freigegeben
 osd-mouse-keys-on = Maustasten an
 osd-mouse-keys-off = Maustasten aus
+osd-screen-reader-on = Bildschirmleser an
+osd-screen-reader-off = Bildschirmleser aus
 
 # System status, the tray's accessible summary
-status-wired = Kabelgebunden
-status-wired-named = Kabelgebunden: { $name }
-status-wifi = WLAN
-status-wifi-named = WLAN: { $name }
-status-offline = Offline
-status-muted = Stummgeschaltet
-status-volume = Lautstärke { $percent } %
-status-battery-charging = Akku { $percent } %, wird geladen
-status-battery = Akku { $percent } %
-status-summary-empty = Systemstatus
 status-other-displays-a11y = Weitere Bildschirme
 
 # Notification toasts
+notification-sender-claims = App sagt: { $name }
 notification-source-caption = { $app } · Von { $device }
 notification-app-host-apps = Host-Apps
 notification-app-power = Energie
@@ -1012,6 +946,10 @@ codec-app-name = Video- und Audioformate
 system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
+network-cannot-join-app-name = Netzwerk
+network-cannot-join-title = { $network } konnte nicht verbunden werden
+network-cannot-join-body = Gib das Passwort ein, um dich zu verbinden.
+network-cannot-join-action = Passwort eingeben
 held-layers-app-name = Entwicklung
 held-layers-title = { $count ->
     [one] Eine installierte Ebene wird zurückgehalten
@@ -1031,12 +969,13 @@ collaborator-update-self-body = Deine Änderungen bleiben bis dahin hier.
 capture-live-alt = Live-Aufnahme: { $title }
 capture-pinned-alt = Angehefteter Screenshot: { $title }
 capture-pinned-preview-alt = Vorschau des angehefteten Screenshots: { $title }
-capture-live-selection = Live-Auswahl
-capture-live-app = Live-App
+capture-live-window = Live-Fenster
 capture-live-screen = Live-Bildschirm
-capture-live-areas = { $count ->
-    [one] { $count } Live-Bereich
-   *[other] { $count } Live-Bereiche
+capture-live-strip = Live-Leiste
+capture-live-screen-region = Live-Bildschirmbereich
+capture-live-screen-regions = { $count ->
+    [one] { $count } Live-Bildschirmbereich
+   *[other] { $count } Live-Bildschirmbereiche
 }
 capture-pinned-title = Screenshot ({ $width } × { $height })
 
@@ -1062,6 +1001,9 @@ launch-error-no-display = Der Desktop startet noch. Versuche es gleich noch einm
 launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann erneut.
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
+launch-error-app-not-in-workspace = Dieser Arbeitsbereich enthält { $app } nicht. Eine verwaltende Person kann sie hinzufügen.
+launch-error-device-not-admitted = Dieses Gerät ist nicht mehr in diesem Arbeitsbereich. Tritt ihm mit einer Einladung erneut bei.
+launch-error-app-authorship-refused = Der Host dieses Arbeitsbereichs hat dir nicht erlaubt, { $app } hinzuzufügen.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
@@ -1081,6 +1023,8 @@ launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werde
 launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
+app-open-unavailable-title = Keine App zum Öffnen
+app-open-unavailable-body = { $app } wollte eine App öffnen, die weder auf diesem Computer noch im Store ist.
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1095,16 +1039,41 @@ memory-app-reopen = Erneut öffnen
 # Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
 window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
 window-duplicate-foreign = Dieses Fenster kann nicht dupliziert werden. Öffne ein weiteres über die Suche.
+window-duplicate-single-window = Diese App hat nur ein Fenster.
 window-tab-action-no-tab = Es gibt keinen Tab für diese Aktion.
 window-tab-action-unknown-tab = Dieser Tab ist nicht mehr geöffnet.
 window-tab-action-only-tab = Das ist der einzige Tab dieses Fensters; er kann nicht abgetrennt werden.
 window-tab-action-document-refused = Der Tab konnte nicht verschoben werden. Versuche es erneut.
+window-tab-action-not-renamable = Hier lässt sich nur ein Fenster von außerhalb von Tilo umbenennen, das auf diesem Gerät läuft.
 
 # Tab-Kontextmenü, Arbeitsbereichsmeldungen und Platzhalterkacheln
 shell-workspace-renamed = Arbeitsbereich umbenannt
 shell-tab-menu-close = Tab schließen
 shell-tab-menu-split-right = Rechts abtrennen
 shell-tab-menu-new-group = In neue Gruppe verschieben
+shell-window-menu-reveal = Zu diesem Fenster gehen
+shell-window-menu-full-screen = Vollbild
+shell-window-menu-exit-full-screen = Vollbild beenden
+# The way out of a window that just filled the display, said over it once.
+# "{ $key }" is the leaving key, labelled as the person's keyboard labels it.
+shell-fullscreen-way-out = { $key } beendet das Vollbild.
+shell-window-menu-maximize = Maximieren
+shell-window-menu-restore = Wiederherstellen
+shell-window-menu-width = Breite
+shell-window-menu-width-half = Halbe Breite
+shell-window-menu-width-narrow = Schmal
+shell-window-menu-width-normal = Normal
+shell-window-menu-width-wide = Breit
+shell-window-menu-width-equal = Alle angleichen
+shell-window-menu-move-to-strip = In Leiste verschieben
+shell-window-menu-move-to-display = Auf Bildschirm verschieben
+shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
+shell-window-menu-new-tab = Neuer Tab
+shell-window-menu-rename-tab = Tab umbenennen
+shell-tab-rename-field = Tab-Name
+shell-window-menu-close-window = Fenster schließen
+shell-window-menu-unnamed-strip = Leiste { $number }
+shell-window-menu-tell-agent = Einem Agenten sagen…
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Anwendung nicht verfügbar
 shell-activity-title = Aktivität
@@ -1135,7 +1104,6 @@ lock-screen-locked-at-date = Sitzung gesperrt, { $clock }, { $date }
 lock-screen-password = Passwort
 lock-screen-help = Gib dein Passwort ein und drücke die Eingabetaste
 lock-screen-verifying-password = Passwort wird geprüft
-lock-screen-prompt-elsewhere = Die Passwortabfrage ist auf dem Hauptbildschirm
 lock-screen-enter-password = Passwort eingeben
 lock-screen-verifying = Wird geprüft …
 lock-screen-press-enter = Zum Entsperren Eingabetaste drücken
@@ -1211,6 +1179,9 @@ speaker-group-summary-waiting = { $total ->
 remote-input-camera = Kamera
 remote-input-microphone = Mikrofon
 remote-input-scanner = Scanner
+remote-capture-consent-title = { $input } dieses Geräts teilen?
+remote-capture-consent-detail = { $source } möchte es für { $app } verwenden.
+remote-capture-consent-allow = Teilen
 
 # Warum das Verschieben von Medien auf ein anderes Gerät fehlschlug, als $reason eines Satzes
 media-handoff-failure-destination-unavailable = Ziel nicht verfügbar
@@ -1232,8 +1203,8 @@ bluetooth-handoff-failure-rollback = Zurücksetzen der Quelle fehlgeschlagen
 
 # Arten von Suchergebnissen, wie Filterchips und Gruppenüberschriften sie nennen
 search-kind-actions = Aktionen
-search-kind-applications = Anwendungen
-search-kind-host-apps = Host-Apps
+search-kind-applications = Apps
+search-group-in-the-store = Im Store
 search-kind-notes = Notizen
 search-kind-records = Einträge
 search-kind-files = Dateien
@@ -1263,7 +1234,35 @@ search-provider-tray = Statusbereich
 search-provider-files = Dateien
 search-kind-answers = Antworten
 search-kind-people = Personen
-search-group-recent = Zuletzt
+
+# Suche, bevor etwas getippt ist: der Starter
+search-launcher-happening-now = Gerade los
+search-launcher-waiting-on-you = Wartet auf dich
+search-launcher-continue = Weitermachen
+search-launcher-apps = Apps
+search-launcher-all-apps = Alle Apps
+search-launcher-app-downloaded = Heruntergeladen
+search-launcher-opened = Geöffnet { $when }
+search-launcher-here-one = { $name } ist hier
+search-launcher-here-two = { $name } und { $other } sind hier
+search-launcher-here-many = { $count ->
+    [one] { $name } und eine weitere Person sind hier
+   *[other] { $name } und { $count } weitere sind hier
+}
+search-launcher-with-one = Mit { $name }
+search-launcher-with-two = Mit { $name } und { $other }
+search-launcher-with-many = { $count ->
+    [one] Mit { $name } und einer weiteren Person
+   *[other] Mit { $name } und { $count } weiteren
+}
+search-launcher-call = Anruf
+search-launcher-call-in = Anruf in { $channel }
+search-launcher-calling-now = Ruft gerade an
+search-launcher-waiting-unavailable = Öffne die App, von der es kam, um zu antworten.
+search-launcher-widen = In allen Workspaces suchen
+search-launcher-outcome-open = Öffnen
+search-launcher-outcome-join = Beitreten
+search-launcher-outcome-answer = Annehmen
 search-provider-quick-answers = Schnelle Antworten
 search-provider-people = Personen
 search-answer-sum = { $expression } =
@@ -1271,6 +1270,13 @@ search-answer-copied = Kopiert
 search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
+search-provider-ask-agent = Einen Agenten fragen
+search-kind-agent = Agent
+search-ask-agent = Einen Agenten fragen: { $query }
+search-ask-agent-subtitle = Eine Aufgabe für { $agent }
+search-ask-agent-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge einen hinzu, um zu fragen.
+search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
+search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
 search-kind-web = Web
 search-kind-websites = Websites
@@ -1282,6 +1288,8 @@ search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen
 search-action-emoji-picker = Emoji auswählen
 search-action-emoji-picker-subtitle = Dort einfügen, wo du schreibst
+search-action-next-input-source-subtitle = Mit dem nächsten Layout deiner Liste schreiben
+input-source-next-none = Füge in den Einstellungen ein weiteres Tastaturlayout hinzu, um zwischen ihnen zu wechseln
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
 
@@ -1304,7 +1312,6 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 search-files-folder-failed = Dateien konnte diesen Ordner nicht öffnen.
 search-files-home = Persönlicher Ordner
-search-files-location = { $folder } · { $age }
 
 # Suche: Host-Apps
 
@@ -1322,8 +1329,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = { $app } · enthält Ressourcen
-search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+search-app-content-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
@@ -1334,6 +1340,8 @@ search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen 
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden
+search-shortcut-continue-needs-step = Läuft ab einem Schritt erneut: Benenne ihn so, wie der letzte Lauf ihn gemeldet hat
+search-shortcut-continue-needs-run = Läuft ab einem Schritt erneut: Benenne den Lauf, der ihn gemeldet hat
 
 # Suche: Elemente im Statusbereich
 search-tray-open = { $item } öffnen
@@ -1350,8 +1358,11 @@ search-action-shortcut-help-toggle-subtitle = F1 öffnet sie überall; Super+/ i
 search-action-desktop-tour-open = Desktop-Tour starten
 search-action-desktop-tour-open-subtitle = Die dreiminütige Einführung in Navigation, Organisation und Zusammenarbeit noch einmal ansehen
 search-provider-device-local = Private Fenster
+search-provider-focused-window = Dieses Fenster
 search-action-feedback-open = Feedback geben
 search-action-feedback-open-subtitle = Ein Problem oder eine Idee zum Fenster im Vordergrund melden; du prüfst, was gesendet wird
+search-action-feedback-point = Feedback zu einem Teil geben
+search-action-feedback-point-subtitle = Klicke auf das Element, um das es geht; du prüfst, was gesendet wird
 feedback-action-unavailable = Feedback ist auf diesem Desktop nicht verfügbar
 search-action-overview-toggle = Arbeitsbereichsübersicht zeigen
 search-action-overview-toggle-subtitle = Alle Arbeitsbereiche und ihre Fenster zeigen
@@ -1424,6 +1435,7 @@ search-action-bot-add-subtitle = Sein Host lässt hier einen Bot aus dem Verzeic
 search-action-bot-remove = Einen Bot aus diesem Arbeitsbereich entfernen…
 search-action-bot-remove-subtitle = Sein Host hält den Bot an und entfernt ihn
 bots-add-failed = Der Bot wurde nicht hinzugefügt
+workspace-settings-agent-model-option = { $model } von { $provider }
 bots-remove-failed = Der Bot wurde nicht entfernt
 search-action-pair-device = Neues Gerät koppeln
 search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen
@@ -1435,6 +1447,8 @@ search-action-tab-duplicate = Diesen Tab duplizieren
 search-action-tab-duplicate-subtitle = Eine zweite Instanz der fokussierten App daneben öffnen
 search-action-tab-close = Diesen Tab schließen
 search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
+search-action-tab-rename = Diesen Tab umbenennen
+search-action-tab-rename-subtitle = Dem fokussierten Fenster einen eigenen Namen geben; ein leerer Name stellt seinen eigenen Titel wieder her
 search-action-tab-reopen = Geschlossenen Tab wieder öffnen
 search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
 search-action-tab-open-beside = App in neuem Tab öffnen
@@ -1443,6 +1457,9 @@ search-action-tab-split-right = Diesen Tab nach rechts teilen
 search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
 search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
 search-action-tab-move-to-new-group-subtitle = Den fokussierten Tab in eine neue Fenstergruppe am Ende seiner Leiste verschieben
+search-action-tab-move-to-workspace = Diesen Tab in einen anderen Arbeitsbereich verschieben
+search-action-tab-move-to-workspace-subtitle = Den fokussierten Tab in einen anderen deiner Arbeitsbereiche verschieben
+search-action-tab-move-to-workspace-missing = Diesen Arbeitsbereich gibt es nicht.
 search-action-window-focus-previous = Vorheriges Fenster fokussieren
 search-action-window-focus-previous-subtitle = Den Fokus auf das Fenster links in der Leiste setzen
 search-action-window-focus-next = Nächstes Fenster fokussieren
@@ -1471,12 +1488,26 @@ search-action-group-move-to-strip-previous = Fenstergruppe in die Leiste darübe
 search-action-group-move-to-strip-previous-subtitle = Die fokussierte Fenstergruppe in die Leiste darüber tragen
 search-action-group-move-to-strip-next = Fenstergruppe in die Leiste darunter verschieben
 search-action-group-move-to-strip-next-subtitle = Die fokussierte Fenstergruppe in die Leiste darunter tragen
+search-action-group-move-to-strip = Fenstergruppe in eine Leiste verschieben…
+search-action-group-move-to-strip-subtitle = Die fokussierte Fenstergruppe in die gewählte Leiste tragen
+search-action-group-close = Dieses Fenster schließen
+search-action-group-close-subtitle = Das fokussierte Fenster mit allen Tabs schließen
+search-action-window-none = Es gibt kein Fenster für diese Aktion.
+search-action-window-unchanged = Nichts geändert. Das Fenster ist schon dort.
+search-action-window-unchanged-edge = Nichts geändert. Das Fenster kann nicht weiter in diese Richtung.
+search-action-window-unchanged-maximized = Nichts geändert. Das Fenster ist schon maximiert.
+search-action-window-unchanged-restored = Nichts geändert. Das Fenster ist nicht maximiert.
+search-action-window-unchanged-narrowest = Nichts geändert. Das Fenster ist schon so schmal wie möglich.
+search-action-window-unchanged-widest = Nichts geändert. Das Fenster ist schon so breit wie möglich.
+search-action-tab-unchanged-edge = Nichts geändert. Auf dieser Seite gibt es kein Fenster, das den Tab aufnehmen kann.
 search-action-group-move-to-display-previous = Fenstergruppe auf den vorherigen Bildschirm verschieben
 search-action-group-move-to-display-previous-subtitle = Die fokussierte Fenstergruppe auf den linken Bildschirm verschieben
 search-action-group-move-to-display-next = Fenstergruppe auf den nächsten Bildschirm verschieben
 search-action-group-move-to-display-next-subtitle = Die fokussierte Fenstergruppe auf den rechten Bildschirm verschieben
-search-action-group-maximize = Fenstergruppe maximieren oder wiederherstellen
-search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern oder wiederherstellen
+search-action-group-toggle-maximize = Fenstergruppe maximieren oder wiederherstellen
+search-action-group-toggle-maximize-subtitle = Die ganze Leiste, oder zurück auf die vorherige Größe
+search-action-group-maximize = Fenstergruppe maximieren
+search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern
 search-action-group-restore = Fenstergruppe wiederherstellen
 search-action-group-restore-subtitle = Die fokussierte maximierte Fenstergruppe an ihren Platz in der Leiste zurückbringen
 search-action-group-fullscreen = Vollbild oder wiederherstellen
@@ -1491,18 +1522,25 @@ search-action-tab-move-to-group-next = Diesen Tab in die rechte Gruppe verschieb
 search-action-tab-move-to-group-next-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe rechts verschieben
 search-action-notifications-dnd-toggle = Bitte nicht stören
 search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner zurückhalten, bis du wieder da bist
+search-action-notifications-open = Benachrichtigungen anzeigen
+search-action-notifications-open-subtitle = Verpasste Benachrichtigungen lesen, beantworten oder löschen
+search-action-notifications-clear = Alle Benachrichtigungen löschen
+search-action-notifications-clear-subtitle = Die Benachrichtigungsliste leeren; acht Sekunden lang kannst du sie zurückholen
+search-action-notifications-clear-undo = Gelöschte Benachrichtigungen zurückholen
+search-action-notifications-clear-undo-subtitle = Die eben gelöschten Benachrichtigungen in ihrer Reihenfolge wiederherstellen
 search-action-appearance-theme-dark = Dunkles Design
 search-action-appearance-theme-dark-subtitle = Dunkle Oberfläche und Apps
 search-action-appearance-theme-light = Helles Design
 search-action-appearance-theme-light-subtitle = Helle Oberfläche und Apps
-search-action-appearance-high-contrast = Hoher Kontrast
-search-action-appearance-high-contrast-subtitle = Mehr Kontrast im aktuellen Design
 search-action-appearance-language = Sprache ändern
 search-action-appearance-language-subtitle = Die Sprache des Desktops, in den Einstellungen
 search-action-identity-connect = Vorhandene Identität hinzufügen
 search-action-identity-connect-subtitle = Identitätszugangsdaten importieren und in diesem Arbeitsbereich verwenden
 search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
 search-action-identity-select-subtitle = Eine der Identitäten wählen, die bereits mit diesem Gerät verbunden sind
+search-action-identity-unnamed = Unbenannte Identität
+search-action-identity-none = Mit diesem Gerät ist noch keine Identität verbunden
+search-action-identity-setup = Deine Identität einrichten
 search-action-identity-device-pair-resource = Geräte in der Nähe koppeln
 search-action-identity-device-pair-discover = Gerät in der Nähe zum Koppeln suchen
 search-action-identity-device-pair-discover-subtitle = In diesem Netzwerk nach einem neuen Gerät oder Heimserver suchen, das beitreten möchte
@@ -1510,6 +1548,10 @@ search-action-identity-device-pair-approve = Gerät in der Nähe bestätigen
 search-action-identity-device-pair-approve-subtitle = Das gefundene Gerät beitreten lassen, sobald beide Bildschirme denselben Code zeigen
 search-action-identity-device-pair-reject = Gerät in der Nähe ablehnen
 search-action-identity-device-pair-reject-subtitle = Ein gefundenes Gerät vergessen und seine Bestätigung abbrechen
+search-action-identity-device-pair-asking = Geräte, die als du beitreten möchten
+search-action-identity-device-pair-asking-subtitle = Neue Geräte, die deine anderen Geräte gefunden haben und hier auf deine Bestätigung warten
+search-action-identity-device-pair-answer = Einem Gerät antworten, das als du beitreten möchte
+search-action-identity-device-pair-answer-subtitle = Ein Gerät, das ein anderes deiner Geräte gefunden hat, bestätigen oder ablehnen, wie in seiner Mitteilung
 search-action-identity-device-revoke = Gerät einer Identität widerrufen
 search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
 search-action-identity-resource = Deine Identitäten
@@ -1576,8 +1618,11 @@ search-action-quick-settings-airplane-mode-set-enabled-subtitle = Alle Funkverbi
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
 search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
 search-action-workspace-switch-subtitle = Zu diesem Arbeitsbereich und seinen Fenstern wechseln
+search-action-archived-restore = { $workspace } wiederherstellen
+search-action-archived-restore-subtitle = Diesen archivierten Arbeitsbereich zurück zu deinen Arbeitsbereichen holen
+search-action-archived-delete = Archivierten Arbeitsbereich { $workspace } löschen
+search-action-archived-delete-subtitle = Diesen archivierten Arbeitsbereich von diesem Computer löschen
 search-action-activity-catch-up-subtitle = Was andere seit deinem letzten Blick geändert haben
-search-action-activity-tasks-subtitle = Arbeit, die hier Personen und Agenten zugewiesen ist
 search-action-activity-explore-subtitle = Jede Änderung hier, nach Person, App und Zeit
 search-action-activity-replay-subtitle = Schritt für Schritt sehen, wie sich dieser Arbeitsbereich verändert hat
 search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
@@ -1607,6 +1652,7 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
+search-action-tab-rename-failed = Dieser Tab kann nicht umbenannt werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
 search-action-enrollment-copied = Geräte-Einrichtungscode kopiert. Er läuft in { $minutes } Min. ab.
@@ -1625,7 +1671,8 @@ search-catalogue-installed-provider = App-Aktionen
 search-catalogue-source-tilo = Tilo-App
 search-catalogue-source-flathub = Flathub
 search-catalogue-document-subtitle = Neu in { $app }
-search-catalogue-show-in-store = Im App Store zeigen
+search-catalogue-install-and-open = Installieren und öffnen
+search-catalogue-not-for-this-device = Für dieses Gerät nicht verfügbar
 search-catalogue-store-failed = App Store für { $app } konnte nicht geöffnet werden
 search-catalogue-installing = { $app } wird installiert
 search-catalogue-installing-body = Die App öffnet sich, sobald sie installiert ist.
@@ -1633,6 +1680,8 @@ search-catalogue-actions-unavailable = Aktionen sind noch nicht verfügbar. Vers
 
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
+search-continuity-window-to = Dieses Fenster auf { $device } zeigen
+search-continuity-window-to-subtitle = Holt es dort nach vorn; hier bleibt es offen
 search-continuity-play-on = { $source } auf { $target } abspielen
 search-continuity-wake-device = Gerät aufwecken
 search-continuity-wake-device-subtitle = Sendet ein Wecksignal von einem Gerät in seinem Netzwerk
@@ -1699,6 +1748,13 @@ search-continuity-unlock-deny = { $device } gesperrt lassen (Code { $code })
 search-continuity-unlock-subtitle = Es wurde neu gestartet und möchte seine verschlüsselte Festplatte öffnen
 search-continuity-device-remove = { $device } aus deinen Geräten entfernen
 search-continuity-device-remove-subtitle = Es kann nicht mehr für dich handeln und seine Festplatte nicht mehr über deine Geräte entsperren
+search-continuity-vpn-through = Datenverkehr dieses Geräts über { $device } leiten
+search-continuity-vpn-stop = Datenverkehr nicht mehr über { $device } leiten
+search-continuity-vpn-subtitle = Deine Geräte als VPN
+search-continuity-vpn-exit-stop = { $device } die Verbindung dieses Geräts nicht mehr nutzen lassen
+search-continuity-vpn-exit-subtitle = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-share = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-unshare = Die Verbindung dieses Geräts nicht mehr teilen
 device-unlock-error-not-pending = Diese Entsperranfrage wartet nicht mehr
 device-unlock-error-cannot-remove = Dieses Gerät kann jenes Gerät nicht entfernen
 device-unlock-error-no-identity = Dieses Gerät hat deine Identität nicht
@@ -1745,11 +1801,11 @@ onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevo
 
 # Identitätseinrichtung: kein Wiederherstellungsdienst
 onboarding-no-recovery-title = Verlierst du dieses Gerät ohne Sicherung, ist diese Identität verloren
-onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Kein Sicherungscode und keine Wiederherstellungsphrase können diese Identität neu erstellen.
-onboarding-no-recovery-point-backup = Die als Nächstes angebotene verschlüsselte Sicherung ist der einzige Weg zur Wiederherstellung. Bewahre Datei und Passphrase getrennt auf. Ohne sie braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
+onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Niemand, auch nicht Tilo, kann diese Identität für dich zurücksetzen oder neu erstellen.
+onboarding-no-recovery-point-backup = Schreib als Nächstes einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung. Beides holt diese Identität zurück. Ohne eines davon braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
 onboarding-acknowledgement = Mir ist klar, dass ich diese Identität verliere, wenn ich dieses Gerät ohne Sicherung verliere.
 onboarding-protect-title = Deine Tilo-Identität schützen
-onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Erstelle nach diesem Schritt eine verschlüsselte, übertragbare Sicherung.
+onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Schreib nach diesem Schritt einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung.
 onboarding-create-failed = Deine Identität wurde nicht erstellt
 onboarding-create-failed-title = Deine Identität konnte nicht erstellt werden
 onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop ist weiterhin geschützt. Geh zurück und versuche es erneut, nachdem du Speicherplatz und Berechtigungen geprüft hast.
@@ -1785,6 +1841,41 @@ onboarding-existing-body = Wähle, wie die Identität, die du bereits nutzt, auf
 onboarding-choice-nearby = Mit einem Gerät in der Nähe verbinden
 onboarding-choice-nearby-detail = Diesen Rechner auf einem Gerät mit deiner Identität freigeben
 onboarding-choice-restore = Aus einer Sicherung wiederherstellen
+onboarding-choice-recovery-key = Wiederherstellungsschlüssel eingeben
+onboarding-choice-recovery-key-detail = Die 24 Wörter eintippen, die du aufgeschrieben hast
+onboarding-recovery-title = Hol deine Identität auf diesen Computer zurück
+onboarding-recovery-eyebrow = Identitätswiederherstellung
+onboarding-recovery-body = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht öffnen und hat nichts geändert. Deine Arbeitsbereiche und anderen Geräte sind in Ordnung. Wenn dein Schlüsselbund gesperrt ist, entsperre ihn und wähle Erneut versuchen.
+onboarding-recovery-body-keyring = Tilo konnte den Schlüsselbund mit dem Schlüssel deiner Identität nicht erreichen und hat nichts geändert. Entsperre den Schlüsselbund und wähle Erneut versuchen.
+onboarding-recovery-body-missing = Die Kopie deiner Identität auf diesem Computer fehlt. Tilo hat nichts geändert, und deine Arbeitsbereiche und anderen Geräte sind in Ordnung.
+onboarding-recovery-body-invalid = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht prüfen und hat nichts geändert. Wenn Datum oder Uhrzeit falsch sind, korrigiere sie und wähle Erneut versuchen.
+onboarding-recovery-identity = Identität dieses Computers: { $fingerprint }
+onboarding-backup-recovery-key = Wiederherstellungsschlüssel aufschreiben
+onboarding-backup-recovery-key-detail = 24 Wörter auf Papier holen diese Identität zurück. Ohne Datei oder Passphrase.
+onboarding-recovery-key-copy-title = Schreib deinen Wiederherstellungsschlüssel auf
+onboarding-recovery-key-copy-body = Schreib sie der Reihe nach auf Papier. Wer sie hat, kann sich als du ausgeben, also fotografiere sie nicht.
+onboarding-recovery-key-confirm = Zur Kontrolle tippe die Wörter { $first }, { $second } und { $third } ein.
+onboarding-recovery-key-word = Wort { $position }
+onboarding-recovery-key-confirm-button = Ich habe ihn aufgeschrieben
+onboarding-recovery-key-written = Wiederherstellungsschlüssel aufgeschrieben
+onboarding-recovery-key-written-detail = Mit diesen 24 Wörtern holst du diese Identität auf jedem Computer zurück.
+onboarding-recovery-key-title = Wiederherstellungsschlüssel eingeben
+onboarding-recovery-key-body = Tippe oder füge die 24 Wörter in der richtigen Reihenfolge ein. Großbuchstaben, Zeilenumbrüche und Nummerierung spielen keine Rolle.
+onboarding-recovery-key-field = Wiederherstellungsschlüssel
+onboarding-recovery-key-placeholder = wort1 wort2 wort3 …
+onboarding-recovery-key-progress = { $count } von { $total } Wörtern
+onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
+onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
+onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
+onboarding-recovery-key-ready = Wiederherstellungsschlüssel für Identität { $fingerprint }
+onboarding-recovery-key-ready-detail = Wähle Identität wiederherstellen, um ihn auf diesem Computer zu verwenden.
+onboarding-recovery-key-matches = Er passt zur Identität dieses Computers. Wähle Identität wiederherstellen, um sie zurückzuholen.
+onboarding-recovery-key-different = Diese Wörter gehören zu einer anderen Identität
+onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }, also prüfe, ob du den Wiederherstellungsschlüssel dieses Computers verwendest.
+onboarding-recovery-key-restoring = Deine Identität wird wiederhergestellt …
+onboarding-recovery-key-failed = Wiederherstellung mit diesem Schlüssel fehlgeschlagen
 onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
 onboarding-restore-title = Aus einer Sicherung wiederherstellen
 onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
@@ -1794,7 +1885,7 @@ onboarding-restore-file-label = Sicherungsdatei
 onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
 onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht geprüft werden. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Bis dahin bleibt deine Identität, wie sie ist.
 onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
-onboarding-connect-retry-keyring = Schlüsselbund erneut versuchen
+onboarding-connect-retry-keyring = Erneut versuchen
 onboarding-connect-browse = Durchsuchen
 onboarding-connect-file = Sicherungsdatei der Identität
 onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
@@ -1840,7 +1931,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
 onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
-onboarding-backup-explanation = Speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
+onboarding-backup-explanation = Oder speichere eine verschlüsselte Sicherungsdatei und bewahre sie getrennt von ihrer Passphrase auf.
 onboarding-backup-passphrase = Neue Passphrase für die Sicherung
 onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
 onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
@@ -1848,7 +1939,7 @@ onboarding-backup-confirmation-placeholder = Passphrase bestätigen
 onboarding-backup-save = Speicherort wählen und Sicherung speichern …
 onboarding-backup-save-another = Weitere Kopie speichern
 onboarding-backup-save-action = Verschlüsselte Sicherung speichern
-onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne verschlüsselte Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
+onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne Wiederherstellungsschlüssel oder Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
 onboarding-backup-continue-without = Ohne Sicherung fortfahren
 onboarding-backup-failed = Die Sicherung wurde nicht gespeichert
 onboarding-backup-verified = Verschlüsselte Sicherung geprüft
@@ -1919,7 +2010,7 @@ onboarding-tour-search-title = Suche
 onboarding-tour-search-title-mac = Suche
 onboarding-tour-search-keys = Super+Leertaste
 onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
-onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
+onboarding-tour-search-body = Öffne sie ohne Eingabe, um deine Tabs, Apps und Aktionen zu sehen; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
 onboarding-tour-overview-title = Übersicht
 onboarding-tour-overview-keys = Super+Tab oder Finger zusammenziehen
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
@@ -1956,36 +2047,45 @@ onboarding-tour-check-title = Arbeit prüfen und Fehler beheben
 onboarding-tour-check-body = Öffne die Aktivität, um auf den neuesten Stand zu kommen, Versionen zu vergleichen oder nur die fehlerhafte Änderung rückgängig zu machen.
 
 # Einladungskarte für Arbeitsbereiche: jemanden einladen, mit einer Einladung beitreten, ausstehende Einladungen
-peer-sync-title-review = Einladung prüfen
 peer-sync-title-invite = Jemanden einladen
+peer-sync-title-invite-to = Zu { $workspace } einladen
+peer-sync-who-label = Wer
+peer-sync-who-placeholder = Name, oder ihre Tilo-Identität einfügen
+peer-sync-create-invite = Einladung erstellen
+peer-sync-identity-row = Ihre Tilo-Identität
+peer-sync-identity-remove = Entfernen
+peer-sync-link-note-anyone = Wer den Link öffnet, kann beitreten. Er funktioniert eine Stunde lang.
+peer-sync-copy-invite = Einladung kopieren
+peer-sync-revoke = Widerrufen
+peer-sync-done = Fertig
+peer-sync-code-hint = Diesen Code sieht die Person, wenn sie die Einladung öffnet
+peer-sync-code-check = Prüfe, ob die Person, die dich eingeladen hat, denselben Code sieht
+peer-sync-paste-link = Link einfügen
+peer-sync-join-field-label = Link oder Seite
+peer-sync-who-heading = Wer
+peer-sync-who-person = Eine Person
+peer-sync-who-link = Alle mit dem Link
+peer-sync-connecting = Dieser Computer verbindet sich noch. Gleich kannst du Leute einladen.
+peer-sync-offline = Für Einladungen muss das Netzwerk eingeschaltet sein. Prüfe, ob dieser Computer online ist und du angemeldet bist, und versuche es dann erneut.
 peer-sync-title-join = Einem Arbeitsbereich beitreten
 peer-sync-title-workspace-invite = Einladung zum Arbeitsbereich
 peer-sync-paste-token = Eine Website eingeben oder einen Arbeitsbereichs- oder Einladungslink einfügen
 peer-sync-identity-copied = Kopiert
-peer-sync-invite-failed = Einladung fehlgeschlagen: { $error }
-peer-sync-identity-unavailable = Identität nicht verfügbar: { $error }
-peer-sync-joined-room = Raum { $room } beigetreten
-peer-sync-join-refused = Abgelehnt: { $error }
-peer-sync-pending-unavailable = Ausstehende Einladungen nicht verfügbar: { $error }
-peer-sync-resend-failed = Erneutes Senden fehlgeschlagen: { $error }
-peer-sync-invite-canceled = Einladung zurückgezogen
-peer-sync-cancel-failed = Zurückziehen fehlgeschlagen: { $error }
+peer-sync-invite-failed = Die Einladung konnte nicht erstellt werden. Versuche es gleich noch einmal.
+peer-sync-identity-unavailable = Deine Tilo-Identität konnte nicht kopiert werden. Versuche es gleich noch einmal.
+peer-sync-join-refused = Diesem Link konnte nicht beigetreten werden. Prüfe, ob er vollständig und noch gültig ist, oder bitte um einen neuen.
+peer-sync-resend-failed = Die Einladung konnte nicht erneut kopiert werden. Versuche es gleich noch einmal.
+peer-sync-invite-canceled = Einladung widerrufen
+peer-sync-cancel-failed = Die Einladung konnte nicht widerrufen werden. Versuche es gleich noch einmal.
 peer-sync-unexpected-response = Unerwartete Antwort der Zusammenarbeit
 peer-sync-working = Wird ausgeführt …
-peer-sync-using-verified-identity = Verifizierte Identität wird verwendet: { $verification }
-peer-sync-ask-for-identity = Bitte die Person, dir ihre Tilo-Identität zu schicken, und füge sie dann hier ein.
 peer-sync-name-required = Gib an, für wen diese Einladung ist
-peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
-peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
+peer-sync-identity-required = Füge die Tilo-Identität ein, die dir die Person geschickt hat, damit nur sie die Einladung nutzen kann.
 peer-sync-copied = Kopiert
 peer-sync-copy-failed = Konnte nicht in die Zwischenablage kopiert werden
 peer-sync-joining = Beitreten…
-peer-sync-pasted = Eingefügt
 peer-sync-clipboard-empty = Die Zwischenablage ist leer
-peer-sync-identity-bound = Identität gebunden: { $fingerprint }
-peer-sync-identity-invalid = Das ist kein Tilo-Identitätsschlüssel (erwartet werden 64 Hexadezimalzeichen)
 peer-sync-pending-heading = Ausstehende Einladungen
-peer-sync-pending-heading-paged = Ausstehende Einladungen ({ $first }–{ $last } von { $total })
 peer-sync-role-expires = { $role }, { $unit ->
     [now] läuft gleich ab
     [seconds] läuft in { $count ->
@@ -2029,34 +2129,13 @@ peer-sync-role-commenter = Kommentator
 peer-sync-role-editor = Bearbeiter
 peer-sync-copy = Kopieren
 peer-sync-cancel = Abbrechen
-peer-sync-back = Zurück
 peer-sync-join = Beitreten
-peer-sync-paste = Einfügen
-peer-sync-create-invite = Einladung erstellen
-peer-sync-review-invite = Einladung prüfen
-peer-sync-paste-identity = Neue Identität einfügen
 peer-sync-copy-identity = Meine Identität kopieren
-peer-sync-recipient-heading = Wen lädst du ein?
-peer-sync-recipient-new = Jemand Neues
 peer-sync-role-heading = Zugriff
-peer-sync-review-workspace = Arbeitsbereich: { $workspace }
-peer-sync-review-workspace-this = Arbeitsbereich: dieser Arbeitsbereich
-peer-sync-review-inviter = Eingeladen von: { $inviter }
-peer-sync-review-inviter-you = Eingeladen von: dir
-peer-sync-review-recipient = Empfänger: { $name }
-peer-sync-review-recipient-unnamed = Empfänger: unbenannt
-peer-sync-review-role = Zugriff: { $role }
-peer-sync-review-identity = Gebundene Identität: { $fingerprint }
-peer-sync-review-identity-missing = Gebundene Identität: fehlt
-peer-sync-review-note = Nur diese Identität kann die signierte, eine Stunde gültige Einladung einlösen.
-peer-sync-selected-person = Ausgewählte Person
-peer-sync-name-new-person = Name der neuen Person
-peer-sync-name-placeholder = Name
-peer-sync-recipient-hint = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein.
-peer-sync-identity-remembered = Verifizierte gespeicherte Identität: { $fingerprint }
-peer-sync-identity-new = Neue Identität gebunden: { $fingerprint }
+peer-sync-recipient-hint = Wähle jemanden, den du kennst, oder füge die Tilo-Identität ein, die dir die Person geschickt hat.
 peer-sync-invite-anyone = Jeder mit dieser Einladung
-peer-sync-invite-received = Einladung erhalten
+peer-sync-invite-workspace = Ein geteilter Arbeitsbereich
+peer-sync-invite-for = Eingeladen als { $name }
 peer-sync-paste-invite-hint = Etwa tilo.coffee oder einen Link, den man dir geschickt hat.
 peer-sync-join-site = Tritt dem Arbeitsbereich auf { $host } bei
 peer-sync-join-invitation-link = Eine Einladung in einen Arbeitsbereich auf { $host }
@@ -2070,11 +2149,25 @@ peer-sync-token-incomplete = Noch keine Website und kein Link
 # Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
 doc-open-failed = { $name } konnte nicht geöffnet werden
 doc-open-unnamed-file = Datei
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Programm
+app-kind-system = System
+downloaded-app-missing = Diese App ist nicht auffindbar
+downloaded-app-locate = Suchen
+downloaded-app-locate-path = Gib den vollständigen Pfad der App-Datei ein, beginnend mit /
+downloaded-app-add-title = { $name } zu den Apps hinzufügen?
+downloaded-app-add-action = Zu den Apps hinzufügen
+downloaded-app-add-decline = Nicht hinzufügen
+downloaded-app-move = In „Programme“ verschieben
+downloaded-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+downloaded-app-add-row = { $name } zu den Apps hinzufügen
+search-provider-downloaded-programs = Heruntergeladene Programme
 new-document-unavailable = Neues Dokument nicht verfügbar: { $error }
 collab-unavailable-title = Zusammenarbeit nicht verfügbar
 collab-unavailable-body = Apps in dieser Sitzung können keine Änderungen teilen. { $reason }
+identity-clock-wrong-title = Die Uhr dieses Geräts geht falsch
+identity-clock-wrong-body = Deine Identität ist sicher. Deine Arbeitsbereiche verbinden sich, sobald Datum und Uhrzeit stimmen.
 quiet-status-dnd = Bitte nicht stören
 quiet-status-dnd-presenting = Bitte nicht stören während der Präsentation
 quiet-status-dnd-sharing = Bitte nicht stören während der Bildschirmfreigabe
@@ -2101,16 +2194,6 @@ overview-items-shared = { $count ->
 }
 
 # Fenster und Dokumente, die die Shell anzeigt
-shell-window-restoring = Dieses Fenster wird wiederhergestellt …
-shell-window-opening = Wird geöffnet …
-shell-window-opening-slow = { $app } wird geöffnet … dauert länger als üblich
-shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
-shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
-shell-window-installing-received = { $app } wird installiert … { $received }
-shell-window-updating = { $app } wird aktualisiert …
-shell-window-updating-slow = { $app } wird aktualisiert … dauert länger als üblich
-shell-window-updating-of = { $app } wird aktualisiert … { $received } von { $total }
-shell-window-updating-received = { $app } wird aktualisiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2134,6 +2217,7 @@ window-move-hosted-workspace = Diesen Arbeitsbereich führt sein Besitzer, und d
 window-move-not-permitted = In diesem Arbeitsbereich darfst du diese App nicht öffnen.
 window-move-already-moving = Dieses Fenster wird bereits verschoben.
 window-move-nobody-to-confirm = Zum Verschieben eines Fensters muss die Person an diesem Desktop zustimmen, was mitgeht, und es ist niemand da.
+window-move-personal = Die Einstellungen gehören nur dir und bleiben in deinem persönlichen Arbeitsbereich.
 window-transfer-title = „{ $window }“ nach { $to } verschieben?
 window-transfer-carries = Das Dokument in „{ $window }“ geht mit seinem vollständigen Bearbeitungsverlauf nach { $to }, und das Fenster öffnet sich dort so, wie du es verlassen hast.
 window-transfer-move-detail = Verschieben: Es verlässt { $from }; der Verlauf dort vermerkt, dass es nach { $to } verschoben wurde.
@@ -2205,6 +2289,20 @@ search-action-workspace-create = Arbeitsbereich erstellen
 search-action-workspace-create-subtitle = Einen neuen leeren Arbeitsbereich erstellen und dorthin wechseln
 search-action-workspace-create-default-name = Unbenannt
 search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeichen ohne Steuerzeichen ein.
+search-action-workspace-rename = Diesen Arbeitsbereich umbenennen
+search-action-workspace-rename-subtitle = Dem angezeigten Arbeitsbereich einen neuen Namen geben
+search-action-workspace-rename-refused = Nur wer diesen Arbeitsbereich leitet, kann ihn umbenennen.
+search-action-workspace-delete = Diesen Arbeitsbereich löschen
+search-action-workspace-delete-subtitle = Den angezeigten Arbeitsbereich hier und auf deinen anderen Geräten löschen
+search-action-workspace-delete-confirm = Arbeitsbereich löschen
+search-action-workspace-delete-last = Das ist dein einziger Arbeitsbereich. Lege zuerst einen weiteren an.
+search-action-workspace-delete-failed = Der Arbeitsbereich konnte nicht gelöscht werden. Versuche es noch einmal.
+search-action-workspace-move-earlier = Diesen Arbeitsbereich nach oben verschieben
+search-action-workspace-move-earlier-subtitle = Den angezeigten Arbeitsbereich in deiner Liste eine Stelle nach vorn rücken
+search-action-workspace-move-later = Diesen Arbeitsbereich nach unten verschieben
+search-action-workspace-move-later-subtitle = Den angezeigten Arbeitsbereich in deiner Liste eine Stelle nach hinten rücken
+search-action-workspace-move-first = Dieser Arbeitsbereich steht schon ganz oben in deiner Liste.
+search-action-workspace-move-last = Dieser Arbeitsbereich steht schon ganz unten in deiner Liste.
 search-action-strip-create = Leiste erstellen
 search-action-strip-create-subtitle = Eine benannte Leiste zu diesem Arbeitsbereich hinzufügen und dorthin wechseln
 search-action-strip-create-default-name = Neue Leiste
@@ -2214,6 +2312,10 @@ search-action-strip-invalid-name = Gib einen Leistennamen mit 1 bis 48 Zeichen o
 search-action-strip-rename-missing = Diese Leiste gibt es in diesem Arbeitsbereich nicht.
 search-action-strip-move = Leiste verschieben
 search-action-strip-move-subtitle = Eine Leiste dieses Arbeitsbereichs weiter nach oben oder unten setzen
+search-action-strip-remove = Leiste entfernen
+search-action-strip-remove-subtitle = Eine leere Leiste aus diesem Arbeitsbereich entfernen
+search-action-strip-remove-not-empty = Diese Leiste enthält noch Fenster. Verschiebe oder schließe sie zuerst
+search-action-strip-remove-last = Ein Arbeitsbereich behält mindestens eine Leiste
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.
@@ -2245,7 +2347,6 @@ pad-map-dial-brightness = Helligkeit
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
 peer-view-surface-title = Entfernte Oberfläche #{ $id }
-peer-view-awaiting = Warte auf die entfernte Oberfläche …
 doc-open-no-handler = Keine App auf diesem Desktop öffnet .{ $ext }-Dateien ({ $name })
 doc-open-no-file-type = { $name } hat keinen Dateityp, mit dem es sich öffnen lässt
 doc-open-no-workspace = Es gibt keinen aktiven Arbeitsbereich, in dem es sich öffnen lässt
@@ -2282,6 +2383,11 @@ capture-recording-audio-lost = Die Aufnahme läuft ohne Ton weiter
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Die Aufnahme der letzten Momente läuft ohne Ton weiter
 capture-failed = Aufnahme fehlgeschlagen
+capture-failed-body = Versuch es noch einmal oder nimm den Bildschirm auf.
+capture-uncapturable-window = Dieses Fenster lässt sich nicht aufnehmen. Nimm stattdessen den Bildschirm auf.
+capture-uncapturable-selection = Diese Auswahl lässt sich nicht aufnehmen. Nimm stattdessen den Bildschirm auf.
+capture-uncapturable-strip = Die Leiste lässt sich nicht aufnehmen. Nimm stattdessen den Bildschirm auf.
+capture-uncapturable-screen = Der Bildschirm lässt sich gerade nicht aufnehmen. Versuch es noch einmal.
 settings-not-saved-title = Einstellung nicht gespeichert
 settings-not-saved-body = Eine Änderung an deinen Einstellungen konnte nicht gespeichert werden, deshalb gilt wieder der vorherige Wert. Prüfe, ob auf dem Datenträger Platz frei ist, und versuche es dann erneut.
 idle-inhibit-unnamed-app = Eine App
@@ -2368,10 +2474,6 @@ speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reaso
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
-projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
-projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
-projection-service-stopped = Der Projektionsdienst wurde beendet
 
 # Warum eine Aktion auf deinen Geräten fehlschlug, wie die Benachrichtigung es sagt
 device-fabric-error-nearby-busy = Nearby Send ist ausgelastet; versuch es erneut, wenn eine andere Übertragung fertig ist
@@ -2573,6 +2675,12 @@ dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins
 dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
 dictation-stopping-microphone = Mikrofon wird angehalten…
 
+search-action-magnifier-toggle = Bildschirmlupe einschalten
+search-action-magnifier-toggle-subtitle = Den Bildschirm um den Zeiger vergrößern oder wieder ausschalten
+search-action-magnifier-zoom-in = Vergrößern
+search-action-magnifier-zoom-in-subtitle = Einen Schritt näher; der Zeiger verschiebt den vergrößerten Ausschnitt
+search-action-magnifier-zoom-out = Verkleinern
+search-action-magnifier-zoom-out-subtitle = Einen Schritt weiter weg, bis aus
 search-action-axis-enable = Experimentelle Achsennavigation aktivieren
 search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
 search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
@@ -2632,35 +2740,20 @@ device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht ve
 search-action-activity-acknowledge = Aktivität als gesehen markieren
 search-action-activity-acknowledge-subtitle = Was du angesehen hast, zählt nicht mehr als neu
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
-search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
-search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
-search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
-
-task-review-inspect = Aufgabennachweise prüfen
-task-review-steer = Aufgabenanweisungen ändern
-task-review-cancel = Aufgabenlauf abbrechen
-task-review-retry = Aufgabe erneut versuchen
-task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
-task-review-provider = Aufgabenprüfung
 
 dictation-vocabulary-changed = Das Diktat wurde beendet, weil sich dein persönliches Wörterbuch geändert hat. Starte ein neues Diktat, um die aktualisierten Wörter zu verwenden.
 dictation-vocabulary-draft-retained = Dein persönliches Wörterbuch hat sich geändert. Das Diktat wurde beendet. Du kannst den letzten Entwurf kopieren; er ist möglicherweise unvollständig.
 
-host-history-task-refused-title = Aufgabe konnte nicht geändert werden
-host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-open-failed = Dieses Fenster wurde nicht geöffnet
 shell-window-retry = Erneut öffnen
 shell-window-app-missing = { $app } ist nicht auf diesem Computer
 shell-window-get-app = { $app } holen
 shell-window-close = Schließen
 
-task-review-approve = Aufgabenausführung freigeben
-
-# Shared activity label used by native task-review rendering.
-activity-task-approve-run = Ausführung freigeben
 device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
 device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
 device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
@@ -2669,39 +2762,23 @@ device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschö
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
 
-search-provider-system-settings = Systemeinstellungen
 setting-never = Nie
 setting-minutes = { $minutes ->
         [one] 1 Minute
        *[other] { $minutes } Minuten
     }
-setting-on = An
-setting-off = Aus
 setting-mode-dark = Dunkel
 setting-mode-light = Hell
 setting-mode-automatic = Automatisch
 setting-mode-unset = Folgt dem Design
 setting-get = { $name }: { $value }
 setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
-setting-power-lock-after = Bildschirm sperren nach
-setting-power-lock-after-words = automatisch sperren sperrzeit inaktivität lock screen
-setting-power-blank-after = Bildschirm ausschalten nach
-setting-power-blank-after-words = abschalten dunkel inaktivität display blank
-setting-power-suspend-after = In Bereitschaft nach
-setting-power-suspend-after-words = standby ruhezustand energiesparen schlafen inaktivität suspend
-setting-power-auto-suspend = Bei Inaktivität in Bereitschaft gehen
-setting-power-auto-suspend-words = automatisch standby ruhezustand schlafen suspend
-setting-display-scale = Bildschirmskalierung
-setting-display-scale-words = skalierung zoom größe anzeige scale
-setting-display-refresh-rate = Bildwiederholrate
-setting-display-refresh-rate-words = hertz frequenz bildfrequenz anzeige refresh
-setting-keyboard-layout = Tastaturlayout
-setting-keyboard-layout-words = sprache belegung eingabequelle tastatur keyboard layout
-setting-appearance-mode = Erscheinungsbild
-setting-appearance-mode-words = dunkel hell nacht design theme modus
+setting-confirm-weaker = Weniger sicher machen
+setting-suspend-plugged-in = Am Netzteil
+setting-suspend-on-battery = Im Akkubetrieb
 display-remote-heading = Deine anderen Bildschirme
 display-remote-title = Bildschirm { $number }: { $name } auf { $device }
-display-remote-row = { $status } · { $title }
+display-remote-row = { $title }, { $status }
 display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
 display-remote-offline = Offline
 display-remote-offline-excluded = Offline, nicht in der Anordnung
@@ -2739,7 +2816,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-palette-show-all = Alle { $count } zeigen
 palette-value-on = Ein
 palette-value-off = Aus
 palette-value-not-whole-number = Eine ganze Zahl eingeben
@@ -2748,6 +2824,7 @@ palette-value-not-on-off = Ein oder Aus eingeben
 palette-value-not-understood = Einen Wert eingeben, den diese Einstellung annimmt
 palette-open-tab-here = Als Tab hier
 palette-open-beside = Daneben
+palette-open-new-window = Neues Fenster
 palette-more-actions = Mehr
 palette-open-containing-folder = Enthaltenden Ordner öffnen
 palette-copy-path = Pfad kopieren
@@ -2756,8 +2833,11 @@ palette-copy-path = Pfad kopieren
 onboarding-prepared-title = Willkommen zu Hause
 onboarding-prepared-body = Gib das Passwort ein, das du beim Vorbereiten von Tilo gewählt hast, um deine Identität und deine Konten hierher zu holen.
 onboarding-prepared-password = Dein Passwort
+onboarding-prepared-peer-waiting = Es wird darauf gewartet, dass dein anderer Computer die Übertragung anbietet.
+onboarding-prepared-peer-code = Dein anderer Computer zeigt { $code }. Prüfe, ob beide Bildschirme denselben Code zeigen, und bestätige diesen Computer dann dort.
 onboarding-prepared-working = Deine Einrichtung wird hierher geholt …
 onboarding-prepared-failed = Deine vorbereitete Einrichtung konnte nicht hierher geholt werden. Versuche es erneut.
+onboarding-prepared-other-person = Auf diesem Computer ist bereits die Identität einer anderen Person, deshalb wurde die vorbereitete Einrichtung nicht angetastet. Stelle die eigene Sicherung dieser Person wieder her oder verbinde stattdessen ihr Konto.
 onboarding-migration-title = Hol deine Sachen in Tilo
 onboarding-migration-body = Hol die Dokumente und Apps herüber, die du bei der Einrichtung ausgewählt hast. Deine Originale bleiben, wo sie sind.
 onboarding-migration-reviewed = Deine Übernahme ist bereit. Kopiere deine Sachen zuerst in einen separaten Import.
@@ -2795,7 +2875,7 @@ onboarding-browser-start = Meine Browserdaten verwenden
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
 onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 onboarding-ready-welcome = Willkommen bei Tilo
-onboarding-ready-next = Richte dich ein oder starte zuerst eine kurze Tour.
+onboarding-ready-next = Der Desktop ist bereit. Beginne mit irgendetwas: Öffne eine App, suche, was du brauchst, oder lade jemanden in einen Arbeitsbereich ein.
 onboarding-migration-cleanup-pending = Deine Sachen sind in Tilo bereit. Einige temporäre Dateien müssen noch entfernt werden.
 onboarding-migration-cleanup-unavailable = Deine Sachen sind in Tilo bereit. Das Entfernen der temporären Dateien konnte nicht bestätigt werden.
 onboarding-migration-cleanup-resume = Aufräumen erneut versuchen
@@ -2832,6 +2912,9 @@ file-picker-filename = Dateinamen zum Speichern festlegen
 file-picker-replace = Vorhandene Datei ersetzen
 file-picker-keep-existing = Vorhandene Datei behalten
 file-picker-next-filter = Dateifilter ändern
+file-picker-search = Nach Dateien zum Auswählen suchen
+file-picker-recent = Zuletzt gewählte Dateien zeigen
+file-picker-query-param = Wonach gesucht wird: ein Name oder Wörter in der Datei. Eine leere Suche kehrt zum Ordner zurück.
 file-picker-page-param = Seite der Dateiliste, beginnend bei null.
 file-picker-state-param = Genauer Zustandsschlüssel aus der aktuellen Dateiauswahlprüfung.
 file-picker-entry-param = Genaue Eintragskennung aus der aktuellen Dateiauswahlprüfung.
@@ -2850,8 +2933,19 @@ portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr ve
 
 ## Der Agent-Verfasser: ein Feld, um einen Agenten zu fragen oder ihm zu sagen, was er tun soll
 agent-quick-title = { $agent }
+agent-quick-agent = Agent
+agent-quick-model = Modell
+agent-quick-model-own = Das eigene Modell des Agenten
+agent-quick-model-of = { $model } ({ $provider })
+agent-quick-mode = Was zu tun ist
+agent-quick-mode-decides = Entscheiden lassen
+agent-quick-mode-answer = Hier antworten
+agent-quick-mode-task = Als Aufgabe ausführen
+agent-quick-mode-answer-line = An Ort und Stelle antworten
+agent-quick-mode-task-line = Das als Aufgabe ausführen
 agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
 agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
+agent-quick-about-resource = Zu { $resource } in { $app }
 agent-quick-accessible-name = Agent-Verfasser
 agent-quick-shots-context = Zu deiner Auswahl in Notes: „[tilo OS](search for the tilo homepage)“
 agent-quick-shots-draft = Wohin führt dieser Link?
@@ -2876,10 +2970,6 @@ agent-quick-steer-saved = Gesendet. { $agent } berücksichtigt es.
 agent-quick-steer-applied = { $agent } folgt deinem Hinweis.
 agent-quick-run-starting = Wird gestartet: { $task }
 agent-quick-run-working = In Arbeit: { $task }
-agent-quick-run-waiting = Wartet auf deine Bestätigung
-agent-quick-draft-confirm = Erlauben
-agent-quick-draft-edit = Bearbeiten
-agent-quick-draft-decline = Ablehnen
 agent-quick-run-done = { $agent } ist fertig.
 agent-quick-run-attention = { $agent } hat angehalten und braucht dich.
 agent-quick-run-stopped = Gestoppt.
@@ -2906,7 +2996,7 @@ search-kw-navigation-axis-enable = experimentell, navigation, achsen
 search-kw-navigation-axis-disable = experimentell, navigation, achsen
 search-kw-navigation-axis-gather = fenster finden, fenster zurückholen, verlorenes fenster, fenster zentrieren
 search-kw-overview-toggle = übersicht, arbeitsbereiche, alle arbeitsbereiche, aktivitäten, überblick
-search-kw-settings-open = arbeitsbereich einstellungen, raum einstellungen, arbeitsbereich optionen
+search-kw-settings-open = arbeitsbereich einstellungen, arbeitsbereich optionen
 search-kw-settings-members-open = personen, mitglieder, mitwirkende, benutzer, rollen, rechte
 search-kw-settings-privacy-open = datenschutz, sicherheit, zugriff, berechtigungen
 search-kw-settings-apps-open = apps, dateien, standard-apps, arbeitsbereich apps
@@ -2948,6 +3038,7 @@ search-kw-tab-open-beside = app öffnen, neuer tab, starten, app starten
 search-kw-tab-menu = tab-menü, kontextmenü, rechtsklick
 search-kw-tab-drag-cancel = ziehen abbrechen
 search-kw-tab-close = schließen, tab schließen, fenster schließen, beenden
+search-kw-tab-rename = umbenennen, tab benennen, tab-name, titel, bezeichnung
 search-kw-tab-reopen = wieder öffnen, wiederherstellen, geschlossenen tab, rückgängig
 search-kw-tab-split-right = teilen, nebeneinander, geteilte ansicht, aufteilen
 search-kw-window-focus-previous = vorheriges fenster, fenster wechseln, zurück
@@ -2968,6 +3059,10 @@ search-kw-group-move-to-strip-next = fenster nach unten, in leiste darunter
 search-kw-group-move-to-display-previous = auf anderen bildschirm, monitor wechseln, vorheriger monitor
 search-kw-group-move-to-display-next = auf anderen bildschirm, monitor wechseln, nächster monitor
 search-kw-group-maximize = maximieren, wiederherstellen, vergrößern, fenster füllen
+search-kw-group-toggle-maximize = maximieren oder wiederherstellen, maximierung umschalten, fenster füllen
+search-kw-magnifier-toggle = bildschirmlupe, lupe, vergrößern, zoom, sehschwäche
+search-kw-magnifier-zoom-in = bildschirmlupe, vergrößern, näher, größer heranzoomen
+search-kw-magnifier-zoom-out = bildschirmlupe, verkleinern, weiter weg, herauszoomen
 search-kw-group-fullscreen = vollbild, ganzer bildschirm
 search-kw-group-narrower = schmaler, verkleinern, größe ändern
 search-kw-group-wider = breiter, vergrößern, größe ändern
@@ -2978,9 +3073,11 @@ search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, l
 search-kw-group-restore = wiederherstellen, verkleinern, normale größe, maximierung aufheben
 search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
+search-kw-notifications-open = benachrichtigungen, mitteilungen, benachrichtigungszentrale, verpasst, hinweise
+search-kw-notifications-clear = benachrichtigungen löschen, alle löschen, alle verwerfen, mitteilungen entfernen, benachrichtigungen leeren
+search-kw-notifications-clear-undo = löschen rückgängig, benachrichtigungen wiederherstellen, benachrichtigungen zurückholen
 search-kw-appearance-theme-dark = dunkelmodus, dunkles design, nachtmodus, dunkel, nachtdesign, dark mode
 search-kw-appearance-theme-light = hellmodus, helles design, tagmodus, hell, tagdesign, light mode
-search-kw-appearance-high-contrast = hoher kontrast, kontrast, barrierefreiheit, sichtbarkeit
 search-kw-appearance-language = sprache, sprache wechseln, lokalisierung, deutsch, englisch, spracheinstellung
 search-kw-record-bring = hinzufügen, importieren, dokument hinzufügen, anhängen
 search-kw-shortcut-help-toggle = hilfe, tastenkürzel, tastaturkürzel, tastenkombinationen, anleitung, spickzettel
@@ -2999,6 +3096,57 @@ search-kw-session-suspend = ruhezustand, standby, energiesparmodus, schlafen, be
 search-kw-session-restart = neu starten, neustart, rechner neu starten, reboot
 search-kw-session-shut-down = herunterfahren, ausschalten, abschalten, pc ausschalten, runterfahren
 search-kw-session-logout = abmelden, ausloggen, logout, sitzung beenden
+search-kw-input-source-next = nächstes layout, layout wechseln, eingabequelle, tastatursprache, schreibsprache
+search-kw-feedback-open = rückmeldung, feedback, problem melden, fehler melden, vorschlag
+search-kw-feedback-point = rückmeldung hierzu, problem zeigen, das melden
+search-kw-identity-device-pair-asking = kopplungsanfragen, wartende geräte, geräteanfragen
+search-kw-identity-device-pair-answer = kopplung beantworten, anfrage beantworten
+search-kw-identity-list = identitäten, konten, meine konten
+search-kw-identity-activate = konto verwenden, identität wechseln, standardkonto
+search-kw-identity-remove = konto entfernen, identität löschen, konto vergessen
+search-kw-identity-protect = schlüssel schützen, konto sichern, identität verschlüsseln
+search-kw-identity-devices-list = meine geräte, vertraute geräte, geräteliste, verknüpfte geräte
+search-kw-identity-home-peer-remove = heimserver entfernen, server vergessen, server entkoppeln
+search-kw-identity-home-peer-retry-removals = entfernen wiederholen, server fertig entfernen
+search-kw-quick-settings-network = wlan netze, verfügbare netzwerke, mit wlan verbinden, netzwerk wählen, hotspot
+search-kw-quick-settings-bluetooth = bluetooth geräte, kopfhörer koppeln, kopfhörer verbinden, lautsprecher verbinden
+search-kw-projection-close = spiegeln beenden, übertragung beenden, präsentation beenden
+search-kw-display-shared-inspect = geteilte bildschirme, wer sieht meinen bildschirm
+search-kw-display-shared-include = bildschirm teilen, anzeige einbeziehen
+search-kw-display-layout-extend = bildschirm erweitern, desktop erweitern, zweiter monitor, beide bildschirme
+search-kw-display-layout-mirror = bildschirm spiegeln, bildschirm duplizieren, gleiches bild
+search-kw-display-layout-builtin-only = nur laptop bildschirm, nur interner bildschirm, externen monitor aus
+search-kw-display-layout-external-only = nur externer monitor, nur zweiter bildschirm, laptop bildschirm aus
+search-kw-display-outputs-inspect = bildschirme, monitore, angeschlossene bildschirme
+search-kw-display-change-keep = änderungen behalten, auflösung behalten, anzeige bestätigen
+search-kw-display-change-revert = anzeige zurücksetzen, auflösung zurück, anzeige wiederherstellen
+search-kw-bluetooth-pairing-decline = kopplung ablehnen, bluetooth ablehnen
+search-kw-peer-pair-device = gerät hinzufügen, handy verbinden, neues gerät, telefon koppeln
+search-kw-bot-add = bot hinzufügen, integration, automatisierung
+search-kw-app-uninstall = deinstallieren, app entfernen, app löschen
+search-kw-app-remove-from-apps = app ausblenden, aus liste entfernen
+search-kw-bot-remove = bot entfernen, bot löschen
+search-kw-member-role-set = rolle ändern, berechtigungen, zum admin machen, zugriffsrechte
+search-kw-member-remove = person entfernen, mitglied entfernen, zugang entziehen
+search-kw-invitation-issue = einladungslink, einladung erstellen, neue einladung
+search-kw-invitation-list = offene einladungen, gesendete einladungen
+search-kw-invitation-resend = einladung erneut senden, erinnern
+search-kw-invitation-cancel = einladung widerrufen, einladung zurückziehen, einladung löschen
+search-kw-agent-remove = assistent entfernen, ki entfernen
+search-kw-strip-remove = streifen löschen, zeile entfernen
+search-kw-workspace-create = neuer arbeitsbereich, arbeitsbereich hinzufügen, neuer desktop, neues projekt
+search-kw-workspace-rename = arbeitsbereich umbenennen, arbeitsbereich benennen
+search-kw-workspace-delete = arbeitsbereich löschen, arbeitsbereich entfernen, arbeitsbereich archivieren
+search-kw-workspace-move-earlier = arbeitsbereich nach oben, arbeitsbereiche sortieren
+search-kw-workspace-move-later = arbeitsbereich nach unten, arbeitsbereiche sortieren
+search-kw-group-move-to-strip = fenster in zeile verschieben, fenster in streifen
+search-kw-group-close = fenster schließen, beenden, app schließen
+search-kw-tab-move-to-workspace = in arbeitsbereich verschieben, tab verschieben, auf anderen desktop
+search-kw-quick-settings-wifi-set-enabled = wlan an, wlan aus, wlan einschalten, wlan ausschalten
+search-kw-quick-settings-bluetooth-set-enabled = bluetooth an, bluetooth aus, bluetooth einschalten, bluetooth ausschalten
+search-kw-quick-settings-airplane-mode-set-enabled = flugmodus an, flugmodus aus
+search-kw-workspace-archived-restore = arbeitsbereich wiederherstellen, aus archiv holen
+search-kw-workspace-archived-delete = endgültig löschen, archivierten arbeitsbereich löschen
 
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
@@ -3008,7 +3156,32 @@ storage-low-body = Noch { $free } frei für { $volume }. Lösche große Download
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
 
+graphics-app-name = Grafik
+graphics-stopped-title = Die Grafik reagiert nicht mehr
+graphics-stopped-body = Alles funktioniert weiter, kann aber langsamer sein, bis du den Computer neu startest.
+crash-notice-app-name = Desktop
+crash-notice-title = Der Desktop wurde neu gestartet
+crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-stopped-title = Der Computer wurde neu gestartet
+crash-notice-stopped-body = Er wurde vor diesem Start unerwartet angehalten. Ein Bericht darüber bleibt auf diesem Computer.
+host-crash-records-resource = Probleme
+host-crash-records-list = Probleme auflisten
+host-crash-records-list-detail = Wann der Desktop oder der Computer angehalten hat, das Neueste zuerst, ohne die Einzelheiten.
+host-crash-records-read = Einzelheiten eines Problems lesen
+host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
+
 ## Desk widgets
+
+desk-widgets-a11y = Schreibtisch-Widgets
+desk-widget-music = Musik
+desk-widget-team = Menschen hier
+desk-widget-calendar = Kalender
+desk-widget-system-monitor = Systemmonitor
+desk-widget-open = { $widget } öffnen
+desk-widget-close = { $widget } schließen
+desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
+desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
 
 desk-team-title = In diesem Arbeitsbereich
 # Where a person is: their strip, then the window they are on.
@@ -3025,12 +3198,12 @@ drives-unnamed-external = Externes Laufwerk
 drives-consent-title = { $drive } öffnen?
 drives-consent-title-unnamed-internal = Dieses Laufwerk in deinem Computer öffnen?
 drives-consent-title-unnamed-external = Dieses externe Laufwerk öffnen?
-drives-consent-internal = In diesem Computer · { $size }
-drives-consent-external = Externes Laufwerk · { $size }
-drives-consent-detail = Wähle, wie dieses Laufwerk geöffnet wird.
-drives-consent-detail-known = Du hast dieses Laufwerk schon einmal sicher geöffnet. Wähle, wie es diesmal geöffnet wird.
-drives-consent-open-safely = Sicher öffnen: für Laufwerke, die du nicht kennst. Etwas langsamer.
-drives-consent-open = Öffnen: am schnellsten. Für deine eigenen Laufwerke.
+drives-consent-internal = In diesem Computer, { $size }
+drives-consent-external = Externes Laufwerk, { $size }
+drives-consent-detail = Öffne es sicher, außer es ist dein Laufwerk. Das ist etwas langsamer.
+drives-consent-detail-known = Du hast dieses Laufwerk schon einmal sicher geöffnet.
+drives-consent-open-safely = Sicher öffnen
+drives-consent-open = Mit voller Geschwindigkeit öffnen
 drives-consent-remember = Dieses Laufwerk merken und nicht mehr fragen
 drives-consent-remember-safely = Dieses Laufwerk merken und sicheres Öffnen vorschlagen
 drives-consent-confirm = Öffnen
@@ -3047,16 +3220,10 @@ workspace-menu-new = Neuer Arbeitsbereich
 workspace-menu-join = Einem Arbeitsbereich beitreten…
 workspace-menu-report = Arbeitsbereich melden…
 workspace-menu-leave = Arbeitsbereich verlassen
+workspace-menu-join-again = Erneut beitreten
 profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…
-# Strip switcher: the strip ribbon grown into a list of strips and workspaces.
-strip-switcher-a11y = Leisten
-strip-switcher-unnamed = Leiste { $number }
-strip-switcher-new-strip = Neue Leiste
-strip-switcher-rename-named = { $name } umbenennen
-strip-switcher-name-placeholder = Name der Leiste
-strip-switcher-refused = Die Leiste konnte nicht geändert werden
 
 
 
@@ -3064,6 +3231,7 @@ strip-switcher-refused = Die Leiste konnte nicht geändert werden
 pairing-title = Neues Gerät koppeln
 pairing-making = Link wird erstellt…
 pairing-waiting = Warte auf dein neues Gerät…
+pairing-failed = Der Kopplungslink konnte nicht erstellt werden. Prüfe, ob dieser Computer online ist, und versuche es dann erneut.
 pairing-copy-link = Link kopieren
 pairing-done-button = Fertig
 pairing-copied = Kopiert
@@ -3079,6 +3247,7 @@ pairing-done = { $device } ist jetzt eines deiner Geräte.
 pairing-asks-title = Ein Gerät möchte du sein
 pairing-asks-body = { $device }{ $from }, { $when }. Wenn du bestätigst, handelt es als du. Bestätige nur, wenn es { $code } zeigt.
 pairing-asks-from = {" "}({ $country })
+pairing-asks-via = {" "}(gefunden von deinem Gerät { $device })
 pairing-approve = { $code } bestätigen
 pairing-decline = Ablehnen
 pairing-answer-failed = Das Gerät wurde nicht beantwortet: { $error }
@@ -3138,25 +3307,61 @@ directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
 directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.
-arrival-others = { $count ->
-    [one] und 1 weitere Person
-   *[other] und { $count } weitere
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Sag etwas
 cursor-chat-you = Du
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
-presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
-presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
-presence-arrival-change = Ändern
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = Sie sehen, wo du bist
+presence-arrival-seen-here = Sie sehen, dass du da bist
+presence-arrival-seen-nothing = Sie sehen dich nicht
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 profile-action-say-something = Hier etwas sagen
 cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen
 cursor-chat-no-window-body = Was du sagst, erscheint neben deinem Zeiger für die Personen in diesem Fenster
 people-join-call-failed = Dem Anruf konnte nicht beigetreten werden
 people-join-call-not-taken = Tritt ihm in Chat bei
-presence-wave-notice = { $person } winkt
 presence-someone = Jemand
+
+# The person's apps: uninstalling, and taking a part of the system off them
+app-list-app-name = Apps
+app-list-gone-title = App nicht gefunden
+app-list-gone-body = Sie ist nicht mehr unter deinen Apps.
+app-list-no-home = Dein persönlicher Ordner ist nicht auffindbar.
+app-list-no-app-tool = Tilo-Apps lassen sich auf diesem Computer nicht deinstallieren.
+app-list-invalid-flatpak = Das ist kein Flatpak, das dieser Computer deinstallieren kann.
+app-list-invalid-entry = Dieser Eintrag lässt sich nicht aus deinen Apps entfernen.
+app-list-uninstalled = { $name } deinstalliert
+app-list-uninstalled-data = Ihre Daten liegen im Papierkorb.
+app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
+app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.
+app-list-removed = { $name } aus deinen Apps entfernt
+app-list-uninstall-failed = { $name } konnte nicht deinstalliert werden
+app-list-remove-failed = { $name } konnte nicht aus deinen Apps entfernt werden
+app-uninstall-title = { $name } deinstallieren?
+app-uninstall-action = Deinstallieren
+app-uninstall-cancel = Abbrechen
+app-uninstall-remove-data = Ihre Daten entfernen
+app-uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+app-uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
+app-uninstall-file-body = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+app-uninstall-home-folder = Persönlicher Ordner
+app-uninstall-tilo-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
+app-uninstall-remove-title = { $name } aus den Apps entfernen?
+app-uninstall-remove-action = Aus Apps entfernen
+app-uninstall-remove-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.
+search-action-app-uninstall = Eine App deinstallieren…
+search-action-app-uninstall-subtitle = Du bestätigst vorher
+search-action-app-remove-from-apps = Eine App aus deinen Apps entfernen…
+search-action-app-remove-from-apps-subtitle = Sie bleibt auf diesem Computer
+search-apps-uninstall = Deinstallieren
+search-apps-remove-from-apps = Aus Apps entfernen
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus

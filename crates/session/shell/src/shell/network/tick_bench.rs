@@ -56,7 +56,7 @@ fn network_tick_latency_while_the_desktop_changes() {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room == room)
+                .find(|workspace| workspace.room() == room)
                 .expect("room workspace");
             let group = workspace
                 .strips
@@ -72,6 +72,7 @@ fn network_tick_latency_while_the_desktop_changes() {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: String::new(),
                 },
+                app_title: None,
             });
             tree.seed_doc_from_cache();
         }

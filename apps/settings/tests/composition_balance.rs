@@ -57,7 +57,7 @@ fn compact_heading_and_region_layout_stay_balanced() {
         let config = crate::support::ScratchConfig::new();
         for (category, label, limit) in [
             (Category::ExternalAccounts, "Add Email", 370.0),
-            (Category::RegionFormats, "Currency", 220.0),
+            (Category::RegionFormats, "Language", 220.0),
         ] {
             let app = config.app().with_category(category);
             let app = lay_out(app);

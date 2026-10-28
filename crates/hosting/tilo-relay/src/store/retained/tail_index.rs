@@ -137,6 +137,18 @@ pub(super) fn appended(
     }
 }
 
+/// Follow a change to the generation's entries that leaves what it holds
+/// as the index says (staged records renamed into place, `group`): kept at
+/// `after` when it was kept at `before`, forgotten otherwise.
+pub(super) fn restamp(lineage: &Path, before: &Stamp, after: Stamp) {
+    let mut index = index();
+    match index.lineages.get_mut(lineage) {
+        Some(generation) if generation.stamp == *before => generation.stamp = after,
+        Some(_) => index.remove(lineage),
+        None => {}
+    }
+}
+
 /// Stop trusting what the index holds for `lineage`.
 pub(super) fn forget(lineage: &Path) {
     index().remove(lineage);

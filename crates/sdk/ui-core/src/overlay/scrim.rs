@@ -75,7 +75,6 @@ pub fn behind_panel(
 /// The edge of a [`vertical_fade`] where it is strongest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FadeEdge {
-    /// Strongest at the top of the rect, clear at its bottom.
     Top,
     /// Strongest at the bottom of the rect, clear at its top.
     Bottom,
@@ -162,7 +161,6 @@ mod tests {
 
     #[test]
     fn the_fade_is_smooth_monotonic_and_one_gradient() {
-        // Case `fade_runs_from_full_to_clear_without_a_step`.
         {
             let mut previous = fade_alpha(0.0, 0.8);
             assert!((previous - 0.8).abs() < 1e-6, "full strength at the edge");
@@ -177,7 +175,6 @@ mod tests {
             assert!(previous.abs() < 1e-6, "clear at the far edge");
         }
 
-        // Case `painting_is_one_gradient_fill_not_bands`.
         {
             let mut scene = Scene::new();
             vertical_fade(
@@ -198,7 +195,6 @@ mod tests {
             assert_eq!(scene.encoding().draw_tags.len(), 1, "and nothing else");
         }
 
-        // Case `a_faint_fade_still_takes_the_minimum_step`.
         {
             const { assert!(MIN_FADE_STRENGTH > 0.0 && MIN_FADE_STRENGTH < 1.0) };
             let mut scene = Scene::new();

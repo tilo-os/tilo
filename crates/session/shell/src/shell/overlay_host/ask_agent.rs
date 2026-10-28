@@ -1,4 +1,4 @@
-//! The ask-agent chord and the "Ask agent…" requests Tilo apps send: both
+//! The ask-agent chord and the "Tell an agent…" requests Tilo apps send: both
 //! open the agent quick composer on the focused window's selection
 //! ([`crate::shell::selection_agent`]).
 
@@ -17,6 +17,17 @@ impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection` answers selection requests.
     pub(crate) fn note_selection_capable(&mut self, connection: u64, app_id: &str) {
         self.selection_requests.capable(connection, app_id);
+    }
+
+    /// The window of `app_id` on shell-ui `connection` shows `resource`.
+    pub(crate) fn note_window_resource(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        resource: Option<tilo_actions::ActionResource>,
+    ) {
+        self.selection_requests
+            .window_resource(connection, app_id, resource);
     }
 
     /// Shell-ui `connection` went away.
@@ -63,7 +74,7 @@ impl ShellOverlayHost {
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
     /// `selection`, drawn at `area` on the desktop when it said where: in
-    /// answer to the chord, or from an "Ask agent…" entry in its focused
+    /// answer to the chord, or from an "Tell an agent…" entry in its focused
     /// window. Whether the composer opened.
     pub(crate) fn receive_ask_agent(
         &mut self,
@@ -77,6 +88,20 @@ impl ShellOverlayHost {
         }
         let label = self.app_label(app_id);
         self.open_ask_agent(SelectionSeed::new(app_id, label, selection).drawn_at(area))
+    }
+
+    /// "Tell an agent…" on a window of `app_id`, chosen at `at` on the
+    /// desktop: the composer opens there about that app. It attaches the
+    /// resource the app said its window shows, else names the app alone.
+    pub(super) fn tell_agent_about_app(&mut self, app_id: &str, at: Point) -> bool {
+        let label = self.app_label(app_id);
+        let seed = SelectionSeed::new(app_id, label, None)
+            .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))));
+        let seed = match self.selection_requests.window_of(app_id) {
+            Some(resource) => seed.showing(resource.clone()),
+            None => seed,
+        };
+        self.open_ask_agent(seed)
     }
 
     /// The focused window offers no selection of its own: ask about the
@@ -100,10 +125,11 @@ impl ShellOverlayHost {
         };
         let Some((room, person, members)) = ({
             let state = chrome.borrow();
-            state.tree().desktop.active_workspace().map(|workspace| {
+            let tree = state.tree();
+            tree.desktop.active_workspace().map(|workspace| {
                 (
-                    workspace.room.to_string(),
-                    state.active_local_user(),
+                    workspace.room().to_string(),
+                    state.active_local_user_in(&tree),
                     workspace
                         .agent_members()
                         .into_iter()
@@ -146,7 +172,12 @@ impl ShellOverlayHost {
         }
         self.selection_requests.asked(&room, &agent);
         let viewport = self.overlay_area();
-        let window = self.focused_window_rect().unwrap_or(viewport);
+        // Where the thing is drawn was clipped to its window already when an
+        // app said; the desktop's own surfaces (a tab) are outside windows.
+        let window = match seed.area {
+            Some(_) => viewport,
+            None => self.focused_window_rect().unwrap_or(viewport),
+        };
         let (at, protected) = selection_area(window, self.text_caret, seed.area);
         self.agent_quick_composer.open_about(
             owner,
@@ -159,13 +190,29 @@ impl ShellOverlayHost {
             viewport,
             seed,
         );
+        self.agent_quick_composer.offer_agents(live);
         self.bump_chrome();
         true
     }
 
+    /// The person picked another agent in the composer: open it again for
+    /// that one, about the same thing. Whether it opened.
+    pub(super) fn switch_composer_agent(&mut self) -> bool {
+        let Some(agent) = self.agent_quick_composer.take_agent_switch() else {
+            return false;
+        };
+        let (Some(owner), Some(seed)) = (
+            self.agent_quick_composer.owner().cloned(),
+            self.agent_quick_composer.about().cloned(),
+        ) else {
+            return false;
+        };
+        self.selection_requests.asked(&owner.room, &agent);
+        self.open_ask_agent(seed)
+    }
+
     /// No agent of the focused workspace takes tasks: start the one asked
-    /// last there (else its first admitted agent), as Task Center's "Start
-    /// agent" does, and open the composer about `seed` once it takes them.
+    /// last there (else its first admitted agent), and open the composer about `seed` once it takes them.
     /// Whether one is starting. Only someone who may administer the
     /// workspace starts its agents.
     fn start_admitted_agent(
@@ -234,6 +281,75 @@ impl ShellOverlayHost {
     /// The session source for the workspace, and those of its agent
     /// `members` that are admitted (certified under their own key) and hold
     /// a live task subscription, so a queued task reaches them.
+    /// Ask agents the work the chrome handed them (a notification, a query
+    /// from search), each as an issue in its workspace's Tasks, and open the
+    /// issue's page when the ask says so. An agent that is not running is
+    /// started, as the ask-agent chord starts it; the issue waits in the
+    /// tracker until it takes it. Whether one was asked.
+    pub(super) fn pump_agent_asks(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let asks = chrome.borrow_mut().take_agent_asks();
+        let mut asked = false;
+        let mut starts = Vec::new();
+        for ask in asks {
+            let Some(broker) = self.shortcut_triggers.broker() else {
+                break;
+            };
+            let room = ask.room.to_string();
+            let live = askable(&broker, &room, &ask.agent);
+            let source = ActionSessionSource::new(broker);
+            let Some(identity_revision) = source.identity_revision(&room) else {
+                continue;
+            };
+            let person = chrome.borrow().local_user_for_room(&ask.room);
+            let owner = ComposerOwner {
+                person,
+                room,
+                agent: ask.agent,
+                identity_revision,
+            };
+            let actions = self.agent_actions.entry(owner.clone()).or_default();
+            if !live && actions.start_once(Instant::now()) {
+                starts.push((ask.room, owner.agent.clone()));
+            }
+            if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show, ask.quick) {
+                asked = true;
+            } else {
+                tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
+            }
+        }
+        for (room, agent) in starts {
+            self.start_agent_for(&room, &agent);
+        }
+        asked
+    }
+
+    /// Start `agent` in the workspace of `room`, for work asked of it while
+    /// it was not running. Only someone who may administer the workspace
+    /// starts its agents; for anyone else the work waits for it.
+    fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
+        let Some(workspace) = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == *room)
+                .cloned()
+        }) else {
+            return;
+        };
+        match crate::shell::launcher::launch_workspace_agent(agent, &workspace) {
+            Ok(_) => tracing::info!(%agent, "started the agent to take the work asked of it"),
+            Err(error) => {
+                tracing::info!(%agent, error = %error.user_message(), "the agent asked for work could not be started");
+            }
+        }
+    }
+
     fn live_agents(
         &self,
         room: &str,
@@ -247,7 +363,6 @@ impl ShellOverlayHost {
         Some((ActionSessionSource::new(broker), live))
     }
 
-    /// The focused tab's app id.
     fn focused_app_id(&self) -> Option<String> {
         self.chrome
             .as_ref()?
@@ -257,7 +372,7 @@ impl ShellOverlayHost {
     }
 
     /// What `app_id` is called, for the composer and the agent.
-    fn app_label(&self, app_id: &str) -> String {
+    pub(super) fn app_label(&self, app_id: &str) -> String {
         crate::shell::launcher::display_name_for_app_id(app_id)
             .or_else(|| self.chrome.as_ref()?.borrow().active_app_title())
             .unwrap_or_else(|| app_id.to_owned())
@@ -324,7 +439,6 @@ mod tests {
     #[test]
     fn the_composer_keeps_clear_of_all_the_selected_text_it_was_told_of() {
         let window = Rect::new(100.0, 50.0, 900.0, 650.0);
-        // The caret ends a selection of three lines of a paragraph.
         let caret = Rect::new(400.0, 300.0, 402.0, 318.0);
         let paragraph = Rect::new(200.0, 264.0, 800.0, 336.0);
         assert_eq!(

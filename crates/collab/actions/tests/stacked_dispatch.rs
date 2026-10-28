@@ -136,7 +136,6 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
             envelopes.push(dispatched.envelope().clone());
         }
 
-        // Every stacked action landed a distinct scalar/append.
         for i in (0..n).step_by(2) {
             let got = a
                 .get(&ROOT, format!("k{i}"))

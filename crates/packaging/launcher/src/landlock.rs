@@ -89,7 +89,6 @@ mod tests {
 
     #[test]
     fn landlock_rules_and_rulesets_are_pinned() {
-        // Phase `plan_maps_ro_to_read_only_access`.
         {
             let ro = vec![PathBuf::from("/usr")];
             let rw = vec![];
@@ -99,7 +98,6 @@ mod tests {
             assert_eq!(plan[0].access, AccessFs::from_read(abi));
             assert!(!plan[0].access.contains(AccessFs::WriteFile));
         }
-        // Phase `plan_maps_rw_to_full_access_superset`.
         {
             let ro = vec![PathBuf::from("/a")];
             let rw = vec![PathBuf::from("/b")];
@@ -113,7 +111,6 @@ mod tests {
             );
             assert_eq!(read_write_access, AccessFs::from_all(abi));
         }
-        // Phase `concrete_file_rules_never_request_directory_rights`.
         {
             let temp = tempfile::NamedTempFile::new().expect("temp file");
             let fd = PathFd::new(temp.path()).expect("open temp file");

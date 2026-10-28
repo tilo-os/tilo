@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 
 use crate::auth::AuthenticatedPeer;
 use crate::environment_host::{
-    EnvironmentStreamError, MeterEvent, Metering, read_message, write_message,
+    EnvironmentStreamError, MessageReader, MeterEvent, Metering, read_message, write_message,
 };
 use crate::frame::{read_frame_or_eof, write_frame};
 use crate::mesh::DeviceKey;
@@ -68,7 +68,6 @@ struct Viewer {
 }
 
 impl WorkspaceEnvironments {
-    /// Sessions routed in this workspace.
     #[must_use]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
@@ -492,6 +491,7 @@ async fn serve_viewer(
         .add_viewer(member.user, frames_tx);
     drop(guard);
     write_message(send, &WindowFrame::Watching).await?;
+    let mut receive = MessageReader::new(&mut *receive);
     let outcome = async {
         loop {
             tokio::select! {
@@ -499,7 +499,7 @@ async fn serve_viewer(
                     let Some(frame) = frame else { return Ok(()) };
                     write_message(send, &frame).await?;
                 }
-                input = read_message::<_, WindowInput>(receive) => {
+                input = receive.next::<WindowInput>() => {
                     let Some(input) = input? else { return Ok(()) };
                     if !input.valid() {
                         continue;
@@ -654,10 +654,21 @@ async fn pump_launch(
         session,
         app,
     } = pump;
+    let mut kvm_frames = MessageReader::new(&mut kvm_receive);
     let code = loop {
         tokio::select! {
-            frame = read_message::<_, LegacyFrame>(&mut kvm_receive) => {
-                let Ok(Some(frame)) = frame else { break None };
+            frame = kvm_frames.next::<LegacyFrame>() => {
+                let frame = match frame {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => {
+                        tracing::warn!(launch = %hex::encode(launch), "the legacy worker ended the launch's stream without its exit");
+                        break None;
+                    }
+                    Err(error) => {
+                        tracing::warn!(launch = %hex::encode(launch), ?error, "the legacy worker's stream failed");
+                        break None;
+                    }
+                };
                 let window = match frame {
                     LegacyFrame::Started => WindowFrame::Launched {
                         launch,
@@ -670,7 +681,12 @@ async fn pump_launch(
                         continue;
                     }
                     LegacyFrame::Exited { code } => break code,
-                    LegacyFrame::Refused { .. } => break None,
+                    LegacyFrame::Refused { reason, detail } => {
+                        // The member's viewers hear only that it ended; the
+                        // worker's reason stays in the relay's log.
+                        tracing::warn!(launch = %hex::encode(launch), ?reason, %detail, "the legacy worker refused or lost the launch");
+                        break None;
+                    }
                 };
                 workspace
                     .lock()
