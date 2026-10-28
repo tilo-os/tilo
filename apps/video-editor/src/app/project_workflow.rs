@@ -473,6 +473,13 @@ impl VideoEditorApp {
         let name = self.export.suggested_filename(&self.project.name);
         let ext = self.export.container.extension();
         self.export_notice = Some("Choose where to save…".to_string());
+        if crate::export::renders_by_steps() {
+            // A page saves by contents: the file is chosen now, while the
+            // press that asked for it still lets the page open its Save
+            // dialog, and written when the render finishes.
+            self.export_save_rx = Some(portal::request_export_save(&name, ext));
+            return;
+        }
         self.export_dest_rx = Some(portal::request_export_destination(&name, ext));
     }
 
@@ -526,8 +533,51 @@ impl VideoEditorApp {
             }
             None => {}
         }
+        // A destination chosen for a render run a step at a time.
+        let chosen = match self
+            .export_save_rx
+            .as_ref()
+            .map(ui::portal::DestinationChannel::try_recv)
+        {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => None,
+            Some(answer) => {
+                self.export_save_rx = None;
+                Some(answer)
+            }
+        };
+        match chosen {
+            Some(Ok(ui::portal::DestinationOutcome::Chosen(destination))) => {
+                self.export_notice = None;
+                self.export_status = ExportStatus::Rendering { progress: 0.0 };
+                self.export_job = Some(Self::stepped_export(
+                    &self.project,
+                    self.export,
+                    destination,
+                ));
+            }
+            Some(Ok(ui::portal::DestinationOutcome::Cancelled)) => {
+                self.export_notice = None;
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err(
+                        "export destination selection was cancelled".into()
+                    ));
+                }
+            }
+            Some(Ok(ui::portal::DestinationOutcome::Failed(reason))) => {
+                self.export_notice = None;
+                self.export_status = ExportStatus::Failed { reason };
+            }
+            Some(Err(_)) => {
+                self.export_notice = None;
+                self.export_status = ExportStatus::Failed {
+                    reason: "the file chooser closed without a result".into(),
+                };
+            }
+            None => {}
+        }
         // Running render.
-        if let Some(job) = self.export_job.as_ref() {
+        if let Some(job) = self.export_job.as_mut() {
+            job.pump();
             let status = job.status();
             let finished = !matches!(status, ExportStatus::Rendering { .. });
             self.export_status = status;
@@ -535,6 +585,35 @@ impl VideoEditorApp {
                 self.export_job = None;
             }
         }
+    }
+
+    /// A render run a step at a time, saved to `destination`.
+    #[cfg(not(any(feature = "gst", feature = "decode")))]
+    fn stepped_export(
+        project: &crate::model::Project,
+        settings: crate::export::ExportSettings,
+        destination: ui::portal::SaveDestination,
+    ) -> crate::export::ExportJob {
+        crate::export::ExportJob::stepped(project, settings, destination)
+    }
+
+    /// A `GStreamer` build renders on a worker thread and never asks for a
+    /// destination this way; one that somehow did writes where it was told.
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the stepped build's signature, which keeps the destination"
+    )]
+    fn stepped_export(
+        project: &crate::model::Project,
+        settings: crate::export::ExportSettings,
+        destination: ui::portal::SaveDestination,
+    ) -> crate::export::ExportJob {
+        let path = destination.location().map_or_else(
+            || crate::export::output_path(&settings, project),
+            Into::into,
+        );
+        crate::export::start_export(project, &settings, path)
     }
 
     /// Whether a render is in flight (so Cancel means "stop it", not "close").

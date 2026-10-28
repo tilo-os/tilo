@@ -577,6 +577,23 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
         .clone()
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The device the page renders with, once its runtime has opened one.
+    /// Wasm runs no TLS destructors, so the drop-order hazard above does
+    /// not apply here.
+    static PAGE_GPU: std::cell::RefCell<Option<SharedGpu>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Lend apps the device a browser page renders with, so their own GPU work
+/// (the video editor's compositor) runs on it: a page cannot wait for a
+/// device of its own, and two devices would not share textures. `None` when
+/// the page lost or released it.
+#[cfg(target_arch = "wasm32")]
+pub fn provide_page_gpu(gpu: Option<SharedGpu>) {
+    PAGE_GPU.with_borrow_mut(|slot| *slot = gpu);
+}
+
 /// Handles to the process-wide shared wgpu device — the very same one
 /// every [`OffscreenRenderer`] draws through.
 ///
@@ -588,6 +605,7 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
 ///
 /// Both handles are `Arc`-backed inside wgpu, so cloning them out of the
 /// context is cheap and they stay valid once the lock is released.
+#[derive(Clone)]
 pub struct SharedGpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -607,6 +625,10 @@ pub struct SharedGpu {
 /// [`OffscreenError::ContextPoisoned`] when another thread panicked while
 /// holding the shared render-context lock.
 pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(gpu) = PAGE_GPU.with_borrow(Clone::clone) {
+        return Ok(gpu);
+    }
     // Acquiring the device waits on it, which a browser page cannot do: the
     // caller gets an error and falls back, instead of the page panicking.
     if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
