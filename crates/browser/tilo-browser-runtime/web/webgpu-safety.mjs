@@ -8,6 +8,12 @@
 //
 // `?unsafeWebKitGPU=0` on the page URL refuses WebGPU on WebKit again, as a
 // fallback; `?unsafeWebKitGPU=1` forces it on if the default is flipped back.
+//
+// A browser that offers no WebGPU at all is not refused: the desktop is drawn
+// on the CPU instead (`rendererChoice`, `web/cpu-present.mjs`), so the
+// visitors whose browsers ship with it off (Firefox on Linux) get the desktop
+// rather than instructions. `?unsafeWebKitGPU=0` is still a refusal: it asks
+// for no GPU, not for the slower renderer.
 
 export const WEBKIT_GUARD_DEFAULT = false;
 export const WEBKIT_WEBGPU_OVERRIDE = 'unsafeWebKitGPU';
@@ -37,9 +43,9 @@ export function webgpuRefusal(env = globalThis) {
 }
 
 /**
- * Which browser's settings a visitor without WebGPU would change. `firefox`
- * covers its forks too: LibreWolf resists fingerprinting and sends Firefox's
- * user agent unchanged, so the steps name both.
+ * Which browser's settings a visitor drawing on the CPU would change.
+ * `firefox` covers its forks too: LibreWolf resists fingerprinting and sends
+ * Firefox's user agent unchanged, so the setting is named the same way.
  */
 export function browserFamily({userAgent = '', vendor = '', maxTouchPoints = 0} = {}) {
   if (/\bFirefox\//.test(userAgent)) return 'firefox';
@@ -48,29 +54,24 @@ export function browserFamily({userAgent = '', vendor = '', maxTouchPoints = 0} 
   return 'other';
 }
 
-// What turns WebGPU on, per browser. Firefox and its forks have no per-site
-// WebGPU prompt: with `dom.webgpu.enabled` off (LibreWolf's default, and
-// Firefox's on Linux) the page has no `navigator.gpu` to ask through, so it
-// names the setting. LibreWolf does prompt for WebGL, which pages that fall
-// back from WebGPU to WebGL trigger; allowing it does not help this renderer.
-const ENABLE = Object.freeze({
-  firefox: [
-    'In Firefox or LibreWolf, open about:config in a new tab and accept the warning.',
-    'Set dom.webgpu.enabled to true, then press Try again.',
-    'A prompt to allow WebGL is not the same: Tilo needs WebGPU.',
-  ],
-  safari: ['Update to Safari 26 or later, where WebGPU is on.', 'On an older Safari, turn on Develop › Feature Flags › WebGPU.'],
-  chromium: ['Check that hardware acceleration is on, in the browser’s system settings.', 'On Linux, if it stays off: open chrome://flags, enable “Unsafe WebGPU Support”, and relaunch.'],
-  other: ['Open this page in a current Chrome, Edge, Firefox or Safari.'],
+// How a page that must draw without WebGPU says so, per browser. Firefox and
+// its forks have no per-site WebGPU prompt: with `dom.webgpu.enabled` off
+// (LibreWolf's default, and Firefox's on Linux) the page has no
+// `navigator.gpu` at all, so the setting is named. LibreWolf also prompts for
+// WebGL, which its visitors may take for the fix: allowing it does not make
+// the desktop faster.
+const ON_CPU = Object.freeze({
+  firefox: 'Drawing the desktop on the CPU: WebGPU is off in this browser (dom.webgpu.enabled in about:config turns it on, for a faster desktop).',
+  safari: 'Drawing the desktop on the CPU: this Safari has no WebGPU (Safari 26 and later have it, for a faster desktop).',
+  chromium: 'Drawing the desktop on the CPU: this browser gave the page no WebGPU (hardware acceleration, or chrome://flags’ Unsafe WebGPU Support, turns it on).',
+  other: 'Drawing the desktop on the CPU, without WebGPU: it works, more slowly.',
 });
 
 // What to check when WebGPU is on but no adapter came back; browsers not
-// listed have the same steps as for turning it on.
+// listed have the same reason as for turning it on.
 const NO_ADAPTER = Object.freeze({
-  firefox: [
-    'Check that hardware acceleration is on, under Settings › General › Performance.',
-    'If your graphics card is blocklisted for WebGPU, set gfx.webgpu.ignore-blocklist to true in about:config, then press Try again.',
-  ],
+  firefox: 'Drawing the desktop on the CPU: WebGPU is on, but this browser offered no graphics adapter (gfx.webgpu.ignore-blocklist in about:config may help, and hardware acceleration under Settings › General › Performance).',
+  chromium: 'Drawing the desktop on the CPU: WebGPU is on, but this browser offered no graphics adapter (hardware acceleration, or chrome://flags, may help).',
 });
 
 /** How long the page waits for the browser's adapter answer before it
@@ -80,38 +81,39 @@ const NO_ADAPTER = Object.freeze({
 export const ADAPTER_ANSWER_MS = 10_000;
 const LATE = Symbol('late');
 
+/** [`pageRenderer`]'s answer, once asked. */
+let cached;
+
 /**
- * Why this browser cannot draw Tilo, or `undefined` when it can:
- * `{reason, steps}`, the steps saying how to turn WebGPU on here. The desktop
- * renders with Vello's WebGPU compute pipeline and has no CPU or WebGL
- * fallback, so this asks for an adapter as the renderer will, before the page
- * takes a seat, or takes the one the page asked for first
- * (`__tiloAdapter`). An answer later than `answerMs` counts as available.
- * Never throws.
+ * How this page draws Tilo: `{renderer: 'webgpu'}` through vello's compute
+ * pipeline on the GPU, or `{renderer: 'cpu', reason}` with the scene replayed
+ * on the CPU into the canvas (`web/cpu-present.mjs`), which is what a browser
+ * with no WebGPU or no adapter gets. Never throws, and asks for an adapter
+ * exactly as the renderer will (`__tiloAdapter` is the answer the entry page
+ * already has, if it asked); an answer later than `answerMs` counts as
+ * available, so a busy GPU process does not demote a page that has a GPU.
  */
-export async function rendererUnavailable(env = globalThis, {answerMs = ADAPTER_ANSWER_MS} = {}) {
-  const refusal = webgpuRefusal(env);
-  if (refusal) return {reason: refusal, steps: []};
+export async function rendererChoice(env = globalThis, {answerMs = ADAPTER_ANSWER_MS} = {}) {
   const navigator = env.navigator ?? {};
   const family = browserFamily(navigator);
-  if (!navigator.gpu) return {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps: ENABLE[family]};
+  if (!navigator.gpu) return {renderer: 'cpu', reason: ON_CPU[family]};
   let adapter = null;
   let timer;
-  // An answer that does not come is no refusal: the page goes on, and the
-  // renderer asks again and says how its own start goes.
   const late = new Promise(resolve => { timer = setTimeout(() => resolve(LATE), answerMs); });
   try {
     adapter = await Promise.race([env.__tiloAdapter ?? navigator.gpu.requestAdapter(), late]);
   } catch { /* Same as no adapter. */ } finally { clearTimeout(timer); }
   if (adapter === LATE) {
-    console.warn(`WebGPU: no adapter answer after ${answerMs / 1000} s; going on`);
-    return undefined;
+    console.warn(`WebGPU: no adapter answer after ${answerMs / 1000} s; drawing on the GPU`);
+    return {renderer: 'webgpu'};
   }
-  if (!adapter) {
-    return {
-      reason: 'Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter.',
-      steps: NO_ADAPTER[family] ?? ENABLE[family],
-    };
-  }
-  return undefined;
+  if (!adapter) return {renderer: 'cpu', reason: NO_ADAPTER[family] ?? ON_CPU[family]};
+  return {renderer: 'webgpu'};
+}
+
+/** The renderer this page draws with, chosen once however many mounts ask:
+ * the adapter request is the page's own, and its answer serves them all. */
+export function pageRenderer(env = globalThis, options) {
+  cached ??= rendererChoice(env, options);
+  return cached;
 }

@@ -58,7 +58,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
-    .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
+    .replace("import {webgpuRefusal} from './webgpu-safety.mjs';", 'const webgpuRefusal = () => undefined;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.

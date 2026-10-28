@@ -32,7 +32,7 @@ import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} fro
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
-import {rendererUnavailable} from './webgpu-safety.mjs';
+import {webgpuRefusal} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
@@ -709,6 +709,8 @@ export async function startEntryPage({mode}) {
       // What graphics start-up waits on while the first frame is late
       // (device, pipelines, surface, first-frame), for tests and tools.
       if (state.gpuStep) root.gpuStep = state.gpuStep;
+      // Which renderer draws the frames: the page's WebGPU device, or the CPU.
+      if (state.renderer) root.renderer = state.renderer;
       // Whether that step stopped moving on: the page offers Try again
       // while it keeps waiting (arrival.mjs).
       if ('gpuStalled' in state || state.phase !== 'gpu-pending') document.documentElement.toggleAttribute('data-gpu-stalled', state.gpuStalled === true);
@@ -884,15 +886,16 @@ export async function startEntryPage({mode}) {
         runtime, requireExistingCertificate: true}));
     },
   };
-  const unavailable = await rendererUnavailable();
-  if (unavailable) {
-    // Said before admission, so a browser that cannot draw the desktop
-    // never takes a seat or leaves a person behind.
+  // A page the desktop's renderer is turned off for (`?unsafeWebKitGPU=0`)
+  // is refused before admission, so it never takes a seat or leaves a person
+  // behind. A browser with no WebGPU is not: the desktop draws on the CPU.
+  const refusal = webgpuRefusal();
+  if (refusal) {
     tell('unsupported');
     arrive('stopped');
     document.documentElement.dataset.entry = 'unsupported';
     status.textContent = '';
-    rendererCard(unavailable);
+    rendererCard({reason: refusal, steps: []});
     return;
   }
   try {

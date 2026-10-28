@@ -27,6 +27,8 @@ use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
+use cpu::Cpu;
+
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
@@ -127,6 +129,16 @@ fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) 
         });
         false
     })
+}
+
+/// Answer the apps' waiting pixel requests with `why`, for a page with no
+/// device to render a picture on: they read the refusal on its next frame.
+fn refuse_pixels(why: &str) {
+    PIXELS.with_borrow_mut(|host| {
+        if let Some(host) = host {
+            host.refuse(why);
+        }
+    });
 }
 
 /// Schedule a frame for every desktop: an application posted or withdrew a
@@ -282,6 +294,9 @@ struct Request {
     fonts: Vec<StartupFont>,
     hydrated: JsValue,
     status: Function,
+    /// What presents this mount's frames when the browser offers no WebGPU
+    /// (`web/cpu-present.mjs`); `null` when the page draws on the device.
+    presenter: JsValue,
 }
 
 /// The page's one WebGPU device and vello renderer, shared by every mount.
@@ -318,13 +333,20 @@ impl SharedGpu {
     }
 }
 
+/// What one frame draws into: a texture of the shared device's surface, or
+/// the page's canvas, drawn on the CPU where the browser offers no WebGPU.
+enum FrameTarget {
+    Gpu(wgpu::SurfaceTexture),
+    Cpu,
+}
+
 /// One mount's surface on the shared device.
 struct Gpu {
     shared: Rc<RefCell<SharedGpu>>,
     surface: vello::util::RenderSurface<'static>,
-    /// The surface's target keeps the last presented frame; each frame
-    /// repaints only what changed since, the way the native hosts do.
-    retained: Retained,
+    /// Rasterizes each frame into the surface's target: only what changed
+    /// since the last one, the way the native hosts do.
+    raster: ui::retained_raster::RetainedRaster,
     /// Frames submitted that the GPU has not finished.
     pacing: crate::frame_pacing::FramePacing,
 }
@@ -336,13 +358,41 @@ impl Gpu {
 
     /// Whether the target shows a frame drawn before an overflow of the
     /// shared renderer's bump buffers was collected.
-    fn shows_lost_frame(&self) -> bool {
+    fn shows_lost_frame(&self, retained: &Retained) -> bool {
         self.shared.try_borrow().is_ok_and(|shared| {
-            self.retained
+            retained
                 .frames
                 .shows_lost_geometry(shared.overflows.collected())
         })
     }
+}
+
+/// Repaint `frame` onto `gpu`'s target, only where it changed, ready to be
+/// submitted to the swapchain.
+fn rasterize_on_gpu(
+    gpu: &mut Gpu,
+    frame: ui::retained_raster::FrameContent<'_>,
+) -> Result<u64, String> {
+    let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
+    let shared = &mut *shared_guard;
+    let handle = shared
+        .cx
+        .devices
+        .get(gpu.surface.dev_id)
+        .ok_or("WebGPU device missing")?;
+    let target = ui::retained_raster::RetainedTarget {
+        texture: &gpu.surface.target_texture,
+        view: &gpu.surface.target_view,
+    };
+    shared
+        .video_pictures
+        .copy(&handle.device, &handle.queue, &mut shared.renderer);
+    gpu.raster.repaint(
+        (&handle.device, &handle.queue),
+        &mut shared.renderer,
+        target,
+        frame,
+    )
 }
 
 /// Collect the shared renderer's finished bump counters without waiting
@@ -410,6 +460,12 @@ struct Mount {
     remote_pointers: Vec<pointers::RemotePointer>,
     desktop: Option<Desktop>,
     gpu: Option<Gpu>,
+    /// What draws this mount's frames when the browser offers no WebGPU: the
+    /// scene replayed on the CPU into the page's canvas.
+    cpu: Option<Cpu>,
+    /// What the mount's target holds: the frame presented last, which each
+    /// frame repaints only where it changed, whichever target draws it.
+    retained: Retained,
     pending: bool,
     background_retry: Option<ui::time::Instant>,
     feedback_retry: Option<ui::time::Instant>,
@@ -678,7 +734,7 @@ impl Mount {
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
-            gpu_ready: self.gpu.is_some(),
+            gpu_ready: self.gpu.is_some() || self.cpu.is_some(),
         };
         let mut attempted = false;
         let result = crate::background_work::run(p, || {
@@ -895,7 +951,10 @@ pub fn provide_startup_font(name: String, bytes: Vec<u8>, sha256: String) {
 /// `device`, `room`, `author`, `instance`, optional `record`, `mac`); its
 /// startup fonts are those handed over by [`provide_startup_font`] since the
 /// last mount; `hydrated` holds the namespace's stored rows. Statuses arrive
-/// on `status` as JSON text.
+/// on `status` as JSON text. `presenter` draws the canvas where the browser
+/// offers no WebGPU: `{resize(width, height), present(x, y, width, height,
+/// pixels)}` over the mount's canvas element, or `null` to draw on the
+/// device.
 ///
 /// # Errors
 ///
@@ -905,6 +964,7 @@ pub fn mount(
     canvas: web_sys::HtmlCanvasElement,
     config: &str,
     hydrated: JsValue,
+    presenter: JsValue,
     status: Function,
 ) -> Result<u64, JsValue> {
     admit_runtime()?;
@@ -930,6 +990,7 @@ pub fn mount(
                 fonts: STARTUP_FONTS.take(),
                 hydrated,
                 status,
+                presenter,
             },
         )
     });
@@ -1328,6 +1389,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         mut fonts,
         hydrated,
         status,
+        presenter,
     } = request;
     // Apps can measure shared controls while constructing their views. Publish
     // the verified browser fonts first: WASM has no system fonts to fall back
@@ -1487,7 +1549,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let window_ms = config
         .semantics_window_ms
         .unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS);
-    let mount = Mount {
+    let mut mount = Mount {
         metrics: RefCell::default(),
         semantics: RefCell::new(crate::semantics_status::SemanticsGate::new(
             ui::time::Duration::from_millis(window_ms),
@@ -1503,6 +1565,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         remote_pointers: Vec::new(),
         desktop,
         gpu: None,
+        cpu: None,
+        retained: Retained::new(),
         pending: true,
         background_retry: None,
         feedback_retry: None,
@@ -1539,9 +1603,31 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
         cursor: winit::window::CursorIcon::Default,
     };
+    // A page whose browser offers no WebGPU hands over what presents its
+    // canvas (`web/cpu-present.mjs`): there is no device to open, and the
+    // CPU rasterizes this mount's frames into the page's canvas.
+    let on_cpu = !presenter.is_null() && !presenter.is_undefined();
+    if on_cpu {
+        mount.cpu = Some(Cpu::new(presenter));
+        mount.viewport.surface_installed();
+        mount.queue_resize();
+        mount.pending = true;
+    }
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
-    emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window, caps);
+    if on_cpu {
+        emit(
+            &status,
+            &serde_json::json!({"phase":"gpu-pending","id":id,"renderer":"cpu"}),
+        );
+        // Set up outside winit dispatch, as a device would be: wake the idle
+        // loop so the first frame draws.
+        if let Ok(wake) = proxy() {
+            let _ = wake.send_event(id);
+        }
+    } else {
+        emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
+        initialize_gpu(id, 1, window, caps);
+    }
     wasm_bindgen_futures::spawn_local(watch_first_frame(id));
     Ok(())
 }
@@ -1862,7 +1948,7 @@ async fn set_up_gpu(setup: GpuSetup) {
                 m.gpu = Some(Gpu {
                     shared,
                     surface,
-                    retained: Retained::new(),
+                    raster: ui::retained_raster::RetainedRaster::new(false),
                     pacing: crate::frame_pacing::FramePacing::default(),
                 });
                 m.viewport.surface_installed();
@@ -1916,6 +2002,91 @@ impl Mount {
         }
     }
 
+    /// Acquire what this frame draws into, before laying it out: the
+    /// surface's next texture on WebGPU (configuring the canvas if the
+    /// viewport changed, which keeps configure -> acquire -> submit ->
+    /// present in this synchronous redraw callback), or nothing to acquire
+    /// on the CPU, where the page's canvas is the target. `None` when no
+    /// texture came back this time: the caller asks for another redraw.
+    fn acquire_frame(&mut self, viewport: Viewport) -> Result<Option<FrameTarget>, String> {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Ok(Some(FrameTarget::Cpu));
+        };
+        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
+            // Another mount's GPU setup holds the shared device for a moment.
+            self.held = "the shared device busy";
+            return Ok(None);
+        };
+        let shared = &mut *shared_guard;
+        let handle = shared
+            .cx
+            .devices
+            .get(gpu.surface.dev_id)
+            .ok_or("WebGPU device missing")?;
+        if let Some(reason) = handle.loss_monitor().reason() {
+            return Err(format!(
+                "WebGPU device lost: {reason}; call recover to recreate the renderer"
+            ));
+        }
+        // The target may show a frame the renderer drew with geometry
+        // missing: this one repaints it whole. It still shows that frame
+        // until then, which a skipped frame presents again.
+        self.retained
+            .frames
+            .note_overflows(shared.overflows.collected());
+        // Configuration changes canvas.width/height on WebGPU, clearing its
+        // displayed image, so it happens here, with no equal-size resize.
+        if self
+            .viewport
+            .needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height)
+        {
+            shared
+                .cx
+                .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+            // A new target texture holds nothing of the last frame.
+            gpu.raster.invalidate();
+            self.retained.forget();
+        }
+        let mut acquired = gpu.surface.surface.get_current_texture();
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
+            && self.viewport.recover_outdated()
+        {
+            shared.cx.configure_surface(&gpu.surface);
+            gpu.raster.invalidate();
+            self.retained.forget();
+            acquired = gpu.surface.surface.get_current_texture();
+        }
+        Ok(match acquired {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(FrameTarget::Gpu(t)),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.held = "an outdated surface";
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                self.held = "a surface texture that timed out";
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.held = "an occluded surface";
+                None
+            }
+            other => return Err(format!("WebGPU surface unavailable: {other:?}")),
+        })
+    }
+
+    /// The target no longer holds the last presented frame (a new texture,
+    /// a resized canvas, a theme): the next frame repaints all of it.
+    fn forget_frame(&mut self) {
+        self.retained.forget();
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.raster.invalidate();
+        }
+        if let Some(cpu) = self.cpu.as_mut() {
+            cpu.invalidate();
+        }
+    }
+
     // ResizeObserver/winit is the sole source of viewport notifications.
     // Reading the pair again at redraw also covers scale/size event ordering
     // and changes that occurred while GPU initialization was pending.
@@ -1961,10 +2132,10 @@ impl Mount {
         }
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
-        let Some(gpu) = self.gpu.as_mut() else {
+        if self.gpu.is_none() && self.cpu.is_none() {
             self.held = "no surface";
             return Ok(());
-        };
+        }
         let viewport = self.viewport.requested();
         // What asked for this frame, when frame metrics are on.
         let mut reasons = self.metrics.borrow().enabled().then(|| {
@@ -2018,7 +2189,10 @@ impl Mount {
                 );
             }
         }
-        let lost = gpu.shows_lost_frame();
+        let lost = self
+            .gpu
+            .as_ref()
+            .is_some_and(|gpu| gpu.shows_lost_frame(&self.retained));
         if lost && let Some(reasons) = &mut reasons {
             reasons.push("a frame that lost geometry".into());
         }
@@ -2029,12 +2203,19 @@ impl Mount {
             || lost;
         // Pixels an app asked for move on every frame until they are there,
         // whether or not this frame draws.
-        if pixels_waiting()
-            && let Ok(shared) = gpu.shared.try_borrow()
-            && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
-        {
-            let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
-            self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
+        if pixels_waiting() {
+            if let Some(gpu) = self.gpu.as_ref()
+                && let Ok(shared) = gpu.shared.try_borrow()
+                && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
+            {
+                let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
+                self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
+            } else if self.gpu.is_none() {
+                // A page drawn on the CPU has no device for a picture beside
+                // the frame: the app is told, rather than left waiting.
+                refuse_pixels("this page draws without WebGPU");
+                self.pending = true;
+            }
         }
         if !self.pending {
             // A skipped layout waits for input or a wake: say that, not idleness.
@@ -2043,83 +2224,25 @@ impl Mount {
             }
             return Ok(());
         }
-        if !gpu.pacing.may_draw() {
+        if self.gpu.as_ref().is_some_and(|gpu| !gpu.pacing.may_draw()) {
             // The GPU still draws earlier frames: what changed waits for
             // the frame after it caught up, rather than queue behind them.
             self.held = "the GPU drawing earlier frames";
             self.window.request_redraw();
             return Ok(());
         }
-        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
-            // Another mount's GPU setup holds the shared device for a moment.
-            self.held = "the shared device busy";
+        let Some(target) = self.acquire_frame(viewport)? else {
             self.window.request_redraw();
             return Ok(());
         };
-        let shared = &mut *shared_guard;
-        let handle = shared
-            .cx
-            .devices
-            .get(gpu.surface.dev_id)
-            .ok_or("WebGPU device missing")?;
-        if let Some(reason) = handle.loss_monitor().reason() {
-            return Err(format!(
-                "WebGPU device lost: {reason}; call recover to recreate the renderer"
-            ));
-        }
-        // The target may show a frame the renderer drew with geometry
-        // missing: this one repaints it whole. It still shows that frame
-        // until then, which a skipped frame presents again.
-        gpu.retained
-            .frames
-            .note_overflows(shared.overflows.collected());
-        // Configuration changes canvas.width/height on WebGPU, clearing its
-        // displayed image. Keep configure -> acquire -> submit -> present in
-        // this synchronous redraw callback, with no equal-size resize.
-        if self
-            .viewport
-            .needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height)
-        {
-            shared
-                .cx
-                .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
-            // A new target texture holds nothing of the last frame.
-            gpu.retained.forget();
-        }
-        let mut acquired = gpu.surface.surface.get_current_texture();
-        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
-            && self.viewport.recover_outdated()
-        {
-            shared.cx.configure_surface(&gpu.surface);
-            gpu.retained.forget();
-            acquired = gpu.surface.surface.get_current_texture();
-        }
-        let output = match acquired {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.held = "an outdated surface";
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                self.held = "a surface texture that timed out";
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                self.held = "an occluded surface";
-                None
-            }
-            other => return Err(format!("WebGPU surface unavailable: {other:?}")),
-        };
-        drop(shared_guard);
         let passes_before = self.frame.relayout_frames();
         let frame = &mut self.frame;
         // A layout that fails skips this frame's drawing, as every host
         // does: the last frame stays on screen and input keeps landing.
         let mut unsettled = None;
-        let Some(output) = self
+        let Some(target) = self
             .viewport
-            .apply_for_acquired_texture(output, |viewport| {
+            .apply_for_acquired_texture(Some(target), |viewport| {
                 frame.set_input_scale(viewport.dpr)?;
                 unsettled = frame.resize(viewport.logical_size()).err();
                 Ok::<_, String>(())
@@ -2247,7 +2370,7 @@ impl Mount {
             self.pending = !self.skipped_frame;
             self.skipped_frame = true;
             self.held = "a layout that did not settle";
-            return self.keep_last_frame(output);
+            return self.keep_last_frame(target);
         }
         self.skipped_frame = false;
         let stage = self.metric_start();
@@ -2262,7 +2385,7 @@ impl Mount {
             }
             self.pending = false;
             self.held = "a scene too large to draw";
-            return self.keep_last_frame(output);
+            return self.keep_last_frame(target);
         }
         self.oversized_scene = false;
         let mut physical = vello::Scene::new();
@@ -2272,56 +2395,44 @@ impl Mount {
         );
         self.metric_end("scene", stage);
         let stage = self.metric_start();
-        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-        let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
-        let shared = &mut *shared_guard;
-        let handle = shared
-            .cx
-            .devices
-            .get(gpu.surface.dev_id)
-            .ok_or("WebGPU device missing")?;
         let key = ui::retained_raster::TargetKey {
             width: viewport.width,
             height: viewport.height,
             to_device: ui::scale::composite_transform(viewport.dpr),
             base_color: frame.background,
-            generation: gpu.retained.generation,
+            generation: self.retained.generation,
         };
         let parts = self.frame.scene_parts();
         // Compared with the frame the target shows, command by command: a
         // change no part proves is bounded (an unknown one) repaints it all.
-        let repaint = gpu.retained.frames.repaint(frame.scene, parts, key);
+        let repaint = self.retained.frames.repaint(frame.scene, parts, key);
         let (damage, full_redraw) = match &repaint {
             ui::retained_raster::Repaint::Full(_) => (&[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
         };
-        let target = ui::retained_raster::RetainedTarget {
-            texture: &gpu.surface.target_texture,
-            view: &gpu.surface.target_view,
+        let content = ui::retained_raster::FrameContent {
+            scene: &physical,
+            width: viewport.width,
+            height: viewport.height,
+            base_color: frame.background,
+            damage_regions: damage,
+            scroll_copies: &[],
+            full_redraw,
+            backdrop: &ui::backdrop::BackdropFrame::default(),
         };
-        shared
-            .video_pictures
-            .copy(&handle.device, &handle.queue, &mut shared.renderer);
-        let rasterized = gpu.retained.raster.repaint(
-            (&handle.device, &handle.queue),
-            &mut shared.renderer,
-            target,
-            ui::retained_raster::FrameContent {
-                scene: &physical,
-                width: viewport.width,
-                height: viewport.height,
-                base_color: frame.background,
-                damage_regions: damage,
-                scroll_copies: &[],
-                full_redraw,
-                backdrop: &ui::backdrop::BackdropFrame::default(),
-            },
-        );
+        // The same scene either way: drawn by vello's compute pipeline on the
+        // shared device, or replayed on the CPU and presented by the page.
+        let rasterized = if let Some(cpu) = self.cpu.as_mut() {
+            cpu.present(content)
+        } else {
+            let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+            rasterize_on_gpu(gpu, content)
+        };
         let rasterized = match rasterized {
             Ok(pixels) => pixels,
             Err(error) => {
                 // What the target holds after a failed raster is unknown.
-                gpu.retained.forget();
+                self.forget_frame();
                 return Err(error);
             }
         };
@@ -2358,32 +2469,19 @@ impl Mount {
                 .borrow_mut()
                 .damaged(describe_repaint(&repaint, window));
         }
-        gpu.retained.frames.presented(frame.scene, parts, key);
+        self.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
-        check_retained(
-            &mut gpu.retained,
-            &gpu.surface,
-            &mut shared.renderer,
-            handle,
-            &physical,
-            key,
-            full_redraw,
-        );
-        ui::gpu::submit_target_to_surface(
-            &handle.device,
-            &handle.queue,
-            &gpu.surface,
-            &output.texture,
-        );
-        let target = &gpu.surface.target_texture;
-        crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
-        let done = gpu.pacing.submitted();
-        handle.queue.on_submitted_work_done(move || done.finished());
-        // The first frame is out: the pipelines it did not need compile once
-        // the page has stayed a while (`compile_deferred_pipelines_later`).
-        drop(shared_guard);
-        compile_deferred_pipelines_later();
-        output.present();
+        self.check_retained_frame(&physical, key, full_redraw);
+        // A CPU frame is already on the page's canvas, presented region by
+        // region by `Cpu::present`.
+        if let FrameTarget::Gpu(output) = target {
+            self.submit_frame(&output.texture, viewport.dpr)?;
+            // The first frame is out: the pipelines it did not need compile
+            // once the page has stayed a while
+            // (`compile_deferred_pipelines_later`).
+            compile_deferred_pipelines_later();
+            output.present();
+        }
         self.presented_capture_protected = self.frame.capture_protected();
         self.metric_end(render_stage, stage);
         self.viewport.did_present();
@@ -2405,14 +2503,71 @@ impl Mount {
         Ok(())
     }
 
-    /// Present the frame the target already holds on `output`, drawing
-    /// nothing: a texture once acquired shows whatever it holds, so a frame
-    /// skipped after acquiring it would otherwise blank the canvas. A
-    /// target that no longer holds the last frame (a resize made it anew)
-    /// has nothing to show again.
-    fn keep_last_frame(&mut self, output: wgpu::SurfaceTexture) -> Result<(), String> {
+    /// Put the frame the device's target now holds on `output`, the
+    /// acquired texture, and count it against the frames the GPU may still
+    /// be drawing. The page's crop service reads the target from here too.
+    fn submit_frame(&mut self, output: &wgpu::Texture, dpr: f64) -> Result<(), String> {
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-        if gpu.retained.frames.shows_frame() {
+        let shared = gpu.shared.try_borrow().map_err(|_| "shared GPU busy")?;
+        let handle = shared
+            .cx
+            .devices
+            .get(gpu.surface.dev_id)
+            .ok_or("WebGPU device missing")?;
+        ui::gpu::submit_target_to_surface(&handle.device, &handle.queue, &gpu.surface, output);
+        crate::feedback_crops::service(
+            &handle.device,
+            &handle.queue,
+            &gpu.surface.target_texture,
+            dpr,
+        );
+        let done = gpu.pacing.submitted();
+        handle.queue.on_submitted_work_done(move || done.finished());
+        Ok(())
+    }
+
+    /// Debug builds compare a frame repainted in part with a full render.
+    #[cfg(debug_assertions)]
+    fn check_retained_frame(
+        &mut self,
+        physical: &vello::Scene,
+        key: ui::retained_raster::TargetKey,
+        full_redraw: bool,
+    ) {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
+            return;
+        };
+        let shared = &mut *shared_guard;
+        let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id) else {
+            return;
+        };
+        check_retained(
+            &mut self.retained,
+            &gpu.surface,
+            &mut shared.renderer,
+            handle,
+            physical,
+            key,
+            full_redraw,
+        );
+    }
+
+    /// Present the frame the target already holds, drawing nothing: a
+    /// texture once acquired shows whatever it holds, so a frame skipped
+    /// after acquiring it would otherwise blank the canvas. A target that
+    /// no longer holds the last frame (a resize made it anew) has nothing to
+    /// show again. The page's canvas keeps the last frame it was given
+    /// without being told.
+    fn keep_last_frame(&mut self, target: FrameTarget) -> Result<(), String> {
+        let FrameTarget::Gpu(output) = target else {
+            self.viewport.did_present();
+            return Ok(());
+        };
+        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+        if self.retained.frames.shows_frame() {
             let shared = gpu.shared.try_borrow().map_err(|_| "shared GPU busy")?;
             let handle = shared
                 .cx
@@ -2621,7 +2776,13 @@ impl Mount {
             "layoutGeneration": self.frame.relayout_frames(),
             "logicalSize": applied.logical_size(),
             "dpr": applied.dpr,
-            "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
+            // What drew the frame, so the page can say so and its tests know.
+            "renderer": if self.cpu.is_some() { "cpu" } else { "webgpu" },
+            "surfaceSize": match (&self.gpu, &self.cpu) {
+                (Some(g), _) => Some([g.surface.config.width, g.surface.config.height]),
+                (None, Some(_)) => Some([applied.width, applied.height]),
+                (None, None) => None,
+            },
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
@@ -2655,6 +2816,8 @@ impl Mount {
         emit_text(&self.status, &text);
     }
 }
+
+mod cpu;
 
 /// Deliver an IME event (`start`, `preedit`, `commit`, `end`) from the
 /// page's hidden text editor.
@@ -2706,6 +2869,13 @@ pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn recover(id: u64) -> Result<(), JsValue> {
     with_mount(id, |m| {
+        if m.cpu.is_some() {
+            // A CPU target has no device to lose or recreate.
+            m.error = None;
+            m.pending = true;
+            m.window.request_redraw();
+            return Ok(());
+        }
         unconfigure(&m.canvas);
         if let Some(gpu) = m.gpu.take() {
             release_gpu(id, gpu);

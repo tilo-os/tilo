@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {browserFamily, isWebKit, rendererUnavailable, webgpuRefusal, WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
+import {browserFamily, isWebKit, rendererChoice, webgpuRefusal, WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 
 const SAFARI_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15';
 const CHROME_MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
@@ -45,7 +45,7 @@ const withGpu = (userAgent, gpu, options) => {
   return {...base, navigator: {...base.navigator, gpu}};
 };
 
-test('browsers are told apart for the setting that turns WebGPU on', () => {
+test('browsers are told apart for how they are told the desktop is on the CPU', () => {
   assert.equal(browserFamily({userAgent: LIBREWOLF}), 'firefox');
   assert.equal(browserFamily({userAgent: FIREFOX_MAC}), 'firefox');
   assert.equal(browserFamily({userAgent: CHROME_MAC, vendor: 'Google Inc.'}), 'chromium');
@@ -53,56 +53,54 @@ test('browsers are told apart for the setting that turns WebGPU on', () => {
   assert.equal(browserFamily({userAgent: SAFARI_MAC, vendor: 'Apple Computer, Inc.'}), 'safari');
 });
 
-test('without navigator.gpu the visitor is told the setting to change, not that joining failed', async () => {
-  const off = await rendererUnavailable(env(LIBREWOLF));
-  assert.match(off.reason, /WebGPU.*turned off/);
-  assert.ok(off.steps.some(step => step.includes('dom.webgpu.enabled') && step.includes('Try again')));
-  assert.ok(off.steps.some(step => step.includes('LibreWolf')), 'LibreWolf cannot be told from Firefox, so both are named');
-  assert.ok(off.steps.some(step => step.includes('WebGL')), "LibreWolf's WebGL prompt is not mistaken for the fix");
-  assert.ok((await rendererUnavailable(env(CHROME_LINUX))).steps.some(step => step.includes('chrome://flags')));
+// Firefox on Linux, and LibreWolf anywhere, have no navigator.gpu: the page
+// draws the desktop on the CPU instead of the refusal it used to show.
+test('a browser without WebGPU draws on the CPU, and Firefox is told the setting that would speed it up', async () => {
+  const firefox = await rendererChoice(env(LIBREWOLF));
+  assert.equal(firefox.renderer, 'cpu');
+  assert.match(firefox.reason, /dom\.webgpu\.enabled/);
+  assert.ok(!/WebGL/.test(firefox.reason), 'a WebGL prompt is not offered as the fix');
+  const chromium = await rendererChoice(env(CHROME_LINUX));
+  assert.equal(chromium.renderer, 'cpu');
+  assert.match(chromium.reason, /hardware acceleration|chrome:\/\/flags/);
 });
 
-test('Firefox with WebGPU on but no adapter is pointed at acceleration and the blocklist, not the setting it already has', async () => {
-  const none = await rendererUnavailable(withGpu(LIBREWOLF, {requestAdapter: async () => null}));
+test('WebGPU on but no adapter is the CPU too, pointed at acceleration and the blocklist', async () => {
+  const none = await rendererChoice(withGpu(LIBREWOLF, {requestAdapter: async () => null}));
+  assert.equal(none.renderer, 'cpu');
   assert.match(none.reason, /no graphics adapter/);
-  assert.ok(none.steps.some(step => step.includes('gfx.webgpu.ignore-blocklist')));
-  assert.ok(!none.steps.some(step => step.includes('dom.webgpu.enabled')));
+  assert.match(none.reason, /gfx\.webgpu\.ignore-blocklist/);
 });
 
-test('an adapter request that yields nothing or throws is unavailable; an adapter is enough', async () => {
-  assert.match((await rendererUnavailable(withGpu(CHROME_LINUX, {requestAdapter: async () => null}))).reason, /no graphics adapter/);
-  assert.ok(await rendererUnavailable(withGpu(CHROME_LINUX, {requestAdapter: async () => { throw Error('lost'); }})));
-  assert.equal(await rendererUnavailable(withGpu(CHROME_LINUX, {requestAdapter: async () => ({})})), undefined);
+test('an adapter request that yields nothing or throws is the CPU; an adapter is the GPU', async () => {
+  assert.equal((await rendererChoice(withGpu(CHROME_LINUX, {requestAdapter: async () => null}))).renderer, 'cpu');
+  assert.equal((await rendererChoice(withGpu(CHROME_LINUX, {requestAdapter: async () => { throw Error('lost'); }}))).renderer, 'cpu');
+  assert.deepEqual(await rendererChoice(withGpu(CHROME_LINUX, {requestAdapter: async () => ({})})), {renderer: 'webgpu'});
 });
 
-test('the WebKit fallback flag refuses before any adapter is asked for', async () => {
-  const asked = [];
-  const refused = withGpu(SAFARI_MAC, {requestAdapter: async () => { asked.push(1); return {}; }}, {search: '?unsafeWebKitGPU=0'});
-  assert.deepEqual(await rendererUnavailable(refused), {reason: WEBKIT_WEBGPU_REFUSAL, steps: []});
-  assert.equal(asked.length, 0);
-});
-
-test('the check takes the adapter the entry page asked for while its modules loaded', async () => {
+// Catches the page probing twice, or the renderer asking again: the adapter
+// request is the page's, and its answer serves every mount.
+test('the choice takes the adapter the entry page asked for while its modules loaded', async () => {
   const asked = [];
   const early = {...withGpu(CHROME_LINUX, {requestAdapter: async () => { asked.push(1); return {}; }}), __tiloAdapter: Promise.resolve(null)};
-  assert.match((await rendererUnavailable(early)).reason, /no graphics adapter/);
-  assert.equal(await rendererUnavailable({...early, __tiloAdapter: Promise.resolve({})}), undefined);
+  assert.equal((await rendererChoice(early)).renderer, 'cpu');
+  assert.equal((await rendererChoice({...early, __tiloAdapter: Promise.resolve({})})).renderer, 'webgpu');
   assert.equal(asked.length, 0);
 });
 
 // Catches a GPU process too busy to answer (several pages starting at once
-// on a software rasteriser) leaving the page on "Loading Tilo…" for good.
-test('an adapter answer that never comes does not hold the page', async () => {
+// on a software rasteriser) demoting a page that has a GPU to the CPU.
+test('an adapter answer that never comes keeps the page on the GPU', async () => {
   const silent = {...withGpu(CHROME_LINUX, {requestAdapter: () => new Promise(() => {})}), __tiloAdapter: new Promise(() => {})};
   const warned = [];
   const warn = console.warn;
   console.warn = (...args) => warned.push(args.join(' '));
   try {
-    assert.equal(await rendererUnavailable(silent, {answerMs: 20}), undefined);
+    assert.deepEqual(await rendererChoice(silent, {answerMs: 20}), {renderer: 'webgpu'});
   } finally {
     console.warn = warn;
   }
   assert.match(warned.join('\n'), /no adapter answer/);
-  // An answer in time still counts.
-  assert.match((await rendererUnavailable({...silent, __tiloAdapter: Promise.resolve(null)}, {answerMs: 20})).reason, /no graphics adapter/);
+  // An answer in time still counts either way.
+  assert.equal((await rendererChoice({...silent, __tiloAdapter: Promise.resolve(null)}, {answerMs: 20})).renderer, 'cpu');
 });

@@ -24,7 +24,8 @@ export {createPanorama} from './panorama.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
 import {createNativeCatalogueBridge, invokeRoomMembership, runRoomAction} from './native-catalogue.mjs';
-import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
+import {isWebKit,pageRenderer,webgpuRefusal} from './webgpu-safety.mjs';
+import {createCpuPresenter} from './cpu-present.mjs';
 import {browserSettings} from './browser-locale.mjs';
 import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
@@ -64,11 +65,16 @@ export async function loadRuntime(){await ready();return runtime;}
 /** Open the WebGPU device and compile the renderer once the module is in,
  * while the page opens the workspace it was let into; the first mount
  * takes it.
- * Skipped where mounting would refuse WebGPU, and on WebKit, whose renderer
- * starts only once the page's load settled (`settleBeforeGpu`). */
+ * Skipped where mounting would refuse WebGPU, where the page draws on the
+ * CPU (`pageRenderer`), and on WebKit, whose renderer starts only once the
+ * page's load settled (`settleBeforeGpu`). */
 export function prepareGpu(){
-  if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
-  void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
+  if(webgpuRefusal()||isWebKit(navigator))return;
+  // Asked before the device: a page without WebGPU draws on the CPU, and
+  // has no renderer to prepare.
+  void pageRenderer().then(({renderer})=>{
+    if(renderer==='webgpu')return ready().then(()=>runtime.prepare_gpu());
+  }).catch(()=>{});
 }
 /** Every mount's images decode in one worker, started on the first. */
 let imageDecoder;
@@ -428,7 +434,12 @@ export async function mountDesktop(target,options={}) {
   }
   try{
     const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
-    if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
+    // WebGPU where the browser has it; the CPU raster where it truly has
+    // none (Firefox on Linux ships it off), which draws the same scene into
+    // this canvas and presents it (`cpu-present.mjs`).
+    const {renderer,reason}=await pageRenderer();
+    const presenter=renderer==='cpu'?createCpuPresenter(canvas):null;
+    if(presenter){status.show(reason,{again:true});console.info(`Tilo: ${reason}`);}
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
     const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
@@ -455,7 +466,7 @@ export async function mountDesktop(target,options={}) {
     // Each startup font goes in with the digest the loader computed natively,
     // which the runtime checks against its build instead of hashing again.
     for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
-    id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
+    id=runtime.mount(canvas,JSON.stringify(config),entries,presenter,raw=>{
       // Pin pixels and geometry while this presentation is still current,
       // before another presentation or a queued page callback can replace it.
       // This path reads only JS/Canvas state, never re-enters the WASM mount.

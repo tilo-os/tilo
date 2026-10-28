@@ -6,7 +6,6 @@
 use wasm_bindgen::JsValue;
 
 pub(super) struct Retained {
-    pub(super) raster: ui::retained_raster::RetainedRaster,
     pub(super) frames: ui::retained_raster::RetainedFrames,
     /// Changed whenever the target's pixels may not be the last frame's.
     pub(super) generation: u64,
@@ -18,7 +17,6 @@ pub(super) struct Retained {
 impl Retained {
     pub(super) fn new() -> Self {
         Self {
-            raster: ui::retained_raster::RetainedRaster::new(false),
             frames: ui::retained_raster::RetainedFrames::default(),
             generation: 0,
             #[cfg(debug_assertions)]
@@ -27,11 +25,11 @@ impl Retained {
     }
 
     /// The target no longer shows the last presented frame: repaint all of
-    /// the next one.
+    /// the next one. The target's own raster is invalidated by the caller
+    /// (`Mount::forget_frame`), which holds it.
     pub(super) fn forget(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.frames.forget();
-        self.raster.invalidate();
         #[cfg(debug_assertions)]
         {
             self.check = None;

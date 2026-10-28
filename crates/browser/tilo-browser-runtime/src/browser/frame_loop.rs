@@ -303,10 +303,17 @@ impl ApplicationHandler<u64> for Runner {
                         wake(due);
                     }
                 }
-                if m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
+                if m.hidden
+                    || m.error.is_some()
+                    || (m.gpu.is_none() && m.cpu.is_none())
+                    || m.viewport.suspended()
+                {
                     return Ok(());
                 }
-                m.pending |= m.gpu.as_ref().is_some_and(Gpu::shows_lost_frame);
+                m.pending |= m
+                    .gpu
+                    .as_ref()
+                    .is_some_and(|gpu| gpu.shows_lost_frame(&m.retained));
                 let output = m.frame.frame_schedule();
                 let desktop_woken = m
                     .desktop
@@ -390,7 +397,7 @@ pub(super) async fn watch_first_frame(id: u64) {
             if m.error.is_some() {
                 return Ok(false);
             }
-            if m.gpu.is_some() {
+            if m.gpu.is_some() || m.cpu.is_some() {
                 let visible = page_visible() && !m.hidden && !m.viewport.suspended();
                 let wants_frame = m.pending || m.viewport.needs_present();
                 match driver.tick(m.redraws, m.frames, visible, wants_frame) {
@@ -398,7 +405,8 @@ pub(super) async fn watch_first_frame(id: u64) {
                         // The pipelines the first frame did not need compile
                         // one at a time (vello's deferred pipelines), each
                         // started by the poll after the one before it is in,
-                        // and only while the page is shown.
+                        // and only while the page is shown. A CPU target
+                        // compiles none.
                         if !visible {
                             return Ok(true);
                         }
@@ -422,7 +430,7 @@ pub(super) async fn watch_first_frame(id: u64) {
             if m.frames > 0 {
                 return Ok(true);
             }
-            let step = if m.gpu.is_some() {
+            let step = if m.gpu.is_some() || m.cpu.is_some() {
                 GpuStep::FirstFrame
             } else {
                 GPU_STEP.get()

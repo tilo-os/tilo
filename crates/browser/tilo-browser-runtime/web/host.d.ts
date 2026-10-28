@@ -18,6 +18,12 @@ export interface RuntimeStatus {
    * load, which shows `error` in it; `restarting` says the page reloads.
    */
   phase?: 'gpu-pending' | 'presented' | 'failed' | 'closed' | 'crashed';
+  /**
+   * What draws the frames: `webgpu` through vello's compute pipeline, or
+   * `cpu`, the same scene replayed on the CPU because the browser offered no
+   * WebGPU (`webgpu-safety.mjs`). Absent before the first status.
+   */
+  renderer?: 'webgpu' | 'cpu';
   crashedWindow?: string | null;
   restarting?: boolean;
   app?: string;

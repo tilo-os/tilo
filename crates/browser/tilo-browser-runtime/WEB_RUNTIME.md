@@ -13,7 +13,7 @@ crate owns the components, their records and the GPU. See
 ```sh
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/out \
   [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop]
-python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
+python3 -m http.server -d /abs/out   # then open it: WebGPU where the browser has it
 ```
 
 `--bundle runtime` (the default) builds this crate; `--bundle desktop` builds
@@ -57,6 +57,33 @@ already asserts. Page URLs (which room, app and
 resource a page opens, desktop or full-tab app mode, history, share links) follow
 `docs/architecture/web-routing.md`, which replaces these query parameters. `package --target web` writes
 it in the immutable layout Cloud serves.
+
+## Renderers: WebGPU, and the CPU where there is none
+
+Frames are drawn on the page's WebGPU device when the browser has one, and
+else on the CPU in the same module. `web/webgpu-safety.mjs` asks for an
+adapter once per page (`rendererChoice`: no `navigator.gpu`, no adapter, or a
+request that fails is `cpu`); `web/host.mjs` then presents through
+`web/cpu-present.mjs`, and `mount` takes that presenter instead of opening a
+device. Firefox on Linux ships `dom.webgpu.enabled` off, so its visitors used
+to get about:config instructions: they now get the desktop, more slowly.
+
+On the CPU, `ui::cpu_canvas` replays each frame's `vello::Scene` with
+`tilo-cpu-raster` (`vello_cpu`) into a retained premultiplied RGBA8 canvas,
+repainting only the damage `RetainedFrames` proves, and hands each changed
+region to the page: a WebGL2 texture drawn as one quad per frame, or
+`putImageData` where there is no WebGL2 (`?cpuPresent=2d` picks that path,
+`?cpuPresent=webgl2` the other, to measure them against each other). The
+canvas keeps the frame between presents, which the page's capture path reads
+back. Both renderers draw the same scene from the same damage decisions; the
+CPU one is single-threaded (`wasm32` has none) and keeps every image and glyph
+outline the frame needs in the module's memory.
+
+Not on the CPU: the pixels apps ask for beside the frame (an eyedropper, an
+exported picture) need a device and are refused, and videos' pictures are not
+copied into the frame; the page's feedback crops are GPU-only too. A WebKit
+page with `?unsafeWebKitGPU=0` is still refused rather than drawn on the CPU:
+that flag asks for no GPU, not for the slower renderer.
 
 ## Mounting
 

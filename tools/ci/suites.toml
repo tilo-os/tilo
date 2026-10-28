@@ -734,6 +734,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/cpu-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
   "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs",
