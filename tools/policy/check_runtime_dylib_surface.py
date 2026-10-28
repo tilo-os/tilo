@@ -66,7 +66,7 @@ DENIED = {
     "launcher": "the sandbox launcher",
     "app-host": "the app host daemon (apps use its client side)",
     "app-cli": "the install and registry CLI",
-    "app-registry": "the registry protocol behind the app host",
+    "app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",
     "iroh": "the peer transport, owned by the runtime daemon",
     "iroh-blobs": "the content store's transfer protocol",

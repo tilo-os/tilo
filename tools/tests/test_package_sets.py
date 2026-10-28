@@ -107,7 +107,6 @@ class PackageSetsTests(unittest.TestCase):
             "shell": "syscall table, open or creat",
             "tilo-agent-participant": "seccomp confinement",
             "app-cli": "ISA detection",
-            "app-registry": "the host profile",
             "tilo-environment": "the host architecture",
             "ush": "ELF loader, runtime image by ISA",
             "fs-native": "open or creat",

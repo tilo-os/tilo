@@ -11,8 +11,8 @@ Nothing new beyond workspace-model.md, canvas.md and agent-ux.md:
 - **An answer is a window** showing a composed view, authored by "you via this task". Keeping it
   means not closing it; changing it means asking again or editing its tilolang source.
 - **A kept view goes into an app of your own** and can be reused on other resources ("do the
-  same for the product video"), shared and versioned. Someone else's view runs with the lesser
-  of their authority and yours.
+  same for the product video") and versioned. Sharing views with other people is out of scope
+  for now; you share resources, which others see through their own views.
 - **Outside services** are types whose origin is the service, with get and search capabilities
   (convergence.md §5). The YouTube app has `Video`, `Channel`, `Playlist` and a player view.
 
