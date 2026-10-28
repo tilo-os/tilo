@@ -368,7 +368,7 @@ fn every_kind_of_value_prints_the_same_program_back() {
         LISTED,
         "file",
         Selector::FirstOfKind("notes.note".into()),
-        BTreeMap::from([("folder".to_owned(), folder.clone())]),
+        BTreeMap::from([("folder".to_owned(), folder)]),
     )];
     for (index, value) in values.into_iter().enumerate() {
         steps.push(Step::new(
@@ -415,15 +415,10 @@ fn every_kind_of_value_prints_the_same_program_back() {
     assert_eq!(kinds(&parsed.shortcut), kinds(&shortcut), "\n{text}");
 }
 
-#[test]
-fn every_kind_of_step_prints_the_same_program_back() {
-    let catalog = catalog();
-    let shared = Shared {
-        catalog: &catalog,
-        app_label: &bare,
-    };
-    let folder = Binding::Input("folder".into());
-    let shortcut = Shortcut {
+/// A program that holds one of each kind of step, so a rendering of it
+/// covers each of them.
+fn every_step(folder: Binding) -> Shortcut {
+    Shortcut {
         id: "kinds".into(),
         name: "Every step".into(),
         inputs: vec![
@@ -517,11 +512,21 @@ fn every_kind_of_step_prints_the_same_program_back() {
         step_timeout_secs: Some(45),
         // What the shortcut gives back names an input, which is in scope
         // where the steps' own variables are not.
-        output: Some(folder.clone()),
+        output: Some(folder),
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+    }
+}
+
+#[test]
+fn every_kind_of_step_prints_the_same_program_back() {
+    let catalog = catalog();
+    let shared = Shared {
+        catalog: &catalog,
+        app_label: &bare,
     };
+    let shortcut = every_step(Binding::Input("folder".into()));
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,
         Err(error) => panic!("{error}"),
