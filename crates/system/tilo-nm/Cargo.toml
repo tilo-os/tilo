@@ -6,15 +6,16 @@ publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Tilo's one NetworkManager client: connectivity, metering and the primary link, read over D-Bus and followed by signal."
+description = "Tilo's one NetworkManager client over D-Bus: connectivity, metering, radios, Wi-Fi, saved profiles and activation."
 
 [lib]
 name = "tilo_nm"
 path = "src/lib.rs"
 
-# One NetworkManager reader for the whole OS. The shell's status bar, the
+# One NetworkManager client for the whole OS. The shell's status bar, the
 # filesystem's predictive hydration and os-actions all read the same typed
-# state from here, so "is the network up / metered?" has one answer.
+# state from here, so "is the network up / metered?" has one answer, and
+# every network setting is changed through it.
 #
 # Split like `tilo-bluez`: a pure model that maps NetworkManager's numbers and
 # strings with no bus, and a thin async zbus client over it.
@@ -22,8 +23,10 @@ path = "src/lib.rs"
 [dependencies]
 futures-util.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+uuid.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
+zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

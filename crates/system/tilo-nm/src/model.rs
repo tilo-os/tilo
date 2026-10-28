@@ -228,6 +228,151 @@ pub struct VpnReading {
     pub ended_on_purpose: std::collections::BTreeMap<String, u64>,
 }
 
+/// `NMDeviceType`, as far as Tilo tells devices apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceKind {
+    Ethernet,
+    Wifi,
+    /// A mobile broadband modem (`ModemManager`'s).
+    Modem,
+    /// Anything else: loopback, bridges, tunnels, Wi-Fi P2P, …
+    Other,
+}
+
+impl DeviceKind {
+    /// Map `NMDeviceType`.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::Ethernet,
+            2 => Self::Wifi,
+            8 => Self::Modem,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// `NMDeviceState` `ACTIVATED`: the device's connection is up.
+pub const DEVICE_ACTIVATED: u32 = 100;
+
+/// A network device `NetworkManager` knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// Its object.
+    pub path: String,
+    /// The kernel interface (`wlp2s0`).
+    pub interface: String,
+    pub kind: DeviceKind,
+    /// `NMDeviceState`.
+    pub state: u32,
+    /// The hardware address in use.
+    pub hw_address: String,
+    /// Its active connection's object; `None` while it has none.
+    pub active: Option<String>,
+}
+
+impl Device {
+    /// Whether its connection is up.
+    #[must_use]
+    pub const fn is_activated(&self) -> bool {
+        self.state == DEVICE_ACTIVATED
+    }
+}
+
+/// A Wi-Fi access point a device sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessPoint {
+    /// Its object.
+    pub path: String,
+    /// The device that sees it.
+    pub device: String,
+    /// The network's name; empty for a hidden network.
+    pub ssid: String,
+    /// Signal strength in percent.
+    pub strength: u8,
+    /// `NM80211ApFlags`.
+    pub flags: u32,
+    /// `NM80211ApSecurityFlags` of its WPA and RSN (WPA2/WPA3) elements.
+    pub wpa_flags: u32,
+    pub rsn_flags: u32,
+    /// In MHz.
+    pub frequency: u32,
+    /// In kbit/s.
+    pub max_bitrate: u32,
+    /// Whether its device is connected through it.
+    pub active: bool,
+}
+
+/// `NM80211ApFlags` `PRIVACY`: the network encrypts.
+pub const AP_PRIVACY: u32 = 0x1;
+/// `NM80211ApSecurityFlags` key management suites.
+pub const AP_KEY_PSK: u32 = 0x100;
+pub const AP_KEY_8021X: u32 = 0x200;
+pub const AP_KEY_SAE: u32 = 0x400;
+pub const AP_KEY_OWE: u32 = 0x800;
+pub const AP_KEY_OWE_TRANSITION: u32 = 0x1000;
+pub const AP_KEY_EAP_SUITE_B_192: u32 = 0x2000;
+
+/// An active connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveConnection {
+    /// Its object.
+    pub path: String,
+    /// The profile's name and id.
+    pub id: String,
+    pub uuid: String,
+    /// The profile's type (`802-11-wireless`, `vpn`, …).
+    pub kind: String,
+    pub state: ActiveState,
+    /// The devices' objects.
+    pub devices: Vec<String>,
+    /// The profile's object.
+    pub profile: String,
+}
+
+/// What a device holds of one address family now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IpDetails {
+    /// Each with its prefix (`192.0.2.10/24`).
+    pub addresses: Vec<String>,
+    pub gateway: Option<String>,
+    pub dns: Vec<String>,
+}
+
+/// `NetworkManager`'s radio switches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is one of NetworkManager's separate switches"
+)]
+pub struct Radios {
+    pub wifi_enabled: bool,
+    /// False while a hardware switch holds Wi-Fi off.
+    pub wifi_hardware_enabled: bool,
+    pub wwan_enabled: bool,
+    pub wwan_hardware_enabled: bool,
+}
+
+/// Why an activation ended, for a person: `NMActiveConnectionStateReason`.
+#[must_use]
+pub const fn activation_failure(reason: u32) -> &'static str {
+    match reason {
+        2 => "the connection was disconnected",
+        3 => "the device went away or was disconnected",
+        4 => "the VPN service stopped",
+        5 => "no usable IP configuration was received",
+        6 => "the connection timed out",
+        7 => "the VPN service did not start in time",
+        8 => "the VPN service failed to start",
+        9 => "the network needs a password or key that was not given",
+        10 => "the login was refused",
+        11 => "the saved network was removed",
+        12 => "a connection it depends on failed",
+        13 | 14 => "the device is not available",
+        _ => "the connection failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +397,22 @@ mod tests {
         }
         assert!(is_vpn_type("vpn") && is_vpn_type("wireguard"));
         assert!(!is_vpn_type("802-11-wireless"));
+    }
+
+    #[test]
+    fn device_kinds_and_activation_failures_map() {
+        assert_eq!(
+            [1, 2, 8, 14, 0].map(DeviceKind::from_raw),
+            [
+                DeviceKind::Ethernet,
+                DeviceKind::Wifi,
+                DeviceKind::Modem,
+                DeviceKind::Other,
+                DeviceKind::Other,
+            ]
+        );
+        assert!(activation_failure(9).contains("password"));
+        assert_eq!(activation_failure(99), "the connection failed");
     }
 
     #[test]
