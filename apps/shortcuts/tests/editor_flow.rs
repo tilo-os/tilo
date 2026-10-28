@@ -968,6 +968,10 @@ fn a_condition_holds_steps_and_a_step_folds_away() {
 #[test]
 fn the_text_view_shows_the_same_steps_in_the_same_order() {
     let (_host, _guard, mut app) = draft_with_a_condition();
+    // A step inside the condition, so the text has a block to indent.
+    let draft_id = app.state().drafts.ids().next().expect("the draft").clone();
+    app.invoke(Workbench::SET_NESTED.with((draft_id, "2".to_owned(), "0.then".to_owned(), 0)))
+        .expect("the step moves into the condition");
     let draft = app
         .state()
         .drafts
