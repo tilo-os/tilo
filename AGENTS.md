@@ -16,16 +16,40 @@
 | Builds/integration    | `docs/t.md`                                                          |
 | Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
 
+## Principles
+
+These hold for every app, the shell and the SDK. When a doc or code disagrees, these win.
+
+1. **One resource/action/view model.** State is resources; changes are typed actions on them;
+   views present resources. Native apps, tilolang apps, the shell, agents and automations all
+   use this one model. No second model beside it.
+2. **State is CRDT-backed changes.** Resources are owned CRDT documents; edits are recorded
+   changes (diff and splice text and lists, never replace them). A widget holds presentation and
+   caches, never state.
+3. **No tabs, search boxes or history in apps.** Tabs and window groups, search, history and
+   undo, window chrome and titles are system functionality. An app shows one thing; its search
+   button opens system search scoped to it.
+4. **The system does what's needed more than once.** Storage, sync, presence, history,
+   permissions, notifications, and indexing and search of what the workspace holds: if more than
+   one app needs it, the system provides it and apps don't reimplement it. Find the existing
+   system service before building anything app-local. An app adds only what is its own: a search
+   provider over a service it connects to (a video site's catalogue, a mail server), never a
+   private copy of what it already publishes.
+5. **One set of UI components** for every app and the shell. An app adds its own component
+   only when it really needs one and the shared library couldn't gain it; otherwise the shared
+   component improves.
+6. **The nice properties come by default.** Collaboration and sync between people and
+   devices, searchability, composability, and agents and automations acting on an app's
+   resources and actions are properties of the system architecture. Every app gets them by
+   publishing its resources and actions, not because its author worked hard for them.
+
 ## Make the change
 
-- State is an owned resource/CRDT; a widget holds presentation and caches.
 - Bind app edits to typed resource/actions, not click-only mutations.
-- Shared controls, theme tokens, localisation, platform services; search, window
-  chrome, undo, history and collaboration belong to the system.
+- Shared controls, theme tokens, localisation and platform services.
 - No floating windows, app title bars or private app search fields.
 - Appearance changes apply live, through the shared motion primitives.
 - Start apps empty; fixtures belong in tests, shots or explicit demos.
-- Diff and splice CRDT text and lists instead of replacing them.
 - Sandboxing, capability grants and cross-workspace isolation are the security
   boundary; never weaken them or bypass a denial with ambient credentials.
 - No private trackers or discussions in public code, docs or messages.
