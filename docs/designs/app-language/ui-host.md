@@ -89,10 +89,12 @@ Building it showed four gaps. They are decided as follows:
      through `TiloStore::sync_from`. What it lacks is the path that commits those actions and
      brings the record's changes back. Today `apps/tilolang` borrows that path from ui-core.
    - **What moves:** the broker client in `ui_core::collaboration` (routes, transport, committed
-     reads, signing, invocation updates, presence transport), the record store it commits to,
-     and the managed sender with its private storage, whole. The sender's constructors stay
+     reads, signing, invocation updates, presence transport) and the managed sender with its
+     private storage, whole. The tilolang host commits through `RoomRecord`
+     (`tilolang_tilo::instance::room`), which holds the room record directly. The sender's constructors stay
      private: custody is never loosened to make a cut easier.
-   - **What stays in ui-core:** the door's widget side (`bound_dispatch`, `invocation_scope`'s
+   - **What stays in ui-core:** the record store (`RecordStore`, native apps' typed records, tied
+     to their undo log and widgets), the door's widget side (`bound_dispatch`, `invocation_scope`'s
      UI state), participants and content loading state. Widgets live in the UI host; an event
      there becomes an action the tilolang host executes and commits.
    - **Where to:** the crate `collaboration` (crates/collab/collaboration), re-exported under the
@@ -100,7 +102,14 @@ Building it showed four gaps. They are decided as follows:
      (document custody, native launch errors and connections, component bindings, record read
      errors) that ui-core implements.
    - **Done when:** `tilolang_tilo::instance` commits through the crate, and its dependency tree
-     has no ui-core and no tilo-host.
+     has no ui-core and no tilo-host. (Done 2026-10-28.)
+   - **Visibility is not custody.** Inside an app's process, Rust visibility guards nothing: the
+     broker, in its own process, checks every route and commit. Functions the crate makes public
+     only for ui-core are `#[doc(hidden)]`, and ui-core re-exports only what apps could use
+     before.
+   - **Open: one undo.** The tilolang host keeps undo and history records (point 2). They must
+     use the platform's undo log and history records, moved down beside `RoomRecord` if needed,
+     never a second implementation.
    - **Why it's worth doing anyway:** thin mode, browser workers and the convergence log
      (`convergence.md` §9) all need it. Native apps keep working through ui-core on top of it.
    - **Order:** this is the prerequisite for step 2.
