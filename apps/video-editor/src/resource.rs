@@ -10,10 +10,13 @@
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Id, Invoke, Path, Refusal, resource};
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{self, Id, Path, Refusal, resource};
 use ui::widget::Element;
 use uuid::Uuid;
 
+#[cfg(feature = "samples")]
 use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::model::{
     ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, Side,
@@ -749,6 +752,16 @@ pub fn load_project(project: &Project) -> ui::tilo_resource::Edit<Project> {
     Path::<Project, Project>::root().set(project.clone())
 }
 
+/// A new record's document holding `project`, as its first content.
+#[must_use]
+pub fn document_of(project: &Project) -> ui::tilo_resource::Doc {
+    use ui::tilo_resource::Fields as _;
+    let mut doc = ui::tilo_resource::Doc::new();
+    let _ = project.write_fields(&mut doc, &automerge::ROOT);
+    doc.commit();
+    doc
+}
+
 /// The effect that reveals what `item` names in `project` — a marker,
 /// track, clip or source, or an effect or marker on a clip
 /// (`<clip>/effects/<effect>`, `<clip>/markers/<marker>`, see
@@ -845,6 +858,7 @@ impl ResourceApp for VideoEditor {
         Some(&CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
             ShotScenario::ALL_NAMES
@@ -858,6 +872,7 @@ impl ResourceApp for VideoEditor {
 
     /// The narrow capture is below the bin's collapse breakpoint, so it
     /// shows the overlay-flap layout.
+    #[cfg(feature = "samples")]
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some(NARROW_CAPTURE) {
             (720, 820)
@@ -868,6 +883,7 @@ impl ResourceApp for VideoEditor {
 
     /// The demo project's sources resolve to the stand-ins bundled with the
     /// crate, so a capture reads local bytes without a workspace mount.
+    #[cfg(feature = "samples")]
     fn fixture(_fixture: &mut ui::framework::Fixture<Project>) {
         let bundled = crate::media::bundled_sample_media();
         crate::media::serve_sample_media(bundled.exists().then_some(bundled));
@@ -877,6 +893,7 @@ impl ResourceApp for VideoEditor {
     /// edit opening a project file makes: the bundled demo project, or the
     /// composed one; the editor stages the rest (see
     /// `VideoEditorApp::stage_capture`).
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Project>> {
         let project = match name {
             Some(EMPTY_CAPTURE) => return Vec::new(),

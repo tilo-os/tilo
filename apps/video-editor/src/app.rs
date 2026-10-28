@@ -66,6 +66,7 @@ mod paint;
 mod preview_paint;
 mod project_workflow;
 mod render_action;
+#[cfg(feature = "samples")]
 mod scenario;
 mod selection;
 mod strip_menu;
@@ -80,8 +81,9 @@ use layout::Regions;
     reason = "the shared paint helpers are the vocabulary of every paint file split out of this impl"
 )]
 use paint::*;
-use scenario::ShotLifecycle;
+#[cfg(feature = "samples")]
 pub(crate) use scenario::composed_project;
+#[cfg(feature = "samples")]
 pub use scenario::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use selection::Selection;
 
@@ -976,9 +978,9 @@ pub struct VideoEditorApp {
     /// must never diff a stale local result against a newer remote projection:
     /// doing so would turn unrelated remote edits into reverse patches.
     clip_edit_bases: HashMap<ClipId, Clip>,
-    /// Deterministic capture scenario applied once during the first `sync`.
-    shot_scenario: ShotScenario,
-    shot_lifecycle: ShotLifecycle,
+    /// The screenshot scenario staged on this editor, if any.
+    #[cfg(feature = "samples")]
+    capture: scenario::CaptureStaging,
     seed: SeedState,
     playback: PlaybackState,
     presentation: PresentationState,
@@ -1017,12 +1019,6 @@ pub struct VideoEditorApp {
     /// each poll of [`Widget::presence_payload`], which only carries one.
     /// See [`crate::presence`] for why there are two things to say.
     local_presence: crate::presence::LocalPresence,
-    /// Other participants, staged for a `--shots` capture. `None` in the
-    /// live app, where they arrive over the collaboration socket like
-    /// anyone else; a capture cannot wait on a socket, so the scenario
-    /// stages the very frames a peer would have sent and the draw reads
-    /// them through the identical path.
-    shot_presence: Option<PresenceCtx>,
     // --- ui state ---
     export: ExportSettings,
     export_status: ExportStatus,
@@ -1418,8 +1414,8 @@ impl VideoEditorApp {
             faces: ui::widget::FaceMotions::default(),
             content: None,
             clip_edit_bases: HashMap::new(),
-            shot_scenario: ShotScenario::Live,
-            shot_lifecycle: ShotLifecycle::default(),
+            #[cfg(feature = "samples")]
+            capture: scenario::CaptureStaging::default(),
             seed: SeedState::default(),
             playback: PlaybackState::default(),
             presentation: PresentationState::default(),
@@ -1434,7 +1430,6 @@ impl VideoEditorApp {
             text_scale: 1.0,
             ui_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
-            shot_presence: None,
             playhead: 0.0,
             zoom: 34.0,
             scroll: 0.0,
@@ -2477,20 +2472,6 @@ impl VideoEditorApp {
         if !self.seed.hermetic {
             self.mix_meters.decay(dt);
         }
-        self.mix = self.mix_meters.snapshot();
-    }
-
-    /// Take in a block the mixer measured, as the monitor does.
-    ///
-    /// The one door meter data comes through, so a `--shots` capture and a
-    /// test exercise the same recording, latching and merging the live
-    /// monitor does rather than a drawing that imitates the result. The
-    /// signature is pinned to the project the block describes: without that
-    /// the next frame would read the staged report as one about a mix that
-    /// has since changed and throw it away.
-    fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
-        self.mix_meters.record(at, report);
-        self.mix_sig = Some(crate::audio::mix_signature(&self.project));
         self.mix = self.mix_meters.snapshot();
     }
 
@@ -3596,13 +3577,6 @@ impl VideoEditorApp {
             t.pan = 0.0;
         });
         self.dispatch_selected_track();
-    }
-
-    /// Dispatch a whole-media write for one bin source.
-    fn dispatch_media(&mut self, mid: MediaId) {
-        if let Some(m) = self.project.media(mid).cloned() {
-            self.submit_media(&m);
-        }
     }
 
     /// Dispatch a whole-media write for the selected clip's source.
@@ -6136,17 +6110,12 @@ impl VideoEditorApp {
         self.poll_export();
 
         self.place_timeline_split();
-        let mut regions = self.regions();
-        if !self.shot_lifecycle.interaction_applied
-            && self.shot_scenario.is_interaction()
-            && self.rect.width() > 1.0
-        {
-            self.apply_shot_interaction(&regions);
-            self.shot_lifecycle.interaction_applied = true;
+        #[cfg(feature = "samples")]
+        if self.stage_capture_interaction() {
             // The scenario may move a side flap, invalidating the first pass.
-            regions = self.regions();
+            return self.regions();
         }
-        regions
+        self.regions()
     }
 }
 
@@ -6344,13 +6313,8 @@ impl Widget for VideoEditorApp {
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
-        if !self.shot_lifecycle.applied
-            && self.shot_scenario != ShotScenario::Live
-            && !self.project.clips.is_empty()
-        {
-            self.apply_shot_scenario();
-            self.shot_lifecycle.applied = true;
-        }
+        #[cfg(feature = "samples")]
+        self.stage_capture_scenario();
         // Let the meters fall, and take the one copy the frame will draw
         // from. After the scenario, so a staged capture's levels survive into
         // the frame that captures them.
@@ -6462,11 +6426,11 @@ impl Widget for VideoEditorApp {
         // A key (B, Ctrl+I, S) or a render's progress changes what the bar
         // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
-        // Everything below draws the room from here. In the live app that is
-        // the host's own context, fed by the collaboration socket; a capture
-        // scenario can stage one instead (see `seed_shot_collaborators`).
-        // Cloned because the draws below need `&mut self`.
-        let staged = self.shot_presence.clone();
+        // Everything below draws the room from here: the host's own context,
+        // fed by the collaboration socket, or the one a capture staged.
+        #[cfg(feature = "samples")]
+        let staged = self.capture.presence.clone();
+        #[cfg(feature = "samples")]
         let presence: &PresenceCtx = staged.as_ref().unwrap_or(presence);
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
@@ -8970,6 +8934,7 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
 
     /// A `--shots` capture: the scenario's project is loaded; arrange the
     /// editor around it. See [`Self::stage_capture`].
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_capture(scenario);
     }

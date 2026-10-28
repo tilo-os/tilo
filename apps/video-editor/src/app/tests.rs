@@ -168,7 +168,7 @@ fn staged(scenario: ShotScenario) -> VideoEditorApp {
     app.seed.hermetic = true;
     app.seed.capture = true;
     app.render_pipeline.warm_waveforms_sync = true;
-    app.shot_scenario = scenario;
+    app.capture.scenario = scenario;
     app
 }
 

@@ -1411,7 +1411,7 @@ doc = false
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
 "vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
-"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst"] }
+"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst", "samples"] }
 "video-player" = { path = "../../../apps/video-player", default-features = false, features = ["decode", "default"] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-0_7_0" = { package = "wacore", version = "^0.7.0", default-features = false, features = [] }

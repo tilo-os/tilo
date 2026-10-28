@@ -23773,6 +23773,7 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "uuid",
+ "video-editor",
  "workspace-hack",
 ]
 

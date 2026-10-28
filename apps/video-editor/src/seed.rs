@@ -1,7 +1,7 @@
-//! The demo project the editor opens populated with, and the document it
-//! is stored in.
+//! The demo project captures and tests open, and the document it is stored
+//! in.
 
-use ui::tilo_resource::{Doc, Fields};
+use ui::tilo_resource::Doc;
 use uuid::Uuid;
 
 use crate::media;
@@ -9,19 +9,10 @@ use crate::model::{
     Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
 };
 
-/// A new record's document holding `project`, as its first content.
-#[must_use]
-pub fn document_of(project: &Project) -> Doc {
-    let mut doc = Doc::new();
-    let _ = project.write_fields(&mut doc, &automerge::ROOT);
-    doc.commit();
-    doc
-}
-
 /// The demo project's document.
 #[must_use]
 pub fn sample_document() -> Doc {
-    document_of(&sample_project())
+    crate::resource::document_of(&sample_project())
 }
 
 /// Named parameters for a deterministic demo clip placement. Source and
