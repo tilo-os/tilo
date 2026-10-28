@@ -12,9 +12,33 @@ use ui::tilo_actions::{
 use ui::widget::controls::ActionControls as _;
 use ui::widget::{ItemRow, ListItemProps};
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use tilo_render_protocol::patch::Answer;
+use tilo_ui_host::pane::Pane;
+use tilo_ui_host::reconcile::Reconciler;
+use tilo_ui_host::reconcile::UiEvent;
+use tilo_ui_host::rows::RemoteRows;
+use tilo_ui_host::shell::DETAIL;
+use tilo_ui_host::{UiNode, Value};
+use tilolang_tilo::runtime::{Decision, Principal, Value as RtValue};
+use ui::framework::{ResourceSurface as _, RunMode};
+use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
+
 use super::*;
 
 mod opening;
+
+/// The text a value of the runtime holds.
+fn rt_text(value: &RtValue) -> String {
+    match value {
+        RtValue::Text(text) => text.clone(),
+        RtValue::Opt(Some(held)) => rt_text(held),
+        _ => String::new(),
+    }
+}
 
 const HOST: &str = "tl:host";
 
@@ -89,6 +113,10 @@ impl Room {
         let root = ui::automerge::ROOT;
         self.window.sync(&self.doc, &root);
         self.window.update(&self.doc, &root);
+        // Every batch a real app sends passes the UI host's check.
+        if let Some(why) = self.window.view().failed() {
+            panic!("the window refused what its app sent: {why}");
+        }
     }
 
     /// Lay the window out at 1200x800, as a host does after a frame: what changed in place is
@@ -287,22 +315,29 @@ impl Room {
     }
 
     /// The rows of the root's list, as its list reads them.
-    fn root_rows(&self) -> Rc<RefCell<HostRows>> {
+    fn root_rows(&self) -> Rc<RefCell<RemoteRows>> {
         self.window
-            .rows
-            .borrow()
-            .iter()
-            .find(|(key, _)| !key.starts_with(DETAIL))
-            .map(|(_, rows)| Rc::clone(rows))
+            .view()
+            .lists()
+            .into_iter()
+            .find(|key| !key.starts_with(DETAIL))
+            .and_then(|key| self.window.view().rows_of(&key))
             .expect("the root lists its items")
+    }
+
+    /// Ask for `range` of the root's list, as the list does when it shows them, and let the
+    /// window take the rows the app renders for it.
+    fn show_rows(&mut self, range: std::ops::Range<usize>) {
+        self.root_rows().borrow_mut().request_range(range);
+        self.frame();
     }
 
     /// Each row of the root's list, every one rendered as a list tall enough for all of them
     /// renders them: its key, and its item as the list reads it.
-    fn items(&self) -> Vec<(String, ListItemProps)> {
+    fn items(&mut self) -> Vec<(String, ListItemProps)> {
+        let len = self.root_rows().borrow().len();
+        self.show_rows(0..len);
         let rows = self.root_rows();
-        let len = rows.borrow().len();
-        rows.borrow_mut().request_range(0..len);
         (0..len)
             .filter_map(|index| rows.borrow().key_at(index))
             .filter_map(|key| {
@@ -322,7 +357,7 @@ impl Room {
     }
 
     /// The keys and titles of the rows of the root's list.
-    fn rows(&self) -> Vec<(String, String)> {
+    fn rows(&mut self) -> Vec<(String, String)> {
         self.items()
             .into_iter()
             .map(|(key, item)| {
@@ -336,7 +371,7 @@ impl Room {
     }
 
     /// The resource the row `key` of the root's list shows.
-    fn item_of(&self, key: &str) -> ResourceRef {
+    fn item_of(&mut self, key: &str) -> ResourceRef {
         let id = self
             .items()
             .into_iter()
@@ -352,7 +387,7 @@ impl Room {
 
     /// The list of the overview column.
     fn list(&mut self) -> &mut DescribedList {
-        let shell = self.window.shell().expect("the window shows the shell");
+        let shell = self.window.shell_mut().expect("the window shows the shell");
         if shell.overview_mut::<DescribedList>().is_some() {
             return shell.overview_mut::<DescribedList>().unwrap();
         }
@@ -387,7 +422,11 @@ impl Room {
             .expect("the composed list")
             .key
             .clone();
-        self.fire(&list, "activate", Some(Value::resource(&item)));
+        self.fire(
+            &list,
+            "activate",
+            Some(Value::Ref(tilolang_tilo::instance::wire::resource(&item))),
+        );
     }
 
     fn pinned(&self, resource: &str) -> bool {
@@ -396,7 +435,7 @@ impl Room {
         let probe = tilolang_tilo::runtime::ResourceRef::parse_id(path, String::new()).unwrap();
         let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe).unwrap();
         let note = tilolang_tilo::runtime::ResourceRef::parse_id(path, ty).unwrap();
-        host.runtime().read(&note, "pinned").unwrap() == Value::Bool(true)
+        host.runtime().read(&note, "pinned").unwrap() == RtValue::Bool(true)
     }
 
     /// The states of the invocations the room record holds.
@@ -414,7 +453,7 @@ impl Room {
         let host = self.window.current_host().unwrap();
         let root = host.root_of(app).unwrap();
         match host.runtime().read(&root, field).unwrap() {
-            Value::List(items) => items.len(),
+            RtValue::List(items) => items.len(),
             other => panic!("not a list: {other:?}"),
         }
     }
@@ -428,7 +467,7 @@ fn node_with<'a>(node: &'a UiNode, kind: &str, name: &str, value: &str) -> Optio
             || node
                 .props
                 .get(name)
-                .map(crate::reconcile::display)
+                .map(tilo_ui_host::reconcile::display)
                 .as_deref()
                 == Some(value))
     {
@@ -446,20 +485,12 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
     node.children.iter().find_map(first_input)
 }
 
-/// The first node of the tree of `kind` (any props when `name` is empty).
-fn first_of<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if node.kind == kind {
-        return Some(node);
-    }
-    node.children.iter().find_map(|child| first_of(child, kind))
-}
-
 /// The children of the named slot `name` of a component node.
 fn slot_of<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
     node.children
         .iter()
         .filter(|child| {
-            child.kind == crate::adapter::SLOT
+            child.kind == tilo_ui_host::adapter::SLOT
                 && child.props.get("name") == Some(&Value::text(name))
         })
         .flat_map(|child| child.children.iter())
@@ -504,10 +535,10 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
         "the sort menu, search, and the primary action last"
     );
     // The scenario showed its note; with that closed, the content says so in one sentence.
-    assert!(room.window.detail.is_some());
+    assert!(room.window.detail_target().is_some());
     room.window.close_detail();
     room.settle();
-    assert!(room.window.detail.is_none());
+    assert!(room.window.detail_target().is_none());
     let placeholder = slot_of(&room.composed(), "content")
         .into_iter()
         .find(|node| node.kind == "ui.EmptyState")
@@ -568,7 +599,7 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
     );
     room.window.close_detail();
     room.settle();
-    assert!(room.window.detail.is_none() || room.shell().front_pane() != NavPane::Content);
+    assert!(room.window.detail_target().is_none() || room.shell().front_pane() != NavPane::Content);
 }
 
 #[test]
@@ -672,7 +703,7 @@ fn a_new_conversation_shows_the_groups_avatar_until_someone_writes() {
         "before a message, its group's"
     );
     assert_eq!(avatar.name.as_deref(), Some("New chat"));
-    let seeded = Room::seeded("chat");
+    let mut seeded = Room::seeded("chat");
     for (_, item) in seeded.items() {
         let ItemRow::Row(row) = item.row else {
             panic!("a conversation's row is a list row");
@@ -759,7 +790,7 @@ fn every_package_opens_into_its_shell() {
         let mut room = Room::seeded(built.dir);
         let tree = room.window.root_tree().expect("the root view runs");
         assert!(
-            shell::shell_of(&tree).is_some(),
+            tilo_ui_host::shell::shell_of(&tree).is_some(),
             "{} builds its shell: {tree:#?}",
             built.dir
         );
@@ -880,10 +911,10 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
 fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
     let host = room.window.current_host().expect("the host started");
     let desk = host.root_of("so.tilo.lang.letters").unwrap();
-    let Value::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
+    let RtValue::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
         panic!("the desk lists its drafts");
     };
-    let Some(Value::Ref(draft)) = drafts.first() else {
+    let Some(RtValue::Ref(draft)) = drafts.first() else {
         panic!("a draft is a reference");
     };
     ResourceRef::clone(&draft.target)
@@ -952,7 +983,7 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
         .cloned()
         .expect("the letter opened");
     let host = room.window.current_host().unwrap();
-    let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
+    let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
     let send = node_with(&room.composed(), "ui.Button", "label", "Send")
         .expect("the letter's Send button")
         .key
@@ -960,12 +991,15 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
     room.window
         .act(UiEvent::Fire(send, "press".to_owned(), None));
     room.settle();
-    assert!(room.window.ask.is_some(), "a send asks the person first");
+    assert!(
+        room.window.view().asks().is_some(),
+        "a send asks the person first"
+    );
     assert!(
         room.sink.delivered().is_empty(),
         "nothing leaves before they say so"
     );
-    room.window.answers.borrow_mut().push(Answer::Allow);
+    room.window.view().answer(Answer::Allow);
     room.settle();
     let delivered = room.sink.delivered();
     assert_eq!(delivered.len(), 1, "{delivered:?}");
@@ -987,7 +1021,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
     room.seed("letters");
     let host = room.window.current_host().unwrap();
     let draft = first_draft(&room);
-    let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
+    let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
     let source = format!("letters.send(@letters.Draft:{})", draft.id_string());
     let suggested = room
         .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
@@ -1033,14 +1067,14 @@ fn board_room() -> (Room, usize) {
     room.seed("notes");
     let host = room.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.todo").unwrap();
-    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
+    let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
     let done = items
         .iter()
         .filter(|item| match item {
-            Value::Ref(item) => {
-                host.runtime().read(&item.target, "done").ok() == Some(Value::Bool(true))
+            RtValue::Ref(item) => {
+                host.runtime().read(&item.target, "done").ok() == Some(RtValue::Bool(true))
             }
             _ => false,
         })
@@ -1091,7 +1125,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         .unwrap();
     assert_eq!(waiting["state"], "suspended", "{waiting}");
     assert!(
-        room.window.ask.is_some(),
+        room.window.view().asks().is_some(),
         "the window asks the person, as for a press"
     );
     assert_eq!(
@@ -1148,8 +1182,10 @@ fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
     let anchor = hit.anchor.clone().expect("a hit names its resource");
     room.window.open_requests().borrow_mut().push(anchor);
     room.settle();
+    // The messages are rows of the transcript: what the app rendered of them.
     let thread = room
         .window
+        .instance()
         .detail_tree()
         .expect("the hit opened its conversation");
     assert!(
@@ -1168,14 +1204,17 @@ fn search_entries_find_notes_and_open_the_window_at_the_note() {
     let anchor = first.anchor.clone().expect("a hit names its resource");
     room.window.open_requests().borrow_mut().push(anchor);
     room.settle();
-    assert!(room.window.detail.is_some(), "the hit showed the note");
+    assert!(
+        room.window.detail_target().is_some(),
+        "the hit showed the note"
+    );
 }
 
 #[test]
 fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     let room = Room::seeded("counter");
     let host = room.window.current_host().unwrap();
-    let target = room.window.root.as_ref().unwrap().target.clone();
+    let target = room.window.instance().root_target().cloned().unwrap();
     let offered: Vec<String> = host
         .runtime()
         .catalogue()
@@ -1199,7 +1238,7 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 // its row's menu.
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
-    let room = Room::seeded("todo");
+    let mut room = Room::seeded("todo");
     assert!(
         room.window.detail_target().is_some(),
         "the scenario's item is shown"
@@ -1262,7 +1301,7 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
         .cloned()
         .expect("the scenario's note is shown");
     let host = room.window.current_host().unwrap();
-    assert_eq!(describe::title_of(&host, &shown), "Q3 plan");
+    assert_eq!(tilolang_tilo::instance::title_of(&host, &shown), "Q3 plan");
     let selected: Vec<String> = room
         .list()
         .list()
@@ -1283,7 +1322,10 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
 #[test]
 fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_repeat_it() {
     let room = Room::seeded("notes");
-    assert!(room.window.detail.is_some(), "the scenario's note is shown");
+    assert!(
+        room.window.detail_target().is_some(),
+        "the scenario's note is shown"
+    );
     let shell = room.composed();
     assert!(
         !shell.props.contains_key("title"),
@@ -1299,26 +1341,27 @@ fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_r
 
 #[test]
 fn the_list_renders_only_the_rows_it_shows() {
-    let room = Room::seeded("notes");
+    let mut room = Room::seeded("notes");
     let rows = room.root_rows();
+    // What the app renders: the rows of the list in its view's tree.
     let rendered = |room: &Room| -> Vec<String> {
-        let tree = room.window.root_tree().unwrap();
+        let tree = room.window.instance().root_tree().unwrap();
         let list = first_of(&tree, "ui.VirtualList").expect("the list").clone();
         list.children
             .iter()
-            .filter(|row| row.kind != crate::adapter::SLOT && !row.children.is_empty())
+            .filter(|row| row.kind != tilo_ui_host::adapter::SLOT && !row.children.is_empty())
             .map(|row| row.key.clone())
             .collect()
     };
     let len = rows.borrow().len();
-    rows.borrow_mut().request_range(0..3);
+    room.show_rows(0..3);
     let first = rendered(&room);
     assert!(
         !first.is_empty() && first.len() < len,
         "the list asked for the rows it shows, {} of {len}",
         first.len()
     );
-    rows.borrow_mut().request_range(len - 2..len);
+    room.show_rows(len - 2..len);
     let shown: Vec<String> = (len - 2..len)
         .filter_map(|index| rows.borrow().key_at(index))
         .collect();
@@ -1327,6 +1370,26 @@ fn the_list_renders_only_the_rows_it_shows() {
         shown,
         "the rows scrolled away are forgotten"
     );
+    assert_eq!(
+        rows.borrow().rendered(),
+        {
+            let mut sorted = shown.clone();
+            sorted.sort();
+            sorted
+        },
+        "and the window holds only those"
+    );
+}
+
+/// The first node of the runtime's tree of `kind`.
+fn first_of<'a>(
+    node: &'a tilolang_tilo::runtime::UiNode,
+    kind: &str,
+) -> Option<&'a tilolang_tilo::runtime::UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| first_of(child, kind))
 }
 
 #[test]
@@ -1350,7 +1413,7 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
-    let room = Room::staged("todo", "a saturday list");
+    let mut room = Room::staged("todo", "a saturday list");
     let checked: Vec<bool> = room
         .items()
         .into_iter()
@@ -1393,7 +1456,7 @@ fn widget_with_id<'a>(
 /// The content column's scroll.
 fn content_scroll(room: &mut Room) -> &mut ui::widget::Scrollable {
     room.window
-        .shell()
+        .shell_mut()
         .and_then(|shell| shell.content_mut::<ui::widget::Scrollable>())
         .expect("the content column scrolls")
 }
@@ -1442,14 +1505,14 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
     // Ticking a todo off changes what the todo card counts and previews, and nothing else.
     let host = room.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.todo").unwrap();
-    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
+    let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
     let open = items
         .iter()
         .find_map(|item| match item {
-            Value::Ref(item)
-                if host.runtime().read(&item.target, "done").ok() == Some(Value::Bool(false)) =>
+            RtValue::Ref(item)
+                if host.runtime().read(&item.target, "done").ok() == Some(RtValue::Bool(false)) =>
             {
                 Some(item.clone())
             }
@@ -1471,14 +1534,14 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
     host.runtime()
         .invoke_action(
             &Principal::new("ada"),
-            (check.as_str(), vec![Value::Ref(open.clone())]),
+            (check.as_str(), vec![RtValue::Ref(open.clone())]),
         )
         .unwrap();
     room.window.commit_planned();
     room.settle();
     assert_eq!(
         host.runtime().read(&open.target, "done").ok(),
-        Some(Value::Bool(true)),
+        Some(RtValue::Bool(true)),
         "the todo is checked"
     );
 
@@ -1512,11 +1575,11 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
 
 #[test]
 fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
-    fn rendered(node: &UiNode) -> usize {
+    fn rendered(node: &tilolang_tilo::runtime::UiNode) -> usize {
         usize::from(node.kind == "ui.ListItem") + node.children.iter().map(rendered).sum::<usize>()
     }
     fn transcript(room: &mut Room) -> &mut DescribedList {
-        let shell = room.window.shell().expect("the shell");
+        let shell = room.window.shell_mut().expect("the shell");
         let docked = shell
             .content_mut::<ui::widget::Docked>()
             .expect("the conversation above its composer");
@@ -1567,7 +1630,7 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
         before,
         "of the same transcript"
     );
-    let detail = room.window.detail_tree().unwrap();
+    let detail = room.window.instance().detail_tree().unwrap();
     assert!(
         rendered(&detail) < total / 2,
         "only the messages shown are rendered: {} of {total}",
@@ -1598,7 +1661,7 @@ fn page_node(value: &str, extra: bool) -> UiNode {
 #[test]
 fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
     use ui::widget::{StructureChange, Widget as _};
-    let mut reconciler = Reconciler::new(Rc::default(), Rc::new(|_| String::new()));
+    let mut reconciler = Reconciler::new(Rc::default());
     let first = page_node("Ship it", false);
     let mut pane = Pane::new(reconciler.build(&first));
     pane.take_structure_change();
@@ -1702,7 +1765,7 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
         .cloned()
         .expect("the new book opened");
     let host = room.window.current_host().unwrap();
-    assert_eq!(describe::title_of(&host, &made), "Untitled");
+    assert_eq!(tilolang_tilo::instance::title_of(&host, &made), "Untitled");
 }
 
 // ----- later builds ------------------------------------------------------------------------
@@ -1879,4 +1942,34 @@ fn a_keystroke_repaints_its_field_not_the_window() {
             "a keystroke repainted what holds the field: {damage:?} of {window:?}"
         );
     }
+}
+
+#[test]
+fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
+    let mut room = Room::staged("notes", "a week of notes");
+    let rows = room.root_rows();
+    let len = rows.borrow().len();
+    room.show_rows(0..len);
+    assert_eq!(
+        rows.borrow().rendered().len(),
+        len,
+        "the list shows every row"
+    );
+    // The list asks for fewer rows (it has not measured them yet), then for all of them: until
+    // the app answers, the rows it had stay.
+    rows.borrow_mut().request_range(0..len / 2);
+    assert_eq!(
+        rows.borrow().rendered().len(),
+        len,
+        "a row is kept until the app forgot it"
+    );
+    room.frame();
+    rows.borrow_mut().request_range(0..len);
+    assert_eq!(
+        rows.borrow().rendered().len(),
+        len / 2,
+        "what the app forgot is gone, nothing else"
+    );
+    room.frame();
+    assert_eq!(rows.borrow().rendered().len(), len, "and every row is back");
 }

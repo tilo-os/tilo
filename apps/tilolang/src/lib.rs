@@ -14,15 +14,11 @@
     reason = "layout weights, counts and sizes are small values; see crates/platform/tilolang-tilo"
 )]
 
-pub mod adapter;
 pub mod app;
-pub mod body;
-pub mod date;
 pub mod i18n;
 pub mod names;
 #[cfg(test)]
 pub mod packages;
-pub mod reconcile;
 pub mod resource;
 pub mod search;
 pub mod updates;

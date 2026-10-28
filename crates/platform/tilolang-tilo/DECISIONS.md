@@ -102,10 +102,17 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
 - **Package name.** The app crate is `tilolang-app` (binary `tilolang`, app id `so.tilo.lang`): the
   compiler crate owns the name `tilolang`.
 - **No UI graph.** The view tree is rendered straight onto the shared layout primitives and the
-  toolkit's controls by a keyed reconciler (`reconcile.rs`); the UI graph's `Column`/`Row`/gap
+  toolkit's controls by a keyed reconciler (`tilo_ui_host::reconcile`); the UI graph's `Column`/`Row`/gap
   nodes cannot express `grid`, `split`, `page` or `layers`. A node with the same key and kind keeps
   its widget (focus, scroll position, text state); text, input and checkbox values live in shared
   state, so a changed value rebuilds nothing.
+- **A window in two halves over component patches.** The app instance
+  (`tilolang_tilo::instance`) runs the views without the toolkit and sends their trees and
+  patches over the patch protocol (`tilo_render_protocol::patch`); the UI host half
+  (`tilo_ui_host::AppWindow`) builds the widgets. The instance diffs the trees it sent rather
+  than forwarding the runtime's patches: the window's copy stays exact whatever the runtime
+  renders off a patch (a content list's rows), and a change costs only the nodes that differ.
+  Today both halves run in the app's process over an in-process transport.
 - **`min:` and `max:` bound a node's inline size** (its width); `fill` takes the container's main
   axis by weight and stretches across; `span:` and `at:` are read by `grid` and `layers`.
 - **`split` collapse.** `stack` is complete. `drawer` and `navigate` hide the other pane (the drawer
