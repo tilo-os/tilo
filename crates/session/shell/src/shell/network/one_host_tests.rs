@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -203,9 +203,30 @@ pub(crate) struct Device {
     /// Whether this device's session keeps its workspaces' layouts through
     /// its broker, as a desktop session does ([`Self::carry_layouts`]).
     carries_layouts: bool,
-    /// Its session broker and the layout records it keeps through it, while
+    /// Which of this thread's [`SESSION_LAYOUTS`] are this device's: its
+    /// session broker and the layout records it keeps through it, while
     /// online.
-    layouts: std::cell::RefCell<Option<SessionLayouts>>,
+    layouts: u64,
+}
+
+thread_local! {
+    /// Each device's session layouts, by [`Device::layouts`], on the test's
+    /// own thread: the records are kept on the thread that pumps them, as a
+    /// session's loop keeps them, so a device stays shareable across the
+    /// threads a test runs it from.
+    static SESSION_LAYOUTS: std::cell::RefCell<std::collections::HashMap<u64, SessionLayouts>> =
+        std::cell::RefCell::default();
+}
+
+/// The next [`Device::layouts`] key.
+static NEXT_LAYOUTS: AtomicU64 = AtomicU64::new(1);
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        // Its session's layouts end with it, as its session would.
+        let key = self.layouts;
+        let _ = SESSION_LAYOUTS.try_with(|held| held.borrow_mut().remove(&key));
+    }
 }
 
 /// A session's layout records kept in step with its rooms through its own
@@ -354,7 +375,7 @@ impl Device {
             note_writes: Mutex::default(),
             endpoint_keys: Mutex::default(),
             carries_layouts: false,
-            layouts: std::cell::RefCell::default(),
+            layouts: NEXT_LAYOUTS.fetch_add(1, Ordering::Relaxed),
         };
         device.go_online();
         device
@@ -436,7 +457,7 @@ impl Device {
     /// session ends, its state stays on disk.
     pub(crate) fn go_offline(&mut self) {
         // The session's broker holds its network: it ends with the session.
-        self.layouts.get_mut().take();
+        SESSION_LAYOUTS.with(|held| held.borrow_mut().remove(&self.layouts));
         let net = self.net.take().expect("the device is online");
         self.channels = None;
         self.notes.lock().unwrap().clear();
@@ -537,10 +558,11 @@ impl Device {
                     },
                 )
             });
-        *self.layouts.get_mut() = Some(SessionLayouts {
+        let held = SessionLayouts {
             records,
             _broker: broker,
-        });
+        };
+        SESSION_LAYOUTS.with(|layouts| layouts.borrow_mut().insert(self.layouts, held));
     }
 
     /// Hold `keys` for every channel of this device's rooms, as its channel
@@ -684,9 +706,11 @@ impl Device {
             return;
         };
         net.tick();
-        if let Some(layouts) = self.layouts.borrow_mut().as_mut() {
-            layouts.records.pump(&self.tree);
-        }
+        SESSION_LAYOUTS.with(|held| {
+            if let Some(layouts) = held.borrow_mut().get_mut(&self.layouts) {
+                layouts.records.pump(&self.tree);
+            }
+        });
         let now = Instant::now();
         let pending = self.enrollments.lock().unwrap().clone();
         if !pending.is_empty() {
