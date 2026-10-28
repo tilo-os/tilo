@@ -2949,6 +2949,9 @@ impl FrameBuilder {
         // last drawing at rest), so one still holding it rasterises only
         // those tiles of its chrome: a clock tick at rest, the strip rail
         // during a pan.
+        // A frame in screen space since leaves the presenter holding the
+        // last drawing at rest it was handed, so that is what a pan's first
+        // frame measures from.
         let measured_from = if self.drawing_layers_at_rest {
             self.layers_drawn
                 .as_ref()
@@ -2957,6 +2960,11 @@ impl FrameBuilder {
             self.last_produced_sections
                 .as_ref()
                 .and_then(|previous| previous.layers_generation.map(|since| (since, previous)))
+                .or_else(|| {
+                    self.layers_drawn
+                        .as_ref()
+                        .map(|(since, previous)| (*since, previous))
+                })
         };
         let chrome_damage =
             measured_from
@@ -3136,12 +3144,30 @@ impl FrameBuilder {
         {
             return None;
         }
-        let sections = self.last_produced_sections.take();
+        let mut sections = self.last_produced_sections.take();
+        // Right after frames drawn as layers, the presenter holds the last
+        // of them, not an older drawing at rest: the drawing's chrome damage
+        // is measured from that frame, so a change at that moment (the strip
+        // indicators going after their hold) rasterises its tiles, not the
+        // whole chrome.
+        let measured_from_last_frame = self.layers_drawn.is_none()
+            && sections
+                .as_ref()
+                .is_some_and(|previous| previous.layers_generation.is_some());
+        if measured_from_last_frame
+            && let Some(previous) = sections.take()
+            && let Some(since) = previous.layers_generation
+        {
+            self.layers_drawn = Some((since, previous));
+        }
         let revision = self.next_scene_revision;
         self.drawing_layers_at_rest = true;
         let drawn = self.paint_with_damage();
         self.drawing_layers_at_rest = false;
         self.next_scene_revision = revision;
+        if measured_from_last_frame {
+            sections = self.layers_drawn.take().map(|(_, previous)| previous);
+        }
         let drawn_sections = std::mem::replace(&mut self.last_produced_sections, sections);
         if handed_over
             && let (Some(cache), Some(drawn_sections)) = (drawn.cache.as_ref(), drawn_sections)

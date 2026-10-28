@@ -155,6 +155,41 @@ impl PopulatedShellFixture {
         }
         Self { frame, parent }
     }
+
+    /// Acknowledge the startup writes of the fixture's `surfaces` Notes
+    /// windows and present that. Startup creates real records, and the
+    /// writer otherwise acknowledges them on its own thread whenever it gets
+    /// to them, flipping each window from Saving to Saved between two frames
+    /// a test compares.
+    pub(crate) fn acknowledge_notes_startup_writes(&mut self, surfaces: usize) {
+        let (apps, room) = {
+            let chrome = self.chrome();
+            let room = chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("fixture workspace")
+                .room()
+                .to_string();
+            let apps = chrome
+                .hosted_inputs()
+                .in_process()
+                .expect("fixture app owner")
+                .clone();
+            (apps, room)
+        };
+        assert_eq!(
+            apps.borrow_mut()
+                .flush_fixture_records(notes::definition().app_id(), &room)
+                .expect("actual Notes startup writes acknowledged"),
+            surfaces
+        );
+        // Durability is sampled after sync; the next sync presents that sample.
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
+    }
 }
 
 /// A collaborator renames the active workspace from their own device: the
