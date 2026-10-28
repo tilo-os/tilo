@@ -10623,7 +10623,7 @@ pub fn run() {
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
     // The now-playing transport Tab or the arrows reached on the lock screen;
     // `None` is its password field.
-    let mut lock_media_focus: Option<crate::shell::quick_settings::now_playing::Transport> = None;
+    let mut lock_media_focus: Option<crate::shell::now_playing_panel::Transport> = None;
     // The keyboard the lock screen draws for unlocking by touch: shown from
     // the first touch, gone at the next physical key. No input method runs
     // while locked; the passcode never leaves the lock screen.
@@ -11467,7 +11467,7 @@ pub fn run() {
                         // between them, Enter and Space act, Escape goes
                         // back to the field.
                         let media_available = lock_player.as_ref().is_some_and(|player| {
-                            crate::shell::quick_settings::now_playing::Transport::ALL
+                            crate::shell::now_playing_panel::Transport::ALL
                                 .into_iter()
                                 .any(|transport| transport.enabled(player))
                         });
@@ -13749,10 +13749,7 @@ pub fn run() {
             // Quick Settings, Settings, a firmware hotkey, another program.
             let levels = os_actions::BrightnessService::global().levels();
             frame_builder.with_chrome(|st| {
-                if crate::shell::quick_settings::follow_brightness_levels(
-                    &mut st.quick_settings,
-                    &levels,
-                ) {
+                if tilo_quick_settings::follow_brightness_levels(&mut st.quick_settings, &levels) {
                     st.bump();
                 }
             });
@@ -15544,7 +15541,7 @@ fn publish_media_osd(
 }
 
 fn sync_quick_settings_from_osd(
-    quick_settings: &mut crate::shell::chrome_state::QuickSettingsState,
+    quick_settings: &mut tilo_quick_settings::QuickSettingsState,
     osd: crate::shell::osd::Osd,
 ) {
     match osd.kind {
@@ -15735,7 +15732,7 @@ fn session_displays(outputs: &[crate::compositor::backend::Output]) -> os_action
 fn brightness_displays(
     levels: Vec<os_actions::MonitorLevel>,
     outputs: &[crate::compositor::backend::Output],
-) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+) -> Vec<tilo_quick_settings::DisplayBrightness> {
     levels
         .into_iter()
         .map(|level| {
@@ -15759,7 +15756,7 @@ fn brightness_displays(
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| level.connector.clone())
             };
-            crate::shell::chrome_state::DisplayBrightness {
+            tilo_quick_settings::DisplayBrightness {
                 connector: level.connector,
                 name,
                 level: level.level,

@@ -15,18 +15,18 @@ pub use os_actions::RealDispatcher as RealQsActions;
     clippy::struct_excessive_bools,
     reason = "each flag independently records whether one Quick Settings backend is present"
 )]
-pub(crate) struct QsActionAvailability {
-    pub(crate) brightness: bool,
-    pub(crate) volume: bool,
-    pub(crate) wifi: bool,
-    pub(crate) power_profile: bool,
-    pub(crate) vpn: bool,
-    pub(crate) bluetooth: bool,
-    pub(crate) airplane_mode: bool,
+pub struct QsActionAvailability {
+    pub brightness: bool,
+    pub volume: bool,
+    pub wifi: bool,
+    pub power_profile: bool,
+    pub vpn: bool,
+    pub bluetooth: bool,
+    pub airplane_mode: bool,
 }
 
 impl QsActionAvailability {
-    pub(crate) const fn all() -> Self {
+    pub const fn all() -> Self {
         Self {
             brightness: true,
             volume: true,
@@ -38,7 +38,7 @@ impl QsActionAvailability {
         }
     }
 
-    pub(crate) fn detect() -> Self {
+    pub fn detect() -> Self {
         #[cfg(target_os = "linux")]
         {
             let mut availability = Self::from_probe(command_on_path);
@@ -96,7 +96,7 @@ pub fn log_qs_result(op: &str, result: Result<(), String>) {
 }
 
 /// No hardware service is attached to an explicit fixture.
-pub(crate) struct UnavailableQsActions;
+pub struct UnavailableQsActions;
 
 impl QsActions for UnavailableQsActions {
     fn set_brightness(&self, _pct: f32) -> Result<(), String> {

@@ -274,12 +274,12 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
             let state = chrome.borrow();
             assert_eq!(
                 state.quick_settings.section,
-                open.then_some(crate::shell::quick_settings::QsSection::Wifi),
+                open.then_some(tilo_quick_settings::QsSection::Wifi),
                 "Enter on the chevron toggles the section in place"
             );
             assert!(matches!(
                 state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
+                tilo_quick_settings::QsLevel::Root
             ));
         }
     }
@@ -916,7 +916,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             state.overlays.quick_settings = true;
             state
                 .quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+                .push_level(tilo_quick_settings::QsLevel::Notifications);
         }
 
         let mut handled = false;
@@ -930,7 +930,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             );
             assert!(matches!(
                 state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
+                tilo_quick_settings::QsLevel::Root
             ));
         }
 
@@ -974,9 +974,9 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             let mut state = chrome.borrow_mut();
             state.overlays.quick_settings = true;
             state.quick_settings.radios.wifi_available = true;
-            state.quick_settings.section = Some(crate::shell::quick_settings::QsSection::Wifi);
+            state.quick_settings.section = Some(tilo_quick_settings::QsSection::Wifi);
             state.quick_settings.wifi_password = Some(
-                crate::shell::quick_settings::WifiPasswordPrompt::new("Secure network"),
+                tilo_quick_settings::WifiPasswordPrompt::new("Secure network"),
             );
         }
 
@@ -989,7 +989,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             assert!(state.quick_settings.wifi_password.is_none());
             assert_eq!(
                 state.quick_settings.section,
-                Some(crate::shell::quick_settings::QsSection::Wifi),
+                Some(tilo_quick_settings::QsSection::Wifi),
                 "the password goes first, the networks stay"
             );
         }

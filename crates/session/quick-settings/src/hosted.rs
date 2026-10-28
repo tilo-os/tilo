@@ -61,7 +61,7 @@ impl HostedRow {
     #[must_use]
     pub fn spoken(&self) -> String {
         match &self.actions {
-            HostedActions::Select(action) => crate::shell::i18n::t_args(
+            HostedActions::Select(action) => crate::i18n::t_args(
                 "qs-hosted-row-action-a11y",
                 &[
                     ("title", self.title.as_str().into()),
@@ -69,7 +69,7 @@ impl HostedRow {
                     ("action", action.as_str().into()),
                 ],
             ),
-            _ => crate::shell::i18n::t_args(
+            _ => crate::i18n::t_args(
                 "qs-hosted-row-a11y",
                 &[
                     ("title", self.title.as_str().into()),

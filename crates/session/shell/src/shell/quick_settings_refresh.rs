@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use os_actions as qs;
 use tilo_power_mgmt::BatterySnapshot;
 
-use crate::shell::chrome_state::DisplayBrightness;
+use tilo_quick_settings::DisplayBrightness;
 
 /// Every field independently optional: `None` means "not read", which
 /// leaves the panel's value alone rather than blanking it — a missing
@@ -686,7 +686,7 @@ impl QsRefresh {
 fn display_brightness(
     levels: Vec<qs::MonitorLevel>,
     snapshot: Option<settings_store::hardware::DisplayHardwareSnapshot>,
-) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+) -> Vec<tilo_quick_settings::DisplayBrightness> {
     let outputs = snapshot
         .map(|snapshot| snapshot.outputs)
         .unwrap_or_default();
@@ -710,7 +710,7 @@ fn display_brightness(
                 }
                 None => level.connector.clone(),
             };
-            crate::shell::chrome_state::DisplayBrightness {
+            tilo_quick_settings::DisplayBrightness {
                 connector: level.connector,
                 name,
                 level: level.level,

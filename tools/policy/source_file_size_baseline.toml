@@ -119,6 +119,7 @@
 "crates/session/desktop/src/workspace_settings.rs" = 6000
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
+"crates/session/quick-settings/src/root.rs" = 4000
 "crates/session/shell/examples/redraw_bench.rs" = 7000
 "crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6400
@@ -144,7 +145,6 @@
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500
 "crates/session/shell/src/shell/projection_overlay.rs" = 3500
-"crates/session/shell/src/shell/quick_settings/root.rs" = 4000
 "crates/session/shell/src/shell/remote_audio.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
 "crates/session/shell/src/shell/search/providers/actions.rs" = 10000

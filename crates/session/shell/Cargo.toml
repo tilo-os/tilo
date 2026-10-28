@@ -301,6 +301,9 @@ fs-protocol = { path = "../../system/fs-protocol" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The color-management-v1 handlers and the EDID parsing behind them.
 tilo-wayland-ext = { path = "../wayland-ext" }
+# The Quick Settings panel, its sections and state, and the status line
+# the top bar shares.
+tilo-quick-settings = { path = "../quick-settings" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The reusable video-streaming stack (encode/decode, per-share frame transport
 # substrate, throttle). `network::{encoder,
@@ -424,6 +427,8 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The radio fixture and panel hooks the chrome tests drive Quick Settings with.
+tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 # The clipboard bridge tests speak futures-io over tokio sockets (`compat`).
 tokio-util.workspace = true
 # Drives the secret agent from a stand-in NetworkManager into the sheet.

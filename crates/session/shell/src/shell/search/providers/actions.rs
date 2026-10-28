@@ -1989,7 +1989,7 @@ impl Action {
             "search-action-quick-settings-clipboard-subtitle",
             "search-kw-quick-settings-clipboard",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
                 Ok(())
             },
         ),
@@ -1999,7 +1999,7 @@ impl Action {
             "search-action-quick-settings-network-subtitle",
             "search-kw-quick-settings-network",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Wifi);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Wifi);
                 Ok(())
             },
         ),
@@ -2009,7 +2009,7 @@ impl Action {
             "search-action-quick-settings-bluetooth-subtitle",
             "search-kw-quick-settings-bluetooth",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Bluetooth);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Bluetooth);
                 Ok(())
             },
         ),
@@ -2019,7 +2019,7 @@ impl Action {
             "search-action-quick-settings-devices-subtitle",
             "search-kw-quick-settings-devices",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Devices);
                 Ok(())
             },
         ),
@@ -3141,7 +3141,7 @@ impl Action {
             "search-action-notifications-open-subtitle",
             "search-kw-notifications-open",
             |st, _| {
-                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
+                st.open_quick_settings_level(tilo_quick_settings::QsLevel::Notifications);
                 Ok(())
             },
         ),
@@ -3549,7 +3549,7 @@ struct CatalogueState {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct QuickSettingsKey {
     backend: usize,
-    availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    availability: tilo_quick_settings::actions::QsActionAvailability,
     radio_pending: bool,
 }
 
@@ -3559,8 +3559,8 @@ impl ActionsProvider {
             search_preferences: None,
             provider_catalog: None,
             qs_actions: Rc::new(SharedQsDispatcher::new(
-                Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
-                crate::shell::quick_settings::actions::QsActionAvailability::default(),
+                Rc::new(tilo_quick_settings::actions::UnavailableQsActions),
+                tilo_quick_settings::actions::QsActionAvailability::default(),
             )),
             ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
@@ -4862,7 +4862,9 @@ impl ActionsProvider {
                                         let Some(result) = job.result() else {
                                             return Ok(None);
                                         };
-                                        job.apply(&chrome);
+                                        crate::shell::chrome_state::ChromeState::apply_radio_ticket(
+                                            &chrome, &job,
+                                        );
                                         result.map_err(ActionError::Refused)?;
                                         Ok(Some(crate::shell::search::ActionReceipt::completed()))
                                     });
@@ -4934,11 +4936,11 @@ impl ActionsProvider {
                         }
                         QS_POWER_ID => {
                             state.quick_settings.power_profile = match args.text("profile") {
-                                Some("saver") => crate::shell::quick_settings::PowerProfile::Saver,
+                                Some("saver") => tilo_quick_settings::PowerProfile::Saver,
                                 Some("performance") => {
-                                    crate::shell::quick_settings::PowerProfile::Performance
+                                    tilo_quick_settings::PowerProfile::Performance
                                 }
-                                _ => crate::shell::quick_settings::PowerProfile::Balanced,
+                                _ => tilo_quick_settings::PowerProfile::Balanced,
                             };
                         }
                         QS_VPN_ID => {
@@ -6207,20 +6209,20 @@ mod tests {
                 assert!(!state.overlays.ws_settings);
                 assert_eq!(
                     state.quick_settings.current_level(),
-                    &crate::shell::quick_settings::QsLevel::Root
+                    &tilo_quick_settings::QsLevel::Root
                 );
             }
 
             invoke_action(&results, "quick-settings.clipboard", &chrome);
             assert_eq!(
                 chrome.borrow().quick_settings.section,
-                Some(crate::shell::quick_settings::QsSection::Clipboard)
+                Some(tilo_quick_settings::QsSection::Clipboard)
             );
 
             invoke_action(&results, "quick-settings.devices", &chrome);
             assert_eq!(
                 chrome.borrow().quick_settings.section,
-                Some(crate::shell::quick_settings::QsSection::Devices)
+                Some(tilo_quick_settings::QsSection::Devices)
             );
         }
 
@@ -7180,7 +7182,7 @@ mod tests {
         let first = Rc::new(RecordingQsActions::default());
         let slot = Rc::new(SharedQsDispatcher::new(
             first.clone(),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         ));
         let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
         let chrome = chrome_with_room();
@@ -7208,7 +7210,7 @@ mod tests {
         let second = Rc::new(RecordingQsActions::default());
         slot.replace(
             second.clone(),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         );
         set_volume(&provider).expect("the second backend sets the volume");
         assert_eq!(
@@ -7227,9 +7229,9 @@ mod tests {
         assert!(volume_available(&provider));
         slot.replace(
             second,
-            crate::shell::quick_settings::actions::QsActionAvailability {
+            tilo_quick_settings::actions::QsActionAvailability {
                 volume: false,
-                ..crate::shell::quick_settings::actions::QsActionAvailability::all()
+                ..tilo_quick_settings::actions::QsActionAvailability::all()
             },
         );
         assert!(!volume_available(&provider), "the volume control went away");
@@ -8444,9 +8446,9 @@ mod tests {
 
         // Phase `quick_settings_contracts_follow_each_production_mechanism`.
         {
-            let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> =
+            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> =
                 Rc::new(RecordingQsActions::default());
-            let availability = crate::shell::quick_settings::actions::QsActionAvailability {
+            let availability = tilo_quick_settings::actions::QsActionAvailability {
                 brightness: false,
                 volume: true,
                 wifi: false,
@@ -8490,12 +8492,12 @@ mod tests {
 
     #[test]
     fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
-        use crate::shell::chrome_state::DisplayBrightness;
+        use tilo_quick_settings::DisplayBrightness;
         let recorder = Rc::new(RecordingQsActions::default());
-        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
         let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
             dispatcher,
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         )));
         let chrome = chrome_with_room();
         {
@@ -8579,7 +8581,7 @@ mod tests {
         fail: std::cell::Cell<bool>,
     }
 
-    impl crate::shell::quick_settings::actions::QsActions for RecordingQsActions {
+    impl tilo_quick_settings::actions::QsActions for RecordingQsActions {
         fn set_brightness(&self, percent: f32) -> Result<(), String> {
             self.calls
                 .borrow_mut()
@@ -8630,7 +8632,7 @@ mod tests {
 
         fn set_power_profile(
             &self,
-            profile: crate::shell::quick_settings::actions::PowerProfile,
+            profile: tilo_quick_settings::actions::PowerProfile,
         ) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("power:{profile:?}"));
             self.result()
@@ -8664,11 +8666,10 @@ mod tests {
         // Phase `typed_quick_settings_effects_use_the_injected_dispatcher_exactly`.
         {
             let recorder = Rc::new(RecordingQsActions::default());
-            let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> =
-                recorder.clone();
+            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
             let slot = Rc::new(SharedQsDispatcher::new(
                 dispatcher,
-                crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                tilo_quick_settings::actions::QsActionAvailability::all(),
             ));
             let provider = ActionsProvider::with_shared_qs_actions(slot);
             let chrome = chrome_with_room();
@@ -8815,7 +8816,7 @@ mod tests {
 
         // Phase `quick_settings_ui_adapter_and_external_effect_share_typed_dispatch`.
         {
-            use crate::shell::quick_settings::actions::QsActions as _;
+            use tilo_quick_settings::actions::QsActions as _;
 
             let recorder = Rc::new(RecordingQsActions::default());
             let ui = ValidatedQsActions::new(recorder.as_ref());
@@ -8850,7 +8851,7 @@ mod tests {
                     crate::shell::search::action_api::ArgValue::Boolean(true),
                 )],
             );
-            ui.set_power_profile(crate::shell::quick_settings::actions::PowerProfile::Saver)
+            ui.set_power_profile(tilo_quick_settings::actions::PowerProfile::Saver)
                 .expect("valid UI value dispatches");
             external(
                 QS_POWER_ID,
@@ -9082,9 +9083,9 @@ mod tests {
 
     #[test]
     fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
-        use crate::shell::quick_settings::radio::fixture::Fixture;
         use crate::shell::search::InvocationDisposition;
         use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        use tilo_quick_settings::radio::fixture::Fixture;
         for (id, change) in [
             (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
             (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
@@ -9093,7 +9094,7 @@ mod tests {
                 let fixture = Fixture::new();
                 let slot = Rc::new(SharedQsDispatcher::new(
                     Rc::new(fixture.dispatcher),
-                    crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                    tilo_quick_settings::actions::QsActionAvailability::all(),
                 ));
                 let (wake_tx, wake_rx) = std::sync::mpsc::channel();
                 slot.set_radio_wake(Arc::new(move || {
@@ -9155,7 +9156,7 @@ mod tests {
                 let completion = slot
                     .take_radio_completion()
                     .expect("host consumes same owned receipt");
-                completion.apply(&chrome);
+                crate::shell::chrome_state::ChromeState::apply_radio_ticket(&chrome, &completion);
                 assert!(slot.take_radio_completion().is_none());
                 let restored = radio_catalog(&registry, &chrome, &doc);
                 assert!(matches!(
@@ -9173,12 +9174,12 @@ mod tests {
 
     #[test]
     fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
-        use crate::shell::quick_settings::radio::fixture::Fixture;
         use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        use tilo_quick_settings::radio::fixture::Fixture;
         let fixture = Fixture::new();
         let slot = Rc::new(SharedQsDispatcher::new(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         ));
         let mut registry = crate::shell::search::SearchRegistry::new();
         registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
@@ -9192,7 +9193,7 @@ mod tests {
             .unwrap();
         slot.replace(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::default(),
+            tilo_quick_settings::actions::QsActionAvailability::default(),
         );
         assert!(
             action
@@ -9207,7 +9208,7 @@ mod tests {
         assert!(fixture.entered.try_recv().is_err());
         slot.replace(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         );
         chrome
             .borrow_mut()
@@ -9814,7 +9815,7 @@ mod tests {
             assert!(state.overlays.quick_settings);
             assert_eq!(
                 state.quick_settings.nav_stack.last(),
-                Some(&crate::shell::quick_settings::QsLevel::Notifications)
+                Some(&tilo_quick_settings::QsLevel::Notifications)
             );
         }
 
@@ -9865,11 +9866,11 @@ mod tests {
         for (id, section) in [
             (
                 "quick-settings.network",
-                crate::shell::quick_settings::QsSection::Wifi,
+                tilo_quick_settings::QsSection::Wifi,
             ),
             (
                 "quick-settings.bluetooth",
-                crate::shell::quick_settings::QsSection::Bluetooth,
+                tilo_quick_settings::QsSection::Bluetooth,
             ),
         ] {
             let provider = ActionsProvider::new();
@@ -9891,7 +9892,7 @@ mod tests {
                 // The list opens in place on the root page.
                 assert_eq!(
                     state.quick_settings.nav_stack,
-                    [crate::shell::quick_settings::QsLevel::Root]
+                    [tilo_quick_settings::QsLevel::Root]
                 );
                 assert_eq!(state.quick_settings.section, Some(section));
                 assert_eq!(

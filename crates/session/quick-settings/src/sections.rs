@@ -19,9 +19,9 @@ use ui::widget::{
     ToggleFace,
 };
 
-use crate::shell::chrome_state::QuickSettingsState;
-use crate::shell::i18n::{t, t_args};
-use crate::shell::quick_settings::{PowerProfile, QsSection, WifiNetwork};
+use crate::QuickSettingsState;
+use crate::i18n::{t, t_args};
+use crate::{PowerProfile, QsSection, WifiNetwork};
 use tilo_desktop::drill_in::{RELATED_GAP, TOGGLE_H, TOGGLE_W};
 
 /// A focus stop inside the open section. Indices name a network, an
@@ -141,7 +141,7 @@ pub(crate) fn offered_modes(state: &QuickSettingsState) -> Vec<PowerProfile> {
 /// What the Wi-Fi tile and section say about a radio that is off.
 pub(crate) fn wifi_off_message(state: &QuickSettingsState) -> String {
     if state.radios.wifi_hardware_blocked {
-        crate::shell::quick_settings::radio::WifiProblem::HardwareSwitch.reason()
+        crate::radio::WifiProblem::HardwareSwitch.reason()
     } else if let Some(problem) = state.wifi_problem {
         problem.reason()
     } else {
@@ -317,7 +317,7 @@ fn bluetooth(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
     if state.bluetooth {
         // Connected first, then by name: what is in use is what a person
         // came to change.
-        let mut order: Vec<(usize, &crate::shell::quick_settings::BtDevice)> =
+        let mut order: Vec<(usize, &crate::BtDevice)> =
             state.bt_devices.iter().enumerate().collect();
         order.sort_by(|(_, a), (_, b)| {
             b.connected
@@ -1037,9 +1037,7 @@ mod tests {
             network("Home", 3, true, true),
             network("Cafe", 2, false, false),
         ];
-        state.wifi_password = Some(crate::shell::quick_settings::WifiPasswordPrompt::new(
-            "Cafe",
-        ));
+        state.wifi_password = Some(crate::WifiPasswordPrompt::new("Cafe"));
         let laid = layout(QsSection::Wifi, &state, 360.0, metrics());
         let kinds: Vec<&ItemKind> = laid.items.iter().map(|item| &item.kind).collect();
         assert_eq!(

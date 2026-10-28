@@ -1,16 +1,33 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "in a test an exact comparison is the assertion, not a hazard"
+    )
+)]
 //! `QuickSettings` — the top-right status-area popover: sliders, a grid of
 //! tiles and rows whose sections (Wi-Fi, Bluetooth, VPN, sound, the
 //! battery, devices, the clipboard) open in place on the root page, and the
 //! drill-in pages that stay pages (notification history, one accessory's
 //! handoff) through `nav_stack`.
 
+//!
+//! The panel, its sections and its state live here, below the shell, so a
+//! change to the compositor or chrome does not rebuild them and their tests
+//! run on their own. The shell reads the device into [`QuickSettingsState`]
+//! and lands the panel's actions.
+
 pub mod actions;
 mod device_status;
 pub mod hosted;
-pub mod now_playing;
-pub mod refresh;
-pub(crate) mod root;
-pub(crate) mod sections;
+mod i18n;
+pub mod root;
+pub mod sections;
+mod state;
+pub mod status;
+
+pub use state::{DisplayBrightness, PasteOrigin, QuickSettingsState, focused_display_first};
+pub use status::SystemStatus;
 
 /// The clipboard history as Quick Settings shows it: the Clipboard row's
 /// count and the section's copies, read together from one snapshot of the
@@ -58,7 +75,7 @@ pub enum QsSection {
     /// Certified personal devices, local audio outputs and media routes.
     /// The overlay host paints its rows ([`QuickSettingsState::device_rows`]).
     ///
-    /// [`QuickSettingsState::device_rows`]: crate::shell::chrome_state::QuickSettingsState::device_rows
+    /// [`QuickSettingsState::device_rows`]: crate::QuickSettingsState::device_rows
     Devices,
     /// Private clipboard history, including authenticated same-person
     /// copies. The overlay host paints its rows.
@@ -170,7 +187,7 @@ pub enum PowerProfile {
 
 impl PowerProfile {
     pub fn label(self) -> String {
-        crate::shell::i18n::t(match self {
+        crate::i18n::t(match self {
             PowerProfile::Saver => "qs-power-saver",
             PowerProfile::Balanced => "qs-power-balanced",
             PowerProfile::Performance => "qs-power-performance",
@@ -183,7 +200,7 @@ impl PowerProfile {
 /// sliders the built-in panel's level is the one slider's. Returns whether
 /// a slider moved.
 pub fn follow_brightness_levels(
-    state: &mut crate::shell::chrome_state::QuickSettingsState,
+    state: &mut crate::QuickSettingsState,
     levels: &[os_actions::MonitorLevel],
 ) -> bool {
     let before = (state.brightness.to_bits(), state.displays.clone());
@@ -224,7 +241,7 @@ mod tests {
     #[test]
     fn a_backlight_change_moves_its_slider_and_nothing_else() {
         use os_actions::BrightnessKind::{Backlight, Ddc};
-        let mut state = crate::shell::chrome_state::QuickSettingsState::default();
+        let mut state = crate::QuickSettingsState::default();
         assert!(follow_brightness_levels(
             &mut state,
             &[level("eDP-1", 0.7, Backlight)]
@@ -235,12 +252,12 @@ mod tests {
         );
 
         state.displays = vec![
-            crate::shell::chrome_state::DisplayBrightness {
+            crate::DisplayBrightness {
                 connector: "eDP-1".into(),
                 name: "Built-in display".into(),
                 level: 0.7,
             },
-            crate::shell::chrome_state::DisplayBrightness {
+            crate::DisplayBrightness {
                 connector: "DP-2".into(),
                 name: "Dell U2720Q".into(),
                 level: 0.5,

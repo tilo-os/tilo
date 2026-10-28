@@ -1210,6 +1210,7 @@ doc = false
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["jobs", "native-editor"] }
 "tilo-projector" = { path = "../../../crates/system/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../../crates/system/tilo-pycompat", default-features = false, features = [] }
+"tilo-quick-settings" = { path = "../../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
@@ -2170,7 +2171,7 @@ doc = false
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
-"syn-3_0_4" = { package = "syn", version = "^3.0.4", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
+"syn-3_0_9" = { package = "syn", version = "^3.0.9", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
 "synstructure-0_13_2" = { package = "synstructure", version = "^0.13.2", default-features = false, features = ["default", "proc-macro"] }
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
@@ -3579,6 +3580,7 @@ doc = false
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["jobs", "native-editor"] }
 "tilo-projector" = { path = "../../../crates/system/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../../crates/system/tilo-pycompat", default-features = false, features = [] }
+"tilo-quick-settings" = { path = "../../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
@@ -4448,7 +4450,7 @@ doc = false
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "std", "stdio", "system", "termios", "time"] }
+"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -4537,7 +4539,6 @@ doc = false
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
-"syn-3_0_4" = { package = "syn", version = "^3.0.4", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
 "synstructure-0_13_2" = { package = "synstructure", version = "^0.13.2", default-features = false, features = ["default", "proc-macro"] }
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
@@ -4572,14 +4573,14 @@ doc = false
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = [] }
-"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = [] }
+"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
+"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
-"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
+"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
@@ -4594,7 +4595,7 @@ doc = false
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = [] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }

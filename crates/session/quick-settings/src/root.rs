@@ -7,12 +7,10 @@
 //! one pass ([`PageLayout`]); paint, hit-testing, keyboard focus and the
 //! accessibility tree all read that one layout.
 
-use crate::shell::chrome_state::QuickSettingsState;
-use crate::shell::i18n::{t, t_args};
-use crate::shell::quick_settings::sections::{
-    self, SectionLayout, SectionMetrics, SectionPaint, SectionStop,
-};
-use crate::shell::quick_settings::{PowerProfile, QsLevel, QsSection};
+use crate::QuickSettingsState;
+use crate::i18n::{t, t_args};
+use crate::sections::{self, SectionLayout, SectionMetrics, SectionPaint, SectionStop};
+use crate::{PowerProfile, QsLevel, QsSection};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use std::collections::HashMap;
 use tilo_desktop::drill_in::{
@@ -597,7 +595,7 @@ impl QuickSettingsRoot {
         }
     }
     /// How far the page is scrolled, in logical pixels.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn scroll_offset(&self) -> f64 {
         self.scroll.offset().y
     }
@@ -1823,7 +1821,9 @@ impl QuickSettingsRoot {
                 .map_or_else(|| t("qs-not-connected"), |v| v.ssid.clone()),
         }
     }
-    pub(crate) fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+    /// The line under control `c`'s tile: its state in words.
+    #[must_use]
+    pub fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         if s.radio_change_pending
             && matches!(
                 c,
@@ -1959,8 +1959,8 @@ impl QuickSettingsRoot {
 
     /// Lay the page out in `panel` with every section where its motion
     /// ends, as a frame would once it settled.
-    #[cfg(test)]
-    pub(crate) fn lay_out_settled_for_tests(&mut self, panel: Rect, state: &QuickSettingsState) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn lay_out_settled_for_tests(&mut self, panel: Rect, state: &QuickSettingsState) {
         self.settle_sections(state);
         self.lay_out(panel, state);
     }

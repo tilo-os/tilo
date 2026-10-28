@@ -15341,6 +15341,7 @@ dependencies = [
  "tilo-polkit-agent",
  "tilo-power-mgmt",
  "tilo-projector",
+ "tilo-quick-settings",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
@@ -19723,6 +19724,23 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-quick-settings"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "parking_lot",
+ "settings-store",
+ "tilo-cpu-raster",
+ "tilo-desktop",
+ "tilo-power-mgmt",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -26599,6 +26617,7 @@ dependencies = [
  "tilo-process",
  "tilo-projector",
  "tilo-pycompat",
+ "tilo-quick-settings",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",

@@ -56,9 +56,9 @@ impl ShellOverlayHost {
     pub(super) fn apply_one_qs_reading(
         &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::quick_settings::refresh::QsReading,
+        reading: crate::shell::quick_settings_refresh::QsReading,
     ) {
-        use crate::shell::quick_settings::refresh::QsReading;
+        use crate::shell::quick_settings_refresh::QsReading;
         match reading {
             QsReading::Fast(reading) => self.apply_fast_qs_reading(st, *reading),
             QsReading::Field(reading) => self.apply_qs_field_reading(st, reading),
@@ -76,7 +76,7 @@ impl ShellOverlayHost {
                 }
             }
             QsReading::BtDevices(Some(devs)) => {
-                use crate::shell::quick_settings::BtDevice;
+                use tilo_quick_settings::BtDevice;
                 st.quick_settings.bt_devices = devs
                     .into_iter()
                     .map(|d| BtDevice {
@@ -104,9 +104,9 @@ impl ShellOverlayHost {
     pub(super) fn apply_fast_qs_reading(
         &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::quick_settings::refresh::FastReading,
+        reading: crate::shell::quick_settings_refresh::FastReading,
     ) {
-        use crate::shell::quick_settings::refresh::FastReading;
+        use crate::shell::quick_settings_refresh::FastReading;
         let FastReading {
             brightness,
             displays,
@@ -162,9 +162,9 @@ impl ShellOverlayHost {
     pub(super) fn apply_qs_field_reading(
         &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::quick_settings::refresh::FieldReading,
+        reading: crate::shell::quick_settings_refresh::FieldReading,
     ) {
-        use crate::shell::quick_settings::refresh::FieldReading;
+        use crate::shell::quick_settings_refresh::FieldReading;
         match reading {
             FieldReading::Radios(Some(radios)) => self.apply_qs_radios(st, radios),
             FieldReading::Bluetooth(Some(on)) => st.quick_settings.bluetooth = on,
@@ -228,12 +228,12 @@ impl ShellOverlayHost {
     pub(super) fn apply_qs_brightness(
         st: &mut crate::shell::chrome_state::ChromeState,
         brightness: Option<f32>,
-        displays: Option<Vec<crate::shell::chrome_state::DisplayBrightness>>,
+        displays: Option<Vec<tilo_quick_settings::DisplayBrightness>>,
         focused: Option<&str>,
     ) {
         let brightness = match displays {
             Some(mut displays) => {
-                crate::shell::chrome_state::focused_display_first(&mut displays, focused);
+                tilo_quick_settings::focused_display_first(&mut displays, focused);
                 st.quick_settings.brightness_available =
                     brightness.is_some() || !displays.is_empty();
                 let brightness =
@@ -272,7 +272,7 @@ impl ShellOverlayHost {
         st: &mut crate::shell::chrome_state::ChromeState,
         nets: Vec<os_actions::WifiNetworkInfo>,
     ) {
-        use crate::shell::quick_settings::WifiNetwork;
+        use tilo_quick_settings::WifiNetwork;
         st.quick_settings.wifi_networks = nets
             .into_iter()
             .map(|n| WifiNetwork {
@@ -289,9 +289,9 @@ impl ShellOverlayHost {
     pub(super) fn apply_wifi_join_result(
         &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        join: crate::shell::quick_settings::refresh::WifiJoinResult,
+        join: crate::shell::quick_settings_refresh::WifiJoinResult,
     ) {
-        let crate::shell::quick_settings::refresh::WifiJoinResult {
+        let crate::shell::quick_settings_refresh::WifiJoinResult {
             ssid,
             password,
             shared_credential,
@@ -369,7 +369,7 @@ impl ShellOverlayHost {
                 {
                     // A protected network that turned its saved password
                     // down asks for it, in place.
-                    let mut prompt = crate::shell::quick_settings::WifiPasswordPrompt::new(ssid);
+                    let mut prompt = tilo_quick_settings::WifiPasswordPrompt::new(ssid);
                     prompt.error = Some(t("host-wifi-join-check-password"));
                     st.quick_settings.wifi_password = Some(prompt);
                 } else {
@@ -483,7 +483,7 @@ impl ShellOverlayHost {
     /// the screen from the text.
     pub(super) fn clipboard_paste_rect(
         &self,
-        origin: crate::shell::chrome_state::PasteOrigin,
+        origin: tilo_quick_settings::PasteOrigin,
         (width, desired_h): (f64, f64),
     ) -> Rect {
         let margin = self.qs_panel.margin;
@@ -562,7 +562,7 @@ impl ShellOverlayHost {
         &self,
         state: &crate::shell::chrome_state::ChromeState,
     ) -> f64 {
-        use crate::shell::quick_settings::QsLevel;
+        use tilo_quick_settings::QsLevel;
         match state.quick_settings.current_level() {
             QsLevel::Root => self.qs_root.preferred_height(&state.quick_settings),
             QsLevel::BluetoothDetails(_) => self
@@ -624,7 +624,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Notifications
+                    tilo_quick_settings::QsLevel::Notifications
                 )
         };
         if !notifications_open
@@ -664,7 +664,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
+                    tilo_quick_settings::QsLevel::Root
                 )
         };
         if !on_root && !self.qs_root.scroll_dragging() {
@@ -832,8 +832,8 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let qs = &state.quick_settings;
         if !state.overlays.quick_settings
-            || qs.current_level() != &crate::shell::quick_settings::QsLevel::Root
-            || qs.section != Some(crate::shell::quick_settings::QsSection::Clipboard)
+            || qs.current_level() != &tilo_quick_settings::QsLevel::Root
+            || qs.section != Some(tilo_quick_settings::QsSection::Clipboard)
         {
             return false;
         }
@@ -950,7 +950,7 @@ impl ShellOverlayHost {
                 let bluetooth_details = self.chrome.as_ref().is_some_and(|chrome| {
                     matches!(
                         chrome.borrow().quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                        tilo_quick_settings::QsLevel::BluetoothDetails(_)
                     )
                 });
                 if bluetooth_details {
@@ -988,7 +988,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                    tilo_quick_settings::QsLevel::BluetoothDetails(_)
                 )
         });
         if !devices_open
@@ -1089,13 +1089,13 @@ impl ShellOverlayHost {
             return Vec::new();
         }
         match state.quick_settings.current_level() {
-            crate::shell::quick_settings::QsLevel::Root => {
+            tilo_quick_settings::QsLevel::Root => {
                 let mut rects = self.qs_root.semantic_rects(&state.quick_settings);
                 drop(state);
                 rects.extend(self.now_playing_semantic_rects());
                 rects
             }
-            crate::shell::quick_settings::QsLevel::Notifications => {
+            tilo_quick_settings::QsLevel::Notifications => {
                 drop(state);
                 self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
                     self.notification_center.semantic_rects(
@@ -1105,7 +1105,7 @@ impl ShellOverlayHost {
                     )
                 })
             }
-            crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => Vec::new(),
+            tilo_quick_settings::QsLevel::BluetoothDetails(_) => Vec::new(),
         }
     }
 
@@ -1131,7 +1131,7 @@ impl ShellOverlayHost {
 
 /// The authentication mode the last Wi-Fi scan listed for `ssid`.
 pub(super) fn scanned_wifi_security(
-    networks: &[crate::shell::quick_settings::WifiNetwork],
+    networks: &[tilo_quick_settings::WifiNetwork],
     ssid: &str,
 ) -> Option<os_actions::WifiSecurity> {
     networks
@@ -1159,12 +1159,10 @@ pub(super) enum QsDeviceSource {
 }
 
 /// This machine's sound outputs as Quick Settings lists them.
-pub(super) fn sound_outputs_of(
-    view: &DeviceFabricView,
-) -> Vec<crate::shell::quick_settings::SoundOutput> {
+pub(super) fn sound_outputs_of(view: &DeviceFabricView) -> Vec<tilo_quick_settings::SoundOutput> {
     view.local_outputs
         .iter()
-        .map(|output| crate::shell::quick_settings::SoundOutput {
+        .map(|output| tilo_quick_settings::SoundOutput {
             node: output.node_id,
             name: output.label.clone(),
             current: output.is_default,
@@ -1182,10 +1180,10 @@ pub(super) const fn radio_field(change: os_actions::RadioChange) -> QsField {
 
 /// The panel's three-way profile, from the daemon's.
 pub(super) const fn ui_power_profile(
-    profile: crate::shell::quick_settings::actions::PowerProfile,
-) -> crate::shell::quick_settings::PowerProfile {
-    use crate::shell::quick_settings::PowerProfile as UiPP;
-    use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+    profile: tilo_quick_settings::actions::PowerProfile,
+) -> tilo_quick_settings::PowerProfile {
+    use tilo_quick_settings::PowerProfile as UiPP;
+    use tilo_quick_settings::actions::PowerProfile as ActPP;
     match profile {
         ActPP::Saver => UiPP::Saver,
         ActPP::Balanced => UiPP::Balanced,
@@ -1202,7 +1200,7 @@ pub(super) fn focus_quick_settings_accessibility(
     };
     let notifications_open = matches!(
         chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Notifications
+        tilo_quick_settings::QsLevel::Notifications
     );
     if notifications_open
         && let [0, dialog_path @ ..] = child_path

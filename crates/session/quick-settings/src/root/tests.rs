@@ -1,5 +1,5 @@
 use super::*;
-use crate::shell::quick_settings::{BtDevice, WifiNetwork};
+use crate::{BtDevice, WifiNetwork};
 use ui::time::Duration;
 use ui::tokens::Motion;
 const PANEL: Rect = Rect::new(100., 48., 500., 960.);
@@ -406,9 +406,7 @@ fn the_wifi_section_turns_wifi_on_and_joins_networks_or_asks_for_a_password() {
 
     // The password is asked in place, under its network.
     state.wifi_networks[1].known = false;
-    state.wifi_password = Some(crate::shell::quick_settings::WifiPasswordPrompt::new(
-        "Cafe",
-    ));
+    state.wifi_password = Some(crate::WifiPasswordPrompt::new("Cafe"));
     root.settle_sections(&state);
     let prompt = root
         .wifi_password_rect(&state)
@@ -423,12 +421,12 @@ fn the_wifi_section_turns_wifi_on_and_joins_networks_or_asks_for_a_password() {
 fn the_volume_chevron_chooses_where_sound_plays_under_the_sliders() {
     let mut state = laptop();
     state.sound_outputs = vec![
-        crate::shell::quick_settings::SoundOutput {
+        crate::SoundOutput {
             node: 41,
             name: "Speakers".into(),
             current: true,
         },
-        crate::shell::quick_settings::SoundOutput {
+        crate::SoundOutput {
             node: 57,
             name: "Headphones".into(),
             current: false,
@@ -839,12 +837,12 @@ fn edit_help_copy_uses_font_safe_keyboard_names() {
 fn each_monitor_gets_a_named_brightness_slider() {
     let mut state = laptop();
     state.displays = vec![
-        crate::shell::chrome_state::DisplayBrightness {
+        crate::DisplayBrightness {
             connector: "eDP-1".into(),
             name: "Built-in display".into(),
             level: 0.5,
         },
-        crate::shell::chrome_state::DisplayBrightness {
+        crate::DisplayBrightness {
             connector: "DP-2".into(),
             name: "Dell U2720Q".into(),
             level: 0.75,
@@ -963,7 +961,7 @@ fn every_slider_track_is_one_length_with_or_without_the_sound_chevron() {
     for outputs in [0, 2] {
         let mut state = laptop();
         state.sound_outputs = (0..outputs)
-            .map(|node| crate::shell::quick_settings::SoundOutput {
+            .map(|node| crate::SoundOutput {
                 node,
                 name: format!("Output {node}"),
                 current: node == 0,
