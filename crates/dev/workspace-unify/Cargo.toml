@@ -352,8 +352,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_2" = { package = "form_urlencoded", version = "^1.2.2", default-features = false, features = ["alloc", "default", "std"] }
-"format-host" = { path = "../../../crates/doc/format-host", default-features = false, features = [] }
-"format-provider-abi" = { path = "../../../crates/doc/format-provider-abi", default-features = false, features = [] }
 "frame-link" = { path = "../../../crates/dev/frame-link", default-features = false, features = [] }
 "frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
 "frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }
@@ -2740,8 +2738,6 @@ doc = false
 "fontconfig-parser-0_5_8" = { package = "fontconfig-parser", version = "^0.5.8", default-features = false, features = [] }
 "fontdb-0_23_0" = { package = "fontdb", version = "^0.23.0", default-features = false, features = ["default", "fontconfig", "fontconfig-parser", "fs", "memmap", "memmap2", "std"] }
 "form_urlencoded-1_2_2" = { package = "form_urlencoded", version = "^1.2.2", default-features = false, features = ["alloc", "default", "std"] }
-"format-host" = { path = "../../../crates/doc/format-host", default-features = false, features = [] }
-"format-provider-abi" = { path = "../../../crates/doc/format-provider-abi", default-features = false, features = [] }
 "frame-link" = { path = "../../../crates/dev/frame-link", default-features = false, features = [] }
 "frost-core-3_0_0" = { package = "frost-core", version = "^3.0.0", default-features = false, features = ["internals", "serde", "serialization"] }
 "frost-ed25519-3_0_0" = { package = "frost-ed25519", version = "^3.0.0", default-features = false, features = ["default", "serde", "serialization"] }

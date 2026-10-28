@@ -62,7 +62,7 @@ install = { path = "../install", optional = true }
 runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
-# Cap'n Proto RPC for the control socket, matching format-host.
+# Cap'n Proto RPC for the control socket.
 capnp.workspace = true
 capnp-rpc.workspace = true
 

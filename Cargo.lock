@@ -2563,13 +2563,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "collab-link"
-version = "0.1.0"
-dependencies = [
- "workspace-hack",
-]
-
-[[package]]
 name = "collab-probe"
 version = "0.1.0"
 dependencies = [
@@ -5211,40 +5204,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "format-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "capnp",
- "capnp-rpc",
- "format-provider-abi",
- "getrandom 0.4.3",
- "notify",
- "runtime-portal",
- "serde",
- "tempfile",
- "tilo-files",
- "tilo-lock",
- "tilo-paths",
- "tilo-test-env",
- "tokio",
- "toml 1.0.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "wasmi",
- "wat",
- "workspace-hack",
-]
-
-[[package]]
-name = "format-provider-abi"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.3.4",
- "workspace-hack",
 ]
 
 [[package]]
@@ -25756,7 +25715,6 @@ dependencies = [
  "url",
  "usvg",
  "uuid",
- "wasm-encoder 0.252.0",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
@@ -26163,8 +26121,6 @@ dependencies = [
  "fontconfig-parser",
  "fontdb",
  "form_urlencoded",
- "format-host",
- "format-provider-abi",
  "frame-link",
  "frost-core",
  "frost-ed25519",

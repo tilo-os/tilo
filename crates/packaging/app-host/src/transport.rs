@@ -1,8 +1,7 @@
 //! Cap'n Proto transport over Unix-domain stream sockets. Spawns one
 //! tokio task per accepted connection; each connection runs a
 //! `capnp-rpc` system that vends the [`crate::service::AppHostServer`]
-//! capability as the bootstrap. Mirrors `format-host`'s pattern so the
-//! two daemons share a single review point for socket handling.
+//! capability as the bootstrap.
 
 use std::path::Path;
 use std::sync::Arc;
