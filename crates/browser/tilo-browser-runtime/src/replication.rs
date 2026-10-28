@@ -355,8 +355,8 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 }
 
 pub(crate) fn close(id: u32) {
-    crate::feedback_delivery::forget_feedback_startup(id);
-    crate::feedback_delivery::forget(id);
+    crate::feedback_code::forget_feedback_startup(id);
+    crate::feedback_code::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }
 
@@ -526,7 +526,7 @@ fn refused_change(app: &str, plain: &str) -> String {
     let title = crate::desktop::applications()
         .into_iter()
         .find(|definition| definition.app_id == app)
-        .map_or("The app", |definition| definition.title);
+        .map_or("The app", |definition| &*definition.title);
     format!("{title} didn't keep that. {plain}")
 }
 

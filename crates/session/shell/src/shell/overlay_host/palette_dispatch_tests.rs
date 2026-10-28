@@ -1719,7 +1719,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         );
 
         let none = Modifiers::default();
-        for c in ["X", "a", "v", "e", "r"] {
+        for c in ["B", "o", "b"] {
             peer_sync_key(&mut h, &key_event(Key::Character(c.into())), none);
         }
         assert_eq!(

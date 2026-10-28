@@ -2402,6 +2402,9 @@ impl crate::widget::controls::ActionControls for NavList {
     }
 }
 
+mod component;
+pub use component::{NavItemProps, NavListProps};
+
 impl crate::resources::PublishesResources for NavList {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         self.view_resource().into_iter().collect()

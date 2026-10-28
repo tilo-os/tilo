@@ -38,7 +38,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
             me,
             run: Run::live(None),
         },
-        ui_core::storage::AppStorage::for_app(A::ID),
+        ui_core::storage::AppStorage::for_app(super::app::hooks::<A>().id()),
         super::settings::Hosted::default(),
     );
     let view: Box<dyn AppWidget> = root.into_widget();

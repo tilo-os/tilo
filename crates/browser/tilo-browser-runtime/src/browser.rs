@@ -453,6 +453,9 @@ struct Mount {
     /// Who is here changed since the last frame, which puts them on their
     /// windows before it lays out ([`Mount::apply_here`]).
     here_stale: bool,
+    /// The change of the page's theme this mount draws in
+    /// ([`crate::page_theme::generation`]).
+    theme_seen: u64,
     /// The peer this mount replicates through, and whether a peer's change
     /// reached it since the last frame.
     peer: Option<u32>,
@@ -740,6 +743,34 @@ const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 32 << 20;
 /// The image atlas's side under `conservative_gpu`: 64 MB instead of vello's
 /// 256 MB maximum, which opening a photo-heavy app could reach in one frame.
 const CONSERVATIVE_IMAGE_ATLAS_MAX: u32 = 4096;
+
+/// What a frame repainted, for the frame metrics: why it repainted all of
+/// it, or how much of the window its regions cover and the largest ones.
+fn describe_repaint(repaint: &ui::retained_raster::Repaint, window: u64) -> String {
+    match repaint {
+        ui::retained_raster::Repaint::Full(unknown) => format!("full: {unknown:?}"),
+        ui::retained_raster::Repaint::Regions(regions) => {
+            let area: f64 = regions.iter().map(ui::kurbo::Rect::area).sum();
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a window's pixel count is far below f64's exact range"
+            )]
+            let percent = 100.0 * area / (window.max(1) as f64);
+            let mut largest: Vec<_> = regions.iter().collect();
+            largest.sort_by(|a, b| b.area().total_cmp(&a.area()));
+            let shown: Vec<String> = largest
+                .iter()
+                .take(4)
+                .map(|r| format!("{:.0},{:.0} {:.0}x{:.0}", r.x0, r.y0, r.width(), r.height()))
+                .collect();
+            format!(
+                "{} regions {percent:.1}%: {}",
+                regions.len(),
+                shown.join("; ")
+            )
+        }
+    }
+}
 
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
@@ -1041,7 +1072,7 @@ fn desktop_inputs(
             .map_err(error)?,
     );
     Ok(crate::desktop::Inputs {
-        feedback: config.peer.and_then(crate::feedback_delivery::take_startup),
+        feedback: config.peer.and_then(crate::feedback_code::take_startup),
         owners: RecordOwners::with_store(Rc::clone(dyn_store)),
         store: Rc::clone(dyn_store),
         views,
@@ -1166,13 +1197,13 @@ fn present_component(
     dyn_store: &Rc<dyn durable_store::DurableStore>,
     permissions: SharedPermissions,
 ) -> Result<Presentation, JsValue> {
-    if definition.app_id == tilo_desktop::feedback::PACKAGE {
+    if definition.app_id() == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
     }
     let owners = RecordOwners::with_store(Rc::clone(dyn_store));
     let record = owners
         .clone()
-        .open(definition.app_id, &config.room)
+        .open(definition.app_id(), &config.room)
         .map_err(error)?;
     let stores = Rc::new(RefCell::new(vec![record.clone()]));
     // The instance's default record, named by the host so a reload opens the
@@ -1372,7 +1403,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 *component,
                 viewport.logical_size(),
                 ComponentRunnerInputs {
-                    theme: ui::Theme::dark(),
+                    theme: crate::page_theme::current(),
                     text_renderer,
                 },
                 move || {
@@ -1396,7 +1427,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 ui::state::State::new(),
                 surface,
                 viewport.logical_size(),
-                ui::Theme::dark(),
+                crate::page_theme::current(),
                 text_renderer,
                 UserId(config.author()),
             )
@@ -1468,7 +1499,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
-        app: definition.map(|definition| definition.app_id),
+        app: definition.map(ui::application::ApplicationDefinition::app_id),
         remote_pointers: Vec::new(),
         desktop,
         gpu: None,
@@ -1496,6 +1527,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         oversized_scene: false,
         skipped_frame: false,
         here_stale: false,
+        theme_seen: crate::page_theme::generation(),
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
@@ -1960,7 +1992,9 @@ impl Mount {
         if let Some(peer) = self.peer {
             crate::replication::follow_answers(peer);
         }
-        self.pending |= desktop_woken || self.replica_changed.get();
+        self.pending |= desktop_woken
+            || self.replica_changed.get()
+            || self.theme_seen != crate::page_theme::generation();
         let frame = self.frame.frame_schedule();
         let due = frame
             .next_wake_deadline
@@ -2109,6 +2143,18 @@ impl Mount {
         // eagerly relayouting here and then polling animated widgets runs
         // the same frame pipeline twice before one presentation.
         let mut host_changed = held;
+        // The layout changed under the streamed legacy windows: each moves
+        // into the tab it names once that tab is there.
+        if let Some(desktop) = self
+            .desktop
+            .as_ref()
+            .filter(|d| d.shared.take_peer_windows_due())
+            && let Err(error) = desktop.show_peer_windows()
+        {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "a streamed window could not be shown: {error}"
+            )));
+        }
         if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
             let wakers = desktop.shared.take_wakers();
             if let Some(reasons) = &mut reasons {
@@ -2120,6 +2166,13 @@ impl Mount {
             if desktop.shared.take_arrived() {
                 desktop.shared.retry_waiting(&desktop.handle);
             }
+            host_changed = true;
+        }
+        // The person's settings or their browser's preferences changed
+        // what the theme is: every window draws in the new one.
+        if self.theme_seen != crate::page_theme::generation() {
+            self.theme_seen = crate::page_theme::generation();
+            self.frame.set_theme(crate::page_theme::current());
             host_changed = true;
         }
         // A peer's change merged into an open record.
@@ -2312,6 +2365,11 @@ impl Mount {
             (_, 10..=49) => "render:part<50%",
             _ => "render:full:large-damage",
         };
+        if self.metrics.borrow().enabled() {
+            self.metrics
+                .borrow_mut()
+                .damaged(describe_repaint(&repaint, window));
+        }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
         check_retained(
@@ -2506,11 +2564,13 @@ impl Mount {
         self.place_remote_pointers();
         // The input method stays on the field the screen shows focused. A
         // status between frames (the tree delivered in the task after a
-        // frame) says the presented frame's field: read from the harness
-        // there, the field Notes' editor types into came back missing
-        // after every keystroke, and the page moved its focus from its
-        // text editor to the canvas and back around every key, ending and
-        // restarting input for the app each time.
+        // frame) says the presented frame's field. The harness has none
+        // then whenever a component's model was served since the frame
+        // (a keystroke's record write landing): serving retires its layout
+        // tree until the next frame lays it out again, and a retired tree
+        // names no keyboard owner. Read from it, the page moved its focus
+        // from its text editor to the canvas and back around every key,
+        // ending and restarting input for the app each time.
         if presented {
             self.presented_ime = self.frame.ime_window();
         }
@@ -3055,7 +3115,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "damage": metrics.take_damage(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)

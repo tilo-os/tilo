@@ -10,7 +10,9 @@
 use std::rc::Rc;
 
 use super::Action;
-use super::page_part::{Asked, Placed, asking};
+use super::page_part::{Asked, Placed, asking, bound};
+use crate::model::Library;
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource};
@@ -103,7 +105,7 @@ impl MediaGridHost {
     }
 
     /// Bring the grid up to date with this frame's cards.
-    pub(super) fn update(&mut self, cards: Vec<CardSpec>) {
+    pub(super) fn update(&mut self, cards: Vec<CardSpec>, actions: Option<&Actions<Library>>) {
         self.host.unplace();
         let key: Vec<CardKey> = cards.iter().map(CardKey::of).collect();
         if key == self.key && self.loading.is_none() {
@@ -113,19 +115,21 @@ impl MediaGridHost {
         self.key = key;
         let built = cards
             .into_iter()
-            .map(|card| self.build_card(card))
+            .map(|card| self.build_card(card, actions))
             .collect();
         self.host
             .replace(MediaGrid::new(built).with_size(MediaSize::Small));
     }
 
-    fn build_card(&self, card: CardSpec) -> MediaCard {
+    /// A card opens what it stands for through the published effect, where
+    /// its action is one.
+    fn build_card(&self, card: CardSpec, actions: Option<&Actions<Library>>) -> MediaCard {
         let source = card
             .image
             .map_or(MediaSource::Placeholder, MediaSource::Image);
-        let mut built = MediaCard::new(format!("music.card.{}", card.art_id), source)
-            .title(card.title)
-            .on_activate(asking(&self.asked, card.action));
+        let built = MediaCard::new(format!("music.card.{}", card.art_id), source).title(card.title);
+        let mut built = bound(actions, built, &card.action)
+            .unwrap_or_else(|built| built.on_activate(asking(&self.asked, card.action)));
         if card.portrait {
             built = built.aspect(MediaAspect::Circle);
         }

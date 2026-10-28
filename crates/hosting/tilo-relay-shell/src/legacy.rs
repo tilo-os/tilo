@@ -406,6 +406,7 @@ impl LegacyWindows {
                 height,
                 codec,
                 app_id,
+                tab,
                 ..
             } if *source_peer == own => {
                 // Browsers decode the video codecs this host advertised for
@@ -415,7 +416,8 @@ impl LegacyWindows {
                     tracing::debug!(codec, app_id, "legacy window stream not bridged");
                     return;
                 }
-                let listed = wire::Stream::new(*surface, app_id, codec, *width, *height);
+                let listed =
+                    wire::Stream::new(*surface, app_id, codec, *width, *height).with_tab(*tab);
                 if !listed.valid() {
                     return;
                 }
@@ -962,6 +964,9 @@ mod tests {
         }
     }
 
+    /// The layout tab the session's window is in.
+    const TAB: u64 = 0x93;
+
     fn own() -> u64 {
         tilo_peer_state::peer_handle(&SESSION)
     }
@@ -987,7 +992,7 @@ mod tests {
             hdr_static_metadata: None,
             bit_depth: 0,
             app_id: "org.chromium.Chromium".into(),
-            tab: 0,
+            tab: TAB,
         }
     }
     fn frame(surface: u64, seq: u64, bytes: &[u8]) -> NeighbourMsg {
@@ -1068,7 +1073,9 @@ mod tests {
             }
         })
         .await;
-        let expected = wire::Stream::new(7, "org.chromium.Chromium", "h264", 640, 480);
+        // The stream names the layout tab the session holds its window in.
+        let expected =
+            wire::Stream::new(7, "org.chromium.Chromium", "h264", 640, 480).with_tab(TAB);
         assert_eq!(listed, std::slice::from_ref(&expected));
 
         // Before any keyframe there is nothing to decode from.
@@ -1533,13 +1540,9 @@ mod tests {
         };
         assert_eq!(
             next().await,
-            wire::Frame::Start(wire::Stream::new(
-                7,
-                "org.chromium.Chromium",
-                wire::VP9,
-                640,
-                480
-            ))
+            wire::Frame::Start(
+                wire::Stream::new(7, "org.chromium.Chromium", wire::VP9, 640, 480).with_tab(TAB)
+            )
         );
         let wire::Frame::Chunk { flags, data, .. } = next().await else {
             panic!("the key frame follows the start");

@@ -450,6 +450,30 @@ impl tilo_browser_peer::HttpClient for Recording {
     }
 }
 
+/// The next document `peer` opened on `route`, leaving every other event
+/// pending: a room also carries records the test did not write, such as the
+/// shared desktop every workspace is seeded with.
+pub async fn next_document_on(
+    peer: &PeerHandle,
+    pending: &mut Vec<PeerEvent>,
+    route: &DocumentRoute,
+) -> DocumentMutation {
+    wait_for("a document on the route", || {
+        pending.extend(peer.drain());
+        let found = pending
+            .iter()
+            .position(
+                |event| matches!(event, PeerEvent::Document(document) if &document.route == route),
+            )
+            .and_then(|index| match pending.remove(index) {
+                PeerEvent::Document(document) => document.mutation(),
+                _ => None,
+            });
+        async move { found }
+    })
+    .await
+}
+
 pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
     wait_for("a document", || {
         pending.extend(peer.drain());

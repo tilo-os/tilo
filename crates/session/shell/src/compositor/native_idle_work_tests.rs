@@ -110,6 +110,10 @@ impl Desktop {
         // The desk's widgets appear with the first update, a change of the
         // shell's own; these tests count what an app's deadline costs.
         frame.host_mut().force_desk_settled(Instant::now());
+        // Once the desktop is first painted, a control hint's moment comes
+        // seconds later, and the scheduler rightly wakes for it; these tests
+        // count what an app's deadline costs.
+        frame.host_mut().rest_control_hints();
         Self {
             frame,
             doc: AutoCommit::new(),

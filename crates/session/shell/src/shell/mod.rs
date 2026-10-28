@@ -93,6 +93,7 @@ pub mod fixed_chords;
 pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
+pub mod foreign_ask;
 mod foreign_damage;
 pub mod frame;
 pub mod fs_authority;

@@ -254,14 +254,15 @@ pub fn denied_scope() -> PermissionScope {
 }
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: APP,
-        title: "Probe",
+        app_id: APP.into(),
+        title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         record_kind: RecordKind::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create,
     }
 }

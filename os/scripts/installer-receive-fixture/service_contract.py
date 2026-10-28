@@ -102,8 +102,14 @@ def selected(root):
     require(all(type(row.get(name)) is str and re.fullmatch('[0-9a-f]{64}', row[name])
                 for name in ('package_id_hex', 'publisher_key_hex')),
             'Browser package has no signed identity')
-    payload = '/usr/share/tilo-apps/pkgs/' + row['package_id_hex']
-    metadata = payload + '.pkg/manifest.toml'
+    # The image store names an app's tree by the payload root hash its signed
+    # root commits to (bytes 44..76; os/scripts/signed-records.py).
+    record = '/usr/share/tilo-apps/pkgs/' + row['package_id_hex'] + '.pkg'
+    with (root / record.removeprefix('/') / 'signed-root').open('rb') as stream:
+        signed = stream.read(174)
+    require(len(signed) == 173 and signed[:8] == b'TLOPKG\0\0', 'Browser package has no signed identity')
+    payload = '/usr/share/tilo-apps/trees/' + signed[44:76].hex()
+    metadata = record + '/manifest.toml'
     require(row.get('payload_root') == payload and row.get('manifest_path') == metadata,
             'Browser package does not use the canonical image store')
     manifest = tomllib.loads((root / metadata.removeprefix('/')).read_text())

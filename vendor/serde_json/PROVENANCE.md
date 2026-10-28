@@ -12,7 +12,8 @@
 Local changes:
 
 - `src/value/de.rs`, `src/value/mod.rs` and `src/map.rs` move code every
-  crate compiled for itself into serde_json (`TILO-PATCH.md`);
+  crate compiled for itself into serde_json, and `src/de.rs` reads text as
+  bytes (`TILO-PATCH.md`);
 - `Cargo.toml` drops the archive's `[[test]]` targets and
   `[dev-dependencies]`, and the archive's `tests/`, `.github/`, `.gitignore`,
   `CONTRIBUTING.md`, `Cargo.lock`, `.cargo_vcs_info.json` and `.cargo-ok` are

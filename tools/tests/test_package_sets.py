@@ -126,6 +126,13 @@ class PackageSetsTests(unittest.TestCase):
         found = package_sets.per_arch(packages)
         self.assertEqual(sorted(set(known) - found), [])
 
+    def test_the_crates_built_for_wasm_beyond_the_browser_crates_are_in_the_set(self):
+        # A crate whose wasm build compiles only when this set builds it is the point: it is
+        # built with its own features, so a target table it alone owns is what gets tested.
+        packages = {name: {} for name in (*package_sets.WASM_ALSO, "native-only")}
+        self.assertEqual(package_sets.wasm_crates(packages),
+                         {"tilo-browser-peer", "channel-crypto"})
+
     def test_vendored_test_crates_are_workspaces_the_runner_tests_by_default(self):
         for crate in package_sets.VENDORED_TEST_CRATES:
             with self.subTest(crate=crate):

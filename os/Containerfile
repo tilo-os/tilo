@@ -760,18 +760,20 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 #
 # Apps compiled here are signed by the identity in the `app_publisher_identity`
-# secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
-# else by one minted for this build. Ed25519 signs deterministically, so with
-# the one identity the same binaries give the same package ids and payload
-# paths in every build, and an update re-sends only the apps that changed. The
-# key is in no trust list: see the store's COPY below. Secrets are not part of
-# BuildKit's cache key and never enter a layer.
+# secret when the build is given one, else by one minted for this build and
+# discarded. The key is in no trust list: see the store's COPY below. Secrets
+# are not part of BuildKit's cache key and never enter a layer. The publisher
+# key is in each package's signed root, whose hash is its id, so a minted key
+# gives the same app a new id in every build; its installed tree is named by
+# its payload instead (os/scripts/signed-records.py), the same in every build
+# that packs the same files, and every row is verified again after the move.
 #
 # Each app is in the image once, as its installed tree and signed record. The
 # dev VM daemon, the one reader of a complete archive, rebuilds it from those
 # (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
 # was half of the app bytes in every update.
 RUN --mount=type=secret,id=app_publisher_identity \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/usr/local/libexec/tilo-signed-records.py,ro \
     export TILO_IMAGE_BUILD=1 \
     && if [ -s /run/secrets/app_publisher_identity ]; then \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
@@ -787,6 +789,8 @@ RUN --mount=type=secret,id=app_publisher_identity \
     PUBKEY_OUT=/out/app-publisher.hex \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh \
+    && python3 /usr/local/libexec/tilo-signed-records.py name-trees /usr/share/tilo-apps \
+    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify \
     # The packages carry English only; every other language is a language
     # pack, which the image installs under /usr/share/tilo/language-packs.
     && python3 /build/tools/apps/language_packs.py build /build /out/language-packs
@@ -804,7 +808,7 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/run/tilo-hardlink-identical.py,ro \
     /build/os/scripts/install-env-runtime.sh /tilo-env-runtime/env-runtime \
       /usr/share/tilo-apps /usr/share/tilo-apps /out/tilo-install \
-    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs
+    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs /usr/share/tilo-apps/trees
 
 # Enumerated artifact overlays keep the expensive rootfs stage shallow without
 # bulk-copying os/usr (which would accidentally ship development/test-only
@@ -873,6 +877,9 @@ RUN --mount=type=cache,id=tilo-wallpaper-artifacts,target=/var/cache/tilo-wallpa
 # a non-publishing build signs them with keys it generates, so a key taken from
 # another stage (native-builder-payload, which buildkit may serve from an
 # earlier invocation's cache while the builder re-runs) would not be theirs.
+# What those keys sign (each bundle's bundle.toml) and the keys themselves leave
+# /image for /signatures, so the runtimes' bytes are the same layer in every
+# build that bakes the same runtimes, and only the signatures' small one is new.
 FROM ${BASE_REF} AS runtime-image-payload
 RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
@@ -884,6 +891,7 @@ RUN --network=none \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/tilo-src/signed-records.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
     && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
     && cp /tilo-runtime-publisher.hex /image/usr/share/tilo/runtime-bundle-publisher.hex \
@@ -899,7 +907,8 @@ RUN --network=none \
     # same glibc the native runtime signs at lib/): one inode each.
     && python3 /tilo-src/hardlink-identical.py /image/usr \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
-    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"
+    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")" \
+    && python3 /tilo-src/signed-records.py runtimes /image /signatures
 
 # The browser engine runtime as the registry package that offers it
 # (`so.tilo.runtime.chromium`), for a publication to submit: the thin package
@@ -2910,13 +2919,20 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
 # imports them from there, every byte checked against the image's signed hash.
 # The rootfs's final RUN checks each named host file again, after the last
 # step that changes one, and puts back any that no longer matches.
+# The records that name a package by its id (the registry, each app's signed
+# root, manifest and collection, the CLI shims) leave /out for /signatures: a
+# build that publishes nothing signs its apps with a key of its own, so they
+# are new in every build, while the trees they verify are named by their
+# payload and stay the same layer.
 FROM trust AS app-store
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/run/tilo-signed-records.py,ro \
     mkdir -p /out/usr/share \
     && cp -a /run/tilo-apps-built /out/usr/share/tilo-apps \
-    && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps /
+    && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps / \
+    && python3 /run/tilo-signed-records.py store /out/usr/share/tilo-apps /signatures/usr/share/tilo-apps
 
 # ---- The Tilo binaries ------------------------------------------------------
 # What the workspace compiles, arranged by os/components.toml, each tree its own
@@ -2966,6 +2982,9 @@ COPY --from=component-files /image/windows/ /
 # and the publishers of the runtimes it carries (runtime-bundle-publisher.hex,
 # browser-runtime-publisher.hex), from the same builder result as the bundles.
 COPY --from=runtime-image-payload /image/usr/ /usr/
+# What this build's runtime keys sign, and the keys, in a small layer of their
+# own: the runtimes above are the same layer whenever their bytes are.
+COPY --from=runtime-image-payload /signatures/usr/ /usr/
 # registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
 # registry offers. An app installed or updated from the Store is linked against
 # the release runtime build, which is rarely this image's own bake, and the
@@ -2993,6 +3012,8 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
+# The registry and each app's signed record, apart from the trees above.
+COPY --from=app-store /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
 
 # ---- The derived state: what reads every layer below ----------------------
 # The initramfs (the kernel's modules, the rollback and unlock helpers, the

@@ -20,9 +20,16 @@
 #            app:<dir>) to build from this tree and swap in, which exercises
 #            the swap path; the image is this tree's already
 #   only     comma-separated check ids or areas; empty: every check, or on a
-#            working tree the checks its changes select
+#            working tree the checks its changes select (or, from `t test
+#            --test`, the ones T_TEST_FILTER names)
 #   outputs  the slot's outputs
 #   gl       virgl: auto, on or off
+#   budgets  report (the default on t) or gate: whether a measurement over its
+#            budget (frame times, idle CPU, memory, boot and open times) fails
+#            its check or is reported as over-budget. t's shared workers run
+#            the VM without a GPU beside other jobs, so their timings say more
+#            about the worker than the commit: budgets gate again once the
+#            suite runs on dedicated or GPU runners.
 #
 # vm-acceptance runs the suite in t's shards (t.toml `shards`, run.py SHARDS), and
 # writes the selection it ran beside them, in /target/vm-acceptance/only, for
@@ -66,11 +73,12 @@ mkdir -p "$work" "$reports"
 
 target=$(git rev-parse HEAD)
 disk=$gate/disk.qcow2
-[[ -s $disk && -s $gate/revision && -s $gate/image-digest ]] \
+[[ -s $disk && -s $gate/image-digest ]] \
   || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
-commit=$(cat "$gate/revision")
-[[ $commit == "$target" ]] || { echo "the dev disk is of $commit, this tree is $target" >&2; exit 1; }
+# t gives this run the disk its own tree's inputs built (the need), whatever commit first
+# built it: the disk names its image by digest, the commit is this run's.
+commit=$target
 oci_digest=$(cat "$gate/image-digest")
 
 swap=${T_INPUT_SWAP:-none}
@@ -101,9 +109,13 @@ if [[ $mode == cohort ]]; then
   echo "cohort of ${target:0:12} verified by tilo-vm of main $(jq -r .commit "$verifier/verifier.json")"
 fi
 
-# A run of someone's tree checks what its changes reach; main checks all.
+# A run of someone's tree checks what its changes reach; main checks all. `t test
+# vm-acceptance --test 'A15|W16'` names the checks itself (T_TEST_FILTER: check ids or
+# areas, `|`-separated); each shard then boots only if it holds one of them.
 only=${T_INPUT_ONLY:-secrets}
-if [[ -z $only && -z ${T_TRIGGER:-} ]]; then
+if [[ -n ${T_TEST_FILTER:-} ]]; then
+  only=${T_TEST_FILTER//|/,}
+elif [[ -z $only && -z ${T_TRIGGER:-} ]]; then
   mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
   (( ${#paths[@]} == 0 )) || only=$(python3 scripts/vm-acceptance/ci_select.py "${paths[@]}")
 fi
@@ -118,7 +130,9 @@ case $gl in
   *) echo 'gl must be auto, on or off' >&2; exit 1 ;;
 esac
 outputs=${T_INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}
-echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl"
+budgets=${T_INPUT_BUDGETS:-report}
+[[ $budgets == report || $budgets == gate ]] || { echo 'budgets must be report or gate' >&2; exit 1; }
+echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
 
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$work/test-assets}
 install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
@@ -141,8 +155,8 @@ mkdir -p "$src/target/dev-runs"
 base=$disk
 disk="$work/tilo-dev-${commit:0:9}.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$disk"
-jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit")" \
-  --arg time "$(git log -1 --format=%cI "$commit")" --arg digest "$oci_digest" \
+jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit" 2>/dev/null)" \
+  --arg time "$(git log -1 --format=%cI "$commit" 2>/dev/null)" --arg digest "$oci_digest" \
   --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "t os-dev-disk-$arch" \
   '{commit:$commit, subject:$subject, commit_time:$time, oci_digest:$digest,
     built_at:$built, built_by:"t vm-acceptance", source:$source}' > "$disk.provenance.json"
@@ -164,7 +178,7 @@ keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|R
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
 
-args=(--disk "$disk" --commit "$commit" --outputs "$outputs"
+args=(--disk "$disk" --commit "$commit" --outputs "$outputs" --budgets "$budgets"
       --tilo-vm /usr/local/bin/tilo-vm --runner t)
 [[ -z $swap ]] || args+=(--swap "$swap" --swap-from "$src" --swap-ref "$target")
 args+=("${artifact_args[@]}")

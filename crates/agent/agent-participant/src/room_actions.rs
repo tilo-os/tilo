@@ -511,7 +511,9 @@ impl RoomActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. } => return None,
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::ConfirmationRequest { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
         })
     }
 
@@ -600,7 +602,9 @@ impl HostActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. } => return None,
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::ConfirmationRequest { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
         };
         if supervisor {
             tilo_actions::remote::serve(&self.supervisor, caller, message)
@@ -1351,7 +1355,11 @@ impl Worker {
         let source = link
             .view_document(workspace, caller, &route)
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let app_id = self.catalogue.get(&route.app_id).ok_or_else(refuse)?.app_id;
+        let app_id = self
+            .catalogue
+            .get(&route.app_id)
+            .ok_or_else(refuse)?
+            .app_id();
         // The document is decoded and the app's resource published in a
         // confined worker, never here.
         let mut views = ConfinedViews::load(app_id, source.bytes)
@@ -1521,7 +1529,7 @@ impl Worker {
     fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
-            .map(|definition| open_row(room, definition.app_id))
+            .map(|definition| open_row(room, definition.app_id()))
             .collect()
     }
 

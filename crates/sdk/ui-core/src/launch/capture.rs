@@ -98,6 +98,10 @@ pub(super) fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), La
     if let Some(line) = tilo_startup_metrics::summary_line(spec.app_id) {
         println!("{line}");
     }
+    // What the process holds once its first frame is drawn, and the most it held until then.
+    if let Some(line) = tilo_startup_metrics::memory_line() {
+        println!("{line}");
+    }
     for (name, ns) in tilo_startup_metrics::events() {
         println!("FIRST-FRAME-MARK name={name} us={}", ns / 1000);
     }

@@ -177,10 +177,11 @@ enum ActionKind {
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
     },
-    /// Collects a free-text argument in the field first, then builds the action.
+    /// Collects a free-text argument in the field first, then builds the
+    /// action with the spec's [`build_text`](tilo_actions::ActionSpec::build_text).
     Prompted {
         prompt: String,
-        build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+        spec: Box<tilo_actions::ActionSpec>,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -2175,9 +2176,11 @@ impl ActionPalette {
                 .params()
                 .first()
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
-        Some(match &fa.action.input {
-            ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
+        Some(match fa.action.input() {
+            ActionInput::Immediate(_) => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Encoded(Arc::unwrap_or_clone(
+                    fa.action.encode_immediate()?,
+                )),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -2203,9 +2206,9 @@ impl ActionPalette {
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
             },
-            ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
-                prompt: prompt.clone(),
-                build: build.clone(),
+            ActionInput::Prompted { prompt, .. } => ActionKind::Prompted {
+                prompt: prompt.to_owned(),
+                spec: Box::new(fa.action.clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -2951,13 +2954,18 @@ impl ActionPalette {
                     let history_draft_identity = state.history_draft_identity;
                     let (encoded, context, kind, confirmation, input) = match fresh {
                         ActionKind::Prompted {
-                            build,
+                            spec,
                             context,
                             kind,
                             confirmation,
                             ..
                         } => {
-                            let encoded = build(&value);
+                            let encoded =
+                                spec.build_text(&value).unwrap_or_else(|| EncodedAction {
+                                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+                                        .to_owned(),
+                                    payload: b"the action takes no text".to_vec(),
+                                });
                             let input = if encoded.type_id
                                 == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
@@ -3489,6 +3497,7 @@ mod tests {
     include!("action_palette/deferred_tests.rs");
     include!("action_palette/confirmation_tests.rs");
     include!("action_palette/platform_search_tests.rs");
+    include!("action_palette/search_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -3675,144 +3684,6 @@ mod tests {
                 ),
             )
         }
-    }
-
-    #[test]
-    fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        {
-            let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let mut palette =
-                ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                    SearchField::with_language("en_US")
-                });
-            palette.load_open_resources(&[]);
-            palette.set_providers(vec![Box::new(LazyCorpus {
-                materialized: Arc::clone(&materialized),
-            })]);
-            materialized.store(0, std::sync::atomic::Ordering::Relaxed);
-            palette.open();
-            assert_eq!(
-                materialized.load(std::sync::atomic::Ordering::Relaxed),
-                PROVIDER_HIT_BUDGET
-            );
-            assert_eq!(palette.len(), PER_GROUP_CAP);
-            palette.activate_selected();
-            assert!(
-                palette.take_operation().is_none(),
-                "provider discovery must not become dispatch authority"
-            );
-        }
-
-        // Case `actions_and_content_both_surface_grouped`:
-        // Both an ACTION (from the resource tree) and a searchable CONTENT hit
-        // (from a folded-in provider) surface, grouped, for one query.
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_providers(vec![Box::new(People)]);
-            p.open();
-
-            let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
-            assert!(
-                groups.contains(&ACTIONS_KIND.to_string()),
-                "Actions group present: {groups:?}"
-            );
-            assert!(
-                groups.contains(&"People".to_string()),
-                "content group present: {groups:?}"
-            );
-            // What the app holds leads; what it can do follows.
-            assert_eq!(groups.last(), Some(&ACTIONS_KIND.to_owned()), "{groups:?}");
-
-            let labels = p.result_labels();
-            assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
-            assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
-        }
-    }
-
-    #[test]
-    fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
-        for id in 0..100_000usize {
-            let resource_id = format!("item:{id:06}");
-            catalog
-                .upsert(
-                    &resource_id,
-                    "abc c d",
-                    SearchResult::for_action(
-                        "Items",
-                        format!("Broad candidate {id}"),
-                        tilo_actions::ActionAddress::new(&resource_id, "open"),
-                    ),
-                )
-                .expect("valid broad candidate");
-        }
-        let target_id = "item:999999";
-        catalog
-            .upsert(
-                target_id,
-                "abc d",
-                SearchResult::for_action(
-                    "Items",
-                    "The only exact abc d result",
-                    tilo_actions::ActionAddress::new(target_id, "open"),
-                ),
-            )
-            .expect("valid exact target");
-
-        let mut palette =
-            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-        palette.set_providers(vec![Box::new(catalog)]);
-        // The whitespace-bearing query intentionally cannot take the token
-        // fast path. Every false candidate shares its n-grams, so this proves
-        // progressive exact verification continues across work pages.
-        palette.set_query("abc d");
-        let generation = palette.search_generation;
-        let mut ticks = 0usize;
-        while !palette
-            .result_labels()
-            .iter()
-            .any(|label| label == "The only exact abc d result")
-        {
-            let progress = palette.advance_search_page();
-            assert!(progress.inspected <= PROVIDER_HIT_BUDGET);
-            assert_eq!(progress.generation, generation);
-            ticks = ticks.saturating_add(1);
-            assert!(progress.pending || ticks <= 3_126, "target was skipped");
-            assert!(ticks <= 3_126, "search did not finish in bounded pages");
-        }
-        assert!(
-            palette
-                .referenced_action_resource_ids()
-                .iter()
-                .any(|resource_id| resource_id == target_id),
-            "the exact result must retain its canonical resource action"
-        );
-        assert!(
-            palette
-                .take_search_announcement()
-                .is_some_and(|announcement| announcement.contains("result"))
-        );
-
-        palette.set_query("a different query");
-        assert_ne!(palette.search_generation, generation);
-        assert!(
-            !palette
-                .result_labels()
-                .iter()
-                .any(|label| label == "The only exact abc d result")
-        );
-        let restarted = palette.advance_search_page();
-        assert_eq!(restarted.generation, palette.search_generation);
-        assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
     }
 
     #[test]
@@ -4078,10 +3949,11 @@ mod tests {
 
         {
             let mut disabled = thing_resource();
-            disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
-                code: "offline".into(),
-                reason: "The service went offline".into(),
-            };
+            disabled.actions[0].type_mut().contract.availability =
+                tilo_actions::Availability::Unavailable {
+                    code: "offline".into(),
+                    reason: "The service went offline".into(),
+                };
 
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -4381,7 +4253,7 @@ mod tests {
                 payload: vec![],
             },
         );
-        spec.contract.confirmation = ConfirmationPolicy::Confirm;
+        spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
         let resource = Resource::new("document", "document", "Document").with_action(spec);
         let mut palette = ActionPalette::new();
         palette.load_open_resources(&[resource]);

@@ -17,16 +17,15 @@ SPEC.loader.exec_module(t_toml)
 
 
 class TTomlTests(unittest.TestCase):
-    def test_generated_blocks_are_current(self):
-        text = (ROOT / "t.toml").read_text(encoding="utf-8")
-        expected = t_toml.render(text, t_toml.generated(t_toml.suites.load(ROOT)))
-        self.assertEqual(text, expected, "run python3 tools/ci/t_toml.py write")
+    # That the generated blocks are current is the t-toml check (`t_toml.py check`), keyed by
+    # exactly what the generator reads: run here too, it ran every cargo tree of the size checks
+    # again on every run of the policy tests, most of this file's minute and a half.
 
     def test_each_policy_step_is_a_check_keyed_by_what_it_reads(self):
         config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}
         self.assertNotIn("policy", checks, "the policy suite runs as one check per step")
-        for step in t_toml.policy_steps.load(ROOT):
+        for step in t_toml.policy_steps.expanded(ROOT):
             with self.subTest(step=step.name):
                 if step.covered_by:
                     self.assertIn(step.run, " ".join(checks[step.covered_by]["run"].split()))
@@ -40,7 +39,8 @@ class TTomlTests(unittest.TestCase):
                 # history get t's .git; the checks of the tree read the files as they are,
                 # through an index of them where they use Git.
                 self.assertEqual(check.get("git", False), step.history)
-                self.assertEqual(check.get("writable_sources", False), step.tests)
+                # A test file run in a copy of its inputs writes to that copy.
+                self.assertEqual(check.get("writable_sources", False), step.tests and not step.pruned)
                 self.assertEqual(step.check.startswith("policy/tests/"), step.tests)
 
     def test_security_reads_the_paths_its_invariants_name_and_no_others(self):
@@ -176,6 +176,11 @@ class TTomlTests(unittest.TestCase):
             self.assertFalse(whole["default"])
             # On the board for main's newest head, bisected when it fails.
             self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
+            # Keyed by the packages the collection builds, not by every crate.
+            self.assertIn("runtime-dylib", whole["cargo_packages"])
+            self.assertTrue(packages <= set(whole["cargo_packages"]))
+            self.assertNotIn("crates/**", whole["inputs"])
+            self.assertNotIn("apps/**", whole["inputs"])
             # The push gate's is kept built there, so its size check of an app compiles only the
             # app; the other waits for room.
             self.assertEqual(shared["on"], ["main", "idle"] if arch == t_toml.PUSH_GATE_SIZE_ARCH else ["idle"])
@@ -267,6 +272,15 @@ class PlanTests(unittest.TestCase):
         cls.packages = packages
         cls.dirs = {name: Path(p["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
                     for name, p in packages.items()}
+        cls._built = {}
+
+    def built(self, name: str) -> set[str]:
+        """The packages check `name` builds, worked out once for every commit asked about."""
+        if name not in self._built:
+            check = self.checks[name]
+            self._built[name] = t_toml.local_closure(self.packages, set(check.get("cargo_packages", [])),
+                                                     check.get("cargo_dev_dependencies", True))
+        return self._built[name]
 
     def owner(self, path: str) -> str | None:
         owners = [name for name, directory in self.dirs.items() if path.startswith(directory + "/")]
@@ -288,9 +302,7 @@ class PlanTests(unittest.TestCase):
             if check.get("default") is False:
                 continue
             globs = [*check.get("inputs", ["**"] if not check.get("cargo_packages") else []), *top]
-            built = t_toml.local_closure(self.packages, set(check.get("cargo_packages", [])),
-                                         check.get("cargo_dev_dependencies", True))
-            if any(matches(path, glob) for path in paths for glob in globs) or touched & built:
+            if touched & self.built(name) or any(matches(path, glob) for path in paths for glob in globs):
                 found.add(name)
         stack = list(found)
         while stack:

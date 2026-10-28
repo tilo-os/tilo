@@ -30,6 +30,8 @@
 #[cfg(target_os = "linux")]
 pub mod cgroup;
 #[cfg(target_os = "linux")]
+pub mod helper;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 pub mod quota;
@@ -98,6 +100,8 @@ pub struct Launch<'a> {
     extra: Vec<(OwnedFd, RawFd)>,
     cgroup: Option<BorrowedFd<'a>>,
     setup: Option<SetupHook<'a>>,
+    status: Option<OwnedFd>,
+    netns: Option<BorrowedFd<'a>>,
 }
 
 impl<'a> Launch<'a> {
@@ -111,6 +115,8 @@ impl<'a> Launch<'a> {
             extra: Vec::new(),
             cgroup: None,
             setup: None,
+            status: None,
+            netns: None,
         }
     }
 
@@ -140,6 +146,40 @@ impl<'a> Launch<'a> {
         self
     }
 
+    /// Start the job inside the cgroup whose directory `dir` is open.
+    #[must_use]
+    pub fn cgroup_fd(mut self, dir: BorrowedFd<'a>) -> Self {
+        self.cgroup = Some(dir);
+        self
+    }
+
+    /// Join the network namespace `ns` instead of getting one of its own:
+    /// one made and connected by the caller (with pasta, say), so a job's
+    /// network is up before any of it runs and can be shared with the
+    /// caller's helpers. Its owner configures it, `lo` included.
+    #[must_use]
+    pub fn netns(mut self, ns: BorrowedFd<'a>) -> Self {
+        self.netns = Some(ns);
+        self
+    }
+
+    /// Let the job outlive the thread and the process that start it. Its
+    /// init is born the caller's parent's child (`CLONE_PARENT`) with no
+    /// parent-death signal, and when the command ends it writes the raw
+    /// 4-byte wait status at offset 0 of `status` and syncs it; a job that
+    /// is killed writes nothing.
+    ///
+    /// The caller's parent reaps the init, so it must be a child subreaper
+    /// (`PR_SET_CHILD_SUBREAPER`) or the namespace's init. Nothing else
+    /// bounds the job's life but its cgroup (`cgroup.kill`) and the PID
+    /// namespace it runs in: keep its cgroup. [`Job::into_detached`] then
+    /// gives up the handle without killing the job.
+    #[must_use]
+    pub fn detached(mut self, status: OwnedFd) -> Self {
+        self.status = Some(status);
+        self
+    }
+
     /// Run `hook` after the job's namespaces exist and before any of it
     /// runs: attach its network, for instance. An error stops the job.
     #[must_use]
@@ -155,7 +195,8 @@ impl<'a> Launch<'a> {
     /// See [`SpawnError`].
     #[cfg(target_os = "linux")]
     pub fn spawn(mut self) -> Result<Job, SpawnError> {
-        let plan = linux::plan::Plan::new(self.spec)?;
+        let mut plan = linux::plan::Plan::new(self.spec)?;
+        plan.own_net = self.netns.is_none();
         let fds = linux::runner::Fds {
             stdin: self.stdin,
             stdout: self.stdout,
@@ -166,7 +207,11 @@ impl<'a> Launch<'a> {
             .setup
             .as_mut()
             .map(|h| h.as_mut() as &mut dyn FnMut(&Started) -> Result<(), String>);
-        linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook)
+        let mode = linux::runner::Mode {
+            status: self.status,
+            netns: self.netns,
+        };
+        linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook, mode)
     }
 
     /// # Errors
@@ -181,6 +226,8 @@ impl<'a> Launch<'a> {
             self.extra,
             self.cgroup,
             self.setup,
+            self.status,
+            self.netns,
         );
         Err(SpawnError::Unsupported(format!(
             "jobs run only on Linux; this is {}",

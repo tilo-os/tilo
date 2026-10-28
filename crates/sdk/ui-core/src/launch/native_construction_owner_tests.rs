@@ -20,7 +20,7 @@ mod construction_owner {
         let id = crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
         let mut owners = crate::record::RecordOwners::new(root.clone());
         let records = owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(LaunchError::Record)?;
         let views = std::rc::Rc::new(
             crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)

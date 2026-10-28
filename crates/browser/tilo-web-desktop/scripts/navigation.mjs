@@ -498,12 +498,13 @@ async function mirrorLiesOverEveryControl(page, what, minimum, accept = () => tr
 // whole desktop is checked each time, so these count its top bar and window
 // frame too. Calendar's month has a button a day, tabs (its five views and
 // the window's tab), a combo box and a navigation tree; Tasks has a text
-// field, its places tree and the page's heading.
+// field and its filters tree (the window bar names its place, so the page
+// has no heading of its own).
 const HIDPI_WINDOWS = [
   ['so.tilo.calendar', {Button: 45, ToggleButton: 2, ComboBox: 1, Tree: 1, TreeItem: 4, Tab: 6, Separator: 1},
     [['Tree', 'Calendar navigation']]],
-  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, Tree: 1, TreeItem: 2, Heading: 1, Separator: 1},
-    [['Tree', 'Task views'], ['Heading', 'Issues']]],
+  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, Tree: 1, TreeItem: 2, Separator: 1},
+    [['Tree', 'Filters']]],
 ];
 {
   const hidpi = await desktop(2, {context: await browser.context()});

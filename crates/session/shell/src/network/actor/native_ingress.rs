@@ -253,25 +253,26 @@ impl ActorState {
             }
         }
     }
-    /// Send `msg`, a member's own sealed write, on the room's relay
-    /// session, or hold it until the session is up.
+    /// Send `msg`, a member's own sealed write, to the room's host as a
+    /// commit, and hold it until a host keeps it ([`super::sealed_outbox`]).
     pub(super) fn publish_sealed_native(&mut self, ws: u64, msg: &super::NeighbourMsg) {
         let (Some((channel, retention)), Ok(bytes)) =
             (super::retention(msg, false), postcard::to_allocvec(msg))
         else {
             return;
         };
-        if let Some(session) = native_session(&self.host_sessions, ws) {
-            let sent = match retention {
-                super::Retention::Checkpoint => session.publish_checkpoint(channel, bytes),
-                super::Retention::Delta => session.publish_retained_delta(channel, bytes),
-            };
-            if let Err(error) = sent {
-                tracing::warn!(ws, %error, "sealed write not sent to the room's relay");
-            }
-            return;
+        // Held until a host keeps it: a session up now may already be gone
+        // without this device knowing, and the next one sends it again.
+        let (op, payload) = self
+            .sealed_outbox
+            .entry(ws)
+            .or_default()
+            .hold(channel, retention, bytes);
+        if let Some(session) = native_session(&self.host_sessions, ws)
+            && let Err(error) = session.commit(op, &payload)
+        {
+            tracing::debug!(ws, %error, "sealed write held for the room's next session");
         }
-        self.hold_backlog(ws, channel, retention, bytes);
     }
 
     pub(super) fn drive_native_publication(&self, ws: u64) {
@@ -590,7 +591,8 @@ impl ActorState {
             !local,
         );
         // What this device said while the session was down: its channel
-        // governance (the steward redelivers its own) and its sealed writes.
+        // governance (the steward redelivers its own), and every sealed
+        // write no host has kept yet, sent before or meanwhile.
         for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
             if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
                 tracing::warn!(ws, %error, "channel governance not sent to the room's relay");
@@ -602,7 +604,17 @@ impl ActorState {
                 super::Retention::Delta => session.publish_retained_delta(channel, bytes),
             };
             if let Err(error) = sent {
-                tracing::warn!(ws, %error, "held sealed write not sent to the room's relay");
+                tracing::warn!(ws, %error, "held state not sent to the room's relay");
+            }
+        }
+        for (op, payload) in self
+            .sealed_outbox
+            .get(&ws)
+            .into_iter()
+            .flat_map(|outbox| outbox.commits())
+        {
+            if let Err(error) = session.commit(op, &payload) {
+                tracing::debug!(ws, %error, "sealed write held for the room's next session");
             }
         }
         // Pointers, cursor chat and reactions ride the room's live plane,

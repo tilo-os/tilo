@@ -316,6 +316,18 @@ impl CapnpBrokerState {
             at: None,
             stopped: None,
         };
+        // What this run's steps say they are part of: the work unit that asked
+        // for it, or its own group. Read before the steps run, so it names the
+        // shortcut that asked for it among the ones above it.
+        let group = start
+            .parent
+            .as_ref()
+            .map_or_else(|| start.run.0.to_string(), |parent| parent.id.clone());
+        let chain =
+            self.ended_runs
+                .running
+                .running
+                .above(&room, Some(group.as_str()), &shortcut.id);
         self.ended_runs.running.running.register(running);
         let registered = self.ended_runs.running.running.clone();
         runtime.spawn(async move {
@@ -331,6 +343,7 @@ impl CapnpBrokerState {
                     inputs: start.inputs,
                     caused_by: None,
                     parent,
+                    chain,
                 },
             )
             .await;

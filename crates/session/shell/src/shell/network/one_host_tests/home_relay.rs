@@ -91,6 +91,23 @@ impl HomeRelay {
             .map(|bodies| bodies.len())
     }
 
+    /// Whether the relay keeps `write`, a device's signed write to `room`,
+    /// among the bodies it retains for the room.
+    pub(super) fn keeps_write(&self, room: RoomId, write: &collab_types::SignedOp) -> bool {
+        let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+        self.runtime
+            .block_on(self.relay.room_records().retained(workspace))
+            .unwrap_or_default()
+            .iter()
+            .any(|retained| {
+                matches!(
+                    postcard::from_bytes(&retained.body),
+                    Ok(neighbour_wire::NeighbourMsg::AppDocument { envelope, .. })
+                        if *envelope == *write
+                )
+            })
+    }
+
     /// Whether any file the relay keeps contains `needle`.
     pub(super) fn keeps(&self, needle: &[u8]) -> bool {
         holds(&self.state, needle)
@@ -228,10 +245,9 @@ fn a_home_relay_hosts_only_the_workspace_chosen_for_it_and_carries_it_while_its_
 
     // The desktop goes off; the laptop keeps syncing with the relay.
     first.go_offline();
-    let before = relay.retained(personal).unwrap();
-    second.write_note(personal, "written on the laptop while the desktop was off");
+    let edit = second.write_note(personal, "written on the laptop while the desktop was off");
     until(&[&second], "the relay to take the laptop's edit", || {
-        (relay.retained(personal).unwrap_or(0) > before).then_some(())
+        relay.keeps_write(personal, &edit).then_some(())
     });
 
     // With the laptop off too, the desktop catches up from the relay.

@@ -460,9 +460,10 @@ fn selected_action_collects_real_parameters_and_confirmation() {
             payload: vec![],
         },
     );
-    resources[0].actions[0].contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-        phrase: "INSERT".into(),
-    };
+    resources[0].actions[0].type_mut().contract.confirmation =
+        tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "INSERT".into(),
+        };
     f.set_caller_actions(resources);
     f.open_global_search_all("Insert").unwrap();
     enter(&mut f);

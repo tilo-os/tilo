@@ -401,12 +401,45 @@ fn the_roster_shows_who_the_room_says_is_here_not_who_once_introduced_themselves
     assert_eq!(status(&app, &others[1]), Some(Presence::Online));
     // The room knows the first person is here; the second has left.
     app.room_names.insert(others[0].clone(), "Here".into());
+    app.room_presence_answers = true;
     assert_eq!(status(&app, &others[0]), Some(Presence::Online));
     assert_eq!(
         status(&app, &others[1]),
         Some(Presence::Offline),
         "a visitor who closed the tab is offline"
     );
+    let mut me = app.users[0].clone();
+    me.id = app.me.id.clone();
+    me.status = Presence::Offline;
+    assert_eq!(app.live_status(&me), Presence::Online, "I am here");
+}
+
+/// A room that answers with nobody in it — every visitor closed their tab,
+/// or this is the first one in — reads as empty rather than as everybody who
+/// ever introduced themselves still being online.
+#[test]
+fn a_room_whose_answer_names_nobody_marks_everyone_else_offline() {
+    use crate::model::Presence;
+    let (mut app, _) = app_with_doc();
+    let others: Vec<String> = app
+        .users
+        .iter()
+        .filter(|u| !app.is_me(&u.id) && !u.is_agent)
+        .map(|u| u.id.clone())
+        .collect();
+    assert!(!others.is_empty(), "the sample room has other people");
+    for user in &mut app.users {
+        user.status = Presence::Online;
+    }
+    // Presence answered, and the answer names nobody but me.
+    app.adopt_room(&ui::presence::PresenceCtx::default());
+    for id in &others {
+        assert_eq!(
+            app.live_status(&app.user(id).expect("the room lists them").clone()),
+            Presence::Offline,
+            "{id} left, so the roster must not call them online"
+        );
+    }
     let mut me = app.users[0].clone();
     me.id = app.me.id.clone();
     me.status = Presence::Offline;

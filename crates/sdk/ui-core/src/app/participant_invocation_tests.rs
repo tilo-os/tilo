@@ -445,14 +445,15 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         .unwrap(),
     );
     let definition = crate::application::ApplicationDefinition {
-        app_id: "dev.tilo.two-views",
-        title: "Two views",
+        app_id: "dev.tilo.two-views".into(),
+        title: "Two views".into(),
         icon: crate::widget::IconDescriptor::Glyph("T"),
         record_kind: crate::record::RecordKind::new("two-views"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: bound_factory,
     };
     let target = crate::application::LaunchTarget::New;

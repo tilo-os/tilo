@@ -27,7 +27,7 @@ use winit::event::WindowEvent;
 /// Below this width History takes the whole window, its preview a page of
 /// its own; at or above it, History is a panel beside the content.
 const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
-pub(super) const SIDE_PANEL_WIDTH: f64 = 360.0;
+pub(crate) const SIDE_PANEL_WIDTH: f64 = 360.0;
 
 #[derive(Clone, Copy)]
 enum Command {
@@ -2299,6 +2299,638 @@ impl HistoryHost {
         !(self.invalid_owner
             || self.show_preview()
             || self.open && (self.width < 600.0 || external))
+    }
+}
+
+/// A window's History, as its window holds it.
+pub(crate) type HistoryChrome = Box<dyn HistoryChromeApi>;
+
+/// The History code, as a program that fetches it on first use hands it
+/// over ([`install_history_code`]).
+#[derive(Clone, Copy)]
+pub struct MakeHistory(
+    fn(HistoryRegistration, &AutoCommit) -> Result<HistoryChrome, HistoryRegistrationError>,
+);
+
+/// The History code this build links: what the module a program fetches
+/// on first use hands over.
+#[must_use]
+pub fn builtin_history() -> MakeHistory {
+    MakeHistory(|registration, doc| Ok(Box::new(HistoryHost::new(registration, doc)?)))
+}
+
+/// A window's History, or its registration back while the History code is
+/// still on its way.
+pub(crate) enum MadeHistory {
+    Ready(HistoryChrome),
+    Loading(HistoryRegistration),
+}
+
+/// Make the History `registration` asks for, over `doc`.
+pub(crate) fn make_history(
+    registration: HistoryRegistration,
+    doc: &AutoCommit,
+) -> Result<MadeHistory, HistoryRegistrationError> {
+    match HISTORY.get() {
+        Some(make) => (make.0)(registration, doc).map(MadeHistory::Ready),
+        None => Ok(MadeHistory::Loading(registration)),
+    }
+}
+
+crate::lazy_code! {
+    /// History's code: linked, or with `lazy-history` fetched the first
+    /// time a window registers History. Until then a window keeps its
+    /// registration and shows without History.
+    pub static HISTORY: MakeHistory = builtin_history, feature = "lazy-history";
+}
+
+/// Whether the History code is in, asking for it if not.
+pub(crate) fn history_code_ready() -> bool {
+    HISTORY.get().is_some()
+}
+
+/// What a window, a tile or a test harness asks of its History, as a trait
+/// object: the History code is reached only through [`make_history`], so a
+/// program that fetches it on first use (`lazy-history`) keeps it out of
+/// the code it starts with.
+pub(crate) trait HistoryChromeApi: Widget {
+    #[cfg(test)]
+    fn request_close(&self);
+    #[cfg(test)]
+    fn timeline_selection(&self) -> Vec<crate::HistoryEntryId>;
+    fn next_refresh(&self) -> Option<(crate::background::Background, crate::time::Instant)>;
+    /// # Safety
+    /// As [`HistoryHost::preserve_focus`].
+    unsafe fn preserve_focus(
+        &mut self,
+        focus: Option<NodeId>,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &crate::bound_dispatch::BoundNodeMap,
+        tree: &TaffyTree<()>,
+    );
+    /// # Safety
+    /// As [`HistoryHost::restore_focus`].
+    unsafe fn restore_focus(
+        &mut self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &crate::bound_dispatch::BoundNodeMap,
+    ) -> Option<NodeId>;
+    fn request_open(&self) -> bool;
+    fn is_open(&self) -> bool;
+    fn door_resource(&self) -> tilo_actions::Resource;
+    fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String>;
+    #[cfg(any(feature = "native", test))]
+    fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry>;
+    fn remove_fallback_bar(&mut self);
+    fn remove_open_button(&mut self);
+    fn set_open_button(&mut self, shown: bool);
+    fn set_window_presents(&mut self, presents: bool);
+    fn offers_control(&self) -> bool;
+    #[cfg(feature = "native")]
+    fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        style: (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool;
+    #[cfg(feature = "native")]
+    fn paint_presented(&mut self);
+    fn set_control_domain(&mut self, domain: &crate::ControlDomain);
+    fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool;
+    fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>);
+    fn set_sync_status_in_place(
+        &mut self,
+        status: Option<&crate::widget::WindowStatus>,
+        live: &mut dyn Widget,
+    ) -> bool;
+    fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError>;
+    fn encloses(&self, owner: &super::HistoryOwner) -> bool;
+    fn enclosing_owner(&self) -> Option<&super::HistoryOwner>;
+    fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress>;
+    fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>);
+    fn keyboard_is_active(&self) -> bool;
+    fn cancel_focus_return(&mut self);
+    fn activate_at_pointer(&mut self, event: &WindowEvent, scale: f64);
+    fn set_keyboard_active(&mut self, active: bool);
+    fn composition_contains(&self, target: NodeId, tree: &TaffyTree<()>) -> bool;
+    fn discard_layout_nodes(&mut self);
+    fn live_interactive(&self) -> bool;
+    fn width_needs_refresh(&self, width: f64) -> bool;
+    fn validate(&self) -> Result<(), HistoryRegistrationError>;
+    fn invalidate_owner(&mut self) -> bool;
+    fn preserve_captured_focus(
+        &mut self,
+        captured: Option<crate::widget::layout::CompositionFocus>,
+    );
+    fn take_returning_focus(&mut self) -> Option<crate::widget::layout::CompositionFocus>;
+    fn discard_saved_focus(&mut self);
+    fn captures_input(&self) -> bool;
+    fn capture_pending_controls(
+        &mut self,
+        live: &mut dyn Widget,
+        doc: &AutoCommit,
+        root_lifetime: uuid::Uuid,
+    ) -> bool;
+    fn capture_embedded_pending_controls(
+        &mut self,
+        live: &mut dyn Widget,
+        doc: &AutoCommit,
+    ) -> bool;
+    fn discard_pending_output(&mut self, live: &mut dyn Widget);
+    fn finish_return_to_live(&mut self);
+    fn at_rest(&self) -> bool;
+    fn has_settled_control_return(&self) -> bool;
+    fn finish_control_return(&mut self);
+    fn flush_pending_toolbar(&mut self);
+    fn pending_control_reviews(&self) -> Vec<super::pending_controls::PendingControlReview>;
+    fn pending_control_surface_lifetime(&self) -> uuid::Uuid;
+    fn pending_control_token(
+        &mut self,
+        id: super::pending_controls::PendingControlId,
+    ) -> Option<super::pending_controls::ContinuationToken>;
+    fn prepare_pending_control(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+        confirmed: bool,
+    ) -> Option<super::pending_controls::PreparedContinuation>;
+    fn prepare_pending_control_typed(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+        value: &str,
+    ) -> Option<super::pending_controls::PreparedContinuation>;
+    fn pending_control_needs_confirmation(&mut self, id: super::pending_controls::PendingControlId);
+    fn pending_control_refused(
+        &mut self,
+        id: super::pending_controls::PendingControlId,
+        reason: String,
+    );
+    fn pending_control_consumed(&mut self, id: super::pending_controls::PendingControlId);
+    fn cancel_pending_control(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+    ) -> bool;
+    fn drain_pending_control_commands(&self) -> Vec<super::pending_controls::ContinuationCommand>;
+    #[cfg(test)]
+    fn queue_pending_control_command_for_test(
+        &self,
+        command: super::pending_controls::ContinuationCommand,
+    );
+    #[cfg(test)]
+    fn pending_control_callback_for_test(&self, id: &str) -> Option<PendingControlCallback>;
+    #[cfg(test)]
+    fn activate_retained_control_for_test(&mut self, id: &str) -> bool;
+    fn has_saved_focus(&self) -> bool;
+    fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool;
+    fn returning_live(&self) -> bool;
+    fn present_entries_of(&mut self, live: &dyn Widget);
+    fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool;
+    fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>);
+    fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId>;
+    fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool;
+    fn set_width(&mut self, width: f64);
+    fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool;
+    fn refresh_without_owners(&self, width: f64) -> Option<bool>;
+    #[cfg(debug_assertions)]
+    fn heads_need_refresh(&self, doc: &AutoCommit) -> bool;
+    fn owners_followed_by_frame_witness(&self) -> bool;
+    fn review_is_open(&self) -> bool;
+    fn review_layout_node(&self) -> Option<NodeId>;
+    fn observe_pointer(&mut self, event: &WindowEvent, scale: f64);
+    fn refresh(&mut self, doc: &AutoCommit);
+    fn live_visible(&self) -> bool;
+    #[cfg(feature = "native")]
+    fn take_describe_request(&mut self) -> Vec<crate::floating_surface::HistoryChangeFacts>;
+    #[cfg(feature = "native")]
+    fn describing_disconnected(&mut self);
+    #[cfg(feature = "native")]
+    fn receive_descriptions(
+        &mut self,
+        described: Vec<crate::floating_surface::HistoryChangeDescription>,
+    );
+    #[cfg(feature = "native")]
+    fn has_unwritten_descriptions(&self) -> bool;
+    #[cfg(feature = "native")]
+    fn service_descriptions(
+        &mut self,
+        state: &mut crate::State,
+        authority: &crate::permissions::PermissionContext,
+        author: &crate::permissions::UserId,
+    ) -> bool;
+    #[cfg(test)]
+    fn set_clock(&mut self, clock: fn() -> Option<u64>);
+    fn take_restored_source(&mut self) -> Option<HistorySourceRegistration>;
+    fn has_review_request(&self) -> bool;
+    fn service_restore(
+        &mut self,
+        state: &mut crate::State,
+        root: &dyn Widget,
+        authority: &crate::permissions::PermissionContext,
+        author: &crate::permissions::UserId,
+    ) -> bool;
+    fn build_composition(
+        &mut self,
+        live: &mut dyn Widget,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId;
+    fn apply_composition(
+        &mut self,
+        live: &mut dyn Widget,
+        tree: &TaffyTree<()>,
+        root: NodeId,
+        origin: Point,
+    );
+    fn live_layout_node(&self) -> Option<NodeId>;
+    fn route_event(
+        &mut self,
+        live: &mut dyn Widget,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    );
+}
+
+impl HistoryChromeApi for HistoryHost {
+    #[cfg(test)]
+    fn request_close(&self) {
+        HistoryHost::request_close(self);
+    }
+    #[cfg(test)]
+    fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
+        HistoryHost::timeline_selection(self)
+    }
+    fn next_refresh(&self) -> Option<(crate::background::Background, crate::time::Instant)> {
+        HistoryHost::next_refresh(self)
+    }
+    unsafe fn preserve_focus(
+        &mut self,
+        focus: Option<NodeId>,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &crate::bound_dispatch::BoundNodeMap,
+        tree: &TaffyTree<()>,
+    ) {
+        // SAFETY: the caller's contract, passed on whole.
+        unsafe { HistoryHost::preserve_focus(self, focus, nodes, bindings, tree) }
+    }
+    unsafe fn restore_focus(
+        &mut self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &crate::bound_dispatch::BoundNodeMap,
+    ) -> Option<NodeId> {
+        // SAFETY: the caller's contract, passed on whole.
+        unsafe { HistoryHost::restore_focus(self, nodes, bindings) }
+    }
+    fn request_open(&self) -> bool {
+        HistoryHost::request_open(self)
+    }
+    fn is_open(&self) -> bool {
+        HistoryHost::is_open(self)
+    }
+    fn door_resource(&self) -> tilo_actions::Resource {
+        HistoryHost::door_resource(self)
+    }
+    fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {
+        HistoryHost::invoke_door(self, encoded)
+    }
+    #[cfg(any(feature = "native", test))]
+    fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
+        HistoryHost::current_entries(self, doc)
+    }
+    fn remove_fallback_bar(&mut self) {
+        HistoryHost::remove_fallback_bar(self)
+    }
+    fn remove_open_button(&mut self) {
+        HistoryHost::remove_open_button(self)
+    }
+    fn set_open_button(&mut self, shown: bool) {
+        HistoryHost::set_open_button(self, shown)
+    }
+    fn set_window_presents(&mut self, presents: bool) {
+        HistoryHost::set_window_presents(self, presents)
+    }
+    fn offers_control(&self) -> bool {
+        HistoryHost::offers_control(self)
+    }
+    #[cfg(feature = "native")]
+    fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        style: (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool {
+        HistoryHost::draw_compared(self, scene, transform, text, style)
+    }
+    #[cfg(feature = "native")]
+    fn paint_presented(&mut self) {
+        HistoryHost::paint_presented(self)
+    }
+    fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
+        HistoryHost::set_control_domain(self, domain)
+    }
+    fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
+        HistoryHost::sync_status_matches(self, status)
+    }
+    fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>) {
+        HistoryHost::set_sync_status(self, status)
+    }
+    fn set_sync_status_in_place(
+        &mut self,
+        status: Option<&crate::widget::WindowStatus>,
+        live: &mut dyn Widget,
+    ) -> bool {
+        HistoryHost::set_sync_status_in_place(self, status, live)
+    }
+    fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
+        HistoryHost::validate_root(self, root)
+    }
+    fn encloses(&self, owner: &super::HistoryOwner) -> bool {
+        HistoryHost::encloses(self, owner)
+    }
+    fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
+        HistoryHost::enclosing_owner(self)
+    }
+    fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        HistoryHost::door_addresses(self)
+    }
+    fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
+        HistoryHost::set_enclosing_owner(self, owner)
+    }
+    fn keyboard_is_active(&self) -> bool {
+        HistoryHost::keyboard_is_active(self)
+    }
+    fn cancel_focus_return(&mut self) {
+        HistoryHost::cancel_focus_return(self)
+    }
+    fn activate_at_pointer(&mut self, event: &WindowEvent, scale: f64) {
+        HistoryHost::activate_at_pointer(self, event, scale)
+    }
+    fn set_keyboard_active(&mut self, active: bool) {
+        HistoryHost::set_keyboard_active(self, active)
+    }
+    fn composition_contains(&self, target: NodeId, tree: &TaffyTree<()>) -> bool {
+        HistoryHost::composition_contains(self, target, tree)
+    }
+    fn discard_layout_nodes(&mut self) {
+        HistoryHost::discard_layout_nodes(self)
+    }
+    fn live_interactive(&self) -> bool {
+        HistoryHost::live_interactive(self)
+    }
+    fn width_needs_refresh(&self, width: f64) -> bool {
+        HistoryHost::width_needs_refresh(self, width)
+    }
+    fn validate(&self) -> Result<(), HistoryRegistrationError> {
+        HistoryHost::validate(self)
+    }
+    fn invalidate_owner(&mut self) -> bool {
+        HistoryHost::invalidate_owner(self)
+    }
+    fn preserve_captured_focus(
+        &mut self,
+        captured: Option<crate::widget::layout::CompositionFocus>,
+    ) {
+        HistoryHost::preserve_captured_focus(self, captured)
+    }
+    fn take_returning_focus(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+        HistoryHost::take_returning_focus(self)
+    }
+    fn discard_saved_focus(&mut self) {
+        HistoryHost::discard_saved_focus(self)
+    }
+    fn captures_input(&self) -> bool {
+        HistoryHost::captures_input(self)
+    }
+    fn capture_pending_controls(
+        &mut self,
+        live: &mut dyn Widget,
+        doc: &AutoCommit,
+        root_lifetime: uuid::Uuid,
+    ) -> bool {
+        HistoryHost::capture_pending_controls(self, live, doc, root_lifetime)
+    }
+    fn capture_embedded_pending_controls(
+        &mut self,
+        live: &mut dyn Widget,
+        doc: &AutoCommit,
+    ) -> bool {
+        HistoryHost::capture_embedded_pending_controls(self, live, doc)
+    }
+    fn discard_pending_output(&mut self, live: &mut dyn Widget) {
+        HistoryHost::discard_pending_output(self, live)
+    }
+    fn finish_return_to_live(&mut self) {
+        HistoryHost::finish_return_to_live(self)
+    }
+    fn at_rest(&self) -> bool {
+        HistoryHost::at_rest(self)
+    }
+    fn has_settled_control_return(&self) -> bool {
+        HistoryHost::has_settled_control_return(self)
+    }
+    fn finish_control_return(&mut self) {
+        HistoryHost::finish_control_return(self)
+    }
+    fn flush_pending_toolbar(&mut self) {
+        HistoryHost::flush_pending_toolbar(self)
+    }
+    fn pending_control_reviews(&self) -> Vec<super::pending_controls::PendingControlReview> {
+        HistoryHost::pending_control_reviews(self)
+    }
+    fn pending_control_surface_lifetime(&self) -> uuid::Uuid {
+        HistoryHost::pending_control_surface_lifetime(self)
+    }
+    fn pending_control_token(
+        &mut self,
+        id: super::pending_controls::PendingControlId,
+    ) -> Option<super::pending_controls::ContinuationToken> {
+        HistoryHost::pending_control_token(self, id)
+    }
+    fn prepare_pending_control(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+        confirmed: bool,
+    ) -> Option<super::pending_controls::PreparedContinuation> {
+        HistoryHost::prepare_pending_control(self, token, confirmed)
+    }
+    fn prepare_pending_control_typed(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+        value: &str,
+    ) -> Option<super::pending_controls::PreparedContinuation> {
+        HistoryHost::prepare_pending_control_typed(self, token, value)
+    }
+    fn pending_control_needs_confirmation(
+        &mut self,
+        id: super::pending_controls::PendingControlId,
+    ) {
+        HistoryHost::pending_control_needs_confirmation(self, id)
+    }
+    fn pending_control_refused(
+        &mut self,
+        id: super::pending_controls::PendingControlId,
+        reason: String,
+    ) {
+        HistoryHost::pending_control_refused(self, id, reason)
+    }
+    fn pending_control_consumed(&mut self, id: super::pending_controls::PendingControlId) {
+        HistoryHost::pending_control_consumed(self, id)
+    }
+    fn cancel_pending_control(
+        &mut self,
+        token: &super::pending_controls::ContinuationToken,
+    ) -> bool {
+        HistoryHost::cancel_pending_control(self, token)
+    }
+    fn drain_pending_control_commands(&self) -> Vec<super::pending_controls::ContinuationCommand> {
+        HistoryHost::drain_pending_control_commands(self)
+    }
+    #[cfg(test)]
+    fn queue_pending_control_command_for_test(
+        &self,
+        command: super::pending_controls::ContinuationCommand,
+    ) {
+        HistoryHost::queue_pending_control_command_for_test(self, command)
+    }
+    #[cfg(test)]
+    fn pending_control_callback_for_test(&self, id: &str) -> Option<PendingControlCallback> {
+        HistoryHost::pending_control_callback_for_test(self, id)
+    }
+    #[cfg(test)]
+    fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
+        HistoryHost::activate_retained_control_for_test(self, id)
+    }
+    fn has_saved_focus(&self) -> bool {
+        HistoryHost::has_saved_focus(self)
+    }
+    fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool {
+        HistoryHost::controls_event(self, event, scale)
+    }
+    fn returning_live(&self) -> bool {
+        HistoryHost::returning_live(self)
+    }
+    fn present_entries_of(&mut self, live: &dyn Widget) {
+        HistoryHost::present_entries_of(self, live)
+    }
+    fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
+        HistoryHost::deliver_opened_entry(self, live)
+    }
+    fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+        HistoryHost::extend_focus_denials(self, tree, denied)
+    }
+    fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
+        HistoryHost::owned_nodes(self, tree)
+    }
+    fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        HistoryHost::owns_node(self, node, tree)
+    }
+    fn set_width(&mut self, width: f64) {
+        HistoryHost::set_width(self, width)
+    }
+    fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
+        HistoryHost::needs_refresh(self, doc, width)
+    }
+    fn refresh_without_owners(&self, width: f64) -> Option<bool> {
+        HistoryHost::refresh_without_owners(self, width)
+    }
+    #[cfg(debug_assertions)]
+    fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
+        HistoryHost::heads_need_refresh(self, doc)
+    }
+    fn owners_followed_by_frame_witness(&self) -> bool {
+        HistoryHost::owners_followed_by_frame_witness(self)
+    }
+    fn review_is_open(&self) -> bool {
+        HistoryHost::review_is_open(self)
+    }
+    fn review_layout_node(&self) -> Option<NodeId> {
+        HistoryHost::review_layout_node(self)
+    }
+    fn observe_pointer(&mut self, event: &WindowEvent, scale: f64) {
+        HistoryHost::observe_pointer(self, event, scale)
+    }
+    fn refresh(&mut self, doc: &AutoCommit) {
+        HistoryHost::refresh(self, doc)
+    }
+    fn live_visible(&self) -> bool {
+        HistoryHost::live_visible(self)
+    }
+    #[cfg(feature = "native")]
+    fn take_describe_request(&mut self) -> Vec<crate::floating_surface::HistoryChangeFacts> {
+        HistoryHost::take_describe_request(self)
+    }
+    #[cfg(feature = "native")]
+    fn describing_disconnected(&mut self) {
+        HistoryHost::describing_disconnected(self)
+    }
+    #[cfg(feature = "native")]
+    fn receive_descriptions(
+        &mut self,
+        described: Vec<crate::floating_surface::HistoryChangeDescription>,
+    ) {
+        HistoryHost::receive_descriptions(self, described)
+    }
+    #[cfg(feature = "native")]
+    fn has_unwritten_descriptions(&self) -> bool {
+        HistoryHost::has_unwritten_descriptions(self)
+    }
+    #[cfg(feature = "native")]
+    fn service_descriptions(
+        &mut self,
+        state: &mut crate::State,
+        authority: &crate::permissions::PermissionContext,
+        author: &crate::permissions::UserId,
+    ) -> bool {
+        HistoryHost::service_descriptions(self, state, authority, author)
+    }
+    #[cfg(test)]
+    fn set_clock(&mut self, clock: fn() -> Option<u64>) {
+        HistoryHost::set_clock(self, clock)
+    }
+    fn take_restored_source(&mut self) -> Option<HistorySourceRegistration> {
+        HistoryHost::take_restored_source(self)
+    }
+    fn has_review_request(&self) -> bool {
+        HistoryHost::has_review_request(self)
+    }
+    fn service_restore(
+        &mut self,
+        state: &mut crate::State,
+        root: &dyn Widget,
+        authority: &crate::permissions::PermissionContext,
+        author: &crate::permissions::UserId,
+    ) -> bool {
+        HistoryHost::service_restore(self, state, root, authority, author)
+    }
+    fn build_composition(
+        &mut self,
+        live: &mut dyn Widget,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        HistoryHost::build_composition(self, live, tree, theme, nodes)
+    }
+    fn apply_composition(
+        &mut self,
+        live: &mut dyn Widget,
+        tree: &TaffyTree<()>,
+        root: NodeId,
+        origin: Point,
+    ) {
+        HistoryHost::apply_composition(self, live, tree, root, origin)
+    }
+    fn live_layout_node(&self) -> Option<NodeId> {
+        HistoryHost::live_layout_node(self)
+    }
+    fn route_event(
+        &mut self,
+        live: &mut dyn Widget,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        HistoryHost::route_event(self, live, event, ctx)
     }
 }
 

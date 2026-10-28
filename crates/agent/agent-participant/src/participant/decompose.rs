@@ -123,8 +123,8 @@ impl AgentParticipant {
     fn granted(&self) -> Vec<(String, String)> {
         self.catalogue
             .iter()
-            .filter(|definition| self.identity.delegation.permits_app(definition.app_id))
-            .map(|definition| (definition.app_id.to_owned(), definition.title.to_owned()))
+            .filter(|definition| self.identity.delegation.permits_app(&definition.app_id))
+            .map(|definition| (definition.app_id.to_string(), definition.title.to_string()))
             .collect()
     }
 

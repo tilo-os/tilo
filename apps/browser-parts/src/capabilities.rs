@@ -541,7 +541,7 @@ impl Capabilities {
         ] {
             let mut action =
                 crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
-            action.label = crate::CATALOG.t(key);
+            action.type_mut().label = crate::CATALOG.t(key);
             row.actions.push(action);
         }
         Some(row)
@@ -562,7 +562,7 @@ impl Capabilities {
         .map(|(key, allow)| {
             let mut action =
                 crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
-            action.label = crate::CATALOG.t(key);
+            action.type_mut().label = crate::CATALOG.t(key);
             action
         })
         .collect()

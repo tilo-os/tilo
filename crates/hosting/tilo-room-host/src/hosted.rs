@@ -278,6 +278,11 @@ impl Hosting {
                 return Err("this host governs that room itself".into());
             }
             runtime.governor_tap = Some(tap);
+            // The governor is a host this workspace federates with from the
+            // start: the session it answers this host's with keeps all of
+            // the room, on-demand records included, whichever of the two
+            // sessions comes up first.
+            runtime.record_peer_relay(authority.device_public_key);
         }
         drop(workspace);
         let identity = LiveIdentity {
@@ -293,12 +298,13 @@ impl Hosting {
             metrics: services.metrics.clone(),
             scope: Some(vec![request.workspace_id]),
         }
-        .spawn(
+        .spawn_woken(
             Upstream::OwnDevice {
                 addr: governor.endpoint_addr.clone(),
                 device: authority.device_public_key,
             },
             format!("governor of {}", request.room),
+            &services.arrivals,
         );
         let follower = Follower {
             services: services.clone(),

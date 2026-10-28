@@ -19,7 +19,9 @@ set -uo pipefail
 shopt -s nullglob
 
 perf=${CARGO_TARGET_DIR:-/target}/perf
-out=$perf/compare
+# Where the summary and the records it would publish go: perf-scheduled compares into
+# $perf/compare, perf-publish (which also writes the store) into a directory of its own.
+out=${1:-$perf/compare}
 store=${TILO_PERF_STORE:-https://code.tilo.so}
 TILO_PACKAGE_TOKEN=${TILO_PACKAGE_TOKEN:-${TILO_PACKAGES_TOKEN:-${REGISTRY_TOKEN:-}}}
 export TILO_PACKAGE_TOKEN

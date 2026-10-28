@@ -633,7 +633,7 @@ fn adding_from_the_store_is_an_action_on_a_store_item_only() {
     assert_eq!(
         controller
             .add_action()
-            .map(|spec| spec.contract.availability),
+            .map(|spec| spec.contract.availability.clone()),
         Some(ui::tilo_actions::Availability::Unavailable {
             code: "added".into(),
             reason: "This extension is already added".into(),

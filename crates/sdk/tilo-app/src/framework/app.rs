@@ -40,6 +40,14 @@ use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 use tilo_lock::MutexRecover as _;
 
+/// The id, title and icon of an app named at launch ([`ResourceApp::named`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppName {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub icon: Option<&'static str>,
+}
+
 /// A framework app: one resource type and a view of it.
 ///
 /// Everything else — storage, sync, collaboration, history, undo,
@@ -124,6 +132,14 @@ pub trait ResourceApp: 'static {
     /// shows the machine of whoever took it.
     const READS_HOST: &'static [ui_core::launch::HostSource] = &[];
 
+    /// The app this process is, when only the launch knows it: a runtime that runs a package
+    /// (a tilolang app) is the package's app, with its id, title and icon, rather than
+    /// [`Self::ID`], [`Self::TITLE`] and [`Self::ICON`]. Asked once per process, before the
+    /// definition is first made.
+    fn named() -> Option<AppName> {
+        None
+    }
+
     /// Import a former document format using host-local custody, before typed
     /// projection or resource publication. Unlike schema evolution this may
     /// depend on device services. A pending or failed import must leave the
@@ -141,6 +157,24 @@ pub trait ResourceApp: 'static {
     /// historical version History mode shows (with a read-only context), so
     /// it must build widgets and nothing else.
     fn view(cx: &mut ViewCx<Self::Resource>) -> Element;
+
+    /// The window shows before the room's record is read: an app that keeps
+    /// what its first frame shows beside the record (a tilolang app's
+    /// index) opens a record this device holds off the frame, shows
+    /// [`Self::opening`] meanwhile, and builds [`Self::view`] once the record
+    /// is had. Only for an app that keeps one record per room.
+    const OPENS_BEFORE_RECORD: bool = false;
+
+    /// What the window shows while the room's record is read off the frame
+    /// ([`Self::OPENS_BEFORE_RECORD`]); `None` waits for the record. What it
+    /// returns is handed to [`Self::view`] once the record is had, as a
+    /// service lent to the window ([`RecordEnv::take_lent`](super::RecordEnv::take_lent)):
+    /// the view keeps showing it rather than building it again. A write it
+    /// makes before then waits for the record ([`OpeningCx::record`]).
+    fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
+        let _ = cx;
+        None
+    }
 
     /// The label of the open resource in the palette and in history.
     fn label(state: &<Self::Resource as Resource>::State) -> String {
@@ -310,6 +344,63 @@ pub trait ResourceApp: 'static {
     }
 }
 
+/// What [`ResourceApp::opening`] builds with: who the window is for, the room, and the record
+/// on its way.
+pub struct OpeningCx<'a> {
+    pub(crate) me: &'a str,
+    pub(crate) device: &'a str,
+    pub(crate) room: String,
+    pub(crate) files: ui_core::storage::AppFiles,
+    pub(crate) record: ui_core::record::RecordOpening,
+}
+
+impl OpeningCx<'_> {
+    /// Who the window is for.
+    #[must_use]
+    pub fn me(&self) -> &str {
+        self.me
+    }
+
+    /// This device's id.
+    #[must_use]
+    pub fn device(&self) -> &str {
+        self.device
+    }
+
+    /// The room the window shows, as [`RecordEnv::room`](super::RecordEnv::room) names it.
+    #[must_use]
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+
+    /// The app's private file areas, as [`RecordEnv::storage`](super::RecordEnv::storage) gives
+    /// them to the view.
+    #[must_use]
+    pub fn files(&self) -> ui_core::storage::AppFiles {
+        self.files.clone()
+    }
+
+    /// The room's record, being read off the frame: what a write before it is had waits for
+    /// ([`RecordOpening::document`](ui_core::record::RecordOpening::document)).
+    #[must_use]
+    pub fn record(&self) -> &ui_core::record::RecordOpening {
+        &self.record
+    }
+}
+
+/// What a window shows before its record ([`ResourceApp::opening`]): a widget that the view
+/// takes over as the service it was lent.
+pub trait OpeningView: ui_core::widget::Widget {
+    /// This, as the service lent to the view.
+    fn into_lent(self: Box<Self>) -> Box<dyn std::any::Any>;
+}
+
+impl<W: ui_core::widget::Widget + 'static> OpeningView for W {
+    fn into_lent(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+}
+
 /// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
 /// mounted filesystem an app shows.
 #[derive(Clone, Copy)]
@@ -415,7 +506,7 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
     leaked(TypeId::of::<DefinitionKey<A>>(), || {
         super::kinds::register::<A>();
-        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, A::ID);
+        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, hooks::<A>().id());
         definition_of::<A>()
     })
 }
@@ -439,22 +530,23 @@ fn application_definition(
     create: ComponentFactory,
 ) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: app.id,
-        title: app.title,
+        app_id: app.id().into(),
+        title: app.title().into(),
         icon: icon(app),
         record_kind: RecordKind::new(app.kind),
         required: vec![],
         optional: vec![],
         opens,
         room_record,
+        opens_before_record: room_record && app.opens_before_record,
         create,
     }
 }
 
 fn icon(app: &AppHooks) -> IconDescriptor {
     IconDescriptor::Named(
-        app.icon
-            .unwrap_or_else(|| app.id.rsplit('.').next().unwrap_or(app.id))
+        app.icon_name()
+            .unwrap_or_else(|| app.id().rsplit('.').next().unwrap_or_else(|| app.id()))
             .to_owned(),
     )
 }
@@ -463,9 +555,11 @@ fn icon(app: &AppHooks) -> IconDescriptor {
 /// constants, and shims over the parts that need its types. One table per
 /// app; everything that reads it is compiled once for every app.
 pub(crate) struct AppHooks {
-    pub(crate) id: &'static str,
-    pub(crate) title: &'static str,
+    id: &'static str,
+    title: &'static str,
     icon: Option<&'static str>,
+    /// [`ResourceApp::named`]: the app's name when the launch gives it.
+    named: fn() -> Option<AppName>,
     /// [`Resource::KIND`] of the app's resource.
     pub(crate) kind: &'static str,
     /// [`Resource::LABEL`] of the app's resource.
@@ -491,6 +585,10 @@ pub(crate) struct AppHooks {
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
     open: OpenRoot,
+    /// [`ResourceApp::OPENS_BEFORE_RECORD`].
+    opens_before_record: bool,
+    /// [`ResourceApp::opening`].
+    pub(crate) opening: fn(&OpeningCx<'_>) -> Option<Box<dyn OpeningView>>,
     pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
     history: fn() -> &'static ui_core::history_mode::HistoryDefinition,
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
@@ -520,6 +618,7 @@ impl<A: ResourceApp> Hooks<A> {
         id: A::ID,
         title: A::TITLE,
         icon: A::ICON,
+        named: A::named,
         kind: <A::Resource as Resource>::KIND,
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
@@ -539,10 +638,28 @@ impl<A: ResourceApp> Hooks<A> {
         new_record: new_record::<A>,
         prepare_capture: prepare_capture::<A>,
         open: open_root::<A>,
+        opens_before_record: A::OPENS_BEFORE_RECORD && !A::WINDOW_RESOURCE,
+        opening: A::opening,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
         file_history_witness: super::preview::file_history_witness::<A>,
     };
+}
+
+impl AppHooks {
+    /// The app's id: as the launch names it, else [`ResourceApp::ID`].
+    pub(crate) fn id(&self) -> &'static str {
+        (self.named)().map_or(self.id, |named| named.id)
+    }
+
+    /// The window and launcher title: as the launch names it, else [`ResourceApp::TITLE`].
+    pub(crate) fn title(&self) -> &'static str {
+        (self.named)().map_or(self.title, |named| named.title)
+    }
+
+    fn icon_name(&self) -> Option<&'static str> {
+        (self.named)().map_or(self.icon, |named| named.icon)
+    }
 }
 
 /// `A`'s [`AppHooks`].
@@ -586,7 +703,7 @@ impl RootShell {
         storage: AppStorage,
         hosted: super::settings::Hosted,
     ) -> Self {
-        let scope = PermissionScope::app(app.id, ActionKind::Undoable);
+        let scope = PermissionScope::app(app.id(), ActionKind::Undoable);
         let (permissions, read_only, me, run) = match editing {
             Editing::Live {
                 permissions,
@@ -599,7 +716,8 @@ impl RootShell {
             Editing::ReadOnly => (None, true, None, Run::past()),
         };
         let run = run.for_participant(me.as_deref());
-        let storage = super::settings::ViewStorage::new(storage, hosted.attach(app.id, app.title));
+        let storage =
+            super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
             scope,
             permissions,
@@ -652,7 +770,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id, app.kind, read_only, me.as_deref()).on_record(
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_deref()).on_record(
         run.launched
             .record
             .as_ref()
@@ -686,7 +804,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content)
+    let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
     if !app.document_history {
@@ -768,7 +886,7 @@ fn apply_seed_actions(
     let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
     for (action, encoded) in actions.iter().zip(encoded) {
         let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
-            .with_app(app.id, app.title)
+            .with_app(app.id(), app.title())
             .with_invoker(tilo_actions::ActionInvoker::actor(author))
             .with_change(tilo_actions::ChangeKind::External);
         tilo_actions::apply_local_with_context(doc, *action, encoded, Some(&writer), context)
@@ -916,6 +1034,46 @@ fn open_root<A: ResourceApp>(
     Ok(Ok(root.into_widget()))
 }
 
+/// The component of a window shown before its record ([`ResourceApp::opening`]): it shows
+/// `view` until the record is had, then the window shows the component built as any launch
+/// builds it, which takes `view` over ([`super::Opened`]).
+fn opening_component(
+    app: &'static AppHooks,
+    mut context: HostContext,
+    view: Box<dyn OpeningView>,
+    record: ui_core::record::RecordOpening,
+    restore: &RestoreInput,
+) -> AppComponent {
+    let arguments = context.take_launch_arguments();
+    let options = context.take_launch_options();
+    let handoff = context.take_handoff();
+    let lent = context.take_lent();
+    let restore = restore.clone();
+    let reopener = context.reopener();
+    let checkout = record.checkout().clone();
+    let build: super::opening::Build = Box::new(move |shown| {
+        let definition = (app.definition)();
+        let (mut context, target) = reopener.prepare(definition, checkout.id)?;
+        context.provide_launch_arguments(arguments.clone());
+        context.provide_launch_options(options);
+        if let Some(handoff) = handoff {
+            context.provide_handoff(handoff);
+        }
+        for service in lent {
+            context.lend_boxed(service);
+        }
+        context.lend(super::Opened::new(shown));
+        let component = definition.instantiate(context, target, restore)?;
+        Ok(ui_core::application::ComponentReplacement::new(
+            component, arguments,
+        ))
+    });
+    let root = super::opening::OpeningRoot::new(view, record, build, (app.title(), icon(app)));
+    let mut component = AppComponent::new(context, Box::new(root), (app.action_registry)());
+    component.set_behaviour(app.behaviour);
+    component
+}
+
 /// What a window's root keeps of the person and the device.
 fn hosted(context: &HostContext) -> super::settings::Hosted {
     super::settings::Hosted {
@@ -940,7 +1098,7 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
 /// The window of a record that does not read as the app's resource.
 fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent {
     let unopened = super::root::Unopened::new(
-        app.title,
+        app.title(),
         icon(app),
         (app.kind, app.label),
         &(app.declarations)(),
@@ -958,18 +1116,34 @@ fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent 
 fn create<A: ResourceApp>(
     context: HostContext,
     target: LaunchTarget,
-    _restore: RestoreInput,
+    restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
-    create_component(hooks::<A>(), context, &target)
+    create_component(hooks::<A>(), context, &target, &restore)
 }
 
 fn create_component(
     app: &'static AppHooks,
     mut context: HostContext,
     target: &LaunchTarget,
+    restore: &RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
     if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
+    }
+    // The room's record is being read off the frame: the window shows what the app shows
+    // before it, and opens as below once the record is had.
+    if let Some(record) = context.record_opening() {
+        let opening = OpeningCx {
+            me: &context.author().0,
+            device: context.device_id(),
+            room: context.records().home(),
+            files: context.files(),
+            record: record.clone(),
+        };
+        if let Some(view) = (app.opening)(&opening) {
+            return Ok(opening_component(app, context, view, record, restore));
+        }
+        record.take_in(true).map_err(LaunchError::Record)?;
     }
     // A record of its own, or the room's record an app keeps one of
     // (`ResourceApp::ROOM_RECORD`), opened for the first time.
@@ -1031,11 +1205,9 @@ fn create_component(
                 .clone()
                 .map(|source| (source, (app.file_history_witness)())),
         );
-    let permissions = context.live_permissions();
-    let me = context.author().0.clone();
     let editing = Editing::Live {
-        permissions,
-        me,
+        permissions: context.live_permissions(),
+        me: context.author().0.clone(),
         run,
     };
     let root = match (app.open)(&mut context, editing, capture, created)? {
@@ -1258,6 +1430,15 @@ fn prepare_hooked(
     // the person's records, devices or collaborators.
     let private = (app.private_windows && args.has(PRIVATE_FLAG)) || names_recording(arguments);
     let mut prepared = prepare_named(definition, args, named, private)?;
+    // A window someone looks at shows before its record. What drives or photographs one acts
+    // on the record from its first step: it waits for it.
+    let drives = args.headless.is_some()
+        || args.shots.is_some()
+        || args.responsive_matrix.is_some()
+        || args.native_audit;
+    if drives && let Some(record) = prepared.context.record_opening() {
+        record.take_in(true).map_err(LaunchError::Record)?;
+    }
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     // The session launches the target of a playback handoff with where it
@@ -1543,7 +1724,7 @@ fn prepare_named(
         return Ok(super::headless::in_profile(
             prepared,
             &profile_root,
-            definition.app_id,
+            definition.app_id(),
         ));
     }
     if let Some(directory) = args.value("--data-dir") {
@@ -1561,7 +1742,7 @@ fn prepare_named(
                 super::headless::in_profile(
                     prepared,
                     &super::headless::data_dir_root(directory.as_ref()),
-                    definition.app_id,
+                    definition.app_id(),
                 )
             },
         );

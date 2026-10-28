@@ -83,7 +83,7 @@ pub(crate) struct Blocked {
 /// `effect` as the row `id` offers it, unavailable while `blocked`.
 fn offer(id: &str, effect: &BackupsEffect, blocked: Option<&Blocked>) -> ActionSpec {
     let mut spec = effect.bound();
-    id.clone_into(&mut spec.id);
+    id.clone_into(&mut spec.type_mut().id);
     match blocked {
         Some(blocked) => spec.unavailable(blocked.code, blocked.reason.clone()),
         None => spec,
@@ -91,7 +91,7 @@ fn offer(id: &str, effect: &BackupsEffect, blocked: Option<&Blocked>) -> ActionS
 }
 
 fn labelled(mut spec: ActionSpec, label: &str) -> ActionSpec {
-    label.clone_into(&mut spec.label);
+    label.clone_into(&mut spec.type_mut().label);
     spec
 }
 

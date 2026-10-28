@@ -628,11 +628,13 @@ class CloudDeployTests(unittest.TestCase):
 
 class WorkflowContractTests(unittest.TestCase):
     def test_t_deploys_the_receipts_stable_publishes(self):
-        """Each deployed image's release is published from stable with a receipt, signed first, and
-        the deploy runs after both, on stable, with the only secret it needs."""
+        """Each deployed image's release is published with a receipt, signed first, and the deploy
+        runs after both with the only secret it needs. Production is released by hand by its own
+        session, so the deploy and the web entry's release run when dispatched, never on a push
+        to stable."""
         checks = {c["name"]: c for c in t_matrix.load(ROOT)["check"]}
         cloud = checks["cloud-deploy"]
-        self.assertEqual(cloud["on"], ["stable", "dispatch"])
+        self.assertEqual(cloud["on"], ["dispatch"])
         self.assertEqual(cloud["secrets"], [deploy.TOKEN_ENV])
         self.assertTrue(cloud["git"])
         self.assertFalse(cloud["cache"])
@@ -643,9 +645,11 @@ class WorkflowContractTests(unittest.TestCase):
             receipt = f"/target/publish/{name}/receipt.json"
             self.assertIn(receipt, cloud["run"])
             self.assertIn(receipt, publish["outputs"])
-            self.assertIn("stable", publish["on"], name)
+            self.assertIn("dispatch", publish["on"], name)
             self.assertIn("'release:sha-{commit}'", publish["run"], name)
             self.assertIn(f"sign-{name}", publish["optional_needs"], name)
+        self.assertNotIn("stable", checks["publish-web-entry"]["on"])
+        self.assertNotIn("stable", checks["carry-web-entry"]["on"])
         # The web entry's release is the image carrying production's version, not the bare build.
         self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry", "signing-tools"])
         self.assertIn("carry-web-entry", checks["publish-web-entry"]["optional_needs"])

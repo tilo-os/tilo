@@ -334,7 +334,12 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
         navigation: ui::webview::page::PageNavigation::None,
         loading: false,
     };
-    let update = widget.page_success(ui::tilo_actions::InvocationId::new(), &reply, None);
+    let update = widget.page_success(
+        ui::tilo_actions::InvocationId::new(),
+        &reply,
+        &ui::webview::PageRequest::Outline { frame: None },
+        None,
+    );
     let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
         panic!("a page request that worked succeeds");
     };
@@ -364,7 +369,12 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
     widget
         .capabilities
         .apply(WebViewEvent::PermissionClosed { id: 3 });
-    let update = widget.page_success(ui::tilo_actions::InvocationId::new(), &reply, None);
+    let update = widget.page_success(
+        ui::tilo_actions::InvocationId::new(),
+        &reply,
+        &ui::webview::PageRequest::Outline { frame: None },
+        None,
+    );
     let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
         panic!("a page request that worked succeeds");
     };

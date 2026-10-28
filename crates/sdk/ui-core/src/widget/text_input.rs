@@ -1548,6 +1548,14 @@ impl TextInput {
         input
     }
 
+    /// Key the field's presence by `path`: collaborators editing the field at the same path
+    /// see each other's carets and selections in it.
+    #[must_use]
+    pub fn with_presence_path(mut self, path: Vec<PathSegment>) -> Self {
+        self.path = path;
+        self
+    }
+
     /// Admit only characters accepted by `filter` on every insertion path.
     ///
     /// This is deliberately a character predicate, not a validator for the
@@ -3775,6 +3783,15 @@ impl TextInput {
     pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         self.enter_submits = true;
         self.on_submit = Some(Box::new(callback));
+        self
+    }
+
+    /// Route Enter through an exported resource action with the text as its
+    /// input; see [`Self::on_submit`].
+    #[must_use]
+    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.enter_submits = true;
+        self.submit_action = Some(ActionEmitter::new(binding));
         self
     }
 
@@ -7433,3 +7450,6 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "text_input_touch_tests.rs"]
 mod touch_tests;
+
+mod component;
+pub use component::TextInputProps;

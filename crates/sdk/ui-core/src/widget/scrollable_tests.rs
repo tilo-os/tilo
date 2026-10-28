@@ -1442,6 +1442,34 @@ fn a_restored_offset_is_clamped_before_the_content_is_placed() {
 }
 
 #[test]
+fn a_transcript_opens_at_its_end_and_follows_it_until_scrolled_away() {
+    let mut scroll = Scrollable::new_vertical()
+        .following_end()
+        .with_child(tall_child())
+        .with_height(300.0);
+    host_solve(&mut scroll, 400.0, 300.0);
+    assert!(scroll.max_offset_y() > 0.0);
+    assert!(
+        (scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5,
+        "it opens on the newest line"
+    );
+    // A new line arrives: still at the end.
+    let mut longer = Column::new().with_intrinsic_height();
+    for i in 0..41 {
+        longer = longer.push(Box::new(Text::new(&format!("row {i}"))));
+    }
+    if let Some(child) = scroll.child_mut() {
+        *child = Box::new(longer);
+    }
+    host_solve(&mut scroll, 400.0, 300.0);
+    assert!((scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5);
+    // Scrolled up to read: a new line does not pull the person back down.
+    scroll.set_offset_y(0.0);
+    host_solve(&mut scroll, 400.0, 300.0);
+    assert!(scroll.offset_y() < 0.5, "reading older lines stays put");
+}
+
+#[test]
 fn horizontal_content_is_laid_out_at_its_max_content_width() {
     let wide = Row::new()
         .no_wrap()

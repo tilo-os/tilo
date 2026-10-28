@@ -17,8 +17,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
-use tilo_desktop::feedback::PrivateFeedback;
-
 use super::{
     Closure, DEFERRED_EVENTS, DeferredEvent, GPU_STEP, Gpu, GpuStep, LOOP, MOUNTS, Mount,
     PIPELINES_BUILT, REPLAYING, REQUESTS, SERVICING, STOP, admit_runtime, await_runtime_admission,
@@ -262,7 +260,7 @@ impl ApplicationHandler<u64> for Runner {
                         .feedback
                         .borrow()
                         .as_ref()
-                        .and_then(PrivateFeedback::next_wake_deadline)
+                        .and_then(|feedback| feedback.next_wake_deadline())
                 });
                 if let Some(next) = feedback_due {
                     let due = *m.feedback_retry.get_or_insert(next);

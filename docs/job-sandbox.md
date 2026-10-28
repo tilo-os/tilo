@@ -358,22 +358,32 @@ machine is an ordinary job. `job::vm` builds it:
   reproducibly as a check's outputs, from the Kata guest kernel's
   configuration with the RAID6 benchmark off, which alone halved boot). Per step, `prepare` writes an
   initramfs with busybox, `vm/init.sh` and a generated job file.
-- **Disks, virtio-blk only**: the step's image as a read-only ext4 (made by
-  `make_image`: `mkfs.ext4 -d` in a user namespace of its own that maps the
-  caller to root, so the files are root's and unreadable ones still copy), copy-on-write onto a sparse scratch ext4
-  that also holds `/tmp`, `/var/tmp` and `/var/lib/containers`; more read-only
-  images mounted read-only or copy-on-write (sources, earlier steps' outputs);
-  and a raw output disk on which the guest writes a status line and a tar of
-  the files matching the step's output patterns. The host never mounts what a
-  guest wrote; `finish` reads the tar as untrusted, keeping only regular files
-  and directories below its destination. virtio-fs is avoided: it is slow and
-  breaks SQLite's write-ahead log. IO is QEMU's thread pool, since io_uring is
-  refused.
+- **Inputs over virtio-fs**: every input, the root included, is a directory
+  (a layer) of one read-only share served by a virtiofsd the caller starts as
+  a helper (`job::helper`); the guest stacks the root's layers as an overlay
+  and each input's as another, every change going to the scratch disk.
+  Layers already on the host are shared as they are, with nothing converted
+  into an image per step. Guest memory is a shared memfd, as vhost-user
+  devices need, charged to QEMU's cgroup. A second, writable share holds what
+  the host reads as the step left it (a build directory).
+- **Disks, virtio-blk only**: a sparse scratch ext4 for the root's and
+  inputs' changes, `/tmp`, `/var/tmp` and `/var/lib/containers` (virtio-fs
+  breaks SQLite's write-ahead log, and podman's storage can't sit on it), and
+  a raw output disk on which the guest writes a tar of the files matching the
+  step's output patterns and then, last, a status line: a written status means
+  everything is written, so the host can take the result before QEMU exits.
+  The host never mounts what a guest wrote; `finish` reads the tar as
+  untrusted, keeping only regular files and directories below its
+  destination. IO is QEMU's thread pool, since io_uring is refused.
 - **Output**: the command's stdout and stderr on a virtio serial port (not a
   terminal), the guest's console next to it, both QEMU's stdout.
-- **Network**: passt outside the sandbox, as the caller, reached on a unix
-  socket (`-netdev stream`): outbound connections and DNS, nothing forwarded
-  in, no address leading to the node's loopback.
+- **Network**: passt outside the sandbox, started by the caller as a helper
+  (`passt_argv`), reached on a unix socket (`-netdev stream`): outbound
+  connections and DNS, nothing forwarded in.
+- **Helpers** (`job::helper`): virtiofsd, passt and pasta run in a mount
+  namespace of their own built from the host's `/usr` and `/etc` and their
+  binds alone, so they hold no copy of the caller's other mounts, born in the
+  job's cgroup and detached like the job.
 
 Measured on a laptop and a CI node: a step boots in about 0.25 s to its
 command once the RAID6 benchmark is off; it holds 0.2 to 0.4 GB besides what

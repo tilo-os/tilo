@@ -4670,6 +4670,12 @@ impl Widget for BooksApp {
         // What the person did in the window's bar is carried out here, where
         // the document is at hand, through the actions the row's controls ran.
         self.take_bar_events(edits);
+        // What the search's chips asked for through the window (a screen
+        // reader, an agent) is carried out here.
+        for asked in self.query.chips.take_asked() {
+            self.dispatch(asked, edits);
+            self.dirty = true;
+        }
         self.ensure_library_loaded(edits.doc());
         self.drain_import_worker(edits);
         self.commit_pending_share(edits);
@@ -4944,6 +4950,22 @@ impl Widget for BooksApp {
             }
             _ => {}
         }
+    }
+
+    /// The search's chips are retained widgets the page paints: the window
+    /// reaches their controls as its children's.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.query.chips.child().into_iter().collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.query.chips.child_mut().into_iter().collect()
+    }
+
+    /// The chips are represented in the window's own accessibility tree
+    /// while the search shows them, where they are operable.
+    fn accessibility_represents_child(&self, _child_index: usize) -> bool {
+        true
     }
 
     fn name(&self) -> &'static str {

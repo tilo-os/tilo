@@ -80,7 +80,7 @@ impl SlotRowHost for Lent<'_> {
             .invoke(())
             .map_err(|error| error.to_string())
             .and_then(|intent| {
-                crate::history_mode::embedded::run_door_control(history, &intent)
+                crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = ran {

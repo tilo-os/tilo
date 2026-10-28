@@ -245,27 +245,48 @@ async fn peers_use_several_relays_and_fail_over() {
         };
         c1_r1.send(d2).unwrap();
 
-        // relay1's pending dir for p2 has 1 delta; relay2 has none.
+        // relay1's pending dir for p2 holds the new delta once; relay2 has
+        // nothing. The queue may also still hold `via-relay1`: pending
+        // delivery is at-least-once, and the delta p2 took live just before
+        // it left is dropped from the queue only once acknowledged (see
+        // `p2_returns_and_drains`). So the delta is found by its bytes, not
+        // by how many files the queue holds.
         let hex_p2 = hex::encode(p2.device_pubkey());
         let pending_r1 = relay1.state_root.join("workspaces/3/pending").join(&hex_p2);
         let pending_r2 = relay2.state_root.join("workspaces/3/pending").join(&hex_p2);
-        let count = |dir: &std::path::Path| {
-            std::fs::read_dir(dir).map_or(0, |rd| {
-                rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                    .count()
-            })
+        let queue = |dir: &std::path::Path| -> Vec<Vec<u8>> {
+            std::fs::read_dir(dir).map_or_else(
+                |_| Vec::new(),
+                |rd| {
+                    rd.flatten()
+                        .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                        .filter_map(|e| std::fs::read(e.path()).ok())
+                        .collect()
+                },
+            )
+        };
+        let queued = |dir: &std::path::Path, payload: &[u8]| {
+            queue(dir)
+                .iter()
+                .filter(|bytes| bytes.windows(payload.len()).any(|w| w == payload))
+                .count()
         };
         // Wait for the write rather than guessing how long it takes: a fixed sleep
         // is a race that fails on a loaded machine and proves nothing on a fast one.
         wait_until("relay1 to queue the delta for offline p2", || {
-            count(&pending_r1) == 1
+            queued(&pending_r1, b"queued-on-relay1") > 0
         })
         .await;
-        let count_r1 = count(&pending_r1);
-        let count_r2 = count(&pending_r2);
-        assert_eq!(count_r1, 1, "relay1 should hold the delta for offline p2");
-        assert_eq!(count_r2, 0, "relay2 should not have seen the delta");
+        assert_eq!(
+            queued(&pending_r1, b"queued-on-relay1"),
+            1,
+            "relay1 should hold the delta for offline p2 once"
+        );
+        assert_eq!(
+            queue(&pending_r2).len(),
+            0,
+            "relay2 should not have seen the delta"
+        );
 
         // p2 returns to relay1 and drains the queue.
         drop(c2_r2);

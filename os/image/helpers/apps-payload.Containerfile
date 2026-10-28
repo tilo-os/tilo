@@ -171,18 +171,20 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 #
 # Apps compiled here are signed by the identity in the `app_publisher_identity`
-# secret when the build is given one (Build / OS dev: DEV_APP_PUBLISHER_IDENTITY),
-# else by one minted for this build. Ed25519 signs deterministically, so with
-# the one identity the same binaries give the same package ids and payload
-# paths in every build, and an update re-sends only the apps that changed. The
-# key is in no trust list: see the store's COPY below. Secrets are not part of
-# BuildKit's cache key and never enter a layer.
+# secret when the build is given one, else by one minted for this build and
+# discarded. The key is in no trust list: see the store's COPY below. Secrets
+# are not part of BuildKit's cache key and never enter a layer. The publisher
+# key is in each package's signed root, whose hash is its id, so a minted key
+# gives the same app a new id in every build; its installed tree is named by
+# its payload instead (os/scripts/signed-records.py), the same in every build
+# that packs the same files, and every row is verified again after the move.
 #
 # Each app is in the image once, as its installed tree and signed record. The
 # dev VM daemon, the one reader of a complete archive, rebuilds it from those
 # (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
 # was half of the app bytes in every update.
 RUN --mount=type=secret,id=app_publisher_identity \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/usr/local/libexec/tilo-signed-records.py,ro \
     export TILO_IMAGE_BUILD=1 \
     && if [ -s /run/secrets/app_publisher_identity ]; then \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
@@ -198,6 +200,8 @@ RUN --mount=type=secret,id=app_publisher_identity \
     PUBKEY_OUT=/out/app-publisher.hex \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh \
+    && python3 /usr/local/libexec/tilo-signed-records.py name-trees /usr/share/tilo-apps \
+    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify \
     # The packages carry English only; every other language is a language
     # pack, which the image installs under /usr/share/tilo/language-packs.
     && python3 /build/tools/apps/language_packs.py build /build /out/language-packs
@@ -215,4 +219,4 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/run/tilo-hardlink-identical.py,ro \
     /build/os/scripts/install-env-runtime.sh /tilo-env-runtime/env-runtime \
       /usr/share/tilo-apps /usr/share/tilo-apps /out/tilo-install \
-    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs
+    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs /usr/share/tilo-apps/trees

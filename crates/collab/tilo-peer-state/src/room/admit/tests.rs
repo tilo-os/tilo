@@ -5,8 +5,6 @@ use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::{Role, Subject, roles};
-use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId, shared_record};
 
 const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OWNER: [u8; 32] = [0x11; 32];
@@ -22,8 +20,7 @@ fn person_id(root: [u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A room the owner governs, with an editor and a viewer, one strip the
-/// owner made and one the editor made.
+/// A room the owner governs, with an editor and a viewer.
 fn governed() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "room", ROOM).unwrap();
@@ -51,33 +48,9 @@ fn governed() -> AutoCommit {
         )
         .unwrap();
     }
-    let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-    workspace.strips = vec![
-        Strip::new(StripId(OWNERS_STRIP), "Strip"),
-        Strip::new(StripId(EDITORS_STRIP), "Strip"),
-    ];
-    shared_record::write(
-        &mut doc,
-        &SharedDesktop {
-            tree: DesktopTree {
-                active: workspace.id,
-                workspaces: vec![workspace],
-                ..DesktopTree::default()
-            },
-            authors: BTreeMap::from([
-                (OWNERS_STRIP, person_id(OWNER)),
-                (EDITORS_STRIP, person_id(EDITOR)),
-            ]),
-            ..SharedDesktop::default()
-        },
-    )
-    .unwrap();
     doc.commit();
     doc
 }
-
-const OWNERS_STRIP: u64 = 0x0001_0000_0000_0001;
-const EDITORS_STRIP: u64 = 0x0002_0000_0000_0001;
 
 /// The changes `edit` makes on top of `before`.
 fn changes_after(before: &AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> Vec<Vec<u8>> {
@@ -128,28 +101,13 @@ fn admit(
     )
 }
 
-fn strip_name(doc: &mut AutoCommit, id: u64, name: &str) {
-    let mut desktop = shared_record::read(&*doc, None).unwrap();
-    for strip in desktop
-        .tree
-        .workspaces
-        .iter_mut()
-        .flat_map(|w| &mut w.strips)
-    {
-        if strip.id.0 == id {
-            strip.name = name.into();
-        }
-    }
-    shared_record::write(doc, &desktop).unwrap();
-}
-
-/// A strip nobody is named as having made.
-fn add_strip(doc: &mut AutoCommit, id: u64) {
-    let mut desktop = shared_record::read(&*doc, None).unwrap();
-    desktop.tree.workspaces[0]
-        .strips
-        .push(Strip::new(StripId(id), "New"));
-    shared_record::write(doc, &desktop).unwrap();
+/// A record the room holds, as any member writes it.
+fn hold_record(doc: &mut AutoCommit, record: &str) {
+    tilo_desktop_model::projection::project_room_records(
+        doc,
+        &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
+    )
+    .unwrap();
 }
 
 fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
@@ -232,7 +190,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
 #[test]
 fn sender_needs_write_on_the_room_it_already_governs() {
     let before = governed();
-    let edit = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&before, |doc| hold_record(doc, "file:/plan.md"));
     let authority = key(0xA0);
     let writer = key(0x02);
     assert_eq!(
@@ -266,7 +224,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
         )
         .is_ok()
     );
-    let added = changes_after(&before, |doc| add_strip(doc, 0x0003_0000_0000_0001));
+    let added = changes_after(&before, |doc| hold_record(doc, "file:/notes.md"));
     assert!(
         admit(
             Some(&before),
@@ -401,56 +359,6 @@ fn durable_and_import_governance_count_as_governance() {
         .unwrap_err(),
         RoomRefusal::GovernanceWriter
     );
-}
-
-#[test]
-fn what_someone_else_made_changes_only_with_the_rooms_leave() {
-    let before = governed();
-    let authority = key(0xA0);
-    let editor = key(0x02);
-    let theirs = changes_after(&before, |doc| strip_name(doc, OWNERS_STRIP, "Stolen"));
-    for pin in [AuthorityPin::Device(&authority), AuthorityPin::Local] {
-        let refused = admit(Some(&before), member(&editor, EDITOR), pin, &theirs);
-        assert!(
-            matches!(refused, Err(RoomRefusal::NotTheirs(_))),
-            "{pin:?}: {refused:?}"
-        );
-    }
-    let own = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Mine"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&editor, EDITOR),
-            AuthorityPin::Device(&authority),
-            &own,
-        )
-        .is_ok(),
-        "a person's own strip is theirs from any device"
-    );
-    // The owner, from a device that does not govern the room, moderates it.
-    let moderated = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Tidied"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&key(0x07), OWNER),
-            AuthorityPin::Device(&authority),
-            &moderated,
-        )
-        .is_ok()
-    );
-    // A sender whose person is not known may change nothing a person made.
-    assert!(matches!(
-        admit(
-            Some(&before),
-            Writer {
-                key: &editor,
-                standing: Standing::TransportAuthorized,
-            },
-            AuthorityPin::Local,
-            &own,
-        ),
-        Err(RoomRefusal::NotTheirs(_))
-    ));
 }
 
 #[test]

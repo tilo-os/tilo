@@ -862,6 +862,19 @@ impl EditorView {
         Some(self.cached_text.chars().skip(s).take(e - s).collect())
     }
 
+    /// The primary caret as UTF-8 byte offsets into [`Self::text`], the space
+    /// an accessible text selection is published in: the anchor and the focus
+    /// in the order a screen reader reads them, which is where the selection
+    /// starts and where it ends.
+    fn accessible_caret(&self) -> (usize, usize) {
+        let caret = self.primary();
+        let focus = byte_of(&self.cached_text, caret.line, caret.col);
+        let anchor = caret
+            .anchor
+            .map_or(focus, |(line, col)| byte_of(&self.cached_text, line, col));
+        (anchor, focus)
+    }
+
     /// Move the primary caret to a flat char index, collapsing multi-carets.
     /// `extend` keeps (or promotes) the selection anchor; otherwise the
     /// selection collapses.
@@ -2959,16 +2972,24 @@ impl Widget for EditorView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Document)
-                .with_name("Code editor")
-                .with_state(
-                    ui::a11y::AccessState::new()
-                        .focusable(true)
-                        .focused(self.is_focused)
-                        .multiline(true),
-                ),
-        )
+        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Document)
+            .with_name("Code editor")
+            .with_state(
+                ui::a11y::AccessState::new()
+                    .focusable(true)
+                    .focused(self.is_focused)
+                    .multiline(true),
+            );
+        // What the document holds and where the caret is, for everything that
+        // reads the editor without looking at its pixels: a screen reader, an
+        // automation script, an agent, and the headless driver's checks.
+        // Nothing is bound to a buffer yet, so there is no text to publish.
+        if self.is_bound() {
+            node = node.with_value(self.cached_text.clone());
+            let (anchor, focus) = self.accessible_caret();
+            node = node.with_text_selection(anchor, focus);
+        }
+        Some(node)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

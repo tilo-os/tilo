@@ -153,9 +153,23 @@ where
     }
 
     /// Take the subtree showing now out of the view, `with` standing in it.
+    /// The subtree's controls keep working where it goes: they were in this
+    /// view's control scope, which closes with the view, so they move to the
+    /// domain the view stands in, as a host renews custody it closed.
     pub(crate) fn replace_child(&mut self, with: Element) -> Element {
         self.structure_dirty = true;
-        std::mem::replace(&mut self.child, with)
+        let mut taken = std::mem::replace(&mut self.child, with);
+        if let (Some(outer), Some(scope)) = (self.control_domain.clone(), self.scope_domain.take())
+        {
+            self.child_domain = None;
+            scope.close();
+            crate::widget::controls::install_control_custody(
+                taken.as_mut(),
+                &outer,
+                outer.renewal_from(&scope),
+            );
+        }
+        taken
     }
 
     /// Reconcile a time-sensitive projection through the host's existing wake

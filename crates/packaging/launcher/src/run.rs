@@ -26,6 +26,9 @@ use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
     resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
 };
+use entrypoint_runtime::{preflight_entrypoint_runtime, resolve_launch_runtimes};
+
+mod entrypoint_runtime;
 
 struct SeccompFds {
     clone3_compat: OwnedFd,
@@ -161,6 +164,17 @@ pub enum RunError {
     },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    #[error(
+        "`{package}` runs on the runtime `{runtime}`, which is not installed (looked in \
+         {searched}). Install it with `app install {package}`, which also fetches the runtime \
+         it needs.",
+        searched = display_paths(.searched)
+    )]
+    EntrypointRuntimeMissing {
+        package: String,
+        runtime: String,
+        searched: Vec<PathBuf>,
+    },
     #[error(
         "`{package}` changed while it was opening: an update replaced the build at {path}. \
          Open it again to start the new one."
@@ -654,40 +668,7 @@ mod headless_console_launch_tests {
 }
 
 #[cfg(test)]
-mod interface_tests {
-    use super::*;
-    use tilo_app_package::interfaces::ProvidedInterfaces;
-
-    #[test]
-    fn a_build_speaking_another_interface_version_is_refused() {
-        let settings: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/settings\"\n\
-             [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
-        );
-        let os = |system: u32, runtime: u32| {
-            ProvidedInterfaces::new([("system", system), ("runtime", runtime)], ["collab"])
-        };
-        let unmet = interfaces_unmet(&settings, Some(&os(1, 3)));
-        assert_eq!(unmet.len(), 1);
-        assert_eq!(unmet[0].requirement, "system@2");
-        let optional = interfaces_unmet(&settings, Some(&os(2, 4)));
-        assert_eq!(
-            optional[0].requirement, "collab@3",
-            "an optional service is spoken at its own version where it is there"
-        );
-        assert!(interfaces_unmet(&settings, Some(&os(2, 3))).is_empty());
-        assert!(interfaces_unmet(&settings, None).is_empty());
-
-        let message = RunError::InterfacesUnmet {
-            package: "so.tilo.settings".into(),
-            unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
-        }
-        .to_string();
-        assert!(message.contains("system@2 (this system provides system@1)"));
-        assert!(message.contains("app remove so.tilo.settings"));
-    }
-}
+mod interface_tests;
 
 #[cfg(test)]
 mod managed_service_tests {
@@ -1163,10 +1144,11 @@ fn splice_runtime_mounts(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-    resolved_runtime_present: bool,
+    runtime: Option<(&Path, &str)>,
 ) -> Result<Vec<String>, RunError> {
-    let optional = resolve_optional_runtimes(manifest, opts);
-    splice_runtime_mounts_with(argv, opts, resolved_runtime_present, &optional)
+    let optional = resolve_launch_runtimes(manifest, opts)?;
+    preflight_entrypoint_runtime(manifest, opts, runtime, &optional)?;
+    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &optional)
 }
 
 /// [`splice_runtime_mounts`] for optional runtimes already resolved.
@@ -1193,7 +1175,15 @@ fn resolve_optional_runtimes(
     opts: &RunOptions,
 ) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
-    for raw in &manifest.optional_runtimes {
+    let entry = manifest.entrypoint.runtime.as_deref();
+    // The entrypoint's runtime is declared among the optional ones but is
+    // not optional: `resolve_launch_runtimes` resolves it and refuses the
+    // launch without it.
+    for raw in manifest
+        .optional_runtimes
+        .iter()
+        .filter(|raw| Some(raw.as_str()) != entry)
+    {
         match find_runtime_bundle(raw, opts) {
             Ok((Some(bundle), _)) => found.push(bundle),
             Ok((None, searched)) => tracing::info!(
@@ -1234,7 +1224,7 @@ fn splice_optional_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
-    splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))
+    splice_resolved_optional_runtimes(argv, &resolve_launch_runtimes(manifest, opts)?)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -1943,7 +1933,10 @@ fn start_egress_gate(
         return Ok((None, None));
     };
 
-    let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
+    let host_socket = crate::netgate::gate_socket_path(
+        &crate::dbus_proxy::session_runtime_dir(),
+        std::process::id(),
+    );
     match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
         Ok(gate) => {
             let bind = crate::sandbox::NetGateBind {
@@ -2914,6 +2907,8 @@ struct ChildSetup {
         Option<std::thread::JoinHandle<()>>,
     ),
     latency_sensitive: bool,
+    /// A development session's launch of a module payload: followed from the spawn on.
+    live_module: Option<crate::live_module::LiveModule>,
 }
 
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
@@ -2942,6 +2937,7 @@ fn spawn_and_wait(
         services: resolved,
         identity_broker,
         latency_sensitive,
+        live_module,
     } = child_setup;
     let (observer, debug_output) = match observer {
         Some((observer, debug_output)) => (Some(observer), debug_output),
@@ -3195,6 +3191,12 @@ fn spawn_and_wait(
     }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    // Until the app exits; the watch stops and its directory goes when this drops.
+    let _following = live_module.and_then(|live| {
+        live.follow()
+            .inspect_err(|error| tracing::warn!(%error, "live module: not following reinstalls"))
+            .ok()
+    });
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
@@ -3343,6 +3345,11 @@ fn preflight_runtime_libraries(
     let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
         return Ok(());
     };
+    if manifest.entrypoint.runtime.is_some() {
+        // The binary is the entrypoint runtime's, checked once that runtime
+        // is resolved (`preflight_entrypoint_runtime`).
+        return Ok(());
+    }
     let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
     let runtime_mount = crate::sandbox::runtime_mount_for(version);
     let view = crate::loader_preflight::LoaderView::for_sandbox(
@@ -3700,7 +3707,7 @@ pub(crate) fn run_with_context(
         // engine is hundreds of MB); nothing else here needs the answer
         // before the sandbox argv is built.
         let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
-            let bundles = resolve_optional_runtimes(manifest, opts);
+            let bundles = resolve_launch_runtimes(manifest, opts);
             tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
             bundles
         })?;
@@ -3722,6 +3729,8 @@ pub(crate) fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    let optional_runtimes = optional_runtimes?;
+    preflight_entrypoint_runtime(manifest, opts, runtime_arg, &optional_runtimes)?;
 
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
@@ -3889,6 +3898,15 @@ pub(crate) fn run_with_context(
         resolved_runtime.is_some(),
         &optional_runtimes,
     )?;
+    // A development session's launch of a module payload follows its package's reinstalls.
+    let live_module = if enrolled.is_none() && native_owner.is_none() {
+        crate::live_module::LiveModule::prepare(manifest, opts)?
+    } else {
+        None
+    };
+    if let Some(live) = &live_module {
+        live.splice(&mut argv, &mut ro_paths)?;
+    }
     if native_owner
         .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
         .is_some()
@@ -4010,6 +4028,7 @@ pub(crate) fn run_with_context(
                 identity_broker_thread,
             ),
             latency_sensitive,
+            live_module,
         },
         &egress,
         net_gate.as_ref(),
@@ -4620,7 +4639,7 @@ fn run_with_capture_spawn<T>(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, runtime_arg)?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
@@ -4833,10 +4852,10 @@ fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    let (uid, pid) = (current_uid(), std::process::id());
+    let (runtime, pid) = (dbus_proxy::session_runtime_dir(), std::process::id());
     let sockets = ProxySockets {
-        session: dbus_proxy::proxy_socket_path(uid, pid),
-        atspi: dbus_proxy::atspi_proxy_socket_path(uid, pid),
+        session: dbus_proxy::proxy_socket_path(&runtime, pid),
+        atspi: dbus_proxy::atspi_proxy_socket_path(&runtime, pid),
         ready_within: dbus_proxy::PROXY_READY_TIMEOUT,
     };
     resolve_dbus_bind_at(portals, graphical, &sockets)
@@ -5764,6 +5783,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5840,6 +5860,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5879,6 +5900,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,

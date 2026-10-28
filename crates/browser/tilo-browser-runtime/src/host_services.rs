@@ -2,7 +2,8 @@
 //! clipboard of trusted clipboard events, `<input type=file>` choosers,
 //! downloads, `window.open`, the Notifications API and the Geolocation API.
 //! Speech is silent (`tts::NullSpeaker`); media controls and screen capture
-//! are unavailable.
+//! are unavailable. The browser's reduced-motion and contrast preferences
+//! are the page's accessibility inputs ([`crate::page_theme`]).
 //!
 //! Applications' notifications go to the desktop that shows their window,
 //! as banners and in its notification centre
@@ -333,6 +334,7 @@ thread_local! {
 /// Install the page's services as the process default. `wake` schedules
 /// every desktop's next frame.
 pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
+    crate::page_theme::install(Arc::clone(&wake));
     let system = ui::host::HostServices::system(None);
     let notifier = Arc::new(AppNotifier::new(
         Arc::clone(&system.notifications),

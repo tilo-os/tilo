@@ -40,6 +40,7 @@ so t.toml carries both, generated between markers:
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import fnmatch
 import json
 import os
@@ -160,10 +161,14 @@ def workspace_layout_reads() -> str:
     return f"inputs = {array(reads)}\n"
 
 
-# What each policy step must be able to pass with: one core and the memory a Python scan of the
-# tree or `cargo metadata` takes. The suite's unit tests run their files side by side.
-POLICY_REQUIREMENT = '{ cores = 1, memory = "2GiB" }'
-POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "4GiB" }'
+# What each policy step must be able to pass with, measured over its runs (t.toml's rule: the
+# peak memory with half again as much room, rounded up): one core, and at most 600 MiB, which
+# policy/too-many-arguments peaks at (`cargo metadata`); most scans of the tree stay under 300.
+POLICY_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
+# The suite's tests that read the whole tree, their files side by side: 1.3 GiB at most.
+POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "2GiB" }'
+# A test file's own check (steps.split_checks): 161 MiB at most.
+POLICY_TEST_FILE_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
 
 
 def policy_checks(root: Path = ROOT) -> str:
@@ -172,7 +177,7 @@ def policy_checks(root: Path = ROOT) -> str:
     has to run the same command."""
     declared = {check["name"]: check for check in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("check", [])}
     blocks = []
-    for step in policy_steps.load(root):
+    for step in policy_steps.expanded(root):
         if step.covered_by is not None:
             check = declared.get(step.covered_by)
             if check is None or step.run not in " ".join(check["run"].split()):
@@ -185,7 +190,7 @@ def policy_checks(root: Path = ROOT) -> str:
             "[[check]]",
             f"name = {json.dumps(step.check)}",
             'requires = ["arch=any"]',
-            f"requirement = {POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
+            f"requirement = {POLICY_TEST_FILE_REQUIREMENT if step.pruned else POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
             f"run = {json.dumps(step.t_command)}",
             # Policy steps read the tree and build nothing (their tests stub cargo): no build
             # snapshot to lease and no target/ to prepare, which cost each step over a minute.
@@ -194,7 +199,8 @@ def policy_checks(root: Path = ROOT) -> str:
             # writable view of the tree. Those that read the commit's history (release contracts
             # at HEAD) get t's own .git too, which keys their result per commit.
             *(["git = true"] if step.history else []),
-            *(["writable_sources = true"] if step.tests else []),
+            # A pruned test file runs in a copy of its inputs, which it may write to.
+            *(["writable_sources = true"] if step.tests and not step.pruned else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
@@ -208,7 +214,10 @@ T_TOML_READS = ["t.toml", "tools/ci/suites.toml", "tools/ci/products.toml", "too
                 "tools/policy/steps.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image",
                 "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
                 "dist/apps/app-collections.toml", "tools/apps/app_release.py",
-                "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST]
+                "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST,
+                # The test files' own checks are keyed by the paths of the tree their tests name
+                # (steps.split_checks): which of those exist is the whole tree's to say.
+                "**"]
 
 
 def t_toml_reads(manifest: suites.Manifest, root: Path = ROOT) -> str:
@@ -246,7 +255,8 @@ def suite_checks(manifest: suites.Manifest) -> str:
     for group in manifest.groups:
         fields = GROUP_FIELDS.get(group.name, {})
         inputs = sorted({glob(path) for path in (*group.inputs, *group.suites)}
-                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/with-test-environment.sh"}
+                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/policy/run_unit_tests.py",
+                           "tools/with-test-environment.sh"}
                         | set(fields.get("prepare", "").split()[1:2]))
         run = f"python3 tools/ci/suites.py run --jobs 8 --group {group.name}"
         if "prepare" in fields:
@@ -328,11 +338,15 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
+    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's.
+    A look, not a gate (the baselines are x86_64's), so it runs on request, never as part of a
+    release candidate; keyed like visual-goldens, so a request after an unrelated change returns
+    the last result."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
-    packages = " ".join(f"-p {name}" for name in sorted(set(re.findall(r"package\(([\w-]+)\)", golden))))
+    names = sorted(set(re.findall(r"package\(([\w-]+)\)", golden)))
+    packages = " ".join(f"-p {name}" for name in names)
     return "\n".join([
         "[[check]]",
         'name = "nightly-arm64-goldens"',
@@ -340,9 +354,12 @@ def arm64_goldens(image: str) -> str:
         'requires = ["arch=arm64"]',
         "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
                               f"--no-tests=pass {packages} -E '{golden}'"),
+        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
+        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
+        f"cargo_packages = {array(names)}",
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         "writable_sources = true",
-        'on = ["stable", "dispatch"]',
+        'on = ["dispatch"]',
         'cost = "heavy"',
         "default = false",
     ]) + "\n"
@@ -419,9 +436,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
                    "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml"],
     },
-    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged.
+    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged. The app the
+    # outside_repo test generates compiles tilo-model-gateway from the checkout too, which none of
+    # the others reaches, so a change to it reruns this.
     "sdk-linux": {
-        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator"},
+        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator",
+                                            "tilo-model-gateway"},
         "tested": {"tilo-caps", "tilo-app-cli"},
         "inputs": ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py"],
     },
@@ -461,17 +481,32 @@ CARGO_CHECKS: dict[str, dict] = {
     # user units, the login session, the SELinux policy, the image's Containerfile
     # and workflow, and the session scripts.
     "real-fuse": {
-        "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
-                                            "fs-protocol", "tilo-user-identity",
-                                            "tilo-session-record"},
-        "tested": {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer", "fs-protocol",
-                   "tilo-user-identity"},
+        "packages": lambda packages, root: {"tilo-fs", "fs-protocol", "tilo-user-identity", "tilo-session-record"},
+        "tested": {"tilo-fs", "fs-protocol", "tilo-user-identity"},
         "inputs": ["os/tests/tilo-session-lifecycle.sh", "crates/session/shell/src/linux_main.rs",
                    "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
                    "os/Containerfile", "dist/session/**",
                    "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    # real-fuse's long suites, its relay proof, and its runtime and file explorer mounts, each a
+    # check of its own so they build and run side by side.
+    "real-fuse-mounts": {
+        "packages": lambda packages, root: {"tilo-fs"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-shares": {
+        "packages": lambda packages, root: {"tilo-fs"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-relay": {
+        "packages": lambda packages, root: {"tilo-relay"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    "real-fuse-runtime": {
+        "packages": lambda packages, root: {"tilo-runtime", "file-explorer"},
+        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
     },
     # The credential vault's wasm build linted, and its storage probe example built
     # and driven in Chromium (crates/system/accounts/web/run.mjs, tools/web/chrome.mjs).
@@ -642,6 +677,13 @@ RUNTIME_SIZE_MEASURE = ["tools/perf/runtime_size_ratchet.py", "tools/perf/runtim
 # The packages package-apps.sh compiles for every selection: the runtime, its engines (the runtime
 # bundle and so every tapp's runtime id cover them) and the packing tools.
 SIZE_PACKING_TOOLS = {"tilo-app-package-cli", "runtime-bundle"}
+# and beyond those, what the whole collection's gate (app-sizes-<arch>) runs: the publication
+# settings, the apps' and examples' manifests the catalogue reads, the release tools and the
+# GitHub asset cache its packaging takes binaries from.
+APP_SIZES_EXTRA = ["os/publication.env", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml",
+                   "examples/apps/*/Cargo.toml", "dist/apps/**", "tools/apps/**", "tools/perf/**",
+                   "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv",
+                   "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh"]
 RUNTIME_SIZE_BUDGET = ROOT / "tools/perf/runtime-size-budget/budget.toml"
 # What `thin-runtime-<arch>` hands the checks that need it, under its build directory: the thin
 # graph's profile directory with only its units, the list of its files, and the packing tools.
@@ -731,13 +773,37 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
                           [*SIZE_COMPILE, *SIZE_MEASURE, *RUNTIME_SIZE_MEASURE,
                            *(f"apps/{app}/**" for app in media_free), *manifests], f"thin-runtime-{arch}")
                     for arch, node in SIZE_ARCHES]
+
+    def app_sizes(arch: str, node: str, names: set[str], inputs: list[str]) -> str:
+        spec = {"packages": lambda packages, root: names, "dev": False, "inputs": list(dict.fromkeys(inputs)),
+                "drop_covered": True,
+                "cargo_packages": sorted(names - engines) + (engine_names if names & engines else [])}
+        lines = ["[[check]]", f'name = "app-sizes-{arch}"', f'run = "bash tools/apps/t-release.sh sizes {arch}"',
+                 f"requires = [{json.dumps(node)}]",
+                 # The runtime library's link and the apps' one-unit codegen run side by side.
+                 'requirement = { cores = 16, memory = "32GiB" }', "timeout_secs = 5400", 'cost = "heavy"',
+                 'on = ["stable", "dispatch", "idle"]', "default = false", "heavy = true"]
+        return "\n".join(lines) + "\n" + cargo_check(f"app-sizes-{arch}", spec, manifest, packages, ROOT)
+
+    # The whole collection's gate (tools/apps/t-release.sh sizes): every app of the default
+    # collection, the runtime and its engines compiled, packaged and held to their budgets
+    # (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs on every release
+    # candidate, on demand, and on main's newest head when t has room left (`idle`), where a
+    # failure is bisected to the commit that took an app over its budget; not on every push: each
+    # run builds the whole collection, 10 to 16 minutes on 16 cores. Keyed by what that compiles
+    # and the scripts it runs, so a commit that touches only packages no app or the runtime builds
+    # (the shell, the relay, the OS tools) takes its result.
+    whole = [app_sizes(arch, node, graph, [*SIZE_COMPILE, *SHARED_BUILD, *SIZE_MEASURE, *APP_SIZE_PACKAGING,
+                                           *RUNTIME_SIZE_MEASURE, *APP_SIZES_EXTRA, *manifests])
+             for arch, node in SIZE_ARCHES]
+
     app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
                             node, {catalog[app]["package"]},
                             [*SIZE_COMPILE, *SIZE_MEASURE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests],
                             f"thin-runtime-{arch}")
                       for arch, node in SIZE_ARCHES]
                 for app in apps}
-    return size_matrices([shared, runtime_size], app_size, apps)
+    return size_matrices([shared, runtime_size, whole], app_size, apps)
 
 
 def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], apps: list[str]) -> str:
@@ -806,30 +872,44 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     return text
 
 
+def _local_edges(packages: dict[str, dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Each package's workspace dependencies through normal and build edges, and through dev
+    edges. Worked out once per `packages`: resolving every dependency's path on each closure
+    was most of what planning and generating spent (a closure per check, per commit asked)."""
+    if _EDGES and _EDGES[0] is packages:
+        return _EDGES[1]
+    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
+    normal: dict[str, list[str]] = {}
+    dev: dict[str, list[str]] = {}
+    for name, package in packages.items():
+        normal[name], dev[name] = [], []
+        for dependency in package.get("dependencies", []):
+            if not dependency.get("path"):
+                continue
+            found = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
+            if found:
+                (dev if dependency.get("kind") == "dev" else normal)[name].append(found)
+    _EDGES[:] = [packages, (normal, dev)]
+    return normal, dev
+
+
+# The packages `_local_edges` last worked out, with their edges (holding the dict keeps its id).
+_EDGES: list = []
+
+
 def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:
     """`names` and the workspace packages they reach through normal and build dependencies,
     and with `dev` through their own dev-dependencies, as t derives a check's packages."""
-    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
-
-    def local(package: dict, dev_edges: bool) -> list[str]:
-        found = []
-        for dependency in package.get("dependencies", []):
-            if not dependency.get("path") or (dependency.get("kind") == "dev") != dev_edges:
-                continue
-            name = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
-            if name:
-                found.append(name)
-        return found
-
+    normal, dev_edges = _local_edges(packages)
     stack = list(names)
     if dev:
-        stack += [d for name in names for d in local(packages[name], True)]
+        stack += [d for name in names for d in dev_edges[name]]
     seen: set[str] = set()
     while stack:
         name = stack.pop()
         if name not in seen:
             seen.add(name)
-            stack += local(packages[name], False)
+            stack += normal[name]
     return seen
 
 
@@ -929,6 +1009,12 @@ IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 IDLE_LINTS = ["music", "tilo-messaging-protocol"]
 
 
+def with_examples(packages: dict[str, dict]) -> list[str]:
+    """The packages with example targets: the `examples` family builds and runs them."""
+    return sorted(name for name, package in packages.items()
+                  if any("example" in target["kind"] for target in package["targets"]))
+
+
 def property_tested(packages: dict[str, dict]) -> list[str]:
     """The packages with property tests (a proptest dependency): the `test-deep` family runs
     them with more cases on release candidates."""
@@ -968,6 +1054,7 @@ def test_families(packages: dict[str, dict]) -> dict[str, str]:
     blocks = {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
               "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
               "test-deep-packages": f"packages = {array(deep)}\n",
+              "examples-packages": f"packages = {array(sorted(set(with_examples(packages)) - {'workspace-unify'}))}\n",
               "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS, *sorted(per_arch)])}\n",
               "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n",
               "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
@@ -1009,7 +1096,7 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs, "examples-package-inputs": inputs,
             "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
             **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
             "suites": suite_checks(manifest),
@@ -1057,8 +1144,15 @@ def main(argv: list[str]) -> int:
         return 0
     if expected != text:
         print("t.toml is out of date with tools/ci/suites.toml, tools/ci/products.toml, .config/ or the workspace: "
-              "run python3 tools/ci/t_toml.py write",
+              "run python3 tools/ci/t_toml.py write (`t fix t-toml`)",
               file=sys.stderr)
+        # Which generated blocks differ, and how, so the reason is in the first lines of the log.
+        have = {m["name"]: m[0] for m in BLOCK.finditer(text)}
+        for m in BLOCK.finditer(expected):
+            if have.get(m["name"]) != m[0]:
+                diff = difflib.unified_diff(have.get(m["name"], "").splitlines(), m[0].splitlines(),
+                                            "t.toml", "generated", n=0, lineterm="")
+                print(f"\nblock {m['name']}:", *list(diff)[2:12], sep="\n", file=sys.stderr)
         return 1
     print("t.toml matches tools/ci/suites.toml, tools/ci/products.toml, .config/ and the workspace")
     return 0

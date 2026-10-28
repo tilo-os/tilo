@@ -84,7 +84,7 @@ impl AppCatalogue {
         self.apps
             .iter()
             .copied()
-            .find(|definition| definition.app_id == app_id)
+            .find(|definition| definition.app_id() == app_id)
     }
 
     /// Every app, in registration order.
@@ -124,7 +124,7 @@ impl AppCatalogue {
     pub fn app_for_kind(&self, kind: &str) -> Option<&'static str> {
         self.iter()
             .find(|definition| definition.record_kind.as_str() == kind)
-            .map(|definition| definition.app_id)
+            .map(ApplicationDefinition::app_id)
     }
 
     /// What `doc`, a record of `app_id`, is called when its app names it
@@ -422,7 +422,7 @@ impl Replica {
         .open()
         .map_err(AppError::Launch)?;
         Ok(Self {
-            app_id: definition.app_id,
+            app_id: definition.app_id(),
             kind,
             view,
             place: None,
@@ -906,7 +906,7 @@ fn genesis(
     let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
     let cache = PortableStorage::new("agent-records", DEVICE).map_err(|e| launch(&e))?;
     let records = RecordOwners::portable(cache)
-        .open(definition.app_id, room)
+        .open(definition.app_id(), room)
         .map_err(|e| launch(&e))?;
     records
         .reserve_record(checkout)

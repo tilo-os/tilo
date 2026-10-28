@@ -186,7 +186,7 @@ pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_a
     // The room's roles do not reach a record of the person's own: the host
     // lets only its person change it. It keeps its kind, so a change Undo
     // takes back still runs at once and offers Undo.
-    spec.contract.set_own_record();
+    spec.type_mut().contract.set_own_record();
     spec
 }
 
