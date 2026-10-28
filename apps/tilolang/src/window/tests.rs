@@ -1648,6 +1648,48 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
     );
 }
 
+#[test]
+fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_day_changes() {
+    /// The day dividers, the avatars shown and the avatars' rooms kept empty under `widget`.
+    fn marks(widget: &dyn ui::widget::Widget, found: &mut (usize, usize, usize)) {
+        match widget.name() {
+            "DayDivider" => found.0 += 1,
+            "Avatar" if widget.accessibility().is_some() => found.1 += 1,
+            "Avatar" => found.2 += 1,
+            _ => {}
+        }
+        for child in widget.children() {
+            marks(child, found);
+        }
+    }
+    // Weekend plans: Mia twice, Leo, you, the next day Ada twice.
+    let mut room = Room::seeded("chat");
+    for _ in 0..3 {
+        room.lay_out();
+        room.settle();
+    }
+    let shell = room.window.shell_mut().expect("the shell");
+    let docked = shell
+        .content_mut::<ui::widget::Docked>()
+        .expect("the conversation above its composer");
+    let transcript = docked
+        .children()
+        .into_iter()
+        .find(|child| {
+            child
+                .as_any()
+                .is_some_and(|any| any.downcast_ref::<DescribedList>().is_some())
+        })
+        .expect("the transcript");
+    let mut found = (0, 0, 0);
+    marks(transcript, &mut found);
+    assert_eq!(
+        found,
+        (2, 4, 2),
+        "a divider for each of the two days, an avatar for each of the four runs, and the room of one under each message that continues a run"
+    );
+}
+
 /// A page as a detail column shows it: a heading and a paragraph.
 fn page_node(value: &str, extra: bool) -> UiNode {
     fn leaf(kind: &str, key: &str, value: &str) -> UiNode {

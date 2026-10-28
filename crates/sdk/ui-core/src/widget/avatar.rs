@@ -686,6 +686,8 @@ pub struct Avatar {
     side: f64,
     rect: Rect,
     dirty: bool,
+    /// Only the room it takes, shown empty: see [`Self::room`].
+    room: bool,
 }
 
 // The photo type comes from runtime-identity, which only `local-daemons`
@@ -718,7 +720,17 @@ impl Avatar {
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
+            room: false,
         }
+    }
+
+    /// The room an avatar takes, with none in it: a message that continues its author's run
+    /// lines up under the first one's avatar without repeating it. Nothing is painted and
+    /// nothing is read out.
+    #[must_use]
+    pub fn room(mut self) -> Self {
+        self.room = true;
+        self
     }
 
     /// An app without artwork of its own: see [`AvatarFace::glyph`]. A
@@ -912,7 +924,7 @@ impl Widget for Avatar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if presence.should_cull(self.rect) {
+        if self.room || presence.should_cull(self.rect) {
             return;
         }
         let face = self.face();
@@ -941,6 +953,9 @@ impl Widget for Avatar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
+        if self.room {
+            return None;
+        }
         let name = (!self.name.trim().is_empty()).then(|| match self.status {
             Some(status) => format!("{}, {}", self.name, status.spoken()),
             None => self.name.clone(),

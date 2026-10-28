@@ -237,8 +237,18 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 }
 
 /// A window that is a conversation of `of`: its items in order, the latest at the foot, each a
-/// `row`, built as they show, above the composer, which stays at the foot.
-view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
+/// `row`, built as they show, above the composer, which stays at the foot. An item's `author`
+/// and `time` are drawn by the list as every conversation draws them: the author's avatar and
+/// name over each run of their messages, the time beside the name, and a divider where the
+/// day changes; the `row` then shows only what the item says.
+view transcript<R, T>(
+    of: R,
+    items: List<T>,
+    composer: View,
+    row: (T) -> View,
+    author: Option<(T) -> Principal> = .none,
+    time: Option<(T) -> Time> = .none
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -254,8 +264,18 @@ view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
                 }
                 ui.VirtualList(transcript: true) {
                     for m in items {
-                        ui.ListItem(item: m) {
-                            row(m)
+                        match author {
+                            .some(by) => match time {
+                                .some(at) => ui.ListItem(item: m, author: by(m), time: at(m)) {
+                                    row(m)
+                                },
+                                .none => ui.ListItem(item: m, author: by(m)) {
+                                    row(m)
+                                },
+                            },
+                            .none => ui.ListItem(item: m) {
+                                row(m)
+                            },
                         }
                     }
                 }

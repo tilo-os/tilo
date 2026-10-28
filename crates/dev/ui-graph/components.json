@@ -1002,6 +1002,20 @@
           "type": {
             "option": "principal"
           }
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it, in a transcript: the list shows their avatar, their name and the time over each run of their consecutive messages, so the row holds only what they wrote.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was written, in a transcript: the time beside its author's name, and a divider over the first message of each day.",
+          "type": {
+            "option": "time"
+          }
         }
       ],
       "slots": [

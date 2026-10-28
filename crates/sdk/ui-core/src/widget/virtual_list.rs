@@ -878,6 +878,17 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// How far a list that follows its end stands its rows down while they are shorter than its
+    /// box: a transcript's few messages sit at its foot, by the composer, where the next one
+    /// arrives, and none of them moves when the list grows past its box.
+    fn end_slack(&self) -> f64 {
+        if self.follow_end {
+            (self.viewport.viewport() - self.viewport.content_extent()).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Whether the list shows its end, for one that follows it.
     #[must_use]
     pub fn is_at_end(&self) -> bool {
@@ -1355,7 +1366,9 @@ impl<M: ListModel> VirtualList<M> {
         if !self.rect.contains(cursor) {
             return None;
         }
-        let index = self.viewport.hit_test(cursor.y - self.rect.y0)?;
+        let index = self
+            .viewport
+            .hit_test(cursor.y - self.rect.y0 - self.end_slack())?;
         matches!(self.model.row_state(index), Arrival::Ready(()))
             .then(|| self.model.key_at(index).map(|key| (index, key)))
             .flatten()
@@ -1888,9 +1901,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.visible_window_changed();
         }
         // Rows stand where the layout was built, moved by the scroll since.
+        let slack = self.end_slack();
         let child_origin = Point::new(
             self.rect.x0,
-            self.rect.y0 + self.layout_offset - self.viewport.offset(),
+            self.rect.y0 + slack + self.layout_offset - self.viewport.offset(),
         );
         // Placed again from an unchanged layout (a scroll, a glide), only
         // the rows near the list's box are placed, and those that were
@@ -1948,8 +1962,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 remeasured |= moved;
             }
         }
-        // Rows that settled their heights moved the end: a list following it stays there.
+        // Rows that settled their heights moved the end: a list following it stays there, and
+        // rows shorter than its box stand at its foot again.
         remeasured |= self.keep_end();
+        remeasured |= (self.end_slack() - slack).abs() > 0.5;
         if remeasured {
             self.visible_window_changed();
         } else if first_measured {
