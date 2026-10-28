@@ -143,10 +143,10 @@ view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens
     } composer: {
         if let r = replying { reply_banner(r, cancel: replying = .none) }
         rich_input(bind: draft, placeholder: "Message {in.name}") {
-            complete "@" from: workspace.members as mention
-            complete "#" from: channels as link
-            complete ":" from: std.emoji as emoji
-            complete "/" from: actions(in) as command
+            complete "@" from: [in.members, workspace.members]
+            complete "#" from: query(TextChannel)
+            complete ":" from: std.emoji
+            complete "/" from: actions(in)
             on paste(files), drop(files): std.attach(draft, files)
             key up when draft.is_empty: edit_last(in)
             key escape when replying != .none: replying = .none
@@ -187,6 +187,44 @@ view voice(v: VoiceChannel) {
     std.call(v)
 }
 ```
+
+## Completion drawers
+
+The view picks triggers and sources (`complete "@" from: [in.members, workspace.members]`);
+everything below is the system's drawer, the same in every input.
+
+- **The query is the token.** What's typed after the trigger stays in the input as a tinted
+  pending token (`@mi`); there's no separate search field. It opens on the trigger keystroke,
+  anchored at the caret (above a bottom composer, below otherwise), and closes on Esc (the text
+  stays), when the caret leaves the token, or on a space with no match.
+- **Size.** Desktop: a popover about 22rem wide, 8 rows visible, scrolling beyond. Phone: a
+  full-width panel docked above the keyboard, 44dp rows.
+- **Rows** are the type's row view at list size: people with avatar, name (matched letters bold),
+  handle, and a right-side label ("in this channel", role); channels with icon, name, topic,
+  unread count; tasks with state, identifier, title, assignee.
+- **Order with no letters yet:** "In this conversation" (recent speakers, newest first, up to
+  5), then "Members" (by how often you interact), then group mentions if you may use them.
+- **Order while typing:** one list, no headers: names or handles starting with the query, then a
+  word in the name starting with it, then substrings, then close fuzzy matches; within each tier,
+  this conversation, then the channel, then the workspace, then people outside it (labelled).
+  Accents and case fold as in system search.
+- **Stability.** A still-matching selected row keeps its place; the list height animates;
+  results from slow outside sources arrive under their own header below the local ones, with a
+  progress indicator, and never reorder what's shown.
+- **Keys and touch.** The first row starts selected; ↑ ↓ (wrapping), Enter or Tab inserts, Esc
+  closes, Page Up and Down. Hover highlights, click inserts. Touch taps insert; scrolling keeps
+  the keyboard up.
+- **Insert.** The token becomes the resource's inline view plus a space; one undo turns it back
+  into the typed text.
+- **No match.** One row saying so; for channels and tasks, "Create … "xyz"" when allowed.
+- **Preview.** On wide screens the selected row shows its card beside the drawer.
+- **Accessibility.** A list with the result count and the selected item announced.
+- **Commands (`/`).** Rows: app icon, `/name`, a one-line description, parameter hints
+  (`person duration message`); grouped by app when many; recently used, then this channel's,
+  then the rest; filtering by name, then description words. Picking one turns the input into the
+  command: a chip followed by labelled inline fields, Tab between them; a person field opens the
+  people drawer, a duration takes `2h` or `tomorrow 9:00`; errors underline with a message below;
+  Enter runs it once required fields are filled; destructive commands preview first.
 
 ## What the system does, so the app doesn't
 
