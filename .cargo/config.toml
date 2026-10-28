@@ -7,6 +7,16 @@ jobs = 4
 # CARGO_TARGET_<TRIPLE>_RUSTFLAGS instead, which Cargo joins with these.
 # IBT is disabled because stable Rust does not emit the required landing pads.
 
+# Every browser shipping the web desktop (Chrome 91, Firefox 89, Safari 16.4
+# and later) has WebAssembly's fixed-width SIMD, and the CPU renderer the page
+# falls back to where there is no WebGPU draws with `vello_cpu`, which only
+# takes its vector path when the module enables the feature. Wasm modules
+# carry the features they use, so a browser without it refuses the module
+# rather than mis-running it.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+rustdocflags = ["-C", "target-feature=+simd128"]
+
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
 # Tests never see the caller's desktop session: every test binary runs inside
 # tools/with-test-environment.sh (see tools/cargo-runner.sh).

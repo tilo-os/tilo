@@ -201,11 +201,12 @@ shipped = {p.name for p in pathlib.Path(sys.argv[2]).iterdir() if p.suffix in ('
 assert wanted == shipped, f'tilo_typst_fonts::HOST_FONTS and typst-assets differ: {sorted(wanted ^ shipped)}'
 PY
 fi
-# The features rustc enables for wasm32-unknown-unknown; wasm-opt refuses
-# a module that uses one it was not told about.
+# The features rustc enables for wasm32-unknown-unknown (`.cargo/config.toml`
+# adds `+simd128`, which `vello_cpu` draws with on a page whose browser has no
+# WebGPU); wasm-opt refuses a module that uses one it was not told about.
 # The split modules keep the name section the splitter read; it is dropped
 # here with the rest of the debug information.
-wasm_opt_flags="-Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue --strip-debug --strip-producers"
+wasm_opt_flags="-Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue --enable-simd --strip-debug --strip-producers"
 if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
   # A few at a time: the start module alone takes gigabytes to optimize.
