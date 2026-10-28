@@ -1114,7 +1114,7 @@ package = "greeter"
 # greeter's theme and committed as the plymouth theme's look.json, which the
 # test compares.
 inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session", "os/usr/share/plymouth/themes/tilo/look.json"]
-readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
+readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
 
 [[cargo]]
 package = "pam-tilo"
