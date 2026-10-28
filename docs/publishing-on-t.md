@@ -265,10 +265,10 @@ Secrets come from its environment, named with `--secret`. Of the identity tokens
 registry.tilo.so's has a stand-in: `REGISTRY_TOKEN`, a Forgejo token that may push to this
 repository, which the registry takes from its owner (lib.sh `registry_login`). Signing needs
 t's identity token, so a check that signs runs on t; where its outputs were made another way,
-`--given CHECK` takes it as passed. With a rootless podman, a micro-VM step runs as root of a
-user namespace and can't attach loop devices (os-dev-disk-<arch> installs onto a disk image
-with them); `--vm-podman 'sudo podman --root DIR --runroot DIR'` runs those steps as root, sharing
-the machine's devices, as t's micro-VMs don't.
+`--given CHECK` takes it as passed. A micro-VM step runs in a privileged container on the
+machine's own kernel, so os-dev-disk-<arch>, which installs onto a loop-mounted btrfs disk,
+needs a VM: tools/ci/builder-vm-guest.sh `disk` installs an image layout the same way in a worker
+VM booted from main's published dev disk.
 
 ## Mirrored images
 
