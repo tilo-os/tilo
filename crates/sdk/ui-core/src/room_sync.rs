@@ -6,10 +6,14 @@
 //! room that never synced is a lie the person acts on. So until the room's
 //! first sync completes, every empty state the framework paints
 //! ([`crate::widget::EmptyState`]) says what is really going on instead:
-//! "Connecting to {workspace}…" with a spinner, or that the workspace's host
-//! (or this device) has to update before anything syncs. An app's own empty
-//! state shows only once the room has synced, or in a window whose
-//! workspace syncs with no host at all (the shell says nothing then).
+//! "Connecting to {workspace}…" with a spinner while this device is reaching
+//! the workspace's host; that the host cannot be reached, once a try failed;
+//! or that the workspace's host (or this device) has to update before
+//! anything syncs. While the host cannot be reached the person works on
+//! what this device has, and the empty state keeps the app's own action:
+//! their changes stay here and sync once the host is reached. An app's own empty state shows
+//! only once the room has synced, or in a window whose workspace syncs with
+//! no host at all (the shell says nothing then).
 //!
 //! What the room holds is also a read ([`holdings`]): a view over a record
 //! this device has not got yet shows it arriving from the workspace's host
@@ -27,11 +31,12 @@ use crate::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomSyncState {
-    /// This device has not reached the room's host since it started, and is
-    /// not dialling it now.
-    NeverSynced,
     /// Reaching the room's host; no sync with it has completed yet.
     Connecting,
+    /// This device's last try to reach the room's host failed, and no sync
+    /// with it has completed since this device started. It keeps trying;
+    /// meanwhile the room holds what this device has.
+    Unreachable,
     /// The host speaks an older peer protocol than this device: nothing
     /// syncs until the host updates.
     HostNeedsUpdate,
@@ -163,8 +168,9 @@ pub fn shell_lost() -> bool {
 /// device, briefly) until the shell hosting the window said where the room
 /// stands, then from
 /// the workspace's host until the room's first sync completed; failed while
-/// one side has to update first; ready once it synced, or in a room with no
-/// host. A record this device lacks once it is ready is one the room does
+/// one side has to update first; ready once it synced, in a room with no
+/// host, or while its host cannot be reached (the person works on what this
+/// device has). A record this device lacks once it is ready is one the room does
 /// not have. Every call shares one read.
 #[must_use]
 pub fn holdings() -> Arriving<(), RoomUnreachable> {
@@ -193,9 +199,12 @@ fn standing() -> Arrival<(), RoomUnreachable> {
     match current() {
         None => Arrival::Ready(()),
         Some(sync) => match sync.state {
-            RoomSyncState::NeverSynced | RoomSyncState::Connecting => Arrival::Pending {
+            RoomSyncState::Connecting => Arrival::Pending {
                 from: Source::host(sync.workspace.trim()),
             },
+            // The person works on what this device has: it is what the room
+            // holds until the host is reached again.
+            RoomSyncState::Unreachable => Arrival::Ready(()),
             RoomSyncState::HostNeedsUpdate => Arrival::Failed(RoomUnreachable::HostNeedsUpdate),
             RoomSyncState::DeviceNeedsUpdate => Arrival::Failed(RoomUnreachable::DeviceNeedsUpdate),
             RoomSyncState::Synced => Arrival::Ready(()),
@@ -310,6 +319,19 @@ pub(crate) struct Waiting {
     pub message: Option<String>,
     /// Since when the spinner turns, when the room is on its way.
     pub spinner_since: Option<Instant>,
+    /// The hero icon when no spinner takes its slot.
+    pub icon: crate::icons::Icon,
+    /// Whether the app's own action stays: while the host cannot be
+    /// reached the person works on what this device has, and their changes
+    /// sync once it is back. While the room is on its way, what it holds may
+    /// yet arrive, so the app's action waits for it.
+    pub keeps_action: bool,
+}
+
+impl Waiting {
+    pub(crate) const fn keeps_action(&self) -> bool {
+        self.keeps_action
+    }
 }
 
 /// What an empty state shows instead of the app's own, while the room has
@@ -320,7 +342,7 @@ pub(crate) fn waiting() -> Option<Waiting> {
         let told = told.as_ref().filter(|told| told.sync.before_first_sync())?;
         let workspace = told.sync.workspace.trim();
         Some(match told.sync.state {
-            RoomSyncState::NeverSynced | RoomSyncState::Connecting => Waiting {
+            RoomSyncState::Connecting => Waiting {
                 title: if workspace.is_empty() {
                     crate::i18n::I18nManager::lookup_plain("room-sync-connecting-unnamed")
                 } else {
@@ -330,6 +352,23 @@ pub(crate) fn waiting() -> Option<Waiting> {
                 },
                 message: None,
                 spinner_since: Some(told.since),
+                icon: crate::icons::Icon::Info,
+                keeps_action: false,
+            },
+            RoomSyncState::Unreachable => Waiting {
+                title: if workspace.is_empty() {
+                    crate::i18n::I18nManager::lookup_plain("room-sync-unreachable-unnamed")
+                } else {
+                    let mut args = fluent::FluentArgs::new();
+                    args.set("workspace", workspace.to_owned());
+                    crate::i18n::I18nManager::lookup("room-sync-unreachable", Some(&args))
+                },
+                message: Some(crate::i18n::I18nManager::lookup_plain(
+                    "room-sync-unreachable-body",
+                )),
+                spinner_since: None,
+                icon: crate::icons::Icon::WifiOff,
+                keeps_action: true,
             },
             RoomSyncState::HostNeedsUpdate => Waiting {
                 title: crate::i18n::I18nManager::lookup_plain("room-sync-host-needs-update"),
@@ -337,6 +376,8 @@ pub(crate) fn waiting() -> Option<Waiting> {
                     "room-sync-host-needs-update-body",
                 )),
                 spinner_since: None,
+                icon: crate::icons::Icon::Download,
+                keeps_action: false,
             },
             RoomSyncState::DeviceNeedsUpdate => Waiting {
                 title: crate::i18n::I18nManager::lookup_plain("room-sync-device-needs-update"),
@@ -344,6 +385,8 @@ pub(crate) fn waiting() -> Option<Waiting> {
                     "room-sync-device-needs-update-body",
                 )),
                 spinner_since: None,
+                icon: crate::icons::Icon::Download,
+                keeps_action: false,
             },
             RoomSyncState::Synced => return None,
         })
@@ -420,6 +463,25 @@ mod tests {
         assert!(connecting.spinner_since.is_some());
         assert!(!set(told(RoomSyncState::Connecting)), "said once");
 
+        assert!(
+            !connecting.keeps_action(),
+            "what the room holds is on its way"
+        );
+
+        assert!(set(told(RoomSyncState::Unreachable)));
+        let unreachable = waiting().unwrap();
+        assert!(
+            unreachable.title.contains("Lounge"),
+            "{}",
+            unreachable.title
+        );
+        assert!(unreachable.spinner_since.is_none(), "nothing is on its way");
+        assert!(unreachable.message.is_some(), "it says changes stay here");
+        assert!(
+            unreachable.keeps_action(),
+            "the person works on what is here"
+        );
+
         assert!(set(told(RoomSyncState::HostNeedsUpdate)));
         let behind = waiting().unwrap();
         assert!(behind.spinner_since.is_none());
@@ -455,6 +517,12 @@ mod tests {
             holdings().get(),
             held.get(),
             "every view shares the one read"
+        );
+        set(told(RoomSyncState::Unreachable));
+        assert_eq!(
+            held.get(),
+            Arrival::Ready(()),
+            "with its host out of reach, the person works on what is here"
         );
         set(told(RoomSyncState::DeviceNeedsUpdate));
         assert_eq!(

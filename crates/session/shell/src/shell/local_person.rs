@@ -45,7 +45,10 @@ impl LocalPersonServices for NativeLocalPerson {
         let room = RoomId::parse(room).ok_or("native caller room is invalid")?;
         let tree = self.tree.upgrade().ok_or("native caller owner retired")?;
         if !tree.read().requires_native_owner(room) {
-            return super::action_authority::with_ordinary_room_current(&tree, room, |_| {
+            // Who the caller is never waits for a policy save: the frame loop
+            // asks it for every workspace's room while it lists actions. A
+            // policy change still being saved refuses at once instead.
+            return super::action_authority::with_ordinary_room_published(&tree, room, |_| {
                 Ok(certificate)
             });
         }
@@ -279,9 +282,14 @@ mod tests {
             },
         );
         tree.write().desktop.workspaces[0].policy.owner = None;
-        assert!(
-            service.certificate(&room.to_string(), &person).is_err(),
-            "unpublished policy changes revoke the captured native origin"
+        // The writer is released only after this answered: an answer that
+        // waited for the save would wait for its own release.
+        let refused = service.certificate(&room.to_string(), &person);
+        assert_eq!(
+            refused,
+            Err("The accepted Settings room policy has changed.".into()),
+            "unpublished policy changes revoke the captured native origin at once, \
+             without waiting for the state writer"
         );
         release.send(()).unwrap();
         crate::shell::persist::wait_for_saves();
