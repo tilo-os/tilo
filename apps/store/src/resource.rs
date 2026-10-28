@@ -2191,9 +2191,8 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "browse-remote")
-            .unwrap()
-            .contract
-            .clone();
+            .map(|action| action.contract.clone())
+            .unwrap();
         let invocation = app
             .start_effect_on(
                 remote,
