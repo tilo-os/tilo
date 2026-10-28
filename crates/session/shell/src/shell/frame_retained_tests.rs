@@ -498,6 +498,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
             "actions",
             "records",
             "authentication-prompts",
+            "focused-window",
             "file-picker"
         ]
     );

@@ -2605,10 +2605,12 @@ inputs = [".codex/**", "tools/policy/run_unit_tests.py", "tools/policy/steps.py"
 [[check]]
 name = "miracast-capture"
 image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
-run = "CARGO_TARGET_DIR=${TMPDIR:-/tmp}/miracast-capture-target bash tools/test-env.sh cargo test --locked -p tilo-projector --bin tilo-projector session::miracast"
+run = "bash tools/test-env.sh cargo test --locked -p tilo-projector --bin tilo-projector session::miracast"
 inputs = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 cargo_packages = ["tilo-projector"]
-env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1" }
+# It reads no NTFS image; on a node without them, generating them failed on the read-only
+# sources before the capture test began.
+env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 # Measured on main over a week: 2.1 GiB peak, with half again as much room.
 requirement = { cores = 4, memory = "4GiB" }
