@@ -527,7 +527,7 @@ impl InProcessApps {
         if component.capture_protected() {
             self.capture_protected
                 .borrow_mut()
-                .insert(definition.app_id.to_owned());
+                .insert(definition.app_id().to_owned());
         }
         Ok(component)
     }
