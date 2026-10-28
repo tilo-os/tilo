@@ -81,6 +81,8 @@ impl ReviewedOriginalImage {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&self.source.path)?;
+        // Watched before the first byte is hashed, so no write after it goes unseen.
+        let watch = imager_backend::inode_changes::InodeChanges::watch(&file)?;
         let before = file.metadata()?;
         if !before.is_file()
             || before.len() != self.source.size
@@ -132,6 +134,7 @@ impl ReviewedOriginalImage {
             file,
             reviewed: self.clone(),
             stamp,
+            watch,
         };
         verified.validate()?;
         Ok(verified)
@@ -171,13 +174,14 @@ pub(crate) struct VerifiedOriginalImage {
     file: std::fs::File,
     reviewed: ReviewedOriginalImage,
     stamp: ImageStamp,
+    watch: imager_backend::inode_changes::InodeChanges,
 }
 #[cfg(all(target_os = "linux", feature = "installation"))]
 impl VerifiedOriginalImage {
     pub(crate) fn validate(&self) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         self.reviewed.proof.validate()?;
-        if ImageStamp::read(&self.file)? != self.stamp {
+        if ImageStamp::read(&self.file)? != self.stamp || self.watch.changed()? {
             return Err(invalid());
         }
         let named = std::fs::symlink_metadata(&self.reviewed.source.path)?;
