@@ -125,6 +125,39 @@ test('publisher stops when idle after loss-repair repeats and keeps a slow keepa
   assert.equal(publisher.update({pointer: P(1, 2)}), false);
 });
 
+test("an update notices a change in the fields it names and no other", () => {
+  // `encode` runs once per published frame; nothing about `update` should be
+  // proportional to the whole state. A record of what it wrote shows whether
+  // an unchanged pointer move reached the wire at all.
+  const encoded = [];
+  const {clock, sent, publisher} = publisherHarness({
+    encode: value => { encoded.push(value); return new TextEncoder().encode(JSON.stringify(value)); },
+  });
+  publisher.start();
+  publisher.update({focus: {app: 'notes', record: 'r1'}});
+  publisher.update({chat: {text: 'hello', sent: true}});
+  clock.advance(1);
+  assert.equal(sent.length, 1, 'both changes left together');
+  assert.equal(encoded.length, 1, 'one frame, one encode');
+
+  clock.advance(PRESENCE_MIN_INTERVAL_MS * 2);
+  publisher.update({pointer: P(3, 4)});
+  clock.advance(PRESENCE_MIN_INTERVAL_MS * 2);
+  assert.equal(sent.length, 2, 'the pointer move left');
+  assert.deepEqual(encoded.at(-1).pointer, P(3, 4));
+  assert.deepEqual(encoded.at(-1).focus, {app: 'notes', record: 'r1'}, 'with the fields it did not name');
+
+  // An equal value for a named field is not a change, and neither is the
+  // same value given again.
+  assert.equal(publisher.update({pointer: P(3, 4)}), false);
+  assert.equal(publisher.update({pointer: {...P(3, 4), at: [3, 4]}}), false, 'a fresh equal object');
+  assert.equal(publisher.update({focus: {app: 'notes', record: 'r1'}}), false);
+  assert.equal(publisher.update({focus: null, pointer: null, chat: null, place: 'x'}), true, 'the place is a change');
+  assert.throws(() => publisher.update({cursor: [1, 1]}), /unknown presence field/);
+  clock.advance(PRESENCE_MIN_INTERVAL_MS * 2);
+  assert.equal(sent.length, 3);
+});
+
 test('publisher clears an ended drag after publishing and repeating it', () => {
   const {clock, sent, publisher} = publisherHarness();
   publisher.start();
