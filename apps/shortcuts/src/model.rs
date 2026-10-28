@@ -284,6 +284,7 @@ impl Head {
     }
 }
 
+impl Draft {
     /// A draft holding `program`, its steps' item ids minted by `mint`.
     pub fn new(
         name: String,
@@ -303,6 +304,7 @@ impl Head {
     }
 
     /// The program the draft holds.
+    #[must_use]
     pub fn program(&self) -> Program {
         Program {
             inputs: self.inputs.values().cloned().collect(),
@@ -315,19 +317,16 @@ impl Head {
 
     /// The steps of block `branch` of the step with item id `parent`.
     fn block(&self, parent: &str, branch: &str) -> Vec<Step> {
-        let mut steps: Vec<(usize, Step)> = self
-            .steps
+        self.steps
             .iter()
-            .enumerate()
-            .filter_map(|(index, (key, node))| {
+            .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
+            .filter_map(|(key, node)| {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
-                Some((index, Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone())))
+                Some(Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone()))
             })
-            .collect();
-        steps.sort_by_key(|(index, _)| *index);
-        steps.into_iter().map(|(_, step)| step).collect()
+            .collect()
     }
 
     /// Store `program`, changing only what differs from what the draft
@@ -443,6 +442,7 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
         }
     }
 }
+
 /// Every draft on this device's workbench.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
@@ -452,6 +452,8 @@ pub struct Workbench {
     /// says nothing about what the person did, only which proposals were
     /// turned down.
     pub ignored: Vec<String>,
+}
+
 /// `name`, numbered past the drafts that already go by it: "New shortcut",
 /// then "New shortcut 2", "New shortcut 3".
 fn unused_name(workbench: &Workbench, name: &str) -> String {
@@ -479,6 +481,8 @@ fn draft_mut<'a>(workbench: &'a mut Workbench, draft: &Id) -> Result<&'a mut Dra
         .drafts
         .get_mut(draft)
         .ok_or_else(|| Refusal::from("there is no such draft"))
+}
+
 /// Apply `edit` to the program of `draft` and store what changed.
 fn edit_program(
     workbench: &mut Workbench,
@@ -491,6 +495,8 @@ fn edit_program(
     edit(&mut program).map_err(Refusal::from)?;
     draft.set_program(&program, &mut || cx.id());
     Ok(())
+}
+
 /// Bring a workbench of version 1 up to this one: a draft's inputs, output
 /// and triggers and each step's head and arguments were one JSON string
 /// each, and are stored as their values now. Every draft, step and binding
@@ -946,7 +952,8 @@ impl Workbench {
         &mut self,
         cx: &mut ActionCx,
         draft: &Id,
-        #[param("Where the value comes from, as binding JSON; empty reports nothing")] binding: String,
+        #[param("Where the value comes from, as binding JSON; empty reports nothing")]
+        binding: String,
     ) -> Result<(), Refusal> {
         let binding = parse_binding(&binding)?;
         edit_program(self, cx, draft, |program| {
