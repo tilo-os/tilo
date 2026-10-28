@@ -324,6 +324,7 @@ dependencies = [
  "tilo-automation",
  "tilo-identity-client",
  "tilo-model-client",
+ "tilo-paths",
  "tilo-selector",
  "tilo-test-env",
  "tilo-user-identity",
