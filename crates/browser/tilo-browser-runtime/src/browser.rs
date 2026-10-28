@@ -371,6 +371,7 @@ fn release_gpu(id: u64, gpu: Gpu) {
         SHARED_GPU.with_borrow_mut(|shared| {
             if shared.as_ref().is_some_and(|s| Rc::ptr_eq(s, &gpu.shared)) {
                 *shared = None;
+                ui::offscreen::provide_page_gpu(None);
             }
         });
     }
@@ -1792,6 +1793,10 @@ async fn shared_gpu(
         *uncaptured.lock_recover() = Some(format!("WebGPU error: {e}; call recover"));
         wake(&p, &error_mounts);
     }));
+    let page_gpu = ui::offscreen::SharedGpu {
+        device: handle.device.clone(),
+        queue: handle.queue.clone(),
+    };
     let shared = Rc::new(RefCell::new(SharedGpu {
         cx,
         renderer,
@@ -1802,6 +1807,9 @@ async fn shared_gpu(
         overflows: ui::render_bump_recovery::Overflows::default(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    // Apps that composite on the GPU themselves (the video editor) borrow
+    // this device: the page cannot wait for one of their own.
+    ui::offscreen::provide_page_gpu(Some(page_gpu));
     // A renderer made anew (after a lost device) compiles its own.
     DEFERRED_PIPELINES_ASKED.set(false);
     Ok((shared, surface))
