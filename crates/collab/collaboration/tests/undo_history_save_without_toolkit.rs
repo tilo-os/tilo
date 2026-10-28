@@ -35,7 +35,7 @@ impl HistoryWords for Words {
 }
 
 fn title(doc: &AutoCommit) -> Option<String> {
-    let (value, _) = doc.get(ROOT, "title").unwrap()?;
+    let (value, _) = doc.get(ROOT, "title").ok()??;
     value.into_string().ok()
 }
 

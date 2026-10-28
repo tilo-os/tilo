@@ -390,7 +390,9 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
+pub mod fields;
 mod file_identity;
+pub mod retirement;
 pub mod save;
 pub use save::RecordSaveStatus;
 
