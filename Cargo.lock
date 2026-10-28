@@ -21812,6 +21812,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-host"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "collab-types",
+ "collaboration",
+ "durable-store",
+ "libc",
+ "runtime-portal",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-app-state",
+ "tilo-automerge-fork",
+ "tilo-history",
+ "tilo-render-protocol",
+ "tilo-resource",
+ "tilo-wake",
+ "tilolang",
+ "tilolang-tilo",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
