@@ -6860,7 +6860,7 @@ arch = ["x86_64", "aarch64"]
 name = "local-model-runtime-llama-cpp-cuda-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64"
-inputs = ["tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "dist/local-models/runtimes/llama-cpp-cuda.Containerfile"]
+inputs = ["tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "dist/local-models/runtimes/llama-cpp-cuda.Containerfile", "dist/local-models/runtimes/fixed-clock.c"]
 outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
