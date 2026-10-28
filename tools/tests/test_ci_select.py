@@ -777,6 +777,53 @@ class SelectorTests(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["check_required"], "true")
 
+    def test_test_jobs_ask_for_the_class_their_own_links_need(self):
+        with self.subTest(phase='the shard decides, not the workflow'):
+            self.setUp()
+            oversized = {"packages": "-p base -p middle",
+                         "estimated_cost": ci_select.LARGE_TEST_SHARD_COST + 1}
+            fits = {"packages": "-p base -p middle",
+                    "estimated_cost": ci_select.LARGE_TEST_SHARD_COST}
+            single_large_link = {"packages": "-p shell", "estimated_cost": 1}
+            for arch in ci_select.NATIVE_RUNNERS:
+                self.assertEqual(ci_select.test_shard_runner(oversized, arch),
+                                 ci_select.LARGE_RUNNERS[arch])
+                self.assertEqual(ci_select.test_shard_runner(fits, arch),
+                                 ci_select.NATIVE_RUNNERS[arch])
+                self.assertEqual(ci_select.test_shard_runner(single_large_link, arch),
+                                 ci_select.LARGE_RUNNERS[arch])
+        with self.subTest(phase='a whole-workspace plan needs the large class and a narrow one does not'):
+            self.setUp()
+            # Enough structure that a full set balances into shards above
+            # LARGE_TEST_SHARD_COST, as a whole-workspace run does.
+            for index in range(100):
+                name = f"app-{index:03}"
+                self.metadata["packages"].append({
+                    "name": name,
+                    "manifest_path": str(self.root / "apps" / name / "Cargo.toml"),
+                    "targets": [{"name": name}] * 5,
+                    "dependencies": [{"name": f"external-{i}"} for i in range(40)],
+                })
+            plan = ci_select.make_plan(self.metadata, self.root, [], 2, force_full=True)
+            rows = plan["matrix"]["include"]
+            for arch in ci_select.NATIVE_RUNNERS:
+                native_rows = [row for row in rows if row["arch"] == arch]
+                for row in native_rows:
+                    self.assertEqual(row["runner"], ci_select.test_shard_runner(row, arch))
+                    self.assertEqual(row["check_runner"], row["runner"])
+                self.assertIn(ci_select.LARGE_RUNNERS[arch], {row["runner"] for row in native_rows})
+            narrow = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
+            self.assertEqual({row["runner"] for row in narrow["matrix"]["include"]},
+                             {ci_select.NATIVE_RUNNERS["x86_64"]})
+            # One slot carries every arm test job, so an arm run keeps to the
+            # few shards that queue on it instead of four.
+            arm = [row for row in rows if row["arch"] == "aarch64"]
+            self.assertLessEqual(len(arm), ci_select.MAX_TEST_SHARDS_ARM)
+            self.assertEqual([row["shard"] for row in arm], list(range(1, len(arm) + 1)))
+            arm_packages = [name for row in arm for name in row["test_packages"].split()[1::2]]
+            self.assertEqual(sorted(arm_packages), plan["tested"])
+            self.assertLessEqual(len(arm), len([row for row in rows if row["arch"] == "x86_64"]))
+
     def test_documentation_changes_omit_rust_only_when_audited_and_unmixed(self):
         with self.subTest(phase='design only has explicit empty rust matrix'):
             self.setUp()
