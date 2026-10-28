@@ -150,18 +150,15 @@ jobs:
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [select]
-    runs-on: runner-quality
-    timeout-minutes: 30
+    # The invariants compile their fixtures (image policy check, crypto, ESP
+    # write, board successor, staging handoff). On the quality lane's 2 CPUs
+    # one run spent its 30-minute timeout inside the second of 74 invariants
+    # (29m38s) and never reached the rest; the native class's CPUs and memory
+    # are t's declared shape for the same check.
+    runs-on: runner
+    timeout-minutes: 60
     env:
-      # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
-      CARGO_BUILD_JOBS: '2'
-      # ci-fast carries the pinned compiler but not every target the workspace
-      # pins (it copies one toolchain); rustup would stop to download one when
-      # the invariants build their fixture, and a stalled toolchain download
-      # used this job's whole timeout before any invariant returned. The native
-      # fixtures need no extra target: use the installed toolchain, and let a
-      # genuinely missing component fail in seconds.
-      RUSTUP_AUTO_INSTALL: '0'
+      CARGO_BUILD_JOBS: '4'
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
@@ -172,6 +169,12 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      # The fixture binaries build from the merged tree. The registry cache
+      # and the runner's compiler cache serve them, and a toolchain component
+      # the image lacks must fail at once rather than download during the run.
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
 
       # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
       # check them explicitly so EFI/RPM tests cannot skip.
@@ -266,7 +269,11 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: ${{ matrix.runner }}
+    # Linking a shard's test binaries is the memory peak of the whole check:
+    # the shell test link took the native class's 14/16 GiB job limit (the
+    # kernel killed 1-2 rustc processes on both architectures), and the tree
+    # declares 48 GiB for the same tests. The large class has 36 GiB.
+    runs-on: ${{ matrix.arch == 'aarch64' && 'runner-large-arm64' || 'runner-large' }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
