@@ -18,13 +18,13 @@ use collab_types::{
 };
 use runtime_collab::event::CollabEvent;
 
-pub use crate::shell::collab_core::{
-    AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
-};
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::network::{
     InboundAppPresence, InboundDocument, InboundScrollbackRequest, InboundScrollbackResponse,
     ShellNetwork,
+};
+pub use tilo_action_broker::collab_core::{
+    AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
 #[cfg(test)]
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
@@ -394,7 +394,7 @@ pub fn spawn_native_peer(
     capnp_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     publisher: &Arc<PeerPublisher>,
-    config: &crate::shell::peer_actions::NativePeerBrokerConfig,
+    config: &tilo_action_broker::peer_actions::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(
@@ -690,7 +690,7 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_presence {
-            let decoded = crate::shell::collab_presence::from_peer(entry.presence);
+            let decoded = tilo_action_broker::collab_presence::from_peer(entry.presence);
             let Some((key, payload)) = decoded else {
                 continue;
             };
@@ -962,7 +962,7 @@ fn spawn_inner(
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     certificate_provisioning: CertificateProvisioning,
-    config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&tilo_action_broker::peer_actions::NativePeerBrokerConfig>,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
     channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1256,7 +1256,7 @@ fn open_session_history(_: &Arc<Mutex<BrokerChannels>>) {}
 
 #[cfg(not(test))]
 fn open_session_history(channels: &Arc<Mutex<BrokerChannels>>) {
-    match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
+    match tilo_action_broker::collab_history::CollabHistoryStore::open_for_session() {
         Ok(history) => {
             if let Ok(mut state) = channels.lock() {
                 state.history = Some(history);

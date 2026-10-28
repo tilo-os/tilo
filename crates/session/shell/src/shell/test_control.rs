@@ -588,7 +588,7 @@ impl RawJson {
         serde_json::value::to_raw_value(value).map_or_else(
             |error| {
                 tracing::error!(
-                    target: "shell::compositor::test_control",
+                    target: "shell::shell::test_control",
                     %error,
                     "failed to serialise a state dump field; answering null"
                 );
@@ -637,7 +637,7 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    /// JSON view of the persisted `WorkspaceTree` — the persisted shape, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
     fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
         RawJson::null()
     }
@@ -2257,7 +2257,7 @@ pub fn serialise_response(resp: &Response) -> String {
         // Fall back to a same-shape wire error rather than aborting the whole compositor over
         // one malformed reply — this crate builds with `panic = "abort"`.
         tracing::error!(
-            target: "shell::compositor::test_control",
+            target: "shell::shell::test_control",
             %error,
             "failed to serialise Response; sending fallback error"
         );

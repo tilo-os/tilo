@@ -30,7 +30,6 @@ mod lock_wait;
 mod output_link;
 mod output_signal;
 pub mod outputs;
-pub mod paint;
 mod phase_window;
 mod present_frame;
 mod retained_canvas;
@@ -42,7 +41,6 @@ pub mod session;
 mod tablet;
 mod topology;
 pub mod wake_check;
-mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -50,6 +48,7 @@ use std::time::{Duration, Instant};
 
 use vello::Scene;
 
+use crate::shell::render::paint;
 use phase_window::PhaseWindow;
 
 use paint::{
@@ -58,8 +57,8 @@ use paint::{
 };
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
-use crate::compositor::frame::FramePaint;
-use crate::compositor::present::Presenter;
+use crate::shell::frame::FramePaint;
+use crate::shell::present::Presenter;
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
 use tilo_color_pipeline::hdr_surface::{CpuComposite, HdrLayer};

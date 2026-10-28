@@ -200,9 +200,9 @@ mod tests {
             ChannelAccess, ChannelEncryption, ChannelEncryptionConfig,
         };
         use crate::shell::channel_policy::WorkspaceChannelDirectory;
-        use crate::shell::collab_core::BrokerChannels;
         use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
+        use tilo_action_broker::collab_core::BrokerChannels;
 
         const OWNER: u8 = 40;
         const SERVICE: u8 = 41;

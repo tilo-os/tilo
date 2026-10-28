@@ -747,7 +747,7 @@ refuses it again at run time.
 
 | What | Where |
 |---|---|
-| Command + response shapes | `crates/session/shell/src/compositor/test_control.rs` |
+| Command + response shapes | `crates/session/shell/src/shell/test_control.rs` |
 | Device admin's control socket | `crates/session/shell/src/compositor/admin_control.rs` |
 | Session agent door (peer check, serving) | `crates/session/shell/src/compositor/agent_door.rs`, client route and MCP gate in `crates/runtime/tilo-runtime/src/session_door.rs` |
 | Agent door consent | `crates/session/shell/src/shell/agent_admission.rs` |

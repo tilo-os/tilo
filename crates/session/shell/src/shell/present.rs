@@ -914,7 +914,7 @@ impl PresentPipe {
             Ok(handle) => Some(handle),
             Err(e) => {
                 tracing::error!(
-                    target: "shell::compositor::present",
+                    target: "shell::shell::present",
                     error = %e,
                     "could not start the tilo-present render thread; presentation stays unavailable"
                 );

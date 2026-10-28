@@ -1220,11 +1220,11 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
             let tab = {
                 let chrome = fb.chrome();
                 let mut rendered = chrome.tree_mut();
-                crate::compositor::tab_binding::adopt_toplevel_at(
+                crate::shell::tab_binding::adopt_toplevel_at(
                     &mut rendered,
                     surface,
                     Some(app.to_string()),
-                    crate::compositor::tab_binding::Placement::NewGroup,
+                    crate::shell::tab_binding::Placement::NewGroup,
                 )
             };
             tabs.insert(surface, tab);

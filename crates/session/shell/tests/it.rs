@@ -55,12 +55,8 @@ mod color_management_protocol;
 mod color_management_surface_override;
 #[path = "compositor_test.rs"]
 mod compositor_test;
-#[path = "concept_parity_spec.rs"]
-mod concept_parity_spec;
 #[path = "continuity_suggestion_flow.rs"]
 mod continuity_suggestion_flow;
-#[path = "control_socket_test.rs"]
-mod control_socket_test;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
 #[path = "cpu_raster_parity.rs"]

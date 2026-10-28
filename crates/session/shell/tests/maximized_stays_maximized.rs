@@ -33,7 +33,7 @@ use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, TileContent};
 
 use crate::support::wayland;
@@ -209,7 +209,7 @@ impl Harness {
     fn group(&self) -> GroupId {
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
-        shell::compositor::tab_binding::group_id_for_surface(&tree, self.id)
+        shell::shell::tab_binding::group_id_for_surface(&tree, self.id)
             .expect("the terminal has a group")
     }
 

@@ -22,7 +22,7 @@
 //!
 //! What changed on screen since the last presented frame accumulates in
 //! [`CpuRenderer::pending`]. The scanout's per-buffer destination history
-//! (`super::xrgb_history`) turns that into the rectangles each dumb buffer
+//! (`tilo_output_passes::xrgb_history`) turns that into the rectangles each dumb buffer
 //! is missing.
 #![allow(
     clippy::arithmetic_side_effects,

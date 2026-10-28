@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::TileContent;
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_subcompositor, wl_subsurface, wl_surface};
@@ -172,9 +172,9 @@ fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
         h.open(&compositor, &wm_base, "org.example.Second");
 
     for id in [first, second] {
-        shell::compositor::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 800.0, 600.0));
+        shell::shell::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 800.0, 600.0));
     }
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     for app in ["org.example.First", "org.example.Second"] {
         let states = h.last_states(app);
@@ -191,7 +191,7 @@ fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
     // Focus goes to a tile only once its client has drawn (it cannot take
     // keyboard focus unmapped); stand in for that first buffer.
     for id in [first, second] {
-        shell::compositor::foreign::store().publish_rgba(id, &[0; 4], 1, 1);
+        shell::shell::foreign::store().publish_rgba(id, &[0; 4], 1, 1);
     }
 
     h.focus(first);
@@ -234,7 +234,7 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
     h.pump();
 
     let (surface, xdg, id) = h.open(&compositor, &wm_base, "org.example.Shadowed");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.publish_rgba(id, &vec![0; 140 * 120 * 4], 140, 120);
     assert_eq!(store.frame_size(id), Some((140, 120)));
 
@@ -272,7 +272,7 @@ fn committed_buffer_scale_puts_the_window_and_input_in_logical_pixels() {
     h.pump();
 
     let (surface, xdg, id) = h.open(&compositor, &wm_base, "org.example.HiDpi");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.publish_rgba(id, &vec![0; 480 * 480 * 4], 480, 480);
 
     surface.set_buffer_scale(2);
@@ -343,7 +343,7 @@ impl Harness {
         // The compositor files a client's surfaces under the client's index
         // in the high half and the protocol id in the low half.
         let page = (root & 0xFFFF_FFFF_0000_0000) | u64::from(page_surface.id().protocol_id());
-        let store = shell::compositor::foreign::store();
+        let store = shell::shell::foreign::store();
         let (frame_w, frame_h) = FRAME;
         let frame_pixels = frame_w.checked_mul(frame_h).expect("frame size");
         store.publish_rgba(
@@ -374,7 +374,7 @@ fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
     let mut h = Harness::new();
     let browser = h.open_shadowed_browser();
     drop(h);
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
 
     assert_eq!(
         store.frame_size(browser.root),
@@ -452,7 +452,7 @@ fn a_client_that_dies_with_a_subsurface_does_not_freeze_the_compositor() {
         let _ = wl.display.flush_clients();
     }
     drop(h);
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     assert_eq!(
         store.frame_seq(browser.root),
         0,
@@ -481,10 +481,10 @@ fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.example.Terminal");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     let column = Rect::new(0.0, 0.0, 320.0, 820.0);
     store.note_placement(id, column);
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
 
     toplevel.set_fullscreen(None);
@@ -505,7 +505,7 @@ fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
 
     // The promoted tile reports its own rect every frame.
     store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 900.0));
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     let after_tile = last(&h);
     assert_eq!(
@@ -517,7 +517,7 @@ fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
     toplevel.unset_fullscreen();
     h.pump();
     store.note_placement(id, column);
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     let restored = last(&h);
     drop(h);
@@ -556,9 +556,9 @@ fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.tilo.Browser");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     assert_eq!(h.state.fullscreen_group, None);
 
@@ -600,9 +600,9 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.tilo.Browser");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     h.focus(id);
     toplevel.set_fullscreen(None);
@@ -697,7 +697,7 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
     }
     let for_the_person = h.state.leave_fullscreen_when_focus_moved(Some(group));
     drop(h);
-    shell::compositor::foreign::store().forget(id);
+    shell::shell::foreign::store().forget(id);
 
     assert!(!for_someone_else, "a window opened beside for someone else");
     assert!(for_the_person, "a window the person opened");
@@ -756,9 +756,9 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.tilo.Video");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     let video_group = {
         let tree = h.state.workspace_tree.read();
@@ -947,7 +947,7 @@ fn an_app_that_stops_answering_shows_not_responding_until_it_answers() {
     let cleared = h.state.advance_app_liveness_at(again);
     let recovered = app_liveness::is_hung(id);
     drop(h);
-    shell::compositor::foreign::store().forget(id);
+    shell::shell::foreign::store().forget(id);
 
     assert!(pinged.is_some(), "input to the app pings it");
     assert!(!within && !hung_early, "an app gets its time to answer");
@@ -1085,9 +1085,9 @@ fn search_over_a_full_screen_window(super_f: bool) {
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.tilo.Movie");
-    let store = shell::compositor::foreign::store();
+    let store = shell::shell::foreign::store();
     store.note_placement(id, Rect::new(0.0, 0.0, 800.0, 820.0));
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     // Its full-screen frame: opaque and the size of the display.
     let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);

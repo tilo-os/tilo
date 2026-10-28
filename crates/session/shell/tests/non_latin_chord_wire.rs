@@ -194,7 +194,7 @@ fn a_chord_on_a_russian_source_keeps_the_german_letter() {
                 .unwrap();
         }
         display.dispatch_clients(&mut state).unwrap();
-        shell::compositor::foreign::flush_configures(&mut state);
+        shell::shell::foreign::flush_configures(&mut state);
         display.flush_clients().unwrap();
         if !focused && let Some(surface) = foreign_id(&state) {
             state.set_client_keyboard_focus(Some(surface));

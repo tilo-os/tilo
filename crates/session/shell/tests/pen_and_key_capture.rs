@@ -29,8 +29,8 @@ use shell::compositor::backend::{
     BackendEvent, PadAction, PadDescription, PadEvent, PadGroup, TabletDevice, TabletInput,
     TabletPhase, TabletTool, TabletToolKind,
 };
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tablet_pad::{DialSteps, dial_events};
+use shell::shell::frame::FrameBuilder;
 
 use crate::support::wayland;
 
@@ -388,12 +388,12 @@ impl Harness {
         surface.commit();
         self.pump();
         assert!(
-            shell::compositor::foreign::store().is_mapped(surface_id),
+            shell::shell::foreign::store().is_mapped(surface_id),
             "the committed SHM buffer maps before painting or asynchronous pixel conversion"
         );
         let _ = self.fb.paint_settled();
         assert!(
-            shell::compositor::foreign::store().is_mapped(surface_id),
+            shell::shell::foreign::store().is_mapped(surface_id),
             "the real first-buffer commit maps the configured toplevel"
         );
     }
@@ -603,7 +603,7 @@ fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_st
         h.state.client_input.keyboard_focus(),
         Some(app),
         "touching down focuses the window, as a click does; mapped={}, active={:?}, cursor={:?}",
-        shell::compositor::foreign::store().is_mapped(app),
+        shell::shell::foreign::store().is_mapped(app),
         shell::shell::input_policy::active_foreign_surface(&h.state.workspace_tree.read()),
         h.state.client_input.cursor(),
     );

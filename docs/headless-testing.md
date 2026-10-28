@@ -276,7 +276,7 @@ echo '{"op":"pointer_button","pressed":false}' | nc -U $TILO_TEST_CONTROL
 echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $TILO_TEST_CONTROL
 ```
 
-Full command reference: `crates/session/shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+Full command reference: `crates/session/shell/src/shell/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
 
 ### Response shapes
 
@@ -727,12 +727,12 @@ authentication deadlines.
 | `shots` binary | `crates/session/shell/src/bin/shots/` |
 | Frame-loop metrics | `crates/session/shell/src/compositor/metrics.rs` |
 | Presentation clock | `crates/session/shell/src/compositor/pacing.rs` |
-| Render thread | `crates/session/shell/src/compositor/present.rs` |
+| Render thread | `crates/session/shell/src/shell/present.rs` |
 | Load-generator client | `crates/session/shell/src/bin/tilo-loadclient.rs` |
 | Scenario catalogue | `crates/session/shell/src/bin/shots/scenario.rs::catalogue()` |
 | Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
-| `TILO_TEST_CONTROL` protocol | `crates/session/shell/src/compositor/test_control.rs` |
-| Widget registry walk | `crates/session/shell/src/compositor/frame.rs::walk_widget` |
+| `TILO_TEST_CONTROL` protocol | `crates/session/shell/src/shell/test_control.rs` |
+| Widget registry walk | `crates/session/shell/src/shell/frame.rs::walk_widget` |
 | Backend trait | `crates/session/shell/src/compositor/backend/mod.rs` |
 | Headless backend impl | `crates/session/shell/src/compositor/backend/headless.rs` |
 
@@ -987,20 +987,6 @@ The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU
 forwarding) as long as the runner has a recent Mesa plus a software wgpu
 fallback. The compositor's `--backend headless` does the same thing for
 live-binary tests.
-
-The control-socket integration test is ignored by default because its native
-compositor opens a winit window. Run it from the repository checkout inside a
-desktop session (or enter the development container first):
-
-```bash
-cargo build -p shell
-cargo test --locked -p shell --test it control_socket_test:: -- --ignored --test-threads 1
-```
-
-The test spawns the binary itself. It is intentionally separate from the
-offscreen lanes until the native compositor can run without a host display.
-`control_socket_test` is a module inside the shared `it` test binary, not a
-separate Cargo target. Keep the module filter when opting into ignored tests.
 
 ## Desktop smoke gate
 

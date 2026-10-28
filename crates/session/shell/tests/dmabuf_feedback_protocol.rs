@@ -12,7 +12,7 @@
 //! real headless [`State`], asserting: the global is version >= 4;
 //! `get_default_feedback` yields a `main_device` naming a real, openable
 //! DRM node; the format table offers only buffers
-//! [`shell::compositor::foreign::validate_importable`] would accept.
+//! [`shell::shell::foreign::validate_importable`] would accept.
 
 #![allow(
     clippy::unwrap_used,

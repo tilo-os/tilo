@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use super::paint;
 use super::runtime::ScanoutCommand;
 use super::scanout;
 use super::{
@@ -14,6 +13,7 @@ use super::{
     publish_client_planes, quiesce_presentations, refresh_of, report_signal_status,
     route_flip_completions, service_links,
 };
+use crate::shell::render::paint;
 use tilo_lock::MutexRecover as _;
 
 impl DrmPresenter {

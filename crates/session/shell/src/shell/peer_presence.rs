@@ -4396,7 +4396,7 @@ mod two_sessions {
             pair.guest_cmds.try_recv().is_err(),
             "nor a caret in no resource it names"
         );
-        let arrived = crate::shell::collab_presence::to_peer(
+        let arrived = tilo_action_broker::collab_presence::to_peer(
             &PresenceKey::Workspace { id: room.clone() },
             &PresencePayload::Arrived,
         )

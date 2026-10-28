@@ -32,7 +32,7 @@ const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
 /// the `shots --mode offscreen` default. Mirrors the env-var-driven
-/// shape of `TILO_TEST_CONTROL` / `TILO_TEST_STATE_DUMP` so the
+/// shape of `TILO_TEST_CONTROL` so the
 /// whole headless surface stays opt-in without CLI bloat.
 pub const HEADLESS_SIZE_ENV: &str = "TILO_HEADLESS_SIZE";
 
@@ -510,7 +510,7 @@ impl Backend for HeadlessBackend {
 
     fn submit_frame_with_damage(
         &mut self,
-        frame: &crate::compositor::frame::FramePaint,
+        frame: &crate::shell::frame::FramePaint,
         output: OutputId,
     ) {
         let retainable = self.watched
@@ -783,7 +783,7 @@ impl SimulatedVblankPresenter {
 
     /// Render `frame` into the next scanout buffer, as the DRM presenter's
     /// direct path does; `false` when it kept the image already shown.
-    fn render(&mut self, frame: &crate::compositor::frame::FramePaint) -> bool {
+    fn render(&mut self, frame: &crate::shell::frame::FramePaint) -> bool {
         if !self.ensure_renderer() {
             return false;
         }
@@ -914,7 +914,7 @@ impl SimulatedVblankPresenter {
     /// dma-buf covering the display exactly.
     fn scan_out(
         &mut self,
-        frame: &crate::compositor::frame::FramePaint,
+        frame: &crate::shell::frame::FramePaint,
         damage: Option<SceneDamage<'_>>,
     ) -> Option<bool> {
         let candidate = frame.scanout.as_ref().filter(|candidate| {
@@ -949,12 +949,12 @@ impl SimulatedVblankPresenter {
 impl Presenter for SimulatedVblankPresenter {
     fn present(&mut self, scene: &Scene, output: OutputId) {
         self.present_frame(
-            &crate::compositor::frame::FramePaint::full(scene.clone()),
+            &crate::shell::frame::FramePaint::full(scene.clone()),
             output,
         );
     }
 
-    fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _: OutputId) {
+    fn present_frame(&mut self, frame: &crate::shell::frame::FramePaint, _: OutputId) {
         self.queued_last = false;
         let started = Instant::now();
         let rendered = self.render(frame);
@@ -1086,7 +1086,7 @@ mod tests {
             // there are at least 3 distinct pixel values, which proves
             // (a) the offscreen pipeline ran end-to-end and (b) the
             // FrameBuilder's scene reached the texture (not a no-op).
-            let mut fb = crate::compositor::frame::FrameBuilder::new((400, 300));
+            let mut fb = crate::shell::frame::FrameBuilder::new((400, 300));
             // Paint twice — the first paint primes layout caches, the
             // second is what we actually capture. Mirrors the
             // `paint_settled` pattern used by `bin/shots`.

@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 
 use neighbour_wire::colorimetry::Colorimetry;
 use settings_store::hardware::OutputTransform;
-use shell::compositor::backend::drm::paint::{
+use shell::shell::render::OutputId;
+use shell::shell::render::paint::{
     OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
 };
-use shell::shell::render::OutputId;
 use tilo_color_pipeline::color_pipeline::{pq_eotf, pq_inverse_eotf, srgb_eotf};
 use tilo_color_pipeline::hdr_surface::{
     CompositeTarget, HdrLayer, HdrLayerRecording, HdrPlane, SurfaceSignal, composite_hdr_pixel,

@@ -24,7 +24,7 @@ use std::time::Duration;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use shell::bluetooth::{PairingPromptHandle, PairingService};
 use shell::bluetooth_prompt::ENTRY_FIELD_ID;
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use tilo_bluez::{AGENT_CAPABILITY, AGENT_PATH, BluezClient, DeviceNames, PairingPrompt};
 use tilo_lock::MutexRecover as _;
 use vello::kurbo::{Point, Rect};

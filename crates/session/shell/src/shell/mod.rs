@@ -42,10 +42,7 @@ pub mod codec_pack_notice;
 pub(crate) mod cold_record_reads;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
-pub mod collab_core;
-pub mod collab_history;
 pub mod collab_outbound;
-pub mod collab_presence;
 pub(crate) mod collaborator_versions;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
@@ -147,7 +144,6 @@ pub mod overlay_host;
 pub mod overview;
 pub mod owner_session;
 pub mod pad_map;
-pub mod peer_actions;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
 pub mod peer_view;
@@ -386,7 +382,7 @@ fn try_to_ui_tile_for_tab(
             label: label.clone(),
         },
         // Pulls the client's most recent buffer out of
-        // `compositor::foreign`'s frame store and also publishes the tab's
+        // `shell::foreign`'s frame store and also publishes the tab's
         // rect back so the compositor can configure the client to size.
         ShellTile::Foreign { app_id, surface_id } => UiTile::App(Box::new(
             crate::shell::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),

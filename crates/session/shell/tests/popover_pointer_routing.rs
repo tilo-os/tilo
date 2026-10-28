@@ -25,7 +25,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::input_policy::chrome_captures_input;
 use ui::widget::{CaptureIntent, CapturePreview, ScreenshotCommand, ScreenshotSendTarget};
 
@@ -169,7 +169,7 @@ impl Harness {
         self.pump();
         let _ = self.fb.paint_settled();
         assert!(
-            shell::compositor::foreign::store().is_mapped(surface_id),
+            shell::shell::foreign::store().is_mapped(surface_id),
             "the window is mapped and can take the pointer"
         );
     }

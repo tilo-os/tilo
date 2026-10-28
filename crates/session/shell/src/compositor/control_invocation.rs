@@ -10,9 +10,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::compositor::test_control;
 use crate::shell::search::invocation_wake;
 use crate::shell::search::{ActionReceipt, PendingInvocation};
+use crate::shell::test_control;
 
 /// The longest a reply waits for its invocation to settle, whatever
 /// `wait_ms` asked: the MCP door's bound.

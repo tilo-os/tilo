@@ -9,7 +9,7 @@
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::backend::headless::parse_output_spec;
 use shell::compositor::backend::{Output, combined_geometry, output_geometry};
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{
     AppKind, GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceTree, compose_id,

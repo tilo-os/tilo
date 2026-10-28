@@ -37,9 +37,9 @@ hosted-test-control = ["dep:pprof-alloc", "dep:prost", "dep:flate2"]
 # no behaviour on its own — the marker is the entire content of the feature.
 dev-session = []
 # Honour the developer environment overrides (`TILO_TEST_CONTROL`,
-# `TILO_TEST_STATE_DUMP`, `TILO_LOCK_TEST_PASSWORD`, `TILO_UNLOCK_HELPER`,
-# `TILO_LAUNCHER_BIN`, the app/runtime overlay forwarding) in a release build,
-# exactly as a debug build does. See `compositor::dev_env`.
+# `TILO_LOCK_TEST_PASSWORD`, `TILO_UNLOCK_HELPER`, `TILO_LAUNCHER_BIN`, the
+# app/runtime overlay forwarding) in a release build, exactly as a debug build
+# does. See `compositor::dev_env`.
 #
 # NEVER SHIP THIS. A `dev-overrides` binary accepts a fixed lock-screen
 # password from its environment and opens a socket that drives the session as

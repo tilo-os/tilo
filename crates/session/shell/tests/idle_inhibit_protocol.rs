@@ -7,7 +7,7 @@
 
 use std::ops::{Deref, DerefMut};
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{Workspace, WorkspaceId};
 use tilo_power_mgmt::InhibitRegistry;
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;

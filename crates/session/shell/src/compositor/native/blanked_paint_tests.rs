@@ -1,7 +1,7 @@
 use super::{NativeRedrawReasons, TickPaint, release_idle_client_callback, tick_paint};
 use crate::compositor::backend::OutputId;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
-use crate::compositor::present::{PresentPipe, Presenter};
+use crate::shell::present::{PresentPipe, Presenter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

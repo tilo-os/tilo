@@ -206,7 +206,7 @@ fn a_token_carries_the_press_it_was_asked_for_after() {
                 .unwrap();
         }
         display.dispatch_clients(&mut state).unwrap();
-        shell::compositor::foreign::flush_configures(&mut state);
+        shell::shell::foreign::flush_configures(&mut state);
         display.flush_clients().unwrap();
         if !focused && let Some(surface) = foreign_id(&state) {
             state.set_client_keyboard_focus(Some(surface));

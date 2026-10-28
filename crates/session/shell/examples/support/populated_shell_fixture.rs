@@ -1,4 +1,4 @@
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 
 pub(crate) struct PopulatedShellFixture {
     frame: FrameBuilder,

@@ -21,8 +21,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
-use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
+use shell::shell::frame::FrameBuilder;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{AppKind, WorkspaceTree};
 use ui::Widget;
@@ -285,7 +285,7 @@ impl ShellDriver {
         app_id: &'static str,
         surface_id: u64,
     ) -> Result<(), String> {
-        let size = shell::compositor::foreign::store()
+        let size = shell::shell::foreign::store()
             .viewport(surface_id)
             .filter(|(w, h)| *w > 0 && *h > 0)
             .unwrap_or((800, 600));
@@ -3917,8 +3917,8 @@ impl ShellDriver {
     /// `paint` in a multi-action scenario. Widgets at `Rect::ZERO` are
     /// still registered; `resolve_named_rect` filters those out.
     pub fn widget_registry(&self) -> HashMap<String, Rect> {
-        // Delegate to the shared walk in `compositor::frame` so the
-        // out-of-process `compositor::test_control` and in-process
+        // Delegate to the shared walk in `shell::frame` so the
+        // out-of-process `shell::test_control` and in-process
         // ShellDriver see exactly the same target set.
         self.fb.widget_registry()
     }
@@ -3938,9 +3938,9 @@ impl ShellDriver {
 
 // ---------- helpers ----------
 
-// `walk_widget` lives in `compositor::frame` so the out-of-process
-// `compositor::test_control` and the in-process ShellDriver share one
-// implementation. See `crates/session/shell/src/compositor/frame.rs`.
+// `walk_widget` lives in `shell::frame` so the out-of-process
+// `shell::test_control` and the in-process ShellDriver share one
+// implementation. See `crates/session/shell/src/shell/frame.rs`.
 
 pub fn key_press_event(key: &Key) -> WindowEvent {
     let mut ev = ui::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);

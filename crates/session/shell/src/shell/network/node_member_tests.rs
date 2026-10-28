@@ -23,8 +23,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use super::{HostIdentity, Reach, ShellNetwork};
 use crate::shell::channel_encryption::{ChannelAccess, ChannelEncryption, ChannelEncryptionConfig};
 use crate::shell::channel_policy::WorkspaceChannelDirectory;
-use crate::shell::collab_core::BrokerChannels;
 use crate::shell::state::{RoomId, WorkspaceTree};
+use tilo_action_broker::collab_core::BrokerChannels;
 
 const NOTES: &str = "so.tilo.notes";
 /// Text only the workspace's members ever see.

@@ -56,7 +56,6 @@ pub const DEV_OVERRIDES_RELEASE_BUILD: bool = DEV_ENV_OVERRIDES && !cfg!(debug_a
 /// is a password.
 pub const DEV_OVERRIDE_VARS: &[&str] = &[
     "TILO_TEST_CONTROL",
-    "TILO_TEST_STATE_DUMP",
     "TILO_LOCK_TEST_PASSWORD",
     "TILO_UNLOCK_HELPER",
     "TILO_LAUNCHER_BIN",

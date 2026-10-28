@@ -369,7 +369,7 @@ fn room_activity_reads_the_live_room_and_opens_what_it_names() {
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
             app_id,
-            crate::compositor::tab_binding::Placement::NewGroup,
+            crate::shell::tab_binding::Placement::NewGroup,
         );
         let target = ui::HistoryResourceTarget {
             app_id: Some(app_id.to_string()),

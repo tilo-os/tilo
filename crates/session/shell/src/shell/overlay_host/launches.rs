@@ -283,7 +283,7 @@ impl ShellOverlayHost {
                     && {
                         let chrome = chrome_handle.borrow();
                         let mut tree = chrome.tree_mut();
-                        crate::compositor::tab_binding::retire_starting_foreign_surface(
+                        crate::shell::tab_binding::retire_starting_foreign_surface(
                             &mut tree, surface_id,
                         )
                     }
@@ -481,7 +481,7 @@ impl ShellOverlayHost {
                 .flat_map(|g| g.tabs.iter())
                 .filter_map(|t| match &t.tile {
                     crate::shell::state::TileContent::Foreign { app_id, surface_id }
-                        if { crate::compositor::foreign::store().stands(*surface_id) } =>
+                        if { crate::shell::foreign::store().stands(*surface_id) } =>
                     {
                         Some(app_id.clone())
                     }

@@ -123,7 +123,7 @@ fn local_key(code: KeyCode, text: &str, pressed: bool) -> WindowEvent {
 }
 
 /// A focused client window, ready for keys.
-fn focused_client() -> (Harness, shell::compositor::frame::FrameBuilder) {
+fn focused_client() -> (Harness, shell::shell::frame::FrameBuilder) {
     let mut h = Harness::new();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
@@ -140,10 +140,10 @@ fn focused_client() -> (Harness, shell::compositor::frame::FrameBuilder) {
     h.pump();
     h.client.strokes.clear();
     h.client.releases.clear();
-    (h, shell::compositor::frame::FrameBuilder::new((1600, 900)))
+    (h, shell::shell::frame::FrameBuilder::new((1600, 900)))
 }
 
-fn route(h: &mut Harness, frame: &mut shell::compositor::frame::FrameBuilder, event: &WindowEvent) {
+fn route(h: &mut Harness, frame: &mut shell::shell::frame::FrameBuilder, event: &WindowEvent) {
     assert!(
         shell::compositor::client_input::route_input(
             &mut h.state,

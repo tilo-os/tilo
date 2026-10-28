@@ -78,7 +78,7 @@ pub(crate) fn pointer_events_for_touch(
     touch: &winit::event::Touch,
     chrome_handled: bool,
     taken_by_client: bool,
-    fb: &crate::compositor::frame::FrameBuilder,
+    fb: &crate::shell::frame::FrameBuilder,
 ) -> Vec<WindowEvent> {
     if chrome_handled
         && touch.phase == winit::event::TouchPhase::Moved
@@ -100,12 +100,7 @@ pub(crate) fn pointer_events_for_touch(
 /// took it; as the pointer held down on a shell surface that reads press,
 /// drag and release (selecting what to capture, marking up a screenshot);
 /// else by what the chrome there does with a pointer.
-fn touch_route(
-    taken: bool,
-    fb: &crate::compositor::frame::FrameBuilder,
-    x: f64,
-    y: f64,
-) -> TouchRoute {
+fn touch_route(taken: bool, fb: &crate::shell::frame::FrameBuilder, x: f64, y: f64) -> TouchRoute {
     let point = vello::kurbo::Point::new(x, y);
     let route = if taken || fb.claims_raw_touch_at(point) {
         TouchRoute::Raw

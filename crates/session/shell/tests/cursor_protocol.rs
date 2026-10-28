@@ -17,8 +17,8 @@ use wayland_protocols::wp::cursor_shape::v1::client::{
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 use shell::compositor::client_input::sync_pointer_image;
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::state::State;
+use shell::shell::frame::FrameBuilder;
 
 #[derive(Default)]
 struct Client {

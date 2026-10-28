@@ -4,7 +4,7 @@
 //! floating-surface service) are handled where those live.
 
 use super::CaptureOutcome;
-use crate::compositor::frame::FrameBuilder;
+use crate::shell::frame::FrameBuilder;
 
 /// Tell the person what `outcome` came to, or note it in the log where the
 /// shell's own chrome already shows it.

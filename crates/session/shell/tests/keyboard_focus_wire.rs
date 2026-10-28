@@ -186,12 +186,12 @@ fn app_tab_chords_reach_a_foreign_client_and_their_super_spelling_never_does() {
     h.pump();
     h.client.keyboard.clear();
 
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     frame
         .host_mut()
         .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("valid default shortcut configuration");
-    let active_tab = |frame: &shell::compositor::frame::FrameBuilder| {
+    let active_tab = |frame: &shell::shell::frame::FrameBuilder| {
         frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab
     };
     let before_tab = active_tab(&frame);
@@ -315,7 +315,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         h.pump();
         h.client.keyboard.clear();
 
-        let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+        let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
         let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
         shortcuts
             .set(
@@ -689,7 +689,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
         approved.await.expect("the review resolves");
     });
 
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     let press = physical_key_event(
         Key::Character("M".into()),
@@ -828,7 +828,7 @@ fn typing_window(app_id: &str) -> (Harness, wl_surface::WlSurface, u64) {
 
 /// Type `h` then `i` through the desktop's key routing, as a person does
 /// with no modifier held: both reach the focused window, not the desktop.
-fn type_hi(h: &mut Harness, frame: &mut shell::compositor::frame::FrameBuilder) {
+fn type_hi(h: &mut Harness, frame: &mut shell::shell::frame::FrameBuilder) {
     for key in ["h", "i"] {
         for pressed in [true, false] {
             assert!(
@@ -860,7 +860,7 @@ fn a_modifier_released_outside_the_window_it_was_held_into_is_up_for_that_window
         (NamedKey::Super, ModifiersState::SUPER),
     ] {
         let (mut h, surface, window) = typing_window("org.example.HeldIn");
-        let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+        let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
         h.state.set_client_keyboard_focus(None);
         h.pump();
 
@@ -928,7 +928,7 @@ fn a_modifier_released_outside_the_window_it_was_held_into_is_up_for_that_window
 #[test]
 fn a_modifier_held_into_the_window_and_released_elsewhere_lets_go_of_its_app() {
     let (mut h, _surface, window) = typing_window("org.example.HeldOut");
-    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut frame = shell::shell::frame::FrameBuilder::new((1600, 900));
     h.state.set_client_keyboard_focus(Some(window));
     h.pump();
 

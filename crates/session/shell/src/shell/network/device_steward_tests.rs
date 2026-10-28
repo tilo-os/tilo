@@ -23,9 +23,9 @@ use crate::shell::channel_encryption::{
     InboundChannelGovernance,
 };
 use crate::shell::channel_policy::WorkspaceChannelDirectory;
-use crate::shell::collab_core::BrokerChannels;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+use tilo_action_broker::collab_core::BrokerChannels;
 
 const NOTES: &str = "so.tilo.notes";
 

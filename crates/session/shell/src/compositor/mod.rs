@@ -56,8 +56,6 @@ pub mod downloaded_programs;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
-pub mod foreign;
-pub mod frame;
 pub mod frame_stall;
 #[cfg(target_os = "linux")]
 pub mod gpu_health;
@@ -93,7 +91,6 @@ pub mod pacing;
 pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
-pub mod present;
 #[cfg(target_os = "linux")]
 pub mod presentation;
 #[cfg(target_os = "linux")]
@@ -131,13 +128,10 @@ pub mod switch_control;
 pub mod switch_latency;
 #[cfg(target_os = "linux")]
 pub mod system_stats_service;
-pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;
 #[cfg(target_os = "linux")]
 pub mod tablet_pad;
-#[cfg(target_os = "linux")]
-pub mod test_control;
 #[cfg(target_os = "linux")]
 pub mod text_commit;
 #[cfg(target_os = "linux")]

@@ -24,8 +24,8 @@
 use std::ops::{Deref, DerefMut};
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::state::State;
+use shell::shell::frame::FrameBuilder;
 use vello::kurbo::{Point, Rect};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
@@ -281,7 +281,7 @@ impl Harness {
             .checked_add(tilo_test_env::hang_bound())
             .expect("the hang bound fits in an Instant");
         let applied = || {
-            shell::compositor::foreign::store()
+            shell::shell::foreign::store()
                 .frame_geometry(id)
                 .is_some_and(|geometry| {
                     geometry["raw_buffer"]["w"] == buffer_w
@@ -301,7 +301,7 @@ impl Harness {
         let _ = self.fb.paint_settled();
         self.pump();
         assert!(
-            shell::compositor::foreign::store().is_mapped(id),
+            shell::shell::foreign::store().is_mapped(id),
             "the window is mapped and can take the pointer"
         );
         Window {
@@ -357,7 +357,7 @@ impl Harness {
     /// found in the window's composed image, placed where the tile paints
     /// that image.
     fn drawn_target(&self, window: &Window) -> Rect {
-        let store = shell::compositor::foreign::store();
+        let store = shell::shell::foreign::store();
         let tile = self.tile(window.id);
         let frame = store.snapshot(window.id).expect("the window has a frame");
         let width = usize::try_from(frame.width).unwrap();
@@ -461,7 +461,7 @@ fn a_click_reaches_the_point_drawn_under_it(scale: f64, density: Density) {
         x - want.0,
         y - want.1,
     );
-    shell::compositor::foreign::store().forget(window.id);
+    shell::shell::foreign::store().forget(window.id);
 }
 
 #[test]

@@ -2,7 +2,7 @@ use super::super::{
     ClientState, FloatingTransferSource, InputMethodPreeditState, PendingFloatingToplevel, Rect,
 };
 use super::*;
-use crate::compositor::frame::FrameBuilder;
+use crate::shell::frame::FrameBuilder;
 use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use std::os::unix::net::UnixStream;
@@ -165,7 +165,7 @@ impl Fixture {
     }
 
     fn ready(&mut self, fb: &mut FrameBuilder) {
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         store.publish_rgba(self.ids[1], &vec![255; 400 * 300 * 4], 400, 300);
         assert!(store.mark_presented(self.ids[1], Rect::new(0.0, 0.0, 400.0, 300.0)));
         self.state.mark_floating_toplevel_presented(self.ids[1]);
@@ -182,7 +182,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         for id in self.ids {
-            crate::compositor::foreign::store().forget(id);
+            crate::shell::foreign::store().forget(id);
         }
     }
 }
@@ -324,7 +324,7 @@ fn floating_input_gutter_routes_pointer_touch_and_remote_to_lower_float() {
             ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX
         )
     ));
-    let store = crate::compositor::foreign::store();
+    let store = crate::shell::foreign::store();
     // Each native buffer answers its current allocation; otherwise input is
     // correctly scaled from the displayed window to the old buffer's size.
     store.publish_rgba(child, &vec![255; 500 * 400 * 4], 500, 400);
@@ -403,7 +403,7 @@ fn floating_input_gutter_falls_through_to_the_workspace_tile() {
     };
     let point = (tile.rect.center().x, tile.rect.center().y);
     let window = Rect::from_center_size(tile.rect.center(), (160.0, 120.0));
-    let store = crate::compositor::foreign::store();
+    let store = crate::shell::foreign::store();
     let width = ui::num::u32_of_f64(tile.rect.width().round());
     let height = ui::num::u32_of_f64(tile.rect.height().round());
     store.publish_rgba(

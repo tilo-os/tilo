@@ -13,8 +13,8 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 
-use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
+use crate::shell::frame::FrameBuilder;
 
 /// Live inhibitor requests and the registry holds they currently earn.
 #[derive(Default)]

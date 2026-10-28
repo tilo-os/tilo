@@ -293,7 +293,7 @@ The Wayland state is decoupled from the graphical backend so the compositor's lo
 
 ## Per-frame paint
 
-The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
+The frame builder (`crates/session/shell/src/shell/frame.rs`) produces one `vello::Scene` per output per frame:
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, strip switcher, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are imported on the presenting device (`shell::gpu_frames`), once per client buffer, and drawn into Vello's image atlas straight from the client's buffer, which the compositor holds until the last frame that drew it was presented.
@@ -743,7 +743,7 @@ The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|re
 
 ## Foreign-client adoption
 
-Foreign Wayland clients are placed in the workspace model via app-id matching (`crates/session/shell/src/compositor/tab_binding.rs`). Rule:
+Foreign Wayland clients are placed in the workspace model via app-id matching (`crates/session/shell/src/shell/tab_binding.rs`). Rule:
 
 When `XdgShellHandler::new_toplevel` fires:
 
@@ -779,7 +779,7 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 
 When the env var is set, the compositor binds an additional unix socket alongside the wayland one. The socket drives the shell as the user, so it is published 0600 (bound in a 0700 staging directory, then renamed into place) and a missing parent is created 0700; anything other than a stale socket at the path is refused. The conventional path, and `tilo-control`'s default, is `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` — never `/tmp`. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
-`crates/session/shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `crates/session/shell/tests/control_socket_test.rs` covers the live socket.
+`crates/session/shell/src/shell/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `crates/session/shell/tests/control_socket_test.rs` covers the live socket.
 
 ### Keyboard shortcuts (host-only)
 

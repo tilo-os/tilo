@@ -37,7 +37,7 @@ fn each_visibility_lets_out_exactly_its_presence() {
     };
     let over_window = PresenceKey::tile_pointer(room.clone(), 7);
     let frame = |key: &PresenceKey, payload: &P| {
-        crate::shell::collab_presence::to_peer(key, payload).expect("presence encodes")
+        tilo_action_broker::collab_presence::to_peer(key, payload).expect("presence encodes")
     };
     let inferred = P::Status {
         text: "Editing the budget in Notes".into(),
@@ -194,7 +194,7 @@ fn at_that_im_here_the_people_in_a_note_see_each_others_caret_and_no_other_windo
     let paragraph = PresenceKey::Widget {
         path: vec![ui::presence::PathSegment::Field("body".into())],
     };
-    let caret = crate::shell::collab_presence::to_peer(&paragraph, &P::Caret { pos: 12 })
+    let caret = tilo_action_broker::collab_presence::to_peer(&paragraph, &P::Caret { pos: 12 })
         .expect("a caret encodes");
     pair.guest_net
         .publish_app_presence("so.tilo.notes".into(), room.clone(), caret);
@@ -227,7 +227,7 @@ fn at_that_im_here_the_people_in_a_note_see_each_others_caret_and_no_other_windo
     );
 
     // The guest brings another window to the front, and points over it.
-    let other = crate::shell::collab_presence::to_peer(
+    let other = tilo_action_broker::collab_presence::to_peer(
         &PresenceKey::Tab {
             id: format!("{:x}", 0x0042_0000_0000_0009_u64),
         },
@@ -274,8 +274,8 @@ fn a_call_reaches_only_those_who_may_see_where_you_are() {
         (ui::PresenceVisibility::WhereIAm, Some(call)),
     ] {
         pair.guest_net.set_presence_visibility(&room, visibility);
-        let frame =
-            crate::shell::collab_presence::to_peer(&key, &available).expect("availability encodes");
+        let frame = tilo_action_broker::collab_presence::to_peer(&key, &available)
+            .expect("availability encodes");
         pair.guest_net
             .publish_app_presence("tilo-shell".into(), room.clone(), frame);
         assert_eq!(said(&mut pair), heard, "{visibility:?}");

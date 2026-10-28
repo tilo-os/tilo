@@ -18,8 +18,8 @@
 
 use std::path::PathBuf;
 
-use shell::compositor::frame::FrameBuilder;
 use shell::compositor::lock_screen::{LockOutput, LockView, draw_lock_scene};
+use shell::shell::frame::FrameBuilder;
 use tilo_cpu_raster::compare::{Diff, compare, premultiply};
 use tilo_cpu_raster::{CpuRasterizer, Options, Target};
 use ui::text_render::TextRenderer;

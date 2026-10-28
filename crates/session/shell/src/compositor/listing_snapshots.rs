@@ -11,8 +11,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::compositor::test_control::ListingRequest;
 use crate::shell::search::action_api::ActionCatalog;
+use crate::shell::test_control::ListingRequest;
 
 /// How many listings are held beyond their first page at once. A listing
 /// paged to its end lets its reading go; this bounds the ones callers left

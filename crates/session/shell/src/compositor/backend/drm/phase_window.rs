@@ -52,7 +52,8 @@ pub(super) struct PhaseWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositor::backend::drm::{DirectFrame, paint};
+    use crate::compositor::backend::drm::DirectFrame;
+    use crate::shell::render::paint;
 
     fn timing(value: u64) -> paint::BridgePhaseTiming {
         paint::BridgePhaseTiming {

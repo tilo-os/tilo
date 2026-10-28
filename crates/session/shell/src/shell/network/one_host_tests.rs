@@ -28,12 +28,12 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
 use crate::shell::channel_encryption::{ChannelAccess, ChannelEncryptionConfig, ChannelKeyAccess};
-use crate::shell::collab_core::BrokerChannels;
 use crate::shell::peer_sync_overlay::{InvitationTerms, PeerSyncResponse};
 use crate::shell::state::{
     AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId,
     WorkspaceTree, WorkspaceTreeHandle,
 };
+use tilo_action_broker::collab_core::BrokerChannels;
 
 mod adopted_fields;
 mod channels;

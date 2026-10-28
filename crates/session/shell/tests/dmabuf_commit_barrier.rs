@@ -88,9 +88,9 @@ fn commit_first_dmabuf() -> bool {
 
     for toplevel in h.state.xdg_shell_state.toplevel_surfaces().to_vec() {
         let id = shell::compositor::state::surface_id(toplevel.wl_surface());
-        shell::compositor::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 640.0, 480.0));
+        shell::shell::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 640.0, 480.0));
     }
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     assert!(
         h.client.configured,
@@ -176,7 +176,7 @@ fn restore_a_saved_tab(h: &Harness) -> shell::shell::state::TabId {
     };
     // The opening card was laid out, so the window is configured to its
     // size in the dispatch that binds it.
-    shell::compositor::foreign::store().note_opening_tab(target, Rect::new(0.0, 0.0, 640.0, 480.0));
+    shell::shell::foreign::store().note_opening_tab(target, Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::launcher::set_pending_placement(RESTORED_APP, Placement::IntoTab(target));
     target
 }
@@ -188,7 +188,7 @@ fn wait_for_first_frame(h: &mut Harness, id: u64) -> u64 {
         h.pump();
         let display = h.display.handle();
         h.state.pump_foreign_capture_barriers(&display);
-        let seq = shell::compositor::foreign::store().frame_seq(id);
+        let seq = shell::shell::foreign::store().frame_seq(id);
         if seq != 0 {
             return seq;
         }
@@ -256,13 +256,13 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
         );
         drop(tree);
     }
-    shell::compositor::foreign::flush_configures(&mut h.state);
+    shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
     assert!(h.client.configured, "the restored window was configured");
     if !commit_on_map {
         h.client.configured = false;
-        shell::compositor::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
-        shell::compositor::foreign::flush_configures(&mut h.state);
+        shell::shell::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+        shell::shell::foreign::flush_configures(&mut h.state);
         h.pump();
         assert!(h.client.configured, "the second configure arrived");
     }
@@ -293,7 +293,7 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
     }
     let seq = wait_for_first_frame(&mut h, id);
     assert!(
-        shell::compositor::foreign::store().is_mapped(id),
+        shell::shell::foreign::store().is_mapped(id),
         "the frame's commit applied"
     );
     assert_ne!(seq, 0);

@@ -28,10 +28,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::compositor::frame::FrameBuilder;
 use crate::shell::capture_surface::{
     CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
 };
+use crate::shell::frame::FrameBuilder;
 
 mod outcome;
 pub use outcome::tell_outcome;

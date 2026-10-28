@@ -71,13 +71,13 @@ impl Harness {
     fn lay_tabs_out(&self, tile: Rect) {
         for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
             let id = shell::compositor::state::surface_id(toplevel.wl_surface());
-            shell::compositor::foreign::store().note_placement(id, tile);
+            shell::shell::foreign::store().note_placement(id, tile);
         }
     }
 
     /// The pass the run loop runs after every layout.
     fn flush_configures(&mut self) {
-        shell::compositor::foreign::flush_configures(&mut self.state);
+        shell::shell::foreign::flush_configures(&mut self.state);
         self.pump();
     }
 }
@@ -231,7 +231,7 @@ fn a_runaway_tab_is_configured_to_a_size_the_client_can_render() {
 
     let seen = configures.lock().expect("configures").clone();
     assert_eq!(seen.first(), Some(&(780, 792)), "configures: {seen:?}");
-    let limit = shell::compositor::foreign::CLIENT_TEXTURE_LIMIT_PX / 2;
+    let limit = shell::shell::foreign::CLIENT_TEXTURE_LIMIT_PX / 2;
     assert!(
         seen.iter()
             .all(|&(w, height)| w <= limit && height <= limit),

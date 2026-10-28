@@ -17,7 +17,7 @@ use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 use shell::compositor::backend::PointerConstraintRegion;
 use shell::compositor::client_input::sync_pointer_constraint;
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 
 use crate::support::wayland;
 

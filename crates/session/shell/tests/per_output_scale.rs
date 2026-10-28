@@ -18,7 +18,7 @@ use shell::compositor::backend::layout::{event_to_logical, placements};
 use shell::compositor::backend::{
     BackendEvent, Output, combined_geometry, logical_geometry, output_geometry,
 };
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;

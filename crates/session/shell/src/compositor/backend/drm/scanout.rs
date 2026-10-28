@@ -9,7 +9,7 @@
 //!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
 //!   and the final pass writes it into the back slot turned by the output's transform and,
 //!   in SDR, mapped through its ICC profile
-//!   ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
+//!   ([`crate::shell::render::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
 //!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a hardware cursor
 //!   plane, page-flip events, and the renderer on this card. Any rotation and any ICC
 //!   profile is eligible.
@@ -54,9 +54,9 @@ use super::kms_flip::{FlipTarget, KmsFlip};
 use super::output_link::{
     AtomicLink, Completion, LinkFailure, LinkStep, LinkTarget, OutputLink, Power,
 };
-use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::wake_check::{WakeStage, WakeVerdict};
-use super::xrgb_history::{
+use crate::shell::render::paint::{BridgeError, SceneDamage, VelloDrmBridge};
+use tilo_output_passes::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
 };
 
@@ -5069,7 +5069,7 @@ mod tests {
         reason = "the cursor fixture keeps both destination-age transactions next to their exact same-staging restoration checks"
     )]
     fn two_target_history_restores_moved_and_hidden_software_cursor_from_staging() {
-        use crate::compositor::backend::drm::paint::XrgbCpuWriteMode;
+        use crate::shell::render::paint::XrgbCpuWriteMode;
         use vello::kurbo::{Affine, Rect};
         use vello::peniko::{Color, Fill};
 

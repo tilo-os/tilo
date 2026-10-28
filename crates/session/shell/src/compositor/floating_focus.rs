@@ -289,7 +289,7 @@ impl State {
 
     pub(crate) fn apply_floating_focus_handoffs(
         &mut self,
-        fb: &crate::compositor::frame::FrameBuilder,
+        fb: &crate::shell::frame::FrameBuilder,
     ) -> Option<u64> {
         let candidate = self
             .floating_focus_handoffs

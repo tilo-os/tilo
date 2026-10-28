@@ -25,11 +25,11 @@ use ed25519_dalek::SigningKey;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use shell::shell::collab_broker::{CrdtRoute, LocalIdentity, PeerLabels};
-use shell::shell::collab_core::{BrokerChannels, apply_redaction_from_envelope};
 use threshold_identity::{
     ThresholdIdentity,
     signing::{SigningRound1, SigningRound1Commitment, SigningRound2Partial},
 };
+use tilo_action_broker::collab_core::{BrokerChannels, apply_redaction_from_envelope};
 
 struct Fixture {
     owner_sk: SigningKey,

@@ -63,7 +63,7 @@ impl Harness {
     /// at the wrong size), so the mode is staged and rides out on the first
     /// size-bearing configure, which this pass sends.
     fn lay_out_and_configure(&mut self, tile: vello::kurbo::Rect) {
-        use shell::compositor::foreign;
+        use shell::shell::foreign;
         for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
             let id = shell::compositor::state::surface_id(toplevel.wl_surface());
             // What `ForeignSurfaceWidget::apply_layout` publishes once the strip has

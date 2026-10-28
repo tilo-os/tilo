@@ -156,7 +156,7 @@ mod tests {
             );
         }
         // The window paints the app, not an empty ground.
-        let snapshot = shell::compositor::foreign::store()
+        let snapshot = shell::shell::foreign::store()
             .snapshot(OWN_ACTIVITY.surface_id)
             .expect("the window published its frame");
         let distinct: std::collections::HashSet<u32> = snapshot

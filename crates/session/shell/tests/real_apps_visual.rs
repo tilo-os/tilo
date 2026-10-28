@@ -20,7 +20,7 @@
 use ui::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 use vello::kurbo::Point;
 use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};

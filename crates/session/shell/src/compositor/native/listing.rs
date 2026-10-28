@@ -183,8 +183,8 @@ mod tests {
     use automerge::AutoCommit;
 
     use super::super::{FrameBuilderControlState, test_control};
-    use crate::compositor::frame::FrameBuilder;
     use crate::compositor::listing_snapshots::ListingSnapshots;
+    use crate::shell::frame::FrameBuilder;
     use test_control::ControlState as _;
 
     /// One page of the listing for `query` at `cursor`, three rows long,

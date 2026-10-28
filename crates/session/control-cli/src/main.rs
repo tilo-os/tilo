@@ -1701,7 +1701,7 @@ mod tests {
     //! Pure-logic argv-parsing tests: every subcommand's parse path, the
     //! resulting `Command` variant, and the wire payload's schema. The
     //! socket protocol itself is covered in
-    //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
+    //! `shell::test_control::tests`.
     use super::*;
 
     /// In the Terminal app the admin socket answers `not_permitted`; the

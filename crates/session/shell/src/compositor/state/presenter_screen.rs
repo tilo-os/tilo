@@ -86,7 +86,7 @@ impl State {
     /// Where an audience surface without a requested output goes, judged
     /// against the output its presenter's tab is on now.
     pub(super) fn audience_fallback_output(&self, presenter: SurfaceId) -> Option<OutputId> {
-        let presenter_on = crate::compositor::foreign::store()
+        let presenter_on = crate::shell::foreign::store()
             .placement(presenter)
             .map(|rect| rect.center())
             .and_then(|centre| {
@@ -136,7 +136,7 @@ impl State {
         {
             // Same placement; the output itself may have moved or resized.
             if let Some(rect) = self.output_rects.get(&output).copied() {
-                crate::compositor::foreign::store().pin_placement(presenter, Some(rect));
+                crate::shell::foreign::store().pin_placement(presenter, Some(rect));
             }
             return;
         }
@@ -156,7 +156,7 @@ impl State {
         else {
             return;
         };
-        crate::compositor::foreign::store().pin_placement(presenter, Some(rect));
+        crate::shell::foreign::store().pin_placement(presenter, Some(rect));
         let displaced = self
             .fullscreen_target
             .take()
@@ -188,7 +188,7 @@ impl State {
         let Some(pin) = self.presenter_pin.take() else {
             return;
         };
-        crate::compositor::foreign::store().pin_placement(pin.presenter, None);
+        crate::shell::foreign::store().pin_placement(pin.presenter, None);
         if self.pin_holds_overlay(&pin) {
             self.fullscreen_target = pin.displaced.map(|mut target| {
                 // Its output may have changed while it was hidden.

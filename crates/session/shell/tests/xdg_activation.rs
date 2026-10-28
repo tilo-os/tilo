@@ -137,7 +137,7 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
 
         let source_id = foreign_id(&h.state, "org.example.Source");
         let target_id = foreign_id(&h.state, "org.example.Target");
-        assert!(shell::compositor::tab_binding::activate_surface(
+        assert!(shell::shell::tab_binding::activate_surface(
             &mut h.state.workspace_tree.write(),
             source_id
         ));
@@ -163,7 +163,7 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
         assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
         assert_eq!(h.state.xdg_activation_state.tokens().count(), 0);
 
-        assert!(shell::compositor::tab_binding::activate_surface(
+        assert!(shell::shell::tab_binding::activate_surface(
             &mut h.state.workspace_tree.write(),
             source_id
         ));
@@ -192,12 +192,12 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
         // This is the pre-existing peer/document tab a host launch must adopt,
         // rather than assuming the test harness's fresh workspace carries a demo
         // group. The production tree may quite legitimately start empty.
-        let target_tab = shell::compositor::tab_binding::adopt_toplevel(
+        let target_tab = shell::shell::tab_binding::adopt_toplevel(
             &mut h.state.workspace_tree.write(),
             0xfeed,
             Some("org.example.Existing".to_string()),
         );
-        let intended = shell::compositor::tab_binding::Placement::IntoTab(target_tab);
+        let intended = shell::shell::tab_binding::Placement::IntoTab(target_tab);
         shell::shell::launcher::set_pending_placement_for_identities(
             desktop_id,
             &[identity.to_string()],
@@ -330,7 +330,7 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     // The browser lives on a strip of its own.
     let elsewhere = {
         let mut tree = h.state.workspace_tree.write();
-        let group = shell::compositor::tab_binding::group_id_for_surface(&tree, target_id)
+        let group = shell::shell::tab_binding::group_id_for_surface(&tree, target_id)
             .expect("the browser has a group");
         let workspace = tree.desktop.active_workspace_mut().expect("a workspace");
         let moved = workspace
@@ -351,7 +351,7 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     };
 
     // The person is in Mail, full screen.
-    assert!(shell::compositor::tab_binding::activate_surface(
+    assert!(shell::shell::tab_binding::activate_surface(
         &mut h.state.workspace_tree.write(),
         source_id
     ));
@@ -438,7 +438,7 @@ fn a_press_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not(
     chat_top.set_app_id("org.example.Chat".into());
     h.pump();
     let chat_id = foreign_id(&h.state, "org.example.Chat");
-    assert!(shell::compositor::tab_binding::activate_surface(
+    assert!(shell::shell::tab_binding::activate_surface(
         &mut h.state.workspace_tree.write(),
         chat_id
     ));
@@ -647,7 +647,7 @@ fn real_xdg_popups_and_titles_are_handled_without_becoming_tabs() {
                 (1920, 1080),
                 1.0,
             )]);
-        shell::compositor::foreign::store().note_placement(
+        shell::shell::foreign::store().note_placement(
             parent_id,
             vello::kurbo::Rect::new(100.0, 100.0, 400.0, 300.0),
         );

@@ -36,7 +36,7 @@ use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
-use shell::compositor::frame::FrameBuilder;
+use shell::shell::frame::FrameBuilder;
 
 use crate::support::wayland;
 
