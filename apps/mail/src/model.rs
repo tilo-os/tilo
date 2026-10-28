@@ -819,16 +819,6 @@ impl Mailbox {
         threads
     }
 
-    /// Case-insensitive full-text search across subject/sender/body, scoped
-    /// to a folder or (when `None`) the whole mailbox excluding Trash.
-    ///
-    /// This compatibility helper is deliberately exhaustive. Interactive UI
-    /// callers should use [`Self::search_page`] with explicit bounds instead.
-    pub fn search(&self, query: &str, scope: Option<Folder>) -> Vec<&Message> {
-        self.search_page(query, scope, usize::MAX, usize::MAX)
-            .messages
-    }
-
     /// Search loaded mail with explicit work and result bounds.
     ///
     /// The newest loaded messages are considered first, then matches are kept
@@ -1132,16 +1122,6 @@ mod tests {
             assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
             assert_eq!(body_page.messages.len(), 3);
             assert!(body_page.truncated);
-        }
-
-        {
-            let mut mb = Mailbox::default();
-            mb.insert(msg("Launch Plan", 10, Folder::Inbox));
-            let hits = mb.search("launch", None);
-            assert_eq!(hits.len(), 1);
-            let body_hits = mb.search("second line", None);
-            assert_eq!(body_hits.len(), 1);
-            assert!(mb.search("nothing", None).is_empty());
         }
     }
 }
