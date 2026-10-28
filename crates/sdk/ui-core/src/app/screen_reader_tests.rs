@@ -367,3 +367,45 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         );
     }
 }
+
+/// Ctrl+Super+Enter pressed, as winit delivers it.
+#[cfg(feature = "native")]
+fn ctrl_super_enter(app: &mut App) -> WindowEvent {
+    use winit::keyboard::ModifiersState;
+    app.input.modifiers =
+        winit::event::Modifiers::from(ModifiersState::CONTROL | ModifiersState::SUPER);
+    crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter)
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn the_chord_toggles_the_reader_and_says_so_even_when_turning_it_off() {
+    let (mut app, rec) = app_with_reader();
+    app.init_layout();
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&told);
+    app.on_screen_reader_chord(move |on| seen.borrow_mut().push(on));
+    let before = rec.0.borrow().spoken().len();
+
+    let chord = ctrl_super_enter(&mut app);
+    assert!(app.handle_screen_reader_chord(&chord));
+    assert!(!app.screen_reader_enabled());
+    assert_eq!(
+        rec.0.borrow().spoken().get(before..),
+        Some(&["Screen reader off".to_string()][..]),
+        "turning the reader off is heard"
+    );
+    assert!(
+        app.accessibility.parting_screen_reader.is_some(),
+        "the narrator saying so is not dropped mid-sentence"
+    );
+    assert!(app.handle_screen_reader_chord(&chord));
+    assert!(app.screen_reader_enabled());
+    assert!(app.accessibility.parting_screen_reader.is_none());
+    assert_eq!(*told.borrow(), [false, true]);
+
+    app.input.modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let enter = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
+    assert!(!app.handle_screen_reader_chord(&enter));
+    assert!(app.screen_reader_enabled());
+}
