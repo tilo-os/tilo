@@ -67,7 +67,11 @@ page ran exactly that commit's clean bundle on the WebGPU adapter the records
 name, then measures load, first opens, window activation, the demo workload's
 frame intervals and per-frame runtime CPU, and an idle desktop, and reports them
 against the runtime's goals (30 fps minimum and 120 fps for the demo, 50 ms
-activation). The runner has no GPU, and Chrome gives WebGPU no CPU driver but
+activation). Load is recorded as its time, and as what the first load transferred
+and how many requests it took (every resource that started before the desktop's
+first presented frame, by Performance Resource Timing's `encodedBodySize`), so a
+change that costs bytes or round trips shows in the `browser.load.*` records
+even when the runner's wall-clock does not move. The runner has no GPU, and Chrome gives WebGPU no CPU driver but
 its own SwiftShader, so the records name `renderer=swiftshader`. SwiftShader
 takes tens of seconds over a panned FHD frame there, so the nightly run leaves
 the demo out (`--demo-seconds 0`); its frame rate and goals are judged where a

@@ -2107,6 +2107,30 @@ p99 = 2500.0
 baseline_min_runs = 3
 source = "navigation to the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
 
+# What the first load costs in bytes and requests: every resource the page
+# requested before the desktop's first presented frame, by the Performance
+# Resource Timing API's encodedBodySize (what came over the wire, compressed)
+# and its entry count. Transfer bytes and requests are deterministic counters,
+# so their rule is the default one: a regression is a rise over the median of
+# the stored runs, not a night's noise. The ceilings are the live entry's
+# first load (tilo.coffee, measured 2026-10-27: 1 HTML page, the start module
+# 23,078,266 B raw / 5,715,416 B brotli, 67 entry-page modules, the MoQ
+# library and the startup fonts, about 8.4 MB over the wire) with a tenth of
+# headroom; t's perf-browser check serves the same bundle unversioned from
+# loopback, so its numbers are the bundle's, not the edge's.
+
+[kpi."browser.load.transfer_bytes"]
+unit = "bytes"
+max = 9300000.0
+baseline_min_runs = 1
+source = "summed encodedBodySize of every resource that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+[kpi."browser.load.request_count"]
+unit = "count"
+max = 90.0
+baseline_min_runs = 1
+source = "resource entries that started before the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
 [kpi."browser.open.first_frame"]
 unit = "ms"
 p99 = 250.0

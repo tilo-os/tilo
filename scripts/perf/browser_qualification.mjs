@@ -51,6 +51,11 @@
 //                  the app's own code drawn within 1 s
 //   load           p99 <= 2.5 s (the web's "good" Largest Contentful Paint)
 //   idle           <= 2 presented frames per second
+// Beside load's time, the report records what the first load transferred and
+// how many requests it took (Performance Resource Timing: every resource that
+// started before the desktop's first presented frame), which the browser
+// group's budgets hold as `browser.load.transfer_bytes` and
+// `browser.load.request_count`.
 // The demo's runtime stages are attributed per presented frame in the report
 // (`attribution`), so a missed goal names where its frame time went.
 //
@@ -191,6 +196,18 @@ export function unlistedResources(entries, origin, files) {
     .filter(name => !listed.has(name));
 }
 
+/**
+ * What the page transferred until `until` (the desktop's first presented frame),
+ * from the Performance Resource Timing API: every same-origin resource's
+ * encoded body bytes, and how many requests it took. A resource the page has
+ * no entry for yet (a worker's, a stream) is not in either.
+ */
+export function transfer(entries, origin, until) {
+  const resources = entries.filter(entry => entry.startTime <= until);
+  const bytes = resources.reduce((sum, entry) => sum + (Number(entry.encodedBodySize) || 0), 0);
+  return {bytes, requests: resources.length, crossOrigin: resources.filter(entry => entry.origin !== origin).length};
+}
+
 /** The renderer a WebGPU adapter's info names. */
 export function classifyAdapter(info) {
   const text = Object.values(info ?? {}).join(' ').toLowerCase();
@@ -293,6 +310,12 @@ const PHASE_PROBE = `(() => {
 })();`;
 
 const RUNTIME = `(await import(new URL('pkg/tilo_browser_runtime.js', document.baseURI).href))`;
+
+// Every resource the page fetched, with what it cost and when it started: the
+// load KPI's bytes and request count are those that started before the
+// desktop's first presented frame (`globalThis.__tiloPhases.presented`).
+const RESOURCES = `performance.getEntriesByType('resource').map(e => ({name: e.name, status: e.responseStatus ?? 200,
+  origin: new URL(e.name).origin, startTime: e.startTime, encodedBodySize: e.encodedBodySize}))`;
 
 // Resolves with the time of the first presented frame after `frames` for
 // which `ready()` holds, or NaN after `timeoutMs`.
@@ -537,7 +560,7 @@ async function round(browser, url, options, index) {
 
     await sleep(2000);
     const idle = await page.evaluate(idleExpression(options.idleSeconds));
-    const resources = await page.evaluate("performance.getEntriesByType('resource').map(e => ({name: e.name, status: e.responseStatus}))");
+    const resources = await page.evaluate(RESOURCES);
     if (page.errors.length) throw new Invalid(`round ${index}: page exceptions: ${page.errors.slice(0, 3).join(' | ')}`);
     return {round: index, loadMs: load, adapter, apps, opens, activations, demo, idlePerS: idle, resources};
   } finally {
@@ -547,9 +570,11 @@ async function round(browser, url, options, index) {
 
 // --- the run --------------------------------------------------------------------
 
-export function summarize(rounds) {
+export function summarize(rounds, load = {}) {
   return {
     load_ms: stats(rounds.map(r => r.loadMs)),
+    transfer_bytes: stats(load.transferBytes ?? []),
+    request_count: stats(load.requests ?? []),
     open_ms: stats(rounds.flatMap(r => r.opens.map(o => o.ms))),
     open_ready_ms: stats(rounds.flatMap(r => r.opens.map(o => o.readyMs))),
     activate_ms: stats(rounds.flatMap(r => r.activations)),
@@ -584,7 +609,8 @@ export function formatSummary(report) {
     `  ${report.browser.product} | adapter ${report.renderer}: ${Object.values(report.adapter ?? {}).filter(Boolean).join(' ')} | ${report.viewport.width}x${report.viewport.height}@${report.viewport.deviceScaleFactor}`,
     `  host ${report.host.cpu} x${report.host.cpus}, load ${report.host.before.load1} before, ${report.host.after.load1} after`
       + `${report.workload.cpuThrottle > 1 ? `, CPU throttled ${report.workload.cpuThrottle}x` : ''}`,
-    row('load (ms)', s.load_ms), row('open (ms)', s.open_ms), row('open ready (ms)', s.open_ready_ms),
+    row('load (ms)', s.load_ms), row('load bytes (B)', s.transfer_bytes), row('load requests', s.request_count),
+    row('open (ms)', s.open_ms), row('open ready (ms)', s.open_ready_ms),
     row('activate (ms)', s.activate_ms),
     row('demo interval (ms)', s.demo_interval_ms), row('demo work (ms)', s.demo_work_ms), row('demo fps', s.demo_fps),
     row('idle (frames/s)', s.idle_per_s),
@@ -635,13 +661,19 @@ async function main() {
     if (unlisted.length) throw new Invalid(`the page loaded files the bundle does not list: ${unlisted.slice(0, 5).join(', ')}`);
     const loadedRuntime = rounds.every(r => r.resources.some(entry => entry.status === 200 && entry.name.endsWith('/pkg/tilo_browser_runtime_bg.wasm')));
     if (!loadedRuntime) throw new Invalid('the page never loaded the bundle\'s runtime module');
+    const loadBytes = rounds.map(r => transfer(r.resources, origin, r.loadMs));
+    if (loadBytes.some(t => t.bytes <= 0 || t.requests <= 0)) {
+      throw new Invalid('the page reported no resource entries before its desktop presented');
+    }
     const after = hostState();
     checkHost(after, options.maxLoad, 'after the run');
-    const summary = summarize(rounds);
+    const summary = summarize(rounds, {transferBytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests)});
     const host = {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`};
     const report = {schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer,
       adapter: rounds[0].adapter, browser: {product: version.product, userAgent: version.userAgent},
       viewport: options.viewport, host,
+      load: {bytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests),
+        crossOrigin: loadBytes.map(t => t.crossOrigin)},
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
         idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
       summary, goals: judgeGoals(summary), attribution: attribute(rounds),
@@ -650,6 +682,7 @@ async function main() {
         open_ready_ms: rounds.flatMap(r => r.opens.map(o => o.readyMs)),
         activate_ms: rounds.flatMap(r => r.activations), demo_interval_ms: rounds.flatMap(r => r.demo.intervals),
         demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idlePerS),
+        transfer_bytes: loadBytes.map(t => t.bytes), request_count: loadBytes.map(t => t.requests),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
         seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages,

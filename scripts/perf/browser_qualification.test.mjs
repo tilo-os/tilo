@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {
-  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, parseViewport, within, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
+  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, parseViewport, within, intervals, judgeGoals, parseArgs, percentile, stats, summarize, transfer, unlistedResources,
   verifyBundle,
 } from './browser_qualification.mjs';
 
@@ -68,6 +68,19 @@ test('only same-origin files received that the bundle does not list are unlisted
     'https://tiles.example/1.png'].map(name => ({name, status: 200}))
     .concat([{name: `${origin}/favicon.ico`, status: 404}]);
   assert.deepEqual(unlistedResources(loaded, origin, ['index.html', 'pkg/tilo_browser_runtime_bg.wasm']), ['pkg/app-notes.wasm']);
+});
+
+test('a load\'s bytes and requests are the resources that started before the desktop presented', () => {
+  const origin = 'https://tilo.example';
+  const entries = [{name: `${origin}/`, origin, startTime: 1, encodedBodySize: 6800, status: 200},
+    {name: `${origin}/v/a/pkg/tilo_browser_runtime_bg.wasm`, origin, startTime: 3, encodedBodySize: 5715416, status: 200},
+    {name: `${origin}/v/a/entry-page.mjs`, origin, startTime: 4, encodedBodySize: 20410, status: 200},
+    // Fetched after the first presented frame: another KPI's, not load's.
+    {name: `${origin}/v/a/pkg/tilo_browser_runtime.notes.wasm`, origin, startTime: 900, encodedBodySize: 100, status: 200},
+    {name: 'https://tiles.example/1.png', origin: 'https://tiles.example', startTime: 5, encodedBodySize: 7, status: 200}];
+  assert.deepEqual(transfer(entries, origin, 500), {bytes: 6800 + 5715416 + 20410 + 7, requests: 4, crossOrigin: 1});
+  assert.deepEqual(transfer(entries, origin, 0), {bytes: 0, requests: 0, crossOrigin: 0});
+  assert.deepEqual(transfer([], origin, 500), {bytes: 0, requests: 0, crossOrigin: 0});
 });
 
 test("an app's code is its split-off module, after the shared modules it needs", () => {
@@ -158,6 +171,15 @@ test('a run without the demo judges no demo goal', () => {
   assert.ok(goals.find(g => g.name === 'activation (p99, ms)').met);
   assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'swiftshader', '--demo-seconds', '0']).demoSeconds, 0);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--rounds', '0']), /positive/);
+});
+
+test('the load summary holds the transfer bytes and requests of every round', () => {
+  const summary = summarize([round(1), round(1)], {transferBytes: [6000000, 6200000], requests: [70, 72]});
+  assert.deepEqual(summary.transfer_bytes, {n: 2, p50: 6000000, p95: 6200000, p99: 6200000, max: 6200000});
+  assert.deepEqual(summary.request_count, {n: 2, p50: 70, p95: 72, p99: 72, max: 72});
+  const unmeasured = summarize([round(1)]);
+  assert.equal(unmeasured.transfer_bytes.n, 0, 'a summary without a load leaves them empty, not zero');
+  assert.equal(unmeasured.request_count.n, 0);
 });
 
 test('arguments need a bundle, a report path and a known renderer', () => {
