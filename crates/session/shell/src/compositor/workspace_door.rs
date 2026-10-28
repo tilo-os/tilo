@@ -432,7 +432,10 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let records = dir.path().join("terminal-sessions");
             let mut shell = std::process::Command::new("sh")
-                .args(["-c", "sleep 30 & echo $!; wait"])
+                // The typed program runs until the test ends it: a fixed
+                // lifetime would end it first whenever a loaded machine
+                // stretches the test past it, and its parent's record with it.
+                .args(["-c", "sleep infinity & echo $!; wait"])
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .expect("shell");
@@ -462,7 +465,15 @@ mod tests {
         }
 
         /// Both processes are this test's own.
-        fn close(mut self) {
+        fn close(self) {
+            drop(self);
+        }
+    }
+
+    impl Drop for Typed {
+        /// Ends the program, and with it the shell waiting on it, however
+        /// the test ends.
+        fn drop(&mut self) {
             let _ = std::process::Command::new("kill")
                 .arg(self.program.to_string())
                 .status();
