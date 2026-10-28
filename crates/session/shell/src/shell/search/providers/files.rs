@@ -412,8 +412,9 @@ pub struct FilesIndexes {
     /// lock only for its upserts and incremental commit (milliseconds); a
     /// walk or a bulk change builds its index beside this one and swaps it in.
     name_index: Arc<RwLock<NameIndex>>,
-    /// Opened on first [`Self::ensure_ready`]. `None` means open failed.
-    tantivy: OnceLock<Option<crate::shell::search::files_index::FilesIndex>>,
+    /// Opened on a thread of its own from the first [`Self::ensure_ready`];
+    /// unset until then, `None` when opening failed.
+    tantivy: Arc<OnceLock<Option<crate::shell::search::files_index::FilesIndex>>>,
     /// Set once the home walk has been kicked and the content index opened.
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
@@ -482,7 +483,7 @@ impl FilesProvider {
         Self::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::default())),
-            tantivy: OnceLock::new(),
+            tantivy: Arc::default(),
             ready: OnceLock::new(),
             watch: OnceLock::new(),
         })
@@ -517,7 +518,7 @@ impl FilesProvider {
             .collect();
         let ready = OnceLock::new();
         let _ = ready.set(());
-        let tantivy = OnceLock::new();
+        let tantivy = Arc::new(OnceLock::new());
         let _ = tantivy.set(None);
         Self::over(FilesIndexes {
             home,
@@ -543,16 +544,33 @@ impl FilesProvider {
 }
 
 impl FilesIndexes {
-    /// Open the content index and kick the background name walk once.
-    /// Users who query before the walk finishes get only the content index.
+    /// Kick the background name walk and the opening of the content index
+    /// once. Queries before the walk finishes get only the content index,
+    /// and before the index opens only the names.
+    ///
+    /// The first query is often the main loop's (the palette, an action
+    /// listing), and creating the index syncs its directory: on a busy disk
+    /// that froze the desktop. So the index opens on a thread of its own,
+    /// which wakes the loop when it is ready.
     fn ensure_ready(&self) {
         self.ready.get_or_init(|| {
             #[cfg(test)]
             crate::shell::test_support::ambient_start("Files search constructor");
             self.start_name_index();
-            let _ = self.tantivy.set(
-                crate::shell::search::files_index::FilesIndex::open_or_create(&self.home).ok(),
-            );
+            let tantivy = Arc::clone(&self.tantivy);
+            let home = self.home.clone();
+            let wake = crate::shell::search::invocation_wake::waker();
+            let opened = thread::Builder::new()
+                .name("tilo-search-files-open".into())
+                .spawn(move || {
+                    let _ = tantivy.set(
+                        crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok(),
+                    );
+                    wake.wake();
+                });
+            if opened.is_err() {
+                let _ = self.tantivy.set(None);
+            }
         });
     }
 
@@ -2860,7 +2878,7 @@ mod tests {
         let home = PathBuf::from("/home/tester");
         let ready = OnceLock::new();
         let _ = ready.set(());
-        let tantivy = OnceLock::new();
+        let tantivy = Arc::new(OnceLock::new());
         let _ = tantivy.set(None);
         FilesProvider::over(FilesIndexes {
             home,
