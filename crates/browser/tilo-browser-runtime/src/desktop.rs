@@ -1205,13 +1205,16 @@ impl Tiles {
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id();
         component
-            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
-                woken.store(true, Ordering::Release);
-                let mut wakers = wakers.lock_recover();
-                if !wakers.contains(&app_id) {
-                    wakers.push(app_id);
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |event| {
+                // A save that moved on asks for the owner's service alone;
+                // the service asks for the frame if it shows something.
+                if event.asks_for_frame() {
+                    woken.store(true, Ordering::Release);
+                    let mut wakers = wakers.lock_recover();
+                    if !wakers.contains(&app_id) {
+                        wakers.push(app_id);
+                    }
                 }
-                drop(wakers);
                 notify();
             })
             .map_err(|error| error.to_string())?;
@@ -1321,8 +1324,10 @@ impl Tiles {
         let woken = Arc::clone(&self.shared.woken);
         let notify = Arc::clone(&self.notify);
         component
-            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
-                woken.store(true, Ordering::Release);
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |event| {
+                if event.asks_for_frame() {
+                    woken.store(true, Ordering::Release);
+                }
                 notify();
             })
             .map_err(|error| error.to_string())?;

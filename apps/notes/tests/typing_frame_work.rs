@@ -33,6 +33,15 @@ fn notes_windows(
     checkout: &ui::record::RecordCheckout,
     windows: usize,
 ) -> FrameHarness {
+    notes_windows_with(f, checkout, windows, |_| {})
+}
+
+fn notes_windows_with(
+    f: &NotebookFixture,
+    checkout: &ui::record::RecordCheckout,
+    windows: usize,
+    sink: impl Fn(ui::WakeEvent) + Clone + Send + Sync + 'static,
+) -> FrameHarness {
     let mut minter = IdMinter::new(7);
     let tabs: Vec<Tab> = (0..windows)
         .map(|_| Tab {
@@ -65,7 +74,9 @@ fn notes_windows(
     for (instance, &tab) in (1..).zip(&ids) {
         let mut component =
             component_support::component(f, instance, component_support::existing(checkout));
-        component.mount_with_owner_queue(&wakes, |_| {}).unwrap();
+        component
+            .mount_with_owner_queue(&wakes, sink.clone())
+            .unwrap();
         arrived.borrow_mut().insert(tab, component);
         handle.rebuild(tab);
     }
@@ -233,6 +244,89 @@ fn a_keystroke_in_a_heading_repaints_where_it_changed_not_the_windows() {
                 repainted > 0.0 && repainted < SCREEN * 0.15,
                 "typing {key:?} repainted {:.0}% of the screen",
                 100.0 * repainted / SCREEN
+            );
+        }
+    });
+}
+
+/// A keystroke in a note draws one frame, and its owner is serviced once:
+/// the key's frame shows the edit, and the store's write of it landing
+/// tells the owner its save status alone. That save landed in time, which
+/// the window shows nothing of, so neither its wake nor its service asks
+/// the host for a second frame. The host here behaves as the browser's:
+/// a frame whenever queued work or a wake asks for one, the owner's
+/// service whenever a wake is queued for it.
+#[test]
+fn a_keystroke_draws_one_frame_and_services_its_owner_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        ui::i18n::I18nManager::init("en-US");
+        let f = NotebookFixture::rich();
+        let checkout = component_support::notebook(&f);
+        // The wakes that ask the host for a frame, as the browser's sink
+        // takes them.
+        let frame_wakes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&frame_wakes);
+        let mut harness = notes_windows_with(&f, &checkout, 1, move |event| {
+            if event.asks_for_frame() {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let editor = harness
+            .targets()
+            .into_iter()
+            .find(|(key, _)| key == "block_editor")
+            .map(|(_, rect)| rect)
+            .expect("a note's editor");
+        harness.click_at(editor.x0 + 20.0, editor.y0 + 10.0);
+        // The first key may settle what the click left (focus, the caret).
+        harness.key("x");
+        for _ in 0..6 {
+            let _ = f.records.try_flush();
+            if harness.has_pending_owner_models() {
+                harness.service_pending_owner_models().unwrap();
+            }
+            if !harness.poll_frame().unwrap() {
+                break;
+            }
+        }
+        for key in "typing".chars() {
+            frame_wakes.store(0, Ordering::Relaxed);
+            harness.key(&key.to_string());
+            let (mut frames, mut services) = (0_usize, 0_usize);
+            for _ in 0..8 {
+                let due = harness.frame_schedule().queued_work
+                    || frame_wakes.swap(0, Ordering::Relaxed) > 0;
+                if due {
+                    let sources = harness.queued_work_sources();
+                    assert!(harness.poll_frame().unwrap(), "a due frame draws");
+                    frames += 1;
+                    assert!(
+                        frames <= 1,
+                        "typing {key:?} drew a second frame, for {sources:?}"
+                    );
+                }
+                if harness.has_pending_owner_models() {
+                    let report = harness.service_pending_owner_models_report();
+                    assert!(
+                        !report.attempted && !report.presented,
+                        "a landed save ran the owner's model or showed something: {report:?}"
+                    );
+                    report.result.unwrap();
+                    services += 1;
+                } else if !due {
+                    break;
+                }
+                // The store lands the key's write, as the browser's host
+                // acknowledges it after the key's frame: its wake waits for
+                // the host's next turn, where a frame may come first.
+                let _ = f.records.try_flush();
+            }
+            assert_eq!(frames, 1, "typing {key:?} drew {frames} frames");
+            assert_eq!(
+                services, 1,
+                "typing {key:?} serviced its owner {services} times"
             );
         }
     });
