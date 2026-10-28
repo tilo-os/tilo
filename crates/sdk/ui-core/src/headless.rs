@@ -3022,6 +3022,12 @@ impl FrameHarness {
         out
     }
 
+    /// Whether [`Self::take_browser_font_demands`] has anything to hand over.
+    #[must_use]
+    pub fn browser_font_demands_pending(&self) -> bool {
+        self.text.browser_font_demands_pending()
+    }
+
     /// Drain optional canonical font assets demanded by the most recent
     /// authoritative shaping pass.
     pub fn take_browser_font_demands(&mut self) -> Vec<String> {

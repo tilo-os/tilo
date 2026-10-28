@@ -303,15 +303,17 @@ export async function mountDesktop(target,options={}) {
         options.onNavigation?.(navigation.controller);
       }
     }
-    inputScope.capture();
+    // The frame's one read of who holds the input: the pumps below and the
+    // IME box both use it, and a change it reports has already run.
+    const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
     if(runtimeReady)data.pump(report);
     if(runtimeReady&&options.peer?.voice){media??=createMediaPump({runtime,id,voice:options.peer.voice,room:config.room,active,report});queueMicrotask(()=>{if(active())media.pump();});}
-    if(runtimeReady&&runtime.font_demands){
+    // Shaping asks for an optional font rarely, and the take is a wasm call
+    // and a decode: ask whether there is anything first.
+    if(runtimeReady&&runtime.font_demands&&(!runtime.font_demands_pending||runtime.font_demands_pending(id))){
       const demanded=JSON.parse(runtime.font_demands(id));
       if(demanded.length)void fontDemands(demanded);
     }
-    navigation?.refresh();
-
     if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
@@ -320,7 +322,7 @@ export async function mountDesktop(target,options={}) {
     // Search opened from page chrome (a Search button) takes the keyboard.
     if(state.searchOpen&&!lastState?.searchOpen&&![canvas,editor].includes(document.activeElement))canvas.focus({preventScroll:true});
     lastState=retainStatus(lastState,state);report(state);
-    if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
+    if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],pending:()=>Boolean(active()&&runtime.desktop_node_app_requests_pending?.(id)),onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
@@ -331,7 +333,6 @@ export async function mountDesktop(target,options={}) {
     if(state.phase==='presented'&&navigation)navigationFocus.update(navigation.controller.getSnapshot());
     if(state.semantics)semantic.update(state.semantics);
     placeSemantics();
-    const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
     fillScreen(!ime);
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
