@@ -113,11 +113,29 @@ fn typed_mut<M: 'static>(model: &mut DynTreeModel) -> Option<&mut M> {
 /// The tree over a model behind a trait object: every [`TreeView`]'s, and
 /// compiled once, in the toolkit.
 #[repr(transparent)]
-pub(crate) struct TreeCore(TreeImpl<(), DynTreeModel>);
+/// Boxed: a tree's state is large, and its builders take and return the
+/// view by value, so a chain of them built in one function (a sidebar's
+/// constructor) would otherwise hold a copy of it per call in that
+/// function's frame, megabytes in a debug build.
+pub(crate) struct TreeCore(Box<TreeImpl<(), DynTreeModel>>);
+
+impl std::ops::Deref for TreeCore {
+    type Target = TreeImpl<(), DynTreeModel>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TreeCore {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 impl TreeCore {
     fn new(model: DynTreeModel) -> Self {
-        Self(TreeImpl::from_source(model))
+        Self(Box::new(TreeImpl::from_source(model)))
     }
 
     fn begin_model_update(&self) -> Option<SparseAnchor<TreeRowKey>> {
@@ -150,29 +168,29 @@ macro_rules! forward_widget {
     ($($tree:tt)+) => {
         // The tree's capabilities (its published choice) are this view's.
         fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-            Widget::provide(&self.$($tree)+, request);
+            Widget::provide(&*self.$($tree)+, request);
         }
 
         fn provide_mut<'a>(
             &'a mut self,
             request: &mut crate::widget::capability::RequestMut<'a, '_>,
         ) {
-            Widget::provide_mut(&mut self.$($tree)+, request);
+            Widget::provide_mut(&mut *self.$($tree)+, request);
         }
 
         fn set_interaction_environment(
             &mut self,
             environment: crate::interaction::InteractionEnvironment,
         ) {
-            Widget::set_interaction_environment(&mut self.$($tree)+, environment);
+            Widget::set_interaction_environment(&mut *self.$($tree)+, environment);
         }
 
         fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-            Widget::sync(&mut self.$($tree)+, state, path);
+            Widget::sync(&mut *self.$($tree)+, state, path);
         }
 
         fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-            Widget::update(&mut self.$($tree)+, state, path)
+            Widget::update(&mut *self.$($tree)+, state, path)
         }
 
         fn build_layout(
@@ -181,7 +199,7 @@ macro_rules! forward_widget {
             theme: &Theme,
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = Widget::build_layout(&mut self.$($tree)+, taffy, theme, node_map);
+            let node = Widget::build_layout(&mut *self.$($tree)+, taffy, theme, node_map);
             // The tree registered itself for its node; the host reaches it
             // through the widget its parent holds, this one.
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -189,7 +207,7 @@ macro_rules! forward_widget {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-            Widget::apply_layout(&mut self.$($tree)+, taffy, node, origin);
+            Widget::apply_layout(&mut *self.$($tree)+, taffy, node, origin);
         }
 
         fn draw(
@@ -200,7 +218,7 @@ macro_rules! forward_widget {
             theme: &Theme,
             presence: &PresenceCtx,
         ) {
-            Widget::draw(&mut self.$($tree)+, scene, transform, text_renderer, theme, presence);
+            Widget::draw(&mut *self.$($tree)+, scene, transform, text_renderer, theme, presence);
         }
 
         fn draw_overlay(
@@ -212,7 +230,7 @@ macro_rules! forward_widget {
             presence: &PresenceCtx,
         ) {
             Widget::draw_overlay(
-                &mut self.$($tree)+,
+                &mut *self.$($tree)+,
                 scene,
                 transform,
                 text_renderer,
@@ -222,119 +240,119 @@ macro_rules! forward_widget {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            Widget::handle_event(&mut self.$($tree)+, event, ctx);
+            Widget::handle_event(&mut *self.$($tree)+, event, ctx);
         }
 
         fn children(&self) -> Vec<&dyn Widget> {
-            Widget::children(&self.$($tree)+)
+            Widget::children(&*self.$($tree)+)
         }
 
         fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-            Widget::for_each_child(&self.$($tree)+, visitor);
+            Widget::for_each_child(&*self.$($tree)+, visitor);
         }
 
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            Widget::children_mut(&mut self.$($tree)+)
+            Widget::children_mut(&mut *self.$($tree)+)
         }
 
         fn accessibility_child_parent(&self, child_index: usize) -> Option<usize> {
-            Widget::accessibility_child_parent(&self.$($tree)+, child_index)
+            Widget::accessibility_child_parent(&*self.$($tree)+, child_index)
         }
 
         fn wants_pointer_capture(&self) -> bool {
-            Widget::wants_pointer_capture(&self.$($tree)+)
+            Widget::wants_pointer_capture(&*self.$($tree)+)
         }
 
         fn needs_redraw(&self) -> bool {
-            Widget::needs_redraw(&self.$($tree)+)
+            Widget::needs_redraw(&*self.$($tree)+)
         }
 
         fn collect_damage(&self, regions: &mut Vec<Rect>) {
-            Widget::collect_damage(&self.$($tree)+, regions);
+            Widget::collect_damage(&*self.$($tree)+, regions);
         }
 
         fn release_scene_cache(&mut self) {
-            Widget::release_scene_cache(&mut self.$($tree)+);
+            Widget::release_scene_cache(&mut *self.$($tree)+);
         }
 
         fn mark_drawn(&mut self) {
-            Widget::mark_drawn(&mut self.$($tree)+);
+            Widget::mark_drawn(&mut *self.$($tree)+);
         }
 
         fn needs_animation_frame(&self) -> bool {
-            Widget::needs_animation_frame(&self.$($tree)+)
+            Widget::needs_animation_frame(&*self.$($tree)+)
         }
 
         fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-            Widget::next_wake_deadline(&self.$($tree)+)
+            Widget::next_wake_deadline(&*self.$($tree)+)
         }
 
         fn take_structure_dirty(&mut self) -> bool {
-            Widget::take_structure_dirty(&mut self.$($tree)+)
+            Widget::take_structure_dirty(&mut *self.$($tree)+)
         }
 
         fn is_layout_dirty(&self) -> bool {
-            Widget::is_layout_dirty(&self.$($tree)+)
+            Widget::is_layout_dirty(&*self.$($tree)+)
         }
 
         fn layout_needs_measure(&self) -> bool {
-            Widget::layout_needs_measure(&self.$($tree)+)
+            Widget::layout_needs_measure(&*self.$($tree)+)
         }
 
         fn name(&self) -> &str {
-            Widget::name(&self.$($tree)+)
+            Widget::name(&*self.$($tree)+)
         }
 
         fn test_id(&self) -> Option<&str> {
-            Widget::test_id(&self.$($tree)+)
+            Widget::test_id(&*self.$($tree)+)
         }
 
         fn get_rect(&self) -> Rect {
-            Widget::get_rect(&self.$($tree)+)
+            Widget::get_rect(&*self.$($tree)+)
         }
 
         fn is_focusable(&self) -> bool {
-            Widget::is_focusable(&self.$($tree)+)
+            Widget::is_focusable(&*self.$($tree)+)
         }
 
         fn set_focus(&mut self, focused: bool) {
-            Widget::set_focus(&mut self.$($tree)+, focused);
+            Widget::set_focus(&mut *self.$($tree)+, focused);
         }
 
         fn is_focused(&self) -> bool {
-            Widget::is_focused(&self.$($tree)+)
+            Widget::is_focused(&*self.$($tree)+)
         }
 
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            Widget::accessibility(&self.$($tree)+)
+            Widget::accessibility(&*self.$($tree)+)
         }
 
         fn accessibility_hidden(&self) -> bool {
-            Widget::accessibility_hidden(&self.$($tree)+)
+            Widget::accessibility_hidden(&*self.$($tree)+)
         }
 
         fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
-            Widget::accessibility_root(&self.$($tree)+)
+            Widget::accessibility_root(&*self.$($tree)+)
         }
 
         fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
-            Widget::accessibility_shared(&self.$($tree)+)
+            Widget::accessibility_shared(&*self.$($tree)+)
         }
 
         fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-            Widget::synthetic_accessibility_rect(&self.$($tree)+, path)
+            Widget::synthetic_accessibility_rect(&*self.$($tree)+, path)
         }
 
         fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-            Widget::focus_synthetic_accessibility(&mut self.$($tree)+, path)
+            Widget::focus_synthetic_accessibility(&mut *self.$($tree)+, path)
         }
 
         fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-            Widget::tooltip_target_at(&self.$($tree)+, point)
+            Widget::tooltip_target_at(&*self.$($tree)+, point)
         }
 
         fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-            Widget::cursor_shape(&self.$($tree)+, point)
+            Widget::cursor_shape(&*self.$($tree)+, point)
         }
 
         fn perform_semantic_action(
@@ -344,7 +362,7 @@ macro_rules! forward_widget {
             state: &mut crate::widget::Edits<'_>,
             path: &ModelPath,
         ) -> bool {
-            Widget::perform_semantic_action(&mut self.$($tree)+, target, action, state, path)
+            Widget::perform_semantic_action(&mut *self.$($tree)+, target, action, state, path)
         }
     };
 }
@@ -444,7 +462,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         build: impl FnOnce(TreeImpl<(), DynTreeModel>) -> TreeImpl<(), DynTreeModel>,
     ) -> Self {
         Self {
-            core: TreeCore(build(self.core.0)),
+            core: TreeCore(Box::new(build(*self.core.0))),
             types: PhantomData,
         }
     }

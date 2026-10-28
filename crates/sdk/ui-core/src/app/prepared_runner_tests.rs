@@ -1269,7 +1269,7 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
     let counted = std::rc::Rc::clone(&served);
     crate::ImageStore::serve_window(
         &component.callback_binding().lifetime,
-        std::rc::Rc::new(move |max_dimension| {
+        std::rc::Rc::new(move |max_dimension, _: &crate::image_store::ServedWindow| {
             counted.set(counted.get() + 1);
             crate::ImageStore::host_driven_with_max_dimension(max_dimension).0
         }),
@@ -1288,4 +1288,106 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
     assert_eq!(served.get(), 1, "the window in its place is served too");
     drop(context);
     drop(component);
+}
+
+/// A picture a window opened in a served window's place shows, whose bytes
+/// the host lacks, is asked for on that window's own content requests, also
+/// once the window it replaced closed, and loads when the bytes arrive there.
+#[test]
+fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
+    use crate::collaboration::record_content::{ContentLane, RecordContent};
+    use crate::image_store::{HostImageLoader, ServedWindow};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    let host = ProbeHost::new();
+    // The host's loaders, each with the window it draws for, as a page keeps them.
+    let loaders: Rc<RefCell<Vec<(HostImageLoader, ServedWindow)>>> = Rc::default();
+    let page = Rc::clone(&loaders);
+    let mut first = host
+        .prepare_with_permissions(
+            runner_probe_definition(),
+            39,
+            &LaunchTarget::New,
+            runner_permissions(),
+        )
+        .unwrap();
+    let first_lane = ContentLane::of("test.successor-content", "first");
+    first.provide_content(RecordContent::store(
+        tilo_content::ContentStore::memory(),
+        Arc::clone(&first_lane),
+    ));
+    crate::ImageStore::serve_window(
+        &first.wake_handle(),
+        Rc::new(move |max_dimension, drawn_for: &ServedWindow| {
+            let (store, loader) = crate::ImageStore::host_driven_with_max_dimension(max_dimension);
+            page.borrow_mut().push((loader, drawn_for.clone()));
+            store
+        }),
+    );
+    let mut component = runner_probe_definition()
+        .instantiate(first, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+
+    // The window opens another record in its place, on a lane of its own.
+    let (mut next, target) = component
+        .reopener()
+        .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+        .unwrap();
+    let next_lane = ContentLane::of("test.successor-content", "next");
+    let next_local = tilo_content::ContentStore::memory();
+    next.provide_content(RecordContent::store(
+        next_local.clone(),
+        Arc::clone(&next_lane),
+    ));
+    let successor = next.wake_handle();
+    let replacement = runner_probe_definition()
+        .instantiate(next, target, RestoreInput::None)
+        .unwrap();
+    component.close();
+    drop(component);
+
+    let png = crate::png::encode_rgba8(8, 8, &[220, 60, 60, 255].repeat(64)).unwrap();
+    let hash = tilo_content::ContentStore::memory().put(&png).unwrap();
+    let url = format!("tilo-blob://{hash}");
+    let unused: crate::image_store::Fetcher =
+        Arc::new(|_| panic!("a served window never fetches its pictures itself"));
+    let store = {
+        let _entry = successor.enter_if_open().unwrap();
+        crate::ImageStore::new(&unused)
+    };
+    assert!(store.get(&url).is_none());
+
+    // The host drains the request and reads the bytes where the window
+    // reads its content: not here yet, so the window's own lane asks.
+    let mut loaders = loaders.borrow_mut();
+    let (loader, drawn_for) = loaders.last_mut().expect("the successor is served");
+    assert_eq!(loader.next_request().as_deref(), Some(url.as_str()));
+    let content = drawn_for.content().expect("the successor's content");
+    assert!(!content.has(&hash));
+    assert!(content.read(&hash).is_none());
+    assert_eq!(next_lane.take_requests().wants, vec![hash.clone()]);
+    assert!(
+        first_lane.take_requests().wants.is_empty(),
+        "the closed window's lane asks for nothing"
+    );
+
+    // The bytes arrive on the successor's lane: the host hands them over.
+    next_lane.arrive(hash.clone(), png.clone());
+    let bytes = content.read(&hash).expect("the bytes arrived");
+    assert_eq!(bytes, png);
+    let ticket = loader.reserve(&url).unwrap();
+    assert!(loader.complete_decoded(
+        &ticket,
+        Some(tilo_image_codec::DecodedImage {
+            rgba: [220, 60, 60, 255].repeat(64),
+            width: 8,
+            height: 8,
+        }),
+    ));
+    let picture = store.get(&url).expect("the picture shows");
+    assert_eq!((picture.width, picture.height), (8, 8));
+    drop(loaders);
+    drop(replacement);
 }

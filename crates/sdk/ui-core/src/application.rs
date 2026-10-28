@@ -1240,6 +1240,9 @@ impl ApplicationDefinition {
                 component.application_view = application;
             }
             component.prepared = true;
+            // The pictures a host loads for this window are read from the
+            // content the window now reads its record's content from.
+            crate::image_store::window_built(&component.context.wake_handle(), component.content());
             Ok(component)
         });
         drop(entry);
