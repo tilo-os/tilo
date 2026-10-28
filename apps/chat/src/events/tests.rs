@@ -43,6 +43,11 @@ fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
     app.project_native_voice();
 }
 
+/// The id of the window bar's entry that runs `hit`.
+fn bar_id(app: &ChatApp, hit: Hit) -> String {
+    app.bar_entries.entry("", "", hit).id
+}
+
 fn app_with_doc() -> (ChatApp, crate::testing::Room) {
     let doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
@@ -1429,7 +1434,7 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             ui::window_toolbar::declared().is_some_and(|toolbar| toolbar
                 .actions
                 .iter()
-                .any(|action| action.id == "people" && action.on)),
+                .any(|action| action.id == bar_id(&app, Hit::ToggleRightFlap) && action.on)),
             "the bar's People slot shows the roster open"
         );
         assert_eq!(
@@ -2267,14 +2272,8 @@ fn inspector_accessibility_focus_retires_the_previous_keyboard_owner() {
     assert!(state.adopt_doc(doc.chat));
     let mut driver = FrameHarness::for_root(state, app, (1800, 900), ui::Theme::dark());
     // People is the window bar's slot; the desktop hands its press to the app.
-    assert!(
-        ui::window_toolbar::declared()
-            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.id == "people")),
-        "the window's bar offers People"
-    );
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-        id: "people".into(),
-    });
+    let people = driver.root::<ChatApp>().roster_label();
+    driver.press_window_action(people).unwrap();
     assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         driver
             .root::<ChatApp>()
@@ -2644,7 +2643,7 @@ fn escape_closes_the_pins_opened_from_the_window_bar() {
     let mut state = ui::State::new();
     assert!(state.adopt_doc(doc.chat));
     let mut driver = FrameHarness::for_root(state, app, (1200, 800), ui::Theme::dark());
-    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    driver.press_window_action("Pinned messages").unwrap();
     assert!(
         driver.root::<ChatApp>().pins_open,
         "the bar's button opens the pins"
@@ -2667,7 +2666,7 @@ fn floating_pins_leave_the_composer_whole() {
     let mut state = ui::State::new();
     assert!(state.adopt_doc(doc.chat));
     let mut driver = FrameHarness::for_root(state, app, (640, 700), ui::Theme::dark());
-    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    driver.press_window_action("Pinned messages").unwrap();
     assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         !driver.root::<ChatApp>().right_flap.is_animating()
     }));

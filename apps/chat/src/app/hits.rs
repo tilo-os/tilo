@@ -11,7 +11,7 @@ use super::{ChatApp, MenuAction};
 
 /// Everything the user can click. Recorded during `draw`, resolved on the
 /// next mouse-press.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Hit {
     HostModel(String),
     Channel(Id),

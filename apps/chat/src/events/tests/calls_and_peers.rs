@@ -75,7 +75,7 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
             ui::window_toolbar::declared().is_some_and(|toolbar| toolbar
                 .actions
                 .iter()
-                .any(|action| action.id == "call-mute")),
+                .any(|action| action.id == bar_id(&app, Hit::CallMute))),
             "in a call the window's bar shows the microphone"
         );
     }
@@ -811,23 +811,25 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
             .unwrap_or_default()
     };
     assert!(
-        !bar_ids().iter().any(|id| id == "call"),
+        !bar_ids().contains(&bar_id(&app, Hit::StartCall)),
         "out of a call the bar has no call"
     );
     app.call.join("c_huddle");
     render_frame(&mut app, 1280.0, 800.0);
     let ids = bar_ids();
-    let call = ids.iter().position(|id| id == "call").expect("the call");
-    let leave = ids.iter().position(|id| id == "call-leave").expect("leave");
+    let at = |hit: Hit| ids.iter().position(|id| *id == bar_id(&app, hit.clone()));
+    let call = at(Hit::StartCall).expect("the call");
+    let leave = at(Hit::CallLeave).expect("leave");
     assert!(leave > call, "leave follows the call it ends");
-    let destructive = |id: &str| {
+    let destructive = |hit| {
+        let id = bar_id(&app, hit);
         ui::window_toolbar::declared()
             .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
             .expect("in the bar")
             .destructive
     };
-    assert!(destructive("call-leave"), "leaving ends the call: danger");
-    assert!(!destructive("call-mute"), "muting is undone with a press");
+    assert!(destructive(Hit::CallLeave), "leaving ends the call: danger");
+    assert!(!destructive(Hit::CallMute), "muting is undone with a press");
 }
 
 #[test]
@@ -865,13 +867,14 @@ fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
 fn deafen_is_in_the_bar_and_asks_the_service() {
     let (mut app, mut doc, mut live) = connected_call();
     render_frame(&mut app, 1280.0, 720.0);
+    let deafen_id = bar_id(&app, Hit::CallDeafen);
     let deafen = || {
         ui::window_toolbar::declared()
             .and_then(|toolbar| {
                 toolbar
                     .actions
                     .into_iter()
-                    .find(|action| action.id == "call-deafen")
+                    .find(|action| action.id == deafen_id)
             })
             .expect("deafen is at hand while in a call")
     };
@@ -1017,11 +1020,12 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
     let (mut app, mut doc, live) = connected_call();
     let mute_name = |app: &mut ChatApp| {
         render_frame(app, 1280.0, 720.0);
+        let mute = bar_id(app, Hit::CallMute);
         ui::window_toolbar::declared().and_then(|toolbar| {
             toolbar
                 .actions
                 .into_iter()
-                .find(|action| action.id == "call-mute")
+                .find(|action| action.id == mute)
                 .map(|action| action.name)
         })
     };
@@ -1061,7 +1065,7 @@ fn someone_alone_in_a_room_can_still_unmute_and_leave_the_call() {
         })
         .unwrap_or_default();
     assert!(
-        ids.iter().any(|id| id == "call-mute") && ids.iter().any(|id| id == "call-leave"),
+        ids.contains(&bar_id(&app, Hit::CallMute)) && ids.contains(&bar_id(&app, Hit::CallLeave)),
         "the call's microphone and Leave are at hand in any room: {ids:?}"
     );
 }

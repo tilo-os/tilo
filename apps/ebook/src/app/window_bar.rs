@@ -12,6 +12,7 @@
 //! page's tabs are that page's own views of one document and stay in the
 //! body, under its title, where the page put them.
 
+use ui::framework::{BarActions, BarCommands, Dispatcher};
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::ControlSize;
@@ -22,22 +23,23 @@ use vello::kurbo::Rect;
 
 use super::{Action, BooksApp, View};
 use crate::model::LibrarySort;
+use crate::resource::Ebook;
 
-/// The library's primary way in: a book through the host picker.
-pub(crate) const OPEN_BOOK: &str = "books.open";
-/// The library's sort order, as a menu of the orders it can be in.
-pub(crate) const SORT: &str = "books.sort";
-/// One sort order, by the value the shelf's preference is stored under.
-const SORT_CHOICE: &str = "books.sort.";
-/// Whether finished books are hidden from the shelf.
-pub(crate) const HIDE_FINISHED: &str = "books.hide-finished";
-/// The font and colour-scheme managers.
-pub(crate) const SETTINGS: &str = "books.settings";
-/// The reading controls: bookmark the page, show the annotations rail, and
-/// the reading-appearance popover.
-pub(crate) const BOOKMARK: &str = "books.bookmark";
-pub(crate) const ANNOTATIONS: &str = "books.annotations";
-pub(crate) const APPEARANCE: &str = "books.appearance";
+/// The bar's entries: the library's edits, and the window's actions.
+pub(super) struct Bar {
+    edits: BarActions<Ebook>,
+    actions: BarCommands<Action>,
+}
+
+impl Bar {
+    /// Entries submitted through `dispatcher`, the window's.
+    pub(super) fn new(dispatcher: Dispatcher<Ebook>) -> Self {
+        Self {
+            edits: BarActions::new(dispatcher),
+            actions: BarCommands::new(),
+        }
+    }
+}
 
 impl BooksApp {
     /// The window bar's slots for what the window shows now.
@@ -46,27 +48,34 @@ impl BooksApp {
             location: Some(self.location()),
             ..WindowToolbar::default()
         };
+        let Bar { edits, actions } = &self.bar;
+        let prefs = Ebook::paths().prefs;
         match self.view {
             View::Library => {
                 let sort = LibrarySort::ALL
                     .iter()
                     .map(|sort| {
-                        ToolbarAction::new(
-                            format!("{SORT_CHOICE}{}", sort.as_str()),
-                            Icon::Check.name(),
-                            sort.label(),
-                        )
+                        ToolbarAction {
+                            name: sort.label().into(),
+                            icon: Icon::Check.name().into(),
+                            ..edits.action(prefs.sort.set(*sort))
+                        }
                         .on(*sort == self.library_prefs.sort)
                     })
                     .collect();
+                let hide_read = self.library_prefs.hide_read;
                 toolbar.actions = vec![
-                    ToolbarAction::new(OPEN_BOOK, Icon::Plus.name(), "Open book"),
-                    ToolbarAction::new(SORT, Icon::ArrowUpDown.name(), "Sort books")
+                    actions.entry(Icon::Plus.name(), "Open book", Action::OpenViaPortal),
+                    ToolbarAction::new("books.sort", Icon::ArrowUpDown.name(), "Sort books")
                         .with_items(sort),
-                    ToolbarAction::new(HIDE_FINISHED, Icon::Eye.name(), "Hide finished books")
-                        .on(self.library_prefs.hide_read)
-                        .in_menu(),
-                    ToolbarAction::new(SETTINGS, Icon::Settings.name(), "Settings"),
+                    ToolbarAction {
+                        name: "Hide finished books".into(),
+                        icon: Icon::Eye.name().into(),
+                        ..edits.action(prefs.hide_read.set(!hide_read))
+                    }
+                    .on(hide_read)
+                    .in_menu(),
+                    actions.entry(Icon::Settings.name(), "Settings", Action::OpenSettings),
                 ];
             }
             View::Reader => {
@@ -77,12 +86,24 @@ impl BooksApp {
                     back: true,
                     forward: false,
                 });
+                let bookmark =
+                    Ebook::TOGGLE_BOOKMARK.with(self.bookmark_params(self.page_top_block));
                 toolbar.actions = vec![
-                    ToolbarAction::new(BOOKMARK, Icon::Bookmark.name(), "Bookmark this page")
-                        .on(self.page_bookmarked()),
-                    ToolbarAction::new(ANNOTATIONS, Icon::PanelRight.name(), "Annotations")
+                    ToolbarAction {
+                        name: "Bookmark this page".into(),
+                        icon: Icon::Bookmark.name().into(),
+                        ..edits.action(bookmark)
+                    }
+                    .on(self.page_bookmarked()),
+                    actions
+                        .entry(Icon::PanelRight.name(), "Annotations", Action::ToggleNotes)
                         .on(self.notes_open()),
-                    ToolbarAction::new(APPEARANCE, Icon::Type.name(), "Reading appearance")
+                    actions
+                        .entry(
+                            Icon::Type.name(),
+                            "Reading appearance",
+                            Action::ToggleTypePopover,
+                        )
                         .on(self.reading_settings.is_open()),
                 ];
             }
@@ -155,23 +176,13 @@ impl BooksApp {
                         self.dispatch(back, edits);
                     }
                 }
-                ToolbarEvent::Action { id } => {
-                    if let Some(sort) = id.strip_prefix(SORT_CHOICE) {
-                        self.choose_sort(LibrarySort::from_str(sort), edits);
-                    } else if id == HIDE_FINISHED {
-                        self.toggle_finished_hidden(edits);
-                    } else if let Some(action) = match id.as_str() {
-                        OPEN_BOOK => Some(Action::OpenViaPortal),
-                        SETTINGS => Some(Action::OpenSettings),
-                        BOOKMARK => Some(Action::ToggleBookmark),
-                        ANNOTATIONS => Some(Action::ToggleNotes),
-                        APPEARANCE => Some(Action::ToggleTypePopover),
-                        _ => None,
-                    } {
+                event => {
+                    if !self.bar.edits.press(&event)
+                        && let Some(action) = self.bar.actions.pressed(&event)
+                    {
                         self.dispatch(action, edits);
                     }
                 }
-                _ => {}
             }
         }
     }

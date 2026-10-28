@@ -461,6 +461,8 @@ pub struct CameraApp {
     sample_captures: Vec<crate::record::SharedCapture>,
     /// Where the record's edits go, once the framework attached the surface.
     dispatcher: Option<ui::framework::Dispatcher<crate::record::Record>>,
+    /// The window bar's entries.
+    bar: window_bar::Bar,
     /// The time a screenshot is taken at, in Unix seconds; `None` reads the
     /// machine's clock.
     clock: Option<i64>,
@@ -601,6 +603,7 @@ impl CameraApp {
             dirty: true,
             sample_captures: Vec::new(),
             dispatcher: Self::unattached_dispatcher(),
+            bar: window_bar::Bar::new(Self::unattached_dispatcher().as_ref()),
             clock: None,
             photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
             photos_browse: Self::photos_browse_emitter(),
@@ -1199,6 +1202,7 @@ impl CameraApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::record::Record>,
     ) {
+        self.bar.attach(dispatcher.clone());
         self.dispatcher = Some(dispatcher);
     }
 
@@ -3486,9 +3490,9 @@ mod tests {
             .window_toolbar()
             .actions
             .into_iter()
-            .map(|action| action.id)
+            .map(|action| action.name)
             .collect();
-        assert_eq!(bar, [window_bar::PHOTOS, window_bar::SETTINGS]);
+        assert_eq!(bar, ["Open Photos", "Camera settings"]);
         let tree = frame.accessibility().unwrap();
         let shutter = tree
             .children
@@ -4040,11 +4044,9 @@ mod tests {
         {
             let (app, doc, _root) = sample_app();
             let mut app = render_at(app, doc, 900.0, 700.0);
-            Framed::harness_mut(&mut app).press_window_slot(
-                ui::window_toolbar::ToolbarEvent::Action {
-                    id: window_bar::PHOTOS.into(),
-                },
-            );
+            Framed::harness_mut(&mut app)
+                .press_window_action("Open Photos")
+                .unwrap();
             // The host runs the press as the live window's idle service
             // does: the typed handoff to Photos went out, and the bar says so.
             assert_eq!(
