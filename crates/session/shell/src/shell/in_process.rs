@@ -1806,7 +1806,7 @@ mod tests {
         let record = RecordId::for_tab(93).to_string();
         let wire = session
             .network()
-            .register_local_record(app, &session.room, &record);
+            .register_local_record(&app, &session.room, &record);
         let host = session
             .network()
             .room_host()
@@ -1820,7 +1820,7 @@ mod tests {
                 let routes = runtime.block_on(host.rooms().record_routes(&session.room));
                 let found = routes.as_ref().is_ok_and(|routes| {
                     routes.iter().any(|(held_app, held_record)| {
-                        held_app == app && (*held_record == record || *held_record == wire)
+                        held_app.as_str() == app && (*held_record == record || *held_record == wire)
                     })
                 });
                 let (sealed, committed) = {
