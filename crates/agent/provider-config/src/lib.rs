@@ -707,9 +707,9 @@ pub struct HostedProfiles {
 settings_store::read_through_json_value!(HostedProfiles);
 
 /// A portable profile list, the user's deliberate default and the models
-/// they chose for particular agents. Kept separate from a task: tasks capture
-/// a chosen model at start so changing these does not change work already in
-/// progress.
+/// they chose for particular agents and for each kind of interaction. Kept
+/// separate from a request: a request records the model it was asked of, so
+/// changing these does not change work already in progress.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -720,11 +720,15 @@ pub struct ProviderConfig {
     /// The model an agent plans with in place of the default, by agent id.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub agent_models: BTreeMap<String, AgentModel>,
+    /// The model one kind of interaction runs on, by [`Interaction::id`]. A
+    /// kind with no choice follows the default, or the agent's own model.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub interaction_models: BTreeMap<String, AgentModel>,
 }
 
 settings_store::read_through_json_value!(ProviderConfig);
 
-/// A model of one profile, chosen for an agent.
+/// A model of one profile, chosen for an agent or for a kind of interaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct AgentModel {
@@ -737,9 +741,111 @@ settings_store::read_through_json_value!(AgentModel);
 #[cfg(feature = "model")]
 tilo_resource::json_model!(AgentModel);
 
+/// What a person is asking of a model, as far as choosing a model goes.
+///
+/// One kind is one exchange with a different appetite: a translation or a
+/// dictated sentence is one short answer, a task runs for a plan and many
+/// steps. Each kind carries its own default model, and a request may name
+/// another one for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "snake_case")]
+pub enum Interaction {
+    /// One short answer computed from an input: translate, summarise,
+    /// extract, classify, rewrite.
+    OneShot,
+    /// An instruction worked through the actions a person allows.
+    Task,
+    /// A part of a task.
+    Subtask,
+    /// A person's message to their agent, answered rather than acted on.
+    Request,
+    /// One label chosen for an input.
+    Classifier,
+    /// Tidying text a person dictated.
+    Dictation,
+}
+
+settings_store::read_through_json_value!(Interaction);
+
+impl Interaction {
+    /// Every kind, in the order Settings lists them.
+    pub const ALL: &'static [Self] = &[
+        Self::OneShot,
+        Self::Task,
+        Self::Subtask,
+        Self::Request,
+        Self::Classifier,
+        Self::Dictation,
+    ];
+
+    /// This kind's stable id, which is the key its choice is stored under.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::OneShot => "one_shot",
+            Self::Task => "task",
+            Self::Subtask => "subtask",
+            Self::Request => "request",
+            Self::Classifier => "classifier",
+            Self::Dictation => "dictation",
+        }
+    }
+
+    /// The kind stored under `id`, if this build knows it.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.id() == id)
+    }
+}
+
+impl std::fmt::Display for Interaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
 pub use tilo_agent_models::{OfferedModel, OfferedModels};
 
 impl ProviderConfig {
+    /// The model and where it runs, chosen for `kind`; `None` while nothing
+    /// is chosen for it, or the choice names a provider that is switched off
+    /// or no longer offers that model.
+    #[must_use]
+    pub fn interaction_selection(
+        &self,
+        kind: Interaction,
+    ) -> Option<(&ProviderProfile, &ModelDescriptor)> {
+        let chosen = self.interaction_models.get(kind.id())?;
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == chosen.profile && profile.enabled)?;
+        let model = profile.models.iter().find(|m| m.id == chosen.model)?;
+        Some((profile, model))
+    }
+
+    /// Choose `chosen` of a profile for `kind`, or with `None` let that kind
+    /// follow the default again.
+    ///
+    /// # Errors
+    /// When no profile offers that model.
+    pub fn set_interaction_model(
+        &mut self,
+        kind: Interaction,
+        chosen: Option<AgentModel>,
+    ) -> Result<(), &'static str> {
+        let Some(chosen) = chosen else {
+            self.interaction_models.remove(kind.id());
+            return Ok(());
+        };
+        if !self.profiles.iter().any(|profile| {
+            profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+        }) {
+            return Err("That provider does not offer this model.");
+        }
+        self.interaction_models.insert(kind.id().to_owned(), chosen);
+        Ok(())
+    }
+
     /// Every model of the enabled providers, in Settings' order: what a
     /// model picker offers besides the agent's own.
     pub fn offered_models(&self) -> impl Iterator<Item = OfferedModel> + '_ {
@@ -751,11 +857,7 @@ impl ProviderConfig {
                     profile: profile.id.clone(),
                     provider: profile.label.clone(),
                     model: model.id.clone(),
-                    label: if model.label.trim().is_empty() {
-                        model.id.clone()
-                    } else {
-                        model.label.clone()
-                    },
+                    label: model.display_label().to_string(),
                 })
             })
     }
@@ -803,6 +905,7 @@ impl ProviderConfig {
                 profiles: local,
                 default_profile: self.default_profile,
                 agent_models: self.agent_models,
+                interaction_models: self.interaction_models,
             },
             HostedProfiles { profiles: hosted },
         )
@@ -822,6 +925,7 @@ impl ProviderConfig {
             profiles,
             default_profile: local.default_profile,
             agent_models: local.agent_models,
+            interaction_models: local.interaction_models,
         }
     }
 
@@ -981,18 +1085,14 @@ impl ProviderConfig {
             }
         }
         for (agent, chosen) in &self.agent_models {
-            if agent.trim().is_empty()
-                || !self.profiles.iter().any(|profile| {
-                    profile.id == chosen.profile
-                        && profile.models.iter().any(|m| m.id == chosen.model)
-                })
-            {
+            if agent.trim().is_empty() || self.offers_nothing(chosen) {
                 issues.push(ProfileIssue::new(
                     &chosen.profile,
                     "An agent's model is not offered by its provider.",
                 ));
             }
         }
+        self.choice_issues(&mut issues);
         if self
             .default_profile
             .as_ref()
@@ -1050,6 +1150,26 @@ impl ProviderConfig {
         Ok(())
     }
 
+    /// Whether no profile offers the model `chosen` names.
+    fn offers_nothing(&self, chosen: &AgentModel) -> bool {
+        !self.profiles.iter().any(|profile| {
+            profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+        })
+    }
+
+    /// Diagnose the models chosen for kinds of interaction: one this build
+    /// does not know, or one no profile offers.
+    fn choice_issues(&self, issues: &mut Vec<ProfileIssue>) {
+        for (kind, chosen) in &self.interaction_models {
+            if Interaction::from_id(kind).is_none() || self.offers_nothing(chosen) {
+                issues.push(ProfileIssue::new(
+                    &chosen.profile,
+                    "A default model for a kind of interaction is not offered here.",
+                ));
+            }
+        }
+    }
+
     pub fn active_profile(&self) -> Option<&ProviderProfile> {
         self.default_profile.as_ref().and_then(|id| {
             self.profiles
@@ -1077,6 +1197,8 @@ impl ProviderConfig {
             self.default_profile = None;
         }
         self.agent_models.retain(|_, chosen| chosen.profile != id);
+        self.interaction_models
+            .retain(|_, chosen| chosen.profile != id);
         Some(removed)
     }
 
@@ -1098,12 +1220,14 @@ impl ProviderConfig {
                 profile.default_model = None;
             }
         }
-        let profiles = &self.profiles;
-        self.agent_models.retain(|_, chosen| {
-            profiles.iter().any(|profile| {
+        let unknown = |chosen: &AgentModel| {
+            !self.profiles.iter().any(|profile| {
                 profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
             })
-        });
+        };
+        self.agent_models.retain(|_, chosen| !unknown(chosen));
+        self.interaction_models
+            .retain(|kind, chosen| Interaction::from_id(kind).is_some() && !unknown(chosen));
         self
     }
 }
@@ -1237,6 +1361,59 @@ mod tests {
         assert!(config.agent_models.is_empty());
         config.set_agent_model("writer", None).unwrap();
         assert_eq!(chosen(&config, "writer"), Some((first.id, "large".into())));
+    }
+
+    #[test]
+    fn a_kind_of_interaction_without_a_choice_follows_the_default() {
+        let mut local = ProviderProfile::local_vllm();
+        local.models = vec![ModelDescriptor::new("small")];
+        let mut hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        hosted.models = vec![ModelDescriptor::new("large")];
+        hosted.default_model = Some("large".into());
+        let mut config = ProviderConfig {
+            default_profile: Some(hosted.id.clone()),
+            profiles: vec![local.clone(), hosted],
+            ..Default::default()
+        };
+        assert!(config.interaction_selection(Interaction::OneShot).is_none());
+        config
+            .set_interaction_model(
+                Interaction::OneShot,
+                Some(AgentModel {
+                    profile: local.id.clone(),
+                    model: "small".into(),
+                }),
+            )
+            .unwrap();
+        let chosen = config.interaction_selection(Interaction::OneShot);
+        assert_eq!(chosen.map(|(_, model)| model.id.as_str()), Some("small"));
+        assert!(
+            config.interaction_selection(Interaction::Task).is_none(),
+            "a kind keeps no choice of another kind"
+        );
+        // A switched-off provider is not swapped for another one.
+        config.profiles[0].enabled = false;
+        assert!(config.interaction_selection(Interaction::OneShot).is_none());
+        config.profiles[0].enabled = true;
+        // A removed provider takes its choices with it.
+        config.remove(&local.id);
+        assert!(config.interaction_models.is_empty());
+        // A choice the provider no longer offers is forgotten, and a kind
+        // this build does not know is not kept.
+        config.interaction_models.insert(
+            Interaction::Task.id().into(),
+            AgentModel {
+                profile: "gone".into(),
+                model: "large".into(),
+            },
+        );
+        config
+            .interaction_models
+            .insert("an-older-kind".into(), AgentModel::default());
+        let stored = serde_json::to_value(config.clone().sanitised()).unwrap();
+        assert!(stored.get("interaction_models").is_none());
+        assert_eq!(Interaction::from_id("one_shot"), Some(Interaction::OneShot));
+        assert_eq!(Interaction::from_id("an-older-kind"), None);
     }
 
     #[test]
