@@ -1,7 +1,7 @@
 //! A whole model turn in either provider dialect, for a client that talks to
 //! the provider itself instead of through the per-user gateway: a browser
 //! page's model service, which has no gateway to hand its windows' requests
-//! to. Pure pieces like [`crate::transform`]: the request body for a
+//! to. Pure pieces like [`agent_provider_config::transform`]: the request body for a
 //! [`ModelRequest`] and the [`ModelResponse`] out of the provider's answer,
 //! with no HTTP client, so they are tested once wherever they run.
 //!
@@ -12,11 +12,11 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::protocol::{
+use agent_provider_config::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
     ToolCall, ToolChoice, Usage,
 };
-use crate::{ProviderProfile, ProviderProtocol, TokenLimitParam};
+use agent_provider_config::{ProviderProfile, ProviderProtocol, TokenLimitParam};
 
 /// The request body asking `model` of `profile` for the next turn of `request`.
 ///
@@ -38,7 +38,7 @@ pub fn body(
     if profile.protocol == ProviderProtocol::OpenAiCompatible {
         // Last: fields this provider rejects, as the gateway drops them.
         for param in &profile.omit_params {
-            if !crate::REQUIRED_PARAMS.contains(&param.as_str()) {
+            if !agent_provider_config::REQUIRED_PARAMS.contains(&param.as_str()) {
                 object.remove(param.as_str());
             }
         }
@@ -172,11 +172,14 @@ fn is_text(content: &Content) -> bool {
     matches!(content, Content::Text { .. })
 }
 
+/// The first choice of a chat-completions answer, read as the gateway reads
+/// it ([`crate::openai::read_turn`]): an unknown finish reason, or a tool
+/// call without object arguments, is a malformed answer.
 fn openai_response(value: &Value) -> Option<ModelResponse> {
-    let choice = value.get("choices")?.as_array()?.first()?;
-    let message = choice.get("message")?;
+    let turn = crate::openai::read_turn(value).ok()?;
     let mut content = Vec::new();
-    if let Some(reasoning) = message
+    if let Some(reasoning) = turn
+        .message
         .get("reasoning_content")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
@@ -186,43 +189,31 @@ fn openai_response(value: &Value) -> Option<ModelResponse> {
             extra_content: None,
         });
     }
-    if let Some(text) = message
-        .get("content")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        content.push(Content::Text { text: text.into() });
+    if let Some(text) = turn.text.filter(|text| !text.is_empty()) {
+        content.push(Content::Text { text });
     }
-    for call in message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let function = call.get("function")?;
-        let arguments = function
-            .get("arguments")
-            .and_then(Value::as_str)
-            .unwrap_or("{}");
+    let echoed = turn.message.get("tool_calls").and_then(Value::as_array);
+    for (index, call) in turn.calls.into_iter().enumerate() {
         content.push(Content::ToolCall(ToolCall {
-            id: call.get("id")?.as_str()?.into(),
-            name: function.get("name")?.as_str()?.into(),
-            input: serde_json::from_str(if arguments.trim().is_empty() {
-                "{}"
-            } else {
-                arguments
-            })
-            .ok()?,
-            extra_content: None,
+            id: call.id,
+            name: call.name,
+            input: call.input,
+            extra_content: echoed
+                .and_then(|calls| calls.get(index))
+                .and_then(|call| call.get("extra_content"))
+                .cloned(),
         }));
     }
-    let refused = message
-        .get("refusal")
+    let refused = value
+        .pointer("/choices/0/message/refusal")
         .and_then(Value::as_str)
         .is_some_and(|refusal| !refusal.is_empty());
-    let stop_reason = match choice.get("finish_reason").and_then(Value::as_str) {
+    let stop_reason = match value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+    {
         _ if refused => StopReason::Refusal,
-        Some("tool_calls" | "function_call") => StopReason::ToolCalls,
+        Some("tool_calls") => StopReason::ToolCalls,
         Some("length") => StopReason::OutputLimit,
         Some("content_filter") => StopReason::Refusal,
         _ if content.iter().any(|c| matches!(c, Content::ToolCall(_))) => StopReason::ToolCalls,
@@ -395,7 +386,7 @@ fn anthropic_response(value: &Value) -> Option<ModelResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ToolDefinition, ToolResult};
+    use agent_provider_config::protocol::{ToolDefinition, ToolResult};
 
     fn endpoint_profile(protocol: ProviderProtocol, endpoint: &str) -> ProviderProfile {
         ProviderProfile {
@@ -511,6 +502,22 @@ mod tests {
             )
             .is_err(),
             "tool arguments must be an object"
+        );
+        assert!(
+            response(
+                ProviderProtocol::OpenAiCompatible,
+                r#"{"choices":[{"finish_reason":"surprise","message":{"content":"Hi"}}]}"#
+            )
+            .is_err(),
+            "an unknown finish reason is a malformed answer"
+        );
+        assert!(
+            response(
+                ProviderProtocol::OpenAiCompatible,
+                r#"{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"w"}}]}}]}"#
+            )
+            .is_err(),
+            "a tool call without arguments is a malformed answer"
         );
     }
 }

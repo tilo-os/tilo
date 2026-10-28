@@ -79,6 +79,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
 # The page's own model service, set up and asked as a browser page does.
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 settings-store = { path = "../../crates/system/settings-store" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

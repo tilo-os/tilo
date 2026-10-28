@@ -101,6 +101,8 @@ local-model-service = { optional = true, path = "../local-model-service" }
 image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
+# The page service's end-to-end test keeps its provider settings in memory.
+settings-store = { path = "../../system/settings-store" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

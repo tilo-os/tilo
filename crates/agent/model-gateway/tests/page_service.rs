@@ -20,7 +20,7 @@ use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
     SecretReference,
 };
-use tilo_model_client::page_service::{MemoryKeys, PageService};
+use tilo_model_gateway::page_service::{MemoryKeys, PageService};
 
 /// One request the fake provider received.
 struct Seen {

@@ -87,7 +87,8 @@ A page whose host lends no model service runs its own:
 the same `ProviderAdmin` for Model Providers, over the person's settings
 document and their provider keys in the browser's encrypted secret store
 (`tilo-secrets`), each bound to its provider's origin as here. It speaks the
-providers' dialects through `agent_provider_config::conversation`, directly
+providers' dialects through `conversation`, which reads an OpenAI-compatible
+answer with the gateway's own `openai::read_turn`, directly
 to a provider that answers browsers and through the workspace host's fetch
 proxy (relayed, never kept) to one that does not. Sign-ins stay on Tilo
 computers; in a browser a provider takes an API key.
