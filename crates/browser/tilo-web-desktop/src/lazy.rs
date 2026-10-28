@@ -285,6 +285,12 @@ split_code! {
 }
 
 split_code! {
+    /// The action palette: the first window to lay out asks for it.
+    mod action_palette: tilo_ui::action_palette::MakeActionPalette = tilo_ui::action_palette::builtin_action_palette()
+        => tilo_ui::action_palette::ACTION_PALETTE, module = "action_palette", hash = "a26d9f4c1e0b8573";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -340,6 +346,7 @@ pub(crate) fn register() {
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
     emoji::register();
     history::register();
+    action_palette::register();
     feedback_code::register();
     profile_card::register();
 }

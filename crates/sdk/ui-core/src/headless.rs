@@ -292,6 +292,7 @@ mod drive;
 pub mod driver;
 pub use driver::{Outcome, Step, StepRecord, StepStatus, drive};
 mod invocation_results;
+mod lazy_palette;
 mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
@@ -358,7 +359,8 @@ pub struct FrameHarness {
     history: Option<crate::history_mode::host::HistoryChrome>,
     /// A History registered before its code was in, installed once it is.
     pending_history: Option<crate::history_mode::HistoryRegistration>,
-    action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    action_palette: Option<crate::action_palette::ActionPaletteBox>,
+    palette_waiting: lazy_palette::Waiting,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
     /// several out (the desktop's strip of app tiles): the palette stands
@@ -1623,7 +1625,7 @@ impl FrameHarness {
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::asking)
+            .and_then(|palette| palette.asking())
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
@@ -1633,7 +1635,7 @@ impl FrameHarness {
     pub fn asking_why(&self) -> Option<&str> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::asking_why)
+            .and_then(|palette| palette.asking_why())
     }
 
     /// Confirm what the host is asking, as the person does: activate the
@@ -1647,7 +1649,7 @@ impl FrameHarness {
         let target = self
             .action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::confirming_target)?;
+            .and_then(|palette| palette.confirming_target())?;
         self.perform_palette_action(&target, &crate::a11y::Action::Activate)
             .ok()?;
         Some(address)
@@ -1811,6 +1813,7 @@ impl FrameHarness {
             history: None,
             pending_history: None,
             action_palette: None,
+            palette_waiting: lazy_palette::Waiting::default(),
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer_at: None,
@@ -3557,6 +3560,7 @@ impl FrameHarness {
 
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.adopt_loaded_history();
+        self.adopt_loaded_palette();
         // The whole frame runs in the root's wake scope, as the live window's
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();
@@ -8173,19 +8177,7 @@ impl FrameHarness {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
             });
         }
-        // Read before the tree it is found in is discarded.
-        self.palette_window = self.invoking_window_rect();
-        self.discard_layout_tree();
-        self.focused = None;
-        let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
-            self.text.font_system.locale().to_owned(),
-        ));
-        palette.activate_ordinary(request);
-        let went_ahead = palette.went_ahead();
-        self.action_palette = Some(palette);
-        if went_ahead {
-            self.finish_action_palette_input();
-        }
+        self.present_ordinary(request);
     }
 
     /// Keep why an invocation the person made did not run, and say it over
@@ -8193,14 +8185,7 @@ impl FrameHarness {
     /// unseen.
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
-        self.discard_layout_tree();
-        self.focused = None;
-        let palette = self.action_palette.get_or_insert_with(|| {
-            Box::new(crate::action_palette::ActionPalette::with_host_text(
-                self.text.font_system.locale().to_owned(),
-            ))
-        });
-        palette.show_refusal("", &crate::bound_dispatch::refusal_reason(error));
+        self.present_refusal(crate::bound_dispatch::refusal_reason(error));
     }
 
     /// The refusal the window is saying over itself, if any: an invocation
@@ -8208,13 +8193,13 @@ impl FrameHarness {
     pub fn refusal_shown(&self) -> Option<&str> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::refusal)
+            .and_then(|palette| palette.refusal())
     }
     fn finish_action_palette_input(&mut self) {
         let pending = self
             .action_palette
             .as_deref_mut()
-            .and_then(crate::action_palette::ActionPalette::take_operation);
+            .and_then(|palette| palette.take_operation());
         if let Some(pending) = pending {
             let result = (|| {
                 let request = pending.ordinary.as_ref().ok_or_else(|| {
@@ -8273,7 +8258,7 @@ impl FrameHarness {
         let navigation = self
             .action_palette
             .as_deref_mut()
-            .and_then(crate::action_palette::ActionPalette::take_scoped_navigation);
+            .and_then(|palette| palette.take_scoped_navigation());
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
                 if let Err(error) = crate::bound_dispatch::activate_bound_search(

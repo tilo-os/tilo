@@ -90,6 +90,13 @@ lazy-emoji = []
 # then the window shows without History. The browser desktop uses this to
 # keep it out of its start module.
 lazy-history = []
+# The action palette (confirmations, argument prompts, refusals and in-app
+# search) is not linked into the windows that show it: the program fetches
+# its code as the first window lays out and hands it over
+# (`action_palette::ACTION_PALETTE`); what a window asks of it before then
+# shows once it is in. The browser desktop uses this to keep it out of its
+# start module.
+lazy-palettes = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
