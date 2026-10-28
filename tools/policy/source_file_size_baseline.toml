@@ -78,7 +78,7 @@
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/ui-core/src/action_palette.rs" = 4500
 "crates/sdk/ui-core/src/app.rs" = 5500
-"crates/sdk/ui-core/src/app/actions.rs" = 4389
+"crates/sdk/ui-core/src/app/actions.rs" = 4396
 "crates/sdk/ui-core/src/app/bound_component_tests.rs" = 3500
 "crates/sdk/ui-core/src/app/history_tests.rs" = 8500
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
