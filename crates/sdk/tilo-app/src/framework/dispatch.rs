@@ -1047,6 +1047,20 @@ impl<R: Resource> Dispatcher<R> {
         self.core.asked_state(Asked::Need(need))
     }
 
+    /// The participant's standing in the room as the host keeps it when
+    /// called: who they are, the room's policy and what bounds them. For a
+    /// runtime that decides its own invocations (a tilolang program's) by
+    /// the policy the door decides by. `None` outside a host.
+    pub fn standing_source(&self) -> impl Fn() -> Option<policy::Standing> + 'static {
+        let permissions = Rc::clone(&self.core.permissions);
+        move || {
+            permissions
+                .borrow()
+                .as_ref()
+                .map(|live| live.current().standing().clone())
+        }
+    }
+
     /// Whether the participant may govern the room (invite, grant, change
     /// its settings), as observable view state: for an owner's pane.
     pub fn govern_state(&self) -> LocalState<bool> {

@@ -4,7 +4,7 @@ use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::meta::Meta;
-use tilolang_runtime::{Decision, Principal, ViewInstance};
+use tilolang_runtime::{Principal, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::record::{DynRecord, DynValue};
@@ -62,7 +62,18 @@ pub struct Replica {
 impl Replica {
     /// A replica of `doc` for `name`, with `packages` (source and ids lock) loaded.
     pub fn new(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> (Self, Vec<Package>) {
-        let host = Host::new(&doc, Principal::new(name), |_, _| Decision::Allow).unwrap();
+        Self::standing(name, doc, packages, None)
+    }
+
+    /// As [`Self::new`], deciding what the runtime invokes by `standing`, the person's standing
+    /// in the room; without one, the door decides the person's own part.
+    pub fn standing(
+        name: &str,
+        doc: AutoCommit,
+        packages: &[(&str, &str)],
+        standing: Option<tilo_action_policy::Standing>,
+    ) -> (Self, Vec<Package>) {
+        let host = Host::new(&doc, Principal::new(name), move || standing.clone()).unwrap();
         let loaded = packages
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())

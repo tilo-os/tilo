@@ -42,9 +42,8 @@ use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::view::is_virtual;
 use crate::runtime::{
-    ActionInfo, ActionRef, BindTarget, Binding, Decision, EditOutcome, InvokeOutcome, NameHost,
-    OutsideSink, Patch, Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent,
-    ViewInstance,
+    ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
+    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use rows::{FIRST_ROWS, ListRows};
@@ -233,6 +232,8 @@ pub struct Instance {
     device: Option<String>,
     index_dir: Option<std::path::PathBuf>,
     record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
+    /// Where the host reads the person's standing in the room, once its embedder has one.
+    standing: Rc<RefCell<Option<Rc<crate::authority::StandingSource>>>>,
     /// Whether the instance shows the room before its record, over its indexes.
     opening: bool,
     platform: Rc<dyn Platform>,
@@ -290,6 +291,7 @@ impl Instance {
             index_dir: config.index_dir,
             opening: config.record_loader.is_some(),
             record_loader: config.record_loader,
+            standing: Rc::default(),
             platform,
             names,
             host: Rc::default(),
@@ -342,6 +344,13 @@ impl Instance {
     pub fn set_record_loader(&mut self, loader: Box<dyn Fn() -> Option<tilo_resource::Doc>>) {
         self.opening = true;
         self.record_loader = Some(loader);
+    }
+
+    /// Read the person's standing in the room from `source`: what the runtime invokes is decided
+    /// by the room's policy with it. May come after the host started (a window shown before its
+    /// host gave it one).
+    pub fn set_standing(&self, source: Rc<crate::authority::StandingSource>) {
+        *self.standing.borrow_mut() = Some(source);
     }
 
     /// Send the outside effects the instance settles to `sink`. Before the host starts.
@@ -509,15 +518,10 @@ impl Instance {
             index_dir,
             device: self.device.as_deref(),
         };
-        let built = Host::open(
-            opening,
-            Principal::new(self.me.clone()),
-            |_: &Principal, _: &ActionInfo| {
-                // What the person may do in the room is decided where the change is committed:
-                // the door refuses a viewer's `commit`. Code authorship is the runtime's.
-                Decision::Allow
-            },
-        );
+        let standing = Rc::clone(&self.standing);
+        let built = Host::open(opening, Principal::new(self.me.clone()), move || {
+            standing.borrow().as_ref().and_then(|source| source())
+        });
         let host = match built {
             Ok(host) => host,
             Err(error) => {
@@ -1435,7 +1439,6 @@ impl Instance {
                     for author in &suggestion.chain {
                         host.authority().trust(author);
                     }
-                    host.always_allow_agents(&suggestion.action);
                 }
                 Resolution::Approve
             }

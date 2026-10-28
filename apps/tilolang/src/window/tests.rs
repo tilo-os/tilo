@@ -23,8 +23,9 @@ use tilo_ui_host::reconcile::UiEvent;
 use tilo_ui_host::rows::RemoteRows;
 use tilo_ui_host::shell::DETAIL;
 use tilo_ui_host::{UiNode, Value};
-use tilolang_tilo::runtime::{Decision, Principal, Value as RtValue};
+use tilolang_tilo::runtime::{Principal, Value as RtValue};
 use ui::framework::{ResourceSurface as _, RunMode};
+use ui::permissions::policy::{self, agent_answers};
 use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
 
 use super::*;
@@ -1108,13 +1109,22 @@ fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
 #[test]
 fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     let (mut room, done) = board_room();
-    let host = room.window.current_host().unwrap();
-    // The person narrowed this agent: changes to the todo app ask first.
-    host.set_agent_answer(
-        "so.tilo.lang.todo",
-        tilolang_tilo::runtime::meta::EffectClass::Undoable,
-        Decision::Ask,
-    );
+    // The person narrowed this agent in the room: changes to the todo app ask first.
+    let mut workspace = policy::RoomPolicy::new("room", "ada");
+    workspace.grants.push(agent_answers::grant(
+        "room",
+        "agent-task:7",
+        (
+            &agent_answers::AnswerScope::app("so.tilo.lang.todo"),
+            policy::ActionKind::Undoable,
+        ),
+        policy::Answer::Ask,
+        policy::Subject::person("ada"),
+    ));
+    let standing = policy::Standing::person(workspace, "ada");
+    room.window
+        .instance
+        .set_standing(Rc::new(move || Some(standing.clone())));
     let todos = room.items_of("so.tilo.lang.todo", "items");
     let notes = room.items_of("so.tilo.lang.notes", "notes");
     let args = cleanup_args(&room);

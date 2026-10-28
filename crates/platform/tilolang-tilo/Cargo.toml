@@ -21,6 +21,8 @@ toml.workspace = true
 tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The one policy what the runtime invokes is decided by.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }

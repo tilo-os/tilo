@@ -14,8 +14,8 @@ mod cases {
     use tilolang::IdsLock;
     use tilolang_runtime::{
         AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Principal, Resolution, ResourceRef, Runtime, RuntimeError, SimpleAuthority, Space, UiNode,
-        Value, ViewInstance,
+        Principal, Resolution, ResourceRef, Runtime, RuntimeError, Space, UiNode, Value,
+        ViewInstance,
     };
 
     macro_rules! app_source {
@@ -70,13 +70,13 @@ mod cases {
 
     struct World {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         sink: MemorySink,
         ids: Vec<PackageId>,
     }
 
     fn world(apps: &Apps, store: &AmStore) -> World {
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(store.clone(), auth.clone()).unwrap();
         let sink = MemorySink::new();
         rt.set_sink(sink.clone());
