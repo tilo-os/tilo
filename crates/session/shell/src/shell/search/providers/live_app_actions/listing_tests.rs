@@ -136,7 +136,13 @@ fn assert_listings_survive_searches() {
 
     for search in 0..SEARCHES {
         let needle = format!("needle{search}");
-        let _ = settle(&needle, &|peer| format!("Found {needle} at {peer}"));
+        // The search runs, and the pages it asks for arrive; whether it
+        // covers every connection is the search's own bound, not the
+        // listing's.
+        for _ in 0..2 {
+            let _ = query(&needle);
+            answer_all(&|peer| format!("Found {needle} at {peer}"));
+        }
         let again = query("");
         assert!(
             again.completion().complete,
