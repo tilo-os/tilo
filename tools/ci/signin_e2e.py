@@ -489,6 +489,7 @@ class Run:
                ">/run/e2e/unattended.log 2>&1; echo $? >/run/e2e/rc' </dev/null >/dev/null 2>&1", 30)
         started = time.monotonic()
         seen: list = []
+        printed = 0
         while True:
             try:
                 state = console.state(c.console, 10)
@@ -506,7 +507,13 @@ class Run:
                            "cat /run/e2e/rc 2>/dev/null || true", 60, quiet=True)
             if rc.strip():
                 break
-            _, log = sh.run("tail -n 5 /run/e2e/unattended.log 2>/dev/null", 30, quiet=True)
+            # What the installer printed since the last look, timestamped here, so the log says
+            # where the install spends its time.
+            _, log = sh.run(f"tail -n +{printed + 1} /run/e2e/unattended.log 2>/dev/null", 30, quiet=True)
+            lines = log.splitlines()
+            printed += len(lines)
+            for line in lines:
+                say(f"install +{time.monotonic() - started:.0f}s: {line[:300]}")
             if "Unattended installation stopped" in log:
                 break
             if time.monotonic() - started > 3600:
