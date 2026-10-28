@@ -101,6 +101,77 @@ with its admission and loads older history on demand, without any other
 member being online. Removal stops future access; it cannot recall what was
 already shared.
 
+### Membership is a resource
+
+A workspace's members, their roles, their grants and the devices each member
+has in it are one resource of the workspace, `workspace.members`. Inviting,
+admitting, changing a role, granting, removing and leaving are its actions.
+Each is a signed op: its author's device key, certified by the author's root,
+signs it, and the op names the ops it was written on (its causal heads), as
+every op does.
+
+Every participant replays the resource and checks every op under the action
+policy against the membership **as the op's author saw it**: the state at the
+op's own heads, not the receiver's current state. An op its author was not
+granted at that point is kept, so replicas stay byte-identical, but has no
+effect. No device decides for the others; every participant reaches the same
+answer from the same ops.
+
+**Concurrent changes merge by one rule.** Ops that do not depend on each
+other are applied in a fixed order: the author's role first (owner, then
+administrator, then the rest), then the op id. Each op is checked at its place
+in that order, so a change that a concurrent, earlier-ordered op made
+unauthorised has no effect. Two administrators removing each other: the one
+ordered first wins, and the other's removal comes from someone no longer
+granted. A role change racing a removal of the same member: the removal is
+kept if it orders first, the role change is moot if it orders later.
+Concurrent edits that do not conflict (two people invited at once) both
+apply.
+
+**Admitting.** An invitation is an op naming the role it grants and, when
+narrowed, the person it is for. Redeeming it is the joiner's op, written on
+the invitation's ops and signed by the joiner's device; any participant that
+holds the invitation admits it, with no particular device needed online. A
+member's own further devices need no invitation: a device certified by a
+member's root is that member's device, and any participant admits it when it
+first asks. Which role the device takes in the workspace (participant or
+store) is the member's choice, recorded in the same resource.
+
+### Keys follow membership
+
+Content is sealed under content keys (`channel-crypto`), one per key epoch.
+The key epoch's group is an MLS group whose members are exactly the
+workspace's participant devices: a projection of `workspace.members`, never a
+second record of who belongs.
+
+- **Any participant commits.** When the membership resource admits a
+  participant device or removes one, any participant that sees the group
+  differ from the projection writes the MLS commit that brings it in line:
+  `Add` with a `Welcome` and the bundle of every past content key for an
+  admitted device, `Remove` and a fresh key epoch for a removed one. A
+  participant checks every commit it receives against the projection at the
+  commit's place and refuses one that adds or removes anyone the resource
+  does not.
+- **One commit per epoch.** MLS orders commits linearly. When two
+  participants commit on the same epoch, every device keeps the commit with
+  the lower hash; the other committer applies it and, if the group still
+  differs from the projection, commits again on top. Commits only enact what
+  the resource decided, so a lost race loses nothing.
+- **Removal does not wait for a commit.** From the op that removes a member,
+  every participant refuses that member's further ops, whatever key epoch
+  they are sealed under. The commit that rotates the key comes from the next
+  participant online, and protects content written from then on.
+- **Late joiners read everything.** The bundle in an admission carries the
+  key of every past epoch, sealed to the joiner's first epoch, so a joiner
+  reads the whole history locally. It grows with membership changes, never
+  with content.
+
+A store never enters the group and never holds a key. It keeps and forwards
+sealed ops, and refuses ones that are not signed by a member's device. To
+tell, it reads the one part of `workspace.members` that is not sealed: the
+device keys of the current members (no names, roles or grants), carried in
+the signed envelope of each membership op.
+
 ## Layout
 
 **Layout across devices.** Each device writes only its own namespace of the
