@@ -16,6 +16,7 @@ pub(super) fn admits_id(id: &str) -> bool {
         id,
         "read-preview"
             | "choose-preview"
+            | "choose-and-continue-preview"
             | "set-preview-name"
             | "set-preview-device-name"
             | "set-preview-password"
@@ -80,6 +81,27 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    /// A choice card chooses and moves on in one published action: a
+    /// person's press and an agent's invocation take the same step.
+    #[test]
+    fn a_choice_card_chooses_and_continues_in_one_action() {
+        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+        assert_eq!(state(&mut app)["page"], "destination");
+        app.harness()
+            .perform_named("installer.choice.computer", &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        let pressed = state(&mut app);
+        assert_eq!(pressed["destination"], "computer");
+        assert_ne!(pressed["page"], "destination", "{pressed}");
+        app.effect(&InstallerPreviewEffect::ChooseAndContinuePreview {
+            choice: "migrate".into(),
+        })
+        .unwrap();
+        let invoked = state(&mut app);
+        assert_ne!(invoked["page"], pressed["page"], "{invoked}");
     }
 
     #[test]

@@ -242,6 +242,12 @@ pub enum RoomEvent {
         /// How many people belong to the room.
         #[serde(default, skip_serializing_if = "is_zero")]
         members: u32,
+        /// Every person counted in `people` (user roots, hex): the door
+        /// seats people, so a person already here is already seated, and
+        /// another device of theirs coming in takes no seat a newcomer
+        /// could have.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        online: Vec<String>,
     },
     /// A member was removed from the persistent room.
     MemberRemoved {
@@ -545,6 +551,7 @@ mod tests {
                     name: "Ada".into(),
                 }],
                 members: 40,
+                online: vec!["cd".repeat(32), "ab".repeat(32)],
             },
             RoomEvent::MemberRemoved {
                 user_public_key: "cd".repeat(32),
@@ -662,6 +669,7 @@ mod tests {
                 spectators: 2,
                 here: Vec::new(),
                 members: 0,
+                online: Vec::new(),
             }
             .to_line(),
             "tilo-room-operator {\"event\":\"online\",\"people\":7,\"spectators\":2}"

@@ -114,11 +114,14 @@ impl RowMenu {
             .map(|(index, entry)| {
                 let chosen = Rc::clone(&self.chosen);
                 let run = move || chosen.set(Some(index));
-                let item = if entry.destructive {
+                let mut item = if entry.destructive {
                     MenuItem::destructive_action(entry.label.clone(), run)
                 } else {
                     MenuItem::action(entry.label.clone(), run)
                 };
+                if let Some(emitter) = &entry.emitter {
+                    item = item.for_action(emitter.binding().address().clone());
+                }
                 item.with_enabled(
                     entry
                         .emitter

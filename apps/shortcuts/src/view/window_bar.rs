@@ -19,6 +19,7 @@ pub(crate) const EDIT: &str = "edit-shortcut";
 pub(crate) const DUPLICATE: &str = "duplicate-shortcut";
 pub(crate) const DELETE: &str = "delete-shortcut";
 pub(crate) const REVIEW: &str = "review-save";
+pub(crate) const TEXT_VIEW: &str = "text-view";
 pub(crate) const DISCARD: &str = "discard-draft";
 
 /// What the open page is, for the bar.
@@ -97,6 +98,19 @@ impl ShortcutsWindow {
             }
             Open::Draft(_) => {
                 let savable = self.ui.editor.with(|input| save_blocker(input).is_none());
+                let as_text = self.ui.as_text.get();
+                actions.push(
+                    ToolbarAction::new(
+                        TEXT_VIEW,
+                        if as_text { "list" } else { "code" },
+                        lookup(if as_text {
+                            "shortcuts-show-blocks"
+                        } else {
+                            "shortcuts-show-text"
+                        }),
+                    )
+                    .on(as_text),
+                );
                 actions.push(
                     ToolbarAction::new(REVIEW, "check", lookup("shortcuts-review"))
                         .enabled(savable),
@@ -165,6 +179,7 @@ impl ShortcutsWindow {
                         .submit(Workbench::DUPLICATE_SHORTCUT.with(json));
                 }
             }
+            (TEXT_VIEW, _) => ui.as_text.set(!ui.as_text.get()),
             (REVIEW, Open::Draft(_)) => {
                 if ui.editor.with(|input| save_blocker(input).is_none()) {
                     ui.sheet.set(true);

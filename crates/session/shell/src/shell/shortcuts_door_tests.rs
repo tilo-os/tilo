@@ -51,6 +51,7 @@ use tilo_actions::{
     ActionAddress, ActionContext, ActionContract, ActionOutput, ActionParam, InvocationId,
     InvocationUpdate, OperationKind, ParamType, ResultSpec,
 };
+use tilo_automation::dispatch::RecordEvent;
 use tilo_automation::{
     Binding, CatchUp, RunId, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut, Step, StepKind,
     TriggerSpec, action_rule, shortcut_resource_id,
@@ -1459,6 +1460,108 @@ fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
         title,
         Some(json!(FIXTURE)),
         "the opened app's id reached the step through the shortcut's input"
+    );
+}
+
+#[test]
+fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let mut on_message = publish_draft("on-message", &["draft", "publish"]);
+    on_message.inputs = vec![ActionParam::required(
+        "event",
+        ParamType::Object,
+        "What fired the run",
+    )];
+    on_message.steps[0] = invoke_step(
+        "draft",
+        "draft",
+        &[("title", Binding::Input("event/subject".into()))],
+    );
+    on_message.triggers = vec![TriggerSpec::AppEvent {
+        app_id: "so.tilo.mail".into(),
+        kind: "mail.message".into(),
+    }];
+    door.save(&on_message)
+        .expect("an app's declared event may start a shortcut");
+
+    // What mail's own action publishes when a message arrives, read the way
+    // the session reads any change committed in the room.
+    let mut arrived = RecordEvent {
+        room: ROOM.into(),
+        record: "rec-1".into(),
+        kind: "so.tilo.mail.mail.message.event".into(),
+        change: "a".repeat(64),
+        actor: tilo_actions::interaction::InteractionActor::new(
+            format!("person:{owner}"),
+            tilo_actions::interaction::ActorKind::Person,
+        ),
+        did: tilo_actions::entry::Did::verb(
+            tilo_actions::ActionKey::new(
+                "so.tilo.mail",
+                "so.tilo.mail.mail.message.event",
+                "announce",
+            ),
+            [],
+        ),
+        arguments: serde_json::json!({ "subject": "Invoice" })
+            .as_object()
+            .cloned()
+            .expect("an object"),
+        item: None,
+        before: None,
+        after: None,
+        caused_by: None,
+        incoming_message: false,
+        housekeeping: false,
+        shortcut: None,
+        run: None,
+    };
+    let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
+    let fired = {
+        let tree = door.membership.read();
+        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let fired = triggers.observe(
+            TriggerEvent::Records(std::slice::from_ref(&arrived)),
+            &armed,
+        );
+        drop(tree);
+        fired
+    };
+    assert_eq!(fired.len(), 1, "{fired:?}");
+    assert_eq!(fired[0].trigger.kind(), "app_event");
+
+    let job = door
+        .fire_firing(&owner, &fired[0])
+        .expect("the event starts the shortcut");
+    let ended = door.job_to_end(job);
+    assert!(
+        matches!(ended, InvocationUpdate::Succeeded { .. }),
+        "{ended:?}"
+    );
+    let title = door.app.served[0].1.get("title").cloned();
+    drop(door);
+    assert_eq!(
+        title,
+        Some(json!("Invoice")),
+        "the event's payload reached the step through the shortcut's input"
+    );
+
+    // A change that is not an event an app declared starts nothing.
+    arrived.kind = "so.tilo.mail.message".into();
+    let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
+    let armed = [crate::shell::automation_triggers::Armed {
+        room: ROOM.to_string(),
+        shortcut: &on_message,
+        claims: &[],
+    }];
+    assert!(
+        triggers
+            .observe(
+                TriggerEvent::Records(std::slice::from_ref(&arrived)),
+                &armed
+            )
+            .is_empty()
     );
 }
 

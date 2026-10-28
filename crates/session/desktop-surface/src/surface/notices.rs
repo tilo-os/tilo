@@ -20,14 +20,19 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
-    NotificationCenter, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, CentreApi, HistoryActivation, NOTIFICATION_CENTRE,
+    Notification, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
 
 /// Width of the centre panel, and its inset from the surface's edges.
 const PANEL_WIDTH: f64 = 360.0;
 const PANEL_INSET: f64 = 16.0;
+/// How tall the centre's panel stands while its code is on its way.
+const LOADING_HEIGHT: f64 = 96.0;
+
+/// The open centre, or its panel waiting on the centre's code.
+type Centre = ui::lazy_code::LazySurface<Box<dyn CentreApi>, ()>;
 
 /// What the person did with a notification that its sender should hear.
 #[derive(Clone, Debug)]
@@ -516,7 +521,7 @@ pub(super) struct NotificationLayer {
     /// Applications' requests, when the host routes them here.
     pub inbox: Option<AppInbox>,
     stack: NotificationStack,
-    center: Option<NotificationCenter>,
+    center: Option<Centre>,
     /// An application a retained notification asked to open.
     pub open_app: Option<String>,
     rect: Rect,
@@ -560,9 +565,30 @@ impl NotificationLayer {
     pub fn set_center_open(&mut self, open: bool) {
         if open != self.center.is_some() {
             self.notifications.mark_read();
-            self.center = open.then(NotificationCenter::new);
+            self.center =
+                open.then(|| Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make()));
             self.dirty = true;
         }
+    }
+
+    /// Open the centre waiting on its code once the code is in. Whether it
+    /// opened just now.
+    fn adopt_centre(&mut self) -> bool {
+        let opened = Centre::poll(&mut self.center, &NOTIFICATION_CENTRE, |make, ()| {
+            make.make()
+        });
+        self.dirty |= opened;
+        opened
+    }
+
+    /// The open centre, once its code is in.
+    fn centre(&self) -> Option<&dyn CentreApi> {
+        Some(&**self.center.as_ref()?.ready()?)
+    }
+
+    /// The open centre, once its code is in.
+    fn centre_mut(&mut self) -> Option<&mut (dyn CentreApi + 'static)> {
+        Some(&mut **self.center.as_mut()?.ready_mut()?)
     }
 
     pub fn center_open(&self) -> bool {
@@ -581,12 +607,14 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
+        let max = r.y1 - PANEL_INSET - y0;
         let height = center
-            .fitted_height(
-                self.notifications.host(),
-                &self.type_lines,
-                width,
-                r.y1 - PANEL_INSET - y0,
+            .ready()
+            .map_or_else(
+                || LOADING_HEIGHT.min(max),
+                |center| {
+                    center.fitted_height(self.notifications.host(), &self.type_lines, width, max)
+                },
             )
             .max(0.0);
         let x1 = r.x1 - PANEL_INSET;
@@ -666,8 +694,10 @@ impl NotificationLayer {
                 };
                 if let (Some(center), Some(layout)) = (self.center.as_mut(), layout) {
                     if layout.panel().contains(p) {
-                        let outcome = center.click(host, &layout, p);
-                        self.apply(outcome);
+                        if let Some(center) = center.ready_mut() {
+                            let outcome = center.click(host, &layout, p);
+                            self.apply(outcome);
+                        }
                         return true;
                     }
                     // A press outside the open panel closes it and goes no
@@ -679,8 +709,8 @@ impl NotificationLayer {
                 false
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let (Some(center), Some(layout), Some(p)) =
-                    (self.center.as_mut(), layout, self.cursor)
+                let cursor = self.cursor;
+                let (Some(center), Some(layout), Some(p)) = (self.centre_mut(), layout, cursor)
                 else {
                     return false;
                 };
@@ -692,10 +722,16 @@ impl NotificationLayer {
                 true
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let (Some(center), Some(layout)) = (self.center.as_mut(), layout) else {
+                let Some(layout) = layout else {
                     return false;
                 };
-                let outcome = center.key_with_shift(host, &layout, &event.logical_key, backwards);
+                let Some(center) = self.centre_mut() else {
+                    // Escape closes the centre whose code is still coming.
+                    let escape = event.logical_key
+                        == ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::Escape);
+                    return escape && self.apply(CenterOutcome::Back);
+                };
+                let outcome = center.key(host, &layout, &event.logical_key, backwards);
                 self.apply(outcome)
             }
             _ => false,
@@ -720,15 +756,13 @@ impl Widget for NotificationLayer {
     }
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame(self.notifications.host())
-            || self
-                .center
-                .as_ref()
-                .is_some_and(NotificationCenter::reading_needs_frame)
+            || self.centre().is_some_and(CentreApi::reading_needs_frame)
     }
     /// The reading page glides on after a flick, repainted as a wheel's
     /// scroll is; that changes no model.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
-        if let Some(center) = self.center.as_mut() {
+        self.adopt_centre();
+        if let Some(center) = self.centre_mut() {
             self.dirty |= center.advance_reading();
         }
         false
@@ -760,10 +794,12 @@ impl Widget for NotificationLayer {
         _presence: &ui::presence::PresenceCtx,
     ) {
         self.type_lines = CenterLayout::metrics(theme, text);
+        self.adopt_centre();
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
         self.stack.draw(host, scene, transform, text, theme);
+        let cursor = self.cursor;
         if let Some(layout) = self.layout()
             && let Some(center) = self.center.as_mut()
         {
@@ -775,14 +811,28 @@ impl Widget for NotificationLayer {
                 f64::from(theme.tokens.radii.control),
                 theme,
             );
-            center.draw(host, &layout, scene, transform, text, theme, self.cursor);
+            match center.ready_mut() {
+                Some(center) => {
+                    center.draw(host, &layout, scene, transform, text, theme, cursor);
+                }
+                None => {
+                    ui::lazy_code::draw_loading(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        panel,
+                        "lazy-loading",
+                    );
+                }
+            }
         }
         self.drawn_revision.set(Some(notifications.revision()));
         self.dirty = false;
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if !*ctx.handled
-            && let Some(center) = self.center.as_mut()
+            && let Some(center) = self.centre_mut()
         {
             self.dirty |= center.reader_event(event, ctx);
         }
@@ -793,7 +843,7 @@ impl Widget for NotificationLayer {
         }
     }
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
-        self.center.as_ref()?.reading_scroll()
+        self.centre()?.reading_scroll()
     }
     /// A banner's control pressed by assistive technology, as a click does.
     fn perform_semantic_action(
@@ -815,8 +865,7 @@ impl Widget for NotificationLayer {
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
         let result = self
-            .center
-            .as_mut()
+            .centre_mut()
             .map_or(ui::widget::PrimaryScrollResult::Unsupported, |center| {
                 center.apply_reading_scroll(action)
             });
@@ -831,7 +880,7 @@ impl Widget for NotificationLayer {
             return None;
         }
         let mut node = self.stack.accessibility(host)?;
-        if let (Some(center), Some(layout)) = (self.center.as_ref(), self.layout()) {
+        if let (Some(center), Some(layout)) = (self.centre(), self.layout()) {
             // The dialog stays the first child: its synthetic rects are
             // looked up by that path.
             node.children
@@ -843,7 +892,7 @@ impl Widget for NotificationLayer {
         let [0, dialog @ ..] = path else {
             return None;
         };
-        let (center, layout) = (self.center.as_ref()?, self.layout()?);
+        let (center, layout) = (self.centre()?, self.layout()?);
         center.accessibility_rect_for_path(self.notifications.host(), &layout, dialog)
     }
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -854,7 +903,7 @@ impl Widget for NotificationLayer {
         let Some(layout) = self.layout() else {
             return false;
         };
-        let Some(center) = self.center.as_mut() else {
+        let Some(center) = self.centre_mut() else {
             return false;
         };
         let focused = center.focus_accessibility_path(notifications.host(), &layout, dialog);
@@ -1215,20 +1264,20 @@ mod tests {
         layer.set_center_open(true);
         assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
-        assert!(layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.centre().unwrap().is_reading());
         assert!(layer.route(&reader_key_event(NamedKey::Delete), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
         assert_eq!(notifications.log().history().len(), 1);
         assert!(notifications.take_outcomes().is_empty());
         assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
         assert!(layer.center_open());
-        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(!layer.centre().unwrap().is_reading());
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
-        assert!(layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.centre().unwrap().is_reading());
         let back = layer.layout().unwrap().reader_back();
         assert!(press(&mut layer, back.center()));
         assert!(layer.center_open());
-        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(!layer.centre().unwrap().is_reading());
         assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
         assert!(!layer.center_open());
         assert!(notifications.take_outcomes().is_empty());

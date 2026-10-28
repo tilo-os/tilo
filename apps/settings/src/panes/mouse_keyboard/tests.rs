@@ -797,9 +797,22 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
         &mut app,
         InputEffect::SetPreviewLevel { level: "99".into() }
     ));
-    // A level is chosen only for the levels the drawn keyboard supplies. A
-    // host with no installed keyboard data draws the keys without legends,
-    // so it supplies none and refuses every level.
+    // A level is chosen only for the levels the drawn keyboard supplies, read
+    // off the legends of one of its keys: a host with no installed keyboard
+    // data draws each key's position and nothing else, so the drawing holds a
+    // single level and refuses every other.
+    crate::effects::show_pane(&mut app, crate::categories::Category::Keyboard);
+    assert!(set(
+        &mut app,
+        InputEffect::PreviewLayout {
+            source: "de".into()
+        }
+    ));
+    assert!(set(
+        &mut app,
+        InputEffect::InspectKeyboardKey { key: "AD06".into() }
+    ));
+    app.settle();
     let drawn = app
         .call_on(
             "settings.keyboard-map",
@@ -813,12 +826,12 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
     let level = InputEffect::SetPreviewLevel { level: "1".into() };
     assert_eq!(
         set(&mut app, level),
-        drawn > 0,
+        drawn > 1,
         "a level the drawn keyboard supplies is chosen"
     );
     assert_eq!(
         app.settings::<InputPrefs>().get().keyboard_preview_level,
-        usize::from(drawn > 0)
+        usize::from(drawn > 1)
     );
     assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
     let input = app.settings::<InputPrefs>().get();
@@ -888,15 +901,17 @@ fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
     assert_eq!(preview["source"], "de");
     assert_eq!(preview["inspected_key"], "AD06");
     // The read reports the legends of the layout the preview draws. A host
-    // with no installed keyboard data draws the keys without them, and the
-    // preferred layout's "z" is never reported in their place.
+    // with no installed keyboard data draws the keys' positions in place of
+    // their legends, and the preferred layout's "z" is never reported in its
+    // place: whether the drawing is labelled is what the keys say, not what
+    // the seat reports, which is absent on a host with no session.
     let symbols = preview["selected_symbols"].as_array().unwrap();
-    let without_keyboard_data = preview["native_layout_available"] == false;
-    assert!(
-        symbols.iter().any(|symbol| symbol == "z")
-            || (without_keyboard_data && symbols.iter().all(|symbol| symbol == "AD06")),
-        "{symbols:?}"
-    );
+    let labelled_drawing = symbols.iter().any(|symbol| symbol != "AD06");
+    if labelled_drawing {
+        assert!(symbols.iter().any(|symbol| symbol == "z"), "{symbols:?}");
+    } else {
+        assert!(symbols.iter().all(|symbol| symbol == "AD06"), "{symbols:?}");
+    }
     let key = |state| {
         ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
             winit::event::RawKeyEvent {
@@ -914,14 +929,13 @@ fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
     app.harness()
         .dispatch_to_root(&key(winit::event::ElementState::Pressed));
     // A pressed physical key is named whenever the keys below it carry the
-    // layout's legends; the drawing holds no key to press on a host that has
-    // no keyboard data.
+    // layout's legends; an unlabelled drawing holds no key to press.
     assert_eq!(
         read(&mut app)["pressed_physical_keys"],
-        serde_json::json!(if without_keyboard_data {
-            Vec::<&str>::new()
-        } else {
+        serde_json::json!(if labelled_drawing {
             vec!["AD06"]
+        } else {
+            Vec::<&str>::new()
         })
     );
     app.harness()

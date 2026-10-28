@@ -125,7 +125,7 @@ impl ZoomStep {
 /// the same thing everywhere and every app states its level the same way.
 ///
 /// ```
-/// use ui_core::content_zoom::{ZoomModel, ZoomStep};
+/// use tilo_ui::content_zoom::{ZoomModel, ZoomStep};
 /// let mut model = ZoomModel::stepping([1.0, 2.0, 4.0], 1.0);
 /// assert_eq!(model.step(ZoomStep::In), 2.0);
 /// assert_eq!(model.label("Fit to window"), "200%");

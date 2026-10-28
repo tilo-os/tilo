@@ -5,7 +5,7 @@
 //! dev-overrides rebuilds (the shell) on top, and dev images accept it
 //! (os/dev-image's container policy rejects the bare `tilo-ci` OS image).
 //!
-//! Main commits are tagged `main-<sha7>` (t's publish-os-dev-<arch>), each
+//! Main commits are tagged `main-<sha7>` (t's `publish-os-dev-<arch>`), each
 //! an index of the architectures that built, so a
 //! pull takes the one the VM or device runs. The pull happens inside the VM
 //! when its image has podman; otherwise on this host with podman, for the
@@ -18,7 +18,7 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
 pub const IMAGE: &str = "registry.tilo.so/tilo/tilo-vm";
-/// Branches' own builds (t's publish-os-ref-<target>): a repository of their own, never one a
+/// Branches' own builds (t's `publish-os-ref-<target>`): a repository of their own, never one a
 /// device follows a channel from.
 pub const REF_IMAGE: &str = "registry.tilo.so/tilo/tilo-vm-ref";
 

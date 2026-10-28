@@ -790,7 +790,8 @@ impl FrameHarness {
         let handled = self
             .dispatch_node(node, |widget, doc, path| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),

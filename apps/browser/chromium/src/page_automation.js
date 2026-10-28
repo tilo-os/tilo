@@ -496,6 +496,73 @@ globalThis.__tiloPage ||= (() => {
       if (part.includes(MARKER)) return part;
     return '';
   }
+  const HIDDEN = {display: /^(?:none)$/i, visibility: /^(?:hidden|collapse)$/i,
+    'content-visibility': /^(?:hidden)$/i, opacity: /^0(?:\.0+)?%?$/};
+  // Where a rule's inner part names what sits under the hovered compound
+  // (`.menu:hover ul`, `.menu:hover > .panel`), the part the selector goes on
+  // with, or '' when the rule styles the trigger itself.
+  function afterHover(selector) {
+    if (typeof selector !== 'string') return '';
+    const at = selector.search(/:hover(?![\w-])/);
+    return at < 0 ? '' : selector.slice(at + 6).replace(/^[^\s>+~]*/, '').trim();
+  }
+  function ruleElements(rule) {
+    // A sheet a stylesheet import brings in is one more place a hover's rules
+    // sit; a layer's rules are nested like a media query's.
+    if (rule.styleSheet) {
+      let imported = null;
+      try { imported = rule.styleSheet.cssRules; } catch (error) { imported = null; }
+      return imported ? [...imported].flatMap(ruleElements) : [];
+    }
+    return rule.cssRules?.length ? [...rule.cssRules].flatMap(ruleElements) : [rule];
+  }
+  // Whether an element has a place on the page to be scrolled to: a box the
+  // page lays out and shows. A closed menu's rows, or a box of no size, have
+  // nowhere to be reached, and scrolling cannot open them.
+  function onPage(element) {
+    return element.getClientRects().length > 0 && !hiddenByStyle(element);
+  }
+  // Whether the page keeps this box out of sight with one of the hiding
+  // declarations it rests under. A box that has no size yet (an empty
+  // underline that grows on a hover) is not out of sight: it is a spacer, and
+  // a hover that gives it a size reveals nothing a gesture could reach.
+  function hiddenByStyle(element) {
+    for (let node = element, depth = 0; node && node.nodeType === 1 && depth++ < 32;
+      node = node.parentElement || node.getRootNode().host) {
+      const style = getComputedStyle(node);
+      if (Object.entries(HIDDEN).some(([name, held]) => held.test(String(style.getPropertyValue(name)).trim())))
+        return true;
+    }
+    return false;
+  }
+  // Whether an element the rule names after the hover is hidden now: what a
+  // hover would take out of hiding. The rest of the selector only means
+  // something under the box being hovered, so it is read from there: a rule
+  // that opens another box's panel says nothing about this one.
+  function hiddenNow(selector, under) {
+    if (!selector) return false;
+    let nodes = null;
+    try { nodes = under ? under.querySelectorAll(selector) : document.querySelectorAll(selector); }
+    catch (error) { return false; }
+    for (const node of nodes) if (hiddenByStyle(node)) return true;
+    return false;
+  }
+  // Whether one rule takes a box out of hiding on the hover: the part it names
+  // under the hovered compound starts hidden, or its own declarations bring a
+  // box the hidden declarations held down back into sight. A tint alone opens
+  // nothing.
+  function revealsOnHover(rule, element) {
+    for (const inner of ruleElements(rule)) {
+      const under = afterHover(String(inner && inner.selectorText || ''));
+      // A rule that only tints the trigger itself lays no box out to be
+      // reached: `display:flex` on a box the page already shows is a tint.
+      if (!under) continue;
+      if (hiddenNow(under, element)) return true;
+      // A rule the hover gives a size or a place to (`height:2px` on an empty
+      // underline) reveals nothing: it is the same box, drawn larger.
+    }
+    return false;
+  }
   function markHoverTargets() {
     hoverTargets = new Set();
     let seen = 0;
@@ -505,28 +572,52 @@ globalThis.__tiloPage ||= (() => {
       if (!rules) continue;
       for (const rule of rules) {
         if (seen++ > MAX_HOVER_RULES) return hoverTargets.size;
-        const trigger = hoverTrigger(rule.selectorText);
-        if (!trigger) continue;
-        // The marker is what a resting pointer puts on the element; it is
-        // borrowed here to read which elements a hover would land on.
-        const bare = trigger.split('.' + MARKER).join('');
-        if (!bare) continue;
-        for (const element of document.querySelectorAll('*')) {
-          let beside = false;
-          try { beside = element.matches(bare); } catch (error) { beside = false; }
+        try {
+          const trigger = hoverTrigger(rule.selectorText);
+          if (!trigger) continue;
+          // The marker is what a resting pointer puts on the element; it is
+          // borrowed here to read which elements a hover would land on.
+          const bare = trigger.split('.' + MARKER).join('');
+          let beside = null;
+          try { bare && (beside = document.querySelectorAll(bare)); } catch (error) { beside = null; }
           if (!beside) continue;
-          const had = element.classList.contains(MARKER);
-          if (!had) element.classList.add(MARKER);
-          let wanted = false;
-          try { wanted = element.matches(trigger); } catch (error) { wanted = false; }
-          if (!had) element.classList.remove(MARKER);
-          if (!wanted) continue;
-          if (hoverTargets.size >= MAX_HOVER_TARGETS) return hoverTargets.size;
-          hoverTargets.add(element);
+          for (const element of beside) {
+            const had = element.classList.contains(MARKER);
+            if (!had) element.classList.add(MARKER);
+            let wanted = false;
+            try { wanted = element.matches(trigger); } catch (error) { wanted = false; }
+            if (!had) element.classList.remove(MARKER);
+            if (!wanted || !revealsOnHover(rule, element)) continue;
+            if (hoverTargets.size >= MAX_HOVER_TARGETS) return hoverTargets.size;
+            hoverTargets.add(element);
+          }
+        } catch (error) {
+          // A rule this reader cannot follow is not a trigger it can name.
         }
       }
     }
     return hoverTargets.size;
+  }
+  // Whether a hover on this box is what takes a box out of hiding: the page's
+  // own rule says so, and the box the CSS hovers is the one a hand has to
+  // reach. It is read from the sheets, not from the class index: the index
+  // holds only the rules that style a box at rest.
+  function hoverRevealsUnder(element) {
+    let seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (error) { rules = null; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (seen++ > MAX_HOVER_RULES) return false;
+        const trigger = hoverTrigger(rule.selectorText || '');
+        if (!trigger || !revealsOnHover(rule, element)) continue;
+        let beside = false;
+        try { beside = element.matches(trigger.split('.' + MARKER).join('')); } catch (error) { beside = false; }
+        if (beside) return true;
+      }
+    }
+    return false;
   }
   // The element on which a hover opens something: itself when a rule names
   // it, an ancestor when the rule hovers one, else the parent whose hovered
@@ -932,7 +1023,10 @@ globalThis.__tiloPage ||= (() => {
       if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
       // A page that keeps a menu hidden until the pointer rests on it names
       // the element a hand has to reach, so a gesture can address it by ref.
-      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element)) kind = 'hoverable';
+      // A box a hover only tints is not a box it opens: a hand has nothing
+      // new to reach, so it is not listed as one a hover reveals.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element) && hoverRevealsUnder(element))
+        kind = 'hoverable';
       // A hover-only menu's trigger has no role of its own, no click and no
       // pointer cursor; it is found only by the rule its hover applies to.
       if (!kind && visible && !context.inside && tag !== 'body' && tag !== 'html' && hoverReveals(element))

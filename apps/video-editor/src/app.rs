@@ -930,6 +930,16 @@ struct MediaPipelineState {
     monitor_stale: bool,
 }
 
+/// What a composite was made from: a composite read back later is made
+/// again only when one of these changed, or a source still had a frame on
+/// its way.
+struct CompositeInputs {
+    playhead: f64,
+    width: u32,
+    height: u32,
+    project: Project,
+}
+
 /// Preview-renderer lifecycle and deterministic capture warm-up policy.
 #[derive(Default)]
 struct RenderPipelineState {
@@ -1048,13 +1058,10 @@ pub struct VideoEditorApp {
     /// It owns the decode sessions and one YUV converter per layer slot, so
     /// rebuilding it per frame would re-open a pipeline every frame. It is
     /// re-indexed (not rebuilt) when the media bin changes.
-    #[cfg(feature = "decode")]
     frame_source: Option<crate::gpu::MediaFrameSource>,
     /// Signature of the media the frame source was last indexed against.
-    #[cfg(feature = "decode")]
     frame_source_sig: u64,
     /// Frames since the frame source last dropped its idle sessions.
-    #[cfg(feature = "decode")]
     prune_countdown: u32,
     /// Audio monitoring: the mixed timeline, played while the transport
     /// runs. `None` until the first frame builds it, and it holds a
@@ -1098,6 +1105,10 @@ pub struct VideoEditorApp {
     /// have one does not retry every frame.
     /// Scratch RGBA readback from the compositor, reused between frames.
     composited: Option<(u32, u32, std::sync::Arc<Vec<u8>>)>,
+    /// A composite on its way back from a GPU this thread may not wait for
+    /// (a browser page's), with what it was composited from; `None` with
+    /// inputs when the last one landed and nothing changed since.
+    composite_later: Option<(Option<crate::gpu::PendingFrame>, CompositeInputs)>,
     drag: Option<Drag>,
     /// Live rubber-band rect while a [`Drag::Marquee`] is past its threshold,
     /// so `draw` can paint it. `None` until the press actually becomes a drag.
@@ -1247,6 +1258,9 @@ pub struct VideoEditorApp {
     /// publishes progress; this polls it each frame. Dropped once its status
     /// is terminal and the dialog has shown the outcome.
     export_job: Option<crate::export::ExportJob>,
+    /// Where a render run a step at a time will be saved, being chosen
+    /// before it starts ([`crate::export::renders_by_steps`]).
+    export_save_rx: Option<ui::portal::DestinationChannel>,
     /// A destination-picker round-trip in flight, drained each frame exactly
     /// like the import one. The user chooses where the file lands (and, under
     /// a strict sandbox, that grant is what earns the write).
@@ -1444,12 +1458,10 @@ impl VideoEditorApp {
             undo: ui::UndoAccess::default(),
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
-            #[cfg(feature = "decode")]
             frame_source: None,
-            #[cfg(feature = "decode")]
             frame_source_sig: 0,
-            #[cfg(feature = "decode")]
             prune_countdown: 0,
+            composite_later: None,
             #[cfg(any(feature = "gst", feature = "decode"))]
             monitor: None,
             mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
@@ -1503,6 +1515,7 @@ impl VideoEditorApp {
             waveforms: crate::waveform::WaveformCache::new(),
             projected_media: HashSet::new(),
             export_job: None,
+            export_save_rx: None,
             export_dest_rx: None,
             export_notice: None,
             project_path: None,
@@ -1543,16 +1556,9 @@ impl VideoEditorApp {
     /// the source. The compositor's frame source now reports whether it put a
     /// decoded picture on any layer, and that is the answer.
     pub fn has_preview_frame(&self) -> bool {
-        #[cfg(feature = "decode")]
-        {
-            self.frame_source
-                .as_ref()
-                .is_some_and(crate::gpu::media_source::MediaFrameSource::served_real_picture)
-        }
-        #[cfg(not(feature = "decode"))]
-        {
-            false
-        }
+        self.frame_source
+            .as_ref()
+            .is_some_and(crate::gpu::MediaFrameSource::served_real_picture)
     }
 
     /// Whether a decoded picture of the clip under the playhead may still
@@ -5103,7 +5109,7 @@ impl VideoEditorApp {
             text: None,
             has_audio: probed.has_audio,
         };
-        crate::files::keep_imported(token, bytes);
+        crate::files::keep_imported(token, name, bytes);
         self.project.media.push(item.clone());
         self.submit_media(&item);
         self.selected_media = Some(id);
@@ -5506,11 +5512,20 @@ impl VideoEditorApp {
     /// deterministic and free of any media pipeline.
     fn pump_compositor(&mut self, r: &Regions) {
         const MAX_W: f64 = 960.0;
+        // A thread that may not wait for the GPU (a browser page's) gets the
+        // device only once the page has opened one, so it asks again.
+        let can_wait = ui::rt::available(ui::rt::Feature::BlockOn);
         if !self.render_pipeline.compositor_tried {
-            self.render_pipeline.compositor_tried = true;
             match crate::gpu::HeadlessCompositor::new() {
-                Ok(c) => self.compositor = Some(c),
-                Err(e) => tracing::warn!(error = %e, "no GPU compositor for the preview"),
+                Ok(c) => {
+                    self.compositor = Some(c);
+                    self.render_pipeline.compositor_tried = true;
+                }
+                Err(e) if can_wait => {
+                    self.render_pipeline.compositor_tried = true;
+                    tracing::warn!(error = %e, "no GPU compositor for the preview");
+                }
+                Err(_) => {}
             }
         }
         let Some(compositor) = self.compositor.as_mut() else {
@@ -5518,68 +5533,105 @@ impl VideoEditorApp {
         };
         if self.project.clips.is_empty() || r.canvas.width() < 1.0 {
             self.composited = None;
+            self.composite_later = None;
             return;
         }
         let scale = (MAX_W / r.canvas.width()).min(1.0);
         let w = (r.canvas.width() * scale).round().max(2.0) as u32;
         let h = (r.canvas.height() * scale).round().max(2.0) as u32;
 
-        #[cfg(feature = "decode")]
-        let rgba = {
-            // The preview resolves its layers straight off the decode
-            // sessions, which hand back a GPU-resident planar picture. The
-            // CPU path this replaced converted every frame to RGBA on the
-            // host first — a full-frame colour convert per layer per frame,
-            // for a picture that was already on the GPU.
-            //
-            // `Responsive` never blocks: it serves the cached frame if there
-            // is one and otherwise nudges the pipeline and holds the last
-            // picture, so a scrub cannot stall the UI thread.
-            let sig = crate::gpu::MediaFrameSource::project_signature(&self.project);
-            if self.frame_source.is_none() {
-                self.frame_source =
-                    // A capture has no interactive deadline to miss, and it
-                    // renders exactly once — so it must block for the real
-                    // picture rather than paint the representative fill and
-                    // move on. The live editor must never block: a scrub that
-                    // stalls the UI thread is worse than a frame of lag.
-                    Some(crate::gpu::MediaFrameSource::new(
-                        &self.project,
-                        if self.seed.capture {
-                            crate::gpu::Fetch::Exact
-                        } else {
-                            crate::gpu::Fetch::Responsive
-                        },
-                    ));
-                self.frame_source_sig = sig;
-            } else if sig != self.frame_source_sig {
-                if let Some(src) = self.frame_source.as_mut() {
-                    src.set_project(&self.project);
-                }
-                self.frame_source_sig = sig;
+        // The preview resolves its layers straight off the decoder. With the
+        // GStreamer sessions those hand back a GPU-resident planar picture;
+        // without them (a browser page) a seeker per source holds the exact
+        // frame. Either way the fetch never blocks: it serves the cached
+        // frame if there is one and otherwise nudges the decoder and holds
+        // the last picture, so a scrub cannot stall the UI thread.
+        let sig = crate::gpu::MediaFrameSource::project_signature(&self.project);
+        if self.frame_source.is_none() {
+            self.frame_source =
+                // A capture has no interactive deadline to miss, and it
+                // renders exactly once — so it must block for the real
+                // picture rather than paint the representative fill and
+                // move on. The live editor must never block: a scrub that
+                // stalls the UI thread is worse than a frame of lag.
+                Some(crate::gpu::MediaFrameSource::new(
+                    &self.project,
+                    if self.seed.capture {
+                        crate::gpu::Fetch::Exact
+                    } else {
+                        crate::gpu::Fetch::Responsive
+                    },
+                ));
+            self.frame_source_sig = sig;
+        } else if sig != self.frame_source_sig {
+            if let Some(src) = self.frame_source.as_mut() {
+                src.set_project(&self.project);
             }
-            if let Some(sources) = self.frame_source.as_mut() {
-                // An open pipeline holds a decoder and a slice of the GPU. Drop
+            self.frame_source_sig = sig;
+        }
+        // Whether the last composite asked a source for a frame still on its
+        // way, so a composite read back later is made again.
+        let waiting = self
+            .frame_source
+            .as_ref()
+            .is_some_and(crate::gpu::MediaFrameSource::has_pending_frames);
+        let mut no_sources = crate::gpu::NoSources;
+        let sources: &mut dyn crate::gpu::FrameSource = match self.frame_source.as_mut() {
+            Some(sources) => {
+                // An open decoder holds memory and a slice of the GPU. Drop
                 // the idle ones periodically rather than every frame, which
-                // would churn sessions the playhead is about to want again.
+                // would churn decoders the playhead is about to want again.
                 self.prune_countdown = self.prune_countdown.wrapping_add(1);
                 if self.prune_countdown.is_multiple_of(120) {
                     sources.prune();
                 }
-                compositor.frame(&self.project, self.playhead, w, h, sources)
-            } else {
-                // A decoder setup failure is a preview fallback, never a UI
-                // thread panic. The media bin continues to disclose it.
-                let mut sources = crate::gpu::NoSources;
-                compositor.frame(&self.project, self.playhead, w, h, &mut sources)
+                sources
             }
-        };
-        #[cfg(not(feature = "decode"))]
-        let rgba = {
-            let mut sources = crate::gpu::NoSources;
-            compositor.frame(&self.project, self.playhead, w, h, &mut sources)
+            // A decoder setup failure is a preview fallback, never a UI
+            // thread panic. The media bin continues to disclose it.
+            None => &mut no_sources,
         };
 
+        if !can_wait {
+            // The pixels come back after this frame is drawn: show the last
+            // composite until they do, and composite again only when what it
+            // was made from changed or a source's frame was still on its way.
+            if let Some((Some(pending), _)) = &self.composite_later {
+                match pending.try_take() {
+                    None => return,
+                    Some(Ok(rgba)) => {
+                        let (pw, ph) = pending.size();
+                        self.composited = Some((pw, ph, std::sync::Arc::new(rgba)));
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!(error = %e, "the preview composite did not come back");
+                        self.composited = None;
+                    }
+                }
+                if let Some((slot, _)) = self.composite_later.as_mut() {
+                    *slot = None;
+                }
+            }
+            let unchanged = self.composite_later.as_ref().is_some_and(|(_, made_from)| {
+                made_from.playhead.to_bits() == self.playhead.to_bits()
+                    && (made_from.width, made_from.height) == (w, h)
+                    && made_from.project == self.project
+            });
+            if unchanged && !waiting {
+                return;
+            }
+            let pending = compositor.frame_later(&self.project, self.playhead, w, h, sources);
+            let inputs = CompositeInputs {
+                playhead: self.playhead,
+                width: w,
+                height: h,
+                project: self.project.clone(),
+            };
+            self.composite_later = Some((Some(pending), inputs));
+            return;
+        }
+
+        let rgba = compositor.frame(&self.project, self.playhead, w, h, sources);
         if rgba.len() == (w as usize) * (h as usize) * 4 {
             self.composited = Some((w, h, std::sync::Arc::new(rgba)));
         } else {
@@ -5766,11 +5818,11 @@ impl VideoEditorApp {
             .copied()
             .zip(group(&mut captions[0], &resolution_labels))
             .collect();
-        let container_labels: Vec<String> = Container::ALL
+        let container_labels: Vec<String> = Container::offered()
             .iter()
             .map(|v| v.label().to_string())
             .collect();
-        let container = Container::ALL
+        let container = Container::offered()
             .iter()
             .copied()
             .zip(group(&mut captions[1], &container_labels))
@@ -6412,13 +6464,15 @@ impl Widget for VideoEditorApp {
     fn needs_animation_frame(&self) -> bool {
         // A clip's switch asks the motion clock for its own frames
         // (`FaceMotions`); the runner reads it.
-        #[cfg(feature = "decode")]
         let decoding = self
             .frame_source
             .as_ref()
-            .is_some_and(crate::gpu::MediaFrameSource::has_pending_frames);
-        #[cfg(not(feature = "decode"))]
-        let decoding = false;
+            .is_some_and(crate::gpu::MediaFrameSource::has_pending_frames)
+            // A composite on its way back from the GPU paints when it lands.
+            || self
+                .composite_later
+                .as_ref()
+                .is_some_and(|(pending, _)| pending.is_some());
         decoding
             || self.playback.playing
             || self.shuttle != 0.0
@@ -6427,6 +6481,7 @@ impl Widget for VideoEditorApp {
             || self.bin_rename.is_some() // a live rename blinks its caret
             || self.export_job.is_some() // a running render moves its progress bar
             || self.export_dest_rx.is_some() // …and a picker is still an action in flight
+            || self.export_save_rx.is_some()
             // A meter that stopped mid-fall reads as a level that is still
             // there. Frames keep coming until the bars are down.
             || self.mix_meter_is_live()
@@ -6877,7 +6932,33 @@ impl Widget for VideoEditorApp {
                 }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
-                let report = self.import_files(std::slice::from_ref(path));
+                // Where files have no path to read (a browser page) the drop
+                // hands over the file's bytes instead.
+                let report = match ui::portal::dropped() {
+                    Some(ui::portal::Dropped::Contents(file)) => {
+                        let mut report = ImportReport::default();
+                        match self.try_import_contents(&file.name, file.bytes) {
+                            Ok(()) => report.added += 1,
+                            Err(reason) => report.refused.push((file.name, reason)),
+                        }
+                        report
+                    }
+                    Some(ui::portal::Dropped::NotRead { name, why, .. }) => ImportReport {
+                        added: 0,
+                        refused: vec![(
+                            name,
+                            match why {
+                                ui::portal::NotRead::TooLarge => {
+                                    "is too large to import by dropping it".to_string()
+                                }
+                                ui::portal::NotRead::TooMany => {
+                                    "was more files than one drop takes".to_string()
+                                }
+                            },
+                        )],
+                    },
+                    None => self.import_files(std::slice::from_ref(path)),
+                };
                 self.import_notice.show(import_report_notice(&report));
                 *ctx.handled = true;
             }

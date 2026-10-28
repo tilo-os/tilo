@@ -122,6 +122,7 @@ pub mod published;
 pub mod roaming_provenance;
 mod section_digest;
 mod session;
+pub mod sign_in_comforts;
 mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]

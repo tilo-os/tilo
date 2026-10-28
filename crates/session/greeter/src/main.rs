@@ -98,13 +98,38 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
     let console = console_control::ConsoleServer::new();
+    // The device's sign-in comforts: a screen reader user hears this screen
+    // from its first frame, on every boot.
+    let socket = std::path::Path::new(greeter::handoff::DEFAULT_SOCKET);
+    let comforts = greeter::comforts::load(socket);
+    if let Some(language) = comforts.as_ref().and_then(|c| c.language.as_deref()) {
+        greeter::i18n::CATALOG.set_locale(language);
+    }
     let widget = GreeterApp::new()
         .with_proxy_slot(proxy_slot.clone())
         .with_console(console.clone())
-        .with_displays(displays.clone());
+        .with_displays(displays.clone())
+        .with_sign_in_comforts(
+            comforts.as_ref().is_some_and(|c| c.screen_reader),
+            greeter::comforts::Changes::to(socket.to_owned()),
+        );
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .without_native_document_chrome();
+    // With none chosen, what the kiosk was started with stays.
+    if let Some(comforts) = &comforts {
+        app.set_text_scale(comforts.text_scale);
+        app.set_high_contrast(comforts.high_contrast);
+        app.apply_screen_reader_settings(&comforts.screen_reader_settings());
+    }
+    // The chord turns the reader over here as everywhere; the toggle on the
+    // card follows it and the login screens keep it, not a settings file.
+    let chord = proxy_slot.clone();
+    app.on_screen_reader_chord(move |on| {
+        if let Some(proxy) = chord.get() {
+            let _ = proxy.send_event(UserEvent::External(greeter::comforts::chord_payload(on)));
+        }
+    });
     tilo_startup_metrics::mark("greeter-app-ready");
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.

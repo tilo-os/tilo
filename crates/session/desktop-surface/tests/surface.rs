@@ -1528,33 +1528,17 @@ fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode>
     palette.children.get(1).unwrap().children.clone()
 }
 
-/// Choose the app row named `name` in open search.
-fn choose_app(driver: &mut ui::headless::FrameHarness, name: &str) {
-    let row = result_rows(driver)
-        .into_iter()
-        .find(|row| row.name.as_deref() == Some(name))
-        .unwrap();
-    driver
-        .perform_semantic_named(
-            "command_palette_input",
-            row.action_target.as_deref(),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
-    driver.relayout();
-}
-
 #[test]
 fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twice() {
     let (mut driver, handle, _) = mount();
     handle.open_search(Some("sheets".into()));
     driver.relayout();
-    choose_app(&mut driver, "Sheets");
+    choose_row(&mut driver, "Sheets");
     assert!(handle.focus_app("so.tilo.notes"));
     driver.relayout();
     handle.open_search(Some("sheets".into()));
     driver.relayout();
-    choose_app(&mut driver, "Sheets");
+    choose_row(&mut driver, "Sheets");
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         labels(&snapshot),
@@ -1674,6 +1658,72 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     driver.relayout();
     assert!(!handle.search_open());
     assert!(labels(&handle.snapshot("g", vec![])).contains(&"writer".into()));
+}
+
+/// Choose the row named `name` in open search, which must offer it.
+fn choose_row(driver: &mut ui::headless::FrameHarness, name: &str) {
+    let rows = result_rows(driver);
+    let names: Vec<_> = rows.iter().map(|row| row.name.clone()).collect();
+    let row = rows.iter().find(|row| row.name.as_deref() == Some(name));
+    assert!(row.is_some(), "no row {name:?} among {names:?}");
+    let row = row.unwrap();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            row.action_target.as_deref(),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+}
+
+/// Search over everything answers what is not a name, as the native shell's
+/// does: a sum and a unit conversion lead and are copied, and any query can
+/// be searched on the web, which opens where the host opens addresses (a
+/// new tab of the browser the web desktop runs in).
+#[test]
+fn search_works_out_sums_and_conversions_and_searches_the_web() {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let pumped = ui::rt::background::Pumped::new();
+    let _background = pumped.background().enter();
+    ui::host::scoped(&services, || {
+        let (mut driver, handle, _) = mount();
+        handle.open_search(Some("12*7".into()));
+        driver.relayout();
+        assert_eq!(
+            result_rows(&driver)
+                .first()
+                .and_then(|row| row.name.clone())
+                .as_deref(),
+            Some("84"),
+            "the sum leads"
+        );
+        driver.key("Enter");
+        driver.relayout();
+        assert!(!handle.search_open(), "choosing the answer closes search");
+
+        handle.open_search(Some("5 km in miles".into()));
+        driver.relayout();
+        choose_row(&mut driver, "3.1069 mi");
+
+        handle.open_search(Some("tilo desktop".into()));
+        driver.relayout();
+        choose_row(&mut driver, "Search the web for tilo desktop");
+        assert!(!handle.search_open());
+    });
+    pumped.run_pending();
+    assert_eq!(
+        recorder
+            .copies()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["84", "3.1069 mi"]
+    );
+    assert_eq!(
+        recorder.opened_uris(),
+        ["https://duckduckgo.com/?q=tilo%20desktop"]
+    );
 }
 
 #[test]

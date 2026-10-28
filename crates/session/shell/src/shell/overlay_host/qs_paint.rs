@@ -266,8 +266,8 @@ impl ShellOverlayHost {
     /// and is undone within one draw.
     pub(super) fn swap_quick_settings_stack(
         &self,
-        stack: Vec<crate::shell::quick_settings::QsLevel>,
-    ) -> Vec<crate::shell::quick_settings::QsLevel> {
+        stack: Vec<tilo_quick_settings::QsLevel>,
+    ) -> Vec<tilo_quick_settings::QsLevel> {
         self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             std::mem::replace(&mut chrome.borrow_mut().quick_settings.nav_stack, stack)
         })
@@ -307,18 +307,18 @@ impl ShellOverlayHost {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
+        qs: &tilo_quick_settings::QuickSettingsState,
     ) -> bool {
         match qs.current_level() {
-            crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
+            tilo_quick_settings::QsLevel::BluetoothDetails(address) => {
                 self.draw_qs_bluetooth_details(scene, transform, text_renderer, theme, qs, address);
                 true
             }
-            crate::shell::quick_settings::QsLevel::Notifications => {
+            tilo_quick_settings::QsLevel::Notifications => {
                 self.draw_qs_notification_history(scene, transform, text_renderer, theme);
                 true
             }
-            crate::shell::quick_settings::QsLevel::Root => false,
+            tilo_quick_settings::QsLevel::Root => false,
         }
     }
 
@@ -419,7 +419,7 @@ impl ShellOverlayHost {
             .and_then(|chrome| {
                 self.qs_root.hosted_row_rect(
                     &chrome.borrow().quick_settings,
-                    crate::shell::quick_settings::QsSection::Devices,
+                    tilo_quick_settings::QsSection::Devices,
                     index,
                 )
             })
@@ -444,10 +444,10 @@ impl ShellOverlayHost {
     pub(super) fn open_devices_for_tests(&mut self) {
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
-            if st.quick_settings.section != Some(crate::shell::quick_settings::QsSection::Devices)
+            if st.quick_settings.section != Some(tilo_quick_settings::QsSection::Devices)
                 || !st.overlays.quick_settings
             {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Devices);
             }
         }
         self.lay_out_quick_settings_for_tests();

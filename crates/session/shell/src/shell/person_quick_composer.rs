@@ -591,7 +591,7 @@ mod tests {
             let initial = frame.root::<PersonQuickComposer>().popover.rect();
             let moved = Rect::new(300.0, 220.0, 332.0, 252.0);
             {
-                let composer = frame.root_mut::<PersonQuickComposer>();
+                let mut composer = frame.root_mut::<PersonQuickComposer>();
                 composer.follow_anchor(moved);
             }
             frame.recompose().unwrap();
@@ -602,7 +602,7 @@ mod tests {
             );
             // Focus by itself must not freeze the anchor. The event below
             // reaches the real retained TextInput through the popover.
-            assert!(focus(frame.root_mut::<PersonQuickComposer>()));
+            assert!(focus(&mut *frame.root_mut::<PersonQuickComposer>()));
             frame.recompose().unwrap();
             assert!(!frame.root::<PersonQuickComposer>().anchor.frozen);
             let editor =
@@ -630,7 +630,7 @@ mod tests {
             }
             let later = Rect::new(500.0, 400.0, 532.0, 432.0);
             {
-                let composer = frame.root_mut::<PersonQuickComposer>();
+                let mut composer = frame.root_mut::<PersonQuickComposer>();
                 composer.follow_anchor(later);
             }
             frame.recompose().unwrap();
@@ -639,7 +639,7 @@ mod tests {
             frame.dispatch_to_root(&input::cursor_moved(790.0, 590.0));
             frame.dispatch_to_root(&input::mouse_press());
             assert_dismissed_editor(
-                frame.root_mut::<PersonQuickComposer>(),
+                &mut *frame.root_mut::<PersonQuickComposer>(),
                 later,
                 followed,
                 &draft,

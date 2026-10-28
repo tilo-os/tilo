@@ -73,10 +73,19 @@ pub const MAX_ANSWER_CHARS: u64 = 4000;
 pub const MAX_WORK_TITLE_CHARS: u64 = 120;
 /// How long one transform may take, the repair attempt included.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request's decision may take, the repair attempt included: the
+/// composer shows this answer in a box the person is waiting in front of, so
+/// it is a distinct, much shorter budget than a transform's. Past it the
+/// agent says nothing and the request runs as the work it was written as.
+pub const RESPOND_TIMEOUT: Duration = Duration::from_secs(6);
 /// Transforms run at once; past this a new one is refused as busy.
 pub const MAX_RUNNING: usize = 4;
 /// Output tokens asked of the model per attempt.
 const MAX_OUTPUT_TOKENS: u32 = 2048;
+/// Output tokens a decision may spend: an answer inside [`MAX_ANSWER_CHARS`],
+/// or a work title, which is far shorter. Asking for a transform's budget
+/// would let a model talk its way past [`RESPOND_TIMEOUT`].
+const MAX_RESPOND_TOKENS: u32 = 1024;
 /// How much of a rejected answer is shown back to the model when repairing.
 const REPAIR_ECHO_CHARS: usize = 4000;
 
@@ -97,7 +106,8 @@ pub mod code {
     pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
     /// The model's answer failed the requested shape twice.
     pub const INVALID_OUTPUT: &str = "invalid_model_output";
-    /// [`super::TIMEOUT`] passed before a valid answer arrived.
+    /// [`super::TIMEOUT`], or [`super::RESPOND_TIMEOUT`] for a request's
+    /// decision, passed before a valid answer arrived.
     pub const TIMED_OUT: &str = "timed_out";
     /// [`super::MAX_RUNNING`] transforms are already running.
     pub const BUSY: &str = "busy";
@@ -543,6 +553,24 @@ impl Transform {
                 request,
                 conversation,
             } => respond_task(request, conversation),
+        }
+    }
+
+    /// How long this transform may take, the repair attempt included.
+    #[must_use]
+    pub fn budget(&self) -> Duration {
+        match self {
+            Self::Respond { .. } => RESPOND_TIMEOUT,
+            _ => TIMEOUT,
+        }
+    }
+
+    /// Output tokens one attempt of this transform may spend.
+    #[must_use]
+    pub fn max_output_tokens(&self) -> u32 {
+        match self {
+            Self::Respond { .. } => MAX_RESPOND_TOKENS,
+            _ => MAX_OUTPUT_TOKENS,
         }
     }
 
@@ -1088,7 +1116,8 @@ fn first_chars(text: &str, most: usize) -> String {
 /// # Errors
 ///
 /// [`code::MODEL_UNAVAILABLE`] when the model gave no answer,
-/// [`code::TIMED_OUT`] when [`TIMEOUT`] passed, and
+/// [`code::TIMED_OUT`] when the transform's budget ([`Transform::budget`])
+/// passed, and
 /// [`code::INVALID_OUTPUT`] when both answers failed the shape.
 pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Failure> {
     run_until(call, model, &AtomicBool::new(false))
@@ -1106,6 +1135,8 @@ pub fn run_until(
     stop: &AtomicBool,
 ) -> Result<ActionOutput, Failure> {
     let began = ui::time::now();
+    let budget = call.transform.budget();
+    let max_output_tokens = call.transform.max_output_tokens();
     let instructions = call.transform.instructions();
     let expected = call.transform.expected();
     let input = call
@@ -1119,7 +1150,7 @@ pub fn run_until(
     let mut turn = input.clone();
     let mut rejected = String::new();
     for attempt in 0..2 {
-        let Some(left) = TIMEOUT
+        let Some(left) = budget
             .checked_sub(began.elapsed())
             .filter(|left| !left.is_zero())
         else {
@@ -1140,7 +1171,7 @@ pub fn run_until(
             .answer_until(
                 call.transform.kind(),
                 (&instructions, &turn),
-                MAX_OUTPUT_TOKENS,
+                max_output_tokens,
                 left,
                 stop,
             )

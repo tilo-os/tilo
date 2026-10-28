@@ -155,6 +155,24 @@ pub(crate) fn invoked_control(
         .map_err(|error| error.to_string())
 }
 
+thread_local! {
+    static PRESSES: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Ask the host to press the point `at` of the window, in the coordinates
+/// a widget is drawn in, once the operation it is answering returns: a
+/// published control whose owner reads its choice from the input it handles
+/// (a menu row) is chosen the way a person chooses it. The host presses as
+/// it does when an assistive technology activates a painted target.
+pub(crate) fn press_where_drawn(at: Point) {
+    PRESSES.with(|presses| presses.borrow_mut().push(at));
+}
+
+/// The presses asked for since the last call, in order.
+pub(crate) fn take_presses() -> Vec<Point> {
+    PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
+}
+
 #[derive(Default)]
 pub(crate) struct Activation {
     id: String,

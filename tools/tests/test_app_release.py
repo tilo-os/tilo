@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class AppReleaseTests(unittest.TestCase):
     def test_release_architectures_default_to_both_lanes_and_fail_closed(self):
         with self.subTest(phase='ordinary builds default to both native lanes'):
-            for ref, event in [("refs/heads/main", "push"), ("refs/pull/17/merge", "pull_request")]:
+            for ref, event in [("refs/heads/stable", "push"), ("refs/pull/17/merge", "pull_request")]:
                 with self.subTest(event=event):
                     self.assertEqual(
                         app_release.architecture_matrix(ref, event),
@@ -33,7 +33,7 @@ class AppReleaseTests(unittest.TestCase):
                     )
         with self.subTest(phase='manual build can explicitly select one architecture'):
             self.assertEqual(
-                app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
+                app_release.architecture_matrix("refs/heads/stable", "workflow_dispatch", requested="aarch64"),
                 {"include": [{"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"}]},
             )
         with self.subTest(phase='main architecture switch and tags cover both'):
@@ -45,7 +45,7 @@ class AppReleaseTests(unittest.TestCase):
             }
             self.assertEqual(
                 app_release.architecture_matrix(
-                    "refs/heads/main", "push", main_architectures="x86_64,aarch64"
+                    "refs/heads/stable", "push", main_architectures="x86_64,aarch64"
                 ),
                 both,
             )
@@ -58,10 +58,10 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='invalid release architecture fails closed'):
             with self.assertRaisesRegex(ValueError, "architectures must contain only"):
                 app_release.architecture_matrix(
-                    "refs/heads/main", "push", main_architectures="riscv64"
+                    "refs/heads/stable", "push", main_architectures="riscv64"
                 )
 
-    def test_collections_and_main_push_define_the_publication_boundary(self):
+    def test_collections_and_the_promotion_push_define_the_publication_boundary(self):
         with self.subTest(phase='wildcard collection tracks catalog'):
             cfg = {"collections": {"default": {"include": ["*"]}}}
             self.assertEqual(
@@ -92,7 +92,7 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(catalog),
             )
-        with self.subTest(phase='main push selects affected apps and publishes default collection'):
+        with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
                 encoding="utf-8"
             )
@@ -102,7 +102,7 @@ class AppReleaseTests(unittest.TestCase):
                 'python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', 1
             )[0]
             push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
-            self.assertIn("    branches: [main]", push)
+            self.assertIn("    branches: [stable]", push)
             self.assertNotIn("refs/heads/main", selection)
             # Superseded queued runs must not drop their changes: select
             # relative to the published collection, else rebuild it all.
@@ -115,7 +115,7 @@ class AppReleaseTests(unittest.TestCase):
             )
             self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"',
                           (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8"))
-            self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
+            self.assertIn("if [[ $GITHUB_REF == refs/heads/stable ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
             catalog = app_release.app_catalog(ROOT)

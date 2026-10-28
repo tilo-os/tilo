@@ -8,12 +8,21 @@
 //! report is decided by the same grants as any other action.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Atom, Counter, JsonSchema, Model};
+use ui::tilo_resource::{self, Atom, Counter, JsonSchema, Model, Refusal};
 
 /// The longest turn a budget admits: 15 minutes.
 pub const MAX_TURN_MS: u64 = 900_000;
 /// The longest run a budget admits: two hours.
 pub const MAX_TOTAL_MS: u64 = 7_200_000;
+/// Most per-step receipts a run keeps: the rest of the run still counts
+/// towards its totals and its budget, only their receipts are not listed.
+pub const MAX_SPEND_STEPS: u64 = 64;
+/// The longest model name a receipt keeps.
+pub const MAX_MODEL_CHARS: usize = 96;
+/// The longest device name a receipt keeps.
+pub const MAX_DEVICE_CHARS: usize = 96;
+/// The longest reason a pause keeps, in characters.
+pub const MAX_PAUSE_REASON_CHARS: usize = 240;
 
 /// Where a run is.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -104,13 +113,22 @@ pub enum RunOutcome {
     Stopped,
 }
 
-/// Time ceilings for an issue's runs.
-#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// What an issue's runs may spend, and for how long they may work.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Budget {
     /// The longest one model turn may take, in milliseconds.
     pub turn_ms: u64,
     /// The longest the whole run may take, in milliseconds.
     pub total_ms: u64,
+    /// The most tokens the issue's runs may spend, input and output
+    /// together, counting its sub-issues'. None for no limit.
+    pub max_tokens: Option<u64>,
+    /// The most calls priced per call, such as a web search.
+    pub max_priced_calls: Option<u64>,
+    /// The most money, in micro-units of `currency`.
+    pub max_cost_micros: Option<u64>,
+    /// The currency `max_cost_micros` is in; empty when no money is limited.
+    pub currency: String,
 }
 
 impl Budget {
@@ -122,6 +140,58 @@ impl Budget {
         let total = (1..=MAX_TOTAL_MS).contains(&total_ms);
         turn && total && turn_ms <= total_ms
     }
+
+    /// Whether it limits nothing a run spends: no tokens, priced calls or
+    /// money.
+    #[must_use]
+    pub fn spends_freely(&self) -> bool {
+        self.max_tokens.is_none()
+            && self.max_priced_calls.is_none()
+            && self.max_cost_micros.is_none()
+    }
+
+    /// Whether a run that settled `spent` has reached this budget, and why
+    /// the next step may not be taken. The reason names the limit.
+    #[must_use]
+    pub fn reached(&self, spent: &Spend) -> Option<String> {
+        if let Some(max) = self.max_tokens
+            && spent.tokens() >= max
+        {
+            return Some(format!(
+                "This task's budget of {max} tokens is spent, so it waits for you to raise it"
+            ));
+        }
+        if let Some(max) = self.max_priced_calls
+            && spent.priced_calls >= max
+        {
+            return Some(format!(
+                "This task's budget of {max} priced calls is spent, so it waits for you to raise it"
+            ));
+        }
+        if let Some(max) = self.max_cost_micros
+            && spent.cost() >= max
+        {
+            let named = self.currency.trim();
+            return Some(
+                format!(
+                    "This task's budget of {} {named} is spent, so it waits for you to raise it",
+                    money(max)
+                )
+                .replace("  ", " "),
+            );
+        }
+        None
+    }
+}
+
+/// Micro-units as a person reads money: whole units and hundredths.
+#[must_use]
+pub fn money(micros: u64) -> String {
+    format!(
+        "{}.{:02}",
+        micros / 1_000_000,
+        (micros % 1_000_000) / 10_000
+    )
 }
 
 /// A model of one provider, chosen for an issue's runs in place of the one
@@ -189,6 +259,180 @@ pub enum ConfirmationState {
     Declined,
 }
 
+/// What one step of a run costs: one model turn, as its provider counted it,
+/// and the priced calls it made besides.
+///
+/// A step is charged when it starts, from what the agent estimates it will
+/// use, and settled when it completes: the settled figure is what the run's
+/// totals and its budget are measured against. A step whose provider
+/// answered with an error settles at nothing, so a failed call never spends
+/// a task's budget.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StepSpend {
+    /// The turn's number in the run, from 1.
+    pub step: u64,
+    /// The model the turn used, as its provider names it. Empty for a run
+    /// whose steps a person plans, or matched to the request's words.
+    pub model: String,
+    /// The device that paid: the one the agent ran on.
+    pub device: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// Calls priced per call, such as a web search.
+    pub priced_calls: u64,
+    /// Micro-units of `currency`: `0` for a run on a local model, which
+    /// spends the device's time and tokens rather than money.
+    pub cost_micros: u64,
+    /// The currency `cost_micros` is in; empty when nothing was priced.
+    pub currency: String,
+}
+
+impl StepSpend {
+    /// The tokens the step spent, input and output together.
+    #[must_use]
+    pub fn tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+}
+
+/// What a run spent, step by step.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Spend {
+    /// The most recent steps, oldest first, at most [`MAX_SPEND_STEPS`].
+    pub steps: Vec<StepSpend>,
+    /// The run's steps, listed in `steps` or dropped past the bound.
+    pub steps_taken: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub priced_calls: u64,
+    pub cost_micros: u64,
+    /// Never two currencies in one run: a step priced in another is refused.
+    pub currency: String,
+    /// What is held for the step in flight, before it settles.
+    pub held_tokens: u64,
+    pub held_cost_micros: u64,
+}
+
+impl Spend {
+    /// The tokens the run spent, input and output together, settled steps
+    /// and the held estimate.
+    #[must_use]
+    pub fn tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.held_tokens)
+    }
+
+    /// The money the run spent, in micro-units, with the held estimate.
+    #[must_use]
+    pub fn cost(&self) -> u64 {
+        self.cost_micros.saturating_add(self.held_cost_micros)
+    }
+
+    /// Whether nothing is held for a step: every step taken has settled.
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.held_tokens == 0 && self.held_cost_micros == 0
+    }
+
+    /// Hold `tokens` and `cost_micros` for the step that is about to start.
+    /// A hold is the agent's estimate; the settled receipt replaces it.
+    ///
+    /// # Errors
+    /// Refuses a second hold while one is out, which would let a run spend
+    /// its budget twice over.
+    pub fn hold(&mut self, tokens: u64, cost_micros: u64) -> Result<(), Refusal> {
+        if !self.is_settled() {
+            return Err(Refusal::new("The step before this one has not settled"));
+        }
+        self.held_tokens = tokens;
+        self.held_cost_micros = cost_micros;
+        Ok(())
+    }
+
+    /// Settle the held step with `step`, the receipt its provider gave.
+    ///
+    /// # Errors
+    /// Refuses a receipt in another currency than the run's.
+    pub fn settle(&mut self, step: &StepSpend) -> Result<(), Refusal> {
+        if !self.currency.is_empty() && !step.currency.is_empty() && self.currency != step.currency
+        {
+            return Err(Refusal::new(
+                "A run keeps its cost in one currency: this step is priced in another",
+            ));
+        }
+        if self.currency.is_empty() {
+            self.currency.clone_from(&step.currency);
+        }
+        self.held_tokens = 0;
+        self.held_cost_micros = 0;
+        self.steps_taken = self.steps_taken.saturating_add(1);
+        self.input_tokens = self.input_tokens.saturating_add(step.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(step.output_tokens);
+        self.priced_calls = self.priced_calls.saturating_add(step.priced_calls);
+        self.cost_micros = self.cost_micros.saturating_add(step.cost_micros);
+        self.steps.push(step.clone());
+        if self.steps.len() > usize::try_from(MAX_SPEND_STEPS).unwrap_or(usize::MAX) {
+            self.steps.remove(0);
+        }
+        Ok(())
+    }
+}
+
+/// The most an issue's runs may spend, as `set-execution-budget` is given
+/// it. Every limit is optional: the one given is the one written.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpendLimits {
+    /// Tokens, input and output together, counting the sub-issues'.
+    pub max_tokens: Option<u64>,
+    /// Calls priced per call, such as a web search.
+    pub max_priced_calls: Option<u64>,
+    /// Money, in micro-units of `currency`.
+    pub max_cost_micros: Option<u64>,
+    /// The currency the money limit is in, such as `EUR`.
+    pub currency: String,
+}
+
+impl SpendLimits {
+    /// Whether it limits nothing.
+    #[must_use]
+    pub fn is_unlimited(&self) -> bool {
+        self.max_tokens.is_none()
+            && self.max_priced_calls.is_none()
+            && self.max_cost_micros.is_none()
+    }
+
+    /// The limits, checked: a token limit above nothing, and a money limit
+    /// naming its currency.
+    ///
+    /// # Errors
+    /// A limit no run can work under, or money with no currency.
+    pub fn checked(mut self) -> Result<Self, Refusal> {
+        if self.max_tokens == Some(0) {
+            return Err(Refusal::new("A token budget is more than nothing"));
+        }
+        if self.max_priced_calls == Some(0) {
+            return Err(Refusal::new("A budget for priced calls is more than none"));
+        }
+        if self.max_cost_micros == Some(0) {
+            return Err(Refusal::new("A money budget is more than nothing"));
+        }
+        self.currency = self.currency.trim().to_owned();
+        if self.max_cost_micros.is_some() && self.currency.is_empty() {
+            return Err(Refusal::new("Name the currency the money limit is in"));
+        }
+        if self.currency.chars().count() > MAX_CURRENCY_CHARS {
+            return Err(Refusal::new("A currency is its code, such as EUR"));
+        }
+        Ok(self)
+    }
+}
+
+/// The longest currency code a limit keeps.
+pub const MAX_CURRENCY_CHARS: usize = 8;
+
 /// An action a run asks its person before taking.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Confirmation {
@@ -246,6 +490,8 @@ pub struct Run {
     pub started_ms: i64,
     /// When it last reported, or ended.
     pub updated_ms: i64,
+    /// What it spent, step by step, and the step in flight.
+    pub spend: Option<Spend>,
     /// The action it waits on, or the last one it asked about.
     pub confirmation: Option<Confirmation>,
 }
@@ -255,7 +501,10 @@ impl Run {
     /// where one does, so a paused run never reads as if it were working.
     #[must_use]
     pub fn shown_phase(&self) -> RunPhase {
-        self.paused.and_then(PausedRun::phase).unwrap_or(self.phase)
+        self.paused
+            .as_ref()
+            .and_then(PausedRun::phase)
+            .unwrap_or(self.phase)
     }
 
     /// Whether the run waits for its person's answer to an action that asks
@@ -288,7 +537,7 @@ impl Run {
 /// the step it was in may merge into the record and move it. `held` carries
 /// the step, which is what makes the pause a value of this record rather
 /// than a step of the run.
-#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PausedRun {
     /// The step it goes on in, as `RunPhase::ALL` numbers it: `0` is a pause
     /// nobody wrote.
@@ -298,6 +547,9 @@ pub struct PausedRun {
     pub through: u64,
     /// When it was paused, in milliseconds since the epoch.
     pub at_ms: i64,
+    /// Why it was paused: a person's decision, or the budget it reached.
+    /// Empty when nobody named one.
+    pub reason: String,
 }
 
 impl PausedRun {
@@ -314,13 +566,22 @@ impl PausedRun {
             held: Counter::new(held),
             through,
             at_ms,
+            reason: String::new(),
         })
     }
 
     /// The step the run goes on in, or `None` where there is no pause.
     #[must_use]
-    pub fn phase(self) -> Option<RunPhase> {
+    pub fn phase(&self) -> Option<RunPhase> {
         let index = usize::try_from(self.held.get()).ok()?.checked_sub(1)?;
         RunPhase::ALL.get(index).copied()
+    }
+
+    /// This pause, saying `reason` when one is known.
+    #[must_use]
+    pub fn because(mut self, reason: &str) -> Self {
+        let reason = reason.trim();
+        self.reason = reason.chars().take(MAX_PAUSE_REASON_CHARS).collect();
+        self
     }
 }

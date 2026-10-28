@@ -630,6 +630,10 @@ fn every_kind_of_trigger_prints_the_same_program_back() {
             device: Some("Ada's phone".into()),
         },
         TriggerSpec::NearbyDevice { device: None },
+        TriggerSpec::AppEvent {
+            app_id: "so.tilo.mail".into(),
+            kind: "mail.message".into(),
+        },
     ];
     let shortcut = Shortcut {
         id: "triggered".into(),
@@ -652,4 +656,8 @@ fn every_kind_of_trigger_prints_the_same_program_back() {
         Err(error) => panic!("{error}\n{text}"),
     };
     assert_eq!(parsed.shortcut.triggers, triggers, "\n{text}");
+    assert!(
+        text.contains(r#"when "so.tilo.mail" announces "mail.message""#),
+        "an app's event names the app and the event it declared: {text}"
+    );
 }

@@ -560,7 +560,10 @@ impl App {
         let Some(manager) = self.collaboration.room_manager.as_mut() else {
             return false;
         };
-        let Some(route) = manager.primary_route().map(|witness| witness.route.clone()) else {
+        let Some(route) = manager
+            .primary_route()
+            .map(|witness| witness.route().clone())
+        else {
             return false;
         };
         let events = manager.poll();
@@ -805,7 +808,7 @@ impl App {
             .collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route.clone())
+            .map(|witness| witness.route().clone())
         else {
             return;
         };

@@ -327,9 +327,9 @@ impl FrameHarness {
             return Err("Close search before handing off an action".into());
         }
         let resources = self.caller_resources();
-        let mut palette = crate::action_palette::ActionPalette::with_host_text(
-            self.text.font_system.locale().to_owned(),
-        );
+        let mut palette = self
+            .new_action_palette()
+            .ok_or_else(|| "Search is still loading".to_owned())?;
         palette.load_open_resources(&resources);
         palette.open();
         if !palette.activate_address(&address.resource, &address.action) {

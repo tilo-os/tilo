@@ -7,8 +7,10 @@
 //! the model service's clients, which the first model request or provider
 //! settings change asks for, the pinned people overlay, which pinning
 //! who is here asks for, the emoji catalogue, which the first picker,
-//! reaction name or `:name:` completion asks for, and History, which the
-//! first window that registers it asks for.
+//! reaction name or `:name:` completion asks for, History, which the
+//! first window that registers it asks for, desktop search, which the
+//! desktop asks for as it first lays out, and the notification centre,
+//! which opening it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -285,6 +287,24 @@ split_code! {
 }
 
 split_code! {
+    /// The action palette: the first window to lay out asks for it.
+    mod action_palette: tilo_ui::action_palette::MakeActionPalette = tilo_ui::action_palette::builtin_action_palette()
+        => tilo_ui::action_palette::ACTION_PALETTE, module = "action_palette", hash = "a26d9f4c1e0b8573";
+}
+
+split_code! {
+    /// Desktop search: the desktop asks for it as it first lays out.
+    mod desktop_search: tilo_desktop_search::MakeDesktopSearch = tilo_desktop_search::builtin_desktop_search()
+        => tilo_desktop_search::DESKTOP_SEARCH, module = "desktop_search", hash = "7be226dd82b8cdaa";
+}
+
+split_code! {
+    /// The notification centre: the first time it opens asks for it.
+    mod notification_centre: tilo_desktop_surface::notifications::MakeNotificationCentre = tilo_desktop_surface::notifications::builtin_notification_centre()
+        => tilo_desktop_surface::notifications::NOTIFICATION_CENTRE, module = "notification_centre", hash = "3d94b0e6a1c7f258";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -340,6 +360,9 @@ pub(crate) fn register() {
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
     emoji::register();
     history::register();
+    action_palette::register();
     feedback_code::register();
     profile_card::register();
+    desktop_search::register();
+    notification_centre::register();
 }

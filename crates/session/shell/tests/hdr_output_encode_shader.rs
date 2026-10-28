@@ -9,7 +9,7 @@
 //! silently break the production encode path) — both use the same maths
 //! (203-nit white, BT.709->2020, PQ inverse EOTF).
 
-use shell::shell::color_pipeline::{
+use tilo_color_pipeline::color_pipeline::{
     OUTPUT_ENCODE_SHADER_SOURCE, SDR_REFERENCE_WHITE_NITS, map_sdr_pixel_to_pq_bt2020, pq_eotf,
 };
 

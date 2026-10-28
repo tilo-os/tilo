@@ -1368,7 +1368,7 @@ impl NavList {
     }
 
     /// The list's stable identity for assistive technology
-    /// ([`TreeView::with_semantic_key`]).
+    /// (`TreeView::with_semantic_key`).
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
         self.tree = self.tree.with_semantic_key(key);
@@ -1423,7 +1423,7 @@ impl NavList {
 
     /// Called with the item id when a destination is chosen: the list, as
     /// control `id`, publishes choosing a destination as its view action
-    /// `select` ([`view_choice`](crate::widget::view_choice)), so a person's
+    /// `select` (`view_choice`), so a person's
     /// click, a screen reader, a script and an agent choose through the same
     /// action. Showing a destination is the window's own state, never an
     /// edit: the action is absent from history.
@@ -2234,7 +2234,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 
     /// The tree's rows as it keeps them between walks
-    /// ([`TreeView::access_rows`]), each the very node of the last walk
+    /// (`TreeView::access_rows`), each the very node of the last walk
     /// while nothing it is built from changed: a keystroke in the pane
     /// beside the list builds none of them. A row whose destination's
     /// selection action is unavailable is published disabled, as a copy of
@@ -2365,7 +2365,7 @@ impl crate::widget::controls::ActionControls for NavList {
         bindings
     }
 
-    /// Whether [`Self::control_action_bindings`] holds an action, answered
+    /// Whether `Self::control_action_bindings` holds an action, answered
     /// without building the rows' semantics it also lists: the host asks it
     /// on every frame. The actions are the visible destinations' selection
     /// actions and whatever the tree's own children bind.

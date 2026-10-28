@@ -422,7 +422,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             retire_wait.as_micros(),
             // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
             // session's first presented frame on the system's own clock.
-            crate::compositor::metrics::monotonic_time_ns()
+            tilo_frame_metrics::monotonic_time_ns()
                 .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
         );
     }

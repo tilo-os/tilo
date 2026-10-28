@@ -19,13 +19,14 @@
 //! not be read or Plymouth is not running; the screen keeps its general
 //! wording.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use tilo_boot_signin::auth::CliAuth;
 use tilo_boot_signin::flow::{self, Exit};
 use tilo_boot_signin::glyphs::{self, Glyphs};
+use tilo_boot_signin::greeter::{GreeterScreen, Launch};
 use tilo_boot_signin::relay::{Relay, Relayed};
 use tilo_boot_signin::screen::{BootScreen, Plymouth};
 use tilo_boot_signin::unlock_prompt;
@@ -107,19 +108,50 @@ fn main() -> ExitCode {
     } else {
         Glyphs::any()
     };
-    let mut screen = BootScreen {
+    let fallback = BootScreen {
         ask_password: program("TILO_SIGNIN_ASK_PASSWORD", "systemd-ask-password"),
         plymouth,
         glyphs,
         volume,
     };
-    let exit = flow::run(&mut auth, &mut screen);
+    // The greeter starts while the people are listed, so its first frame
+    // comes as soon as it can.
+    let exit = match start_greeter(&auth.device, fallback) {
+        Ok(mut greeter) => flow::run(&mut auth, &mut greeter),
+        Err(mut fallback) => flow::run(&mut auth, &mut fallback),
+    };
     match exit {
         Exit::Unlocked => eprintln!("tilo-boot-signin: signed in; the volume opens with its key"),
         Exit::NothingToTry => eprintln!("tilo-boot-signin: no sign-in here; asking as before"),
         Exit::OtherWays => eprintln!("tilo-boot-signin: another way in was chosen"),
     }
     ExitCode::from(exit.code())
+}
+
+/// The greeter on the display, or `fallback` when it cannot start there.
+fn start_greeter(device: &Path, fallback: BootScreen) -> Result<GreeterScreen, BootScreen> {
+    let greeter = program("TILO_SIGNIN_GREETER", "/usr/libexec/tilo/tilo-greeter");
+    if !greeter.exists() {
+        return Err(fallback);
+    }
+    let comforts = unlock_prompt::read(&program("TILO_SIGNIN_CRYPTSETUP", "cryptsetup"), device)
+        .map_or(serde_json::Value::Null, |metadata| {
+            tilo_boot_signin::greeter::comforts(&metadata)
+        });
+    let launch = Launch {
+        program: greeter,
+        dri: program("TILO_SIGNIN_DRI", "/dev/dri"),
+        drm_class: program("TILO_SIGNIN_DRM_CLASS", "/sys/class/drm"),
+        input: program("TILO_SIGNIN_INPUT", "/dev/input"),
+        group: program("TILO_SIGNIN_GROUP", "/etc/group"),
+        runtime: program("TILO_SIGNIN_GREETER_RUNTIME", "/run/tilo-greeter"),
+        comforts,
+    };
+    GreeterScreen::start(
+        &launch,
+        fallback,
+        program("TILO_SIGNIN_SYSTEMCTL", "systemctl"),
+    )
 }
 
 fn tell_unlock_prompt(plymouth: Option<&Plymouth>, device: &std::path::Path) -> ExitCode {

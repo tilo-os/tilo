@@ -33,8 +33,8 @@ mod tests {
     /// decodes.
     #[test]
     fn viewer_input_from_a_device_host_decodes_as_remote_input() {
-        use crate::network::streaming::InputEvent as Session;
         use tilo_relay_protocol::legacy_window::InputEvent as Wire;
+        use tilo_window_share::streaming::InputEvent as Session;
         let pairs = [
             (
                 Session::PointerMotion { x: 1.5, y: -2.0 },
@@ -101,8 +101,8 @@ mod tests {
     /// what this session decodes.
     #[test]
     fn viewer_input_from_a_relay_decodes_as_remote_input() {
-        use crate::network::streaming::InputEvent as Session;
         use tilo_relay_protocol::legacy_window::InputEvent as Wire;
+        use tilo_window_share::streaming::InputEvent as Session;
         let pairs = [
             (
                 Session::PointerMotion { x: 1.5, y: -2.0 },

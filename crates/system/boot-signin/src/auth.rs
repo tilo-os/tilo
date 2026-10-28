@@ -31,7 +31,11 @@ impl Auth for CliAuth {
             .output();
         match output {
             Ok(output) if output.status.success() => {
-                people::parse(&String::from_utf8_lossy(&output.stdout))
+                let people = people::parse(&String::from_utf8_lossy(&output.stdout));
+                // The moment a screen can show who signs in: the boot
+                // performance gate measures the greeter's first frame from it.
+                eprintln!("tilo-boot-signin: {} may sign in here", people.len());
+                people
             }
             _ => Vec::new(),
         }

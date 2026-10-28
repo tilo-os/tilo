@@ -11,14 +11,12 @@
 pub mod app_icons;
 pub mod bluetooth;
 pub mod bluetooth_prompt;
-pub mod collab;
 pub mod compositor;
 pub mod config;
 pub mod crash_log;
 #[cfg(unix)]
 pub mod stderr_guard;
 pub use tilo_identity_host::device_fleet;
-pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
 #[cfg(target_os = "linux")]
@@ -36,6 +34,8 @@ pub mod notifications;
 pub mod onboarding;
 #[cfg(target_os = "linux")]
 mod onboarding_browser;
+#[cfg(not(target_os = "linux"))]
+mod onboarding_elsewhere;
 #[cfg(target_os = "linux")]
 mod onboarding_migration;
 mod onboarding_nearby;
@@ -47,6 +47,12 @@ mod onboarding_portable_applications;
 mod onboarding_portable_home;
 #[cfg(target_os = "linux")]
 mod onboarding_prepared;
+#[cfg(not(target_os = "linux"))]
+use onboarding_elsewhere::{
+    browser as onboarding_browser, migration as onboarding_migration,
+    portable_applications as onboarding_portable_applications,
+    portable_home as onboarding_portable_home, retained_files,
+};
 pub mod onboarding_view;
 pub mod polkit_agent;
 pub mod portal;
@@ -66,5 +72,4 @@ pub mod shell;
 tilo_automerge_isolate::test_worker!();
 pub mod tray;
 pub mod watched_identity;
-pub mod wayland;
 pub mod workspace;

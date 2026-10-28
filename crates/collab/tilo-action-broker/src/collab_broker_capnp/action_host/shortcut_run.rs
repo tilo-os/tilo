@@ -89,6 +89,7 @@ impl CapnpBrokerState {
                     )
                 },
                 Some(ShortcutAdmission { origin, request }),
+                None,
             )
             .map_err(abandon)?;
         if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -112,9 +113,39 @@ impl CapnpBrokerState {
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
+        self.start_interactive_shortcut_run_continuing(caller, room, shortcut_id, inputs, None)
+    }
+
+    /// [`Self::start_interactive_shortcut_run`], continuing the run `from`
+    /// names: its steps before `from` are taken as they happened and the run
+    /// goes on from `from`, as it stands in the shortcut now. The origin run
+    /// has to be one of this shortcut's runs in `room`.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`, or why the run it says to go
+    /// on from cannot be continued.
+    pub(crate) fn start_interactive_shortcut_run_continuing(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+        from: Option<tilo_automation::Continuation>,
+    ) -> Result<u64, ActionHostError> {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
+        let origin = match &from {
+            Some(continuation) => Some(self.earlier_run(continuation, shortcut_id)?),
+            None => None,
+        };
+        let carried = origin
+            .zip(from)
+            .map(|(report, asked)| automation::Continued {
+                report,
+                from: asked.from,
+            });
         let prompts = self.ended_runs.running.prompts.clone();
         let name = shortcut.name.clone();
         let runs = self.ended_runs.running.running.clone();
@@ -133,7 +164,28 @@ impl CapnpBrokerState {
             },
             hooks,
             None,
+            carried,
         )
+    }
+
+    /// Run `continuation` names, which has to be one of this broker's own
+    /// runs of `shortcut_id`.
+    fn earlier_run(
+        &self,
+        continuation: &tilo_automation::Continuation,
+        shortcut_id: &str,
+    ) -> Result<tilo_automation::RunReport, ActionHostError> {
+        if continuation.from.as_str().is_empty() {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "a continued run says which step it goes on from".into(),
+            });
+        }
+        self.ended_runs
+            .shortcuts
+            .report(continuation.run, shortcut_id)
+            .ok_or_else(|| ActionHostError::Refused {
+                reason: "that run is not recorded for this shortcut".into(),
+            })
     }
 
     /// The oldest step of an interactive run waiting for its person.
@@ -224,6 +276,7 @@ impl CapnpBrokerState {
                 },
                 hooks,
                 None,
+                None,
             );
         }
         self.start_shortcut_run(
@@ -245,6 +298,7 @@ impl CapnpBrokerState {
                     run,
                 )
             },
+            None,
             None,
         )
     }
@@ -278,6 +332,7 @@ impl CapnpBrokerState {
         start: automation::RunStart,
         hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::RunId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
+        carried: Option<automation::Continued>,
     ) -> Result<u64, ActionHostError>
     where
         K: tilo_automation::RunHooks + Send + 'static,
@@ -342,6 +397,10 @@ impl CapnpBrokerState {
                     trigger: start.trigger,
                     inputs: start.inputs,
                     caused_by: None,
+                    // A run that goes on from an earlier one takes the steps
+                    // before the step it goes on from from that run's record.
+                    resume: carried.as_ref().map(|carried| &carried.report),
+                    from: carried.as_ref().map(|carried| carried.from.clone()),
                     parent,
                     chain,
                 },

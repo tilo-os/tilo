@@ -112,7 +112,7 @@ impl TextRenderer {
     /// ([`crate::richtext::InkReach`]): from the bounds each face declares
     /// for all its glyphs, at the size and on the baseline each glyph is
     /// drawn with. The layout keeps each logical line's reach
-    /// ([`crate::richtext::InkReachCache`]), so after an edit only the lines
+    /// (`crate::richtext::InkReachCache`), so after an edit only the lines
     /// it replaced are walked, looking a face up only where it changes.
     pub fn rich_ink_reach(
         &mut self,

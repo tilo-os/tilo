@@ -1062,9 +1062,19 @@ impl LauncherServices for NativeLauncher {
         )
     }
     fn person_initiated(&self, app_id: &str) -> bool {
-        self.0.as_ref().is_some_and(|tree| {
-            crate::compositor::activation::person_initiated(&tree.read(), app_id)
-        })
+        // A person's input reaches an app through the Linux compositor's
+        // windows; elsewhere no window of the app took it.
+        #[cfg(target_os = "linux")]
+        {
+            self.0.as_ref().is_some_and(|tree| {
+                crate::compositor::activation::person_initiated(&tree.read(), app_id)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = app_id;
+            false
+        }
     }
     fn launch(
         &self,
@@ -2673,16 +2683,16 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                         return published;
                     }
                     runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                        crate::network::InputEvent::PointerMotion { x, y }
+                        tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
                     }
                     runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                        crate::network::InputEvent::PointerButton { button, pressed }
+                        tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
                     }
                     runtime_collab::WorkspaceControlInput::Key {
                         keycode,
                         pressed,
                         modifiers,
-                    } => crate::network::InputEvent::Key {
+                    } => tilo_window_share::streaming::InputEvent::Key {
                         keysym: keycode,
                         pressed,
                         modifiers,
@@ -2698,7 +2708,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                                 ));
                             }
                         };
-                        crate::network::InputEvent::KeyboardFocus { surface, focused }
+                        tilo_window_share::streaming::InputEvent::KeyboardFocus { surface, focused }
                     }
                 };
                 let published = this

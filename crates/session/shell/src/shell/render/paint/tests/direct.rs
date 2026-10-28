@@ -361,7 +361,7 @@ fn direct_paint_phase_timing_observes_real_gpu_wait_without_pixel_readback() {
     let mut bridge = required_bridge(128, 96);
     let target = direct_target(&bridge, 128, 96);
     let scene = rect_scene(128, 96, Color::WHITE);
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     bridge
         .paint_imported_until(
             &scene,
@@ -462,7 +462,7 @@ fn direct_gpu_stage_records_keep_actual_submission_identity_and_coverage() {
                 version(revision, None, None),
                 &target,
                 tilo_test_env::hang_deadline(),
-                crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 &[],
             )
             .expect("production direct GPU paint");
@@ -515,7 +515,7 @@ fn direct_gpu_stage_failed_paints_and_recovery_keep_renderer_identity() {
     let mut bridge = required_bridge(128, 96);
     let target = direct_target(&bridge, 128, 96);
     let scene = rect_scene(128, 96, Color::WHITE);
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     bridge
         .paint_imported_until(
             &scene,
@@ -610,7 +610,7 @@ fn direct_frames_stay_sparse_across_the_swapchain_and_show_the_whole_scene() {
         direct_target(&bridge, width, height),
         direct_target(&bridge, width, height),
     ];
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     let region = vello::FineDamageRect {
         x: 16,
         y: 16,
@@ -712,7 +712,7 @@ fn a_client_frame_on_the_gpu_reaches_every_renderer() {
             version(1, None, None),
             &target,
             tilo_test_env::hang_deadline(),
-            crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+            tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
             &[],
         )
         .expect("the presenting renderer draws the frame");
@@ -757,7 +757,7 @@ fn a_direct_frame_after_a_missed_deadline_renders_again() {
     let mut bridge = required_bridge(128, 96);
     let target = direct_target(&bridge, 128, 96);
     let scene = rect_scene(128, 96, Color::WHITE);
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
 
     let mut test = completion_clock();
     test.failure = Some(WaitPhase::Marker);

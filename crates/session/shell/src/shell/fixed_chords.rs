@@ -43,6 +43,7 @@ pub enum FixedChordAction {
     ShortcutGuide,
     StopRemoteInput,
     ToggleMouseKeys,
+    ToggleScreenReader,
 }
 
 impl FixedChordAction {
@@ -68,6 +69,7 @@ impl FixedChordAction {
             "fixed-shortcut-guide" => Self::ShortcutGuide,
             "fixed-stop-remote-input" => Self::StopRemoteInput,
             "fixed-toggle-mouse-keys" => Self::ToggleMouseKeys,
+            "fixed-toggle-screen-reader" => Self::ToggleScreenReader,
             _ => return None,
         })
     }
@@ -327,6 +329,7 @@ mod tests {
             FixedChordAction::ShortcutGuide,
             FixedChordAction::StopRemoteInput,
             FixedChordAction::ToggleMouseKeys,
+            FixedChordAction::ToggleScreenReader,
         ] {
             assert!(entry_for(action).is_some(), "{action:?} has no chord");
         }
@@ -399,6 +402,10 @@ mod tests {
         assert_eq!(
             display(FixedChordAction::ToggleMouseKeys).as_deref(),
             Some("Alt+Shift+Num Lock")
+        );
+        assert_eq!(
+            display(FixedChordAction::ToggleScreenReader).as_deref(),
+            Some("Super+Ctrl+Enter")
         );
     }
 

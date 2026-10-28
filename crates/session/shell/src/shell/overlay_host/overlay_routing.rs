@@ -296,7 +296,7 @@ impl ShellOverlayHost {
         if !st.overlays.quick_settings
             || !matches!(
                 st.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
+                tilo_quick_settings::QsLevel::Root
             )
         {
             return false;
@@ -495,7 +495,7 @@ impl ShellOverlayHost {
             st.overlays.quick_settings
                 && matches!(
                     st.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Notifications
+                    tilo_quick_settings::QsLevel::Notifications
                 )
                 && self.quick_settings_rect().contains(point)
         })

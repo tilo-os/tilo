@@ -30,10 +30,12 @@ use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRe
 use crate::clipboard::{ClipboardBackend, InProcessClipboard};
 use crate::mpris::{MprisCommand, MprisConfig, PlayerSnapshot};
 
-pub mod environment;
 /// The native desktop implementation; see [`crate::native::services`].
 #[cfg(feature = "native")]
 pub use crate::native::services as native;
+/// Host inputs: who the process is and where its files live, kept with the
+/// current process (`tilo_process::environment`).
+pub use tilo_process::environment;
 mod recording;
 
 pub use environment::{

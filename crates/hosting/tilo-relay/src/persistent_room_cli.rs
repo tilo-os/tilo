@@ -1944,7 +1944,13 @@ const ROLES_FILE_EVERY_SECS: u64 = 2;
 /// What the room last said about who is online, and when it last wrote
 /// down when each member was last seen.
 struct OnlineWatch {
-    last_online: Option<(u32, u32, Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    last_online: Option<(
+        u32,
+        u32,
+        Vec<tilo_relay_protocol::directory::Face>,
+        u32,
+        Vec<String>,
+    )>,
     last_seen_written: tokio::time::Instant,
 }
 
@@ -1984,6 +1990,7 @@ impl OnlineWatch {
             faces,
             // The spectator person is a member nobody counts.
             members.saturating_sub(1),
+            here.iter().map(hex::encode).collect::<Vec<_>>(),
         );
         if self.last_online.as_ref() != Some(&online) {
             println!(
@@ -1993,6 +2000,7 @@ impl OnlineWatch {
                     spectators: online.1,
                     here: online.2.clone(),
                     members: online.3,
+                    online: online.4.clone(),
                 }
                 .to_line()
             );

@@ -2,7 +2,7 @@
 //! write touched, and shares the tray's volume.
 
 use super::*;
-use crate::shell::quick_settings::refresh::{FastReading, Kick, QsField, QsReading};
+use crate::shell::quick_settings_refresh::{FastReading, Kick, QsField, QsReading};
 use crate::shell::status::StatusBridge;
 
 /// Records every write, so two paths can be compared call for call.
@@ -18,7 +18,7 @@ impl Recorder {
     }
 }
 
-impl crate::shell::quick_settings::actions::QsActions for Recorder {
+impl tilo_quick_settings::actions::QsActions for Recorder {
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
         self.push(format!("brightness={pct:.1}"));
         Ok(())
@@ -101,7 +101,7 @@ fn toggle_reconciles_only_its_field() {
     );
 
     host.apply_quick_settings_root_action(
-        RootAction::Changed(crate::shell::quick_settings::root::PendingRootActions {
+        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
             bluetooth: Some(false),
             ..Default::default()
         }),
@@ -115,8 +115,8 @@ fn toggle_reconciles_only_its_field() {
     );
 
     host.apply_quick_settings_root_action(
-        RootAction::Changed(crate::shell::quick_settings::root::PendingRootActions {
-            power: Some(crate::shell::quick_settings::PowerProfile::Saver),
+        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
+            power: Some(tilo_quick_settings::PowerProfile::Saver),
             ..Default::default()
         }),
         &chrome,
@@ -252,8 +252,8 @@ fn a_panel_volume_reading_updates_the_tray() {
 
 #[test]
 fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
-    use crate::shell::quick_settings::WifiNetwork;
     use settings_store::hardware::QuickSettingsControl;
+    use tilo_quick_settings::WifiNetwork;
     let bridge = StatusBridge::new();
     let (mut host, chrome) = host_with(&Recorder::default(), Some(bridge.clone()));
     {

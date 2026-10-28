@@ -292,10 +292,13 @@ mod drive;
 pub mod driver;
 pub use driver::{Outcome, Step, StepRecord, StepStatus, drive};
 mod invocation_results;
+mod lazy_palette;
 mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
 mod retained_layout;
+mod root_access;
+pub use root_access::{Framed, RootAndStateMut, RootMut};
 mod root_wake;
 mod search_open;
 mod sidebar_button;
@@ -358,7 +361,8 @@ pub struct FrameHarness {
     history: Option<crate::history_mode::host::HistoryChrome>,
     /// A History registered before its code was in, installed once it is.
     pending_history: Option<crate::history_mode::HistoryRegistration>,
-    action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    action_palette: Option<crate::action_palette::ActionPaletteBox>,
+    palette_waiting: lazy_palette::Waiting,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
     /// several out (the desktop's strip of app tiles): the palette stands
@@ -745,70 +749,6 @@ pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
     (w as u32, h as u32)
 }
 
-/// A [`FrameHarness`] over one concrete root that reads as that root.
-///
-/// Dereferencing yields the widget; a mutable dereference makes the next
-/// frame recompose from scratch (see [`FrameHarness::root_mut`]). Harness
-/// operations are associated functions so they never shadow the root's own
-/// methods.
-pub struct Framed<W: Widget + 'static> {
-    harness: FrameHarness,
-    root: std::marker::PhantomData<fn() -> W>,
-}
-
-impl<W: Widget + 'static> Framed<W> {
-    /// Mount `root` over `state` and run its first frame at `viewport`.
-    pub fn new(state: State, root: W, viewport: (u32, u32), theme: Theme) -> Self {
-        Self::from_harness(FrameHarness::for_root(state, root, viewport, theme))
-    }
-
-    /// [`Self::new`] with every construction option spelled out.
-    pub fn with_options(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        options: FrameOptions,
-    ) -> Self {
-        Self::from_harness(FrameHarness::for_root_with(state, root, viewport, options))
-    }
-
-    fn from_harness(harness: FrameHarness) -> Self {
-        let _: &W = harness.root();
-        Self {
-            harness,
-            root: std::marker::PhantomData,
-        }
-    }
-
-    pub fn harness(this: &Self) -> &FrameHarness {
-        &this.harness
-    }
-
-    pub fn harness_mut(this: &mut Self) -> &mut FrameHarness {
-        &mut this.harness
-    }
-
-    /// The root and the live document at once; see
-    /// [`FrameHarness::root_and_state_mut`].
-    pub fn split(this: &mut Self) -> (&mut W, &mut State) {
-        this.harness.root_and_state_mut()
-    }
-}
-
-impl<W: Widget + 'static> std::ops::Deref for Framed<W> {
-    type Target = W;
-
-    fn deref(&self) -> &W {
-        self.harness.root()
-    }
-}
-
-impl<W: Widget + 'static> std::ops::DerefMut for Framed<W> {
-    fn deref_mut(&mut self) -> &mut W {
-        self.harness.root_mut()
-    }
-}
-
 impl FrameHarness {
     /// Mount a prepared component without a native window, GPU, or service discovery.
     /// # Errors
@@ -1188,16 +1128,6 @@ impl FrameHarness {
             crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
         );
         self.discard_layout_tree();
-    }
-
-    /// Drop the raw layout maps so no later frame re-solves a composition
-    /// whose widgets may have been replaced; the next frame rebuilds.
-    fn discard_layout_tree(&mut self) {
-        self.serviced_layout = None;
-        self.bindings.clear();
-        self.node_map.clear();
-        self.layout_maps.clear();
-        self.layout_built = false;
     }
 
     /// The app root's structure flag, and framework History's: it is laid
@@ -1623,7 +1553,7 @@ impl FrameHarness {
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::asking)
+            .and_then(|palette| palette.asking())
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
@@ -1633,7 +1563,7 @@ impl FrameHarness {
     pub fn asking_why(&self) -> Option<&str> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::asking_why)
+            .and_then(|palette| palette.asking_why())
     }
 
     /// Confirm what the host is asking, as the person does: activate the
@@ -1647,7 +1577,7 @@ impl FrameHarness {
         let target = self
             .action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::confirming_target)?;
+            .and_then(|palette| palette.confirming_target())?;
         self.perform_palette_action(&target, &crate::a11y::Action::Activate)
             .ok()?;
         Some(address)
@@ -1811,6 +1741,7 @@ impl FrameHarness {
             history: None,
             pending_history: None,
             action_palette: None,
+            palette_waiting: lazy_palette::Waiting::default(),
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer_at: None,
@@ -1918,121 +1849,6 @@ impl FrameHarness {
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d
-    }
-
-    /// Mount one concrete widget as the root so a test can read and adjust
-    /// it through [`Self::root`] and [`Self::root_mut`] between frames.
-    pub fn for_root<W: Widget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        theme: Theme,
-    ) -> Self {
-        Self::for_root_with(
-            state,
-            root,
-            viewport,
-            FrameOptions {
-                theme: Some(theme),
-                ..FrameOptions::default()
-            },
-        )
-    }
-
-    /// [`Self::for_root`] for an app: its window's bar
-    /// ([`Self::present_in_window_bar`]) wears the app's icon and title, as
-    /// a desktop window's tab does.
-    pub fn for_app<W: crate::widget::AppWidget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        theme: Theme,
-    ) -> Self {
-        let app = (root.app_kind(), root.app_title().to_owned());
-        let mut harness = Self::for_root(state, root, viewport, theme);
-        harness.window_app = Some(app);
-        harness
-    }
-
-    /// [`Self::for_root`] with every construction option spelled out.
-    pub fn for_root_with<W: Widget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        options: FrameOptions,
-    ) -> Self {
-        let FrameOptions {
-            theme,
-            text,
-            host_style,
-            content_height,
-        } = options;
-        let mut harness = Self::with_inputs_styled(
-            state,
-            Box::new(root),
-            viewport,
-            theme.unwrap_or_else(Theme::dark),
-            text.unwrap_or_default(),
-            HostLayout {
-                style: host_style.unwrap_or_default(),
-                content_height,
-            },
-        );
-        harness.root_type = Some(std::any::TypeId::of::<W>());
-        harness
-    }
-
-    /// The root mounted by [`Self::for_root`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    #[must_use]
-    pub fn root<W: Widget + 'static>(&self) -> &W {
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root: the root was not mounted as this type"
-        );
-        // SAFETY: `root_type` records the concrete type `root` was boxed from
-        // and is cleared whenever `root` is replaced.
-        unsafe { &*std::ptr::from_ref::<dyn Widget>(self.root.as_ref()).cast::<W>() }
-    }
-
-    /// Mutable access to the root mounted by [`Self::for_root`]. Anything
-    /// may change through it, so the next frame recomposes from scratch.
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    pub fn root_mut<W: Widget + 'static>(&mut self) -> &mut W {
-        self.invalidate_local();
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root_mut: the root was not mounted as this type"
-        );
-        self.discard_layout_tree();
-        // SAFETY: as in `root`; the raw layout maps that pointed into this
-        // tree were discarded above.
-        unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() }
-    }
-
-    /// The root mounted by [`Self::for_root`] together with the live
-    /// document, for calls that take both. Invalidates as [`Self::root_mut`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
-        self.invalidate_local();
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root_and_state_mut: the root was not mounted as this type"
-        );
-        self.discard_layout_tree();
-        // SAFETY: as in `root_mut`.
-        let root =
-            unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() };
-        (root, &mut self.state)
     }
 
     /// Run one frame at `viewport`, even when neither the size nor the
@@ -3557,6 +3373,7 @@ impl FrameHarness {
 
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.adopt_loaded_history();
+        self.adopt_loaded_palette();
         // The whole frame runs in the root's wake scope, as the live window's
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();
@@ -3885,7 +3702,7 @@ impl FrameHarness {
             && (self.history_chrome_enabled
                 || self.history.is_some()
                 || crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref()));
-        let structure = self.full_relayout_forced_now()
+        let mut structure = self.full_relayout_forced_now()
             || !self.layout_built
             || recompose_for_viewport
             || structure_changed
@@ -3936,6 +3753,10 @@ impl FrameHarness {
                 self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
             }
             if structure || (rebuild && !remount_only) || (in_place && !remounted) {
+                // Carried out by this build, as the live host's rebuild
+                // clears its pending structure: a change the build's layout
+                // then reports is remounted in place by the next pass.
+                structure = false;
                 self.remount = false;
                 rebuilt_this_pass = true;
                 stats.rebuilt = true;
@@ -5721,7 +5542,8 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),
@@ -5896,6 +5718,24 @@ impl FrameHarness {
         out
     }
 
+    /// The rects the widgets inside the [`EmbeddedApp`] root answer to, by
+    /// name, in the frame's own pixels.
+    ///
+    /// [`targets`](Self::targets) stops at the app: an embedded app keeps
+    /// its widget tree to itself, so a caller that drives the app alone (a
+    /// recording of it) reads them from here instead.
+    ///
+    /// # Panics
+    /// When the root was not mounted as an [`EmbeddedApp`].
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
+        let mut embedded = self.root_mut::<crate::app::EmbeddedApp>();
+        let root = embedded.app_mut().root_widget_mut();
+        let mut out = std::collections::HashMap::new();
+        collect_targets(root, "", &mut std::collections::HashMap::new(), &mut out);
+        out
+    }
+
     /// Perform one semantic action against a stable widget id or fallback
     /// path, through the same routing contract as live assistive technology.
     /// A control a widget paints itself and publishes as a semantic child
@@ -6020,7 +5860,7 @@ impl FrameHarness {
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
                         let mut edits = crate::widget::Edits::lend(doc);
-                        widget.perform_semantic_action(target, action, &mut edits, root)
+                        crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
                             || (own_target && widget.perform_action(action, &[], &mut edits, root))
                     } else {
                         widget.perform_action(
@@ -6058,7 +5898,7 @@ impl FrameHarness {
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
                     let mut edits = crate::widget::Edits::lend(doc);
-                    widget.perform_semantic_action(target, action, &mut edits, root)
+                    crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
                         || (own_target && widget.perform_action(action, &[], &mut edits, root))
                 } else {
                     widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
@@ -7444,6 +7284,11 @@ impl FrameHarness {
             );
             return;
         }
+        // A control an operation chose the way a person chooses it (a menu
+        // row) asked to be pressed where it is drawn.
+        for at in crate::widget::take_presses() {
+            self.click_at(at.x, at.y);
+        }
         self.idle_control_tick();
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
@@ -8147,19 +7992,7 @@ impl FrameHarness {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
             });
         }
-        // Read before the tree it is found in is discarded.
-        self.palette_window = self.invoking_window_rect();
-        self.discard_layout_tree();
-        self.focused = None;
-        let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
-            self.text.font_system.locale().to_owned(),
-        ));
-        palette.activate_ordinary(request);
-        let went_ahead = palette.went_ahead();
-        self.action_palette = Some(palette);
-        if went_ahead {
-            self.finish_action_palette_input();
-        }
+        self.present_ordinary(request);
     }
 
     /// Keep why an invocation the person made did not run, and say it over
@@ -8167,14 +8000,7 @@ impl FrameHarness {
     /// unseen.
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
-        self.discard_layout_tree();
-        self.focused = None;
-        let palette = self.action_palette.get_or_insert_with(|| {
-            Box::new(crate::action_palette::ActionPalette::with_host_text(
-                self.text.font_system.locale().to_owned(),
-            ))
-        });
-        palette.show_refusal("", &crate::bound_dispatch::refusal_reason(error));
+        self.present_refusal(crate::bound_dispatch::refusal_reason(error));
     }
 
     /// The refusal the window is saying over itself, if any: an invocation
@@ -8182,13 +8008,13 @@ impl FrameHarness {
     pub fn refusal_shown(&self) -> Option<&str> {
         self.action_palette
             .as_deref()
-            .and_then(crate::action_palette::ActionPalette::refusal)
+            .and_then(|palette| palette.refusal())
     }
     fn finish_action_palette_input(&mut self) {
         let pending = self
             .action_palette
             .as_deref_mut()
-            .and_then(crate::action_palette::ActionPalette::take_operation);
+            .and_then(|palette| palette.take_operation());
         if let Some(pending) = pending {
             let result = (|| {
                 let request = pending.ordinary.as_ref().ok_or_else(|| {
@@ -8247,7 +8073,7 @@ impl FrameHarness {
         let navigation = self
             .action_palette
             .as_deref_mut()
-            .and_then(crate::action_palette::ActionPalette::take_scoped_navigation);
+            .and_then(|palette| palette.take_scoped_navigation());
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
                 if let Err(error) = crate::bound_dispatch::activate_bound_search(
@@ -9977,6 +9803,7 @@ impl FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.invalidate_local();
         self.pump_component_wakes();
+        let _ = crate::widget::take_presses();
         let resources = self.resources();
         let spec = tilo_actions::door::resolve(&resources, address)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;

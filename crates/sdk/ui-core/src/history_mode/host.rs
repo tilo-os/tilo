@@ -2306,7 +2306,7 @@ impl HistoryHost {
 pub(crate) type HistoryChrome = Box<dyn HistoryChromeApi>;
 
 /// The History code, as a program that fetches it on first use hands it
-/// over ([`install_history_code`]).
+/// over (`install_history_code`).
 #[derive(Clone, Copy)]
 pub struct MakeHistory(
     fn(HistoryRegistration, &AutoCommit) -> Result<HistoryChrome, HistoryRegistrationError>,

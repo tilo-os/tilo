@@ -852,3 +852,157 @@ async fn mismatched_original_uuid_and_retired_host_start_nothing() {
     tokio::task::yield_now().await;
     assert!(!fixture.state.has_finished_shortcut_runs());
 }
+
+/// A shortcut whose every step runs the fixture's `echo`, under a name of
+/// its own so its runs can be told from `echo`'s.
+fn several_steps(count: usize) -> tilo_automation::Shortcut {
+    let mut shortcut = waiting_shortcut();
+    shortcut.id = "several".into();
+    shortcut.name = "Several".into();
+    shortcut.steps = (0..count).map(|_| run_echo()).collect();
+    shortcut
+}
+
+/// The record of a run of `several` that has finished.
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+)]
+async fn finished_run(fixture: &Fixture) -> automation::FinishedShortcutRun {
+    tilo_test_env::within("the run finishes", async {
+        loop {
+            if let Some(run) = fixture
+                .state
+                .take_finished_shortcut_runs()
+                .into_iter()
+                .find(|run| run.shortcut.id == "several")
+            {
+                return run;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from() {
+    let fixture = Fixture::with_extra(several_steps(4));
+    let room = fixture.caller.room().unwrap().to_owned();
+    let origin = fixture
+        .state
+        .start_interactive_shortcut_run(&fixture.caller, &room, "several", serde_json::Map::new())
+        .expect("the shortcut starts");
+    let first = finished_run(&fixture).await;
+    assert_eq!(first.report.outcome, tilo_automation::RunOutcome::Completed);
+    assert_eq!(first.report.steps.len(), 4, "{:?}", first.report);
+
+    // The person fixed the third step and runs the shortcut again from it.
+    let third = tilo_automation::StepPath::parse("2");
+    let continued = fixture
+        .state
+        .start_interactive_shortcut_run_continuing(
+            &fixture.caller,
+            &room,
+            "several",
+            serde_json::Map::new(),
+            Some(tilo_automation::Continuation {
+                run: first.report.run,
+                from: third.clone(),
+            }),
+        )
+        .expect("a recorded run can be continued");
+    assert_ne!(continued, origin, "continuing starts a run of its own");
+    let second = finished_run(&fixture).await;
+    assert_eq!(
+        second.report.outcome,
+        tilo_automation::RunOutcome::Completed,
+        "{:?}",
+        second.report
+    );
+    assert_eq!(second.report.steps.len(), 4, "{:?}", second.report);
+    // The two steps before the one it goes on from were not run again: they
+    // keep the invocations the first run gave them, which is what keeps
+    // their effects the ones that happened.
+    for index in 0..2 {
+        assert_eq!(
+            second.report.steps[index].invocation, first.report.steps[index].invocation,
+            "step {index} is taken from the record, not run again"
+        );
+        assert_eq!(
+            second.report.steps[index].path,
+            first.report.steps[index].path
+        );
+    }
+    // The step it goes on from and everything after it run again, as this
+    // run's own steps.
+    for index in 2..4 {
+        let path = tilo_automation::StepPath::parse(&index.to_string());
+        assert_eq!(
+            second.report.steps[index].invocation,
+            Some(tilo_automation::invocation_id(second.report.run, &path)),
+            "step {index} runs again under this run's own invocation"
+        );
+        assert_ne!(
+            second.report.steps[index].invocation, first.report.steps[index].invocation,
+            "step {index} is not taken from the record"
+        );
+    }
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothing() {
+    let fixture = Fixture::with_extra(several_steps(1));
+    let room = fixture.caller.room().unwrap().to_owned();
+    let refused = fixture.state.start_interactive_shortcut_run_continuing(
+        &fixture.caller,
+        &room,
+        "several",
+        serde_json::Map::new(),
+        Some(tilo_automation::Continuation {
+            run: tilo_automation::RunId::new(),
+            from: tilo_automation::StepPath::parse("0"),
+        }),
+    );
+    assert!(
+        matches!(refused, Err(ActionHostError::Refused { .. })),
+        "a run the broker has no record of is refused: {refused:?}"
+    );
+    assert!(
+        fixture.state.running_shortcut_runs(&room).is_empty(),
+        "and nothing starts"
+    );
+    assert!(!fixture.state.has_finished_shortcut_runs(), "nor finishes");
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn continuing_a_run_from_the_run_itself_is_refused() {
+    let fixture = Fixture::with_extra(several_steps(1));
+    let room = fixture.caller.room().unwrap().to_owned();
+    let refused = fixture.state.start_interactive_shortcut_run_continuing(
+        &fixture.caller,
+        &room,
+        "several",
+        serde_json::Map::new(),
+        Some(tilo_automation::Continuation {
+            run: tilo_automation::RunId::new(),
+            from: tilo_automation::StepPath::root(),
+        }),
+    );
+    assert!(
+        matches!(refused, Err(ActionHostError::InvalidRequest { .. })),
+        "a continuation names the step it goes on from: {refused:?}"
+    );
+}

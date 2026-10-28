@@ -76,7 +76,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 
-use super::liveness::{self, Answer, ThreadReport};
+use tilo_liveness::{self as liveness, Answer, ThreadReport};
 
 /// How long the compositor waits at session end for the layout changes
 /// queued for the state writer to reach the disk.

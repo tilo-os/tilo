@@ -22,8 +22,8 @@ use winit::keyboard::{Key, NamedKey, NativeKey};
 use xkeysym::key as keysyms;
 
 use crate::shell::osd::{Osd, Transport};
-use crate::shell::quick_settings::actions::QsActions;
 use crate::shell::status::StatusBridge;
+use tilo_quick_settings::actions::QsActions;
 
 /// `XF86XK_RFKill`, which the `xkbcommon` bindings predate. Laptops send it
 /// for the airplane-mode key; `XF86WLAN` is the older Wi-Fi-key spelling.
@@ -169,7 +169,7 @@ pub struct Context<'a> {
 pub struct BrightnessKeys<'a> {
     /// Every display whose brightness can be set (by its backlight, over
     /// DDC/CI, or dimmed by the compositor), with its name and cached level.
-    pub displays: &'a [crate::shell::chrome_state::DisplayBrightness],
+    pub displays: &'a [tilo_quick_settings::DisplayBrightness],
     /// Connector of the display the person works on, when the desktop spans
     /// several.
     pub focused: Option<&'a str>,
@@ -469,6 +469,22 @@ pub fn toggle_mouse_keys() -> Option<Osd> {
         Ok(next) => Some(Osd::mouse_keys(next)),
         Err(error) => {
             tracing::warn!(%error, "mouse keys toggle could not be saved");
+            None
+        }
+    }
+}
+
+/// The change origin the screen reader chord records: its fixed-chord id.
+const SCREEN_READER_ORIGIN: &str = "fixed-toggle-screen-reader";
+
+/// Flip the person's screen reader setting, the one Settings and every app
+/// read, for its chord. Returns whether it is now on.
+pub fn toggle_screen_reader() -> Option<bool> {
+    let origin = settings_store::ChangeOrigin::local(SCREEN_READER_ORIGIN);
+    match settings_store::accessibility::SCREEN_READER.update_by(&origin, |on| !on) {
+        Ok(on) => Some(on),
+        Err(error) => {
+            tracing::warn!(%error, "screen reader toggle could not be saved");
             None
         }
     }
@@ -774,12 +790,8 @@ mod tests {
         );
     }
 
-    fn display(
-        connector: &str,
-        name: &str,
-        level: f32,
-    ) -> crate::shell::chrome_state::DisplayBrightness {
-        crate::shell::chrome_state::DisplayBrightness {
+    fn display(connector: &str, name: &str, level: f32) -> tilo_quick_settings::DisplayBrightness {
+        tilo_quick_settings::DisplayBrightness {
             connector: connector.into(),
             name: name.into(),
             level,
@@ -1005,6 +1017,28 @@ mod tests {
                     "pressed at this device's keyboard"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn the_screen_reader_chord_flips_the_setting_every_app_reads() {
+        with_session_records(|paths| {
+            assert_eq!(toggle_screen_reader(), Some(true), "absent means off");
+            assert!(settings_store::accessibility::ScreenReaderSettings::load().enabled);
+            assert_eq!(
+                settings_store::load_at(&paths.copy)["accessibility"]["screen_reader"],
+                true,
+                "the compositor reads the copy"
+            );
+            assert_eq!(toggle_screen_reader(), Some(false));
+            assert!(!settings_store::accessibility::ScreenReaderSettings::load().enabled);
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let actions: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON"))
+                .map(|entry| entry["action"].clone())
+                .collect();
+            assert_eq!(actions, [SCREEN_READER_ORIGIN, SCREEN_READER_ORIGIN]);
         });
     }
 

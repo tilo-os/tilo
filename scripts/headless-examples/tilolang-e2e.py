@@ -16,7 +16,8 @@ app gets on a real system:
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
-  unsynced   a PNG per app as first opened, before its room synced (unsynced-*.png)
+  hosted-here the session's own workspace is hosted by this device: no app waits
+             on a host, each shows its own state as first opened (first-*.png)
   snapshot   a PNG of the nested session per app, in OUT
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
@@ -24,10 +25,24 @@ app gets on a real system:
   read       the door's `read` of tilolang Notes lists the room's records, and
              the notebook's read lists its notes by the ids a read takes
   idle       each app untouched for 10 s, native Notes included: one that commits no
-             frame wakes no thread at all; one that animates (a connecting spinner)
-             commits one frame per pose and no more
-  spinner    Board, empty and unsynced, in front: its connecting spinner turns, one
-             committed frame per pose and none between
+             frame wakes no thread at all; one that animates commits one frame per
+             pose and no more
+  host-join  a local site (the room service and its workspace host, as
+             nested-pair.sh runs it) and a session of its own whose community it
+             is: the session joins the site's Lounge and it reaches "synced"; the
+             time from dialling the host to the first sync is recorded
+  host-again the same session started again, holding the Lounge already: it syncs
+             again, and the time it takes is recorded
+  spinner    started a third time with the site's processes stopped: the Lounge is
+             connecting, Board (empty) says so with a spinner that turns one
+             committed frame per pose, until the dial gives up
+  unsynced   then the Lounge's host cannot be reached: native Notes says so, keeps
+             its own action, and Board draws nothing more (unsynced-*.png)
+  reconnect  the site's processes go on: the Lounge syncs again by itself
+  host       in the synced Lounge every app is told so and shows the room
+             (synced-*.png), native Notes' "New note" lands, and each launch's time
+             to its first frame is recorded
+  host-edit  tilolang Notes' "New note" lands in the Lounge too
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Board, whose surface declares that it reads Notes' kinds, and as
@@ -37,10 +52,10 @@ app gets on a real system:
              the probe packages installed in place of Board and Todo.
 
 Usage:
-  scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
+  scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep] [--host-only]
 
-Without --no-build it builds the nested session on t (nested-session.sh), and
-the tilolang tool and the probe with cargo (which forwards to t). Each run
+Without --no-build it builds the nested session remotely (nested-session.sh:
+on the rcargo builder, or on t), and the tilolang tool and the probe with cargo. Each run
 uses a fresh throwaway session state in OUT/state and removes its compositor,
 runtime directory and processes at the end; --keep leaves the session running
 (stop it with `kill $(cat OUT/state/session.pid)`). The verdict is OUT/summary.json; the
@@ -66,6 +81,8 @@ BIN = REPO / "target/nested-session/bin"
 APPS = ["notes", "chat", "todo", "board"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
+# Opened last in the local site's Lounge, to time a first launch in a synced room.
+NATIVE_CHAT = "so.tilo.chat"
 PROBE_RUNTIME = "0.1.0+probe"
 # The routes the probe tries as each app: Board declares that it reads Notes'
 # kinds; Todo declares no read.
@@ -73,6 +90,12 @@ PROBE_ROUTES = {
     "board": ["so.tilo.lang.notes", "so.tilo.lang.board"],
     "todo": ["so.tilo.lang.notes"],
 }
+
+
+SITE = REPO / "crates/hosting/tilo-room-service/dev/run.py"
+# The apps the local site's Lounge lets write: its defaults and the tilolang apps, as an
+# operator names the apps of their site (TILO_ROOMS_AUTHOR_APPS).
+SITE_AUTHORS = ["so.tilo.chat", "so.tilo.notes", "so.tilo.canvas"]
 
 
 def app_id(name: str) -> str:
@@ -149,6 +172,22 @@ class Session:
 
     def log(self) -> str:
         return (self.state / "logs/shell.log").read_text(errors="replace")
+
+    def room_sync(self, room: str):
+        """Where the workspace of `room` stands with its host, as its apps are told: None
+        for a room no host is waited on, else "connecting", "unreachable", "synced", ..."""
+        for entry in self.control_json("state-dump")["chrome"]["room_sync"]:
+            if entry["room"] == room:
+                return entry
+        raise Failed(f"no workspace holds room {room}")
+
+    def holds(self, room: str) -> bool:
+        tree = self.control_json("state-dump")["workspace_tree"]
+        return any(str(w.get("room")) == room for w in tree.get("workspaces", []))
+
+    def active_room(self) -> str:
+        tree = self.control_json("state-dump")["workspace_tree"]
+        return next(str(w["room"]) for w in tree["workspaces"] if w["id"] == tree["active"])
 
 
 # --- /proc --------------------------------------------------------------------
@@ -470,28 +509,230 @@ def frame_seq(session: Session, app: str) -> int:
 INDICATOR_POSES_PER_SECOND = 30
 
 
-def check_spinner(session: Session, windows: dict, processes: dict, seconds: float = 10.0) -> dict:
-    """Board holds nothing and its room never syncs, so it says it is connecting with a spinner,
-    in front: the spinner turns, and costs one committed frame per pose, nothing between poses."""
-    w = windows[app_id("board")]
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def log_lines(session: Session, pattern: str) -> list[dict]:
+    """The shell log's tracing lines matching `pattern`, each as its `key=value` fields."""
+    out = []
+    for line in ANSI.sub("", session.log()).splitlines():
+        if re.search(pattern, line):
+            out.append(dict(re.findall(r"(\w+)=(\S+)", line)))
+    return out
+
+
+def sync_times(session: Session) -> list[float]:
+    """How long each room waited from dialling its host to its first sync, in ms."""
+    return [round(float(f["connect_to_sync_ms"]), 1)
+            for f in log_lines(session, "room synced with its host")]
+
+
+def first_frames(session: Session) -> dict:
+    """Per package, the milliseconds from asking for the launch to its first presented frame."""
+    return {f["package_id"]: round(int(f["request_to_first_present_us"]) / 1000, 1)
+            for f in log_lines(session, "application first frame presented")}
+
+
+def presented(session: Session, app: str) -> bool:
+    frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+    return any(f["app_id"] == app and f["presented"] and f["pixels_ready"] for f in frames)
+
+
+def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
+    """The session's own workspace is hosted by this device: there is no host to wait for,
+    so its apps are told nothing about one, and each shows its own state at once."""
+    room = session.active_room()
+    told = session.room_sync(room)
+    if told["state"] is not None:
+        raise Failed(f"the session's own workspace waits on a host: {told}")
+    return {"room": room, "state": told["state"],
+            "snapshots": snapshots(session, windows, out, "first-")}
+
+
+def open_in_workspace(session: Session, apps: list[str], workspace: str) -> dict:
+    """Open `apps` in the workspace in front, called `workspace`, until each presents a frame.
+    An app with a window there already keeps it: each opens once."""
+    already = {w.get("app_id") for w in session.windows() if w.get("workspace") == workspace}
+    for app in apps:
+        if app not in already:
+            session.invoke("applications", app)
+    def opened():
+        windows = {w.get("app_id"): w for w in session.windows()}
+        return windows if all(a in windows for a in apps) else None
+    windows = until("every app's window", opened)
+    elsewhere = {a: w.get("workspace") for a, w in windows.items() if a in apps and w.get("workspace") != workspace}
+    if elsewhere:
+        raise Failed(f"apps opened outside {workspace}: {elsewhere}")
+    until("a presented frame of every app", lambda: all(presented(session, a) for a in apps), 60)
+    return {a: {"group": windows[a]["group"], "tab": windows[a]["tab"]} for a in apps}
+
+
+def shots_of(session: Session, windows: dict, out: Path, prefix: str) -> dict:
+    shots = {}
+    for app, w in windows.items():
+        session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
+        time.sleep(0.5)
+        name = {NATIVE: "native-notes", NATIVE_CHAT: "native-chat"}.get(app, app.rsplit(".", 1)[-1])
+        path = out / f"{prefix}{name}.png"
+        session.control_cmd("snapshot", str(path))
+        shots[app] = str(path)
+    return shots
+
+
+def check_joined(session: Session, room: str) -> dict:
+    """A fresh session joins the local site's Lounge through its door, as a computer joins
+    tilo.coffee's, and the room syncs with its host."""
+    until("the session to join the Lounge", lambda: session.holds(room), 120, 0.1)
+    until("the Lounge to sync with its host",
+          lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
+    if session.active_room() != room:
+        session.invoke("actions", f"workspace.select.{room}")
+        until("the Lounge in front", lambda: session.active_room() == room, 15)
+    return {"room": room, "connect_to_sync_ms": sync_times(session)}
+
+
+def check_host_again(session: Session, room: str) -> dict:
+    """A session that holds the Lounge already syncs with its host again on start."""
+    until("the Lounge restored", lambda: session.holds(room), 60, 0.1)
+    until("the Lounge to sync again", lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
+    return {"connect_to_sync_ms": sync_times(session)}
+
+
+def new_note_in(session: Session, app: str, args: dict | None = None) -> list[int]:
+    """Invoke `app`'s "New note" edit and wait for it in the app's history: [before, after]."""
+    # Out of focus, an app lists its actions under directory ids, which move on as the
+    # listing changes: find the edit by its application, title and kind, and ask again
+    # when the id listed a moment ago has moved on.
+    def listed():
+        for query in ("New note", "notes"):
+            for action in session.actions(query):
+                if (action.get("application") == app and action.get("title") == "New note"
+                        and action.get("operation_kind") == "Document"):
+                    return action
+        return None
+
+    def history():
+        action = next((a for a in session.actions("History") if a.get("application") == app
+                       and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
+        try:
+            return action and value_of(session.invoke("app-actions", action["id"]))["total"]
+        except Failed:
+            return None
+
+    until(f"{app}'s 'New note'", listed)
+    before = until(f"{app}'s history", lambda: (lambda t: None if t is None else (t,))(history()))[0]
+    refusals: list[str] = []
+
+    def invoked():
+        action = listed()
+        if action is None:
+            return None
+        try:
+            return session.invoke("app-actions", action["id"], args)
+        except Failed as error:
+            refusals.append(str(error)[-600:])
+            # A refusal that names the edit, not a stale id, is the answer.
+            return None if "unknown_action" in str(error) else {"refused": str(error)[-600:]}
+
+    try:
+        answer = until(f"{app}'s 'New note' answered", invoked, 30)
+    except Failed:
+        raise Failed(f"{app}'s 'New note' was never answered: {refusals[-1:]}") from None
+    if "refused" in answer:
+        raise Failed(f"{app}'s 'New note' failed: {answer['refused']}")
+    after = until(f"'New note' in {app}'s history",
+                  lambda: (lambda t: t if t is not None and t > before else None)(history()), 15)
+    return [before, after]
+
+
+def check_host(session: Session, room: str, out: Path) -> dict:
+    """In the Lounge, synced with its host: every app is told the room is synced and shows
+    it, not "Connecting…"; the Lounge lets each write; native Notes' "New note" changes the
+    room; and native Chat, opened now, reaches its first frame in a synced room."""
+    told = session.room_sync(room)
+    if told["state"] != "synced":
+        raise Failed(f"the Lounge is not synced: {told}")
+    apps = [app_id(n) for n in APPS]
+    missing = [a for a in [*apps, NATIVE] if a not in told["app_authors"]]
+    if missing:
+        raise Failed(f"the Lounge does not let these apps write: {missing}")
+    windows = open_in_workspace(session, [*apps, NATIVE, NATIVE_CHAT], "Lounge")
+    shots = shots_of(session, windows, out, "synced-")
+    return {
+        "launch_to_first_frame_ms": first_frames(session),
+        "snapshots": shots,
+        "native_new_note": new_note_in(session, NATIVE, {"title": "From the Lounge"}),
+    }
+
+
+def check_host_edit(session: Session) -> dict:
+    """tilolang Notes' "New note" changes the Lounge, as native Notes' does."""
+    return {"history": new_note_in(session, app_id("notes"))}
+
+
+def check_spinner(session: Session, room: str, pid_of) -> dict:
+    """The Lounge's host is stopped: its room is connecting, and Board, empty and in front,
+    says so with a spinner that turns one committed frame per pose, none between, until the
+    dial gives up and the room says its host cannot be reached."""
+    board = app_id("board")
+    until("the Lounge restored", lambda: session.holds(room), 60, 0.1)
+    check_registry(session, ["board"])
+    # The room is dialled once this device's native owner has opened, which an app in
+    # the room needs to open too.
+    until("the Lounge dialled", lambda: session.room_sync(room)["state"] is not None, 60, 0.1)
+    windows = open_in_workspace(session, [board], "Lounge")
+    w = windows[board]
     session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
-    time.sleep(2)
-    pid = processes["apps"][app_id("board")]["pid"]
-    before, seq, start = switches(pid), frame_seq(session, app_id("board")), time.monotonic()
-    time.sleep(seconds)
-    frames = frame_seq(session, app_id("board")) - seq
+    state = session.room_sync(room)["state"]
+    if state != "connecting":
+        raise Failed(f"with its host stopped, the Lounge is {state!r}, not connecting")
+    pid = pid_of(board)
+    before, seq, start = switches(pid), frame_seq(session, board), time.monotonic()
+    until("the dial to give up", lambda: session.room_sync(room)["state"] != "connecting", 60, 0.1)
+    frames = frame_seq(session, board) - seq
     elapsed = time.monotonic() - start
     after = switches(pid)
     woke = sum(after[t] - before.get(t, 0) for t in after)
     poses = elapsed * INDICATOR_POSES_PER_SECOND
-    out = {"frames": frames, "poses": round(poses), "switches": woke,
-           "switches_per_frame": round(woke / frames, 1) if frames else None}
+    out = {"seconds": round(elapsed, 1), "frames": frames, "poses": round(poses), "switches": woke,
+           "then": session.room_sync(room)["state"]}
     if frames == 0:
         raise Failed(f"the connecting spinner stood still: {out}")
     # One pose a frame; a frame whose clock reading straddles two poses may land late by one.
     if frames > poses + 1:
         raise Failed(f"the spinner committed more frames than it has poses: {out}")
+    if out["then"] != "unreachable":
+        raise Failed(f"a host that does not answer is not said to be out of reach: {out}")
     return out
+
+
+def check_unsynced(session: Session, room: str, out: Path, pid_of) -> dict:
+    """The Lounge's host cannot be reached: each app says so in place of its own empty state,
+    keeps its own action to work on what this device has, and, with nothing on its way,
+    draws nothing more."""
+    apps = [app_id(n) for n in APPS]
+    windows = open_in_workspace(session, [*apps, NATIVE], "Lounge")
+    told = session.room_sync(room)
+    if told["state"] != "unreachable":
+        raise Failed(f"the Lounge should say its host cannot be reached: {told}")
+    shots = shots_of(session, windows, out, "unsynced-")
+    time.sleep(1)
+    board = app_id("board")
+    pid = pid_of(board)
+    before, seq = switches(pid), frame_seq(session, board)
+    time.sleep(5)
+    frames = frame_seq(session, board) - seq
+    woke = {t: c - before.get(t, 0) for t, c in switches(pid).items() if c != before.get(t, 0)}
+    if frames or woke:
+        raise Failed(f"Board, with nothing on its way, drew {frames} frames and woke {woke}")
+    return {"state": told["state"], "snapshots": shots}
+
+
+def check_reconnect(session: Session, room: str) -> dict:
+    """The host is back: the Lounge syncs by itself, with no one asking."""
+    until("the Lounge to sync once its host is back",
+          lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
+    return {"state": "synced"}
 
 
 def probe_packages(state: Path, out: Path) -> list[Path]:
@@ -553,16 +794,90 @@ def check_routes(session: Session) -> dict:
     return result
 
 
-def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: str = ""):
+def free_port_base() -> int:
+    """A base whose ports the local site takes (see nested-pair.sh --ports) are all free."""
+    import random
+    import socket
+    for _ in range(64):
+        base = random.randrange(20000, 40000, 100)
+        try:
+            for port in (base, base + 1, base + 10, base + 74):
+                for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                    with socket.socket(socket.AF_INET, kind) as probe:
+                        probe.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+        return base
+    raise Failed("no free ports for the local site")
+
+
+class Site:
+    """A local site as nested-pair.sh runs it: the room service in persistent mode and its
+    workspace host, the site's entry naming the host's room as its home workspace, the
+    Lounge. Its processes can be stopped and let go on, as a host that stops answering."""
+
+    def __init__(self, out: Path):
+        self.dir = out / "site"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        ready = self.dir / "ready.json"
+        base = free_port_base()
+        argv = [sys.executable, "-I", SITE, "--scratch", self.dir, "--name", "lounge",
+                "--shown-name", "Lounge", "--no-bundle", "--relay-bin", BIN / "tilo-relay",
+                "--room-service-bin", BIN / "tilo-room-service", "--web-port", str(base),
+                "--api-port", str(base + 1), "--port-base", str(base + 10), "--ready-file", ready]
+        authors = ",".join([*SITE_AUTHORS, *(app_id(n) for n in APPS)])
+        env = {**os.environ, "TILO_ROOMS_AUTHOR_APPS": authors,
+               "TILO_ROOMS_GUEST_JOINS_PER_10_MIN": "1000", "TILO_ROOMS_GUEST_JOINS_PER_DAY": "100000"}
+        print("==> starting the local site", file=sys.stderr)
+        self.proc = subprocess.Popen(argv, stdout=open(self.dir / "site.log", "w"), stderr=subprocess.STDOUT,
+                                     start_new_session=True, env=env)
+        until("the local site", lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
+        if self.proc.poll() is not None:
+            raise Failed(f"the local site ended ({self.proc.returncode}); see {self.dir / 'site.log'}")
+        answer = json.loads(ready.read_text())
+        self.url, self.room = answer["site"], answer["room"]
+
+    def processes(self) -> list[int]:
+        # run.py starts the room service in a session of its own, and the service its
+        # workspace host: the whole tree, not one process group.
+        return [self.proc.pid, *descendants(self.proc.pid)]
+
+    def signal(self, number: int) -> None:
+        for pid in self.processes():
+            try:
+                os.kill(pid, number)
+            except ProcessLookupError:
+                pass
+
+    def pause(self) -> None:
+        self.signal(signal.SIGSTOP)
+
+    def resume(self) -> None:
+        self.signal(signal.SIGCONT)
+
+    def stop(self) -> None:
+        if self.proc.poll() is None:
+            self.resume()
+            os.killpg(self.proc.pid, signal.SIGTERM)
+            self.proc.wait(60)
+
+
+def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: str = "",
+                  community: str | None = None, fresh: bool = True):
     ready = out / f"ready-{tag}.json"
-    argv = [SESSION, "--no-build", "--headless", "--software", "--fresh-desktop", "--apps", native,
+    argv = [SESSION, "--no-build", "--headless", "--software", "--apps", native,
             "--state", state, "--ready", ready]
+    if fresh:
+        argv.append("--fresh-desktop")
+    if community:
+        argv += ["--community", community]
     for tapp in tapps:
         argv += ["--install-tapp", tapp]
     print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
     log = open(out / f"session-{tag}.log", "w")
     proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                            env={**os.environ, "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info")})
+                            env={**os.environ, "RUST_LOG": os.environ.get(
+        "RUST_LOG", "warn,tilo::launch_latency=info,tilo::room_sync=info")})
     until("the session", lambda: ready.is_file() or proc.poll() is not None, 300, 0.5)
     if proc.poll() is not None:
         raise Failed(f"the session ended ({proc.returncode}); see {out / f'session-{tag}.log'}")
@@ -590,11 +905,100 @@ def run_checks(summary: dict, checks) -> bool:
     return True
 
 
+def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
+    """The apps in a session of their own, then the route checks in a second start of it."""
+    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps",
+                                  native="notes")
+    running["proc"] = proc
+    pid = proc.pid
+    ok = run_checks(summary, [
+        ("registry", lambda: check_registry(session)),
+        ("launch", lambda: launch_all(session)),
+        ("processes", lambda: check_processes(session, pid)),
+        # Before anything is in them: the session's own workspace is this device's to
+        # host, so no app waits on a host and each shows its own state.
+        ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),
+        ("actions", lambda: check_actions(session)),
+        ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
+        ("native", lambda: check_native(session, out)),
+        ("activation", lambda: check_activation(session)),
+        ("read", lambda: check_read(session)),
+        ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+    ])
+    stop_session(proc)
+    running["proc"] = None
+    # The second start writes its own shell log over this one.
+    shutil.copy(state / "logs/shell.log", out / "shell-apps.log")
+    if not ok:
+        return False
+    # Route access, with the probe installed as Board and as Todo. The probes first: until
+    # a package names the probe's runtime, the collection after each install reclaims it.
+    tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
+    proc, session = start_session(state, out, tapps, "routes")
+    running["proc"] = proc
+    run_checks(summary, [("routes", lambda: check_routes(session))])
+    stop_session(proc)
+    running["proc"] = None
+    shutil.copy(state / "logs/shell.log", out / "shell-routes.log")
+    return True
+
+
+def host_phases(summary: dict, out: Path, running: dict) -> None:
+    """A workspace with a host: a local site, and a session of its own in its Lounge,
+    started three times: fresh, again, and with the site's processes stopped."""
+    site = Site(out)
+    running["site"] = site
+    host_state = out / "host-state"
+    run([SESSION, "--no-build", "--prepare-only", "--apps", "notes chat", "--state", host_state])
+    tapps = [out / "build" / f"{n}.tapp" for n in APPS]
+
+    def start(tag: str, fresh: bool) -> Session:
+        proc, session = start_session(host_state, out, tapps, tag, native="notes chat",
+                                      community=site.url, fresh=fresh)
+        running["proc"] = proc
+        return session
+
+    def stop(tag: str) -> None:
+        stop_session(running["proc"])
+        running["proc"] = None
+        shutil.copy(host_state / "logs/shell.log", out / f"shell-{tag}.log")
+
+    def pid_of(app: str) -> int:
+        return next(p for p in descendants(running["proc"].pid)
+                    if environ(p).get("TILO_PACKAGE_ID") == app and exe(p).endswith("/bin/tilolang-app"))
+
+    # A fresh session joins the Lounge; started again it holds it already. No app opens
+    # in either, so every app opens in the third start, where each is first opened.
+    session = start("host-join", True)
+    run_checks(summary, [("host-join", lambda: check_joined(session, site.room))])
+    stop("host-join")
+    session = start("host-again", False)
+    run_checks(summary, [("host-again", lambda: check_host_again(session, site.room))])
+    stop("host-again")
+    # The host stops answering: its processes are stopped, not gone, so a dial waits
+    # for an answer until it gives up.
+    site.pause()
+    session = start("host", False)
+    run_checks(summary, [
+        ("spinner", lambda: check_spinner(session, site.room, pid_of)),
+        ("unsynced", lambda: check_unsynced(session, site.room, out, pid_of)),
+    ])
+    site.resume()
+    run_checks(summary, [
+        ("reconnect", lambda: check_reconnect(session, site.room)),
+        ("host", lambda: check_host(session, site.room, out)),
+        ("host-edit", lambda: check_host_edit(session)),
+    ])
+    stop("host")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-e2e")
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--host-only", action="store_true",
+                        help="run only the checks of a workspace with a host (host to reconnect)")
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out, ignore_errors=True)
@@ -617,39 +1021,12 @@ def main() -> int:
          "--tilo-runtime", f"tilo-runtime/{runtime}"])
 
     summary: dict = {"checks": {}, "failed": []}
-    proc = None
+    # The session running now, and the local site, stopped at the end whatever happens.
+    running: dict = {"proc": None, "site": None}
     try:
-        # The apps as they are.
-        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps",
-                                      native="notes")
-        pid = proc.pid
-        ok = run_checks(summary, [
-            ("registry", lambda: check_registry(session)),
-            ("launch", lambda: launch_all(session)),
-            ("processes", lambda: check_processes(session, pid)),
-            # Before anything is in them: the room has not synced with the workspace's host,
-            # so each app says it is connecting, as native Notes does, not that it is empty.
-            ("unsynced", lambda: snapshots(session, summary["checks"]["launch"], out, "unsynced-")),
-            ("actions", lambda: check_actions(session)),
-            ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
-            ("native", lambda: check_native(session, out)),
-            ("activation", lambda: check_activation(session)),
-            ("read", lambda: check_read(session)),
-            ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
-            ("spinner", lambda: check_spinner(session, summary["checks"]["launch"],
-                                              summary["checks"]["processes"])),
-        ])
-        stop_session(proc)
-        proc = None
-        # The second start writes its own shell log over this one.
-        shutil.copy(state / "logs/shell.log", out / "shell-apps.log")
-        # Route access, with the probe installed as Board and as Todo.
+        ok = args.host_only or apps_phases(summary, state, out, running)
         if ok:
-            # The probes first: until a package names the probe's runtime,
-            # the collection after each install reclaims it as unused.
-            tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
-            proc, session = start_session(state, out, tapps, "routes")
-            run_checks(summary, [("routes", lambda: check_routes(session))])
+            host_phases(summary, out, running)
     except Failed as error:
         summary["failed"].append("session")
         summary["error"] = str(error)
@@ -657,7 +1034,9 @@ def main() -> int:
     finally:
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         if not args.keep:
-            stop_session(proc)
+            stop_session(running["proc"])
+            if running["site"] is not None:
+                running["site"].stop()
     print(f"==> {'FAILED: ' + ', '.join(summary['failed']) if summary['failed'] else 'every check passed'}"
           f" (summary: {out / 'summary.json'})", file=sys.stderr)
     return 1 if summary["failed"] else 0

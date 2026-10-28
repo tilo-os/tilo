@@ -484,7 +484,7 @@ impl App {
             self.bound_broker_route(),
         ) && let Some(witness) = self.bound_broker_route()
         {
-            return witness.route.app_id.clone();
+            return witness.route().app_id.clone();
         }
         crate::collaboration::local_app_id()
     }
@@ -1011,7 +1011,7 @@ impl App {
         self.collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route.clone())
+            .map(|witness| witness.route().clone())
     }
 
     fn encode_resource_action(
@@ -1581,6 +1581,7 @@ impl App {
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let local = request.actor == self.collaboration.local_author.0;
+        let _ = crate::widget::take_presses();
         let started = (|| {
             use crate::bound_dispatch::legacy_document::{
                 LocalResourceTarget, select_local_target,
@@ -1608,6 +1609,12 @@ impl App {
                 Err(error) => Err(error),
             }
         })()?;
+        // A control chosen the way a person chooses it (a menu row) asked
+        // to be pressed where it is drawn: pressed for this invoker, before
+        // the caller learns it finished.
+        for at in crate::widget::take_presses() {
+            self.dispatch_semantic_click(at.x, at.y);
+        }
         if local {
             self.take_over_owner_view();
         }
@@ -4122,7 +4129,7 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
     fn workspace(&self) -> Option<String> {
         self.manager
             .primary_route()
-            .map(|witness| witness.route.cluster_id.to_string())
+            .map(|witness| witness.route().cluster_id.to_string())
     }
 
     fn invoke(

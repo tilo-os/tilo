@@ -49,12 +49,15 @@ class EnabledImagerPlatforms(unittest.TestCase):
         self.winget_check = checks["imager-winget-acceptance"]
 
     def test_release_gate_requires_every_enabled_platform_artifact(self):
-        with self.subTest(phase='full native, tags and protected main require both macos architectures'):
+        with self.subTest(phase='a tag or a full-native dispatch requires both macos architectures'):
             self.doCleanups()
             self.setUp()
             macos = section(self.workflow, "macos", 2)
+            # macOS and Windows need hosts this fleet does not serve, so a
+            # promotion publishes the Linux media and these lanes wait for a
+            # tag or for a dispatch that names them.
             self.assertIn(
-                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))",
+                "    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
                 macos,
             )
             for arch in ("x86_64", "aarch64"):
@@ -63,8 +66,8 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.assertIn("    needs: [plan, linux, windows, macos]", publish)
             install = section(self.workflow, "homebrew-install-test", 2)
             self.assertNotIn("package_kind: cask", install)
-            for arch in ("x86_64", "aarch64"):
-                self.assertIn(f"runner: imager-linux-{arch}", install)
+            for runner in ("runner-release", "runner-large-arm64"):
+                self.assertIn(f"runner: {runner}", install)
             native_casks = section(self.workflow, "homebrew-macos-install-test", 2)
             self.assertIn("    if: startsWith(github.ref, 'refs/tags/imager-v')", native_casks)
             for arch in ("x86_64", "aarch64"):

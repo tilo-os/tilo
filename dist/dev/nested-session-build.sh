@@ -10,14 +10,19 @@
 # env-runtime image Terminal's environments start from, and a dbus-daemon for
 # hosts that have none.
 #
-# t.toml's `nested-session` check runs it on a t node, and the session script
-# downloads its output with `t outputs nested-session`. The thin apps and
-# libruntime_dylib.so must come from one Cargo graph (a Rust dylib's symbols
-# carry crate hashes), so they travel together as one check's outputs rather
-# than through `t cargo build`, which copies back programs only.
+# It runs where the builds are warm, never on the machine that runs the
+# session: nested-session.sh has t.toml's `nested-session` check run it on a t
+# node and downloads its output with `t outputs nested-session`, or has rcargo
+# run it on an rcargo builder (`rcargo --fetch nested-session exec`) and fetch
+# the target directory's nested-session. The thin apps and libruntime_dylib.so
+# must come from one Cargo graph (a Rust dylib's symbols carry crate hashes),
+# so they travel together as one build's output rather than through `t cargo
+# build` or `rcargo build`, which copy back programs only.
 #
 # Usage:
-#   dist/dev/nested-session-build.sh OUT        build into OUT (replaced)
+#   dist/dev/nested-session-build.sh [OUT]      build into OUT (replaced), by
+#                                               default the target directory's
+#                                               nested-session
 #   dist/dev/nested-session-build.sh --apps     print the apps it builds
 #
 # The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
@@ -35,13 +40,15 @@ if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
 fi
-out=$(realpath -m "${1:?usage: nested-session-build.sh OUT | --apps}")
+(($# <= 1)) || { echo "usage: nested-session-build.sh [OUT] | --apps" >&2; exit 2; }
+out=${1:+$(realpath -m "$1")}
 cd "$repo_root"
 arch=$(uname -m)
 env_runtime_trees=$(realpath -m "${TILO_ENV_RUNTIME_TREES:?TILO_ENV_RUNTIME_TREES names the env-runtime trees (the outputs of the image-env-runtime-dev-tree-ARCH check)}")
 [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
     || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+out=${out:-$target/nested-session}
 # Build scripts fetch their test assets into the build directory; on t the
 # sources are read-only.
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}

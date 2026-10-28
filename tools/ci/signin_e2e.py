@@ -23,6 +23,9 @@ Variants:
                          recovery key it hands over must open a keyslot of its own (item 8)
   separate-disk-secret   the installer's separate disk secret: migration adds the keyslot with the
                          volume key the initrd links, then the boot sign-in takes the password
+  rollback               an image from before pam_tilo (--pre-pam-tilo-image) stays in the rollback
+                         set: migration keeps the old password hash, the old image still signs the
+                         person in with it, and the new one still checks only through tilo-authd
 
 Writes report.json and report.md, screenshots and per-boot logs into --out. Every file there is
 searched for every secret the run used before the run ends; a file that holds one is emptied
@@ -312,6 +315,7 @@ class Run:
         self.boot_denials: dict[str, dict] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
+        self.old_image: str | None = args.pre_pam_tilo_image
 
     # -- reporting ------------------------------------------------------------------------------
 
@@ -937,11 +941,16 @@ cryptsetup close e2e-target
         volume_key_left = [k for k in keys if "tilo-auth:volume-key" in k]
         _, authd = self.guest("journalctl -b --no-pager -o cat -t tilo-authd -u tilo-authd | tail -n 60", quiet=True)
         self.save("tilo-authd-migration.txt", authd)
+        # The hash stays only while an older image could check it: on a fresh install, until
+        # this generation is confirmed (sign-in.md section 9).
+        kept_for = [line for line in authd.splitlines() if "keeping uid" in line]
+        kept_until_confirmed = bool(kept_for) and all("is not confirmed yet" in line for line in kept_for)
         custody = self.lockout_custody()
         evidence = {"lockout_custody": custody, "disk_prompts_answered": typed, "session": session, "record": summary,
                     "tilo_signin_tokens": [{k: t.get(k) for k in ("keyslots", "uid", "name")}
                                            for t in tokens],
-                    "shadow_locked": locked, "pre_existing_keyslots_unchanged": unchanged,
+                    "shadow_locked": locked, "shadow_kept_for": kept_for,
+                    "pre_existing_keyslots_unchanged": unchanged,
                     "pre_existing_secrets_open": reopen,
                     "baseline_slots": {"disk_secret": self.baseline.get("disk_secret_slot"),
                                        "recovery_key": self.baseline.get("recovery_slot")},
@@ -955,7 +964,8 @@ cryptsetup close e2e-target
             "record names its system keyslot": isinstance(slot, int),
             "a tilo-signin token for that keyslot": isinstance(slot, int) and str(slot) in token_slots,
             "the keyslot is new": isinstance(slot, int) and str(slot) not in self.baseline["keyslots"],
-            "shadow entry locked": locked,
+            "shadow entry locked, or kept until this generation is confirmed":
+                locked or (not locked and kept_until_confirmed),
             "no tilo-auth:volume-key left in the kernel keyring": not volume_key_left,
             "pre-existing keyslots unchanged": bool(unchanged) and all(unchanged.values()),
             "the disk secret still opens its slot":
@@ -1153,8 +1163,9 @@ cryptsetup close e2e-target
 
     def pam_surfaces(self) -> None:
         """Item 5: lock screen, sudo and polkit accept the secret through pam_tilo and reject a
-        wrong one. With the shadow entry locked, pam_unix can accept nothing: an acceptance is
-        pam_tilo's. Correct entries first, so a lockout from the wrong ones cannot hide them."""
+        wrong one. Correct entries first, so a lockout from the wrong ones cannot hide them. Then,
+        with tilo-authd stopped, none accepts the secret: the old hash, which may be kept for an
+        older image, is checked by nothing on this one."""
         u = self.user
         before = self.lockout()
         _, stacks = self.guest("grep -l pam_tilo /etc/pam.d/system-auth /etc/pam.d/password-auth; "
@@ -1182,6 +1193,12 @@ cryptsetup close e2e-target
                               ("pkexec", pkexec)):
             results[name]["wrong"] = attempt(name, command, self.wrong)
         after = self.lockout()
+        self.guest("systemctl stop tilo-authd.service", quiet=True)
+        try:
+            for name, command in (("lock-screen", lock), ("sudo", sudo), ("polkit", polkit_stack)):
+                results[name]["right_without_daemon"] = attempt(name, command, self.account)
+        finally:
+            self.guest("systemctl start tilo-authd.service", quiet=True)
         evidence = {"results": results, "details": checks, "shadow_prefix_locked": shadow.strip()[:1] in ("!", "*"),
                     "lockout_before": before, "lockout_after": after}
         required = ("lock-screen", "sudo", "polkit")
@@ -1191,6 +1208,8 @@ cryptsetup close e2e-target
                 bad.append(f"{n} rejected the secret (exit {results[n]['right']})")
             if results[n]["wrong"] == 0:
                 bad.append(f"{n} accepted a wrong entry")
+            if results[n]["right_without_daemon"] == 0:
+                bad.append(f"{n} accepted the secret with tilo-authd stopped")
         note = ("real pkexec through its text agent: "
                 + ("accepted the secret and refused the wrong one"
                    if results["pkexec"]["right"] == 0 and results["pkexec"]["wrong"] != 0
@@ -1200,7 +1219,8 @@ cryptsetup close e2e-target
             self.item("5", "failed", "; ".join(bad), **evidence)
         else:
             self.item("5", "passed", "lock screen (tilo-unlock), sudo and polkit's PAM stack accept "
-                      f"the secret and reject a wrong one; {note}", **evidence)
+                      "the secret and reject a wrong one, and accept nothing with tilo-authd stopped; "
+                      f"{note}", **evidence)
 
     def recovery_path(self) -> None:
         """Item 6: "Can't sign in", then the recovery key opens the volume."""
@@ -1263,7 +1283,9 @@ cryptsetup close e2e-target
             "a new keyslot with its tilo-signin token": isinstance(slot, int)
             and str(slot) not in self.baseline["keyslots"]
             and any(str(slot) in t.get("keyslots", []) for t in tokens),
-            "shadow entry locked": evidence["shadow_locked"],
+            "shadow entry locked, or kept until this generation is confirmed": evidence["shadow_locked"]
+            or (bool(evidence["shadow_kept_for"])
+                and all("is not confirmed yet" in line for line in evidence["shadow_kept_for"])),
             "pre-existing keyslots unchanged": all(evidence["pre_existing_keyslots_unchanged"].values()),
             "the disk secret still opens its slot": opened["disk_secret"] is not None
             and opened["disk_secret"] == self.baseline.get("disk_secret_slot"),
@@ -1304,7 +1326,11 @@ cryptsetup close e2e-target
     # -- the variants -----------------------------------------------------------------------
 
     def execute(self) -> None:
-        if self.variant == "one-secret":
+        if self.variant == "rollback":
+            steps = [("install", self.install, ("9",)),
+                     ("first boot", self.first_boot_quiet, ("9",)),
+                     ("rollback", self.rollback, ("9",))]
+        elif self.variant == "one-secret":
             steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
@@ -1331,9 +1357,112 @@ cryptsetup close e2e-target
                     pass
                 self.cycle.stop()
                 self.cycle.keep_serial(name.replace(" ", "-"))
-                if name in ("install", "migration", "first boot"):
+                if name in ("install", "migration", "first boot", "rollback"):
                     break
         self.cycle.stop()
+
+    def boot_to_session(self, label: str) -> dict | None:
+        """Boot, open the volume and sign in at the greeter with the account password; the
+        session that starts, if one does."""
+        self.boot(label)
+        self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
+        try:
+            state = console.poll(self.cycle.console, lambda s: s.get("app") == "greeter"
+                                 and s.get("accepts_input"), 300, 2)
+            self.greeter_log(label, state)
+            self.cycle.invoke("greeter", "sign-in@greeter", {"password": self.account})
+        except TimeoutError:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen(f"{label}-no-greeter", path, text)
+        self.connect()
+        return self.wait_session(180)
+
+    def shadow_locked(self) -> bool:
+        _, shadow = self.guest(f"getent shadow {self.user} | cut -d: -f2 | cut -c1-3", quiet=True)
+        return shadow.strip()[:1] in ("!", "*")
+
+    def rollback(self) -> None:
+        """Item 9: switch to an image from before pam_tilo and back, so it stays the rollback
+        deployment; migrate on the new image; roll back and sign in with the old password; roll
+        forward and find the hash still kept while the old image can boot."""
+        if not self.old_image:
+            raise Failed("the rollback variant needs --pre-pam-tilo-image")
+        evidence: dict = {"old_image": self.old_image}
+        label = "rollback-switch"
+        self.boot(label)
+        self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
+        self.connect()
+        code, text = self.guest(f"bootc switch {quote(self.old_image)} 2>&1 | tail -n 20", 1800)
+        evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
+        if code:
+            raise Failed(f"bootc switch to the old image failed: {text.strip()[-200:]}")
+        self.power_off(label)
+
+        label = "rollback-old-image"
+        self.boot(label)
+        self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
+        self.connect()
+        _, pam = self.guest("test -e /etc/pam.d/tilo-auth && echo pam_tilo || echo before", quiet=True)
+        evidence["old_image_pam"] = pam.strip()
+        if pam.strip() != "before":
+            raise Failed("the image given as --pre-pam-tilo-image has the tilo-auth PAM service")
+        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        if code:
+            raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
+        self.power_off(label)
+
+        label = "rollback-migrate"
+        session = self.boot_to_session(label)
+        uid = self.uid()
+        time.sleep(5)
+        code, record = self.guest(f"grep -c '\"kind\"' /var/lib/tilo/auth/users/{uid}.json", quiet=True)
+        _, authd = self.guest("journalctl -b --no-pager -o cat -t tilo-authd -u tilo-authd | tail -n 60",
+                              quiet=True)
+        self.save("tilo-authd-rollback-migrate.txt", authd)
+        evidence["migrated"] = {"session": session, "record_wrappers": record.strip(),
+                                "shadow_locked": self.shadow_locked(),
+                                "kept_for": [l for l in authd.splitlines() if "keeping uid" in l]}
+        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        if code:
+            raise Failed(f"bootc rollback to the old image failed: {text.strip()[-200:]}")
+        self.power_off(label)
+
+        label = "rollback-back-to-old"
+        session = self.boot_to_session(label)
+        evidence["old_image_sign_in"] = {"session": session}
+        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        if code:
+            raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
+        self.power_off(label)
+
+        label = "rollback-forward"
+        session = self.boot_to_session(label)
+        evidence["forward"] = {"session": session, "shadow_locked": self.shadow_locked()}
+        u = self.user
+        self.guest("systemctl stop tilo-authd.service", quiet=True)
+        try:
+            code, _ = self.guest(f"printf '%s\\n' {quote(self.account)} | runuser -u {u} -- "
+                                 "sudo -S -k -p '' /usr/bin/true", 120, True)
+        finally:
+            self.guest("systemctl start tilo-authd.service", quiet=True)
+        evidence["forward"]["sudo_without_daemon"] = code
+        checks = {
+            "migration moved the person onto a user key": evidence["migrated"]["record_wrappers"] not in ("", "0"),
+            "migration kept the old hash for the old image": not evidence["migrated"]["shadow_locked"]
+            and any("predates pam_tilo" in l for l in evidence["migrated"]["kept_for"]),
+            "the old image signed the person in with the old password": bool(evidence["old_image_sign_in"]["session"]),
+            "back on the new image the person signs in": bool(session),
+            "the hash is still kept while the old image can boot": not evidence["forward"]["shadow_locked"],
+            "nothing on the new image accepts the kept hash with tilo-authd stopped": code != 0,
+        }
+        evidence["checks"] = checks
+        failed = [name for name, ok in checks.items() if not ok]
+        if failed:
+            self.item("9", "failed", "; ".join(failed), **evidence)
+        else:
+            self.item("9", "passed", "the old image signs in with the old password after migration, "
+                      "and the new image checks it through tilo-authd alone", **evidence)
+        self.power_off(label)
 
     def first_boot_quiet(self) -> None:
         """The separate-secret variant's first boot: item 1's path, reported under item 7."""
@@ -1359,6 +1488,8 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
         "8": "One secret: the recovery key the installer hands over opens its own keyslot after install",
     }
+    if any(r.variant == "rollback" for r in runs):
+        names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
     document = {"items": {k: {"name": names[k], **items[k]} for k in sorted(items)},
@@ -1448,7 +1579,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--medium", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--storage", type=Path, required=True)
-    parser.add_argument("--variant", action="append", choices=["one-secret", "separate-disk-secret"])
+    parser.add_argument("--variant", action="append",
+                        choices=["one-secret", "separate-disk-secret", "rollback"])
+    parser.add_argument("--pre-pam-tilo-image",
+                        help="for the rollback variant: an image reference from before pam_tilo "
+                             "that the guest can pull")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     args.storage.mkdir(parents=True, exist_ok=True)

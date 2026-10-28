@@ -171,7 +171,7 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
         b"profile-start" => return Some(profile_start(args)),
         b"profile-stop" => {
             return Some(Response::Answer(
-                json!({ "profile": super::metrics::profile::stop() }),
+                json!({ "profile": tilo_frame_metrics::profile::stop() }),
             ));
         }
         _ => {}
@@ -215,7 +215,7 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
                 });
             }
             answer.insert("launch_history".into(), history);
-            answer.insert("profile".into(), super::metrics::profile::status());
+            answer.insert("profile".into(), tilo_frame_metrics::profile::status());
         }
         Some(Response::Answer(serde_json::Value::Object(answer)))
     })
@@ -224,7 +224,7 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
 /// Start profiling the compositor for `seconds` (default
 /// [`profile::DEFAULT_SECONDS`]) into the session's profile directory.
 fn profile_start(args: &serde_json::Map<String, serde_json::Value>) -> Response {
-    use super::metrics::profile;
+    use tilo_frame_metrics::profile;
     let Some(root) = profile::default_root() else {
         return Response::Err {
             code: "unavailable".into(),
@@ -238,7 +238,7 @@ fn profile_start_in(
     root: &std::path::Path,
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Response {
-    use super::metrics::profile;
+    use tilo_frame_metrics::profile;
     let seconds = match args.get("seconds").map(serde_json::Value::as_u64) {
         None => profile::DEFAULT_SECONDS,
         Some(Some(seconds)) if (1..=profile::MAX_SECONDS).contains(&seconds) => seconds,
@@ -303,8 +303,8 @@ mod tests {
     /// loop-timing phase, each thread's CPU and a summary written last.
     #[test]
     fn a_profile_the_owner_starts_and_stops_is_complete_on_disk() {
-        use crate::compositor::metrics::{CSV_HEADER, FrameRecorder, profile};
         use std::time::{Duration, Instant};
+        use tilo_frame_metrics::{CSV_HEADER, FrameRecorder, profile};
 
         // Off by default: the loop's recorder records nothing.
         let mut recorder = FrameRecorder::disabled();

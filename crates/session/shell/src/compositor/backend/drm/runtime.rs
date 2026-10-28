@@ -71,10 +71,10 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
-use crate::shell::render::icc_lut::IccLut;
 pub use keyboard::KeyboardXkb;
 #[cfg(test)]
 use keyboard::{KeyOutcome, keyboard_input_event, keysym_to_winit_key, text_for};
+use tilo_output_passes::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -758,7 +758,7 @@ pub struct LiveEntry {
     /// Adaptive sync was last asked for on this output's CRTC.
     pub adaptive_sync_engaged: bool,
     /// The sink's HDR description, when its EDID advertises PQ.
-    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    pub hdr_display: Option<tilo_wayland_ext::edid::HdrDisplayInfo>,
     /// The connector has every property HDR signalling needs.
     pub hdr_driver_ready: bool,
     /// HDR as the user configured it: SDR white in cd/m² when on.
@@ -774,7 +774,7 @@ pub struct LiveEntry {
 /// with the HDR properties, when the user turned it on and no earlier attempt
 /// failed on this output.
 pub(crate) fn hdr_request_for(
-    display: Option<&crate::wayland::edid::HdrDisplayInfo>,
+    display: Option<&tilo_wayland_ext::edid::HdrDisplayInfo>,
     driver_ready: bool,
     setting: Option<f32>,
     failed: bool,
@@ -4303,13 +4303,13 @@ pub struct ScanoutEntry {
     pub direct_calibration: Option<u64>,
     /// The share of linear light software dimming lets through on this
     /// output, `1.0` when it is not dimmed
-    /// ([`crate::shell::software_dim`]).
+    /// ([`tilo_color_pipeline::software_dim`]).
     pub software_dim: f32,
     /// The final-pass dimming (`f32` bits) the direct path last rendered
     /// this output with: when it changes, the next frame renders in full.
     pub direct_dim: Option<u32>,
     /// The readback presenter's dimming tables, for the level in use.
-    pub cpu_dim: Option<crate::shell::software_dim::CpuDim>,
+    pub cpu_dim: Option<tilo_color_pipeline::software_dim::CpuDim>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
@@ -4399,10 +4399,10 @@ impl ScanoutEntry {
         if self
             .cpu_dim
             .as_ref()
-            .map(crate::shell::software_dim::CpuDim::light)
+            .map(tilo_color_pipeline::software_dim::CpuDim::light)
             != dim
         {
-            self.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
+            self.cpu_dim = dim.map(tilo_color_pipeline::software_dim::CpuDim::new);
         }
         dim
     }
@@ -4410,7 +4410,7 @@ impl ScanoutEntry {
     /// The dimming this output's final pass applies: only where the CRTC
     /// cannot dim it itself.
     pub fn final_pass_dim(&self) -> Option<f32> {
-        crate::shell::software_dim::final_pass_dim(
+        tilo_color_pipeline::software_dim::final_pass_dim(
             self.software_dim,
             self.scanout.software_dim_in_crtc(),
         )
@@ -4508,7 +4508,7 @@ fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
 #[cfg(test)]
 mod color_calibration_tests {
     use super::color_calibration;
-    use crate::shell::render::icc_lut::tests::lut16;
+    use tilo_output_passes::icc_lut::tests::lut16;
 
     #[test]
     fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {
@@ -7045,11 +7045,11 @@ pub(super) mod tests {
 
     #[test]
     fn hdr_is_requested_only_where_sink_driver_and_setting_agree() {
-        let hdr_sink = crate::wayland::edid::HdrDisplayInfo {
+        let hdr_sink = tilo_wayland_ext::edid::HdrDisplayInfo {
             supported_transfers: vec![
-                crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084,
+                neighbour_wire::colorimetry::TransferCharacteristics::SmpteSt2084,
             ],
-            ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+            ..tilo_wayland_ext::edid::HdrDisplayInfo::default_sdr()
         };
         // Phase `each_missing_piece_withholds_the_request`.
         assert!(hdr_request_for(None, true, Some(203.0), false).is_none());

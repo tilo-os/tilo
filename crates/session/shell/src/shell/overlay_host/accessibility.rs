@@ -230,7 +230,7 @@ impl ShellOverlayHost {
                         let state = chrome.borrow();
                         if matches!(
                             state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Notifications
+                            tilo_quick_settings::QsLevel::Notifications
                         ) {
                             // One semantic snapshot has one clock edge, so
                             // adjacent rows cannot label their ages across a
@@ -240,9 +240,8 @@ impl ShellOverlayHost {
                                 &self.qs_notification_layout(),
                                 Instant::now(),
                             ));
-                        } else if let crate::shell::quick_settings::QsLevel::BluetoothDetails(
-                            address,
-                        ) = state.quick_settings.current_level()
+                        } else if let tilo_quick_settings::QsLevel::BluetoothDetails(address) =
+                            state.quick_settings.current_level()
                         {
                             let accessory = state
                                 .quick_settings
@@ -459,7 +458,7 @@ impl ShellOverlayHost {
                 let notification_action = self.chrome.as_ref().and_then(|chrome| {
                     if !matches!(
                         chrome.borrow().quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Notifications
+                        tilo_quick_settings::QsLevel::Notifications
                     ) {
                         return None;
                     }

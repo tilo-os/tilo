@@ -244,26 +244,45 @@ impl CatalogueRow {
         })
     }
 
+    /// Whether this row is worth returning for `needle`. A host narrows a
+    /// query to one word here; whatever it keeps is then matched more
+    /// closely, so this keeps every row a word begins in any of the row's
+    /// names — the action's id, label and description, its parameters, the
+    /// resource's label and kind — rather than only those whose text holds
+    /// the needle verbatim. A caller asking for "draw" is after
+    /// "Draw a pointer path", and one asking for "scrolling" after a
+    /// "scroll" the description spells as "Scroll down with `PageDown`".
     fn matches(&self, needle: &str) -> bool {
         if needle.is_empty() {
             return true;
         }
         let needle = needle.to_lowercase();
+        // The same word in another inflection names the same action: a
+        // caller asking for "scrolling" is after the row that spells
+        // "scroll", and one asking for "draw" after "drawing".
+        let stem = crate::remote::stem_word(&needle);
         let mut fields = vec![
             self.resource.label.as_str(),
+            self.resource.kind.as_str(),
             self.resource.id.as_str(),
             self.app_id.as_str(),
         ];
         if let Some(action) = &self.action {
             fields.extend([action.action_label.as_str(), action.address.action.as_str()]);
             fields.extend(action.keywords.iter().map(String::as_str));
+            fields.extend(action.description.as_deref());
             for param in &action.params {
                 fields.extend([param.name.as_ref(), param.description.as_ref()]);
             }
         }
-        fields
-            .iter()
-            .any(|field| field.to_lowercase().contains(&needle))
+        fields.iter().any(|field| {
+            let field = field.to_lowercase();
+            field.contains(&needle)
+                || field.split(|c: char| !c.is_alphanumeric()).any(|word| {
+                    word.starts_with(&needle)
+                        || (word.chars().count() >= 3 && crate::remote::stem_word(word) == stem)
+                })
+        })
     }
 }
 
@@ -577,6 +596,41 @@ mod tests {
                 .is_none(),
             "a query with no app filter says nothing about one"
         );
+    }
+
+    #[test]
+    fn a_needle_matches_an_inflection_of_a_described_word() {
+        let mut scroll = row("page:1", Some("press-page"), "");
+        if let Some(action) = scroll.action.as_mut() {
+            action.description =
+                Some("Scroll down the page with PageDown, or Space for a screenful.".into());
+        }
+        let mut draw = row("page:1", Some("pointer-path"), "");
+        if let Some(action) = draw.action.as_mut() {
+            action.description = Some("Moves the pointer as drawing a signature does.".into());
+        }
+        let rows = vec![draw, scroll];
+        let actions = |needle: &str| {
+            CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    needle: needle.into(),
+                    ..CatalogueQuery::default()
+                },
+            )
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref().map(|a| a.address.action.clone()))
+            .collect::<Vec<_>>()
+        };
+        // The word the caller types and the word the description spells are
+        // the same word in another inflection.
+        assert_eq!(actions("scrolling"), ["press-page"]);
+        assert_eq!(actions("draw"), ["pointer-path"]);
+        assert_eq!(actions("drawing"), ["pointer-path"]);
+        // A word nothing spells still matches nothing.
+        assert!(actions("printing").is_empty());
     }
 
     #[test]

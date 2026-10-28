@@ -17,13 +17,15 @@ guess a release URL.
 | Goal                             | What changes                                    | Supported hosts or systems                                                                                      |
 | -------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Try Tilo in a virtual machine    | One new virtual disk                            | Linux, Windows, or macOS; x86-64 and ARM64 guests                                                               |
-| Add the Tilo Desktop session     | Packages and a sign-in option                   | Ubuntu 24.04, Debian 13, Fedora 44, Arch, or NixOS; x86-64 currently (ARM64 packaging is not release-gated yet) |
+| Add the Tilo Desktop session     | Packages and a sign-in option                   | Ubuntu 24.04, Debian 13, Fedora 44, Arch, or NixOS; x86-64 currently (releases build and install-test ARM64, but ARM64 is not a qualified public platform yet) |
 | Install the complete Tilo system | A selected physical disk or prepared partitions | x86-64 and ARM64 computers with UEFI                                                                            |
 
 The exact release platform contract lives in
 [`docs/install-contract.json`](install-contract.json). The website consumes the
 same contract during a release, so a new target cannot silently appear in only
-one set of instructions.
+one set of instructions. A release lane that builds and install-tests an
+architecture is a workflow fact, not a support claim: the contract stays the
+one place that says which combinations are qualified for public release.
 
 ## Before you start
 

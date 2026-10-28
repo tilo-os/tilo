@@ -90,7 +90,8 @@ fn micros(since: std::time::Instant) -> u64 {
 }
 
 /// One frame as the native runner draws it after its animation pump asked
-/// for one: model update and sync, structure, layout, draw.
+/// for one: model update and sync, structure, layout, draw, and the action
+/// surface publication the frame owes.
 fn native_frame(app: &mut App) -> FrameCost {
     crate::profiling::frame_probe::enable();
     let publications = app.actions.action_surface_publication_attempts;
@@ -111,6 +112,9 @@ fn native_frame(app: &mut App) -> FrameCost {
     let mut scene = vello::Scene::new();
     draw_frame_content(app, &mut scene, WIDTH, HEIGHT, 1.0, None);
     complete_native_frame_content(app, |_| {});
+    // As the window does once it handed the frame to its render thread:
+    // the frame pays the publication its sync or layout left owed.
+    app.publish_owed_action_surface();
     let draw_us = micros(draw);
     let total_us = micros(started);
     let spans: Vec<_> = crate::profiling::frame_probe::take()

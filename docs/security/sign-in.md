@@ -127,8 +127,8 @@ capture the PIN (§7.4).
 
 On a machine without a TPM, the secret must be a strong passphrase.
 
-The initrd draws each person's face as the login screen does before anyone signs
-in: the initials of their name in the colour their account name derives
+Until §3.4 lands, Plymouth draws the initrd login screen. It draws each person's
+face as the login screen does before anyone signs in: the initials of their name in the colour their account name derives
 (`tilo-face`), in the login screen's colours and sizes (`look.json`, which the
 greeter's own test keeps current). It shows no account picture. A picture would
 have to sit in the volume header beside the name, readable by anyone holding the
@@ -148,6 +148,113 @@ name in a script that face lacks is shown as the account name instead
 | TPM, boot not verified | login screen in the initrd | one: PIN or password |
 | No TPM | login screen in the initrd | one: passphrase |
 | Anything, factors exhausted | the same screen, offering the recovery key | the recovery key, then set a new secret |
+
+### 3.4 The login screen in the initrd is the greeter
+
+The login screen in the initrd is the greeter itself, so it has the greeter's screen
+reader, touch input, on-screen keyboard, larger text and high contrast. It isn't a
+drawing of the greeter. Plymouth stays for the splash before and after it. The
+Plymouth sign-in layout, its cut-down faces and the test that keeps it matching the
+greeter are removed once the greeter replaces them.
+
+**Processes.** `tilo-boot-signin` keeps everything that decides:
+
+- the list of people;
+- the repeated-entry guard (§4.2) and the tries left;
+- the calls to `tilo-auth boot-unlock`;
+- "Can't sign in" and the other ways in.
+
+It starts the greeter as a child in boot mode, connected by a socket pair. That
+replaces the Plymouth message protocol behind the same `flow::Screen`. Over the
+socket the greeter receives the people, the prompt and the notes. It returns the
+person picked and the secret typed. It never talks to the TPM, the volume or
+`tilo-auth`.
+
+The supervisor opens the display and the input devices and hands the greeter only
+those descriptors. The greeter runs with no capabilities, and the secret is wiped
+from its memory once it is sent. This matters because the volume header is
+unauthenticated. Someone holding the disk can write names into it, and the greeter
+shapes those names. A bug in text shaping must not reach the TPM, though it does
+see the secret typed after it. In boot mode the greeter offers the factors the
+initrd has (§5.3) and the power menu. It offers no session picker.
+
+**Drawing without a GPU stack.** The initrd carries no GPU drivers. Mesa, firmware
+and their start-up time would cost more than the screen. The greeter draws with the
+toolkit's CPU rasterizer (`tilo-cpu-raster`), which already renders the full scene
+including text and blurs. It presents into a KMS dumb buffer through a toolkit host
+for KMS and libinput: no winit, no wgpu, no Wayland, no compositor.
+
+The login screen changes little per frame: the caret, the typed dots, a focus ring.
+So the rasterizer's damage regions keep it at the panel's refresh rate on four cores.
+The same host is the greeter's fallback after switch-root when the GPU can't start.
+Today that falls back to a text greeter.
+
+**Input.** libinput supplies:
+
+- the keyboard, through xkbcommon with the device's layout (below);
+- the touchpad and the mouse;
+- the touchscreen.
+
+The greeter's on-screen keyboard shows when no hardware keyboard is present, as
+`OnScreenKeyboard::Auto` does in the session. It shows in both places, because a
+tablet without a keyboard can't type a secret at either. Every control is the same
+size and in the same place for touch as for the pointer.
+
+**Speech.** The toolkit's own screen reader (`ui::screen_reader`) speaks focus,
+values and announcements through `tilo-tts`. It doesn't go through AT-SPI, so the
+initrd needs no D-Bus session and no separate screen reader. Its parts are:
+
+- `espeak-ng` with the voice data for the device's language;
+- ALSA, with the sound modules, firmware and UCM profile the machine needs.
+
+A machine whose audio needs firmware too large for the initrd shows the screen
+without speech, and its hardware test records that. Neither USB audio nor a headset
+needs that firmware.
+
+**Turning it on without seeing the screen.** One chord turns the screen reader on
+and off on every screen, in the initrd, at the greeter and in the session: Ctrl +
+Super + Enter, the chord Windows uses. On a device without a keyboard, holding both
+volume keys for three seconds does the same, as on Android. The toolkit's host
+handles both, so no screen can lack them.
+
+**What the initrd knows before the volume opens.** It knows the device's sign-in
+comforts:
+
+- screen reader on, with its rate and voice;
+- language;
+- keyboard layout;
+- text scale;
+- high contrast.
+
+They are stored as a `tilo-comforts` token in the volume header beside the
+`tilo-signin` tokens. `tilo-authd` writes the token whenever these change. When a
+person turns the screen reader on, at a login screen or in their session, it is on
+at the login screens from then on. Settings has the switch to keep the two apart.
+That makes the default right for most people and leaves the choice for those who
+want it, as Windows does with its "apply to the sign-in screen" setting.
+
+The token is readable by anyone holding the disk, like the names beside it. It
+reveals that someone here uses these settings, and nothing about who. Someone who
+modifies the header can change it, so the greeter clamps every value and treats the
+token as preferences only.
+
+**Budgets.** The boot performance gate on the reference VM checks two things:
+
+- The first frame of the login screen arrives within 300 ms of the sign-in screen
+  Plymouth shows today, measured from when the volume is found.
+- The initrd's growth stays within what the gate records for it. The greeter in
+  boot mode is built without its media stack (GStreamer, PipeWire) and stripped,
+  and the gate fails a build that grows it past the recorded size.
+
+**If the greeter can't start** (no KMS device, the host fails), the supervisor
+asks through systemd's password agents on the console, as it does today without
+Plymouth. It is never left without a way in.
+
+**Tests.** The signin-e2e check runs the boot sign-in with the screen reader turned
+on by the comforts token. QEMU's audio goes to a WAV file, and the check fails if
+the prompt is silent. A virtio multitouch device enters the PIN through the
+on-screen keyboard, with no keyboard attached. Screenshots of the boot screen and
+of the greeter after switch-root must show the same card.
 
 ## 4. The user key and its wrappers
 
@@ -441,6 +548,11 @@ verified, then the person is switched over, and the old directory is removed onl
 they have signed in to the new one. Every step can be resumed after an interruption.
 The old disk secret keeps working until the person's new keyslot has been proven to
 open the volume, and the recovery key keeps working throughout.
+A person's old password hash outlives their move onto a user key while the machine
+could still boot an image from before `pam_tilo`, whose sign-in checks it. `tilo-authd`
+locks it at the first start or sign-in after the booted update is confirmed and once no
+deployment that could boot predates `pam_tilo`; until then nothing on the new image
+checks it, because `pam_tilo`'s answer, and the daemon's silence, is final.
 
 ## 10. Still to establish
 
@@ -448,16 +560,10 @@ open the volume, and the recovery key keeps working throughout.
   If it doesn't, that machine runs §7.4 until it does.
 - The cost of a homed LUKS home inside the encrypted system volume on the Snapdragon,
   measured before step 3 switches anyone.
-- A boot-time login screen with the greeter's accessibility (screen reader, touch).
-  Plymouth can draw the layout but has no screen reader and no pointer or touch
-  input, so the initrd either carries the greeter itself or this is a known gap
-  until it does. Today it is the gap ([defects.md](defects.md) P1-13): every
-  choice there is reachable by keyboard, but nothing is spoken and a tablet without
-  a keyboard cannot enter anything. Closing it means the greeter in the initrd in
-  place of Plymouth: a minimal kiosk compositor on DRM, the greeter with its fonts
-  and AccessKit's AT-SPI path, a D-Bus session, `tilo-tts` with a voice, libinput
-  for touch, and `tilo-auth boot-unlock` behind it, within the boot's size and
-  first-frame budgets.
+- Whether the Snapdragon's audio (its DSP firmware and UCM profile) can start in
+  the initrd within the first-frame budget, so its boot screen can speak (§3.4).
+  Until §3.4 lands, the boot screen has no speech and no touch
+  ([defects.md](defects.md) P1-13).
 - Whether the Windows-managed lockout parameters on a shared TPM still meet §1.3 for a
   six-digit PIN. `tilo-rollback tpm-status` decides per machine, and a machine that
   fails gets a longer PIN, not a weaker check.

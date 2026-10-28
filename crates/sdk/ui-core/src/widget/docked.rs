@@ -36,7 +36,8 @@ impl Described for Docked {
 
     fn from_props(_key: &str, props: DockedProps) -> Self {
         let DockedProps { content, foot } = props;
-        let empty = || Box::new(crate::widget::Spacer::fixed(0.0)) as Element;
+        let empty =
+            || Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)) as Element;
         let stack = Stack::stack()
             .fill_width()
             .fill_height()
@@ -79,9 +80,10 @@ impl SlotViews for Docked {
     }
 
     fn remove(&mut self, _index: usize) {
-        let _ = self
-            .stack
-            .replace(self.editing, Box::new(crate::widget::Spacer::fixed(0.0)));
+        let _ = self.stack.replace(
+            self.editing,
+            Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
+        );
     }
 
     fn move_view(&mut self, _from: usize, _to: usize) {}

@@ -49,7 +49,7 @@ use crate::shell::desk_widgets::{
 use crate::shell::i18n::{t, t_args};
 use crate::shell::input_policy::SuperGesture;
 use crate::shell::now_playing::{NowPlayingView, PlaybackStatus, PlayerSnapshot};
-use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_song_at_rest};
+use crate::shell::now_playing_panel::{NowPlayingCard, paint_song_at_rest};
 
 /// How strongly the Super surface dims what is behind it, as a share of
 /// the theme's modal scrim: the background stays mostly visible.
@@ -924,10 +924,7 @@ impl ShellOverlayHost {
             self.desk.music_card.layout(card);
             if card.contains(p) {
                 let action = self.desk.music_card.click(&view, p);
-                if !matches!(
-                    action,
-                    crate::shell::quick_settings::now_playing::CardAction::None
-                ) {
+                if !matches!(action, crate::shell::now_playing_panel::CardAction::None) {
                     // The same dispatch the Quick Settings card uses: the
                     // command goes to exactly that player's bus, whichever
                     // workspace its app runs in; nothing switches.

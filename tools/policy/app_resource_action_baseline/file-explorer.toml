@@ -1,6 +1,4 @@
 [ratchets.closure_action_button]
-"apps/file-explorer/src/files_app.rs" = 8
-"apps/file-explorer/src/files_app/open_with_recent.rs" = 3
 "apps/file-explorer/src/places_sidebar.rs" = 1
 
 [ratchets.closure_control]

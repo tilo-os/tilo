@@ -67,7 +67,7 @@ pub struct Briefing {
     /// in full. The same bytes for every agent and task granted the same
     /// apps, whatever the room holds, so it follows the instructions as
     /// system content, where a provider's prompt cache keeps it
-    /// ([`catalog::system_messages`]); empty when there is none.
+    /// (`catalog::system_messages`); empty when there is none.
     pub reference: String,
     /// What changes from plan to plan: what the documents the task is about
     /// hold now, and which apps a step would open first. Empty for none.

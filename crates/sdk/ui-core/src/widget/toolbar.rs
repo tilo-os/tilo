@@ -99,6 +99,14 @@ impl ToolbarCommand {
         }
     }
 
+    /// The published action pressing the command runs: its bound action,
+    /// or the control it publishes for its own closure.
+    fn published_address(&self) -> Option<tilo_actions::ActionAddress> {
+        self.action
+            .as_ref()
+            .map(|action| action.binding().address().clone())
+    }
+
     fn is_enabled(&self) -> bool {
         self.enabled
             && self
@@ -1099,6 +1107,10 @@ impl Toolbar {
                             // A toggle's row shows its state with the check.
                             if let Some(active) = command.active {
                                 row = row.with_checked(active);
+                            }
+                            // The row runs the command's own published action.
+                            if let Some(address) = command.published_address() {
+                                row = row.for_action(address);
                             }
                             row.with_enabled(command.is_enabled())
                         }

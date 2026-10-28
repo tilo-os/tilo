@@ -4953,7 +4953,7 @@ impl Widget for BooksApp {
     }
 
     /// The search's chips are retained widgets the page paints: the window
-    /// reaches their controls as its children's.
+    /// reaches their controls, and their accessibility, as its children's.
     fn children(&self) -> Vec<&dyn Widget> {
         self.query.chips.child().into_iter().collect()
     }
@@ -4962,9 +4962,8 @@ impl Widget for BooksApp {
         self.query.chips.child_mut().into_iter().collect()
     }
 
-    /// The chips are represented in the window's own accessibility tree
-    /// while the search shows them, where they are operable.
-    fn accessibility_represents_child(&self, _child_index: usize) -> bool {
+    /// The chips are laid out by the page where it paints them.
+    fn lays_out_child(&self, _child_index: usize) -> bool {
         true
     }
 
@@ -5062,9 +5061,6 @@ impl Widget for BooksApp {
             {
                 controls.push(node);
             }
-            if self.view == View::Search {
-                controls.extend(self.query.chips.access_nodes());
-            }
             controls.extend(self.number_controls.accessibility_nodes());
             if let Some(rename) = &self.renaming
                 && let Some(node) = rename.field.accessibility()
@@ -5140,14 +5136,6 @@ impl Widget for BooksApp {
         let Some(path) = path.downcast_ref::<ObjId>() else {
             return false;
         };
-        if let Some(id) = target.strip_prefix("books.search.") {
-            let performed = self.query.chips.perform(id, action, doc);
-            for asked in self.query.chips.take_asked() {
-                self.dispatch(asked, doc);
-            }
-            self.dirty |= performed;
-            return performed;
-        }
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {

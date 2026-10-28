@@ -13,6 +13,16 @@
 use super::*;
 
 impl FrameHarness {
+    /// Drop the raw layout maps so no later frame re-solves a composition
+    /// whose widgets may have been replaced; the next frame rebuilds.
+    pub(super) fn discard_layout_tree(&mut self) {
+        self.serviced_layout = None;
+        self.bindings.clear();
+        self.node_map.clear();
+        self.layout_maps.clear();
+        self.layout_built = false;
+    }
+
     /// Every tree the layout maps can name: the app root, framework
     /// History's composition around it, the action palette and the
     /// standalone History chrome.

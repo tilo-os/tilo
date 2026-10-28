@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::shell::overlay_host::qs_device_state_tests::Recorder;
-use crate::shell::quick_settings::{QsLevel, QsSection};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
+use tilo_quick_settings::{QsLevel, QsSection};
 
 type Launches = Rc<RefCell<Vec<(String, String)>>>;
 
@@ -55,8 +55,8 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
         qs.bluetooth = false;
         qs.rotation_available = true;
         qs.power_profiles = vec![
-            crate::shell::quick_settings::PowerProfile::Saver,
-            crate::shell::quick_settings::PowerProfile::Balanced,
+            tilo_quick_settings::PowerProfile::Saver,
+            tilo_quick_settings::PowerProfile::Balanced,
         ];
         qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,

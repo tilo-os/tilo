@@ -48,6 +48,22 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("over its budget", message)
 
+    def test_growth_past_the_budget_names_the_parts_that_grew(self) -> None:
+        bundle = self.bundle(1001)
+        (bundle / ratchet.SPLIT).write_text(
+            '{"start_parts": {"tilo_ui::history_mode": 9000, "tilo_ui::widget": 5000,'
+            ' "tilo_desktop::feedback": 4000, "other": 70000}}'
+        )
+        parts = bundle / "parts.json"
+        parts.write_text('{"tilo_ui::widget": 4000, "tilo_desktop::feedback": 4000, "other": 1}')
+        with patch.object(ratchet, "parts_path", lambda name, root=ratchet.REPO: parts):
+            status, message = ratchet.measure("desktop", bundle, BUDGET)
+        self.assertEqual(status, 1)
+        lines = message.splitlines()
+        self.assertIn("tilo_ui::history_mode: +9000 bytes before optimising (new in the start module)", lines[2])
+        self.assertIn("tilo_ui::widget: +1000 bytes before optimising (was 4000)", lines[3])
+        self.assertNotIn("feedback", message, "a part that did not grow is not named")
+
     def test_within_the_budget_passes(self) -> None:
         self.assertEqual(ratchet.measure("desktop", self.bundle(995), BUDGET)[0], 0)
 

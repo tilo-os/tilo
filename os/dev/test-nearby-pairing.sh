@@ -325,10 +325,9 @@ for attempt in $(seq 1 60); do
   [ "$attempt" -lt 60 ] || die "VM A did not create its identity"
   sleep 1
 done
-# The ready screen is finished with the keyboard: Tab reaches its primary
-# action once the screen holds focus, and Return takes it.
+# The ready screen is finished with the keyboard: the screen puts focus on
+# its primary action, and Return takes it.
 vm_a test native-atspi-smoke.sh oobe-ready
-vm_a keys tab
 vm_a test native-atspi-smoke.sh oobe-finish-focused
 vm_a keys ret
 vm_a test native-atspi-smoke.sh oobe-finished
