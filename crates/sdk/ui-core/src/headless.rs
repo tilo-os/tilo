@@ -5905,6 +5905,7 @@ impl FrameHarness {
     ///
     /// # Panics
     /// When the root was not mounted as an [`EmbeddedApp`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
         let root = self
             .root_mut::<crate::app::EmbeddedApp>()

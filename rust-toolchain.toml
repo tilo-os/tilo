@@ -7,3 +7,5 @@ channel = "1.97.1"
 # has to come from the toolchain.
 components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
 profile = "minimal"
+# The browser bundles build for the web wherever the workspace builds.
+targets = ["wasm32-unknown-unknown"]
