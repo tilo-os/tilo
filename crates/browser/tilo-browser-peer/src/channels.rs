@@ -1120,7 +1120,11 @@ impl Channels {
         else {
             return;
         };
-        if steward == self.device {
+        // Only the own room is stewarded by a page. Elsewhere a governor
+        // that is this device stewards through its own governor (a host's
+        // room actions run under the host's certificate), and this session
+        // takes part as a member.
+        if steward == self.device && route.document.cluster_id == self.own_room {
             let saved = self.stewarded.get(&channel).cloned();
             let Some(route) = self.routes.get_mut(&channel) else {
                 return;
