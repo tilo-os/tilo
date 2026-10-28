@@ -1082,14 +1082,13 @@ password agents, so the gap is speech and touch, not keyboard reach. AGENTS.md
 requires parity for assistive technology on every surface; this one does not have
 it. Sign-in.md §10 lists it as still to establish.
 
-**Closing it:** carry the greeter itself into the initramfs, instead of Plymouth, on
-machines that sign in there: a DRM/KMS kiosk (cage or a minimal compositor), the
-greeter binary, its fonts and AccessKit's AT-SPI path, the D-Bus session it needs,
-`tilo-tts` with a voice for speech, libinput for touch, and the boot-time handoff
-to `tilo-auth boot-unlock` in place of `tilo-boot-signin`'s screen. The cost is
-initramfs size (every generation's UKI carries it, and the ESP holds several) and
-start-up time before the first frame, both of which have to stay within the boot
-budgets.
+**Closing it:** [sign-in.md](sign-in.md) §3.4 replaces the Plymouth layout with
+the greeter itself. It runs as an unprivileged child of `tilo-boot-signin` and
+draws with the CPU rasterizer onto KMS. libinput gives it touch, and it shows its
+on-screen keyboard. The toolkit's own screen reader speaks through `tilo-tts`. A
+`tilo-comforts` header token carries the device's sign-in comforts, and Ctrl +
+Super + Enter or both volume keys turn speech on. The initramfs size and the time
+to first frame are gated.
 
 ---
 
