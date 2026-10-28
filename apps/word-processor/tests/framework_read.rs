@@ -203,21 +203,9 @@ fn an_edit_answers_with_the_blocks_it_changed() {
 /// expects without the generated ids: the `^id` an edit answers with, and
 /// the `{#id}` a document answers with.
 fn without_ids(text: &str) -> String {
-    // An edit's answer ends each changed line with the block's id; a page's
-    // line is the block's text as it is, so its trailing `^` is no anchor.
-    let marked: String = text
-        .lines()
-        .map(|line| {
-            if line.ends_with(" ^") {
-                line.trim_end_matches(" ^")
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = without_marked_ids(text);
     let mut out = String::new();
-    let mut rest = marked.as_str();
+    let mut rest = text.as_str();
     while let Some((before, tag)) = rest.split_once("{#") {
         out.push_str(before);
         let (_, after) = tag.split_once('}').expect("a closed tag");
@@ -230,34 +218,70 @@ fn without_ids(text: &str) -> String {
         .join("\n")
 }
 
-/// `text` with the `^id` of each block and cell taken out.
+/// `text` with the `^id` of each block and cell taken out, and the room
+/// each id stood in with it: a line's tag (`text ^id`), and a cell's
+/// (`| text ^id |`), so a row reads back as `| a | b |`.
 fn without_marked_ids(text: &str) -> String {
     text.lines()
-        .map(|line| {
-            let mut out = String::new();
-            let mut rest = line;
-            while let Some((before, tag)) = rest.split_once(" ^") {
-                out.push_str(before);
-                let (id, after) = tag
-                    .split_once(|c: char| c.is_whitespace() || c == '|')
-                    .expect("an id is followed by a space, a cell edge or nothing");
-                assert!(
-                    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()),
-                    "only an id is taken out: ^{tag}"
-                );
-                rest = after;
-            }
-            // A changed line ends in its id alone: an edit cannot tell a
-            // block tag from the text's last space and a `^`.
-            out.push_str(
-                rest.trim_end_matches(['^', ' '])
-                    .replace("  |", " |")
-                    .as_str(),
-            );
-            out.trim_end().to_owned()
-        })
+        .map(Unmarked::line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A line of a page, read without the ids of its text and its cells.
+struct Unmarked;
+
+impl Unmarked {
+    /// `line` without the ids it and its cells are tagged with: a row reads
+    /// back as `| a | b |`, and a line that is not one with its text alone.
+    fn line(line: &str) -> String {
+        let cells: Vec<String> = line
+            .split('|')
+            .map(Self::text)
+            .filter(|cell| !cell.is_empty())
+            .collect();
+        match line.starts_with('|') {
+            true => format!("| {} |", cells.join(" | ")),
+            false => cells.join(" "),
+        }
+    }
+
+    /// `cell` without the ids it is tagged with: the `^id` an edit answers
+    /// with, and the `{#id}` a document answers with, each with the room it
+    /// stood in. An id stands past the one space ahead of it, so a cell reads
+    /// back as its text and a line as its own.
+    fn text(cell: &str) -> String {
+        let mut text = String::new();
+        let mut rest = cell.trim();
+        loop {
+            // The space an id stands past is the cell's room, not its text.
+            let sep = match rest.contains(" {#") {
+                true => " {#",
+                false => match rest.contains(" ^") {
+                    true => " ^",
+                    false => "",
+                },
+            };
+            let Some((before, tag)) = rest.split_once(sep).filter(|_| !sep.is_empty()) else {
+                break;
+            };
+            let (id, after) = tag
+                .split_once(|c: char| c.is_whitespace() || c == '}' || c == '|')
+                .unwrap_or((tag, ""));
+            let is_an_id = !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':');
+            if !is_an_id {
+                break;
+            }
+            // The space the id stands past goes with it.
+            text.push_str(before);
+            rest = after.trim().trim_start_matches('}').trim_start();
+        }
+        text.push_str(rest.trim().trim_start_matches('^').trim());
+        text
+    }
 }
 
 /// The table `table` of `markdown`, as the cells its rows hold: the first
@@ -328,37 +352,31 @@ fn stored(app: &TestApp<WordProcessorApp>) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The page `blocks` are, as a read writes it: a Markdown table for each
-/// table's run of cells.
+/// The page `blocks` are, as a read writes it: the text of each block that
+/// is not a table's cell, and a Markdown row for each row of a table's
+/// cells.
+///
+/// A table's body holds its rows in order: each row's cells and then the
+/// empty block the body ends the row at.
 fn page_of(blocks: &[(String, String)]) -> String {
     let mut out = String::new();
-    let mut index = 0;
-    while let Some((kind, text)) = blocks.get(index) {
-        index += 1;
-        if kind != "cell" {
-            out.push_str(text);
-            out.push('\n');
+    let mut row: Vec<String> = Vec::new();
+    for (kind, text) in blocks {
+        if kind == "cell" {
+            if !text.is_empty() {
+                row.push(text.clone());
+            }
             continue;
         }
-        // A row's cells are the ones whose text is not the block after them:
-        // that block is the empty one the page shows under the last row.
-        let mut run: Vec<&str> = vec![text];
-        while let Some((next_kind, next)) = blocks.get(index) {
-            let starts_a_row = blocks
-                .get(index + 1)
-                .is_some_and(|(_, after)| after != next);
-            if next_kind != "cell" || !starts_a_row {
-                break;
-            }
-            run.push(next);
-            index += 1;
+        if !row.is_empty() {
+            out.push_str(&format!("| {} |\n", row.join(" | ")));
+            row.clear();
         }
-        let row: Vec<&str> = run;
-        out.push('|');
-        for cell in &row {
-            out.push_str(&format!(" {cell} |"));
-        }
+        out.push_str(text);
         out.push('\n');
+    }
+    if !row.is_empty() {
+        out.push_str(&format!("| {} |\n", row.join(" | ")));
     }
     without_marked_ids(&out)
 }
