@@ -82,6 +82,19 @@ def text_of(reply) -> str:
         return ""
 
 
+def created_resource(text: str) -> str | None:
+    """The resource a `tilo_do` reply says it made: its JSON line's `resource`."""
+    for line in text.splitlines():
+        if line.startswith("{"):
+            try:
+                resource = json.loads(line).get("resource")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(resource, str) and resource:
+                return resource
+    return None
+
+
 def is_error(reply) -> bool | None:
     try:
         value = reply["result"].get("isError", False)
@@ -226,11 +239,18 @@ def new_note(ctx, res):
     # Read it back through the desktop's own control socket, not through the agent's reply:
     # the desktop's listing for the note's title, which carries Notes' published pages. The
     # control socket has no generic read, and a listing for "notes" answers with every
-    # action that mentions the word, not with Notes' records.
+    # action that mentions the word, not with Notes' records. The listing answers a title
+    # with the page's own actions (Copy note link, Delete note), which name the page they
+    # act on (semantic_identity) rather than repeat its title: a row of Notes for the page
+    # new-note made, found by its title, is the note read back.
+    page = created_resource(text_of(reply))
+
     def listed():
         rows = [row for row in ctx.vm.actions(title) if row.get("application") == "so.tilo.notes"
                 or str(row.get("provider", "")).isdigit()]
-        return rows if any(title in json.dumps(row, ensure_ascii=False) for row in rows) else None
+        return rows if any(title in json.dumps(row, ensure_ascii=False)
+                           or (page and (row.get("semantic_identity") or {}).get("key") == page)
+                           for row in rows) else None
 
     rows = wait_until(listed, 15, 1.0)
     if rows is None:
