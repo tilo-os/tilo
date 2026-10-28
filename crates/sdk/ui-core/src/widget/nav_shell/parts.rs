@@ -1,6 +1,6 @@
 //! The shell's parts: the element each one is, and every one it owns.
 
-use super::{Column, NavShell, Part, at};
+use super::{Column, HistoryControl, INERT_PART, NavShell, Part, at};
 use crate::widget::Widget;
 
 impl NavShell {
@@ -118,5 +118,40 @@ impl NavShell {
             Part::Band,
         ]);
         parts
+    }
+
+    /// What the host meets for `part`: the part, or a stand-in while its
+    /// push screen is not in front, so a walk that pairs children with the
+    /// tree's nodes never reaches an inert column.
+    pub(super) fn exposed(&self, part: Part) -> Option<&dyn Widget> {
+        if self.part_inert(part) {
+            return Some(&INERT_PART);
+        }
+        self.part(part)
+    }
+
+    /// The parts the host walks: those in the host tree once it is built,
+    /// in its order (the host pairs them with the tree's nodes), and every
+    /// owned part before the first build, when there is no tree for their
+    /// order to disagree with. A part of a screen not in front answers as an
+    /// [`InertPart`]; an action in the More menu stays, so its door is still
+    /// published.
+    pub(super) fn exposed_parts(&self) -> Vec<Part> {
+        if self.built {
+            self.host_parts.clone()
+        } else {
+            let history = self.inputs.borrow().history.map(HistoryControl::is_open);
+            self.all_parts()
+                .into_iter()
+                .filter(|part| self.part(*part).is_some())
+                .filter(|part| match part {
+                    Part::Toggle => self.has_sidebar(),
+                    Part::InspectorToggle => self.inspector.is_some(),
+                    Part::Back | Part::More(_) => false,
+                    Part::History(open) => history == Some(*open),
+                    _ => true,
+                })
+                .collect()
+        }
     }
 }
