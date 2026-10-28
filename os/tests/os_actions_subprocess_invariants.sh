@@ -7,6 +7,8 @@ ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 PROCESS="$ROOT/crates/system/os-actions/src/process.rs"
 FIRMWARE="$ROOT/crates/system/os-actions/src/firmware.rs"
 PRIVACY="$ROOT/crates/system/os-actions/src/privacy.rs"
+OS_ACTIONS_SRC="$ROOT/crates/system/os-actions/src"
+NM_CONTROL="$ROOT/crates/system/tilo-nm/src/control.rs"
 
 fails=0
 checks=0
@@ -35,8 +37,23 @@ else
 fi
 must_contain 'bounded_command::run\(' \
     "OS controls do not use the shared bounded process runner"
-must_contain 'Some\(input\)' \
-    "secret-bearing OS controls do not pass input through the bounded runner"
+# Network secrets (Wi-Fi passwords, 802.1X passwords, WireGuard keys) travel
+# to NetworkManager in D-Bus calls through tilo-nm, never through a client
+# process's argv or stdin.
+must_contain 'bounded_command::run\([^,]+, [^,]+, None,' \
+    "OS control subprocesses are fed input, which only a secret would need"
+if grep -rEq '"nmcli"' "$OS_ACTIONS_SRC"; then
+    fail "OS controls hand network settings or secrets to an nmcli process"
+else
+    ok
+fi
+if [ ! -r "$NM_CONTROL" ]; then
+    fail "cannot inspect $NM_CONTROL"
+elif grep -q 'Zeroizing<String>' "$NM_CONTROL" && grep -q '"Unregister"' "$NM_CONTROL"; then
+    ok
+else
+    fail "an unsaved connection secret is not zeroized or outlives its one-shot secret agent"
+fi
 must_contain 'stderr_diagnostic\(\)' \
     "OS helper diagnostics are not sanitized before display"
 must_not_contain '\.spawn\(\)|\.output\(\)|wait_with_output' \
