@@ -700,6 +700,11 @@ thread_local! {
     /// `resumed` takes it.
     static EARLY_WINDOW: std::cell::RefCell<Option<(String, Arc<Window>)>> =
         const { std::cell::RefCell::new(None) };
+    /// The device and renderer a window that gave its place (`hand_over`)
+    /// drew with, until the window after it takes them: the app drawn in its
+    /// place starts drawing without making them again.
+    static HANDED_RENDERER: std::cell::RefCell<Option<PreparedRenderer>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
@@ -3684,7 +3689,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         self.floating_windows.clear();
         if let Some(mut render) = self.render.take() {
-            render.shutdown_and_join();
+            if self.handing_over {
+                // The app drawn in this window's place draws with them.
+                self.suspended_renderer = render.shutdown_keeping_renderer();
+            } else {
+                render.shutdown_and_join();
+            }
         }
     }
 
@@ -3713,9 +3723,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         }
         // Someone chose who works in this workspace while the window waited
-        // for it: save what it holds and leave the loop, keeping the window,
-        // so the launch opens the app joined to its workspace in it.
-        if !self.handing_over && crate::workspace_identity::chosen() {
+        // for it, or the workspace's join the window showed its loading
+        // state for is over: save what it holds and leave the loop, keeping
+        // the window, so the launch opens the app in it.
+        if !self.handing_over
+            && (crate::workspace_identity::chosen() || crate::launch::window_gives_place())
+        {
             self.handing_over = true;
             for error in self.app.checkpoint_before_close() {
                 tracing::error!(%error, "could not save before opening the workspace");
@@ -4956,7 +4969,7 @@ impl App {
             window: None,
             render: None,
             surface_suspended: false,
-            suspended_renderer: None,
+            suspended_renderer: HANDED_RENDERER.with(|slot| slot.borrow_mut().take()),
             audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,
@@ -5037,6 +5050,9 @@ fn hand_over(handler: &mut AppHandler, event_loop: EventLoop<UserEvent>) {
     }
     if let Some(client) = handler.app.floating.client.take() {
         client.hand_over();
+    }
+    if let Some(renderer) = handler.suspended_renderer.take() {
+        HANDED_RENDERER.with(|slot| *slot.borrow_mut() = Some(renderer));
     }
     EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
 }
