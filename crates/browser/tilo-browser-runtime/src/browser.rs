@@ -250,22 +250,31 @@ struct Config {
 }
 
 impl Config {
+    /// The host's administration grant, else the page's own model service's,
+    /// which only Model Providers is ever lent.
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
-        self.provider_management
-            .as_ref()
-            .map(crate::host_services::ProviderManagementConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.provider_management {
+            Some(granted) => granted.connect().map_err(error),
+            None => Ok(crate::host_services::page_provider_admin()),
+        }
     }
 
+    /// Lend Model Providers the administration; any other application
+    /// gets none.
+    fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
+        if crate::host_services::provider_admin_app(context.app_id()) {
+            crate::host_services::provide_provider_admin(context, self.provider_admin()?)
+                .map_err(error)?;
+        }
+        Ok(())
+    }
+
+    /// The host's model service, else the page's own.
     fn models(&self) -> Result<ui::models::Models, JsValue> {
-        self.models
-            .as_ref()
-            .map(crate::host_services::ModelConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.models {
+            Some(lent) => lent.connect().map_err(error),
+            None => Ok(crate::host_services::page_models()),
+        }
     }
     fn author(&self) -> String {
         self.author
@@ -1273,8 +1282,7 @@ fn present_component(
     context.provide_content(crate::page_content());
     context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
-    crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
-        .map_err(error)?;
+    config.lend_provider_admin(&mut context)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = Rc::clone(&loaders);
     let component = ui::ImageStore::with_host_factory_with_max_dimension(
