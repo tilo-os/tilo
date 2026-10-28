@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! shortcut "File the invoices"
-//! input "folder" is text, not nothing, called "Where the invoices arrived"
+//! input "folder" is text, not nothing, always, called "Where the invoices arrived"
 //! each step may take 30 seconds
 //! file on any Invoice in Invoices Folder input folder
 //! for each title in file on any Invoice in Invoices.titles
@@ -30,8 +30,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use serde_json::{Number, Value};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, Segment, TreePath};
+use serde_json::Value;
+use tilo_action_policy::{ActionKind, Answer, KindSet, Rule, Segment, TreePath};
 use tilo_actions::ActionKey;
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::CatalogueRow;
@@ -47,16 +47,19 @@ use tilo_actions::contract::ResultSpec;
 mod tests;
 mod trigger;
 
+use crate::text_read::{binding_and_rest, binding_of, condition_of, input_of};
+pub(super) use crate::text_read::number_at;
+
 /// Most bytes a rendering of a shortcut may have, so a pathologically nested
 /// program cannot be turned into text without bound.
 pub const MAX_TEXT_BYTES: usize = 262_144;
 
 /// Most steps one program may have, so a deeply nested text is refused before
 /// anything recurses over it.
-pub const MAX_TEXT_STEPS: usize = 1_024;
+pub(crate) const MAX_TEXT_STEPS: usize = 1_024;
 
 /// The types a value of the language has a literal for.
-const TYPES: [&str; 9] = [
+pub(crate) const TYPES: [&str; 9] = [
     "text",
     "whole number",
     "number",
@@ -220,18 +223,55 @@ pub fn edit(shared: &Shared<'_>, before: &Shortcut, text: &str) -> Result<Edit, 
     let parsed = parse(shared, text)?;
     let mut removed = Vec::new();
     let steps = diff_steps(shared, &before.steps, parsed.shortcut.steps, &mut removed);
-    Ok(Edit {
-        shortcut: Shortcut {
-            // Identity, and everything the text does not write, is the
-            // document's: only the steps and what the text states change.
-            id: before.id.clone(),
-            saved_by: before.saved_by.clone(),
-            saved_proof: before.saved_proof.clone(),
-            steps,
-            ..parsed.shortcut
-        },
-        removed,
-    })
+    // The text names a step by the line it reads with, because a program
+    // written by hand has no ids to write; the document names it by its id.
+    // Every reference is pointed at the step the text meant, so an edited
+    // program reads a result from the step that now holds it.
+    let mut names = BTreeMap::new();
+    note_phrases(&steps, shared, &mut names);
+    let mut shortcut = Shortcut {
+        // Identity, and everything the text does not write, is the document's:
+        // only the steps and what the text states change.
+        id: before.id.clone(),
+        saved_by: before.saved_by.clone(),
+        saved_proof: before.saved_proof.clone(),
+        steps,
+        ..parsed.shortcut
+    };
+    crate::text_read::rebind(&mut shortcut, &names);
+    Ok(Edit { shortcut, removed })
+}
+
+/// What each step in the program reads as, and the id it now holds.
+fn note_phrases(steps: &[Step], shared: &Shared<'_>, names: &mut BTreeMap<String, String>) {
+    // The names are the ones [`name_block`] writes, numbering and all, so a
+    // line that refers to the second of two steps that read alike finds the
+    // step it meant.
+    for naming in name_block(shared, steps) {
+        if let Some(refer) = naming.refer {
+            names.insert(naming.phrase.clone(), refer);
+        }
+    }
+    for step in steps {
+        // A step that asks holds its result in a variable the text names by
+        // that variable, so the name points at the step as well.
+        if !step.id.is_empty()
+            && matches!(step.kind, StepKind::Ask { .. })
+            && let StepKind::Ask { param } = &step.kind
+        {
+            names.insert(param.name.to_string(), step.id.clone());
+        }
+        match &step.kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                note_phrases(then, shared, names);
+                note_phrases(otherwise, shared, names);
+            }
+            StepKind::ForEach { body, .. } => note_phrases(body, shared, names),
+            _ => {}
+        }
+    }
 }
 
 /// The steps `after` describes, each one the earlier step whose line reads the
@@ -537,6 +577,10 @@ fn trailing(text: &str) -> bool {
 
 /// The name a step's result is referred to by — the phrase the step reads
 /// with — when the program refers to that result at all.
+///
+/// An invocation is always named: its line carries what the action acts on,
+/// and the text writes a resource the program names by the name a step above
+/// gave it, so the step has to have one whether or not anything reads it.
 fn refer_name_step(shared: &Shared<'_>, step: &Step) -> Option<String> {
     match &step.kind {
         StepKind::Invoke { action, args, .. } => {
@@ -596,10 +640,20 @@ fn title(shared: &Shared<'_>, step: &Step) -> String {
         StepKind::If { .. } => "when".to_owned(),
         StepKind::ForEach { item, .. } => format!("for each {item} in"),
         StepKind::SetVar { name, .. } => format!("set {name}"),
-        StepKind::Ask { param } => format!("ask for {}", param.description),
-        // What the agent is asked is free text, so it is in quotation marks
-        // like every other text; what the step takes and may do follow it as
-        // the notes any other step's fields are.
+        StepKind::Ask { param } => {
+            let words = &param.description;
+            // The name is only written where it is not the one the question
+            // reads as, so a plain question stays a plain question.
+            let words = quoted(words);
+            if param.name == identifier_of(param.description.trim()) {
+                format!("ask for {words}")
+            } else {
+                format!("ask for {words} as {}", quoted(&param.name))
+            }
+        }
+        // A prompt and an instruction are words the person wrote, quoted the
+        // way any text the program holds is, so one that reads like the rest
+        // of the line — with a colon, a comma, `on` — still reads back.
         StepKind::Ai { prompt, .. } => format!("ask AI {}", quoted(prompt)),
         StepKind::Task { instruction, .. } => format!("tell SaaSy {}", quoted(instruction)),
     }
@@ -618,26 +672,32 @@ fn invoke_title(shared: &Shared<'_>, action: &ActionKey, resource: &Selector) ->
         };
     }
     let app = (shared.app_label)(&action.app);
-    let target = match resource {
-        Selector::Fixed(id) | Selector::FromBinding(Binding::Literal(Value::String(id))) => {
-            ResourceTarget::Id(id)
-        }
-        Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
-        Selector::FromBinding(_) => ResourceTarget::Any,
-    };
+    let target = target_of(resource);
     if let Some(row) = shared.catalog.find(action, target) {
-        return reads_any(row, shared.app_label)
+        return reads_target(row, resource, shared.app_label)
             .unwrap_or_else(|| fallback_title(action, target, &app));
     }
     fallback_title(action, target, &app)
 }
 
 /// What a step reads as when the catalogue has no words for it.
+///
+/// The fallback carries what the step acts on, so the line names the
+/// resource the step holds and reads back as that step rather than as the one
+/// that acts on whatever is to hand. The kind is in the same readable form the
+/// catalogue's own words use, which is the form the reader turns back into a
+/// kind, so a step reads the same whether or not the catalogue knows it.
 fn fallback_title(action: &ActionKey, target: ResourceTarget<'_>, app: &str) -> String {
     match target {
-        ResourceTarget::Id(id) => format!("{} on {id} in {app}", action.action),
-        ResourceTarget::Kind(kind) => format!("{} on any {kind} in {app}", action.action),
-        ResourceTarget::Any => format!("{} on the item in {app}", action.action),
+        // A resource id is quoted wherever the text writes one, so an id that
+        // holds a space reads back as the one id it is.
+        ResourceTarget::Id(id) => format!("{} on {} in {app}", action.action, quoted(id)),
+        ResourceTarget::Kind(kind) => {
+            format!("{} on any {} in {app}", action.action, readable(kind))
+        }
+        // What the step acts on is a value, and the note that follows says
+        // what it holds: the phrase names only the action and the app.
+        ResourceTarget::Any => format!("{} in {app}", action.action),
     }
 }
 
@@ -697,8 +757,28 @@ fn step_line(
                     notes.push(format!("{name}: {}", value_text(binding, namings)));
                 }
             }
-            if let Selector::FromBinding(binding) = resource {
-                notes.push(format!("on {}", value_text(binding, namings)));
+            // What the program names is written out, so the line reads back
+            // as the step the document holds and not as one that acts on
+            // whatever is to hand: the one resource by its id, the kind a step
+            // takes whatever item of, and the item a binding yields.
+            //
+            // The note is only for the resource the phrase leaves out. The
+            // phrase says it whenever the catalogue has words for the step —
+            // `file on any Notes.note in Notes` — and the fallback says it too,
+            // in the program's own spelling. A note that repeats what the line
+            // already says reads as a step acting on something else.
+            let note = match resource {
+                Selector::Fixed(id) => Some(format!("on {}", quoted(id))),
+                Selector::FirstOfKind(kind) => Some(format!("on any {}", readable(kind))),
+                Selector::FromBinding(binding) => {
+                    Some(format!("on {}", value_text(binding, namings)))
+                }
+            };
+            let stated = note
+                .as_ref()
+                .is_some_and(|note| format!(" {phrase} ").contains(&format!(" {note} ")));
+            if let (false, Some(note)) = (stated, note) {
+                notes.push(note);
             }
             if appearance.is_some() {
                 notes.push("shown as its author".to_owned());
@@ -725,8 +805,15 @@ fn step_line(
 /// The parameters of the action a step invokes, from the catalogue the
 /// rendering was given or the row it was handed.
 fn params_of(shared: &Shared<'_>, step: &Step, hint: Option<&Hint>) -> Option<Vec<ActionParam>> {
-    if let Some(hint) = hint {
-        return Some(hint.row.as_ref()?.action.as_ref()?.params.clone());
+    // A hint is the row the catalogue gave this step, and it speaks for the
+    // step only where it has one: a step whose resource the catalogue has no
+    // row for still takes the arguments the action states.
+    let hinted = hint
+        .and_then(|hint| hint.row.as_ref())
+        .and_then(|row| row.action.as_ref())
+        .map(|action| action.params.clone());
+    if let Some(params) = hinted {
+        return Some(params);
     }
     let StepKind::Invoke {
         action, resource, ..
@@ -734,7 +821,18 @@ fn params_of(shared: &Shared<'_>, step: &Step, hint: Option<&Hint>) -> Option<Ve
     else {
         return None;
     };
-    let row = shared.catalog.find(action, target_of(resource))?;
+    // The parameters of the action as the catalogue states them for what the
+    // step acts on, and — for a resource the catalogue has no row for — as it
+    // states them for the kind, because the action takes the same arguments
+    // whichever of its resources it runs on.
+    let row = shared
+        .catalog
+        .find(action, target_of(resource))
+        .or_else(|| {
+            shared
+                .catalog
+                .find(action, ResourceTarget::Kind(&action.kind))
+        })?;
     Some(row.action.as_ref()?.params.clone())
 }
 
@@ -781,10 +879,48 @@ fn readable(name: &str) -> String {
     if out.is_empty() { name.to_owned() } else { out }
 }
 
+/// A resource kind as the text writes it back: [`readable`]'s words, in lower
+/// case.
+///
+/// The text names a kind by the words a person reads — `Notes.note` — and each
+/// kind's own tail is a word of the kind (`files.entry.image`). A kind whose
+/// words do not read back as itself — one whose `_` or `-` would come back as
+/// a space, or one with a capital inside a word — is written as the id it is,
+/// so the step keeps the kind the program holds.
+fn readable_back(words: &str) -> String {
+    let kind = words.trim().to_lowercase();
+    if readable(&kind) == words.trim() {
+        kind
+    } else {
+        words.trim().to_owned()
+    }
+}
+
 /// A binding as the text writes it: a literal where one is written, and
 /// otherwise the name the program refers to the value by.
 fn value_text(binding: &Binding, namings: &[Naming]) -> String {
     match binding {
+        // A list or a dictionary the program holds as a literal is written,
+        // and read back, as the list or dictionary it is: the text has one
+        // spelling for it, so the shape a value came in never changes it.
+        Binding::Literal(Value::Array(items)) => value_text(
+            &Binding::List(
+                items
+                    .iter()
+                    .map(|item| Binding::Literal(item.clone()))
+                    .collect(),
+            ),
+            namings,
+        ),
+        Binding::Literal(Value::Object(members)) => value_text(
+            &Binding::Object(
+                members
+                    .iter()
+                    .map(|(name, member)| (name.clone(), Binding::Literal(member.clone())))
+                    .collect(),
+            ),
+            namings,
+        ),
         Binding::Literal(value) => literal_text(value),
         Binding::Input(name) => named_text("input", name),
         Binding::Var(name) => {
@@ -938,7 +1074,7 @@ pub(super) fn quoted(text: &str) -> String {
 
 fn input_text(param: &ActionParam) -> String {
     let mut line = format!(
-        "input {} is {}, {}",
+        "input {} is {}, {}, {}",
         quoted(param.name.as_ref()),
         type_name(param.ty),
         if param.nullable {
@@ -946,6 +1082,9 @@ fn input_text(param: &ActionParam) -> String {
         } else {
             "not nothing"
         },
+        // Whether the shortcut needs a value for it: an input the person may
+        // leave out is a different shortcut from one they must fill in.
+        if param.required { "always" } else { "if given" },
     );
     if !param.description.is_empty() {
         line.push_str(", called ");
@@ -973,7 +1112,7 @@ fn type_name(ty: ParamType) -> &'static str {
     }
 }
 
-fn type_of(name: &str) -> Option<ParamType> {
+pub(crate) fn type_of(name: &str) -> Option<ParamType> {
     Some(match name {
         "text" => ParamType::Text,
         "whole number" => ParamType::Integer,
@@ -1023,20 +1162,47 @@ fn rule_text(rule: &Rule) -> String {
     }
 }
 
+/// A segment of a grant's place, written the way a place is read back:
+/// `app:so.tilo.notes` names one app, `kind:*` any kind, and `**` any depth.
 fn segment_text(segment: &Segment) -> String {
     match segment {
-        Segment::Rest => "anything".to_owned(),
-        Segment::Any(level) => format!("any {}", level_noun(*level)),
+        Segment::Rest => "**".to_owned(),
+        Segment::Any(level) => format!("{}:*", level.tag()),
         Segment::Name(level, id) => format!("{}:{id}", level.tag()),
     }
 }
 
-fn level_noun(level: Level) -> &'static str {
-    level.noun()
-}
-
 /// The `on any <kind>` form of the same action: what a step reads when it
 /// takes the first resource of a kind rather than one resource.
+/// The line a catalogue row's action reads as, naming the resource the step
+/// acts on: a step that takes whatever item of the kind is to hand, or one
+/// that takes the very item the program names.
+fn reads_target(
+    row: &CatalogueRow,
+    resource: &Selector,
+    app_label: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let descriptor = row.action.as_ref()?;
+    if descriptor.action_label.is_empty() {
+        return None;
+    }
+    let app = app_label(&row.app_id);
+    let action = &descriptor.action_label;
+    // A step that acts on what a binding yields says the action and the app
+    // and nothing about the resource: the value is written as the note that
+    // follows, which is the only place a program says what it acts on.
+    Some(match resource {
+        Selector::Fixed(id) => format!("{action} on {} in {app}", quoted(id)),
+        Selector::FirstOfKind(kind) => format!("{action} on any {} in {app}", readable(kind)),
+        Selector::FromBinding(_) => format!("{action} in {app}"),
+    })
+}
+
+/// The line the reader takes a phrase back to a step by: the same words
+/// [`reads_any`] shows, which name no particular resource. Only a step that
+/// takes whatever item of the kind is to hand reads this way; a step that
+/// names one resource reads every line with [`reads_target`], so the line it
+/// states and the phrase the reader matches carry what the step acts on.
 fn reads_any(row: &CatalogueRow, app_label: &dyn Fn(&str) -> String) -> Option<String> {
     let descriptor = row.action.as_ref()?;
     if descriptor.action_label.is_empty() {
@@ -1087,30 +1253,63 @@ struct Read {
 /// What a block's lines may refer back to: the inputs, and the name each
 /// earlier line gave its result.
 #[derive(Clone, Default)]
-struct Targets {
+pub(crate) struct Targets {
     bindings: Vec<Binding>,
     phrases: Vec<String>,
 }
 
 impl Targets {
-    fn value_of(&self, phrase: &str) -> Option<&Binding> {
+    pub(crate) fn value_of(&self, phrase: &str) -> Option<&Binding> {
         let at = self.phrases.iter().position(|name| name == phrase)?;
         self.bindings.get(at)
     }
 
+    /// Note a step's name, for a test that cares how two names that read
+    /// alike are told apart rather than about the step behind either.
+    #[cfg(test)]
+    fn note_name(&mut self, phrase: &str) {
+        self.bindings.push(Binding::step(phrase, ""));
+        self.phrases.push(phrase.to_owned());
+    }
+
     /// Note what a line's result is called, for the lines after it.
+    ///
+    /// Two lines that read alike are told apart by a number after the second,
+    /// which is how [`name_block`] names them and so how the text writes the
+    /// one a later line refers to.
     fn note(&mut self, phrase: &str, step: &Step) {
-        let binding = match &step.kind {
+        let mut binding = match &step.kind {
             StepKind::If { .. } => return,
             StepKind::ForEach { item, .. } => Binding::Var(item.clone()),
             StepKind::SetVar { name, .. } => Binding::Var(name.clone()),
             StepKind::Ask { param } => Binding::Var(param.name.to_string()),
-            StepKind::Invoke { .. } | StepKind::Ai { .. } | StepKind::Task { .. } => {
-                Binding::step(phrase, "")
+            // A step that asks the agent names its result by the variable it
+            // holds it under, which is the name the text refers to it by.
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                match refer_name_step(&Shared::empty(), step) {
+                    Some(name) => Binding::Var(name),
+                    None => Binding::step(phrase, ""),
+                }
             }
+            StepKind::Invoke { .. } => Binding::step(phrase, ""),
         };
+        let mut name = phrase.to_owned();
+        let mut number = 1usize;
+        while self.phrases.contains(&name) {
+            number = number.saturating_add(1);
+            name = format!("{phrase} {number}");
+        }
+        // A step referred to by the line it reads with is referred to by the
+        // name the text writes, numbering and all, so a later line that names
+        // the second of two lines that read alike still means that step when
+        // the program is read back without the ids the document gives it.
+        if name != phrase
+            && let Binding::StepOutput { step: referred, .. } = &mut binding
+        {
+            name.clone_into(referred);
+        }
         self.bindings.push(binding);
-        self.phrases.push(phrase.to_owned());
+        self.phrases.push(name);
     }
 }
 
@@ -1243,7 +1442,7 @@ fn inside_quote(text: &str, at: usize) -> bool {
 
 /// `text` cut at each place one value can end outside a quoted text, shortest
 /// first, so the longest one that names something is the reading it is given.
-fn prefixes(text: &str) -> Vec<&str> {
+pub(crate) fn prefixes(text: &str) -> Vec<&str> {
     let spaces = text
         .char_indices()
         .filter(|(index, ch)| ends_a_value(*ch) && !inside_quote(text, *index))
@@ -1291,7 +1490,7 @@ pub(super) fn text_at(text: &str) -> Result<(String, &str), String> {
 }
 
 /// A whole line that must be one quoted text.
-fn text_of(text: &str) -> Result<String, String> {
+pub(crate) fn text_of(text: &str) -> Result<String, String> {
     let (words, rest) = text_at(text)?;
     if !rest.trim().is_empty() {
         return Err("write the name as one quoted text".to_owned());
@@ -1355,14 +1554,12 @@ impl Reader<'_> {
             ));
         }
         let root: Shape = Shape::new();
-        let (steps, mut next) = self.block(shared, index, 0, &root, &Targets::default())?;
-        // What the shortcut gives back, and what starts it, read after the
-        // steps: both name results the steps above them have.
         let mut targets = Targets::default();
-        for step in &steps {
-            let heading = title(shared, step).trim_end_matches(':').to_owned();
-            targets.note(&heading, step);
-        }
+        let (steps, mut next) =
+            self.block(shared, index, 0, &root, &Targets::default(), &mut targets)?;
+        // What the shortcut gives back, and what starts it, read after the
+        // steps: both name results the steps above them have, by the names the
+        // block they are written in gave them.
         while self.at_left_edge(next) {
             if self.declaration(&mut shortcut, &targets, next)?.is_none() {
                 let number = self.rows.get(next).map_or(1, |row| row.number);
@@ -1417,8 +1614,19 @@ impl Reader<'_> {
             return Ok(Some(false));
         }
         if let Some(rest) = text.strip_prefix("result is ") {
-            shortcut.output =
-                Some(binding_of(rest, targets).map_err(|m| TextParseError::at(number, m))?);
+            // A text a person cut a step out of still says what the shortcut
+            // gives back, and the step it names is the one that left: keeping
+            // the name lets the cut be reported as a step leaving.
+            let given = match binding_of(rest, targets) {
+                Ok(given) => given,
+                // Only a whole line that names a step, and nothing else, is
+                // kept as the result of the step the text no longer states.
+                Err(message) => match unstated_step(rest) {
+                    Some(step) => step,
+                    None => return Err(TextParseError::at(number, message)),
+                },
+            };
+            shortcut.output = Some(given);
             return Ok(Some(false));
         }
         if let Some(rest) = text.strip_prefix("each step may take ") {
@@ -1449,6 +1657,7 @@ impl Reader<'_> {
         depth: usize,
         shape: &Shape,
         outer: &Targets,
+        after: &mut Targets,
     ) -> Result<(Vec<Step>, usize), TextParseError> {
         let mut steps: Vec<Step> = Vec::new();
         let mut targets = outer.clone();
@@ -1468,6 +1677,9 @@ impl Reader<'_> {
             steps.push(step);
             index = next;
         }
+        // The lines after the block refer to what it set, as the lines inside
+        // it did, so what a top-level block named carries out of it.
+        *after = targets;
         Ok((steps, index))
     }
 
@@ -1515,7 +1727,9 @@ impl Reader<'_> {
                 "this line begins a block: write its steps under it, indented two more spaces",
             ));
         }
-        let (children, after) = self.block(shared, under_line, under, here, targets)?;
+        let mut unused = Targets::default();
+        let (children, after) =
+            self.block(shared, under_line, under, here, targets, &mut unused)?;
         *next = after;
         let other =
             if self.rows.get(after).is_some_and(|row| {
@@ -1528,7 +1742,7 @@ impl Reader<'_> {
                         "`otherwise:` begins a block: write its steps under it",
                     ));
                 }
-                let (steps, end) = self.block(shared, header, under, here, targets)?;
+                let (steps, end) = self.block(shared, header, under, here, targets, &mut unused)?;
                 *next = end;
                 Some(steps)
             } else {
@@ -1625,7 +1839,6 @@ impl Reader<'_> {
         targets: &Targets,
         index: usize,
     ) -> Result<Option<Step>, TextParseError> {
-        let rest = body.get(phrase.len()..).unwrap_or_default().trim_start();
         let number = self.rows.get(index).map_or(1, |row| row.number);
         let kind = if phrase == "when" {
             let Some(condition) = condition else {
@@ -1673,13 +1886,16 @@ impl Reader<'_> {
                 item: name,
                 body: Vec::new(),
             }
-        } else if let Some(name) = phrase.strip_prefix("set ") {
-            // A longer prefix of the line is tried first, so a phrase whose
-            // name is not one word yet is a prefix that names nothing.
-            let Some(name) = read_name(name.strip_suffix(" to").unwrap_or(name)) else {
-                return Ok(None);
-            };
-            let value = binding_of(rest.strip_prefix("to ").unwrap_or(rest), targets)
+        } else if let Some(named) = phrase.strip_prefix("set ") {
+            // The line's phrase runs to the end of the value, because a value
+            // the program states is part of what the step says: the variable
+            // is the word after `set` and the value follows the one after it.
+            let (word, tail) = named.split_once(char::is_whitespace).unwrap_or((named, ""));
+            let name = read_name(word).ok_or_else(|| {
+                self.error(index, "a variable is a word like `total`, after `set`")
+            })?;
+            let tail = tail.trim_start();
+            let value = binding_of(tail.strip_prefix("to ").unwrap_or(tail), targets)
                 .map_err(|message| TextParseError::at(number, message))?;
             StepKind::SetVar { name, value }
         } else if phrase.starts_with("ask AI ") {
@@ -1737,8 +1953,8 @@ fn action_step(row: &CatalogueRow) -> Option<Step> {
         descriptor.resource_kind.clone(),
         descriptor.address.action.clone(),
     );
-    // The text names a kind — "on any note" — so the step takes whatever item
-    // of that kind is to hand, not one particular item's id.
+    // The phrase names no particular resource, so until the line's `on …` note
+    // says which, the step takes whatever item of the kind is to hand.
     let selector = Selector::FirstOfKind(row.resource.kind.clone());
     Some(Step::new(
         String::new(),
@@ -1751,8 +1967,8 @@ fn action_step(row: &CatalogueRow) -> Option<Step> {
     ))
 }
 
-/// Read a line that invokes an action: the phrase the catalogue gives it,
-/// then its arguments as `label value` notes.
+/// Read a line that invokes an action: what it acts on, then its arguments as
+/// `label value` notes.
 fn invocation(
     shared: &Shared<'_>,
     row: &CatalogueRow,
@@ -1772,6 +1988,18 @@ fn invocation(
         .unwrap_or_default()
         .trim()
         .to_owned();
+    // The resource the phrase leaves out is the first note of the line, so it
+    // is read before any argument: `on "notes.note:1"` for the one resource
+    // the program names, `on any note` for whatever of the kind is to hand.
+    // The app the resource is named in follows it, as the phrase writes it.
+    let app = (shared.app_label)(&row.app_id);
+    let mut selector = None;
+    if let Some(after) = rest.strip_prefix("on ") {
+        let (read, tail) = selector_of(shared, after, targets)
+            .map_err(|message| TextParseError::at(number, message))?;
+        selector = Some(read);
+        after_the_app(&tail, app.as_str()).clone_into(&mut rest);
+    }
     let mut remaining = descriptor.params.clone();
     let mut args: BTreeMap<String, Binding> = BTreeMap::new();
     let mut appearance = None;
@@ -1781,13 +2009,13 @@ fn invocation(
             rest = after.trim_start().to_string();
             continue;
         }
+        // The resource note follows the arguments the phrase did not name, so
+        // a line may state it here as well as before them.
         if let Some(after) = rest.strip_prefix("on ") {
-            let (binding, tail) = binding_and_rest(shared, after, targets)
+            let (read, tail) = selector_of(shared, after, targets)
                 .map_err(|message| TextParseError::at(number, message))?;
-            if let StepKind::Invoke { resource, .. } = &mut step.kind {
-                *resource = Selector::FromBinding(binding);
-            }
-            rest = tail.trim_start().to_string();
+            selector = Some(read);
+            after_the_app(&tail, app.as_str()).clone_into(&mut rest);
             continue;
         }
         let Some((param, after)) = longest_param(&rest, &remaining) else {
@@ -1805,413 +2033,58 @@ fn invocation(
     if let StepKind::Invoke {
         args: bound,
         appearance: shown,
+        resource,
         ..
     } = &mut step.kind
     {
         *bound = args;
         *shown = appearance;
+        if let Some(selector) = selector {
+            *resource = selector;
+        }
     }
     Ok(step)
 }
 
-/// The input whose value is shown as a bot's name and avatar.
-const AUTHOR: &str = "author";
-
-// ----------------------------------------------------------- the reader's ---
-
-/// The first word of `text`, and what follows it.
-pub(super) fn split_word(text: &str) -> Option<(&str, &str)> {
-    let text = text.trim_start();
-    let end = text.find(' ')?;
-    let (word, rest) = text.split_at(end);
-    (!word.is_empty()).then_some((word, rest))
+/// What follows a resource the line names: the app it is named in, when the
+/// phrase states it, and then the rest of the line.
+fn after_the_app<'t>(tail: &'t str, app: &str) -> &'t str {
+    let tail = tail.trim_start();
+    tail.strip_prefix("in ")
+        .and_then(|named| named.strip_prefix(app))
+        .unwrap_or(tail)
+        .trim_start()
 }
 
-/// A name the text writes: an identifier, which is what a program holds.
-fn read_name(text: &str) -> Option<String> {
-    let name = text.trim();
-    is_identifier(name).then(|| name.to_owned())
-}
-
-/// A value read from the start of `text`, and what follows it.
-fn binding_and_rest(
+/// The resource a line's `on …` note names, as the selector the step holds.
+///
+/// A quoted resource id names that one resource; a binding names the resource
+/// the run binds; and `any KIND` names the kind, so the step takes the first
+/// resource of it that offers the action.
+fn selector_of(
     shared: &Shared<'_>,
     text: &str,
     targets: &Targets,
-) -> Result<(Binding, String), String> {
-    let text = text.trim_start();
-    if text.starts_with('"') {
-        let (words, rest) = text_at(text)?;
-        return Ok((template_of(words), rest.to_owned()));
+) -> Result<(Selector, String), String> {
+    if let Some(rest) = text.strip_prefix("any ") {
+        // The kind is the words up to whatever the line says next: a step's
+        // arguments follow it, and nothing after it belongs to the kind.
+        let end = rest.find(' ').unwrap_or(rest.len());
+        let (kind, after) = rest.split_at(end);
+        return Ok((Selector::FirstOfKind(readable_back(kind)), after.to_owned()));
     }
-    if let Some(rest) = text.strip_prefix('[') {
-        return list_at(shared, rest, targets);
-    }
-    if let Some(rest) = text.strip_prefix('{') {
-        return object_at(shared, rest, targets);
-    }
-    for word in prefixes(text).into_iter().rev() {
-        if let Some(binding) = named_binding(word, targets) {
-            let after = text.get(word.len()..).unwrap_or_default();
-            return Ok((binding, after.to_owned()));
-        }
-    }
-    if let Some(rest) = text.strip_prefix("nothing") {
-        return Ok((Binding::Literal(Value::Null), rest.to_owned()));
-    }
-    if let Some(rest) = text.strip_prefix("yes") {
-        return Ok((Binding::Literal(Value::Bool(true)), rest.to_owned()));
-    }
-    if let Some(rest) = text.strip_prefix("no") {
-        return Ok((Binding::Literal(Value::Bool(false)), rest.to_owned()));
-    }
-    if let Some((value, rest)) = number_at(text) {
-        return Ok((Binding::Literal(value), rest.to_owned()));
-    }
-    Err(format!(
-        "`{}` is not a value: write a quoted text, a number, `yes`, `no`, `nothing`, a list, a dictionary, or a name the steps above set",
-        text.trim()
+    let (binding, rest) = binding_and_rest(shared, text, targets)?;
+    Ok((
+        // A literal string the program writes is a resource the program names,
+        // so it is read back as the one spelling of that resource rather than
+        // as a binding that happens to hold it. Everything else stays a
+        // binding: it is what the value is at run time that decides.
+        match binding {
+            Binding::Literal(Value::String(id)) => Selector::Fixed(id),
+            other => Selector::FromBinding(other),
+        },
+        rest,
     ))
-}
-
-/// A value read from a whole line.
-fn binding_of(text: &str, targets: &Targets) -> Result<Binding, String> {
-    let (binding, rest) = binding_and_rest(&Shared::empty(), text, targets)?;
-    if !rest.trim().is_empty() {
-        return Err(format!("`{}` follows the value", rest.trim()));
-    }
-    Ok(binding)
-}
-
-/// A name a step above bound: `input NAME`, `variable NAME`, or the phrase a
-/// step reads as, which names its result.
-fn named_binding(word: &str, targets: &Targets) -> Option<Binding> {
-    for (at, ch) in word.char_indices().rev() {
-        let after = at.saturating_add(ch.len_utf8());
-        let Some((name, pointer)) = word.get(..after).zip(word.get(after..)) else {
-            continue;
-        };
-        let found = targets
-            .value_of(name)
-            .cloned()
-            .or_else(|| named_value(name));
-        let Some(without) = found else {
-            continue;
-        };
-        if pointer.is_empty() {
-            return Some(without);
-        }
-        let Some(rest) = pointer_of(pointer) else {
-            continue;
-        };
-        return Some(match without {
-            Binding::StepOutput { step, .. } => Binding::StepOutput {
-                step,
-                pointer: rest,
-            },
-            Binding::Var(name) => Binding::Var(format!("{name}{rest}")),
-            other => other,
-        });
-    }
-    None
-}
-
-/// The value an `input` or a variable name on its own stands for.
-fn named_value(name: &str) -> Option<Binding> {
-    if let Some(given) = name.strip_prefix("input ") {
-        let (base, pointer) = Binding::named_part(given);
-        return is_identifier(base).then(|| Binding::Input(format!("{base}{pointer}")));
-    }
-    let given = name.strip_prefix("variable ")?;
-    let (base, pointer) = Binding::named_part(given);
-    is_identifier(base).then(|| Binding::Var(format!("{base}{pointer}")))
-}
-
-/// A pointer back from the tokens the text writes it as.
-fn pointer_of(text: &str) -> Option<String> {
-    let mut pointer = String::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix('.') {
-            let end = after.find(['.', ' ']).unwrap_or(after.len());
-            let (field, after) = after.split_at(end);
-            if field.is_empty() {
-                return None;
-            }
-            pointer.push('/');
-            pointer.push_str(&field.replace('~', "~0").replace('/', "~1"));
-            rest = after;
-        } else {
-            let after = rest.strip_prefix(" item ")?;
-            let end = after.find(['.', ' ']).unwrap_or(after.len());
-            let (index, after) = after.split_at(end);
-            pointer.push('/');
-            pointer.push_str(index);
-            rest = after;
-        }
-    }
-    Some(pointer)
-}
-
-pub(super) fn number_at(text: &str) -> Option<(Value, &str)> {
-    let end = text
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_ascii_digit() || matches!(ch, '-' | '+' | '.' | 'e' | 'E'))
-        .map(|(index, ch)| index.saturating_add(ch.len_utf8()))
-        .last()?;
-    let (head, rest) = text.split_at(end);
-    let number: Number = head.parse().ok()?;
-    Some((Value::Number(number), rest))
-}
-
-fn list_at(
-    shared: &Shared<'_>,
-    text: &str,
-    targets: &Targets,
-) -> Result<(Binding, String), String> {
-    let mut items = Vec::new();
-    let mut owned = text.trim_start().to_owned();
-    loop {
-        let rest = owned.as_str();
-        if let Some(after) = rest.strip_prefix(']') {
-            return Ok((Binding::List(items), after.to_owned()));
-        }
-        let (item, after) = binding_and_rest(shared, rest, targets)?;
-        items.push(item);
-        // The last value ends at the list's own closer, which no comma
-        // separates; the loop reads the closer next.
-        let after = after.trim_start();
-        let next = match after.strip_prefix(',') {
-            Some(next) => next,
-            None if after.starts_with(']') => after,
-            None => return Err("separate a list's values with commas".to_owned()),
-        };
-        owned.clear();
-        owned.push_str(next);
-    }
-}
-
-fn object_at(
-    shared: &Shared<'_>,
-    text: &str,
-    targets: &Targets,
-) -> Result<(Binding, String), String> {
-    let mut members: BTreeMap<String, Binding> = BTreeMap::new();
-    let mut owned = text.trim_start().to_owned();
-    loop {
-        let rest = owned.as_str();
-        if let Some(after) = rest.strip_prefix('}') {
-            return Ok((Binding::Object(members), after.to_owned()));
-        }
-        let (name, after) = text_at(rest)?;
-        let after = after
-            .trim_start()
-            .strip_prefix(':')
-            .ok_or_else(|| "write a dictionary's entries as `\"name\": value`".to_owned())?
-            .trim_start();
-        let (value, after) = binding_and_rest(shared, after, targets)?;
-        members.insert(name, value);
-        // As in a list, the last entry ends at the dictionary's closer.
-        let after = after.trim_start();
-        let next = match after.strip_prefix(',') {
-            Some(next) => next,
-            None if after.starts_with('}') => after,
-            None => return Err("separate a dictionary's entries with commas".to_owned()),
-        };
-        owned.clear();
-        owned.push_str(next);
-    }
-}
-
-/// A quoted text as the binding it is: a plain text, or a template when it
-/// holds `{...}` placeholders.
-fn template_of(words: String) -> Binding {
-    if !words.contains('{') {
-        return Binding::Literal(Value::String(words));
-    }
-    Binding::Template(words)
-}
-
-/// A condition read from a whole line.
-fn condition_of(shared: &Shared<'_>, text: &str, targets: &Targets) -> Result<Condition, String> {
-    let (condition, rest) = condition_or_rest(shared, text, targets, 0)?;
-    if !rest.trim().is_empty() {
-        return Err(format!("`{}` follows the condition", rest.trim()));
-    }
-    Ok(condition)
-}
-
-/// A condition read from the start of `text`, and what follows it. `and`
-/// binds tighter than `or`, and parentheses group.
-fn condition_and_rest(
-    shared: &Shared<'_>,
-    text: &str,
-    targets: &Targets,
-    depth: usize,
-) -> Result<(Condition, String), String> {
-    if depth > MAX_TEXT_STEPS {
-        return Err("this condition nests too deeply".to_owned());
-    }
-    let text = text.trim_start();
-    let (condition, rest) = if let Some(inner) = text.strip_prefix("not ") {
-        let below = depth.saturating_add(1);
-        let (inner, rest) = condition_and_rest(shared, inner, targets, below)?;
-        (Condition::Not(Box::new(inner)), rest)
-    } else if let Some(inner) = text.strip_prefix('(') {
-        let below = depth.saturating_add(1);
-        let (inner, rest) = condition_or_rest(shared, inner, targets, below)?;
-        let rest = rest
-            .trim_start()
-            .strip_prefix(')')
-            .ok_or_else(|| "close the condition's parenthesis".to_owned())?
-            .to_owned();
-        (inner, rest)
-    } else {
-        reading_of(shared, text, targets)?
-    };
-    let mut all = vec![condition];
-    let mut rest = rest;
-    while let Some(after) = rest.trim_start().strip_prefix("and ") {
-        let (next, tail) = reading_of(shared, after, targets)?;
-        all.push(next);
-        rest = tail;
-    }
-    if all.len() == 1 {
-        return Ok((all.remove(0), rest));
-    }
-    Ok((Condition::All(all), rest))
-}
-
-fn condition_or_rest(
-    shared: &Shared<'_>,
-    text: &str,
-    targets: &Targets,
-    depth: usize,
-) -> Result<(Condition, String), String> {
-    let (first, mut rest) = condition_and_rest(shared, text, targets, depth)?;
-    let mut any = vec![first];
-    while let Some(after) = rest.trim_start().strip_prefix("or ") {
-        let (next, tail) = condition_and_rest(shared, after, targets, depth)?;
-        any.push(next);
-        rest = tail;
-    }
-    if any.len() == 1 {
-        return Ok((any.remove(0), rest));
-    }
-    Ok((Condition::Any(any), rest))
-}
-
-/// The reading a condition states: a value, then how it reads.
-fn reading_of(
-    shared: &Shared<'_>,
-    text: &str,
-    targets: &Targets,
-) -> Result<(Condition, String), String> {
-    let (value, rest) = binding_and_rest(shared, text, targets)?;
-    let rest = rest.trim_start();
-    if let Some(after) = rest.strip_prefix("is set") {
-        return Ok((Condition::Truthy(value), after.to_owned()));
-    }
-    if let Some(after) = rest.strip_prefix("is not ") {
-        let (other, tail) = binding_and_rest(shared, after, targets)?;
-        return Ok((
-            Condition::Not(Box::new(Condition::Equals {
-                left: value,
-                right: other,
-            })),
-            tail,
-        ));
-    }
-    if let Some(after) = rest.strip_prefix("is ") {
-        if after.starts_with("greater than ") || after.starts_with("less than ") {
-            return Err("this reading is not one the text writes yet".to_owned());
-        }
-        let (other, tail) = binding_and_rest(shared, after, targets)?;
-        return Ok((
-            Condition::Equals {
-                left: value,
-                right: other,
-            },
-            tail,
-        ));
-    }
-    Err("a condition reads `value is value`, `value is set`, `not`, `and` or `or`".to_owned())
-}
-
-/// An input's declaration.
-fn input_of(text: &str) -> Result<ActionParam, String> {
-    let (name, rest) = text_at(text)?;
-    let rest = rest.trim_start().strip_prefix("is ").ok_or_else(|| {
-        "write an input as `input \"name\" is text, not nothing, called \"what it is for\"`"
-            .to_owned()
-    })?;
-    let mut words = rest.trim_start();
-    let mut ty: Option<&str> = None;
-    for kind in TYPES {
-        if let Some(after) = words.strip_prefix(kind)
-            && (after.is_empty() || after.starts_with(' ') || after.starts_with(','))
-            && ty.is_none_or(|chosen| kind.len() > chosen.len())
-        {
-            ty = Some(kind);
-        }
-    }
-    let Some(kind) = ty else {
-        return Err(format!(
-            "`{}` is not a type: a value is one of {}",
-            words.split(' ').next().unwrap_or_default(),
-            TYPES.join(", ")
-        ));
-    };
-    words = words.get(kind.len()..).unwrap_or_default().trim_start();
-    let mut nullable = true;
-    if let Some(after) = words.strip_prefix(',') {
-        let after = after.trim_start();
-        if let Some(after) = after.strip_prefix("not nothing") {
-            nullable = false;
-            words = after.trim_start();
-        } else if let Some(after) = after.strip_prefix("may be nothing") {
-            words = after.trim_start();
-        }
-    }
-    let mut param = ActionParam::required_owned(name, type_of(kind).unwrap_or(ParamType::Text), "");
-    if !nullable {
-        param.nullable = false;
-    }
-    if words.is_empty() {
-        return Ok(param);
-    }
-    let words = words
-        .strip_prefix(',')
-        .map(str::trim_start)
-        .ok_or_else(|| {
-            format!("say what the input is for after a comma, as `called \"…\"`, not `{words}`")
-        })?;
-    let words = words.strip_prefix("called ").unwrap_or(words);
-    let (description, choices) = match words.split_once(", one of ") {
-        Some((description, listed)) => (description, choices_of(listed)?),
-        None => (words, Vec::new()),
-    };
-    param.description = description.to_owned().into();
-    param.choices = choices.into_iter().map(Into::into).collect();
-    param.nullable = nullable;
-    Ok(param)
-}
-
-/// The values a declaration lists as the only ones it accepts.
-fn choices_of(text: &str) -> Result<Vec<String>, String> {
-    let mut choices = Vec::new();
-    let mut rest = text.trim_start();
-    while !rest.is_empty() {
-        let (choice, after) = text_at(rest)?;
-        choices.push(choice);
-        rest = after.trim_start();
-        rest = rest
-            .strip_prefix(" or ")
-            .or_else(|| rest.strip_prefix(','))
-            .unwrap_or(rest)
-            .trim_start();
-    }
-    Ok(choices)
 }
 
 fn seconds_of(text: &str) -> Result<u64, String> {
@@ -2292,11 +2165,37 @@ fn rule_of(text: &str) -> Result<Rule, String> {
 fn ask_param(shared: &Shared<'_>, phrase: &str) -> Option<ActionParam> {
     let asked = phrase.strip_prefix("ask for ")?;
     let _ = shared;
-    Some(ActionParam::required_owned(
-        asked.to_owned(),
-        ParamType::Text,
-        asked.to_owned(),
-    ))
+    // The step is named by what it asks for, and the name the answer is held
+    // under follows the question; where the program holds it under a name of
+    // its own, the line says so. The question is read first, so a ` as ` inside
+    // the words asked for is part of them rather than the name.
+    let (words, after) = text_at(asked).ok()?;
+    let name = match after.trim() {
+        "" => identifier_of(&words),
+        after => text_at(after.strip_prefix("as ")?).ok()?.0,
+    };
+    Some(ActionParam::required_owned(name, ParamType::Text, words))
+}
+
+/// The name a question is held under when the program does not name it: the
+/// words it reads as, joined up as an identifier.
+fn identifier_of(words: &str) -> String {
+    let name: String = words
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = name.trim_matches('_');
+    if trimmed.is_empty() {
+        "answer".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 // ---------------------------------------------------------------- naming ---
@@ -2312,7 +2211,7 @@ fn referred(shortcut: &Shortcut) -> BTreeSet<String> {
     names
 }
 
-fn collect_references(steps: &[Step], names: &mut BTreeSet<String>) {
+pub(crate) fn collect_references(steps: &[Step], names: &mut BTreeSet<String>) {
     for step in steps {
         let mut args = Vec::new();
         match &step.kind {
@@ -2440,6 +2339,44 @@ fn condition_render(condition: &Condition, namings: &[Naming]) -> String {
 
 // ----------------------------------------------------------- the reader's ---
 
+/// The input whose value is shown as a bot's name and avatar.
+const AUTHOR: &str = "author";
+
+/// The first word of `text`, and what follows it.
+pub(super) fn split_word(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    let end = text.find(' ')?;
+    let (word, rest) = text.split_at(end);
+    (!word.is_empty()).then_some((word, rest))
+}
+
+/// A name the text writes: an identifier, which is what a program holds.
+fn read_name(text: &str) -> Option<String> {
+    let name = text.trim();
+    is_identifier(name).then(|| name.to_owned())
+}
+
+/// The step a line names when the text states no such step.
+///
+/// A step's result is referred to by the words the step reads as, so a line
+/// that gives a result back and names a step the text does not hold is the one
+/// a person cut out. The words are kept as the step's name, which is what the
+/// diff reports as leaving.
+fn unstated_step(text: &str) -> Option<Binding> {
+    let name = text.trim();
+    // Only words: a value that starts with a bracket, a quote or a digit is a
+    // value the reader refused, and stays refused.
+    let mut words = name.split(' ').filter(|word| !word.is_empty());
+    let first = words.next()?;
+    if !first.starts_with(|c: char| c.is_alphabetic()) {
+        return None;
+    }
+    if !words.all(|word| word.starts_with(|c: char| c.is_alphabetic() || c == '"')) {
+        return None;
+    }
+    Some(Binding::step(name, ""))
+}
+
 impl Shared<'_> {
     /// A rendering that reads no catalogue: enough to read the values of a
     /// line that names no action.
@@ -2480,7 +2417,11 @@ fn longest_param<'t>(text: &'t str, params: &[ActionParam]) -> Option<(ActionPar
 
 impl Reader<'_> {
     /// Read a line that names an action: the phrase the catalogue gives it,
-    /// then its arguments as `label value` notes.
+    /// then what it acts on and its arguments as notes.
+    ///
+    /// A step that names one resource reads as the phrase with that resource
+    /// said, so the phrase is one of the row's readable forms — any way it
+    /// writes the resource — up to the `on ` the resource follows.
     fn invocation(
         &self,
         shared: &Shared<'_>,
@@ -2494,11 +2435,34 @@ impl Reader<'_> {
             .catalog
             .rows()
             .iter()
-            .find(|row| reads_any(row, &*shared.app_label).as_deref() == Some(phrase))
+            .find(|row| names_an_action(row, phrase, &*shared.app_label))
         else {
             return Ok(None);
         };
         let number = self.rows.get(index).map_or(1, |row| row.number);
         invocation(shared, row, phrase, body, targets, number).map(Some)
     }
+}
+
+/// Whether `phrase` is a line of `row`'s action: the words the catalogue gives
+/// it, and then what it acts on — `on any <kind>` for a kind, `on <resource>`
+/// for one resource the program names.
+fn names_an_action(row: &CatalogueRow, phrase: &str, app_label: &dyn Fn(&str) -> String) -> bool {
+    let Some(any) = reads_any(row, app_label) else {
+        return false;
+    };
+    // The phrase reads `<action> on any <kind> in <app>`. A line that names
+    // one resource, or takes whatever item of one, says the same words up to
+    // `on any` and then its own resource, so the action's own words are what
+    // decide whether the row is this line's action.
+    let Some(head) = any.split_once(" on any ").map(|(head, _)| head) else {
+        return false;
+    };
+    // The row's own words; just its action, for a step whose resource follows
+    // as a note; or the action and the app, for the step that acts on what a
+    // binding yields. A phrase that runs past `on` would take the resource the
+    // reader has to read for itself.
+    let phrase = phrase.trim_end();
+    let app = app_label(&row.app_id);
+    phrase == any || phrase == head || phrase == format!("{head} in {app}")
 }
