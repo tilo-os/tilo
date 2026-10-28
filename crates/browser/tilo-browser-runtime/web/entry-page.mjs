@@ -31,6 +31,7 @@ import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
 import {createReconnect, domReconnectView} from './reconnect.mjs';
+import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
@@ -684,6 +685,25 @@ export async function startEntryPage({mode}) {
   let openInTab = null;
   /** The peer the host let in, once it did: it knows the room's name as its people last set it. */
   let admitted = null;
+  /** Whether the page's store last committed every change: a mount that
+   * presented says so with its `persistence`, and a store that stops saving
+   * later takes the bar (`connection-status.mjs`). */
+  let saved = true;
+  /** What the desktop last said of itself (its phase, its error, its
+   * store): the bar reads it, so a renderer that stops after the first frame
+   * is a state the person sees rather than one that scrolled past. */
+  let desktopStatus = null;
+  /** Whether this page has no desktop to report on: a browser that cannot
+   * draw one says so before it is let in, and its own desktop has no session
+   * to be cut off from, so no line about a connection is owed. */
+  let noDesktop = false;
+  /** The page once it is open: its mount and its peer. The desktop's status
+   * arrives while it opens, so the bar reads it from here rather than from
+   * the `boot` call's own scope. */
+  let opened = null;
+  /** The bar's follower of the connection, once it is written below. The
+   * desktop reports its first status while the page opens, before then. */
+  let bar = null;
   const diagnostics = {
     onHostAction: (id, value) => {
       if (id === SET_UP.id) void setUp?.();
@@ -716,8 +736,18 @@ export async function startEntryPage({mode}) {
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
       root.frames = String(state.frames ?? 0);
+      // The desktop's own report, for the bar: a renderer or a store that
+      // fails after the first frame is a state the person must see, not an
+      // event that scrolls past (`connection-status.mjs`).
+      desktopStatus = state;
+      if (state.persistence) saved = state.persistence !== 'failed';
+      // The desktop reports its first status while the page opens, before
+      // the follower below is written; it looks once it is.
+      bar?.look();
       if (debug) {
-        status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`;
+        const said = bar.last;
+        status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`
+          + (said.state === 'online' ? '' : ` · ${said.state}${said.detail ? `: ${said.detail}` : ''}`);
       } else if (['failed', 'crashed'].includes(state.phase)) {
         // The cause is for the console; the person gets what to do.
         if (state.error) console.warn('desktop:', state.error);
@@ -728,6 +758,34 @@ export async function startEntryPage({mode}) {
       }
     },
   };
+  /**
+   * The bar's line about this desktop's connection, followed from the
+   * session's health and the desktop's own reports rather than from the
+   * mount that once presented: a transport that drops, an admission that
+   * expires, a store that stops saving and a renderer that stops drawing
+   * all keep the desktop mounted, and none of them may read as connected.
+   * A page opened with ?debug says the line at once; the person reads it in
+   * the bar, which clears once it is well again.
+   */
+  bar = followConnection({
+    // The session's own snapshot, re-read each time: `opened.peer` is the
+    // constant peer object, and its health changes under it.
+    read: () => ({peer: opened?.peer?.getSnapshot?.() ?? null, desktop: desktopStatus, messages,
+      mounted: Boolean(opened?.mount) && !noDesktop, saved}),
+    bar: {
+      show: reading => {
+        document.documentElement.dataset.connection = reading.state;
+        // The cause is for the console, once: the bar says what to do.
+        if (!reading.cleared) console.warn(`desktop: ${reading.state}`, reading.detail ?? '');
+        // The bar is the page's own note while it arrives, so only a line
+        // still of its own is replaced: a visit message stays, and so does
+        // the note about a desktop that stopped while the session was fine.
+        const own = [loading, opening, drawing, STOPPED_DRAWING].includes(status.textContent);
+        if (!own && !reading.cleared) return;
+        status.textContent = reading.cleared ? '' : reading.sentence;
+      },
+    },
+  });
   let runtime;
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
@@ -917,6 +975,7 @@ export async function startEntryPage({mode}) {
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
+    opened = page;
     if (entered) void showVisitState({entered, retryAfter, because: seatlessBecause, workspace: visitedAt, workspaceName, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
@@ -926,6 +985,12 @@ export async function startEntryPage({mode}) {
     // under another host went with that host's state.
     const hostDevice = page.peer ? hostDeviceOf(page.peer.host?.hostCert) : null;
     if (hostDevice) remembering(() => forgetGoneRooms({origin: page.peer.origin, hostDevice}));
+    // A session's own status (transport, admission, persistence) changes
+    // without the desktop unmounting: the page follows it, and clears the
+    // line it took once every one of them is well again.
+    if (page.peer) page.peer.onStatus?.(() => bar.look());
+    else if (!page.mount) noDesktop = true;
+    bar.look();
     if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
       // A room entered as a member: offered again from the person's other workspaces.
       const room = {origin: here.host, room: here.room ?? page.peer.room};

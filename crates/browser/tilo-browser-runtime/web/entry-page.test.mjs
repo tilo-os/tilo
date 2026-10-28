@@ -27,7 +27,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
   globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
   globalThis.history = {pushState: () => calls.push('history')};
-  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}}, createElement: tag => new Element(tag),
+  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
   const status = {textContent: 'Loading…'};
   const calls = [];
@@ -234,4 +234,32 @@ test('an embedded room offers no Invite it could not carry out', async () => {
   assert.equal(deps.onInvite, undefined);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   assert.equal(typeof deps.onInvite, 'function');
+});
+
+// A session's own status, as the peer publishes it (PeerSnapshot).
+function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
+  return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};
+}
+
+test('the bar follows the session after the mount, not the mount alone', async () => {
+  const statuses = [];
+  let session = sessionOf();
+  const r = await fixture({boot: async (options, booted) => {
+    booted.peer = {...booted.peer, mountDesktop: async () => booted.mount,
+      getSnapshot: () => session, subscribe: () => () => {}, onStatus: listener => statuses.push(listener)};
+    return booted;
+  }});
+  const {diagnostics} = r;
+  const root = document.documentElement.dataset;
+  assert.equal(statuses.length, 1, 'the page follows the session, not only the mount it made');
+  diagnostics.onStatus({phase: 'presented', frames: 1});
+  assert.equal(root.connection, undefined, 'a session that is well has nothing to say');
+  // Nothing unmounted: the desktop is still there, the session is not.
+  session = sessionOf({phase: 'incomplete', transport: 'offline'});
+  statuses[0]();
+  assert.equal(root.connection, 'offline', 'a transport that dropped after the mount is not connected');
+  // The mount never changed: the line comes from the session alone.
+  session = sessionOf();
+  statuses[0]();
+  assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
 });
