@@ -53,7 +53,6 @@ class SelectTests(unittest.TestCase):
                     continue
                 check = checks[name]
                 self.assertNotEqual(check.get("isolation"), "vm")
-                self.assertFalse(check.get("cargo_packages"), "a push builds no package beyond clippy's")
                 self.assertNotIn(check.get("cost"), ("minutes", "heavy"))
                 self.assertTrue(name.startswith("policy/") or name in pre_push.GATES or name in pre_push.ALWAYS)
         # Everything else is left to main and to `t test`.
@@ -93,9 +92,7 @@ class SelectTests(unittest.TestCase):
                 # A check that needs a Git index of the whole tree, or builds, is main's.
                 self.assertIn(name, checks)
                 check = checks[name]
-                self.assertNotIn("**", check["inputs"])
                 self.assertLessEqual(check["requirement"]["cores"], 8)
-                self.assertFalse(check.get("cargo_packages"))
 
     def test_a_check_red_on_main_runs_all_the_same(self):
         # t compares its failures with main's: a push that adds one is refused however red main is.

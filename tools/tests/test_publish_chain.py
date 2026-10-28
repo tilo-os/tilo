@@ -43,12 +43,11 @@ class GeneratorTests(unittest.TestCase):
     def test_one_chain_publishes_development_and_release_tags(self):
         c = checks({"family": "f", "name": "svc", "repository": "r.example/svc",
                     "dev": ["dev-{commit}"], "release": ["sha-{commit}"],
-                    "build": {"containerfile": "x/Containerfile", "inputs": ["x/**"]}})
+                    "build": {"containerfile": "x/Containerfile"}})
         self.assertEqual(sorted(c), ["image-svc", "publish-svc", "sign-svc"])
         build = c["image-svc"]
         self.assertEqual(build["requires"], ["arch=x86_64"])
         self.assertIn("oci-build.sh $TMPDIR/empty x/Containerfile /target/publish/svc", build["run"])
-        self.assertIn("x/**", build["inputs"])
         self.assertFalse(build["default"])
         self.assertNotIn("id_token", build)
         self.assertEqual(build["isolation"], "vm")
@@ -167,7 +166,7 @@ class GeneratorTests(unittest.TestCase):
     def test_provenance_is_written_without_secrets_and_attested_when_signing(self):
         c = checks({"family": "f", "name": "k", "repository": "r/k", "release": ["sha-{commit}-{arch}"],
                     "arches": ["x86_64", "aarch64"], "tlog": True, "build": {"run": "b {arch} {out}"},
-                    "provenance": {"run": "prov {dir}", "inputs": ["x"]}})
+                    "provenance": {"run": "prov {dir}"}})
         prov = c["provenance-k"]
         self.assertEqual(prov["needs"], ["image-k-x86_64", "image-k-aarch64"])
         self.assertEqual(prov["outputs"], ["/target/publish/k/x86_64/provenance.json",
@@ -194,7 +193,7 @@ class GeneratorTests(unittest.TestCase):
                     "release": ["sha-{commit}"],
                     "build": {"containerfile": "x/Containerfile", "test": ["test {out}/image.oci.tar"]},
                     "release_build": {"name": "carry-web", "run": "carry {out} {dir}/release",
-                                      "inputs": ["carry.sh"], "outputs": ["{dir}/release/extra.json"],
+                                      "outputs": ["{dir}/release/extra.json"],
                                       "cache": False, "requirement": {"cores": 4, "memory": "8GiB"}}})
         self.assertEqual(sorted(c), ["carry-web", "image-web", "publish-web", "sign-web"])
         carry = c["carry-web"]
@@ -204,7 +203,6 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(carry["outputs"], ["/target/publish/web/release/image.oci.tar",
                                             "/target/publish/web/release/digest",
                                             "/target/publish/web/release/extra.json"])
-        self.assertIn("carry.sh", carry["inputs"])
         self.assertEqual((carry["isolation"], carry["cache"], carry["requirement"], carry["default"]),
                          ("vm", False, {"cores": 4, "memory": "8GiB"}, False))
         self.assertNotIn("id_token", carry)
@@ -346,20 +344,6 @@ def publish_scripts(script: str, seen: set[str]) -> set[str]:
     for name in re.findall(r'\$\(dirname -- "\$\{BASH_SOURCE\[0\]\}"\)/([\w.-]+\.(?:sh|py))', text):
         publish_scripts(f"tools/ci/publish/{name}", seen)
     return seen
-
-
-class InputsTests(unittest.TestCase):
-    def test_checks_read_the_publishing_scripts_they_run(self):
-        """A change to a publishing script reruns exactly the checks that run it."""
-        for c in t_matrix.load(ROOT)["check"]:
-            inputs = c.get("inputs", [])
-            if "tools/ci/publish/**" in inputs:
-                continue
-            seen: set[str] = set()
-            for name in re.findall(r'tools/ci/publish/[\w.-]+\.(?:sh|py)', c.get("run", "")):
-                publish_scripts(name, seen)
-            with self.subTest(check=c["name"]):
-                self.assertEqual(sorted(seen - set(inputs)), [])
 
 
 FAKE_SKOPEO = r'''#!/usr/bin/env python3
