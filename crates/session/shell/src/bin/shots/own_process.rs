@@ -55,7 +55,10 @@ impl OwnProcessApp {
         let mut frame = ui::headless::FrameHarness::for_root(ui::State::new(), app, size, theme);
         let client =
             FloatingSurfaceServiceClient::from_test_stream(app_side).map_err(|e| e.to_string())?;
-        app_runtime(&mut frame).test_floating_service_connection(client);
+        frame
+            .root_mut::<ui::app::EmbeddedApp>()
+            .app_mut()
+            .test_floating_service_connection(client);
         Ok(Self {
             app_id,
             connection,
@@ -160,9 +163,4 @@ impl OwnProcessApp {
         }
         messages
     }
-}
-
-/// The app's own runtime inside the frame that draws it.
-fn app_runtime(frame: &mut ui::headless::FrameHarness) -> &mut ui::App {
-    frame.root_mut::<ui::app::EmbeddedApp>().app_mut()
 }
