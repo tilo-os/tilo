@@ -189,11 +189,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Stands beside the compile matrix, not in front of it (see the note above
+  # `test`); `checks` requires its success, so it is still a gate on the run.
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [select, security-fixtures]
     runs-on: runner-quality
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       # The complete suite passes in the quality lane's 2 CPU / 5 GiB job limit
       # once its fixtures are built (security-fixtures); t declares the same
@@ -305,11 +307,13 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
-  # Admit native PR work only after the required security boundary passes.
-  # A failed boundary already fails the aggregate; do not spend native slots
-  # on that invalid PR. Explicit cancellation and builder/selector predicates
-  # allow main diagnostics after a failed boundary without running a bad plan.
-  # No new admission job or runner reservation is introduced.
+  # The compile jobs below do not wait for the security boundary. It used to
+  # gate them so a red boundary would not spend native slots, but the boundary
+  # suite runs the whole repository's invariant scripts and one slow or hung
+  # invariant then leaves test/check/clippy permanently blocked ("incomplete
+  # matrix"), which hides every product result in the run. The boundary is
+  # still required: the `checks` aggregate fails the run when it fails or is
+  # skipped unexpectedly.
   # Tests and the Clippy gate run as parallel jobs rather than one after
   # another on one runner. Test jobs are sharded by recorded test time, Clippy
   # by structural cost (tools/ci/affected_packages.py). Clippy type-checks
@@ -318,8 +322,8 @@ jobs:
   # instead. The jobs share compiler outputs through sccache; each keeps its
   # own target tree. The `checks` aggregate below requires all of them.
   test:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select]
     # Linking the shell test binaries is the memory peak of the whole check:
     # it took the native class's 14/16 GiB job limit (the kernel killed rustc
     # on both architectures), and the tree declares 48 GiB for those tests.
@@ -524,8 +528,8 @@ jobs:
           if-no-files-found: warn
 
   check:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
+    needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -595,8 +599,8 @@ jobs:
           if-no-files-found: warn
 
   clippy:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -683,8 +687,8 @@ jobs:
   # platform and build tools, and the host code paths it would add run only on
   # a device. The NDK's host tools are x86_64-only.
   android:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.android_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.android_required == 'true' }}
+    needs: [builder, select]
     runs-on: runner
     timeout-minutes: 90
     env:
@@ -729,8 +733,8 @@ jobs:
   # web-capable examples, built for the web. The browser bundle build and its
   # tests run elsewhere.
   wasm:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.wasm_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.wasm_required == 'true' }}
+    needs: [builder, select]
     # wasm32 output is host-independent; main still qualifies it on x86.
     # The portable label admits only qualified x86 general and ARM large slots.
     runs-on: runner
@@ -790,8 +794,8 @@ jobs:
   # them when their files change (VENDORED_TEST_CRATES in
   # tools/ci/affected_packages.py); ci-nightly.yml runs every one.
   vendored:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.vendored_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.vendored_required == 'true' }}
+    needs: [builder, select]
     runs-on: runner
     timeout-minutes: 45
     container:
