@@ -511,7 +511,12 @@ impl Device {
     fn serve_layouts(&mut self) {
         use std::os::fd::IntoRawFd as _;
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD};
-        let socket = self.dir.join("session-collab.sock");
+        // The broker binds only under a directory its owner alone may enter.
+        let parent = self.dir.join("session-collab");
+        std::fs::create_dir_all(&parent).expect("the session's broker directory");
+        std::fs::set_permissions(&parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .expect("the broker directory is the device's alone");
+        let socket = parent.join("collab.sock");
         let _ = std::fs::remove_file(&socket);
         let broker = self.start_broker(&socket);
         let (key, cert) = (self.key(), self.cert());
