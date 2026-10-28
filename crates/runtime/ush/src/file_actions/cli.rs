@@ -104,6 +104,26 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Take `--json` out of `args`: whether it was there, and the rest. Only
+/// before `--`, where it is a flag; after it, it is a name.
+#[must_use]
+pub fn take_json(args: &[String]) -> (bool, Vec<String>) {
+    let mut json = false;
+    let mut flags = true;
+    let mut rest = Vec::with_capacity(args.len());
+    for arg in args {
+        if flags && arg == "--json" {
+            json = true;
+            continue;
+        }
+        if arg == "--" {
+            flags = false;
+        }
+        rest.push(arg.clone());
+    }
+    (json, rest)
+}
+
 /// Read `args` (the operands and flags after the tool's name) as `tool`.
 ///
 /// # Errors
@@ -406,6 +426,16 @@ mod tests {
         };
         assert!(op.recursive && op.force);
         assert_eq!(op.paths, vec![PathBuf::from("build"), PathBuf::from("tmp")]);
+    }
+
+    #[test]
+    fn json_is_a_flag_only_before_the_double_dash() {
+        assert_eq!(take_json(&args("--json a b")), (true, args("a b")));
+        assert_eq!(
+            take_json(&args("a -- --json")),
+            (false, args("a -- --json")),
+            "after `--` it is a name"
+        );
     }
 
     #[test]

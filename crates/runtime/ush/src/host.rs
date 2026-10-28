@@ -305,6 +305,34 @@ impl SessionOwnership {
     }
 }
 
+/// The person signed in to this session, by the principal id the action
+/// door names them with (their root key, hex): what they do at a guest's
+/// shell is theirs in History. `local` when no identity is signed in, the
+/// name an environment's own grants are given by.
+pub fn signed_in_person() -> String {
+    SessionOwnership::discover().signed_in().map_or_else(
+        || "local".to_owned(),
+        |key| {
+            collab_types::caps::Principal::person_from_key(
+                collab_types::Ed25519PublicKey::from_bytes(key),
+            )
+            .id()
+            .to_owned()
+        },
+    )
+}
+
+/// This device, as an environment's file actions name the device that
+/// carries them out: the machine id, which stays the same across sessions
+/// and sign-ins and never leaves the device as anything but a name.
+pub fn this_device() -> String {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "this-device".to_owned())
+}
+
 impl DeviceOwnership for SessionOwnership {
     fn signed_in_person_owns_device(&self) -> bool {
         match (self.owner(), self.signed_in()) {

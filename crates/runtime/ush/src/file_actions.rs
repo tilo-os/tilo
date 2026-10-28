@@ -1,65 +1,70 @@
-//! File actions: the verbs that change a granted directory, as typed
-//! values rather than flags assembled by hand.
+//! Carrying out an environment's file actions.
 //!
 //! `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch` and `append`
-//! inside a guest are this module. Each invocation parses into one
-//! [`FileAction`] carrying its arguments, is classified once ([`FileAction::plan`]) into the places it
-//! would write and the operations it would perform, is checked as a whole
-//! against the environment's grants, and is carried out through
-//! [`FileAction::apply`] — which also hands back the [undo entry](UndoEntry)
-//! that puts the tree back.
+//! inside a guest are the environment record's own verbs
+//! ([`tilo_environment::files`]): each command line parses into one
+//! [`FileAction`] ([`cli`]), is invoked on the record as the person who typed
+//! it ([`invoke`]), and lands in the record's `files` outbox — checked as a
+//! whole against the record's grants by the verb itself. This module is the
+//! device's half: it [plans](plan) a queued task against the tree as it is,
+//! checks that plan against the same grants with the same function, carries
+//! it out, and settles the task with the [`UndoEntry`]s that take it back.
+//! History, undo and attribution are the record's, as for every other action
+//! of the record's: there is no second history here.
 //!
-//! # Why one value per invocation
+//! # Why one action per invocation
 //!
 //! A shell one-liner that copies forty files is one thing the person asked
 //! for. Refusing the seventeenth file would leave thirty-nine copies and no
-//! way to tell which; logging each `open` would fill the log with the
-//! implementation of one intent. So the action is parsed, planned and
-//! checked before anything is written, and written as one unit.
+//! way to tell which; recording each `open` would fill History with the
+//! implementation of one intent. So the action is checked before anything is
+//! written, and written as one unit.
 //!
 //! # Nothing is unlinked
 //!
-//! `rm` renames the path into the environment's recoverable history
+//! `rm` renames the path into the environment's recoverable store
 //! ([`RECOVERABLE_DIR`]) instead of unlinking it, and an overwrite (`cp`,
-//! `mv`, `ln -sf`, `truncate`) moves the previous contents aside the same
-//! way. `rmdir` cannot lose anything — it only succeeds on an empty
+//! `mv`, `ln -f`, `truncate`, `append`) moves the previous contents aside the
+//! same way. `rmdir` cannot lose anything — it only succeeds on an empty
 //! directory — so it removes the entry and its undo recreates the directory.
-//! The one path that really destroys data is [`FileAction::irreversible`]: a
-//! removal asked for with `--force`, which callers name to the person before
-//! it runs.
+//! `rm -f` is GNU's: it says nothing of a path that is not there, and what is
+//! there is kept aside like any removal.
 //!
-//! # Why touch and append exist
+//! The store is where kept contents are, not a history: each entry names the
+//! path it came from, so what a task the record no longer lists kept aside —
+//! and what an older runtime kept, when it still wrote its own history — stays
+//! listed by `history` and comes back with the record's `restore` action.
 //!
-//! A file's contents are what an everyday task changes — a note, a list, a
-//! paragraph — and with only `truncate` and `cp` the only safe way to change
-//! one was to rewrite the whole file, and the only way to create one was to
-//! empty it. `append` adds text to the end and `touch` creates a file without
-//! truncating it, so the everyday edits are one action each, recorded and
-//! reversible like the rest: a `touch` or an `append` keeps what it changed
-//! aside exactly as an overwrite does.
+//! # Outside a guest
 //!
-//! # Where the check happens
-//!
-//! Inside a guest the supervisor answers, over the broker, because the
-//! environment's grants are the record the supervisor owns and the guest can
-//! neither read nor rewrite ([`Request::FileAction`](crate::broker::Request)).
-//! On a device without that runtime (the host's own shell) there is no
-//! environment record to check, so [`no_grants`] allows every path and the
-//! person's own permissions are the only bound — the same command, doing the
-//! same thing, with the same recoverable history.
+//! The host's own shell has no environment record, so there is nothing to
+//! invoke an action on, no grants to check and no History to record in: a
+//! verb run there ([`perform`]) carries out the same plan with the person's
+//! own permissions as its only bound, still keeping what it replaces in
+//! `~/.local/share/ush/recoverable`, where `history` lists it and
+//! `history restore` puts it back.
 
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub mod cli;
+pub mod watch;
 
+use collab_types::caps::Access;
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
+use tilo_environment::Environment;
+pub use tilo_environment::files::{
+    AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
+    RestoreOp, RevertOp, TruncateOp, UndoEntry, normalize,
+};
+use tilo_resource::{Id, Invoke, Replica, Settled};
 
 use crate::audit::{AuditLog, AuditRecord};
 use crate::broker::{BrokerState, EnvironmentHandle, Response};
 use crate::policy::Policy;
+use crate::records::{Invoker, RecordError, Records};
 
 /// Where a removed path (or the previous contents of an overwritten one) is
 /// kept instead of being unlinked: under the environment's own `/var`, so it
@@ -71,304 +76,8 @@ pub const RECOVERABLE_DIR: &str = "/var/lib/tilo-recoverable";
 /// supervisor finds it on the host.
 pub const RECOVERABLE_IN_VAR: &str = "tilo-recoverable";
 
-/// Metadata kept beside every recorded entry, so `ush history` can say what
-/// happened to what without reading the audit log's many lines.
+/// Metadata kept beside every kept entry: the path it came from.
 pub const ENTRY_FILE: &str = "entry.json";
-
-/// What a command asked for, before anything is written.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case")]
-pub enum FileAction {
-    Copy(CopyOp),
-    Move(MoveOp),
-    /// Remove `paths`: into the recoverable history, or permanently when the
-    /// caller asked for `--force` on what has already been removed.
-    Remove(RemoveOp),
-    MakeDir(MakeDirOp),
-    RemoveDir(RemoveDirOp),
-    Link(LinkOp),
-    Truncate(TruncateOp),
-    /// Create `files` if they are missing, leave their contents alone.
-    Touch(AppendFileOp),
-    /// Add `text` to the end of each of `files`.
-    Append(AppendFileOp),
-}
-
-impl FileAction {
-    /// The verb, as the audit log and history name it.
-    #[must_use]
-    pub const fn verb(&self) -> &'static str {
-        match self {
-            Self::Copy(_) => "copy",
-            Self::Move(_) => "move",
-            Self::Remove(_) => "remove",
-            Self::MakeDir(_) => "make-dir",
-            Self::RemoveDir(_) => "remove-dir",
-            Self::Link(_) => "link",
-            Self::Truncate(_) => "truncate",
-            Self::Touch(_) => "touch",
-            Self::Append(_) => "append",
-        }
-    }
-
-    /// Whether the action adds its text to what is already there, rather
-    /// than writing all of it.
-    #[must_use]
-    pub const fn appends(&self) -> bool {
-        matches!(self, Self::Append(_))
-    }
-
-    /// Whether carrying this out loses anything the recoverable history does
-    /// not hold. Callers name it to the person before asking for consent.
-    #[must_use]
-    pub const fn irreversible(&self) -> bool {
-        !matches!(self, Self::Remove(RemoveOp { force: false, .. }))
-    }
-
-    /// Every path this action reads out of, writes to, or creates. Both the
-    /// grant check and the audit log are about these.
-    #[must_use]
-    pub fn paths(&self) -> Vec<PathBuf> {
-        match self {
-            Self::Copy(op) => op.paths(),
-            Self::Move(op) => op.paths(),
-            Self::Remove(op) => op.paths.clone(),
-            Self::MakeDir(op) => op.dirs.clone(),
-            Self::RemoveDir(op) => op.dirs.clone(),
-            Self::Link(op) => op.paths(),
-            Self::Truncate(op) => op.files.clone(),
-            Self::Touch(op) | Self::Append(op) => op.files.clone(),
-        }
-    }
-
-    /// Plan the writes against the tree as it is, then ask
-    /// `allowed` about each of them. The answer is the refusal that stops the
-    /// whole invocation, or the plan it may carry out.
-    ///
-    /// # Errors
-    ///
-    /// The first refused path, or the reason nothing can be done (a missing
-    /// source, a destination that cannot take the plan).
-    pub fn plan(&self, allowed: &dyn Fn(&Path) -> bool) -> Result<Plan, Refusal> {
-        let plan = match self {
-            Self::Copy(op) => plan_copy(op)?,
-            Self::Move(op) => plan_move(op)?,
-            Self::Remove(op) => plan_remove(op)?,
-            Self::MakeDir(op) => plan_make_dir(op)?,
-            Self::RemoveDir(op) => plan_remove_dir(op)?,
-            Self::Link(op) => plan_link(op)?,
-            Self::Truncate(op) => plan_truncate(op)?,
-            Self::Touch(op) => plan_touch(op)?,
-            Self::Append(op) => plan_append(op)?,
-        };
-        for path in &plan.writes {
-            if !allowed(path) {
-                return Err(Refusal::Ungranted(path.clone()));
-            }
-        }
-        Ok(plan)
-    }
-
-    /// Carry out a plan this value produced, and record each operation in the
-    /// recoverable history as it happens, so a failure halfway leaves the
-    /// operations already done recoverable.
-    ///
-    /// # Errors
-    ///
-    /// The filesystem error that stopped it, after the operations behind it
-    /// were carried out.
-    pub fn apply(&self, plan: &Plan, history: &Recoverable) -> Result<Outcome, ActionError> {
-        let id = history.mint().map_err(ActionError::History)?;
-        let mut outcome = Outcome {
-            id: id.clone(),
-            done: Vec::new(),
-        };
-        for op in &plan.ops {
-            match op {
-                Operation::MakeDir { path, parents } => {
-                    create_dir(path, *parents).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome.done.push(UndoEntry::MakeDir { path: path.clone() });
-                }
-                Operation::RemoveDir { path } => {
-                    fs::remove_dir(path).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome
-                        .done
-                        .push(UndoEntry::RemoveDir { path: path.clone() });
-                }
-                Operation::Keep { path, contents } => {
-                    history.stash(&id, path, contents.as_deref())?;
-                    outcome.done.push(UndoEntry::Kept {
-                        id: id.clone(),
-                        path: path.clone(),
-                    });
-                }
-                Operation::Discard { path, recursive } => {
-                    discard(path, *recursive).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome
-                        .done
-                        .push(UndoEntry::Discarded { path: path.clone() });
-                }
-                Operation::Touch { .. } => {
-                    history.record(&id, op)?;
-                    outcome.done.push(UndoEntry::Touched);
-                }
-                Operation::MakeFile { path } => {
-                    create_file(path).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome
-                        .done
-                        .push(UndoEntry::MakeFile { path: path.clone() });
-                }
-                Operation::Write { path, contents } => {
-                    write_file(path, contents).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome.done.push(UndoEntry::Write { path: path.clone() });
-                }
-                Operation::Copy { from, to } => {
-                    copy_tree(from, to).map_err(|error| ActionError::Io {
-                        path: to.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome.done.push(UndoEntry::Copy {
-                        from: from.clone(),
-                        to: to.clone(),
-                    });
-                }
-                Operation::Link {
-                    target,
-                    path,
-                    symbolic,
-                } => {
-                    link(target, path, *symbolic).map_err(|error| ActionError::Io {
-                        path: path.clone(),
-                        error,
-                    })?;
-                    history.record(&id, op)?;
-                    outcome.done.push(UndoEntry::Link {
-                        path: path.clone(),
-                        symbolic: *symbolic,
-                    });
-                }
-            }
-        }
-        Ok(outcome)
-    }
-}
-
-/// `cp` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CopyOp {
-    pub sources: Vec<PathBuf>,
-    pub destination: PathBuf,
-    pub recursive: bool,
-    pub update: bool,
-    pub no_clobber: bool,
-}
-
-impl CopyOp {
-    fn paths(&self) -> Vec<PathBuf> {
-        self.sources
-            .iter()
-            .cloned()
-            .chain(std::iter::once(self.destination.clone()))
-            .collect()
-    }
-}
-
-/// `mv` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MoveOp {
-    pub sources: Vec<PathBuf>,
-    pub destination: PathBuf,
-    pub no_clobber: bool,
-}
-
-impl MoveOp {
-    fn paths(&self) -> Vec<PathBuf> {
-        self.sources
-            .iter()
-            .cloned()
-            .chain(std::iter::once(self.destination.clone()))
-            .collect()
-    }
-}
-
-/// `rm` as it was asked for. `force` (GNU's `-f`) records nothing: the
-/// caller has said it does not want the path back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveOp {
-    pub paths: Vec<PathBuf>,
-    pub recursive: bool,
-    pub force: bool,
-}
-
-/// `mkdir` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MakeDirOp {
-    pub dirs: Vec<PathBuf>,
-    pub parents: bool,
-}
-
-/// `rmdir` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveDirOp {
-    pub dirs: Vec<PathBuf>,
-    pub parents: bool,
-}
-
-/// `ln` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinkOp {
-    pub target: PathBuf,
-    pub path: PathBuf,
-    pub symbolic: bool,
-    pub force: bool,
-    /// `ln -s TARGET DIR` and `ln TARGET` on a directory make the link inside
-    /// it, named after the target.
-    pub into_directory: bool,
-}
-
-impl LinkOp {
-    fn paths(&self) -> Vec<PathBuf> {
-        vec![self.target.clone(), self.path.clone()]
-    }
-}
-
-/// `truncate` as it was asked for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TruncateOp {
-    pub files: Vec<PathBuf>,
-    pub size: u64,
-    pub create: bool,
-}
-
-/// `touch` and `append` as they were asked for: the same files, and the text
-/// `append` adds (empty for `touch`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppendFileOp {
-    pub files: Vec<PathBuf>,
-    #[serde(default)]
-    pub text: String,
-}
 
 /// Why an action will not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,21 +94,18 @@ pub enum Refusal {
     IntoItself(PathBuf),
     /// A destination already holds something and `-n` was given.
     Exists(PathBuf),
-    /// `rmdir` of a directory that still holds something, or `mv` of a
-    /// directory into itself.
+    /// `rmdir` of a directory that still holds something.
     NotEmpty(PathBuf),
     /// `rm` of something that is neither a file nor `-r`. GNU's wording.
     CannotRemove(PathBuf),
+    /// A revert or a restore names nothing that can be put back.
+    Nothing(String),
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ungranted(path) => write!(
-                f,
-                "{}: not granted to this environment; grant its directory with `perm trust-dir`",
-                path.display()
-            ),
+            Self::Ungranted(path) => f.write_str(&tilo_environment::files::ungranted(path)),
             Self::Missing(path) => write!(f, "{}: no such file or directory", path.display()),
             Self::NotADirectory(path) => write!(f, "{}: not a directory", path.display()),
             Self::IsDirectory(path) => write!(f, "{}: is a directory", path.display()),
@@ -415,6 +121,7 @@ impl std::fmt::Display for Refusal {
                     path.display()
                 )
             }
+            Self::Nothing(why) => f.write_str(why),
         }
     }
 }
@@ -425,11 +132,22 @@ impl std::error::Error for Refusal {}
 #[derive(Debug)]
 pub enum ActionError {
     Io { path: PathBuf, error: io::Error },
-    History(io::Error),
+    Store(io::Error),
 }
 
-/// Either half of what [`perform`] can answer with: the check refused the
-/// action before it did anything, or the filesystem stopped it partway.
+impl std::fmt::Display for ActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
+            Self::Store(error) => write!(f, "cannot keep what it replaces: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ActionError {}
+
+/// Either half of what carrying an action out can answer with: refused
+/// before it did anything, or stopped partway by the filesystem.
 #[derive(Debug)]
 pub enum FileActionError {
     Refused(Refusal),
@@ -447,40 +165,23 @@ impl std::fmt::Display for FileActionError {
 
 impl std::error::Error for FileActionError {}
 
-impl std::fmt::Display for ActionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
-            Self::History(error) => write!(f, "cannot record the deletion: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for ActionError {}
-
 /// One thing to do, in the order to do it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
-    /// Create a directory, and its parents when `parents`.
+    /// Create a directory.
     MakeDir {
         path: PathBuf,
-        parents: bool,
     },
     /// Remove an empty directory.
     RemoveDir {
         path: PathBuf,
     },
-    /// Move what is at `path` into the recoverable history. `contents` is the
-    /// data to keep when the path may not be readable later (a truncated
-    /// file), so what is kept is what was there.
+    /// Move what is at `path` into the recoverable store. `contents` is the
+    /// data to keep when the path is rewritten in place (a truncated file),
+    /// so what is kept is what was there.
     Keep {
         path: PathBuf,
         contents: Option<Vec<u8>>,
-    },
-    /// Remove `path` without keeping it: what `--force` asks for.
-    Discard {
-        path: PathBuf,
-        recursive: bool,
     },
     /// Create or replace `path` with `contents`.
     Write {
@@ -507,19 +208,19 @@ pub enum Operation {
 }
 
 /// What an action will do, decided before it does any of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Every path it writes to or creates, in order.
+    /// Every path it reads from, in order.
+    pub reads: Vec<PathBuf>,
+    /// Every path it writes to, creates or gives up, in order.
     pub writes: Vec<PathBuf>,
     pub ops: Vec<Operation>,
 }
 
 impl Plan {
-    fn new() -> Self {
-        Self {
-            writes: Vec::new(),
-            ops: Vec::new(),
-        }
+    fn reads(mut self, path: impl Into<PathBuf>) -> Self {
+        self.reads.push(path.into());
+        self
     }
 
     fn writes(mut self, path: impl Into<PathBuf>) -> Self {
@@ -531,42 +232,111 @@ impl Plan {
         self.ops.push(op);
         self
     }
+
+    /// The first path `policy` does not allow as of `now`, if any: the
+    /// same question the verb asked of the paths it was named, asked again
+    /// of every path the plan found on the tree.
+    #[must_use]
+    pub fn refused_by(&self, policy: &Policy, now: Option<u64>) -> Option<Refusal> {
+        self.reads
+            .iter()
+            .find(|path| !policy.permits_in(path, Access::Read, now))
+            .or_else(|| {
+                self.writes
+                    .iter()
+                    .find(|path| !policy.permits_in(path, Access::Write, now))
+            })
+            .map(|path| Refusal::Ungranted(path.clone()))
+    }
 }
 
-/// What an applied action leaves behind: one entry per operation, in the
-/// order they happened, which is what undoing has to walk backwards.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Outcome {
-    /// The invocation's entry in the recoverable history: every operation it
-    /// recorded shares it, so `undo` takes back exactly this action and not
-    /// what another command did to the same path afterwards.
-    pub id: String,
-    pub done: Vec<UndoEntry>,
+/// Plan `action` against the tree as it is. A revert or a restore is not
+/// planned here; [`carry_out`] reads what it puts back.
+///
+/// # Errors
+///
+/// The reason nothing can be done: a missing source, a destination that
+/// cannot take the plan.
+pub fn plan(action: &FileAction) -> Result<Plan, Refusal> {
+    match action {
+        FileAction::Copy(op) => plan_copy(op),
+        FileAction::Move(op) => plan_move(op),
+        FileAction::Remove(op) => plan_remove(op),
+        FileAction::MakeDir(op) => plan_make_dir(op),
+        FileAction::RemoveDir(op) => plan_remove_dir(op),
+        FileAction::Link(op) => plan_link(op),
+        FileAction::Truncate(op) => plan_truncate(op),
+        FileAction::Touch(op) => plan_touch(op),
+        FileAction::Append(op) => plan_append(op),
+        FileAction::Revert(_) | FileAction::Restore(_) => Ok(Plan::default()),
+    }
 }
 
-/// One operation of an applied action, as undoing reads it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "undo", rename_all = "kebab-case")]
-pub enum UndoEntry {
-    /// Delete the directory that was made.
-    MakeDir { path: PathBuf },
-    /// Make the directory that was removed again.
-    RemoveDir { path: PathBuf },
-    /// Put back what was moved into the recoverable history.
-    Kept { id: String, path: PathBuf },
-    /// Remove the file that was written, or put back what it replaced.
-    Write { path: PathBuf },
-    /// Remove the file that was made.
-    MakeFile { path: PathBuf },
-    /// Nothing changed, so undoing takes nothing away.
-    Touched,
-    /// Remove the copy. Undo does not take back the source.
-    Copy { from: PathBuf, to: PathBuf },
-    /// Remove the link.
-    Link { path: PathBuf, symbolic: bool },
-    /// Removed without keeping it: nothing to put back, so undoing takes
-    /// nothing away either.
-    Discarded { path: PathBuf },
+/// Carry out `plan`, keeping what it replaces in `store`. The answer is
+/// every operation done, in order, which is what undoing walks backwards;
+/// on failure, the error and the operations done before it, so a task that
+/// stopped partway can still be taken back.
+///
+/// # Errors
+///
+/// The filesystem error that stopped it, with what was done before it.
+pub fn apply(
+    plan: &Plan,
+    store: &Recoverable,
+) -> Result<Vec<UndoEntry>, (ActionError, Vec<UndoEntry>)> {
+    let mut done = Vec::new();
+    for op in &plan.ops {
+        let io = |path: &Path| {
+            let path = path.to_path_buf();
+            move |error| ActionError::Io { path, error }
+        };
+        let step = match op {
+            Operation::MakeDir { path } => fs::create_dir(path)
+                .map_err(io(path))
+                .map(|()| UndoEntry::MakeDir { path: path.clone() }),
+            Operation::RemoveDir { path } => fs::remove_dir(path)
+                .map_err(io(path))
+                .map(|()| UndoEntry::RemoveDir { path: path.clone() }),
+            Operation::Keep { path, contents } => {
+                store
+                    .stash(path, contents.as_deref())
+                    .map(|id| UndoEntry::Kept {
+                        id,
+                        path: path.clone(),
+                    })
+            }
+            Operation::Touch { .. } => Ok(UndoEntry::Touched),
+            Operation::MakeFile { path } => create_file(path)
+                .map_err(io(path))
+                .map(|()| UndoEntry::MakeFile { path: path.clone() }),
+            Operation::Write { path, contents } => write_file(path, contents)
+                .map_err(io(path))
+                .map(|()| UndoEntry::Write { path: path.clone() }),
+            Operation::Copy { from, to } => {
+                copy_tree(from, to)
+                    .map_err(io(to))
+                    .map(|()| UndoEntry::Copy {
+                        from: from.clone(),
+                        to: to.clone(),
+                    })
+            }
+            Operation::Link {
+                target,
+                path,
+                symbolic,
+            } => link(target, path, *symbolic)
+                .map_err(io(path))
+                .map(|()| UndoEntry::Link {
+                    path: path.clone(),
+                    symbolic: *symbolic,
+                }),
+        };
+        match step {
+            Ok(entry) => done.push(entry),
+            Err(error) => return Err((error, done)),
+        }
+    }
+    Ok(done)
 }
 
 /// Undo a set of entries, latest first.
@@ -577,9 +347,9 @@ pub enum UndoEntry {
 /// # Errors
 ///
 /// The first path that could not be put back.
-pub fn undo(entries: &[UndoEntry], history: &Recoverable) -> Result<(), ActionError> {
-    // Past the writes that named a path: what was kept goes back last, so a
-    // `mv` restores its source after the copy it made has gone.
+pub fn undo(entries: &[UndoEntry], store: &Recoverable) -> Result<(), ActionError> {
+    // What was kept goes back last, so a `mv` restores its source after the
+    // copy it made has gone.
     for entry in entries.iter().rev() {
         match entry {
             UndoEntry::MakeDir { path } => {
@@ -596,22 +366,13 @@ pub fn undo(entries: &[UndoEntry], history: &Recoverable) -> Result<(), ActionEr
                     error,
                 })?;
             }
-            UndoEntry::Kept { id, path } => {
-                history.restore(id, path)?;
-            }
-            UndoEntry::MakeFile { path } => {
-                remove_if_present(path)?;
-            }
-            // Nothing was changed, so undoing takes nothing away.
-            UndoEntry::Touched | UndoEntry::Discarded { .. } => {}
-            UndoEntry::Write { path } => {
-                // What the action wrote goes; what it replaced comes back
-                // from the entry recorded beside it, later in this walk.
-                remove_if_present(path)?;
-            }
-            UndoEntry::Copy { to, .. } | UndoEntry::Link { path: to, .. } => {
-                remove_if_present(to)?;
-            }
+            UndoEntry::Kept { id, path } => store.restore(id, path)?,
+            UndoEntry::Restored { id, path } => store.put_back(id, path)?,
+            UndoEntry::Touched => {}
+            UndoEntry::MakeFile { path }
+            | UndoEntry::Write { path }
+            | UndoEntry::Copy { to: path, .. }
+            | UndoEntry::Link { path, .. } => remove_if_present(path)?,
         }
     }
     Ok(())
@@ -639,33 +400,33 @@ fn remove_if_present(path: &Path) -> Result<(), ActionError> {
     })
 }
 
-/// The recoverable history: a directory of entries, one per removed or
-/// replaced path, each naming the path it came from.
+/// The recoverable store: a directory of entries, one per removed or
+/// replaced path, each holding what was there and naming where it came from.
 #[derive(Debug, Clone)]
 pub struct Recoverable {
     dir: PathBuf,
 }
 
-/// What one entry of the history remembers.
+/// What one entry of the store remembers. Entries an older runtime wrote
+/// for every operation it did read the same way; only `keep` entries hold
+/// anything to put back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryEntry {
-    /// The entry's id inside the history: when it was recorded, and a
-    /// sequence so two in the same second do not collide.
+pub struct KeptEntry {
+    /// The entry's id: when it was kept, and a sequence so two in the same
+    /// second do not collide.
     pub id: String,
-    /// The invocation that recorded it. A `mv` records several operations
-    /// under one id, and undoing it takes back exactly those.
+    /// The invocation an older runtime recorded it under.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub action: String,
     /// Seconds since the Unix epoch.
     pub at: u64,
-    /// What happened: `keep`, `write`, `copy`, `link`, `make-dir`, `remove-dir`.
+    /// `keep` for an entry holding contents.
     pub op: String,
     /// The path the entry came from.
     pub path: PathBuf,
-    /// The path of the operation's other end (`copy` source, `link` target).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other: Option<PathBuf>,
-    /// The entry's directory in the history.
+    /// The entry's directory in the store.
     pub file: PathBuf,
 }
 
@@ -689,22 +450,17 @@ impl Recoverable {
                 return Ok(id);
             }
         }
-        Err(io::Error::other("the recoverable history is full"))
+        Err(io::Error::other("the recoverable store is full"))
     }
 
-    /// Move `path` into the history, keeping what was there.
+    /// Move `path` into the store, keeping what was there; the entry's id.
     ///
     /// # Errors
     ///
-    /// Whatever kept the move from happening — in which case the caller has
-    /// changed nothing.
-    pub fn stash(
-        &self,
-        action: &str,
-        path: &Path,
-        contents: Option<&[u8]>,
-    ) -> Result<(), ActionError> {
-        let id = self.mint().map_err(ActionError::History)?;
+    /// Whatever kept the move from happening — in which case nothing was
+    /// changed.
+    pub fn stash(&self, path: &Path, contents: Option<&[u8]>) -> Result<String, ActionError> {
+        let id = self.mint().map_err(ActionError::Store)?;
         let slot = self.dir.join(&id);
         let kept = slot.join("payload");
         let result = (|| -> io::Result<()> {
@@ -726,25 +482,28 @@ impl Recoverable {
                 error,
             });
         }
-        Self::write_entry(&HistoryEntry {
-            id,
-            action: action.to_string(),
+        let entry = KeptEntry {
+            id: id.clone(),
+            action: String::new(),
             at: unix_now(),
             op: "keep".into(),
             path: path.to_path_buf(),
             other: None,
             file: slot,
-        })
-        .map_err(ActionError::History)
+        };
+        let body = serde_json::to_vec_pretty(&entry).map_err(io::Error::other);
+        body.and_then(|body| fs::write(entry.file.join(ENTRY_FILE), body))
+            .map_err(ActionError::Store)?;
+        Ok(id)
     }
 
-    /// Put an entry back where it came from.
+    /// Put the entry `id` back at `path`.
     ///
     /// # Errors
     ///
-    /// The path it came from now holds something else, or the entry is gone.
+    /// The path now holds something else, or the entry is gone.
     pub fn restore(&self, id: &str, path: &Path) -> Result<(), ActionError> {
-        let slot = self.dir.join(id);
+        let slot = self.slot(id)?;
         let kept = slot.join("payload");
         if fs::symlink_metadata(path).is_ok() {
             return Err(ActionError::Io {
@@ -762,131 +521,457 @@ impl Recoverable {
             path: path.to_path_buf(),
             error,
         })?;
-        fs::write(slot.join("restored"), unix_now().to_string()).map_err(ActionError::History)
+        fs::write(slot.join("restored"), unix_now().to_string()).map_err(ActionError::Store)
     }
 
-    /// Record an operation that did not keep anything: what it wrote, where.
+    /// Move what [`Self::restore`] put back at `path` into its entry `id`
+    /// again: the undo of a restore.
     ///
     /// # Errors
     ///
-    /// The history's directory could not be written.
-    pub fn record(&self, action: &str, op: &Operation) -> Result<(), ActionError> {
-        let (verb, path, other) = match op {
-            Operation::MakeDir { path, .. } => ("make-dir", path, None),
-            Operation::RemoveDir { path } => ("remove-dir", path, None),
-            Operation::Write { path, .. } => ("write", path, None),
-            Operation::MakeFile { path } => ("make-file", path, None),
-            Operation::Touch { path } => ("touch", path, None),
-            Operation::Copy { from, to } => ("copy", to, Some(from)),
-            Operation::Discard { path, .. } => ("discard", path, None),
-            Operation::Link { target, path, .. } => ("link", path, Some(target)),
-            // A keep is recorded by `stash`, which holds the entry's id.
-            Operation::Keep { path, .. } => ("keep", path, None),
-        };
-        let id = self.mint().map_err(ActionError::History)?;
-        let slot = self.dir.join(&id);
-        fs::create_dir_all(&slot).map_err(ActionError::History)?;
-        Self::write_entry(&HistoryEntry {
-            id,
-            action: action.to_string(),
-            at: unix_now(),
-            op: verb.into(),
-            path: path.clone(),
-            other: other.cloned(),
-            file: slot,
-        })
-        .map_err(ActionError::History)
+    /// The entry already holds something, or the path cannot be moved.
+    pub fn put_back(&self, id: &str, path: &Path) -> Result<(), ActionError> {
+        let slot = self.slot(id)?;
+        let kept = slot.join("payload");
+        if fs::symlink_metadata(&kept).is_ok() {
+            return Err(ActionError::Io {
+                path: kept,
+                error: io::Error::from(io::ErrorKind::AlreadyExists),
+            });
+        }
+        fs::rename(path, &kept).map_err(|error| ActionError::Io {
+            path: path.to_path_buf(),
+            error,
+        })?;
+        match fs::remove_file(slot.join("restored")) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(ActionError::Store(error)),
+            _ => Ok(()),
+        }
     }
 
-    fn write_entry(entry: &HistoryEntry) -> io::Result<()> {
-        let body = serde_json::to_vec_pretty(entry).map_err(io::Error::other)?;
-        fs::write(entry.file.join(ENTRY_FILE), body)
+    /// Hold the store for one device's carrying out: two sessions of one
+    /// environment never carry the same task out twice. Released when the
+    /// answer is dropped.
+    ///
+    /// # Errors
+    ///
+    /// The store's directory cannot be made or its lock taken.
+    pub fn lock(&self) -> io::Result<advisory_lock::FileLock> {
+        fs::create_dir_all(&self.dir)?;
+        advisory_lock::FileLock::open(&self.dir.join(".lock"), advisory_lock::LockMode::Exclusive)
     }
 
-    /// Every entry, newest first.
+    /// The directory of the entry `id`, refusing an id that is not one.
+    fn slot(&self, id: &str) -> Result<PathBuf, ActionError> {
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(ActionError::Store(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{id:?} is not a kept entry's id"),
+            )));
+        }
+        Ok(self.dir.join(id))
+    }
+
+    /// Every entry still holding what it kept, newest first: what `history`
+    /// lists and `restore` takes.
     #[must_use]
-    pub fn entries(&self) -> Vec<HistoryEntry> {
-        let mut out: Vec<HistoryEntry> = Vec::new();
+    pub fn kept(&self) -> Vec<KeptEntry> {
+        let mut out: Vec<KeptEntry> = Vec::new();
         let Ok(dir) = fs::read_dir(&self.dir) else {
             return out;
         };
         for slot in dir.flatten() {
-            let file = slot.path().join(ENTRY_FILE);
-            let Ok(text) = fs::read_to_string(&file) else {
+            let Ok(text) = fs::read_to_string(slot.path().join(ENTRY_FILE)) else {
                 continue;
             };
-            if let Ok(mut entry) = serde_json::from_str::<HistoryEntry>(&text) {
-                entry.file = slot.path();
-                out.push(entry);
+            let Ok(mut entry) = serde_json::from_str::<KeptEntry>(&text) else {
+                continue;
+            };
+            if entry.op != "keep" || slot.path().join("restored").exists() {
+                continue;
             }
+            entry.file = slot.path();
+            out.push(entry);
         }
         out.sort_by(|a, b| b.id.cmp(&a.id));
         out
     }
 
-    /// The newest entry that moved `path` into the history.
+    /// The kept entry `id`, while it still holds what it kept.
     #[must_use]
-    pub fn latest_for(&self, path: &Path) -> Option<String> {
-        self.entries()
-            .into_iter()
-            .find(|entry| entry.op == "keep" && entry.path == path)
-            .map(|entry| entry.id)
+    pub fn entry(&self, id: &str) -> Option<KeptEntry> {
+        self.kept().into_iter().find(|entry| entry.id == id)
     }
+}
 
-    /// The operations of one invocation, in the order they happened.
-    /// [`undo`] walks them backwards from there.
-    #[must_use]
-    pub fn undo_set(&self, id: &str) -> Option<Vec<UndoEntry>> {
-        let entries: Vec<HistoryEntry> = self
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.action == id)
-            .collect();
-        if entries.is_empty() {
-            return None;
+/// What a device answers for one queued task: carried out with what it did,
+/// or refused or stopped with why and what it did before.
+pub type Settlement = Settled<Vec<UndoEntry>>;
+
+/// Carry out one queued task under `policy` as of `now`. `earlier` reads how
+/// another task of the record settled: what a revert takes back.
+///
+/// Nothing is done unless all of it is allowed: the plan found on the tree
+/// is checked as a whole before its first operation.
+pub fn carry_out(
+    action: &FileAction,
+    policy: &Policy,
+    store: &Recoverable,
+    now: Option<u64>,
+    earlier: &dyn Fn(&str) -> Option<Settlement>,
+) -> Settlement {
+    match action {
+        FileAction::Revert(RevertOp { entry }) => {
+            let Some(settled) = earlier(entry) else {
+                return Settled::failed(format!("{entry}: nothing recorded to take back"));
+            };
+            let entries = settled.result();
+            if let Some(path) = entries
+                .iter()
+                .filter_map(UndoEntry::path)
+                .find(|path| !policy.permits_in(path, Access::Write, now))
+            {
+                return Settled::failed(Refusal::Ungranted(path.to_path_buf()).to_string());
+            }
+            match undo(entries, store) {
+                Ok(()) => Settled::Done(Vec::new()),
+                Err(error) => Settled::failed(error.to_string()),
+            }
         }
-        let restored = |entry: &HistoryEntry| -> bool {
-            fs::read_to_string(entry.file.join("restored")).is_ok()
+        FileAction::Restore(RestoreOp { kept }) => {
+            let Some(entry) = store.entry(kept) else {
+                return Settled::failed(format!("{kept}: nothing kept under that id"));
+            };
+            if !policy.permits_in(&entry.path, Access::Write, now) {
+                return Settled::failed(Refusal::Ungranted(entry.path).to_string());
+            }
+            match store.restore(kept, &entry.path) {
+                Ok(()) => Settled::Done(vec![UndoEntry::Restored {
+                    id: kept.clone(),
+                    path: entry.path,
+                }]),
+                Err(error) => Settled::failed(error.to_string()),
+            }
+        }
+        action => match perform(action, policy, store, now) {
+            Ok(done) => Settled::Done(done),
+            Err((error, partial)) => Settled::Failed {
+                reason: error.to_string(),
+                partial,
+            },
+        },
+    }
+}
+
+/// Plan `action`, check the plan against `policy` as a whole, and carry it
+/// out: the whole of what a device does for one copy, move or removal.
+///
+/// # Errors
+///
+/// The refusal that stopped it before it changed anything, or the
+/// filesystem error that stopped it partway, with what was done before it.
+pub fn perform(
+    action: &FileAction,
+    policy: &Policy,
+    store: &Recoverable,
+    now: Option<u64>,
+) -> Result<Vec<UndoEntry>, (FileActionError, Vec<UndoEntry>)> {
+    let plan = plan(action).map_err(|refusal| (FileActionError::Refused(refusal), Vec::new()))?;
+    if let Some(refusal) = plan.refused_by(policy, now) {
+        return Err((FileActionError::Refused(refusal), Vec::new()));
+    }
+    apply(&plan, store).map_err(|(error, done)| (FileActionError::Failed(error), done))
+}
+
+/// The answer to one invocation on the record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Invoked {
+    /// The outbox entry the invocation queued.
+    pub entry: Option<Id>,
+    /// How it settled here, once this device carried it out.
+    pub settled: Option<Settlement>,
+}
+
+/// Invoke `invoke` on the environment `key` as `invoker` (when there is
+/// one), then carry out every task the record holds for `device`, settling
+/// each with what it did: one write of the record.
+///
+/// The invocation goes through the record's action door, so it is checked
+/// against the record's grants by the verb, attributed to `invoker` and
+/// recorded in the record's History with the compensation its undo applies.
+///
+/// # Errors
+///
+/// The verb's refusal (nothing is queued or written), or a record that
+/// cannot be read or written.
+pub fn invoke(
+    records: &Records,
+    key: &str,
+    invoker: &Invoker,
+    invoke: Option<Invoke<Environment>>,
+    device: &str,
+    store: &Recoverable,
+) -> Result<Invoked, RecordError> {
+    let _held = store
+        .lock()
+        .map_err(|e| RecordError::Store(format!("the recoverable store: {e}")))?;
+    records.act(key, invoker, |replica| {
+        let entry = match invoke {
+            Some(invoke) => {
+                let envelope = replica
+                    .apply_confirmed(invoke)
+                    .map_err(|e| RecordError::Refused(e.to_string()))?;
+                tilo_resource::minted_ids(envelope).next()
+            }
+            None => None,
         };
-        // `entries()` answers newest first; undoing reads them oldest first
-        // and walks back from there.
-        let mut done: Vec<HistoryEntry> = entries
-            .into_iter()
-            .filter(|entry| !restored(entry))
-            .collect();
-        done.reverse();
-        Some(
-            done.into_iter()
-                .map(|entry| match entry.op.as_str() {
-                    "make-dir" => UndoEntry::MakeDir { path: entry.path },
-                    "remove-dir" => UndoEntry::RemoveDir { path: entry.path },
-                    "make-file" => UndoEntry::MakeFile { path: entry.path },
-                    "touch" => UndoEntry::Touched,
-                    "keep" => UndoEntry::Kept {
-                        id: entry.id,
-                        path: entry.path,
-                    },
-                    "discard" => UndoEntry::Discarded { path: entry.path },
-                    "copy" => UndoEntry::Copy {
-                        from: entry.other.unwrap_or_default(),
-                        to: entry.path,
-                    },
-                    "link" => UndoEntry::Link {
-                        path: entry.path,
-                        symbolic: true,
-                    },
-                    // What was written, and an operation an older history
-                    // wrote a verb for that this build no longer knows: the
-                    // file it left is what undoing takes away.
-                    _ => UndoEntry::Write { path: entry.path },
+        let settled = drain(replica, device, store)?;
+        let settled = entry.as_ref().and_then(|entry| {
+            settled
+                .into_iter()
+                .find_map(|(id, settled)| (id == *entry).then_some(settled))
+        });
+        Ok(Invoked { entry, settled })
+    })
+}
+
+/// Carry out every task `replica`'s record holds for `device`, oldest
+/// first, each under the record's grants as they stand, and settle it.
+///
+/// # Errors
+///
+/// A record that cannot be read, or a settlement it refuses.
+pub fn drain(
+    replica: &mut Replica<Environment>,
+    device: &str,
+    store: &Recoverable,
+) -> Result<Vec<(Id, Settlement)>, RecordError> {
+    let mut settled = Vec::new();
+    loop {
+        let state = replica
+            .state()
+            .map_err(|e| RecordError::Model(e.to_string()))?;
+        let Some((id, task)) = state
+            .files
+            .pending()
+            .find(|(id, task)| task.device == device && !settled.iter().any(|(s, _)| s == *id))
+            .map(|(id, task)| (id.clone(), task.clone()))
+        else {
+            return Ok(settled);
+        };
+        let policy = Policy::new(state.grants.clone());
+        let earlier = |entry: &str| state.files.outcome(&Id::from_raw(entry)).cloned();
+        let outcome = carry_out(&task.action, &policy, store, Some(unix_now()), &earlier);
+        replica
+            .apply(Environment::paths().files.settle(&id, &outcome))
+            .map_err(|e| RecordError::Refused(e.to_string()))?;
+        settled.push((id, outcome));
+    }
+}
+
+/// What the action was about, for the audit log's `subject`: its paths as
+/// they were written, so the log names one file once.
+#[must_use]
+pub fn subjects(action: &FileAction) -> String {
+    match action {
+        FileAction::Revert(RevertOp { entry }) => entry.clone(),
+        FileAction::Restore(RestoreOp { kept }) => kept.clone(),
+        action => action
+            .paths()
+            .iter()
+            .map(|path| normalize(path).display().to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+/// The audit line for a file action that was carried out.
+#[must_use]
+pub fn audit_record(session: &str, environment: &str, action: &FileAction) -> AuditRecord {
+    AuditRecord::new(session, environment, action.verb(), true).about(subjects(action))
+}
+
+/// Write one line for `action` to the audit log.
+pub fn log(log: &AuditLog, session: &str, environment: &str, action: &FileAction) {
+    log.append(&audit_record(session, environment, action));
+}
+
+/// Where an environment's recoverable store lives: under its own `/var`,
+/// so it follows the environment and never reaches another one.
+#[must_use]
+pub fn store_in(environment: &EnvironmentHandle) -> PathBuf {
+    environment.var_dir.join("lib").join(RECOVERABLE_IN_VAR)
+}
+
+/// The broker's answer to [`Request::FileAction`](crate::broker::Request):
+/// invoke the record's verb as the session's person, carry it out on this
+/// device, and record it in the audit log however it went.
+pub fn brokered(state: &BrokerState, action: &FileAction) -> Response {
+    let store = Recoverable::at(store_in(&state.environment));
+    let invoker = Invoker::Person(state.person.clone());
+    let answer = invoke(
+        &state.environment.records,
+        &state.environment.key,
+        &invoker,
+        Some(Environment::file_invoke(&state.device, action)),
+        &state.device,
+        &store,
+    );
+    let refused = |reason: String| {
+        deny(state, action.verb(), &subjects(action), &reason);
+        Response::Denied { reason }
+    };
+    match answer {
+        Ok(Invoked {
+            entry: Some(entry),
+            settled: Some(Settled::Done(done)),
+        }) => {
+            log(
+                &state.audit,
+                &state.session_id,
+                &state.environment.key,
+                action,
+            );
+            Response::FileAction {
+                id: entry.as_str().to_owned(),
+                operations: done.len(),
+            }
+        }
+        Ok(Invoked {
+            settled: Some(Settled::Failed { reason, .. }),
+            ..
+        }) => refused(reason),
+        Ok(_) => refused("the action was queued but not carried out on this device".into()),
+        Err(error) => refused(error.to_string()),
+    }
+}
+
+/// Carry out every task the session's environment holds for this device
+/// that was queued elsewhere: an undo from History, an agent's `move`.
+/// Each settles in the record and is written to the audit log.
+pub fn carry_out_queued(state: &BrokerState) {
+    let env = state.environment.current();
+    if !env
+        .files
+        .pending()
+        .any(|(_, task)| task.device == state.device)
+    {
+        return;
+    }
+    let store = Recoverable::at(store_in(&state.environment));
+    let invoker = Invoker::Person(state.person.clone());
+    let carried = store
+        .lock()
+        .map_err(|e| RecordError::Store(format!("the recoverable store: {e}")))
+        .and_then(|_held| {
+            state
+                .environment
+                .records
+                .act(&state.environment.key, &invoker, |replica| {
+                    let settled = drain(replica, &state.device, &store)?;
+                    let state = replica
+                        .state()
+                        .map_err(|e| RecordError::Model(e.to_string()))?;
+                    Ok(settled
+                        .into_iter()
+                        .filter_map(|(id, settled)| {
+                            Some((state.files.get(&id)?.value.action.clone(), settled))
+                        })
+                        .collect::<Vec<_>>())
                 })
-                .collect(),
-        )
+        });
+    match carried {
+        Ok(carried) => {
+            for (action, settled) in carried {
+                match settled.reason() {
+                    None => log(
+                        &state.audit,
+                        &state.session_id,
+                        &state.environment.key,
+                        &action,
+                    ),
+                    Some(reason) => deny(state, action.verb(), &subjects(&action), reason),
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the environment's queued file actions were not carried out");
+        }
+    }
+}
+
+fn deny(state: &BrokerState, request: &str, subject: &str, reason: &str) {
+    state.audit.append(
+        &AuditRecord::new(&state.session_id, &state.environment.key, request, false)
+            .about(subject)
+            .because(reason),
+    );
+}
+
+/// `action` with every path it names made absolute against `cwd`, the
+/// directory the command was typed in. A symbolic link's target stays as it
+/// was written: it is read from where the link is, not from `cwd`.
+#[must_use]
+pub fn anchored(action: FileAction, cwd: &Path) -> FileAction {
+    let at = |path: PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            // `join` keeps a trailing separator, which says "a directory".
+            cwd.join(path)
+        }
+    };
+    let all = |paths: Vec<PathBuf>| paths.into_iter().map(at).collect();
+    match action {
+        FileAction::Copy(op) => FileAction::Copy(CopyOp {
+            sources: all(op.sources),
+            destination: at(op.destination),
+            ..op
+        }),
+        FileAction::Move(op) => FileAction::Move(MoveOp {
+            sources: all(op.sources),
+            destination: at(op.destination),
+            ..op
+        }),
+        FileAction::Remove(op) => FileAction::Remove(RemoveOp {
+            paths: all(op.paths),
+            ..op
+        }),
+        FileAction::MakeDir(op) => FileAction::MakeDir(MakeDirOp {
+            dirs: all(op.dirs),
+            ..op
+        }),
+        FileAction::RemoveDir(op) => FileAction::RemoveDir(RemoveDirOp {
+            dirs: all(op.dirs),
+            ..op
+        }),
+        FileAction::Link(op) => FileAction::Link(LinkOp {
+            target: if op.symbolic {
+                op.target
+            } else {
+                at(op.target)
+            },
+            path: at(op.path),
+            ..op
+        }),
+        FileAction::Truncate(op) => FileAction::Truncate(TruncateOp {
+            files: all(op.files),
+            ..op
+        }),
+        FileAction::Touch(op) => FileAction::Touch(AppendFileOp {
+            files: all(op.files),
+            ..op
+        }),
+        FileAction::Append(op) => FileAction::Append(AppendFileOp {
+            files: all(op.files),
+            ..op
+        }),
+        other @ (FileAction::Revert(_) | FileAction::Restore(_)) => other,
     }
 }
 
 fn plan_copy(op: &CopyOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     let into = destination_is_dir(&op.destination, op.sources.len());
     for source in &op.sources {
         let to = if into {
@@ -912,7 +997,7 @@ fn plan_copy(op: &CopyOp) -> Result<Plan, Refusal> {
         if op.update && is_newer(&to, source) {
             continue;
         }
-        plan = plan.writes(to.clone());
+        plan = plan.reads(source.clone()).writes(to.clone());
         if fs::symlink_metadata(&to).is_ok() {
             plan = plan.push(Operation::Keep {
                 path: to.clone(),
@@ -928,7 +1013,7 @@ fn plan_copy(op: &CopyOp) -> Result<Plan, Refusal> {
 }
 
 fn plan_move(op: &MoveOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     let into = destination_is_dir(&op.destination, op.sources.len());
     for source in &op.sources {
         let to = if into {
@@ -946,28 +1031,29 @@ fn plan_move(op: &MoveOp) -> Result<Plan, Refusal> {
         if op.no_clobber && fs::symlink_metadata(&to).is_ok() {
             return Err(Refusal::Exists(to));
         }
-        plan = plan.writes(to.clone());
+        // The source is what a `mv` gives up: written, and kept.
+        plan = plan.writes(source.clone()).writes(to.clone());
         if fs::symlink_metadata(&to).is_ok() {
             plan = plan.push(Operation::Keep {
                 path: to.clone(),
                 contents: None,
             });
         }
-        plan = plan.push(Operation::Copy {
-            from: source.clone(),
-            to: to.clone(),
-        });
-        // The source is what a `mv` gives up: kept, not unlinked.
-        plan = plan.push(Operation::Keep {
-            path: source.clone(),
-            contents: None,
-        });
+        plan = plan
+            .push(Operation::Copy {
+                from: source.clone(),
+                to: to.clone(),
+            })
+            .push(Operation::Keep {
+                path: source.clone(),
+                contents: None,
+            });
     }
     Ok(plan)
 }
 
 fn plan_remove(op: &RemoveOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for path in &op.paths {
         let meta = match fs::symlink_metadata(path) {
             Ok(meta) => meta,
@@ -978,26 +1064,16 @@ fn plan_remove(op: &RemoveOp) -> Result<Plan, Refusal> {
         if meta.is_dir() && !op.recursive {
             return Err(Refusal::CannotRemove(path.clone()));
         }
-        plan = plan.writes(path.clone());
-        if op.force {
-            // `--force` is the caller saying it does not want this back, so
-            // this is the one operation that really removes.
-            plan = plan.push(Operation::Discard {
-                path: path.clone(),
-                recursive: op.recursive,
-            });
-        } else {
-            plan = plan.push(Operation::Keep {
-                path: path.clone(),
-                contents: None,
-            });
-        }
+        plan = plan.writes(path.clone()).push(Operation::Keep {
+            path: path.clone(),
+            contents: None,
+        });
     }
     Ok(plan)
 }
 
 fn plan_make_dir(op: &MakeDirOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for dir in &op.dirs {
         if fs::symlink_metadata(dir).is_ok() {
             // `-p` on a directory that is already there is a no-op; without
@@ -1008,24 +1084,21 @@ fn plan_make_dir(op: &MakeDirOp) -> Result<Plan, Refusal> {
             return Err(Refusal::Exists(dir.clone()));
         }
         // Every directory `-p` has to make, outermost first, the directory
-        // itself last: one record each, so undo takes back exactly those.
+        // itself last: one entry each, so undo takes back exactly those.
         let made = if op.parents {
             missing_ancestors(dir)
         } else {
             vec![dir.clone()]
         };
         for path in made {
-            plan = plan.writes(path.clone()).push(Operation::MakeDir {
-                path,
-                parents: false,
-            });
+            plan = plan.writes(path.clone()).push(Operation::MakeDir { path });
         }
     }
     Ok(plan)
 }
 
 fn plan_remove_dir(op: &RemoveDirOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for dir in &op.dirs {
         let meta = fs::symlink_metadata(dir).map_err(|_| Refusal::Missing(dir.clone()))?;
         if !meta.is_dir() {
@@ -1057,7 +1130,12 @@ fn plan_link(op: &LinkOp) -> Result<Plan, Refusal> {
     } else {
         op.path.clone()
     };
-    let mut plan = Plan::new().writes(path.clone());
+    let mut plan = Plan::default().writes(path.clone());
+    if !op.symbolic {
+        // A hard link is a second name for the target's file: writing one
+        // writes the other.
+        plan = plan.writes(op.target.clone());
+    }
     if fs::symlink_metadata(&path).is_ok() {
         if !op.force {
             return Err(Refusal::Exists(path));
@@ -1075,7 +1153,7 @@ fn plan_link(op: &LinkOp) -> Result<Plan, Refusal> {
 }
 
 fn plan_truncate(op: &TruncateOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for file in &op.files {
         match fs::symlink_metadata(file) {
             Ok(meta) => {
@@ -1107,16 +1185,15 @@ fn plan_truncate(op: &TruncateOp) -> Result<Plan, Refusal> {
 }
 
 fn plan_touch(op: &AppendFileOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for file in &op.files {
         match fs::symlink_metadata(file) {
             Ok(meta) => {
                 if meta.is_dir() {
                     return Err(Refusal::IsDirectory(file.clone()));
                 }
-                // Touching what is there changes nothing: it is recorded so
-                // the invocation says it happened, and there is nothing to
-                // put back.
+                // Touching what is there changes nothing: there is nothing
+                // to put back.
                 plan = plan
                     .writes(file.clone())
                     .push(Operation::Touch { path: file.clone() });
@@ -1132,7 +1209,7 @@ fn plan_touch(op: &AppendFileOp) -> Result<Plan, Refusal> {
 }
 
 fn plan_append(op: &AppendFileOp) -> Result<Plan, Refusal> {
-    let mut plan = Plan::new();
+    let mut plan = Plan::default();
     for file in &op.files {
         plan = plan.writes(file.clone());
         let mut contents = Vec::new();
@@ -1221,14 +1298,6 @@ fn has_entries(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
-fn create_dir(path: &Path, parents: bool) -> io::Result<()> {
-    if parents {
-        fs::create_dir_all(path)
-    } else {
-        fs::create_dir(path)
-    }
-}
-
 /// Create `path` empty, refusing to replace what is there. `create_new` is
 /// what makes that a check on the filesystem and not on a plan.
 fn create_file(path: &Path) -> io::Result<()> {
@@ -1251,19 +1320,6 @@ fn write_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 
 /// Copy a file or a whole tree, following the tree but not the symbolic links
 /// inside it.
-/// Remove a path without keeping it.
-fn discard(path: &Path, recursive: bool) -> io::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.is_dir() && !recursive {
-        return Err(io::Error::other("is a directory"));
-    }
-    if meta.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
-}
-
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
     if meta.is_dir() {
@@ -1292,162 +1348,5 @@ fn link(target: &Path, path: &Path, symbolic: bool) -> io::Result<()> {
     }
 }
 
-/// The answer for a filesystem with no environment record behind it (the
-/// device's own shell): every path the person may reach is theirs to act on.
-#[must_use]
-pub fn no_grants(_: &Path) -> bool {
-    true
-}
-
-/// Answer a file action against an environment's grants, and carry it out.
-///
-/// This is the whole of what the supervisor does for one: the same
-/// [`Policy`] every other path question goes through, the same
-/// [`Recoverable`] history, and — by the caller — the same [`AuditLog`]
-/// line.
-///
-/// # Errors
-///
-/// The refusal that stopped it before it changed anything, or the
-/// filesystem error that stopped it partway.
-pub fn perform(
-    action: &FileAction,
-    policy: &Policy,
-    history: &Recoverable,
-    now: Option<u64>,
-) -> Result<Outcome, FileActionError> {
-    let allowed = |path: &Path| policy.permits_in(path, collab_types::caps::Access::Write, now);
-    let plan = action.plan(&allowed).map_err(FileActionError::Refused)?;
-    action
-        .apply(&plan, history)
-        .map_err(FileActionError::Failed)
-}
-
-/// What the action was about, for the audit log's `subject`: its paths as
-/// they were written, so the log names one file once.
-#[must_use]
-pub fn subjects(action: &FileAction) -> String {
-    action
-        .paths()
-        .iter()
-        .map(|path| normalize(path).display().to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// The audit line for a file action that was carried out.
-#[must_use]
-pub fn audit_record(
-    session: &str,
-    environment: &str,
-    action: &FileAction,
-) -> crate::audit::AuditRecord {
-    crate::audit::AuditRecord::new(session, environment, action.verb(), true)
-        .about(subjects(action))
-}
-
-/// Lexically normalise a path: no `.` or `..` segments, no doubled
-/// separators, so the same file is one subject in the log.
-#[must_use]
-pub fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    if out.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        out
-    }
-}
-
-/// Write one line for `action` to the audit log.
-pub fn log(log: &AuditLog, session: &str, environment: &str, action: &FileAction) {
-    log.append(&audit_record(session, environment, action));
-}
-
 #[cfg(test)]
 mod tests;
-
-/// Where an environment's recoverable history lives: under its own `/var`,
-/// so it follows the environment and never reaches another one.
-#[must_use]
-pub fn history_in(environment: &EnvironmentHandle) -> PathBuf {
-    environment.var_dir.join("lib").join(RECOVERABLE_IN_VAR)
-}
-
-/// The broker's answer to [`Request::FileAction`](crate::broker::Request):
-/// check the action against the environment's grants, carry it out, and
-/// record it in the audit log however it went.
-pub fn brokered(state: &BrokerState, action: &FileAction) -> Response {
-    let history = Recoverable::at(history_in(&state.environment));
-    let policy = state.environment.policy();
-    match perform(action, &policy, &history, Some(unix_now())) {
-        Ok(recorded) => {
-            log(
-                &state.audit,
-                &state.session_id,
-                &state.environment.key,
-                action,
-            );
-            Response::FileAction {
-                id: recorded.id,
-                operations: recorded.done.len(),
-            }
-        }
-        Err(error) => {
-            let reason = error.to_string();
-            deny(state, action.verb(), &subjects(action), &reason);
-            Response::Denied { reason }
-        }
-    }
-}
-
-/// The broker's answer to [`Request::UndoFileAction`](crate::broker::Request):
-/// put one recorded invocation back, latest operation first.
-pub fn brokered_undo(state: &BrokerState, id: &str) -> Response {
-    let history = Recoverable::at(history_in(&state.environment));
-    let Some(entries) = history.undo_set(id) else {
-        let reason = format!("{id}: no such action in the recoverable history");
-        deny(state, "file-action-undo", id, &reason);
-        return Response::Denied { reason };
-    };
-    match undo(&entries, &history) {
-        Ok(()) => {
-            state.audit.append(
-                &AuditRecord::new(
-                    &state.session_id,
-                    &state.environment.key,
-                    "file-action-undo",
-                    true,
-                )
-                .about(id),
-            );
-            Response::Undone {
-                id: id.to_string(),
-                operations: entries.len(),
-            }
-        }
-        Err(error) => {
-            let reason = error.to_string();
-            deny(state, "file-action-undo", id, &reason);
-            Response::Denied { reason }
-        }
-    }
-}
-
-fn deny(state: &BrokerState, request: &str, subject: &str, reason: &str) {
-    state.audit.append(
-        &AuditRecord::new(&state.session_id, &state.environment.key, request, false)
-            .about(subject)
-            .because(reason),
-    );
-}

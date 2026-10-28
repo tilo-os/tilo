@@ -137,9 +137,7 @@ impl Policy {
 
     /// Is `path` reachable at `verb`? The question `scan` and the broker ask.
     pub fn permits(&self, path: &Path, verb: Access, now: Option<u64>) -> bool {
-        let actor = Self::actor();
-        let resource = ResourceRef::FsPath(path.to_string_lossy().into_owned());
-        decide_capability(&actor, &resource, verb, &self.capabilities, now) == CapDecision::Allow
+        tilo_environment::files::permits(&self.capabilities, path, verb, now)
     }
 
     /// A policy that answers yes to every path, for the host's own login
@@ -168,11 +166,7 @@ impl Policy {
     /// and every file a command writes into a granted directory.
     #[must_use]
     pub fn permits_in(&self, path: &Path, verb: Access, now: Option<u64>) -> bool {
-        if self.permits(path, verb, now) {
-            return true;
-        }
-        path.parent()
-            .is_some_and(|dir| !dir.as_os_str().is_empty() && self.permits(dir, verb, now))
+        tilo_environment::files::permits_in(&self.capabilities, path, verb, now)
     }
 }
 
