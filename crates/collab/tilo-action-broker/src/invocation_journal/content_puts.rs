@@ -20,7 +20,7 @@
 //! is bounded by the same rule that bounds the file.
 
 use std::fs::File;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::io::{Read, Seek as _, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
