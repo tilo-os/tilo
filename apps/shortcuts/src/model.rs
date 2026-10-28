@@ -1180,7 +1180,7 @@ impl Draft {
 
     /// The item of the step at `index` of `block`.
     fn item_at(&self, block: &[Segment], index: usize) -> Option<Id> {
-        let (parent, branch) = self.block_owner(block)?;
+        let (parent, branch) = self.block_owner(block);
         self.steps
             .iter()
             .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
@@ -1190,16 +1190,17 @@ impl Draft {
 
     /// The item id of the step whose block `block` names, and which of its
     /// branches that block is.
-    fn block_owner(&self, block: &[Segment]) -> Option<(String, &'static str)> {
-        let (branch, addressing) = block.split_last()?;
-        let Segment::Branch(branch) = branch else {
-            return None;
+    fn block_owner(&self, block: &[Segment]) -> (String, String) {
+        let Some((Segment::Branch(branch), addressing)) = block.split_last() else {
+            return (String::new(), String::new());
         };
         if addressing.is_empty() {
-            return Some((String::new(), branch));
+            return (String::new(), (*branch).to_owned());
         }
-        let owner = self.item_at(addressing, index_of(addressing)?)?;
-        Some((owner.as_str().to_owned(), branch))
+        let owner = self
+            .item_at(addressing, index_of(addressing).unwrap_or_default())
+            .map_or_else(String::new, |owner| owner.as_str().to_owned());
+        (owner, (*branch).to_owned())
     }
 }
 
