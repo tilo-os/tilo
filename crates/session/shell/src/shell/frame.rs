@@ -8154,7 +8154,11 @@ mod tests {
         let field = fb
             .focused_ime_field(None)
             .expect("the open palette owns the input method even without a native focus node");
-        assert_eq!(field.content, ui::ime::InputContent::TEXT);
+        assert_eq!(
+            field.content,
+            ui::ime::InputContent::of(ui::ime::InputPurpose::Search),
+            "the query field asks for a search keyboard"
+        );
         assert!(field.width > 0 && field.height > 0);
         fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Escape)),

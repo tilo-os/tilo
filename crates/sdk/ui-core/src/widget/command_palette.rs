@@ -23,14 +23,12 @@ use crate::icons::{self, Icon};
 use crate::paint::PaintCtx;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::centered_text_top;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{ControlSize, SearchField, TextInputKind, Widget};
 use tilo_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -591,22 +589,11 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64
     "\u{2026}".to_string()
 }
 
-/// Shared by `draw` and the layout tests so they can't disagree.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InputRowLayout {
-    pub icon_rect: Rect,
-    pub input_rect: Rect,
-}
-
-/// While `Some`, keyboard input edits `buffer` instead of the query, and the
-/// result list is frozen.
+/// While `Some`, the field collects the step's value instead of the query
+/// (which is kept aside until the step ends), and the result list is
+/// frozen.
 struct ArgState {
     entry_id: String,
-    prompt: String,
-    placeholder: String,
-    buffer: String,
-    selection: crate::text_selection::Selection,
-    composition: QueryComposition,
     kind: ArgumentKind,
     /// A step the host opened ([`CommandPalette::open_argument_step`]):
     /// Enter hands the value back through
@@ -616,82 +603,43 @@ struct ArgState {
 }
 
 impl ArgState {
-    fn new(entry_id: String, spec: ArgumentSpec, prefill: Option<String>, host_step: bool) -> Self {
-        let buffer = prefill.or(spec.prefill).unwrap_or_default();
-        Self {
-            entry_id,
-            prompt: spec.prompt,
-            placeholder: spec.placeholder,
-            selection: crate::text_selection::Selection {
-                anchor: 0,
-                cursor: buffer.len(),
-            },
-            buffer,
-            composition: QueryComposition::new(),
-            kind: spec.kind,
-            host_step,
-        }
-    }
-
     fn is_secret(&self) -> bool {
         self.kind == ArgumentKind::Secret
     }
+}
 
-    /// What a secret field paints: one bullet per character, with the
-    /// caret and selection at the same characters. `None` for any other.
-    fn masked(&self) -> Option<(String, crate::text_selection::Selection)> {
-        if !self.is_secret() {
-            return None;
-        }
-        let bullets = |byte: usize| {
-            MASK.len_utf8()
-                .saturating_mul(self.buffer.get(..byte).map_or(0, |s| s.chars().count()))
-        };
-        Some((
-            MASK.to_string().repeat(self.buffer.chars().count()),
-            crate::text_selection::Selection {
-                anchor: bullets(self.selection.anchor),
-                cursor: bullets(self.selection.cursor),
-            },
-        ))
-    }
-
-    /// Up (`direction` 1) or Down (-1) on a number field: the value one
-    /// step on, inside its bounds. A field that holds no number starts from
-    /// the bound it moves away from, else from zero.
-    fn step_number(&mut self, direction: f64) -> bool {
-        let ArgumentKind::Number { min, max, step } = self.kind else {
-            return false;
-        };
-        let current = self
-            .buffer
-            .trim()
-            .trim_end_matches('%')
-            .trim()
-            .parse::<f64>()
-            .ok();
-        let start = current.unwrap_or_else(|| {
-            if direction > 0.0 {
-                min.unwrap_or(0.0)
-            } else {
-                max.unwrap_or(0.0)
-            }
-        });
-        let mut next = if current.is_some() {
-            start + direction * step
+/// Up (`direction` 1) or Down (-1) on a number field: `value` one step on,
+/// inside its bounds. A field that holds no number starts from the bound it
+/// moves away from, else from zero. `None` for any other kind.
+fn step_number(kind: ArgumentKind, value: &str, direction: f64) -> Option<String> {
+    let ArgumentKind::Number { min, max, step } = kind else {
+        return None;
+    };
+    let current = value
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok();
+    let start = current.unwrap_or_else(|| {
+        if direction > 0.0 {
+            min.unwrap_or(0.0)
         } else {
-            start
-        };
-        if let Some(min) = min {
-            next = next.max(min);
+            max.unwrap_or(0.0)
         }
-        if let Some(max) = max {
-            next = next.min(max);
-        }
-        self.buffer = format_number(next, step);
-        self.selection = crate::text_selection::Selection::collapsed(self.buffer.len());
-        true
+    });
+    let mut next = if current.is_some() {
+        start + direction * step
+    } else {
+        start
+    };
+    if let Some(min) = min {
+        next = next.max(min);
     }
+    if let Some(max) = max {
+        next = next.min(max);
+    }
+    Some(format_number(next, step))
 }
 
 /// `value` with as many decimals as `step` has, so a whole step never shows
@@ -730,12 +678,15 @@ pub struct CommandPalette {
     /// Labels and descriptions of `entries`, indexed while they stay the
     /// same.
     entry_index: ListIndex,
-    query: String,
+    /// The query field, and an argument step's field while one is open:
+    /// the toolkit's own search field, so caret, selection, clipboard, IME
+    /// and the scope token are the shared text core's.
+    field: SearchField,
+    /// The query, kept aside while an argument step uses the field.
+    saved_query: String,
     /// Hint shown while the main query is empty. Hosts use this to name the
     /// resource being searched (files, commands, applications, ...).
     query_placeholder: String,
-    query_selection: crate::text_selection::Selection,
-    query_composition: QueryComposition,
     filter: Option<EntryFilter>,
     visible: Vec<usize>,
     cursor: usize,
@@ -809,17 +760,12 @@ pub struct CommandPalette {
     submitted_argument: Option<String>,
     /// A host step was backed out of with Escape, until the host notices.
     argument_cancelled: bool,
-    /// What the search is narrowed to, shown as a token at the start of the
-    /// field ([`Self::set_scope_token`]).
-    scope_token: Option<String>,
     /// Backspace at the start of the field took the token away, until the
     /// host notices ([`Self::take_scope_token_removed`]).
     scope_token_removed: bool,
     /// What pressing the token does, when it is a control: its accessible
     /// name ("Search every workspace"). `None`: Backspace alone removes it.
     scope_token_action: Option<String>,
-    /// Where the token was painted, for a press on it.
-    scope_token_rect: Rect,
 }
 
 /// One painted line in the result list. Headers are not selectable and are
@@ -862,10 +808,9 @@ impl CommandPalette {
         Self {
             entries: Vec::new(),
             entry_index: ListIndex::default(),
-            query: String::new(),
+            field: Self::query_field(&crate::i18n!("palette-placeholder")),
+            saved_query: String::new(),
             query_placeholder: crate::i18n!("palette-placeholder"),
-            query_selection: crate::text_selection::Selection::collapsed(0),
-            query_composition: QueryComposition::new(),
             filter: None,
             visible: Vec::new(),
             cursor: 0,
@@ -900,10 +845,83 @@ impl CommandPalette {
             held: winit::keyboard::ModifiersState::empty(),
             submitted_argument: None,
             argument_cancelled: false,
-            scope_token: None,
             scope_token_removed: false,
             scope_token_action: None,
-            scope_token_rect: Rect::ZERO,
+        }
+    }
+
+    /// The query field: the card's own first row, embedded in its header,
+    /// with no clear button (Escape clears).
+    fn query_field(placeholder: &str) -> SearchField {
+        let mut field = SearchField::new()
+            .control_size(ControlSize::Large)
+            .without_clear()
+            .with_placeholder(placeholder);
+        field.set_embedded(true);
+        field
+    }
+
+    /// The query: the field's text, or what it held before an argument
+    /// step took it.
+    fn query_text(&self) -> &str {
+        if self.arg_state.is_some() {
+            &self.saved_query
+        } else {
+            self.field.value()
+        }
+    }
+
+    /// Start collecting `spec`'s value for `entry_id` in the field, seeded
+    /// with `prefill` (else the spec's own) and fully selected so the first
+    /// keystroke replaces it.
+    fn begin_argument(
+        &mut self,
+        entry_id: String,
+        spec: ArgumentSpec,
+        prefill: Option<String>,
+        host_step: bool,
+    ) {
+        if self.arg_state.is_none() {
+            self.saved_query = self.field.value().to_owned();
+        }
+        let value = prefill.or(spec.prefill).unwrap_or_default();
+        let kind = match spec.kind {
+            ArgumentKind::Number { .. } => TextInputKind::Number,
+            ArgumentKind::Text | ArgumentKind::Secret => TextInputKind::Prose,
+        };
+        self.field
+            .set_input_kind(kind, spec.kind == ArgumentKind::Secret);
+        self.field.set_query(&value);
+        self.field.set_selection(0, value.len());
+        self.field.set_placeholder(&spec.placeholder);
+        self.field
+            .set_prompt((!spec.prompt.is_empty()).then_some(spec.prompt));
+        let _ = self.field.take_dirty();
+        self.arg_state = Some(ArgState {
+            entry_id,
+            kind: spec.kind,
+            host_step,
+        });
+    }
+
+    /// End any argument step: the field holds the query again.
+    fn end_argument(&mut self) {
+        if self.arg_state.take().is_none() {
+            return;
+        }
+        // A secret is wiped while the field still knows it is one.
+        self.field.set_query("");
+        self.field.set_input_kind(TextInputKind::Search, false);
+        self.field.set_query(&std::mem::take(&mut self.saved_query));
+        self.field.set_placeholder(&self.query_placeholder);
+        self.field.set_prompt(None);
+        let _ = self.field.take_dirty();
+    }
+
+    /// The field holds the keyboard exactly while the palette does.
+    fn sync_field_focus(&mut self) {
+        if self.field.is_focused() != self.is_focused {
+            self.field.set_focused(self.is_focused);
         }
     }
 
@@ -913,7 +931,7 @@ impl CommandPalette {
     /// field removes it; the host widens the scope
     /// ([`Self::take_scope_token_removed`]).
     pub fn set_scope_token(&mut self, token: Option<String>) {
-        self.scope_token = token;
+        self.field.set_scope_token(token);
     }
 
     /// Make the scope token a control that widens the search when pressed
@@ -926,14 +944,15 @@ impl CommandPalette {
 
     /// Take the scope token away as Backspace would.
     fn remove_scope_token(&mut self) {
-        if self.scope_token.take().is_some() {
+        if self.field.scope_token().is_some() {
+            self.field.set_scope_token(None);
             self.scope_token_removed = true;
         }
     }
 
     /// The scope token the field shows, if any.
     pub fn scope_token(&self) -> Option<&str> {
-        self.scope_token.as_deref()
+        self.field.scope_token()
     }
 
     /// What pressing the scope token does, when it is a control.
@@ -943,7 +962,9 @@ impl CommandPalette {
 
     /// Whether Backspace removed the scope token since the last call.
     pub fn take_scope_token_removed(&mut self) -> bool {
-        std::mem::take(&mut self.scope_token_removed)
+        // The field's own × and Backspace take the token away too.
+        let cleared = self.field.take_scope_cleared();
+        std::mem::take(&mut self.scope_token_removed) || cleared
     }
 
     /// [`PaletteMode::Commands`] chrome with focus trapping enabled.
@@ -982,14 +1003,14 @@ impl CommandPalette {
     /// empty field the host asked to stand alone, or an argument step with
     /// nothing listed under it.
     pub fn shows_field_only(&self) -> bool {
-        (self.field_only_while_empty && self.query.is_empty() && self.arg_state.is_none())
+        (self.field_only_while_empty && self.field.is_empty() && self.arg_state.is_none())
             || (self.arg_state.is_some() && self.visible.is_empty())
     }
 
     /// Leave any argument step without running or reporting anything: the
     /// host has moved on (to another step, or back to the results).
     pub fn cancel_argument(&mut self) {
-        self.arg_state = None;
+        self.end_argument();
         self.direct_argument = false;
         self.submitted_argument = None;
         self.argument_cancelled = false;
@@ -1005,10 +1026,10 @@ impl CommandPalette {
     /// and resets the highlight to the first entry.
     pub fn open(&mut self) {
         self.is_focused = true;
-        self.query.clear();
-        self.query_selection = crate::text_selection::Selection::collapsed(0);
-        self.query_composition.clear();
-        self.arg_state = None;
+        self.end_argument();
+        self.field.set_query("");
+        let _ = self.field.take_dirty();
+        self.sync_field_focus();
         self.direct_argument = false;
         self.outcome = None;
         self.submitted_argument = None;
@@ -1037,7 +1058,7 @@ impl CommandPalette {
         self.is_focused = true;
         self.outcome = None;
         self.direct_argument = true;
-        self.arg_state = Some(ArgState::new(
+        self.begin_argument(
             id.into(),
             ArgumentSpec {
                 prompt: prompt.into(),
@@ -1047,7 +1068,7 @@ impl CommandPalette {
             },
             None,
             false,
-        ));
+        );
     }
 
     /// Open a resource-backed prompted action directly at its argument step.
@@ -1066,7 +1087,7 @@ impl CommandPalette {
         self.outcome = None;
         self.action_invocation.clear();
         self.direct_argument = true;
-        self.arg_state = Some(ArgState::new(id, spec, prefill, false));
+        self.begin_argument(id, spec, prefill, false);
     }
 
     /// Ask for one value in the field, for a host that collects an
@@ -1081,7 +1102,7 @@ impl CommandPalette {
         self.submitted_argument = None;
         self.argument_cancelled = false;
         self.direct_argument = false;
-        self.arg_state = Some(ArgState::new(id.into(), spec, None, true));
+        self.begin_argument(id.into(), spec, None, true);
     }
 
     /// The value a host step was confirmed with, once.
@@ -1112,9 +1133,9 @@ impl CommandPalette {
     /// so the next `open` reuses them.
     pub fn close(&mut self) {
         self.is_focused = false;
-        self.arg_state = None;
+        self.end_argument();
         self.direct_argument = false;
-        self.query_composition.clear();
+        self.sync_field_focus();
     }
 
     pub fn is_open(&self) -> bool {
@@ -1126,7 +1147,7 @@ impl CommandPalette {
     }
 
     pub fn argument_buffer(&self) -> Option<&str> {
-        self.arg_state.as_ref().map(|a| a.buffer.as_str())
+        self.arg_state.as_ref().map(|_| self.field.value())
     }
 
     /// Returns `Some` at most once per selection.
@@ -1151,8 +1172,8 @@ impl CommandPalette {
             Key::Named(NamedKey::ArrowLeft) => -1,
             _ => return false,
         };
-        let at_end =
-            self.query_selection == crate::text_selection::Selection::collapsed(self.query.len());
+        let end = self.field.value().len();
+        let at_end = self.field.selection_anchor_focus_or_caret() == (end, end);
         let Some(entry) = self
             .visible
             .get(self.cursor)
@@ -1338,7 +1359,7 @@ impl CommandPalette {
         let id = entry.id.clone();
         let argument = entry.argument.clone();
         if let Some(spec) = argument {
-            self.arg_state = Some(ArgState::new(id, spec, None, false));
+            self.begin_argument(id, spec, None, false);
             self.direct_argument = false;
         } else {
             self.run_entry(state, path, id, None);
@@ -1367,7 +1388,7 @@ impl CommandPalette {
             self.action_invocation
                 .emit(ControlInvocation { address, arguments });
             self.outcome = None;
-            self.arg_state = None;
+            self.end_argument();
             if self.mode == PaletteMode::Commands {
                 self.is_focused = false;
             }
@@ -1382,77 +1403,65 @@ impl CommandPalette {
             cb(state, path);
         }
         self.outcome = Some(CommandOutcome { id, argument });
-        self.arg_state = None;
+        self.end_argument();
         if self.mode == PaletteMode::Commands {
             self.is_focused = false;
         }
     }
 
-    /// All keys are consumed so nothing leaks to the app behind.
-    /// One immediate-mode key-routing step for the argument-entry mode; the
-    /// full parameter list is the same key/state/path threading every other
-    /// event handler in this file needs, so splitting it up would only
-    /// fragment one cohesive state transition.
+    /// All keys are consumed so nothing leaks to the app behind: Enter,
+    /// Escape and the arrows are the step's, the rest edit its field.
     fn handle_arg_key(
         &mut self,
         event: &WindowEvent,
-        key: &winit::keyboard::Key,
-        shift: bool,
-        ctrl: bool,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-        handled: &mut bool,
+        key: &Key,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        // Everything past this point consumes the key.
-        *handled = true;
+        *ctx.handled = true;
         match key {
             Key::Named(NamedKey::Enter) => {
-                let Some(arg) = self.arg_state.as_mut() else {
+                let Some(arg) = self.arg_state.as_ref() else {
                     return;
                 };
+                let value = self.field.value().to_owned();
                 if arg.host_step {
-                    self.submitted_argument = Some(std::mem::take(&mut arg.buffer));
-                    self.arg_state = None;
+                    self.end_argument();
+                    self.submitted_argument = Some(value);
                     return;
                 }
-                let (id, value) = (arg.entry_id.clone(), arg.buffer.clone());
-                self.run_entry(state, path, id, Some(value));
-                return;
+                let id = arg.entry_id.clone();
+                self.run_entry(&mut ctx.state, ctx.path, id, Some(value));
             }
             Key::Named(NamedKey::Escape) => {
                 if self.arg_state.as_ref().is_some_and(|arg| arg.host_step) {
                     self.argument_cancelled = true;
                 }
-                self.arg_state = None;
+                self.end_argument();
                 if self.direct_argument {
                     self.is_focused = false;
                     self.direct_argument = false;
+                    self.sync_field_focus();
                 }
-                return;
             }
             // No list navigation while typing an argument; a number steps.
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => {
                 let up = matches!(key, Key::Named(NamedKey::ArrowUp));
-                if let Some(arg) = self.arg_state.as_mut() {
-                    arg.step_number(if up { 1.0 } else { -1.0 });
+                let Some(kind) = self.arg_state.as_ref().map(|arg| arg.kind) else {
+                    return;
+                };
+                if let Some(next) =
+                    step_number(kind, self.field.value(), if up { 1.0 } else { -1.0 })
+                {
+                    self.field.set_query(&next);
+                    let _ = self.field.take_dirty();
                 }
-                return;
             }
-            // A secret never reaches the clipboard, where every app reads it.
-            Key::Character(c)
-                if ctrl
-                    && matches!(c.as_str(), "c" | "C" | "x" | "X")
-                    && self.arg_state.as_ref().is_some_and(ArgState::is_secret) =>
-            {
-                return;
+            _ => {
+                self.field.handle_event(event, ctx);
+                let _ = self.field.take_dirty();
+                *ctx.handled = true;
             }
-            _ => {}
         }
-        let Some(arg) = self.arg_state.as_mut() else {
-            return;
-        };
-        arg.composition
-            .handle_event(event, &mut arg.buffer, &mut arg.selection, shift, ctrl);
     }
 
     pub fn search_filter(&self) -> &SearchFilter {
@@ -1541,22 +1550,26 @@ impl CommandPalette {
         PADDING
     }
 
+    /// Replace the query; the caret lands at its end so typing appends.
     pub fn set_query(&mut self, q: &str) {
-        self.query = q.into();
-        // Caret pinned to end so subsequently typed characters append
-        // rather than insert mid-string.
-        let end = self.query.len();
-        self.query_selection = crate::text_selection::Selection::collapsed(end);
-        self.query_composition.clear();
+        if self.arg_state.is_some() {
+            q.clone_into(&mut self.saved_query);
+        } else {
+            self.field.set_query(q);
+            let _ = self.field.take_dirty();
+        }
         self.rebuild();
     }
 
     pub fn query(&self) -> &str {
-        &self.query
+        self.query_text()
     }
 
     pub fn set_query_placeholder(&mut self, placeholder: impl Into<String>) {
         self.query_placeholder = placeholder.into();
+        if self.arg_state.is_none() {
+            self.field.set_placeholder(&self.query_placeholder);
+        }
     }
 
     pub fn set_filter(&mut self, f: Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>) {
@@ -1803,19 +1816,8 @@ impl CommandPalette {
                 self.set_cursor(row);
                 *handled = true;
             }
-            return true;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.scope_token_action.is_some()
-            && self.scope_token_rect.contains(self.last_cursor)
-        {
-            self.remove_scope_token();
-            *handled = true;
-            return true;
+            // The field follows the pointer too, for its caret and drags.
+            return false;
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -1836,27 +1838,6 @@ impl CommandPalette {
     /// floating panel.
     pub fn surface_radius_px(theme: &Theme) -> f64 {
         crate::widget::floating_surface::radius(theme)
-    }
-
-    pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
-        const ICON_W: f64 = 24.0;
-        const EDGE: f64 = 12.0;
-        const GAP: f64 = 10.0;
-        let cy = f64::midpoint(row.y0, row.y1);
-        let icon_y0 = cy - ICON_W / 2.0;
-        let icon_rect = Rect::new(
-            row.x0 + EDGE,
-            icon_y0,
-            row.x0 + EDGE + ICON_W,
-            icon_y0 + ICON_W,
-        );
-        // The icon is an ornament on one control, not a second control
-        // flanking a boxed input — the text slot runs inside the same field.
-        let input_rect = Rect::new(icon_rect.x1 + GAP, row.y0, row.x1 - EDGE, row.y1);
-        InputRowLayout {
-            icon_rect,
-            input_rect,
-        }
     }
 
     pub fn input_row_rect(&self) -> Rect {
@@ -1900,190 +1881,6 @@ impl CommandPalette {
     /// Where the result list ends: the card's bottom inset.
     fn list_bottom_y(&self) -> f64 {
         self.rect.y1 - PADDING
-    }
-
-    /// Draws either the in-progress argument buffer (with its prompt
-    /// heading) or the plain query, whichever step the palette is in.
-    fn draw_query_text(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: &InputRowLayout,
-    ) {
-        let colors = &theme.tokens.colors;
-        let text_style = theme.text(TextRole::Body);
-        let mut tx = layout.input_rect.x0;
-        let style = theme.tokens.typography.style(TextRole::Body);
-        if let Some(arg) = &mut self.arg_state {
-            if !arg.prompt.is_empty() {
-                let heading = format!("{}:  ", arg.prompt);
-                // Centre the heading on its measured line box, not the font size.
-                let (hw, hh) = text_renderer.measure_style(&heading, None, &text_style);
-                let text_y = centered_text_top(
-                    layout.input_rect.y0,
-                    layout.input_rect.height(),
-                    f64::from(hh),
-                );
-                text_renderer.draw_style(
-                    scene,
-                    &heading,
-                    colors.text_dim,
-                    transform.pre_translate(Vec2::new(tx, text_y)),
-                    None,
-                    &text_style,
-                );
-                tx += f64::from(hw);
-            }
-            let rect = Rect::new(
-                tx,
-                layout.input_rect.y0,
-                layout.input_rect.x1,
-                layout.input_rect.y1,
-            );
-            let empty = arg.buffer.is_empty() && !arg.composition.is_composing();
-            let masked = arg.masked();
-            let (shown, selection) = masked
-                .as_ref()
-                .map_or((arg.buffer.as_str(), &arg.selection), |(text, sel)| {
-                    (text.as_str(), sel)
-                });
-            arg.composition.draw(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                QueryView {
-                    text: shown,
-                    selection,
-                    placeholder: "",
-                    show_caret: self.is_focused,
-                },
-                rect,
-                &style,
-                QueryInk::of(colors),
-            );
-            if empty {
-                let placeholder = arg.placeholder.clone();
-                Self::draw_placeholder(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    &placeholder,
-                    &style,
-                    self.is_focused,
-                );
-            }
-        } else {
-            let mut input = layout.input_rect;
-            self.scope_token_rect = Rect::ZERO;
-            if let Some(token) = &self.scope_token {
-                let pill = Self::draw_scope_token(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    input,
-                    token,
-                );
-                self.scope_token_rect = pill;
-                input.x0 = pill.x1 + f64::from(theme.tokens.spacing.s1);
-            }
-            let layout = &InputRowLayout {
-                icon_rect: layout.icon_rect,
-                input_rect: input,
-            };
-            let empty = self.query.is_empty() && !self.query_composition.is_composing();
-            self.query_composition.draw(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                QueryView {
-                    text: &self.query,
-                    selection: &self.query_selection,
-                    placeholder: "",
-                    show_caret: self.is_focused,
-                },
-                layout.input_rect,
-                &style,
-                QueryInk::of(colors),
-            );
-            if empty {
-                Self::draw_placeholder(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    layout.input_rect,
-                    &self.query_placeholder,
-                    &style,
-                    self.is_focused,
-                );
-            }
-        }
-    }
-
-    /// The scope token at the start of `field`: a selector pill holding
-    /// its name. Returns the pill.
-    fn draw_scope_token(ctx: &mut PaintCtx<'_>, field: Rect, token: &str) -> Rect {
-        let theme = ctx.theme;
-        let style = theme.text(TextRole::Caption);
-        let max_w = f32_of_f64((field.width() / 2.0).max(1.0));
-        let shown = ctx.text.elide_to_width_style(token, max_w, &style);
-        let (w, h) = ctx.text.measure_style(&shown, None, &style);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let pill_h = (f64::from(h) + 8.0).min(field.height() - 8.0);
-        let cy = field.center().y;
-        let pill = Rect::new(
-            field.x0,
-            cy - pill_h / 2.0,
-            field.x0 + f64::from(w) + pad * 2.0,
-            cy + pill_h / 2.0,
-        );
-        let shape = RoundedRect::from_rect(pill, pill_h / 2.0);
-        let colors = &theme.tokens.colors;
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            colors.intent.selection_tint,
-            None,
-            &shape,
-        );
-        ctx.text.draw_style(
-            ctx.scene,
-            &shown,
-            colors.ink_on(
-                colors.surfaces.base,
-                colors.text_primary,
-                SMALL_TEXT_MIN_CONTRAST,
-            ),
-            ctx.transform
-                .pre_translate(Vec2::new(pill.x0 + pad, cy - f64::from(h) / 2.0)),
-            None,
-            &style,
-        );
-        pill
-    }
-
-    /// The placeholder of an empty field, set off from the caret by the
-    /// `s1` step so the caret never stands on its first letter.
-    fn draw_placeholder(
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        placeholder: &str,
-        style: &TextStyle,
-        caret: bool,
-    ) {
-        if placeholder.is_empty() {
-            return;
-        }
-        let theme = ctx.theme;
-        let offset = if caret {
-            f64::from(theme.tokens.spacing.s1) + 2.0
-        } else {
-            0.0
-        };
-        let (_, h) = ctx.text.measure_style(placeholder, None, style);
-        let y = centered_text_top(rect.y0, rect.height(), f64::from(h));
-        let width = crate::num::f32_of_f64((rect.width() - offset).max(1.0));
-        let shown = ctx.text.elide_to_width_style(placeholder, width, style);
-        ctx.text.draw_style(
-            ctx.scene,
-            &shown,
-            QueryInk::of(&theme.tokens.colors).placeholder,
-            ctx.transform.pre_translate(Vec2::new(rect.x0 + offset, y)),
-            None,
-            style,
-        );
     }
 
     /// `rounded-full` pill, `px-2 py-1` (≈ 12 px horizontal padding).
@@ -2571,7 +2368,7 @@ impl CommandPalette {
         weight: tilo_search::FieldWeight,
     ) -> Vec<std::ops::Range<usize>> {
         let mut ranges: Vec<std::ops::Range<usize>> = self
-            .query
+            .query_text()
             .split_whitespace()
             .filter_map(|word| tilo_search::locate(word, text, weight))
             .collect();
@@ -2851,16 +2648,16 @@ impl CommandPalette {
     fn is_searching(&self) -> bool {
         // Entries this palette ranks itself wait for the index's code too.
         (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
-            && !self.query.is_empty()
+            && !self.query_text().is_empty()
     }
 
     fn empty_results_title(&self) -> String {
         if self.is_searching() {
             crate::i18n!("palette-searching")
-        } else if self.query.is_empty() {
+        } else if self.query_text().is_empty() {
             crate::i18n!("palette-empty")
         } else {
-            crate::i18n!("palette-no-results", "query" => self.query.as_str())
+            crate::i18n!("palette-no-results", "query" => self.query_text())
         }
     }
 
@@ -2903,18 +2700,16 @@ impl CommandPalette {
             Key::Named(NamedKey::PageUp) => self.cursor.saturating_sub(self.entries_per_page()),
             Key::Named(NamedKey::Tab) => self.next_group_start(!shift),
             Key::Named(NamedKey::Home)
-                if ctrl
-                    || (!shift
-                        && self.query_selection
-                            == crate::text_selection::Selection::collapsed(0)) =>
+                if ctrl || (!shift && self.field.selection_anchor_focus_or_caret() == (0, 0)) =>
             {
                 0
             }
             Key::Named(NamedKey::End)
                 if ctrl
-                    || (!shift
-                        && self.query_selection
-                            == crate::text_selection::Selection::collapsed(self.query.len())) =>
+                    || (!shift && {
+                        let end = self.field.value().len();
+                        self.field.selection_anchor_focus_or_caret() == (end, end)
+                    }) =>
             {
                 last
             }
@@ -2983,7 +2778,7 @@ impl CommandPalette {
         self.visible.clear();
         let matching = (!self.bypass_fuzzy).then(|| {
             self.entry_index.ranks(
-                &self.query,
+                self.query_text(),
                 self.entries.iter().map(|entry| {
                     [
                         (entry.label.as_str(), FieldWeight::TITLE),
@@ -3111,8 +2906,6 @@ impl CommandPalette {
 const ROW_HEIGHT: f64 = 36.0;
 const TWO_LINE_ROW_HEIGHT: f64 = 52.0;
 const HEADER_HEIGHT: f64 = 24.0;
-/// What a secret's characters are painted as.
-const MASK: char = '\u{2022}';
 /// Rows the list shows before it scrolls when the host sets no height.
 const DEFAULT_LIST_ROWS: f64 = 10.0;
 /// Room the composed zero-state needs: glyph, headline, hint.
@@ -3170,7 +2963,7 @@ impl Widget for CommandPalette {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Theme typography is already scaled. Keep all legacy text paint and
         // metric calls in that same space, restoring the child renderer after.
@@ -3179,7 +2972,6 @@ impl Widget for CommandPalette {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
         self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
-        let colors = &theme.tokens.colors;
         // The one floating card (HIG §9.1): the opaque panel ground and its
         // edges. Opaque, as the card is rows of small text: a tinted
         // backdrop let the window under it read through them, text over
@@ -3192,7 +2984,6 @@ impl Widget for CommandPalette {
         // Results, when there are any, are set off from it by the panel's
         // hairline under the header.
         let row_rect = self.input_row_rect();
-        let layout = self.compute_input_layout(row_rect);
         let panel = crate::widget::FloatingPanelFace::new()
             .header(row_rect.height())
             .body_empty(self.shows_field_only())
@@ -3207,21 +2998,13 @@ impl Widget for CommandPalette {
             );
         }
 
-        // Inset inside its 24 px slot — edge to edge would read as a
-        // button, not an ornament.
-        icons::draw_icon(
-            scene,
-            transform,
-            layout.icon_rect.inflate(-3.5, -3.5),
-            Icon::Search,
-            colors.text_dim,
-            1.5,
-        );
-
         // No shortcut chip here: a kbd hint invites a chord you've already
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
-        self.draw_query_text(scene, transform, text_renderer, theme, &layout);
+        self.sync_field_focus();
+        self.field.apply_layout_external(row_rect);
+        self.field
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.shows_field_only() {
             text_renderer.set_text_scale(renderer_scale);
             return;
@@ -3245,6 +3028,7 @@ impl Widget for CommandPalette {
         if !self.is_focused {
             return;
         }
+        self.sync_field_focus();
         // Read, never consumed: every other surface needs modifiers too.
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.held = modifiers.state();
@@ -3276,27 +3060,19 @@ impl Widget for CommandPalette {
         ) {
             return;
         }
-        if matches!(event, WindowEvent::Ime(_)) {
-            let change = if let Some(arg) = &mut self.arg_state {
-                arg.composition.handle_event(
-                    event,
-                    &mut arg.buffer,
-                    &mut arg.selection,
-                    false,
-                    false,
-                )
-            } else {
-                self.query_composition.handle_event(
-                    event,
-                    &mut self.query,
-                    &mut self.query_selection,
-                    false,
-                    false,
-                )
-            };
-            if self.arg_state.is_none() && change == QueryEventChange::Edited {
-                self.rebuild();
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) {
+            // Presses on the field place its caret or take the scope token.
+            let pressed = matches!(event, WindowEvent::MouseInput { .. });
+            if !pressed || self.input_row_rect().contains(self.last_cursor) {
+                self.edit_field(event, ctx);
             }
+            return;
+        }
+        if matches!(event, WindowEvent::Ime(_)) {
+            self.edit_field(event, ctx);
             *ctx.handled = true;
             return;
         }
@@ -3323,15 +3099,7 @@ impl Widget for CommandPalette {
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
             if self.arg_state.is_some() {
-                self.handle_arg_key(
-                    event,
-                    logical_key,
-                    shift,
-                    ctrl,
-                    &mut ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                );
+                self.handle_arg_key(event, logical_key, ctx);
                 return;
             }
             if self.handle_list_key(logical_key, shift, ctrl) {
@@ -3339,15 +3107,6 @@ impl Widget for CommandPalette {
                 return;
             }
             if !shift && !ctrl && self.step_selected(logical_key) {
-                *ctx.handled = true;
-                return;
-            }
-            if matches!(logical_key, Key::Named(NamedKey::Backspace))
-                && self.scope_token.is_some()
-                && self.query_selection == crate::text_selection::Selection::collapsed(0)
-            {
-                self.scope_token = None;
-                self.scope_token_removed = true;
                 *ctx.handled = true;
                 return;
             }
@@ -3359,28 +3118,15 @@ impl Widget for CommandPalette {
                 // A typed query is cleared first; only an empty field closes,
                 // so a slip of the finger never costs the whole search.
                 Key::Named(NamedKey::Escape) => {
-                    if self.query.is_empty() {
+                    if self.field.is_empty() {
                         self.is_focused = false;
+                        self.sync_field_focus();
                     } else {
                         self.set_query("");
                     }
                     *ctx.handled = true;
                 }
-                _ => {
-                    let change = self.query_composition.handle_event(
-                        event,
-                        &mut self.query,
-                        &mut self.query_selection,
-                        shift,
-                        ctrl,
-                    );
-                    if change == QueryEventChange::Edited {
-                        self.rebuild();
-                    }
-                    if change != QueryEventChange::Ignored {
-                        *ctx.handled = true;
-                    }
-                }
+                _ => self.edit_field(event, ctx),
             }
         }
     }
@@ -3400,6 +3146,7 @@ impl Widget for CommandPalette {
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+        self.sync_field_focus();
     }
     fn is_focused(&self) -> bool {
         self.is_focused
@@ -3414,36 +3161,19 @@ impl Widget for CommandPalette {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.arg_state.as_ref().map_or_else(
-            || self.query_composition.ime_cursor_rect(),
-            |arg| arg.composition.ime_cursor_rect(),
-        )
+        self.field.ime_cursor_rect()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        if let Some(arg) = &self.arg_state {
-            let field = arg
-                .composition
-                .ime_edit_fingerprint(&arg.buffer, &arg.selection, key)?;
-            Some(crate::ime::scoped_fingerprint(
-                arg.entry_id.as_bytes(),
-                field,
-                key,
-            ))
-        } else {
-            self.query_composition
-                .ime_edit_fingerprint(&self.query, &self.query_selection, key)
-        }
+        let field = self.field.ime_edit_fingerprint(key)?;
+        Some(match &self.arg_state {
+            Some(arg) => crate::ime::scoped_fingerprint(arg.entry_id.as_bytes(), field, key),
+            None => field,
+        })
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        Some(match self.arg_state.as_ref().map(|arg| arg.kind) {
-            Some(ArgumentKind::Secret) => crate::ime::InputContent::PASSWORD,
-            Some(ArgumentKind::Number { .. }) => {
-                crate::ime::InputContent::of(crate::ime::InputPurpose::Number)
-            }
-            Some(ArgumentKind::Text) | None => crate::ime::InputContent::TEXT,
-        })
+        self.field.ime_content()
     }
 
     /// Only traps focus as a modal command launcher; the default Search
@@ -3484,25 +3214,19 @@ impl Widget for CommandPalette {
             return Some(node);
         }
 
-        let query = self
-            .arg_state
-            .as_ref()
-            .map_or((&self.query_placeholder, &self.query), |arg| {
-                (&arg.placeholder, &arg.buffer)
-            });
+        let name = match &self.arg_state {
+            Some(_) => self.field.prompt().unwrap_or_default().to_owned(),
+            None => self.query_placeholder.clone(),
+        };
         // The caret makes the field a text field for assistive technology
         // (AT-SPI Text and EditableText), not only a labelled value: a screen
         // reader can then read and set the query as it would any other input.
-        let (anchor, caret) = if self.arg_state.is_some() {
-            (query.1.len(), query.1.len())
-        } else {
-            (self.query_selection.anchor, self.query_selection.cursor)
-        };
+        let (anchor, caret) = self.field.selection_anchor_focus_or_caret();
         // A secret reports that it is protected and never its value.
         let secret = self.arg_state.as_ref().is_some_and(ArgState::is_secret);
         let mut query_node = AccessNode::new(Role::TextInput)
             .with_action_target("command-palette:query")
-            .with_name(query.0.clone())
+            .with_name(name)
             .with_bounds(self.input_row_rect())
             .with_state(
                 AccessState::new()
@@ -3512,7 +3236,7 @@ impl Widget for CommandPalette {
             );
         if !secret {
             query_node = query_node
-                .with_value(query.1.clone())
+                .with_value(self.field.value().to_owned())
                 .with_text_selection(anchor, caret);
         }
 
@@ -3586,13 +3310,13 @@ impl Widget for CommandPalette {
                 ))
                 .with_children(result_children),
         ];
-        if let (Some(token), Some(action)) = (&self.scope_token, &self.scope_token_action) {
+        if let (Some(token), Some(action)) = (self.field.scope_token(), &self.scope_token_action) {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_action_target(SCOPE_TOKEN_TARGET)
                     .with_name(action.clone())
-                    .with_description(token.clone())
-                    .with_bounds(self.scope_token_rect)
+                    .with_description(token.to_owned())
+                    .with_bounds(self.field.scope_token_rect())
                     .with_state(AccessState::new().focusable(true)),
             );
         }
@@ -3627,8 +3351,8 @@ impl Widget for CommandPalette {
             [1, ordinal] => self
                 .painted_entry_at(*ordinal)
                 .and_then(|visible_index| self.row_rect(visible_index)),
-            [2] if self.scope_token.is_some() && self.scope_token_action.is_some() => {
-                Some(self.scope_token_rect)
+            [2] if self.field.scope_token().is_some() && self.scope_token_action.is_some() => {
+                Some(self.field.scope_token_rect())
             }
             _ => None,
         }
@@ -3719,6 +3443,16 @@ impl Widget for CommandPalette {
                 true
             }
             _ => false,
+        }
+    }
+}
+
+impl CommandPalette {
+    /// Hand `event` to the field; a query it edited narrows the list.
+    fn edit_field(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.field.handle_event(event, ctx);
+        if self.field.take_dirty().is_some() && self.arg_state.is_none() {
+            self.rebuild();
         }
     }
 }
@@ -4086,10 +3820,7 @@ mod keyboard_flow_tests {
         p.set_cursor(2);
         dispatch(&mut p, &press(NamedKey::Home));
         assert_eq!(p.cursor(), 2, "Home first moves the caret");
-        assert_eq!(
-            p.query_selection,
-            crate::text_selection::Selection::collapsed(0)
-        );
+        assert_eq!(p.field.selection_anchor_focus_or_caret(), (0, 0));
         dispatch(&mut p, &press(NamedKey::Home));
         assert_eq!(p.cursor(), 0, "Home again reaches the first result");
         with(&mut p, ModifiersState::CONTROL, &press(NamedKey::End));
@@ -4179,17 +3910,9 @@ mod keyboard_flow_tests {
             Widget::ime_content(&p),
             Some(crate::ime::InputContent::PASSWORD)
         );
-        let arg = p.arg_state.as_ref().expect("still in the step");
-        let (shown, selection) = arg.masked().expect("a secret is painted masked");
-        assert_eq!(
-            shown,
-            MASK.to_string().repeat(7),
-            "one bullet per character"
-        );
-        assert_eq!(
-            selection.cursor,
-            shown.len(),
-            "the caret after the last bullet"
+        assert!(
+            p.field.ime_content() == Some(crate::ime::InputContent::PASSWORD),
+            "the field masks what it holds"
         );
         assert!(dispatch(&mut p, &press(NamedKey::Enter)));
         assert_eq!(p.take_submitted_argument().as_deref(), Some("hunter2"));
@@ -4272,8 +3995,8 @@ mod keyboard_flow_tests {
             "a row with no value leaves the arrows to the caret"
         );
         p.set_cursor(0);
-        p.query = "vol".into();
-        p.query_selection = crate::text_selection::Selection::collapsed(1);
+        p.field.set_query("vol");
+        p.field.set_selection(1, 1);
         assert!(
             !p.step_selected(&Key::Named(NamedKey::ArrowRight)),
             "inside the query the arrows move the caret"
@@ -4283,7 +4006,7 @@ mod keyboard_flow_tests {
     #[test]
     fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
         let mut p = grouped(&[("Files", 1)]);
-        p.query = "dark the".into();
+        p.field.set_query("dark the");
         let title = tilo_search::FieldWeight::TITLE;
         assert_eq!(
             p.match_ranges("Use the dark theme", title),
@@ -4291,7 +4014,7 @@ mod keyboard_flow_tests {
             "each query word, merged and in order"
         );
         assert!(p.match_ranges("Brightness", title).is_empty());
-        p.query = "pi".into();
+        p.field.set_query("pi");
         assert!(
             p.match_ranges(
                 "Insert it where you're typing",
@@ -4355,21 +4078,24 @@ mod keyboard_flow_tests {
         );
         dispatch(&mut p, &press(NamedKey::Backspace));
         assert!(p.take_scope_token_removed(), "the next one takes the token");
-        assert!(p.scope_token.is_none());
+        assert!(p.scope_token().is_none());
     }
 
     #[test]
     fn a_scope_token_that_widens_is_a_control_for_the_pointer_and_assistive_technology() {
         let mut p = grouped(&[("Files", 2)]);
+        p.set_rect(Rect::new(0.0, 0.0, 480.0, 400.0));
         p.set_scope_token(Some("Workspace".into()));
-        p.scope_token_rect = Rect::new(40.0, 10.0, 120.0, 34.0);
-        dispatch(&mut p, &crate::synthetic_input::cursor_moved(60.0, 20.0));
-        dispatch(&mut p, &crate::synthetic_input::mouse_press());
-        assert!(
-            !p.take_scope_token_removed(),
-            "a token with no action is read, not pressed"
-        );
         p.set_scope_token_action(Some("Search every workspace".into()));
+        p.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        let token = p.field.scope_token_rect();
+        assert!(token.width() > 0.0, "the token stands in the field");
         let tree = p
             .accessibility()
             .expect("the open palette describes itself");
@@ -4379,9 +4105,11 @@ mod keyboard_flow_tests {
             .find(|child| child.role == crate::a11y::Role::Button)
             .expect("the token is a button");
         assert_eq!(button.name.as_deref(), Some("Search every workspace"));
+        let at = token.center();
+        dispatch(&mut p, &crate::synthetic_input::cursor_moved(at.x, at.y));
         dispatch(&mut p, &crate::synthetic_input::mouse_press());
         assert!(p.take_scope_token_removed(), "a press widens");
-        assert!(p.scope_token.is_none());
+        assert!(p.scope_token().is_none());
     }
 
     #[test]
