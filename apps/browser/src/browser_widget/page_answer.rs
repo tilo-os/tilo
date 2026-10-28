@@ -72,20 +72,11 @@ impl BrowserWidget {
         // Everything here came from the page: data to reason about, never
         // instructions to follow.
         value.insert("provenance".into(), "web-content".into());
-        // What the action was, for a reader holding the picture it took: a
-        // read of the page, whose picture is the page to look at. Said here
-        // because the answer names the resource by the id this window bound
-        // it under, which resolves to no action, so a reader asking
-        // afterwards could not tell a read from an effect and would treat
-        // the picture as an artifact the app had made.
-        value.insert(
-            "agent".into(),
-            serde_json::json!({ "kind": "view", "action": request.action() }),
-        );
         // A picture is not a finding: its bytes travel as the action's own
         // content, which a reader that can see shows and one that cannot
         // leaves alone. A picture nothing could keep says so, rather than
-        // answering as if the page had none.
+        // answering as if the page had none. Said before `agent` because a
+        // picture that could not be kept is no content at all.
         let resources = match (&reply.image, &self.content) {
             (Some(image), Some(content)) => match Self::kept_picture(image, content) {
                 Ok(address) => vec![address],
@@ -103,6 +94,20 @@ impl BrowserWidget {
             }
             (None, _) => Vec::new(),
         };
+        // What the action was, for a reader holding content this answer
+        // names: a read of the page, whose picture is the page to look at.
+        // Said here because the answer's resource is the id this window
+        // bound `browser.page` under (`tilo-ui-bound:v1:…`), which resolves
+        // to no action, so a reader asking the host afterwards could not tell
+        // a read from an effect and would treat the picture as an artifact
+        // the app had made. Only an answer with content to show says it: no
+        // other answer has a picture whose kind a reader must know.
+        if !resources.is_empty() {
+            value.insert(
+                "agent".into(),
+                serde_json::json!({"kind": "view", "action": request.action()}),
+            );
+        }
         ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: ui::tilo_actions::ActionOutput {

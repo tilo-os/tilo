@@ -1284,7 +1284,9 @@ impl BrowserWidget {
     }
     /// The content store a picture of the page is kept in: opaque bytes by
     /// hash, which the agent's answer names, so what a page shows as pixels
-    /// reaches the reader who can see them.
+    /// reaches the reader who can see them. The store the host lent the
+    /// window (`SurfaceCx::content`), so the bytes land where the content
+    /// service reads them from.
     pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
     }
@@ -2193,8 +2195,12 @@ impl BrowserWidget {
                     Some(format!("the page it opened failed to load: {error}"))
                 }
             };
-            self.page_operation_result =
-                Some(self.page_success(operation.invocation, reply, &operation.acted, note.as_deref()));
+            self.page_operation_result = Some(self.page_success(
+                operation.invocation,
+                reply,
+                &operation.acted,
+                note.as_deref(),
+            ));
             return;
         }
         self.page_operation_result = Some(match result {
@@ -2243,8 +2249,12 @@ impl BrowserWidget {
             return;
         };
         let note = error.map(|error| format!("the page it opened failed to load: {error}"));
-        self.page_operation_result =
-            Some(self.page_success(operation.invocation, &reply, &operation.acted, note.as_deref()));
+        self.page_operation_result = Some(self.page_success(
+            operation.invocation,
+            &reply,
+            &operation.acted,
+            note.as_deref(),
+        ));
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {

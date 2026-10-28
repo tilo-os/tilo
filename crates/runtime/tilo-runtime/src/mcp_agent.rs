@@ -1879,6 +1879,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             tilo_actions::InvocationId::new(),
             None,
             std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            &mut None,
         ))
         .await?;
         let answered = outcome(&value);
