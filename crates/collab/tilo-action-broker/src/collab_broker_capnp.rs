@@ -4305,6 +4305,19 @@ impl CapnpBrokerState {
         self.refresh_action_directory_root_snapshot();
     }
 
+    /// [`crate::collab_broker::AppActionBroker::publish_surface_for_test`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn publish_surface_for_test(&self, surface: PublishedSurface) {
+        let peer = surface.peer_id;
+        let Ok(mut published) = self.surfaces.lock() else {
+            return;
+        };
+        let previous = published.insert(peer, surface.clone());
+        drop(published);
+        self.advance_witness_publication(peer, WitnessPublicationKind::Surface);
+        self.surface_republished(peer, &surface, previous.as_ref());
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_published_surfaces_for_test(&self, surfaces: Vec<PublishedSurface>) {
         if let Ok(mut published) = self.surfaces.lock() {
@@ -4467,10 +4480,50 @@ impl CapnpBrokerState {
     }
 
     /// Record that a published surface changed: the generation moves and
-    /// every launch waiting for its app to publish wakes.
+    /// every launch waiting for its app to publish wakes. Each move is
+    /// traced with where it came from: every listing and open palette reads
+    /// this generation, so a move with nothing changed is churn.
+    #[track_caller]
     fn surfaces_changed(&self) {
         self.surface_changes
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tracing::debug!(
+            target: "tilo::publications",
+            generation = *self.surface_changes.borrow(),
+            cause = %std::panic::Location::caller(),
+            "published surfaces changed"
+        );
+    }
+
+    /// An app published `surface` over `previous`. The surfaces' generation
+    /// moves, and catalogue subscribers hear of it, only when it differs: an
+    /// app publishing what it already had changes no listing, and moving
+    /// the generation for it made every listing and open palette read the
+    /// whole surface again, and retired the app directory pages kept for it.
+    fn surface_republished(
+        &self,
+        peer: u64,
+        surface: &PublishedSurface,
+        previous: Option<&PublishedSurface>,
+    ) {
+        if previous == Some(surface) {
+            tracing::debug!(
+                target: "tilo::publications",
+                peer,
+                app = %surface.app_id,
+                "an unchanged action surface republished; nothing moves"
+            );
+            return;
+        }
+        tracing::debug!(
+            target: "tilo::publications",
+            peer,
+            app = %surface.app_id,
+            actions = surface.actions.len(),
+            "action surface changed"
+        );
+        self.surfaces_changed();
+        self.publish_action_catalogue();
     }
 
     /// Wake every launch waiting for its app's invocation stream after one
@@ -4494,6 +4547,7 @@ impl CapnpBrokerState {
         self.action_directory_bridge.clone()
     }
 
+    #[track_caller]
     fn refresh_action_directory_root_snapshot(&self) {
         let mut roots = self
             .action_directory_roots
@@ -4504,6 +4558,13 @@ impl CapnpBrokerState {
         if let Ok(mut snapshot) = self.action_directory_root_snapshot.lock() {
             snapshot.roots = roots;
             snapshot.generation = snapshot.generation.wrapping_add(1);
+            tracing::debug!(
+                target: "tilo::publications",
+                generation = snapshot.generation,
+                roots = snapshot.roots.len(),
+                cause = %std::panic::Location::caller(),
+                "action directory roots changed"
+            );
         }
     }
 
@@ -6348,9 +6409,16 @@ impl CapnpBrokerState {
 
     /// Record that a pending or completed invocation changed, waking every
     /// [`Self::invocation_changes`] waiter.
+    #[track_caller]
     fn invocation_changed(&self) {
         self.invocation_generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tracing::debug!(
+            target: "tilo::publications",
+            generation = *self.invocation_generation.borrow(),
+            cause = %std::panic::Location::caller(),
+            "invocation statuses changed"
+        );
     }
 
     /// A receiver that sees every later invocation change; what it has seen
@@ -10649,14 +10717,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                 tables.remove(&peer_id);
             }
             state.launchable.retain(&surface);
-            state
+            let previous = state
                 .surfaces
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface);
+                .insert(peer_id, surface.clone());
             state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surfaces_changed();
-            state.publish_action_catalogue();
+            state.surface_republished(peer_id, &surface, previous.as_ref());
             if offers {
                 state.launch_published(peer_id);
             }
@@ -10714,14 +10781,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, table);
             state.launchable.retain(&surface);
-            state
+            let previous = state
                 .surfaces
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface);
+                .insert(peer_id, surface.clone());
             state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surfaces_changed();
-            state.publish_action_catalogue();
+            state.surface_republished(peer_id, &surface, previous.as_ref());
             if offers {
                 state.launch_published(peer_id);
             }
