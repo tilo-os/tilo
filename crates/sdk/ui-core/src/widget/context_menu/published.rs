@@ -9,7 +9,7 @@
 //! [`ContextMenu::take_selection`] as it does after a click. A nested row
 //! opens its menu first. A row that runs a published action
 //! ([`MenuItem::for_action`]) is that action, so no control is published
-//! for it. The rows the menu adds itself ("Tell an agent…") are not
+//! for it. The row the menu adds itself (asking what is typed) is not
 //! published.
 //!
 //! [`press_where_drawn`]: crate::widget::activation::press_where_drawn

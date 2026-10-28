@@ -1,19 +1,21 @@
 //! Asking an agent: when nothing the person has matches what they typed,
-//! the first suggestion hands it to an agent as a task.
+//! the first suggestion asks the workspace's agent.
 //!
 //! "Ask an agent: …" answers every query, as "Search the web for …" does
-//! ([`SearchProvider::is_fallback`]). Choosing it asks the workspace's agent
-//! through the one way the desktop asks an agent for work
-//! ([`ChromeState::ask_agent`]): an issue in Tasks assigned to the agent,
-//! whose run the asking starts (`ask-agent`), and the issue's page opens so
-//! the person watches it. Nothing here keeps a task of its own.
+//! ([`SearchProvider::is_fallback`]). Choosing it asks the agent about what
+//! is focused, the selection in the focused window or else the window, in
+//! the agent composer beside it, where the answer shows
+//! ([`ChromeState::ask_agent_in_place`]): the same way the ask-agent chord
+//! and a sentence typed into a context menu ask. What the agent takes on as
+//! work becomes an issue in Tasks, as all its work does. Nothing here keeps
+//! a task of its own.
 //!
 //! When the agent cannot take it (the workspace has none, its model is not
 //! set up, or the model is on the internet and this device is offline) the
 //! row says why in plain words, ranks after searching the web
 //! ([`SearchProvider::fallback_rank`]), and opens the place that fixes it.
 //!
-//! [`ChromeState::ask_agent`]: crate::shell::chrome_state::ChromeState::ask_agent
+//! [`ChromeState::ask_agent_in_place`]: crate::shell::chrome_state::ChromeState::ask_agent_in_place
 
 use std::cell::RefCell;
 
@@ -30,10 +32,6 @@ pub const PROVIDER_ID: &str = "ask-agent";
 
 /// The row's address: `ask:<query>`.
 const ASK_ID: &str = "ask";
-
-/// The longest task title, in characters; the whole query is its
-/// description.
-const TITLE_CHARS: usize = 120;
 
 /// Whether the workspace's agent can take a request now, and if not, why.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,10 +180,11 @@ fn choose(query: &str, readiness: &Readiness, chrome: &Chrome) -> Result<(), Act
             .map_err(|error| ActionError::Explained(error.user_message()))
     };
     match readiness {
-        Readiness::Ready { room, agent } => {
-            let (title, body) = request(query);
+        // Asked about what is focused, in the composer beside it, where
+        // the answer shows; work it becomes is an issue in Tasks as ever.
+        Readiness::Ready { .. } => {
             let mut state = chrome.borrow_mut();
-            state.ask_agent_question(*room, agent.clone(), (title, body));
+            state.ask_agent_in_place(query.trim().to_owned());
             state.bump();
             Ok(())
         }
@@ -198,20 +197,6 @@ fn choose(query: &str, readiness: &Readiness, chrome: &Chrome) -> Result<(), Act
         Readiness::NoModel => settings("agent_models"),
         Readiness::Offline => settings("network"),
     }
-}
-
-/// The task a query asks for: its first line as the title, the whole query
-/// as what the agent is asked.
-fn request(query: &str) -> (String, String) {
-    let query = query.trim();
-    let title = query
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .take(TITLE_CHARS)
-        .collect();
-    (title, query.to_owned())
 }
 
 impl SearchProvider for AskAgentProvider {
@@ -274,21 +259,6 @@ impl SearchProvider for AskAgentProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_task_is_titled_by_the_querys_first_line_and_asks_all_of_it() {
-        assert_eq!(
-            request("  what changed in the Q3 numbers?  "),
-            (
-                "what changed in the Q3 numbers?".into(),
-                "what changed in the Q3 numbers?".into()
-            )
-        );
-        let long = "a".repeat(400);
-        let (title, body) = request(&long);
-        assert_eq!(title.chars().count(), TITLE_CHARS);
-        assert_eq!(body, long);
-    }
 
     #[test]
     fn an_agent_is_ready_with_a_model_it_can_reach() {

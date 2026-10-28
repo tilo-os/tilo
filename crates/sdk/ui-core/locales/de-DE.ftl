@@ -785,8 +785,13 @@ author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $inst
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
 
-# Context menu entry: tell an agent to do something with what the menu is about.
-tell-agent = Einem Agenten sagen…
+# A context menu's query field: typing narrows its entries, and a sentence
+# no entry answers is asked of an agent about what the menu is on.
+menu-query-placeholder = Tippen zum Filtern
+menu-query-placeholder-ask = Tippen zum Filtern oder Fragen
+menu-query-name = Filtern oder fragen
+# The row that asks an agent the typed sentence.
+menu-ask-typed = Fragen: { $text }
 
 widget-screenshot-saved = Gespeichert
 widget-screenshot-copied = Kopiert

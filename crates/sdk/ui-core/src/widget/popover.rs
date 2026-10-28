@@ -243,6 +243,13 @@ impl<C: Widget> Popover<C> {
         self
     }
 
+    /// Open on `side` of the anchor from now on: a panel that stands beside
+    /// its subject on a wide screen and along the bottom of a narrow one.
+    pub fn set_side(&mut self, side: PopoverSide) {
+        self.side = side;
+        self.resolved_side = side;
+    }
+
     /// Try this axis when the ordinary preferred/opposite placement would
     /// cover `avoid`. The fallback is used only when its measured panel fits
     /// the viewport and is disjoint from the protected paint.

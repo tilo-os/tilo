@@ -52,7 +52,13 @@ impl TrackerView {
 pub(crate) struct NativeTrackerRuns {
     pub(crate) owner: NativeOwnerCommitService,
     read: Mutex<HashMap<String, Read>>,
+    /// What each going run's current model turn streams, by room and
+    /// issue: its epoch and the latest snapshot. Never written anywhere.
+    live: Mutex<HashMap<(String, String), (u64, runtime_collab::TaskPresentation)>>,
 }
+
+/// How many of a run's own reports a follower is shown: the steps so far.
+const SHOWN_STEPS: usize = 4;
 
 /// A run of an issue as whoever follows it sees it: the composer that asked
 /// for it.
@@ -71,6 +77,9 @@ pub(crate) struct FollowedRun {
     pub incorporated: u64,
     /// What its agent said last in the run.
     pub said: Option<String>,
+    /// What its agent reported in the run so far, oldest first: its steps,
+    /// the last few of them.
+    pub steps: Vec<String>,
 }
 
 /// Every issue's latest run in `tracker`, as it is followed.
@@ -105,6 +114,13 @@ fn followed_runs(tracker: &Tracker) -> Vec<FollowedRun> {
                 said: of_run(MessageKind::FromRun)
                     .next_back()
                     .map(|message| message.text.clone()),
+                steps: {
+                    let reported: Vec<String> = of_run(MessageKind::FromRun)
+                        .map(|message| message.text.clone())
+                        .collect();
+                    let skip = reported.len().saturating_sub(SHOWN_STEPS);
+                    reported.into_iter().skip(skip).collect()
+                },
             })
         })
         .collect()
@@ -115,7 +131,22 @@ impl NativeTrackerRuns {
         Self {
             owner,
             read: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// What run `epoch` of `issue` in `room` streams now, while it goes.
+    pub(crate) fn live(
+        &self,
+        room: &str,
+        issue: &str,
+        epoch: u64,
+    ) -> Option<runtime_collab::TaskPresentation> {
+        self.live
+            .lock_recover()
+            .get(&(room.to_owned(), issue.to_owned()))
+            .filter(|(of, _)| *of == epoch)
+            .map(|(_, presentation)| presentation.clone())
     }
 
     /// The tasks `room`'s document kept before the tracker that the tracker
@@ -293,6 +324,36 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
 impl TrackerRuns for NativeTrackerRuns {
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+    }
+
+    /// Keep the newest snapshot of each run's turn: a later epoch, a later
+    /// turn, or a later sequence of the same turn replaces it; an ended run
+    /// is forgotten. Whoever follows the run is woken to show it.
+    fn presented(
+        &self,
+        room: &str,
+        issue: &str,
+        epoch: u64,
+        presentation: Option<&runtime_collab::TaskPresentation>,
+    ) {
+        let key = (room.to_owned(), issue.to_owned());
+        let mut live = self.live.lock_recover();
+        let Some(presentation) = presentation else {
+            if live.get(&key).is_some_and(|(of, _)| *of <= epoch) {
+                live.remove(&key);
+            }
+            return;
+        };
+        let newer = live.get(&key).is_none_or(|(of, known)| {
+            epoch > *of
+                || (epoch == *of
+                    && (known.run != presentation.run || presentation.sequence > known.sequence))
+        });
+        if newer {
+            live.insert(key, (epoch, presentation.clone()));
+            drop(live);
+            crate::shell::wake_compositor();
+        }
     }
 
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String> {

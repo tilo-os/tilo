@@ -454,6 +454,10 @@ impl ShellOverlayHost {
                     presence,
                 );
             }
+            // A sheet along the bottom of a phone stays above its keyboard.
+            let area = self.overlay_area();
+            let inset = self.portal_dialogs.keyboard_inset(area);
+            self.agent_quick_composer.rise_above_keyboard(area, inset);
             self.agent_quick_composer.draw_overlay(
                 scene,
                 transform,

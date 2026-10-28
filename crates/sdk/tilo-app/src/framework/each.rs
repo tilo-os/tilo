@@ -572,8 +572,14 @@ impl<R: Resource> Each<R> {
                 prompts: !spec.params().is_empty(),
             });
         }
-        // The row's item, in its resource, is what the menu acts on: what
-        // "Tell an agent…" attaches.
+        // The row's item, in its resource, is what the menu acts on and a
+        // question typed into it is about, unless the right-click landed
+        // inside what is selected in the list: then the selection is, as in
+        // every context menu (`shared_selection::pointed_selection`).
+        let selected = ui_core::shared_selection::pointed_selection(
+            ui_core::shared_selection::subtree_selection(&*self),
+            Some(at),
+        );
         let mut about = ui_core::shared_selection::SharedSelection::of_text(&resource.label)
             .at(tilo_actions::SelectionPlace::item(item.as_str()))
             .in_resource(tilo_actions::ActionResource {
@@ -584,7 +590,7 @@ impl<R: Resource> Each<R> {
         if let Some((_, view)) = self.mounted().find(|(id, _)| *id == item) {
             about = about.within(view.widget.get_rect());
         }
-        menu.set_about(Some(about));
+        menu.set_about(Some(selected.unwrap_or(about)));
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a menu anchor is a logical pixel position on screen"

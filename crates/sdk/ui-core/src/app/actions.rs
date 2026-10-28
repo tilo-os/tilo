@@ -310,7 +310,8 @@ impl App {
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     /// The resource this window shows: the first it publishes. What
-    /// "Tell an agent…" attaches when nothing more particular is meant.
+    /// a question typed into a context menu is about when nothing more
+    /// particular is meant.
     #[cfg(feature = "native")]
     pub(super) fn window_resource(&self) -> Option<tilo_actions::ActionResource> {
         let key = self.ensure_resource_cache();
@@ -3303,6 +3304,50 @@ impl App {
             return false;
         }
         self.open_search(crate::search::SearchRequest::this_app());
+        true
+    }
+
+    /// A printable key no widget took, with a selection in focus and nothing
+    /// focused that takes text: the person is talking about the selection.
+    /// The desktop's agent composer opens on it with the key in its field,
+    /// where their typing goes on. Shortcuts, a text field, a terminal and
+    /// an input method all take their keys first, and without a desktop
+    /// agent nothing happens.
+    #[cfg(feature = "native")]
+    pub(crate) fn handle_unconsumed_typed_key(
+        &mut self,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    text: Some(text),
+                    state: winit::event::ElementState::Pressed,
+                    repeat: false,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let modifiers = self.input.modifiers.state();
+        if text.is_empty()
+            || text.chars().any(|c| c.is_control() || c.is_whitespace())
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+            || !crate::shared_selection::agent_host_available()
+            || self.actions.action_palette.is_some()
+            || self.ime_window_state().is_some()
+        {
+            return false;
+        }
+        let Some(selection) = crate::shared_selection::subtree_selection(self.root_widget.as_ref())
+        else {
+            return false;
+        };
+        crate::shared_selection::ask_agent_typing(selection, text);
         true
     }
 

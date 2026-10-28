@@ -18,7 +18,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// The window menu of a tabbed window, top to bottom.
-const TABBED_LABELS: [&str; 12] = [
+const TABBED_LABELS: [&str; 11] = [
     "Full screen",
     "Maximize",
     "Move to strip",
@@ -30,10 +30,9 @@ const TABBED_LABELS: [&str; 12] = [
     "Move to new group",
     "Close tab",
     "Close window",
-    "Tell an agent…",
 ];
 /// The window menu of a window of one tab.
-const SINGLE_LABELS: [&str; 9] = [
+const SINGLE_LABELS: [&str; 8] = [
     "Full screen",
     "Maximize",
     "Move to strip",
@@ -42,7 +41,6 @@ const SINGLE_LABELS: [&str; 9] = [
     "Width",
     "New tab",
     "Close window",
-    "Tell an agent…",
 ];
 
 const TAB_A: u64 = 0xa1;
@@ -228,6 +226,13 @@ impl Harness {
             button,
         ));
         pressed
+    }
+
+    /// Type `text` a key at a time.
+    fn type_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            let _ = self.send(&ui::synthetic_input::char_key(&ch.to_string()));
+        }
     }
 
     fn key(&mut self, key: Key) -> bool {
@@ -641,24 +646,39 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         );
     }
 
-    /// "Tell an agent…" is done once chosen, an agent to tell or not: the
-    /// menu closes rather than reopening as a refused row does.
-    fn telling_an_agent_closes_the_menu() {
+    /// Typing into the window menu narrows its rows, and Enter runs the
+    /// best match: "spl" splits the window.
+    fn typing_into_the_window_menu_narrows_it_and_enter_runs_the_match() {
+        let mut h = harness(2);
+        h.right_click_pill(0);
+        h.type_text("spl");
+        assert_eq!(h.host.layers.tab_menu.query(), "spl");
+        assert!(h.key(Key::Named(NamedKey::Enter)));
+        assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(h.group_ids().len(), 2, "Split right ran");
+    }
+
+    /// A sentence none of the rows answers asks an agent about the window,
+    /// done once asked, an agent to ask or not: the menu closes and the
+    /// window is untouched.
+    fn a_sentence_typed_into_the_window_menu_asks_and_closes_it() {
         let mut h = harness(1);
         h.right_click_pill(0);
-        assert!(h.host.perform_semantic_action(
-            "tabmenu:tell-agent",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut h.doc),
-            &automerge::ROOT,
-        ));
+        h.type_text("tidy these tabs");
+        assert!(h.key(Key::Named(NamedKey::Enter)));
         assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(
+            h.host.layers.tab_menu.take_asked(),
+            None,
+            "the host asked it"
+        );
         assert_eq!(h.tab_ids(0), h.tabs, "the window is untouched");
     }
 
-    /// Anything else the desktop draws gets the same menu, offering only to
-    /// tell an agent about it, and choosing that closes it.
-    fn a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent() {
+    /// Anything else the desktop draws gets the same menu with no rows of
+    /// its own: typing a sentence asks an agent about the thing, and closes
+    /// it.
+    fn a_thing_the_desktop_draws_gets_a_menu_that_takes_a_sentence() {
         let mut h = harness(1);
         let seed = crate::shell::selection_agent::SelectionSeed::new(
             tilo_desktop_model::commands::APP_ID,
@@ -682,19 +702,15 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.clone())
             .collect();
-        assert_eq!(labels, ["Tell an agent…"]);
+        assert!(labels.is_empty(), "no rows: typing is the way in");
         assert!(!h.host.perform_semantic_action(
             "tabmenu:close",
             &ui::a11y::Action::Activate,
             &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         ));
-        assert!(h.host.perform_semantic_action(
-            "tabmenu:tell-agent",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut h.doc),
-            &automerge::ROOT,
-        ));
+        h.host.layers.tab_menu.set_query("summarise this strip");
+        assert!(h.key(Key::Named(NamedKey::Enter)));
         assert!(!h.host.tab_context_menu_is_open());
         assert_eq!(h.tab_ids(0), h.tabs, "no window was touched");
     }
@@ -750,8 +766,9 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes();
     a_click_outside_the_menu_dismisses_it_and_goes_no_further();
     a_single_tab_group_is_offered_close_only();
-    telling_an_agent_closes_the_menu();
-    a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent();
+    typing_into_the_window_menu_narrows_it_and_enter_runs_the_match();
+    a_sentence_typed_into_the_window_menu_asks_and_closes_it();
+    a_thing_the_desktop_draws_gets_a_menu_that_takes_a_sentence();
     the_open_menu_paints_and_the_closed_one_does_not();
 }
 

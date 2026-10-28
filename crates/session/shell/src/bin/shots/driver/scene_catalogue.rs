@@ -125,6 +125,8 @@ impl ShellDriver {
         "desktop-control-menu",
         "workspace-menu",
         "window-menu",
+        "window-menu-typed",
+        "window-menu-ask",
         "tab-rename",
         "window-share-menu",
         "window-shared",

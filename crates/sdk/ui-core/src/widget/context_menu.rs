@@ -5,6 +5,7 @@
 //!
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
+//! A menu the context-menu gesture opened takes typing (`query`).
 
 use std::cell::Cell;
 
@@ -26,6 +27,8 @@ use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
 mod published;
+mod query;
+use query::MenuQuery;
 
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
@@ -441,12 +444,28 @@ pub struct ContextMenu {
     /// The pose it was last drawn in: rows are hit where they are drawn
     /// while it moves.
     drawn: crate::motion::Pose,
-    /// What the menu acts on, which its "Tell an agent…" entry attaches.
+    /// What the menu acts on, which a typed question is about.
     about: Option<crate::shared_selection::SharedSelection>,
-    /// Where the rows this menu adds itself ("Tell an agent…") begin; its
-    /// owner's rows end there, and a choice among them is never reported
+    /// Where the row this menu adds itself (asking the typed sentence)
+    /// sits; its owner's rows end there, and choosing it is never reported
     /// through [`ContextMenu::take_selection`].
     own_rows: Option<usize>,
+    /// The query field, on a menu that takes typing.
+    query: Option<MenuQuery>,
+    /// The rows shown, in the order shown: every row with no query, else
+    /// the entries that match it, best first, and the row that asks it.
+    shown: Vec<usize>,
+    /// The owner answers a typed sentence itself ([`Self::take_ask`])
+    /// rather than the desktop, and the menu takes typing however it was
+    /// opened: the desktop's own menus.
+    owner_asks: bool,
+    /// A sentence asked, for an owner that answers it.
+    asked: Option<String>,
+    /// Where the menu was opened, which a question points at.
+    ask_at: Point,
+    /// While a query narrows the rows, the panel's top edge stays where it
+    /// opened: the field under the person's eyes does not move.
+    pinned_top: Option<f64>,
 }
 
 impl Default for ContextMenu {
@@ -485,12 +504,19 @@ impl ContextMenu {
             drawn: crate::motion::Pose::REST,
             about: None,
             own_rows: None,
+            query: None,
+            shown: Vec::new(),
+            owner_asks: false,
+            asked: None,
+            ask_at: Point::ZERO,
+            pinned_top: None,
         }
     }
 
     pub fn with_items(items: Vec<MenuItem>) -> Self {
         let mut menu = Self::new();
         menu.items = items;
+        menu.refilter();
         menu
     }
 
@@ -502,6 +528,7 @@ impl ContextMenu {
         if self.hovered.is_some_and(|i| i >= self.items.len()) {
             self.hovered = None;
         }
+        self.refilter();
         self.layout_at_position();
     }
 
@@ -521,11 +548,13 @@ impl ContextMenu {
 
     pub fn push(&mut self, item: MenuItem) {
         self.items.push(item);
+        self.refilter();
     }
 
     /// Say what the menu acts on (a selection, the item it was opened on,
-    /// drawn where it is), so "Tell an agent…" attaches that. Without it
-    /// the app attaches what is under the pointer, else its window.
+    /// drawn where it is), so a question typed into it is about that.
+    /// Without it the app attaches what is under the pointer, else its
+    /// window.
     pub fn set_about(&mut self, about: Option<crate::shared_selection::SharedSelection>) {
         self.about = about;
     }
@@ -557,12 +586,12 @@ impl ContextMenu {
     /// input batch the menu opened in.
     ///
     /// A menu opened by the context-menu gesture (a secondary click, the
-    /// Menu key, Shift+F10: [`note_input`]) while a desktop agent can be
-    /// asked ends with "Tell an agent…", about [`Self::set_about`]'s
-    /// subject at `position`. Every app's context menus offer it with no
-    /// code of their own.
+    /// Menu key, Shift+F10: [`note_input`]) takes typing, and a sentence it
+    /// has no entry for asks an agent about [`Self::set_about`]'s subject at
+    /// `position`. Every app's context menus do so with no code of their
+    /// own.
     pub fn open_at(&mut self, position: [f32; 2]) {
-        self.offer_agent(Point::new(f64::from(position[0]), f64::from(position[1])));
+        self.prepare_query(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
@@ -577,6 +606,7 @@ impl ContextMenu {
         self.hovered = self
             .items
             .iter()
+            .take(self.own_rows.unwrap_or(self.items.len()))
             .find(|item| item.is_enabled())
             .filter(|item| item.is_destructive())
             .and_then(|_| {
@@ -622,10 +652,10 @@ impl ContextMenu {
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
     /// call `layout_within` with the renderer before painting to settle text metrics.
     ///
-    /// Opened by the context-menu gesture, it ends with "Tell an agent…" as
-    /// [`Self::open_at`] does, pointed at the anchor.
+    /// Opened by the context-menu gesture, it takes typing as
+    /// [`Self::open_at`] does, a question pointed at the anchor.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
-        self.offer_agent(anchor.center());
+        self.prepare_query(anchor.center());
         self.show_anchored(anchor, viewport);
     }
 
@@ -676,7 +706,9 @@ impl ContextMenu {
         let mut height: f64 = 0.0;
         let has_leading_gutter = self.has_leading_gutter();
         let mut trailing: f64 = 0.0;
-        for item in &self.items {
+        // The row asking what is typed elides its sentence: the menu keeps
+        // the width its own rows give it while the person types.
+        for item in self.owner_items() {
             if let Some(label) = item.label() {
                 // Measured as it asks, the wider of its two forms.
                 let asking;
@@ -740,12 +772,15 @@ impl ContextMenu {
     /// a large text setting otherwise paints two-line-tall glyphs into
     /// 28 px rows.
     fn item_height(&self, index: usize) -> f64 {
+        if !self.shown.contains(&index) {
+            return 0.0;
+        }
         match self.items.get(index) {
             Some(MenuItem::Action { .. }) => self.row_height,
             // A caption is a caption line with an `s1` of air either side,
             // tighter than a row: it is read with the rows above it.
             Some(MenuItem::Caption(_)) => (self.row_height * CAPTION_ROW_SHARE).ceil(),
-            Some(MenuItem::Separator) if item_shown(&self.items, index) => SEPARATOR_HEIGHT,
+            Some(MenuItem::Separator) if item_shown(self.owner_items(), index) => SEPARATOR_HEIGHT,
             Some(MenuItem::Separator) | None => 0.0,
         }
     }
@@ -758,8 +793,18 @@ impl ContextMenu {
     }
 
     fn content_height(&self) -> f64 {
-        (0..self.items.len())
-            .map(|index| self.item_height(index))
+        self.shown
+            .iter()
+            .map(|&index| self.item_height(index))
+            .sum()
+    }
+
+    /// Where row `index` starts below the first row shown.
+    fn row_top(&self, index: usize) -> f64 {
+        self.shown
+            .iter()
+            .take_while(|&&shown| shown != index)
+            .map(|&shown| self.item_height(shown))
             .sum()
     }
 
@@ -771,7 +816,7 @@ impl ContextMenu {
         };
         Rect::new(
             self.rect.x0,
-            self.rect.y0 + inset,
+            (self.rect.y0 + inset + self.query_height()).min(self.rect.y1 - inset),
             self.rect.x1,
             self.rect.y1 - inset,
         )
@@ -786,15 +831,19 @@ impl ContextMenu {
         if !self.open || !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
             return None;
         }
+        if !self.shown.contains(&index) {
+            return None;
+        }
         let body = self.body_rect();
-        let top =
-            body.y0 - self.scroll_offset + (0..index).map(|i| self.item_height(i)).sum::<f64>();
+        let top = body.y0 - self.scroll_offset + self.row_top(index);
         let rect = Rect::new(body.x0, top, body.x1, top + self.item_height(index)).intersect(body);
         (!rect.is_zero_area()).then_some(rect)
     }
 
     pub fn focus_item(&mut self, index: usize) -> bool {
-        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+        if !matches!(self.items.get(index), Some(MenuItem::Action { .. }))
+            || !self.shown.contains(&index)
+        {
             return false;
         }
         self.hovered = Some(index);
@@ -812,7 +861,7 @@ impl ContextMenu {
             return;
         }
         if let Some(index) = self.hovered {
-            let top = (0..index).map(|i| self.item_height(i)).sum::<f64>();
+            let top = self.row_top(index);
             let height = self.item_height(index);
             let body_height = self.body_rect().height();
             if top < self.scroll_offset {
@@ -834,7 +883,7 @@ impl ContextMenu {
             // window's edges (`floating_surface::viewport_margin`, the `s2`
             // step), popovers and menus alike. A window too small for the
             // menu and its air gives up the air first, on that axis only.
-            let full = self.content_height() + PADDING * 2.0;
+            let full = self.content_height() + PADDING * 2.0 + self.query_height();
             let margin_x = PADDING
                 .min((viewport.width() - self.measured_width) / 2.0)
                 .max(0.0);
@@ -910,6 +959,14 @@ impl ContextMenu {
                     .clamp(viewport.y0, (viewport.y1 - height).max(viewport.y0));
                 Rect::new(x, y, x + width, y + height)
             };
+            // Narrowed by a query, it keeps the top edge it opened with and
+            // gives up height at the bottom: the field stays put.
+            let rect = match self.pinned_top {
+                Some(top) if top + rect.height() <= viewport.y1 + 0.5 => {
+                    Rect::new(rect.x0, top, rect.x1, top + rect.height())
+                }
+                _ => rect,
+            };
             self.rect = rect;
             self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
             return;
@@ -917,7 +974,7 @@ impl ContextMenu {
         let Some([px, py]) = self.position else {
             return;
         };
-        let height = PADDING * 2.0 + self.content_height().max(ROW_HEIGHT);
+        let height = PADDING * 2.0 + self.query_height() + self.content_height().max(ROW_HEIGHT);
         let x0 = f64::from(px);
         let y0 = f64::from(py);
         self.rect = Rect::new(x0, y0, x0 + self.legacy_width(), y0 + height);
@@ -925,6 +982,7 @@ impl ContextMenu {
 
     /// Safe to call when already closed.
     pub fn close(&mut self) {
+        self.pinned_top = None;
         self.open = false;
         self.appear.show(false);
         self.opened_under = None;
@@ -988,12 +1046,10 @@ impl ContextMenu {
             return None;
         }
         let point = Point::new(point[0], point[1]);
-        for idx in 0..self.items.len() {
-            if self.item_rect(idx).is_some_and(|rect| rect.contains(point)) {
-                return Some(idx);
-            }
-        }
-        None
+        self.shown
+            .iter()
+            .copied()
+            .find(|&idx| self.item_rect(idx).is_some_and(|rect| rect.contains(point)))
     }
 
     /// For dismiss-on-click-outside routing.
@@ -1017,6 +1073,11 @@ impl ContextMenu {
                 enabled: true,
                 ..
             } => self.open_submenu(idx, false),
+            MenuItem::Action {
+                action,
+                enabled: true,
+                ..
+            } if self.ask_row() == Some(idx) => self.ask_typed(),
             MenuItem::Action {
                 action,
                 enabled: true,
@@ -1196,34 +1257,6 @@ impl ContextMenu {
         self.selection.take()
     }
 
-    /// End a menu the context-menu gesture opened with "Tell an agent…",
-    /// replacing what an earlier opening added.
-    fn offer_agent(&mut self, at: Point) {
-        if let Some(own) = self.own_rows.take() {
-            self.items.truncate(own);
-        }
-        if !CONTEXT_GESTURE.with(Cell::get) || !crate::shared_selection::agent_host_available() {
-            return;
-        }
-        let own = self.items.len();
-        if self
-            .items
-            .last()
-            .is_some_and(|item| !matches!(item, MenuItem::Separator))
-        {
-            self.items.push(MenuItem::separator());
-        }
-        let about = self.about.clone();
-        self.items.push(
-            MenuItem::action(
-                crate::i18n::I18nManager::lookup_plain("tell-agent"),
-                move || crate::shared_selection::tell_agent_at(about.clone(), at),
-            )
-            .with_icon(Icon::Sparkles),
-        );
-        self.own_rows = Some(own);
-    }
-
     pub fn hovered(&self) -> Option<usize> {
         self.hovered
     }
@@ -1289,9 +1322,10 @@ impl ContextMenu {
         );
     }
 
-    /// Skips separators. `dir > 0` moves down, `dir < 0` up.
+    /// Skips separators. `dir > 0` moves down, `dir < 0` up, through the
+    /// rows shown in the order shown.
     fn move_hover(&mut self, dir: i32) {
-        let n = self.items.len();
+        let n = self.shown.len();
         if n == 0 {
             return;
         }
@@ -1299,18 +1333,22 @@ impl ContextMenu {
         // With nothing hovered, entering from above starts at the first row
         // and entering from below at the last; otherwise step off the row we
         // are on. Either way the walk then visits at most `n` candidates.
-        let mut idx = match self.hovered {
+        let at = self
+            .hovered
+            .and_then(|hovered| self.shown.iter().position(|&index| index == hovered));
+        let mut slot = match at {
             Some(i) => wrapping_step(i, n, down),
             None if down => 0,
             None => n.saturating_sub(1),
         };
         for _ in 0..n {
-            if self.items.get(idx).is_some_and(MenuItem::is_enabled) {
-                self.hovered = Some(idx);
+            let index = self.shown[slot];
+            if self.items.get(index).is_some_and(MenuItem::is_enabled) {
+                self.hovered = Some(index);
                 self.ensure_hover_visible();
                 return;
             }
-            idx = wrapping_step(idx, n, down);
+            slot = wrapping_step(slot, n, down);
         }
     }
 }
@@ -1335,6 +1373,8 @@ const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
 /// A caption line's share of a row's height.
 const CAPTION_ROW_SHARE: f64 = 0.75;
+/// The air between the query field and the first row: the `s1` step.
+const QUERY_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// How far, in logical pixels, the pointer may be from where the menu opened
 /// and still count as not having moved: the opening position went through
 /// `f32`, the pointer's did not.
@@ -1374,7 +1414,7 @@ impl ContextMenu {
         reason = "one pass over the rows paints each kind in order"
     )]
     fn paint_menu(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1383,12 +1423,13 @@ impl ContextMenu {
         // Panel role (HIG §9.1): the floating radius, the one floating
         // shadow, and the floating material with its derived edge.
         // One row sits in a panel concentric with it, never a near-pill.
-        let single_row = self
-            .items
-            .iter()
-            .filter(|item| matches!(item, MenuItem::Action { .. }))
-            .count()
-            == 1;
+        let single_row = self.query.is_none()
+            && self
+                .shown
+                .iter()
+                .filter(|&&index| matches!(self.items.get(index), Some(MenuItem::Action { .. })))
+                .count()
+                == 1;
         let panel_radius = if single_row {
             floating_surface::single_row_radius(theme)
         } else {
@@ -1396,6 +1437,7 @@ impl ContextMenu {
         };
         floating_surface::paint_rounded(scene, transform, self.rect, panel_radius, theme);
         let ground = crate::chrome::panel_ground(theme);
+        self.paint_query(scene, transform, text_renderer, theme, panel_radius);
 
         // One style for measuring (`layout_within`) and painting, in both
         // modes: the point-placed path used to paint the theme's already
@@ -1416,7 +1458,10 @@ impl ContextMenu {
         );
         let mut y = self.body_rect().y0 - self.scroll_offset;
         let has_leading_gutter = self.has_leading_gutter();
-        for (idx, item) in self.items.iter().enumerate() {
+        for &idx in &self.shown {
+            let Some(item) = self.items.get(idx) else {
+                continue;
+            };
             let row_height = self.item_height(idx);
             match item {
                 MenuItem::Action {
@@ -1840,22 +1885,31 @@ impl Widget for ContextMenu {
                     self.move_hover(-1);
                     *ctx.handled = true;
                 }
-                Key::Named(NamedKey::Enter | NamedKey::ArrowRight) => {
-                    let opens = self.hovered.filter(|&idx| {
-                        self.items
-                            .get(idx)
-                            .and_then(MenuItem::submenu_items)
-                            .is_some()
-                    });
-                    if let Some(idx) = opens {
+                Key::Named(NamedKey::Enter | NamedKey::ArrowRight)
+                    if !matches!(key, Key::Named(NamedKey::ArrowRight))
+                        || self.query.is_none()
+                        || self.hovered_submenu().is_some() =>
+                {
+                    if let Some(idx) = self.hovered_submenu() {
                         self.open_submenu(idx, true);
                     } else if let (Key::Named(NamedKey::Enter), Some(idx)) = (key, self.hovered) {
                         self.click_item(idx);
+                    } else if matches!(key, Key::Named(NamedKey::Enter)) {
+                        // Nothing matches what is typed: Enter asks it.
+                        self.ask_typed();
                     }
                     *ctx.handled = true;
                 }
-                _ => {}
+                _ => {
+                    if self.edit_query(event, ctx.modifiers) {
+                        *ctx.handled = true;
+                    }
+                }
             },
+            WindowEvent::Ime(_) if self.query.is_some() => {
+                self.edit_query(event, ctx.modifiers);
+                *ctx.handled = true;
+            }
             WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height,
@@ -1870,7 +1924,9 @@ impl Widget for ContextMenu {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
+                if self.place_query_caret(self.last_cursor) {
+                    // A press in the field puts the caret there.
+                } else if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
                     self.click_item(idx);
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
@@ -1899,7 +1955,9 @@ impl Widget for ContextMenu {
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
-                        if let Some(idx) = self.item_at([point.x, point.y]) {
+                        if self.place_query_caret(point) {
+                            // A tap in the field types there.
+                        } else if let Some(idx) = self.item_at([point.x, point.y]) {
                             self.click_item(idx);
                         } else {
                             self.close();
@@ -1926,6 +1984,20 @@ impl Widget for ContextMenu {
         self.open
     }
 
+    /// An open menu that takes typing is where typed text goes: its caret
+    /// is the input method's.
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.query_caret()
+    }
+
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.query_caret().map(|_| crate::ime::InputContent::TEXT)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.query_fingerprint(key)
+    }
+
     /// Participates in the App's modal-capture contract — suppressing focus
     /// shortcuts while up.
     fn modal_capture(&self) -> Option<Rect> {
@@ -1946,15 +2018,16 @@ impl Widget for ContextMenu {
         // virtual children. A container-only node made the menu visible to an
         // assistive technology but hid every action inside it.
         let action_count = self
-            .items
+            .shown
             .iter()
-            .filter(|item| matches!(item, MenuItem::Action { .. }))
+            .filter(|&&index| matches!(self.items.get(index), Some(MenuItem::Action { .. })))
             .count();
         let mut action_position: usize = 0;
-        let children = self
-            .items
+        let field = self.query_access_node();
+        let rows = self
+            .shown
             .iter()
-            .enumerate()
+            .filter_map(|&index| self.items.get(index).map(|item| (index, item)))
             .filter_map(|(index, item)| {
                 if let MenuItem::Caption(text) = item {
                     // Read in place among the rows, never focused.
@@ -2015,8 +2088,8 @@ impl Widget for ContextMenu {
                     node.children.push(nested);
                 }
                 Some(node)
-            })
-            .collect();
+            });
+        let children = field.into_iter().chain(rows).collect();
         Some(
             AccessNode::new(Role::Menu)
                 .with_state(AccessState {
@@ -2035,7 +2108,17 @@ impl Widget for ContextMenu {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.open {
+            return false;
+        }
+        if target == "context-menu:query" {
+            let crate::a11y::Action::SetValue(text) = action else {
+                return false;
+            };
+            self.set_query(text);
+            return true;
+        }
+        if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
         let Some(index) = target
@@ -2307,6 +2390,8 @@ pub use component::{MenuButtonProps, MenuItemProps};
 
 #[cfg(test)]
 mod a11y_tests;
+#[cfg(test)]
+mod typing_tests;
 
 #[cfg(test)]
 mod tests {

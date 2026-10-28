@@ -343,8 +343,30 @@ impl CapnpBrokerState {
             runtime_collab::TaskRunUpdate::Succeeded { .. } => "completed",
             runtime_collab::TaskRunUpdate::Failed { .. } => "stopped",
             runtime_collab::TaskRunUpdate::Cancelled { .. } => "cancelled",
+            runtime_collab::TaskRunUpdate::Progress {
+                presentation: Some(presentation),
+                ..
+            } => {
+                // What the turn streams goes to whoever follows the run
+                // here, as the agent reported it, bounded.
+                if let (Some(service), Ok(presentation)) = (
+                    self.tracker_runs(&run.cluster_id),
+                    presentation.clone().bounded(),
+                ) {
+                    service.presented(
+                        &run.cluster_id,
+                        &run.task_id,
+                        run.native.epoch,
+                        Some(&presentation),
+                    );
+                }
+                return Ok(());
+            }
             _ => return Ok(()),
         };
+        if let Some(service) = self.tracker_runs(&run.cluster_id) {
+            service.presented(&run.cluster_id, &run.task_id, run.native.epoch, None);
+        }
         if outcome != "completed" {
             self.cancel_native_children(run)?;
         }

@@ -662,6 +662,11 @@ impl App {
             handled = true;
         }
 
+        // Select and type: a key nothing took, over a selection, asks about it.
+        if !handled && app.handle_unconsumed_typed_key(&event) {
+            handled = true;
+        }
+
         // Ctrl+T / Ctrl+W / Ctrl+Shift+T / Ctrl+Tab / Ctrl+Shift+Tab nobody
         // consumed are the desktop's tab chords.
         if !window.hosts_tab_chords() {

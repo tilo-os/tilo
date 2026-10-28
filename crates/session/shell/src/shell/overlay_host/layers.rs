@@ -268,9 +268,9 @@ pub(crate) enum LayerIntent {
         target: TabMenuTarget,
         action: WindowMenuAction,
     },
-    /// Tell an agent about the thing the shell's context menu was opened on
-    /// ([`TabMenuLayer::take_thing`]).
-    TellAgent,
+    /// Ask an agent what was typed into the shell's context menu, about
+    /// what the menu was opened on ([`TabMenuLayer::take_asked`]).
+    Ask,
     /// Start a session lifecycle action through the one session executor
     /// that the typed `session.*` actions also reach.
     Session(os_actions::SessionAction),

@@ -1027,6 +1027,10 @@ mod action_palette_tests;
 #[path = "search_open_tests.rs"]
 mod search_open_tests;
 
+#[cfg(test)]
+#[path = "select_type_tests.rs"]
+mod select_type_tests;
+
 // See `crate::view` for the (de)serialize-as-a-whole design this implements.
 impl crate::view::FreezeThaw for App {
     /// `AutoCommit::save` takes `&mut self` to flush its open transaction;
