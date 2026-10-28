@@ -201,7 +201,9 @@ fn a_root_of_layers_shows_the_top_layer_and_cant_be_written() {
     spec.mount(Mount::read_only("/usr", "/usr"));
     shell(
         &mut spec,
-        "cat /etc/hello /etc/only-base; if echo x > /new 2>/dev/null; then echo wrote; fi",
+        // The refused redirection's own message goes to the subshell's stderr, which is
+        // silenced: `cmd > /new 2>/dev/null` would print it, since `> /new` fails first.
+        "cat /etc/hello /etc/only-base; if (echo x > /new) 2>/dev/null; then echo wrote; fi",
     );
     let (mut out_r, out_w) = crate::support::pipe();
     let err_w = out_w.try_clone().unwrap();
