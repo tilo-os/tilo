@@ -19,7 +19,8 @@ class DevOverridesContractTests(unittest.TestCase):
                     "    # --features dev-session in a continuation comment is fine\n"
                     "    && cargo build --release -p shell --features shell/dev-session\n"
                     "RUN cargo build --release --all-features\n"
-                    "RUN cargo build --release -p shell --features my-dev-overrides-x\n",
+                    "RUN cargo build --release -p shell --features my-dev-overrides-x\n"
+                    "RUN cargo build --release -p shell --features shell/hosted-test-control\n",
                     encoding="utf-8",
                 )
                 (os_dir / "Containerfile.dev").write_text(
@@ -35,6 +36,7 @@ class DevOverridesContractTests(unittest.TestCase):
                     ("os/Containerfile", 3, "dev-overrides"),
                     ("os/Containerfile", 5, "dev-session"),
                     ("os/Containerfile", 6, "--all-features"),
+                    ("os/Containerfile", 8, "hosted-test-control"),
                 ],
             )
             message = str(violations[0])
