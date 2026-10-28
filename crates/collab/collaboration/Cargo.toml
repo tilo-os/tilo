@@ -13,9 +13,51 @@ default = []
 # The local session runtime: the identity the launcher bound, read through
 # the identity client.
 local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
+# A native launch: the manager joins its room on the connection the launcher
+# (or the shell, for a window it opened) handed the process.
+native = ["local-daemons"]
+# The collaboration manager's built-in transport: the Tilo collab broker's
+# Cap'n Proto SDK on a worker thread (`broker`). Without it the manager is
+# driven only through `CollaborationManager::with_transport`, and
+# `CollaborationManager::new` starts disabled.
+broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+# The fixtures the toolkit's own tests drive the manager, its committed reads
+# and native construction with: the fake broker the tests stand up.
+test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
 collab-types = { version = "0.1.0", path = "../collab-types" }
+channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+# The clock (`crate::time`), background work and wake routing
+# (`crate::background`, `crate::wake`), as the toolkit reads them.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-rt.workspace = true
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+# Content a record references, carried on its route.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+# The private storage the managed sender keeps its outbox in.
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+# The channel settings the shell hands an app (personal dictionary).
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# Governed audio output for a native launch.
+media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media" }
+registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+serde.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+thiserror.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand_core.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # The local document action report is the broker SDK's vocabulary.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
@@ -38,6 +80,15 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+serial_test.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+# The tests stand up a fake capnp broker on one end of a
+# `UnixStream::pair()` and drive `CollaborationManager` against it.
+capnp.workspace = true
+runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
+tracing-subscriber.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The identity tests read the configuration directory the process names.
@@ -51,3 +102,4 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }

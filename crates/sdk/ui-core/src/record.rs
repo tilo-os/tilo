@@ -1075,7 +1075,7 @@ impl RecordSet {
                     .record(&self.package_id, &self.home, want)
                     .inspect_err(|error| {
                         // A record on its way fails nothing.
-                        if let RecordOpenError::Initialization(error) = error {
+                        if let crate::collaboration::native_initial::RecordReadError::Initialization(error) = error {
                             crate::collaboration::native_initial::fail(error);
                         }
                     })
@@ -1641,7 +1641,9 @@ impl RecordStore {
         if workspace.id != self.0.borrow().home {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        initialization.validate_original(&original, checkout, &workspace.id)?;
+        initialization.validate_original(checkout, |read| {
+            validate_creation_capture(&original, checkout, &workspace.id, read)
+        })?;
         let original_heads = original.base_heads();
         let mut document = original.clone();
         genesis(&mut document, checkout, &workspace.id, initialize)?;
@@ -1761,7 +1763,8 @@ impl RecordOwners {
             app_state::validate_record_identity(package_id, workspace_id, "validation")?;
         }
         if let Some(cache) = &self.portable
-            && let Some(owner) = cache.record_owner(package_id, workspace_id)
+            && let Some(owner) =
+                cache.record_owner::<std::cell::RefCell<RecordSet>>(package_id, workspace_id)
         {
             return Ok(RecordStore(owner));
         }
@@ -2107,6 +2110,17 @@ fn validate_created_identity(
         return Err(RecordOpenError::IdentityMismatch);
     }
     Ok(())
+}
+
+impl From<crate::collaboration::native_initial::RecordReadError> for RecordOpenError {
+    fn from(error: crate::collaboration::native_initial::RecordReadError) -> Self {
+        use crate::collaboration::native_initial::RecordReadError;
+        match error {
+            RecordReadError::IdentityMismatch => Self::IdentityMismatch,
+            RecordReadError::Arriving => Self::Arriving,
+            RecordReadError::Initialization(error) => Self::Initialization(error),
+        }
+    }
 }
 
 pub(crate) fn validate_creation_capture(
@@ -3941,6 +3955,8 @@ mod identity_tests;
 mod arrival;
 mod opening;
 pub use opening::RecordOpening;
+#[cfg(all(test, feature = "broker-transport"))]
+mod named_creation_tests;
 #[cfg(test)]
 mod replica_merge_tests;
 
