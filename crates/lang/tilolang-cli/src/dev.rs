@@ -299,10 +299,13 @@ impl Dev {
         Ok(apps)
     }
 
-    /// Open the app in every session where it has no window yet.
+    /// Open the app in every session where it has no window yet, once that session's catalogue
+    /// offers it: a session indexes an app it just installed, or installed as it started,
+    /// before it can open it.
     pub(crate) fn open(&self) -> Result<(), String> {
         for peer in &self.peers {
             if !peer.is_open(&self.bin, &self.opened) {
+                peer.wait_offered(&self.bin, &self.opened)?;
                 peer.open(&self.bin, &self.opened)?;
             }
         }
