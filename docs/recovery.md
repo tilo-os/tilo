@@ -358,10 +358,6 @@ t dispatch boot-assessment-x86_64 --ref <branch>
 # Settling after a fallback against a stand-in bootc and journal, no VM: what is
 # made the default, what is left alone, and the report.
 ./os/tests/boot_fallback.sh
-
-# The state-version refusal, against the compositor binary:
-cargo build -p shell --bin shell
-./scripts/headless-examples/older-binary-meets-newer-state.py
 ```
 
 ## The state a rollback cannot help with

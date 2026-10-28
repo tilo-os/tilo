@@ -198,8 +198,7 @@ a working PTY. The separately discovered `applications:so.tilo.terminal`
 launches the packaged app and should be checked with foreign-frame counters.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
-invocation against an isolated compositor. `app-launch-proof.py` selects native
-applications by provider/ID and checks that a new surface actually paints.
+invocation against an isolated compositor.
 
 ### Native mounted host-service regression tests
 
@@ -468,8 +467,7 @@ Alongside those, the `*-proof.py` scripts in the same directory stand up
 them in one room, and assert across them. Reach for one of those when the
 question is about collaboration rather than about one session's chrome —
 `peers-cross-both-ways.py` is the presence regression net (each session
-must paint the other's cursor, under the name the room gave it), and
-`named-peer-proof.py` covers naming through a running app.
+must paint the other's cursor, under the name the room gave it).
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 
@@ -953,25 +951,6 @@ The run persists through the app's real store (`ui::persist`), so pointing
 `XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
 restart test.
 
-## Persistence sweep
-
-`scripts/persistence-sweep.py` does exactly that, for every app:
-
-```bash
-scripts/persistence-sweep.py                 # all apps
-scripts/persistence-sweep.py ebook monitor   # named apps
-scripts/persistence-sweep.py --json out.json
-```
-
-Each app is run three times against a scratch data directory — cold (no
-input), driven (clicks/keystrokes, then exit), relaunched — and two things are
-asserted: the input actually changed the document (otherwise a passing restart
-proves nothing), and the document that came back off disk matches the one the
-app had when it exited. Apps that need specific actions get them from
-`scripts/persistence-scenarios.json`; otherwise the harness picks addressable
-widgets out of the app's own live tree, skipping anything whose name suggests
-a destructive operation.
-
 ## Undo, through the driver
 
 `Driver` records undo boundaries the way the real host does, so a headless
@@ -994,39 +973,6 @@ host yourself in a unit test, use `record_committed_action_authored` (or that
 function) rather than the anonymous `record_committed_action`: the anonymous
 form produces an entry production no longer creates, so a test built on it
 passes while proving nothing.
-
-## Opening an app the machine does not have
-
-`scripts/headless-examples/install-on-open.py` drives the one flow that cannot be
-exercised from an installed package, because its subject is a package
-that is not installed: typing the name of an app the configured
-registries offer, pressing Enter, and getting a tab.
-
-```bash
-cargo build -p shell -p sheets -p install -p launcher
-cargo build -p app-cli --bins --examples
-
-scripts/headless-examples/install-on-open.py --out target/install-on-open
-scripts/headless-examples/install-on-open.py --backend winit --stage-only   # drive it yourself
-```
-
-It packs the real Sheets binary into a signed `.tapp`, serves it from a
-loopback registry, points a headless compositor at an empty install
-root, and then checks four things off the compositor's own state: that
-the app is offered and absent, that its palette row is worded
-identically to an installed app's, that `Enter` activates it, and that
-the resulting tab presents frames of its own rather than the
-first-frame placeholder. Three PNGs land in `--out`.
-
-Two things it pins that are easy to get wrong by hand:
-
-- The socket takes **winit** key names. `Enter` works; `Return` is an
-  xkb name and comes back as a `parse_error`.
-- **`Super+Space`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
-  only widens to global when nothing is focused — so it appears to work
-  on an empty workspace and stops working once there is a tab in front
-  of you. The script measures both scopes after the app is up, where
-  the difference is visible.
 
 ## What's still missing
 

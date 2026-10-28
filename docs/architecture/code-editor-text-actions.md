@@ -45,7 +45,7 @@ arguments and Viewer read/write separation. These are production-path app
 checks, not evidence of a model-authored repair or a separately packaged native
 process run.
 
-The developer qualification script `scripts/headless-examples/code-editor-text-proof.py`
+The developer qualification script [`code-editor-text-proof.py`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/code-editor-text-proof.py)
 packages and installs the normal signed native app and runtime, enrolls a private
 session through the existing bootstrap, and places a generic UTF-8 fixture in
 that room's ordinary app directory. It opens the file as the authorized human and supplies only the actual
@@ -54,11 +54,6 @@ public open/read/edit actions,
 observes original terminal receipts, and checks overlapping stale refusal through
 another read. It requires already built platform/bootstrap binaries and a new
 private output directory:
-
-```sh
-python3 scripts/headless-examples/code-editor-text-proof.py \
-  --binaries target/debug --out target/platform-integration/code-editor-text-v1
-```
 
 The project resource declares its kind (`code_editor.project`) as the literal
 required by the normal packager. The proof checks the actual installed signed manifest includes this
