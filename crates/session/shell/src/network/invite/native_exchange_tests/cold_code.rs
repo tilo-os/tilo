@@ -4,7 +4,7 @@ use super::*;
 use automerge::{AutoCommit, ReadDoc as _};
 use std::path::Path;
 use tilo_actions::Action as _;
-use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
+use tilo_joined_room::DocumentRead;
 
 pub(super) const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
 
@@ -34,29 +34,27 @@ pub(super) fn governor(directory: &Path, workspace_emoji: bool) -> TestGovernor 
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let mut governor =
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
-    let route =
-        ApplicationRecord::declared(APP, RECORD, PROJECT_KIND, &[PROJECT_KIND.into()]).unwrap();
     let now = SystemTime::now();
-    assert!(
-        owner
-            .prepare_application_record(room, &certificate, &key, &route, now)
-            .unwrap()
+    // The empty genesis a room's governor writes for a member's first open,
+    // then the creator's own first change onto it.
+    publish_record(
+        owner,
+        room,
+        APP,
+        RECORD,
+        automerge::AutoCommit::new(),
+        &key,
+        now,
     );
-    let capture = capture(&owner, &certificate);
-    let mut document = source_document(directory);
-    owner
-        .initialize_application_record(
-            room,
-            &certificate,
-            &key,
-            ApplicationInitialization {
-                route: &route,
-                revision: capture.revision,
-                document: &document.save(),
-            },
-            now,
-        )
-        .unwrap();
+    publish_record(
+        owner,
+        room,
+        APP,
+        RECORD,
+        source_document(directory),
+        &key,
+        now,
+    );
     if workspace_emoji {
         create_workspace_emoji(&owner, &certificate, &key, now);
     }
@@ -113,19 +111,71 @@ pub(super) fn governor(directory: &Path, workspace_emoji: bool) -> TestGovernor 
 /// member's own change.
 fn create_workspace_emoji(
     owner: &NativeWorkspaceOwner,
-    certificate: &DeviceCert,
+    _certificate: &DeviceCert,
     key: &ed25519_dalek::SigningKey,
     now: SystemTime,
 ) {
     use tilo_app::tilo_workspace_emoji::{KIND, OWNER};
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let record = collab_types::workspace_record_id(KIND);
-    let route = ApplicationRecord::declared(OWNER, &record, KIND, &[KIND.into()]).unwrap();
-    assert!(
-        owner
-            .prepare_application_record(room, certificate, key, &route, now)
-            .unwrap()
+    publish_record(
+        owner,
+        room,
+        OWNER,
+        &record,
+        automerge::AutoCommit::new(),
+        key,
+        now,
     );
+}
+
+/// Publish `document` as the record's next state, signed by the governing
+/// device: the empty genesis a room's governor writes when a member first
+/// opens the app, then that member's own first change reaching the record.
+fn publish_record(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    app: &str,
+    record: &str,
+    document: AutoCommit,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) {
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
+    let message = owner
+        .with_current(room, |view| {
+            view.peer().clone().publication_mut().publish_document(
+                app,
+                record,
+                document.save(),
+                key,
+                now,
+            )
+        })
+        .unwrap();
+    let neighbour_wire::NeighbourMsg::AppDocument {
+        app_id,
+        cluster_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        panic!("a record's state is a document write");
+    };
+    owner
+        .commit_document(
+            OwnerCommitRequest {
+                room: cluster_id,
+                operation: CommitOperation::Document {
+                    app: app_id,
+                    record: record_id,
+                    envelope,
+                },
+            },
+            now,
+        )
+        .unwrap();
 }
 
 #[track_caller]
