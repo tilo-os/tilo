@@ -31,7 +31,7 @@ pub const EMBEDDED: &[Embedded] = &[
     embedded!("notes"),
     embedded!("letters"),
     embedded!("chat"),
-    embedded!("board"),
+    embedded!("today"),
     Embedded {
         dir: "handmade",
         source: include_str!("../tests/handmade/app.tl"),

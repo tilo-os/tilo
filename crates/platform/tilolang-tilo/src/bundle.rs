@@ -7,8 +7,9 @@
 //! * `app.wasm`: the compiled module, its metadata (schema, roots, actions, views) in the
 //!   `tilolang.meta` custom section;
 //! * `app.ids`: the ids lock it was compiled with;
-//! * `imports/<app>.json`: the metadata of each package it uses, so the runtime knows the record
-//!   schemas of resources it reads from them;
+//! * `imports/<app>.wasm`: the compiled module of each package it uses, its metadata embedded
+//!   the same way, so the runtime runs their views and actions on the resources it holds of them
+//!   (a board drawing todos' rows), each package under its own authority;
 //! * `surface.toml`: the surface generated from the metadata, which receivers decide the app's
 //!   changes against;
 //! * `icon.svg`: the app's icon, when it declares one.
@@ -35,12 +36,8 @@ pub enum BundleError {
     },
     #[error("{0}: not a tilolang module (no tilolang.meta section)")]
     NotAModule(PathBuf),
-    #[error("{path}: not package metadata: {source}")]
-    BadImport {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
+    #[error("{0}: not a tilolang module (no tilolang.meta section)")]
+    BadImport(PathBuf),
     #[error("{MODULE_ENV} is not set: the tilolang runtime runs the package the launcher names")]
     Unset,
 }
@@ -52,8 +49,33 @@ pub struct Bundle {
     pub meta: Meta,
     /// The ids lock, as text.
     pub ids: String,
-    /// The metadata of the packages this one uses, by their app ids.
-    pub imports: Vec<Meta>,
+    /// The packages this one uses, each before those that use it.
+    pub imports: Vec<Import>,
+}
+
+/// A package another one uses: its compiled module and the metadata the module embeds.
+#[derive(Clone, Debug)]
+pub struct Import {
+    pub wasm: Vec<u8>,
+    pub meta: Meta,
+}
+
+impl Import {
+    /// The package compiled as `compiled`.
+    #[must_use]
+    pub fn new(compiled: &tilolang::Compiled) -> Self {
+        Self {
+            wasm: compiled.wasm.clone(),
+            meta: compiled.meta.clone(),
+        }
+    }
+
+    /// The package whose compiled module is `wasm`, or `None` when it embeds no metadata.
+    #[must_use]
+    pub fn from_wasm(wasm: Vec<u8>) -> Option<Self> {
+        let meta = Meta::from_wasm(&wasm)?;
+        Some(Self { wasm, meta })
+    }
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, BundleError> {
@@ -64,23 +86,26 @@ fn read(path: &Path) -> Result<Vec<u8>, BundleError> {
 }
 
 impl Bundle {
-    /// A bundle of a compiled package and the metadata of the packages it uses.
+    /// A bundle of a compiled package and the packages it uses, each before those that use it.
     #[must_use]
-    pub fn new(compiled: &tilolang::Compiled, imports: Vec<Meta>) -> Self {
+    pub fn new<'a>(
+        compiled: &tilolang::Compiled,
+        imports: impl IntoIterator<Item = &'a tilolang::Compiled>,
+    ) -> Self {
         Self {
             wasm: compiled.wasm.clone(),
             meta: compiled.meta.clone(),
             ids: compiled.ids.to_text(),
-            imports,
+            imports: imports.into_iter().map(Import::new).collect(),
         }
     }
 
-    /// The bundle of the compiled module `wasm`, its ids lock `ids` and the metadata of the
-    /// packages it uses (`imports`, each as its JSON), as a package's payload holds them: what a
-    /// tilolang host is handed for each instance.
+    /// The bundle of the compiled module `wasm`, its ids lock `ids` and the compiled modules of
+    /// the packages it uses (`imports`), as a package's payload holds them: what a tilolang host
+    /// is handed for each instance.
     ///
     /// # Errors
-    /// The module carries no metadata, or an import does not parse.
+    /// The module or an import carries no metadata.
     pub fn from_parts(
         wasm: Vec<u8>,
         ids: String,
@@ -92,12 +117,11 @@ impl Bundle {
             .iter()
             .enumerate()
             .map(|(index, bytes)| {
-                serde_json::from_slice(bytes).map_err(|source| BundleError::BadImport {
-                    path: PathBuf::from(IMPORTS_DIR).join(format!("{index}.json")),
-                    source,
+                Import::from_wasm(bytes.clone()).ok_or_else(|| {
+                    BundleError::BadImport(PathBuf::from(IMPORTS_DIR).join(format!("{index}.wasm")))
                 })
             })
-            .collect::<Result<Vec<Meta>, _>>()?;
+            .collect::<Result<Vec<Import>, _>>()?;
         Ok(Self {
             wasm,
             meta,
@@ -130,14 +154,12 @@ impl Bundle {
             let mut paths: Vec<PathBuf> = entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "wasm"))
                 .collect();
             paths.sort();
             for path in paths {
                 let bytes = read(&path)?;
-                let meta = serde_json::from_slice(&bytes)
-                    .map_err(|source| BundleError::BadImport { path, source })?;
-                imports.push(meta);
+                imports.push(Import::from_wasm(bytes).ok_or(BundleError::BadImport(path))?);
             }
         }
         Ok(Self {
@@ -163,7 +185,12 @@ impl Bundle {
     /// `reads` those of the packages it uses.
     #[must_use]
     pub fn surface(&self) -> Vec<u8> {
-        crate::surface::surface_toml_reading(&[&self.meta], &self.imports).unwrap_or_default()
+        let reads: Vec<Meta> = self
+            .imports
+            .iter()
+            .map(|import| import.meta.clone())
+            .collect();
+        crate::surface::surface_toml_reading(&[&self.meta], &reads).unwrap_or_default()
     }
 
     /// Write the bundle into `dir` (created when missing): module, ids lock, imports and
@@ -186,8 +213,9 @@ impl Bundle {
         write(dir.join(SURFACE_FILE), &self.surface())?;
         for import in &self.imports {
             write(
-                dir.join(IMPORTS_DIR).join(format!("{}.json", import.app)),
-                &import.to_json_bytes(),
+                dir.join(IMPORTS_DIR)
+                    .join(format!("{}.wasm", import.meta.app)),
+                &import.wasm,
             )?;
         }
         Ok(())

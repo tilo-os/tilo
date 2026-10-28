@@ -3266,7 +3266,9 @@ pub use date_indexed_scrollbar::{
     ProjectedDateMarker,
 };
 pub mod board;
+mod board_component;
 pub use board::{Board, BoardDrop};
+pub use board_component::{BoardCardProps, BoardLaneProps, BoardProps};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;

@@ -52,7 +52,7 @@ view counter(c: Counter) {
 opens through the type's default view (`default view counter for Counter`).
 
 `use other.app as other` imports another package. Imports are found among the package's sibling
-directories (for `apps/tl/board`, the other directories of `apps/tl`); `--path <dir>` adds a
+directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
 ## Syntax reference
@@ -314,7 +314,7 @@ and writes each as a signed `.tapp`:
 - the entrypoint: `[entrypoint] runtime = "tilolang/<version>"`, `bin = "bin/tilolang-app"`. The
   launcher runs the tilolang runtime bundle's binary (`apps/tilolang`) and points it at the
   package's payload with `TILO_APP_MODULE`;
-- the payload: `app.wasm`, `app.ids`, the metadata of the packages it uses (`imports/`), the
+- the payload: `app.wasm`, `app.ids`, the compiled modules of the packages it uses (`imports/`), the
   `surface.toml` generated from the metadata (declaring the kinds it reads from the packages it
   uses as `reads`), and the icon.
 
