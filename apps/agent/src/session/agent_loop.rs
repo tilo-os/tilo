@@ -1172,10 +1172,6 @@ impl Session {
             .map_or_else(|| reason.to_owned(), |turn| turn.retained_failure(reason)))
     }
 
-    /// One model turn: stream it, validate its complete batch, execute and record
-    /// the results. `Some` ends the loop. A turn that ends early (cancelled,
-    /// out of time, a broken model turn) asks the host to stop every
-    /// independent invoke it left running.
     /// Hold what turn `turn` is expected to cost on the run's issue before
     /// it starts, answering the issue's refusal where the turn would take
     /// the task past a budget.
@@ -1197,10 +1193,8 @@ impl Session {
     fn settle_turn_spend(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        body: &str,
         usage: agent_provider_config::protocol::Usage,
     ) -> Result<()> {
-        let _ = body;
         let Some(held) = self.held_turn.take() else {
             return Ok(());
         };
@@ -1220,6 +1214,10 @@ impl Session {
         Ok(())
     }
 
+    /// One model turn: stream it, validate its complete batch, execute and record
+    /// the results. `Some` ends the loop. A turn that ends early (cancelled,
+    /// out of time, a broken model turn) asks the host to stop every
+    /// independent invoke it left running.
     fn run_turn(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1337,12 +1335,12 @@ impl Session {
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             // Streamed calls are presentation only. Dispatch the complete batch,
             // in order, only after validating every call and the terminal status.
-            let answered = self
+            let answered_usage = self
                 .turn
                 .as_ref()
                 .and_then(|turn| turn.finished.as_ref())
                 .and_then(|finished| finished.as_ref().ok())
-                .map(|body| (body.clone(), turn_usage(body)));
+                .map(|body| turn_usage(body));
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 if let Some(Ok(body)) = &active.finished {
@@ -1366,8 +1364,8 @@ impl Session {
                     }
                 }
             }
-            if let Some((body, usage)) = answered {
-                self.settle_turn_spend(run, &body, usage)?;
+            if let Some(usage) = answered_usage {
+                self.settle_turn_spend(run, usage)?;
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
