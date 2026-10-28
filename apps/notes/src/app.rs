@@ -952,6 +952,13 @@ impl NotesApp {
         let mut sidebar_damage = Vec::new();
         if self.sidebar_node.is_some() {
             sidebar.collect_damage(&mut sidebar_damage);
+            // The outline draws into the same part, under the page tree: a
+            // heading typed into the note changes it, and without its damage
+            // the part could not say where it changed and the whole window
+            // was repainted for every key.
+            if self.outline_node.is_some() {
+                self.outline.collect_damage(&mut sidebar_damage);
+            }
         }
         let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
             PaintPart::new(key.into(), rect, scene.clone(), damage)
