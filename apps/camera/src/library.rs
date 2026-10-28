@@ -14,19 +14,18 @@ use std::path::{Path, PathBuf};
 use crate::frame::{self, FrameBuf};
 use crate::model::PhotoFormat;
 
-/// Resolve the capture directory. Honors `CAMERA_DIR` (used by tests and to
-/// point the app at the P2P workspace), otherwise `$XDG_PICTURES_DIR/Camera`,
-/// falling back to `~/Pictures/Camera`.
-pub fn resolve_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("CAMERA_DIR")
-        && !dir.is_empty()
-    {
-        return PathBuf::from(dir);
-    }
-    let pics = tilo_paths::picture_dir().unwrap_or_else(|| {
-        tilo_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
-    });
-    pics.join("Camera")
+/// Resolve the capture directory. Honors an absolute `CAMERA_DIR` (used by
+/// tests and to point the app at the P2P workspace), otherwise
+/// `$XDG_PICTURES_DIR/Camera`, falling back to `~/Pictures/Camera`. `None`
+/// when no absolute directory resolves: captures then stay in the content
+/// store rather than land wherever the process happens to run.
+pub fn resolve_dir() -> Option<PathBuf> {
+    tilo_paths::env_dir("CAMERA_DIR").or_else(|| {
+        tilo_paths::picture_dir()
+            .or_else(|| tilo_paths::home().map(|h| h.join("Pictures")))
+            .filter(|pics| pics.is_absolute())
+            .map(|pics| pics.join("Camera"))
+    })
 }
 
 /// Encode `frame` to `dir` in the requested `format` (a real JPEG or a real

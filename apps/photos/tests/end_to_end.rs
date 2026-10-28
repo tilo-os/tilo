@@ -727,19 +727,66 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
             "the saved pixels differ from the shown ones"
         );
     }
+}
 
-    // The default destination must not be the file that was opened.
-    eprintln!("phase save_does_not_default_to_overwriting_the_original");
-    {
-        let open = photos::OpenImage::new(
-            "/var/tmp/tilo/home/user/harbour.png",
-            10,
-            10,
-            "a".repeat(64),
-        );
-        let suggested = PhotosApp::suggested_save_path(&open);
+/// Save with no destination asks the host's Save chooser, as every app's
+/// Save does, and never writes into the process's working directory.
+#[test]
+fn save_asks_the_chooser_with_a_bare_name() {
+    // The default name must not be the file that was opened, and must be
+    // only a name: a relative path would be written wherever the process
+    // happens to run.
+    eprintln!("phase save_suggests_a_bare_name_that_does_not_overwrite_the_original");
+    for name in [
+        "harbour.png",
+        "/var/tmp/tilo/home/user/harbour.png",
+        "../harbour.png",
+        "",
+    ] {
+        let open = photos::OpenImage::new(name, 10, 10, "a".repeat(64));
+        let suggested = PhotosApp::suggested_save_name(&open);
         assert_ne!(suggested, open.name);
-        assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
+        let path = std::path::Path::new(&suggested);
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(suggested.as_str()),
+            "the suggestion is a bare file name, got {suggested}"
+        );
+        assert!(suggested.ends_with("-edited.png"), "got {suggested}");
+    }
+
+    // Save with no destination asks the host's Save chooser and writes
+    // where it answers, never into the working directory.
+    eprintln!("phase save_without_a_path_asks_the_chooser_and_writes_where_it_answers");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 320, 240);
+        let mut hz = Harness::new(1000.0, 700.0);
+        hz.app().open_path(&path);
+        hz.frame();
+        let shown = hz.app().edited_pixels().expect("rendered").clone();
+
+        let chosen = dir.path().join("chosen.png");
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
+        let _host = ui::host::enter(&services);
+        assert!(hz.app().save_with_chooser(), "nothing was offered to save");
+        let requests = recorder.pick_requests();
+        assert_eq!(requests.len(), 1, "Save asks the chooser once");
+        assert_eq!(requests[0].suggested_name(), Some("harbour-edited.png"));
+        tilo_test_env::wait_until("the chooser's save to finish", || {
+            hz.frame();
+            !hz.app().is_saving()
+        });
+        let back = pixels::decode(&std::fs::read(&chosen).unwrap()).expect("a PNG");
+        assert_eq!(
+            back.bytes, shown.bytes,
+            "the saved pixels differ from the shown ones"
+        );
+        assert!(
+            !std::path::Path::new("harbour-edited.png").exists(),
+            "Save wrote into the working directory"
+        );
     }
 }
 
