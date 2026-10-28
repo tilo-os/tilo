@@ -106,6 +106,19 @@ impl GreeterApp {
             .map(|person| person.secret)
     }
 
+    /// Whether the chosen person's secret is a PIN: at boot as the
+    /// supervisor lists them, after boot as `tilo-authd` keeps it.
+    pub(super) fn secret_is_pin(&self) -> bool {
+        let kind = if self.boot.is_some() {
+            self.boot_secret()
+        } else {
+            self.login_user
+                .as_ref()
+                .and_then(|user| self.secret_kinds.get(&user.username).copied())
+        };
+        kind == Some(boot::SecretKind::Pin)
+    }
+
     /// Send the typed secret to the supervisor, which checks it.
     pub(super) fn attempt_boot_sign_in(&mut self) {
         if self.phase != AuthPhase::Idle {
