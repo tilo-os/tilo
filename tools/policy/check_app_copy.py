@@ -262,16 +262,14 @@ def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
 
 TOOLKIT = "crates/sdk/ui-core"
 # Crates whose copy keys also travel through conditionals and tables.
-INDIRECT = {"apps/settings-core"}
+INDIRECT = {"apps/settings"}
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
-# (apps/settings-core/src/i18n.rs).
-FALLBACK = {"apps/settings-core": ["crates/sdk/provider-settings-ui"]}
-# Crates whose copy is another crate's catalogue: Settings' panes, in the
-# app and in settings-rare, resolve settings-core's; Browser resolves
+# (apps/settings/src/i18n.rs).
+FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
+# Crates whose copy is another crate's catalogue: Browser resolves
 # browser-parts'.
 SOURCES = {
-    "apps/settings-core": ["apps/settings", "apps/settings-rare"],
     "apps/browser-parts": ["apps/browser"],
 }
 

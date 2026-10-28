@@ -1100,14 +1100,8 @@ mod tests {
     #[test]
     fn every_shipped_wallpaper_has_a_name_in_every_language() {
         for (locale, text) in [
-            (
-                "en-US",
-                include_str!("../../../settings-core/locales/en-US.ftl"),
-            ),
-            (
-                "de-DE",
-                include_str!("../../../settings-core/locales/de-DE.ftl"),
-            ),
+            ("en-US", include_str!("../../locales/en-US.ftl")),
+            ("de-DE", include_str!("../../locales/de-DE.ftl")),
         ] {
             for wallpaper in tilo_wallpapers::all() {
                 let key = format!("settings-wallpaper-{} = ", wallpaper.id);

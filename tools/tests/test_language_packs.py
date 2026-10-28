@@ -55,7 +55,7 @@ class LanguagePackTests(unittest.TestCase):
 
     def test_the_repository_packs_settings_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "settings-core"), found)
+        self.assertIn(("de-DE", "settings"), found)
         self.assertNotIn("en-US", {locale for locale, _ in found})
 
     def test_a_locales_pack_is_signed_data_named_by_the_locale(self) -> None:

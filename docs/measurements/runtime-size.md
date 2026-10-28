@@ -95,8 +95,7 @@ client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
 `libtilo_archive_engine.so` for Files; the libraries only Settings uses, the model-provider administration
 panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
-settings, the PC keyboard outlines and the time-zone globe, with Settings'
-core and the panes people rarely open (settings-core, settings-rare):
+settings, the PC keyboard outlines and the time-zone globe:
 `libtilo_settings_engine.so` for
 Settings). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's

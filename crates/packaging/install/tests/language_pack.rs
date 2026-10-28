@@ -108,7 +108,7 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
         &key,
         "2026.10.1",
         &[
-            ("settings-core.ftl", "settings-title = Einstellungen\n"),
+            ("settings.ftl", "settings-title = Einstellungen\n"),
             ("files.ftl", "files-title = Dateien\n"),
         ],
     );
@@ -116,7 +116,7 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
     assert!(ok, "{out}");
     let installed = home.path().join("data/tilo/language-packs/de-DE");
     assert_eq!(
-        std::fs::read_to_string(installed.join("settings-core.ftl")).unwrap(),
+        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
         "settings-title = Einstellungen\n"
     );
 
@@ -127,17 +127,14 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
         home.path(),
         &key,
         "2026.10.2",
-        &[(
-            "settings-core.ftl",
-            "settings-title = Systemeinstellungen\n",
-        )],
+        &[("settings.ftl", "settings-title = Systemeinstellungen\n")],
     );
     let (ok, out) = update(home.path(), &key, &second);
     assert!(ok, "{out}");
     let (ok, out) = update(home.path(), &key, &second);
     assert!(ok && out.contains("already current"), "{out}");
     assert_eq!(
-        std::fs::read_to_string(installed.join("settings-core.ftl")).unwrap(),
+        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
         "settings-title = Systemeinstellungen\n"
     );
     assert!(!installed.join("files.ftl").exists());
@@ -164,11 +161,11 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
         home.path(),
         &stranger,
         "2026.10.3",
-        &[("settings-core.ftl", "x = y\n")],
+        &[("settings.ftl", "x = y\n")],
     );
     assert!(!install(home.path(), &key, &forged).0);
     assert_eq!(
-        std::fs::read_to_string(installed.join("settings-core.ftl")).unwrap(),
+        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
         "settings-title = Systemeinstellungen\n"
     );
 }
@@ -179,7 +176,7 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
 fn a_language_pack_carries_only_its_locales_catalogues() {
     let home = tempfile::tempdir().unwrap();
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    for (directory, file) in [("fr-FR", "settings-core.ftl"), ("de-DE", "bin/tool")] {
+    for (directory, file) in [("fr-FR", "settings.ftl"), ("de-DE", "bin/tool")] {
         let payload = home.path().join(format!("bad-{directory}"));
         let path = payload.join(directory).join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
