@@ -894,6 +894,29 @@ impl TileHost {
         tile
     }
 
+    /// Whether the app in this tile is asking the person to type: a text
+    /// field of it holds the keyboard (`Widget::ime_content`). A stub, a
+    /// notice, a window whose code is on its way, or another device's page
+    /// asks nothing.
+    #[must_use]
+    pub fn asking_for_input(&self) -> bool {
+        match &self.content {
+            TileContent::App(app) => app.ime_content().is_some(),
+            _ => false,
+        }
+    }
+
+    /// What the app whose code is on its way declared its window shows
+    /// meanwhile ([`crate::widget::SkeletonShape`]): the shape the app's
+    /// manifest declares, read from the registry before its code is in. A
+    /// tile told nothing shows its ground alone, as a window that declared
+    /// no shape does.
+    #[must_use]
+    pub fn with_arrival_shape(mut self, shape: super::SkeletonShape) -> Self {
+        self.declared_arrival_shape = Some(shape);
+        self
+    }
+
     /// Content whose first frame comes from `from`: an [`TileContent::Arriving`]
     /// place for an app whose code a host serves.
     #[must_use]
