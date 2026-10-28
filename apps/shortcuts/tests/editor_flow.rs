@@ -941,7 +941,7 @@ fn a_condition_holds_steps_and_a_step_folds_away() {
     let tilo_automation::StepKind::If { then, .. } = &top[0].kind else {
         panic!("the first step is the condition: {:?}", top[0].kind);
     };
-    assert_eq!(then.len(), 2, "the moved step joins what the if holds");
+    assert_eq!(then.len(), 1, "the moved step is what the condition holds");
 
     // A step keeps its place in the program while it is folded: only its
     // drawing goes.
