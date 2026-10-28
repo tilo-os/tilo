@@ -6,6 +6,10 @@ record — a read-only stack of images for `/usr` and `/etc`, the environment's
 own home, the directories it was granted — puts a shell inside it, and brokers
 every request that would reach past it.
 
+Where it is going: [`ush-portable.md`](ush-portable.md), a shell that runs
+Tilo's own commands as actions anywhere, and starts a Linux guest only for the
+commands that need one.
+
 ## The problem it solves
 
 `apps/terminal` cannot `exec` `$SHELL`. Inside a Tilo app sandbox that fails
