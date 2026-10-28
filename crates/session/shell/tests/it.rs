@@ -135,6 +135,8 @@ mod identity_startup;
 mod idle_inhibit_protocol;
 #[path = "idle_memory.rs"]
 mod idle_memory;
+#[path = "idle_publications.rs"]
+mod idle_publications;
 #[path = "idle_settles.rs"]
 mod idle_settles;
 #[path = "idle_wakeups.rs"]

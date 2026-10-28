@@ -1254,6 +1254,10 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         device_projection(&self.bridge, &self.ranker, ctx, &view).1
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -1438,6 +1442,10 @@ impl SearchProvider for CallContinuityActionsProvider {
             &devices,
         )
         .1
+    }
+
+    fn pages_itself(&self) -> bool {
+        true
     }
 
     fn query_page(
