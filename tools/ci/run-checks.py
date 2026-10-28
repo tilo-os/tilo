@@ -299,6 +299,9 @@ class Runner:
         env.update(self.project.get("env", {}))
         if check.get("git") or check.get("secrets") or check.get("id_token"):
             env["T_COMMIT"] = self.tree.commit
+        if check.get("git"):
+            # The checkout belongs to whoever runs this, not to the check's root (with --vm-podman).
+            env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0="/src")
         if self.args.ref:
             env["T_REF"] = self.args.ref
         env.update(check.get("env", {}))
