@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{
-    EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
+    ViewCx,
 };
 use ui::record::RecordId;
 use ui::tilo_resource::{
@@ -31,7 +31,6 @@ use crate::markup::{
 use crate::model::{
     AnnoKind, FormEntry, GeomSpace, MARGIN, PAGE_H, PAGE_W, PtRect, SignatureInk, Swatch,
 };
-use crate::scenarios::SampleDocument;
 
 /// The most text one comment or reply holds.
 const MAX_COMMENT_CHARS: usize = 100_000;
@@ -851,8 +850,6 @@ impl ResourceApp for PdfViewerShell {
             PdfApp::past()
         } else if let Some(path) = cx.launch_arguments().first() {
             PdfApp::open_with_content(path, content)
-        } else if cx.fixture::<SampleDocument>().is_some() {
-            PdfApp::sample_with_content(content)
         } else {
             PdfApp::empty_with_content(content)
         };
@@ -902,14 +899,17 @@ impl ResourceApp for PdfViewerShell {
         vec![crate::actions::pin_source_action(&hash, len, file.name())]
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::SCENARIOS
     }
 
-    fn fixture(fixture: &mut Fixture<PdfMarkup>) {
+    #[cfg(feature = "samples")]
+    fn fixture(fixture: &mut ui::framework::Fixture<PdfMarkup>) {
         crate::scenarios::fixture(fixture);
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
         crate::scenarios::scenario(name)
     }
@@ -929,6 +929,16 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
         self.shown_search_entries()
     }
 
+    /// The system's search reads the open document's every page, not only
+    /// the pages the reader has shown.
+    fn search_query(&mut self, _query: &ui::search::SearchQuery) {
+        self.read_text_for_search();
+    }
+
+    fn search_pending(&self) -> bool {
+        self.search_text_pending()
+    }
+
     fn attach(&mut self, cx: SurfaceCx<PdfMarkup>) {
         self.attach_framework(cx.dispatcher());
         self.attach_people(cx.people());
@@ -945,6 +955,7 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
         self.set_read_only(read_only);
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         PdfApp::stage(self, scenario);
     }

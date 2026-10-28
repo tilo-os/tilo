@@ -1,11 +1,15 @@
-//! The screenshot scenarios: the bundled demonstration document reviewed by
-//! three people, staged through the reader's own actions.
+//! The screenshot scenarios: a real PDF reviewed by three people, staged
+//! through the reader's own actions.
 //!
-//! The markup is written as the field edits that put each item in place,
-//! with fixed ids, dates and authors, so every capture of a scenario is the
-//! same frame. The view state
-//! a scenario shows (an open editor, a selection, a menu) is staged by the
-//! reader itself once these have applied (`crate::PdfApp::stage`).
+//! The document is the frozen test asset `sample.pdf` ("Field Notes on
+//! Estuarine Birds", three US-Letter pages), kept in the capture's content
+//! store and pinned as the record's source, so the reader opens it through
+//! the PDF worker exactly as it opens a file it was handed. The markup is
+//! written as the field edits that put each item in place, with fixed ids,
+//! dates and authors, so every capture of a scenario is the same frame. The
+//! view state a scenario shows (an open editor, a selection, a menu) is
+//! staged by the reader itself once the document has opened
+//! (`crate::PdfApp::stage`).
 
 use ui::framework::Fixture;
 use ui::tilo_resource::{Collection, Edit, Id, Invoke};
@@ -31,11 +35,19 @@ pub const SCENARIOS: &[&str] = &[
 /// The scenarios that show the reader before any document is open.
 const WITHOUT_DOCUMENT: &[&str] = &["empty", "loading", "error"];
 
+/// The document the scenarios show.
+pub(crate) const SAMPLE_PDF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.pdf"));
+/// The name it is pinned under.
+pub(crate) const SAMPLE_NAME: &str = "Field Notes on Estuarine Birds.pdf";
+
+/// The word of page 1 the selection scenario selects.
+pub(crate) const SELECTED_WORD: &str = "harrier";
+
 /// The sticky note the review lands on, and the comment pinned to it.
 pub(crate) const NOTE: &str = "sample-note";
 pub(crate) const NOTE_COMMENT: &str = "sample-note-comment";
 pub(crate) const NOTE_COMMENT_BODY: &str =
-    "Should we spell out the Iroh relay and persistent-host fallback paths here?";
+    "Should we name the harrier's species here, as the later sections do?";
 const HIGHLIGHT: &str = "sample-highlight";
 
 /// Fixed date stamped on the demonstration signature, so captures stay the
@@ -45,30 +57,37 @@ pub(crate) const SIGNED_ON: &str = "2026-06-30";
 /// The signer the demonstration review is signed by.
 pub(crate) const SIGNER: &str = "Alice Example";
 
-/// A capture of a scenario that shows a document reads the bundled
-/// demonstration document rather than a file.
-pub struct SampleDocument;
-
-/// Whether `scenario` shows the bundled document.
+/// Whether `scenario` shows the sample document.
 pub(crate) fn shows_sample(scenario: Option<&str>) -> bool {
     scenario.is_none_or(|name| !WITHOUT_DOCUMENT.contains(&name))
 }
 
 /// What the capture of `fixture`'s scenario reads that its actions do not
-/// stage.
+/// stage: the document's bytes, in the content store the record's source
+/// is read from.
 pub(crate) fn fixture(fixture: &mut Fixture<PdfMarkup>) {
-    if shows_sample(fixture.scenario()) {
-        fixture.provide(SampleDocument);
+    if shows_sample(fixture.scenario())
+        && let Err(error) = fixture.content().put(SAMPLE_PDF)
+    {
+        tracing::warn!(%error, "keeping the sample document failed");
     }
 }
 
-/// The actions that stage `scenario`: the demonstration review on every
-/// scenario that shows the bundled document, nothing on the others.
+/// The actions that stage `scenario`: the sample document pinned as the
+/// record's source and the review on it, on every scenario that shows a
+/// document; nothing on the others.
 pub(crate) fn scenario(scenario: Option<&str>) -> Vec<Invoke<PdfMarkup>> {
     if !shows_sample(scenario) {
         return Vec::new();
     }
-    sample_review().iter().map(Invoke::from).collect()
+    let len = u64::try_from(SAMPLE_PDF.len()).unwrap_or(u64::MAX);
+    let mut actions = vec![crate::actions::pin_source_action(
+        &tilo_content::hash_bytes(SAMPLE_PDF),
+        len,
+        SAMPLE_NAME,
+    )];
+    actions.extend(sample_review().iter().map(Invoke::from));
+    actions
 }
 
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, so a
@@ -89,9 +108,10 @@ pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
     vec![flourish, underline]
 }
 
-/// The demonstration review on page 1: two highlights over the abstract, a
-/// sticky note with a thread, a comment on a highlight, a resolved page
-/// comment and a drawn signature — real review markup anchored to real text.
+/// The review on page 1 of the sample document: a highlight over the
+/// sentence that opens its second paragraph, a sticky note with a thread
+/// beside the third, a comment on the highlight, a resolved page comment and
+/// a drawn signature in the blank lower half of the page.
 #[allow(
     clippy::too_many_lines,
     reason = "one demonstration review, item by item"
@@ -141,21 +161,24 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
         })
     };
     vec![
+        // The lines of 11 pt Helvetica sit on baselines 16 pt apart; the
+        // second paragraph's first two are at 155.65 and 171.65 pt from the
+        // page top.
         markup(
             HIGHLIGHT,
-            AnnoKind::highlight(PtRect::new(64.0, 196.0, 420.0, 14.0)),
+            AnnoKind::highlight(PtRect::new(31.0, 146.5, 550.0, 12.5)),
             Swatch::Yellow,
             "Bob",
         ),
         markup(
             "sample-highlight-2",
-            AnnoKind::highlight(PtRect::new(64.0, 210.0, 300.0, 14.0)),
+            AnnoKind::highlight(PtRect::new(31.0, 162.5, 78.0, 12.5)),
             Swatch::Yellow,
             "Bob",
         ),
         markup(
             NOTE,
-            AnnoKind::Note { x: 506.0, y: 300.0 },
+            AnnoKind::Note { x: 540.0, y: 222.0 },
             Swatch::Blue,
             "Alice",
         ),
@@ -181,7 +204,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
                 (
                     "sample-reply-1",
                     "Bob",
-                    "Good catch — folded it into section 1.2.",
+                    "Good catch — a northern harrier; added it.",
                 ),
                 ("sample-reply-2", "Alice", "Perfect, thanks."),
             ],
@@ -191,7 +214,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             Some(HIGHLIGHT),
             "Bob",
             2,
-            "This sentence is the thesis of the whole paper — let's keep it verbatim.",
+            "This sentence is the thesis of the whole notebook — let's keep it verbatim.",
             false,
             &[],
         ),
@@ -218,8 +241,8 @@ pub(crate) fn record_state() -> ui::State {
     state
 }
 
-/// A document holding the demonstration review, as its actions write it:
-/// what a test of the reader starts from.
+/// A record holding the review, as its actions write it: what a test of the
+/// reader starts from.
 #[cfg(test)]
 pub(crate) fn sample_state() -> ui::State {
     let mut state = record_state();
@@ -230,11 +253,13 @@ pub(crate) fn sample_state() -> ui::State {
     state
 }
 
-/// The demonstration document as a capture of the review shows it, before
-/// its first frame: read with [`sample_state`].
+/// A reader showing three blank US-Letter pages as the review's view state
+/// stages it, before its first frame: read with [`sample_state`]. For the
+/// tests of pages, geometry and markup, which need no text; the tests of
+/// text open the sample document through the PDF worker.
 #[cfg(test)]
 pub(crate) fn sample_reader() -> crate::PdfApp {
-    let mut app = crate::PdfApp::sample();
-    app.stage(None);
+    let mut app = crate::PdfApp::blank_document(3);
+    app.apply_stage(None);
     app
 }

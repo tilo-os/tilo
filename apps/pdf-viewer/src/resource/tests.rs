@@ -56,6 +56,7 @@ fn published_pages_carry_duplicate_and_delete() {
     }
 }
 
+#[serial_test::serial(pdfium)]
 #[test]
 fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
     let specs = PdfEffect::specs();
@@ -88,13 +89,13 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
         "navigation to a place is offered only bound to its row: {ids:?}"
     );
 
-    let mut app = crate::scenarios::sample_reader();
-    let mut state = crate::scenarios::sample_state();
-    app.sync_settled(&mut state.doc, &state.root);
-    app.stage_find_for_test("sandbox");
+    let Some((mut app, _state)) = crate::app::tests::open_sample_review() else {
+        return;
+    };
+    app.stage_find_for_test("godwit");
     assert!(
         app.find_match_count_for_test() > 0,
-        "sample must yield find hits"
+        "the sample must yield find hits"
     );
     let rows: Vec<tilo_actions::ResourceSpec> = app
         .document_rows()
