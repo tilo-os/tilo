@@ -79,6 +79,7 @@ include!("app/actions.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
+include!("app/touch_exploration.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");

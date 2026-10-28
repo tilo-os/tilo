@@ -3727,8 +3727,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
-        // Both volume keys have been held long enough.
-        if self.app.tick_screen_reader_chord(crate::time::now()) {
+        // Both volume keys have been held long enough, or a finger rested.
+        if self.app.tick_screen_reader(crate::time::now()) {
             window.request_redraw();
         }
         if std::mem::take(&mut self.primary_preedit_clear_pending) {
@@ -4241,7 +4241,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
             .chain(self.occluded_tick_at)
-            .chain(self.app.screen_reader_chord_deadline())
+            .chain(self.app.screen_reader_deadline())
             .min();
         if frame_demand::enabled() {
             let mut askers = Vec::new();
@@ -4612,7 +4612,9 @@ impl AppHandler {
         if self.slot_bar.route(&mut self.app, window, &event) {
             return;
         }
-        self.dispatch_touch_pointer_events(window, &event);
+        if self.dispatch_touch_pointer_events(window, &event) {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(window),
             WindowEvent::Resized(_) => {
@@ -4682,11 +4684,18 @@ impl AppHandler {
         self.close_primary_window(window);
     }
 
-    fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
+    /// The pointer events a finger makes, ahead of its own touch events.
+    /// `true` when the built-in screen reader took the finger instead
+    /// ([`App::explore_by_touch`]): nothing else sees it then.
+    fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) -> bool {
         let WindowEvent::Touch(touch) = event else {
-            return;
+            return false;
         };
         let scale = window.scale_factor();
+        if self.app.explore_by_touch(touch, scale) {
+            window.request_redraw();
+            return true;
+        }
         let app = &self.app;
         let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
             app.touch_claim_at(vello::kurbo::Point::new(
@@ -4696,6 +4705,7 @@ impl AppHandler {
         });
         self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
         self.settle_touch_modality();
+        false
     }
 
     /// Lay out for touch once every gesture begun has landed: until then a

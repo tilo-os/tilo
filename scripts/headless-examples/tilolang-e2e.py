@@ -42,7 +42,8 @@ app gets on a real system:
   host       in the synced Lounge every app is told so and shows the room
              (synced-*.png), native Notes' "New note" lands, and each launch's time
              to its first frame is recorded
-  host-edit  tilolang Notes' "New note" lands in the Lounge too
+  host-edit  tilolang Notes' "New note" lands in the Lounge too, in a second
+             window of it and in the app started again
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Board, whose surface declares that it reads Notes' kinds, and as
@@ -665,9 +666,33 @@ def check_host(session: Session, room: str, out: Path) -> dict:
     }
 
 
-def check_host_edit(session: Session) -> dict:
-    """tilolang Notes' "New note" changes the Lounge, as native Notes' does."""
-    return {"history": new_note_in(session, app_id("notes"))}
+def windows_of(session: Session, app: str, workspace: str) -> list:
+    return [w for w in session.windows() if w.get("app_id") == app and w.get("workspace") == workspace]
+
+
+def check_host_edit(session: Session, pids_of) -> dict:
+    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does it in a
+    second window of the app beside the first, and in the app started again."""
+    notes = app_id("notes")
+    out = {"history": new_note_in(session, notes)}
+    # A second window: the first duplicated, as Super+T does.
+    first = windows_of(session, notes, "Lounge")[0]
+    session.invoke("desktop-windows", f"tab.focus:{first['group']}:{first['tab']}")
+    session.invoke("actions", "tab.duplicate")
+    until("a second window of Notes", lambda: len(windows_of(session, notes, "Lounge")) == 2, 30)
+    until("a frame of the second window", lambda: sum(
+        1 for f in session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+        if f["app_id"] == notes and f["presented"] and f["pixels_ready"]) == 2, 30)
+    out["second_window"] = new_note_in(session, notes)
+    if len(windows_of(session, notes, "Lounge")) != 2:
+        raise Failed("a window of Notes closed after its second window edited")
+    # Started again: every window closed, the app gone, and opened anew.
+    for w in windows_of(session, notes, "Lounge"):
+        session.invoke("desktop-windows", f"tab.close:{w['group']}:{w['tab']}")
+    until("Notes closed", lambda: not windows_of(session, notes, "Lounge") and not pids_of(notes), 30)
+    open_in_workspace(session, [notes], "Lounge")
+    out["relaunched"] = new_note_in(session, notes)
+    return out
 
 
 def check_spinner(session: Session, room: str, pid_of) -> dict:
@@ -963,9 +988,12 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         running["proc"] = None
         shutil.copy(host_state / "logs/shell.log", out / f"shell-{tag}.log")
 
+    def pids_of(app: str) -> list[int]:
+        return [p for p in descendants(running["proc"].pid)
+                if environ(p).get("TILO_PACKAGE_ID") == app and exe(p).endswith("/bin/tilolang-app")]
+
     def pid_of(app: str) -> int:
-        return next(p for p in descendants(running["proc"].pid)
-                    if environ(p).get("TILO_PACKAGE_ID") == app and exe(p).endswith("/bin/tilolang-app"))
+        return pids_of(app)[0]
 
     # A fresh session joins the Lounge; started again it holds it already. No app opens
     # in either, so every app opens in the third start, where each is first opened.
@@ -987,7 +1015,7 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
     run_checks(summary, [
         ("reconnect", lambda: check_reconnect(session, site.room)),
         ("host", lambda: check_host(session, site.room, out)),
-        ("host-edit", lambda: check_host_edit(session)),
+        ("host-edit", lambda: check_host_edit(session, pids_of)),
     ])
     stop("host")
 

@@ -231,6 +231,15 @@ impl WakeEvent {
     pub const fn save_progress(&self) -> bool {
         self.save_progress
     }
+
+    /// Whether the wake asks its host for a frame as well as for its
+    /// owner's service. One that says only that a save moved on does not:
+    /// a save that lands in time shows nothing, and the owner's service
+    /// says when it does show something new (the window's bar), so a
+    /// keystroke's write landing draws no second frame after the key's.
+    pub const fn asks_for_frame(&self) -> bool {
+        !self.save_progress
+    }
 }
 
 /// Captures one scope, or remains detached forever. Unlike a closed scope,

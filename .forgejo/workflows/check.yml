@@ -55,7 +55,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+      image: registry.tilo.so/tilo/ci-control@sha256:585b2dacdaa651cb37ea66a57ec8203301d3724726f1b8c700ee55d2438ef728
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -77,7 +77,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -155,8 +155,15 @@ jobs:
   security-fixtures:
     if: needs.select.outputs.security_required == 'true'
     needs: [builder, select]
-    runs-on: runner-large
+    # The native class, not the large one: the shell shard holds a large
+    # runner for up to two hours, and the boundary fixtures queued behind it
+    # for longer than a whole run, which starved the boundary and the
+    # aggregate behind it. Six crates compile here through the shared cache,
+    # two jobs at a time so the linker stays inside the native limit.
+    runs-on: runner
     timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
@@ -202,7 +209,7 @@ jobs:
       # check as a 1-core, minutes-long job.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -253,7 +260,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -862,7 +869,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate

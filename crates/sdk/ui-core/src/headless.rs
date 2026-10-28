@@ -573,6 +573,9 @@ pub struct FrameHarness {
     pointer_buttons: u32,
     /// A coalesced input event was dispatched since the last frame.
     input_frame_pending: bool,
+    /// A save-status-only owner service changed what an owner shows since
+    /// the last frame.
+    owner_save_shown: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1013,15 +1016,22 @@ impl FrameHarness {
         &mut self,
     ) -> crate::owner_wake::OwnerModelServiceReport {
         let mut attempted = false;
+        let mut presented = false;
         let mut completed = 0;
-        let result = self.service_owner_model_batch(&mut attempted, &mut completed);
+        let result = self.service_owner_model_batch(&mut attempted, &mut presented, &mut completed);
         // The host asks whenever it idles; only work actually taken up can
         // have changed what the next frame reads.
         if attempted {
             self.invalidate_local();
         }
+        if presented {
+            // The owner's bar says something new: the next frame draws it.
+            self.invalidate_local();
+            self.owner_save_shown = true;
+        }
         crate::owner_wake::OwnerModelServiceReport {
             attempted,
+            presented,
             completed,
             result,
         }
@@ -1047,6 +1057,7 @@ impl FrameHarness {
     fn service_owner_model_batch(
         &mut self,
         attempted: &mut bool,
+        presented: &mut bool,
         completed: &mut usize,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         let Some(queue) = self.owner_wake_queue.clone() else {
@@ -1054,14 +1065,16 @@ impl FrameHarness {
         };
         let mut batch = queue.take_batch();
         // Saves that moved on, and nothing else: each owner shows its save
-        // status alone (a change the window's bar shows wakes its host), the
-        // layout stands and the next frame need not sync: no model callback
-        // ran.
+        // status alone, the layout stands and the next frame need not sync:
+        // no model callback ran. A frame follows only when an owner shows
+        // something new; a save that landed in time (each keystroke's)
+        // shows nothing, and draws no second frame after the key's.
         if batch.front().is_some() && batch.all_save_progress_only() {
             while let Some(work) = batch.front() {
                 let _profile =
                     tilo_resource::profiling::Phase::start("ui.owner_wake.save_progress");
-                crate::bound_dispatch::service_owner_save_progress(self.root.as_mut(), work)?;
+                *presented |=
+                    crate::bound_dispatch::service_owner_save_progress(self.root.as_mut(), work)?;
                 batch.complete_front();
                 *completed += 1;
             }
@@ -1843,6 +1856,7 @@ impl FrameHarness {
             coalesce_input_frames: false,
             pointer_buttons: 0,
             input_frame_pending: false,
+            owner_save_shown: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
@@ -2843,8 +2857,9 @@ impl FrameHarness {
                 "owner wake queued",
                 self.owner_wake_queue
                     .as_ref()
-                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending),
+                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending_model_work),
             ),
+            ("owner save status shown", self.owner_save_shown),
             ("presence redraw", self.presence_redraw),
             ("tooltip", self.tooltips.schedule().0),
             ("search pending", self.search_pending),
@@ -2871,10 +2886,12 @@ impl FrameHarness {
         let queued_work = self.layout_requested
             || self.input_frame_pending
             || self.owner_service_layout_retired
+            // A save that moved on asks for its service, not for a frame.
             || self
                 .owner_wake_queue
                 .as_ref()
-                .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
+                .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending_model_work)
+            || self.owner_save_shown
             || self.presence_redraw
             || self.tooltips.schedule().0
             || self.search_pending
@@ -3491,6 +3508,7 @@ impl FrameHarness {
         };
         if result.is_ok() {
             self.input_frame_pending = false;
+            self.owner_save_shown = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original

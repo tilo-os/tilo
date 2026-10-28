@@ -76,6 +76,13 @@ pub trait Committer: Send + Sync {
     /// # Errors
     /// Nothing is queued under the ticket.
     fn encoded(&self, ticket: u64) -> Result<EncodedAction, String>;
+
+    /// What committing the action queued under `ticket` needs of a room
+    /// ([`DynAction::need`]).
+    ///
+    /// # Errors
+    /// Nothing is queued under the ticket.
+    fn need(&self, ticket: u64) -> Result<tilo_actions::ActionNeed, String>;
 }
 
 /// The action id of the host action that commits a queued action.
@@ -1196,6 +1203,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
 /// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
+    let classify = Arc::clone(committer);
     let committer = Arc::clone(committer);
     let commit = ActionSpec::typed(
         COMMIT,
@@ -1218,7 +1226,17 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
                 })
         },
     )
-    .for_audience(tilo_actions::Audience::Agents);
+    .for_audience(tilo_actions::Audience::Agents)
+    // Offered as the least a commit is, a change of the record, as the host's surface declares
+    // it; each commit is what the action it carries is, so one that queues an outside effect
+    // needs what that effect needs.
+    .of_kind(tilo_actions::ActionKind::Undoable)
+    .with_need_of(move |args| {
+        args.integer("ticket")
+            .and_then(|ticket| u64::try_from(ticket).ok())
+            .and_then(|ticket| classify.need(ticket).ok())
+            .unwrap_or_else(|| tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable))
+    });
     let mut host =
         Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
     for spec in <crate::effects::HostEffect as tilo_resource::Effect>::specs() {

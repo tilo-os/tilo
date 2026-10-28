@@ -387,6 +387,9 @@ pub struct Reopener {
     files: Option<crate::storage::AppFiles>,
     private: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
+    /// The window this reopener opens in place of: what serves its image
+    /// stores serves the window opened in its place too.
+    window: WakeHandle,
 }
 
 impl Reopener {
@@ -437,6 +440,9 @@ impl Reopener {
         context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
+        // The window opened in this one's place shows in the same host: its
+        // pictures load the way this one's do.
+        crate::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
         Ok((context, target))
     }
 
@@ -496,6 +502,7 @@ impl HostContext {
             files: self.files.clone(),
             private: self.private,
             replacement: Rc::clone(&self.replacement),
+            window: self.wake_handle(),
         }
     }
 
