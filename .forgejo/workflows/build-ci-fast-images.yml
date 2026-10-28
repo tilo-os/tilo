@@ -122,7 +122,11 @@ jobs:
             # The workspace pins wasm32; a job that has to download the target
             # mid-run stalls against rust-toolchain.toml's offline shims.
             printf "expect the wasm32 target in the image\n"
-            rustup target list --installed | grep -qx wasm32-unknown-unknown
+            rustup show
+            rustup target list --installed
+            # The target's compiled std, which is what a build needs; the
+            # rustup listings above say how rustup accounts for it.
+            test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown"
             printf "expect the Fedora primary RPM key\n"
             test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
           docker run --rm --network=none "$control" bash -euo pipefail -c '
