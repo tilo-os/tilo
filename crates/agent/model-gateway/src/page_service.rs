@@ -19,7 +19,6 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_provider_config::conversation;
 use agent_provider_config::management::{
     AdminFuture, CredentialStatus, ProviderAdmin, ProviderSnapshot,
 };
@@ -31,6 +30,8 @@ use agent_provider_config::{
 };
 use tilo_net::proxy::ProxyUse;
 use zeroize::Zeroizing;
+
+use crate::conversation;
 
 /// The longest a provider may take over one turn.
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -240,8 +241,12 @@ impl PageService {
                 .unwrap_or_default();
             return Err(match status.as_u16() {
                 404 | 405 => ModelError::new(ErrorKind::Unsupported),
-                code => crate::failure::Failure::from_http(code, &detail, retry_after.as_deref())
-                    .model_error(),
+                code => tilo_model_client::failure::Failure::from_http(
+                    code,
+                    &detail,
+                    retry_after.as_deref(),
+                )
+                .model_error(),
             });
         }
         let bytes = response

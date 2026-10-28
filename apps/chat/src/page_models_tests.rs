@@ -1,5 +1,5 @@
 //! Chat in a browser page: the page lends it its own model service
-//! (`tilo_model_client::page_service`), as the web runtime does when its
+//! (`tilo_model_gateway::page_service`), as the web runtime does when its
 //! host lends none, and asking the assistant reaches the provider the person
 //! set up, with their key, and lands the answer in the channel. The
 //! provider is a loopback fixture, never a real one, and the key a
@@ -18,7 +18,7 @@ use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
     SecretReference,
 };
-use tilo_model_client::page_service::{MemoryKeys, PageService};
+use tilo_model_gateway::page_service::{MemoryKeys, PageService};
 use ui::models::{Models, ProviderAdmin as _};
 
 use crate::{ChatApp, identity::LocalIdentity};

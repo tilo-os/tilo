@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Whole model turns in either provider dialect, for clients without the gateway.
-pub mod conversation;
 pub mod local;
 pub mod management;
 /// Known providers a new profile starts from.

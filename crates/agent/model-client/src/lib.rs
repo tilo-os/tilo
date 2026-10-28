@@ -16,8 +16,6 @@ use zeroize::Zeroizing;
 #[cfg(test)]
 mod error_tests;
 pub mod failure;
-/// The model service a browser page runs for its own windows.
-pub mod page_service;
 #[cfg(feature = "runtime-client")]
 pub mod runtime_client;
 pub mod transport;

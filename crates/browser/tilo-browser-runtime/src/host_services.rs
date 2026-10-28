@@ -13,7 +13,7 @@
 //!
 //! Models are lent per mount, never ambient: the embedding host's model
 //! service when it supplies a session, else the page's own
-//! ([`tilo_model_client::page_service`]), which asks the providers the
+//! ([`tilo_model_gateway::page_service`]), which asks the providers the
 //! person set up in Model Providers with the keys kept in this browser's
 //! encrypted secret store. Only Model Providers is lent its administration.
 //!
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::ProviderConfig;
 use agent_provider_config::management::AdminFuture;
-use tilo_model_client::page_service::ProviderKeys;
+use tilo_model_gateway::page_service::ProviderKeys;
 use ui::models::{
     CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
     ProviderAdmin, ProviderSnapshot, StreamSink,
@@ -61,7 +61,7 @@ impl ModelConfig {
         if self.session_token.trim().is_empty() {
             return Err("model session is required".into());
         }
-        tilo_model_client::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
         let choice = match (&self.profile_id, &self.model_id) {
             (None, None) => None,
             (Some(profile), Some(model))
@@ -95,7 +95,7 @@ impl ProviderManagementConfig {
         if self.session_token.trim().is_empty() {
             return Err("provider management session is required".into());
         }
-        tilo_model_client::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
             LazyAdministration {
                 service: Service::Host {
@@ -231,7 +231,7 @@ pub fn builtin_model_clients() -> ModelClients {
         session_token: String,
         choice: Option<(String, String)>,
     ) -> Result<Rc<dyn ModelBackend>, String> {
-        use tilo_model_client::transport::{FetchTransport, ModelClient};
+        use tilo_model_gateway::transport::{FetchTransport, ModelClient};
         let transport = FetchTransport::new(endpoint, session_token)?;
         let timeout = std::time::Duration::from_secs(120);
         Ok(Rc::new(match choice {
@@ -243,20 +243,20 @@ pub fn builtin_model_clients() -> ModelClients {
         endpoint: &str,
         session_token: String,
     ) -> Result<Arc<dyn ProviderAdmin>, String> {
-        use tilo_model_client::transport::{AdministrationClient, FetchTransport};
+        use tilo_model_gateway::transport::{AdministrationClient, FetchTransport};
         let transport = FetchTransport::new(endpoint, session_token)?;
         Ok(Arc::new(AdministrationClient::new(transport)))
     }
     fn page_models(keys: Arc<dyn ProviderKeys>) -> Result<Rc<dyn ModelBackend>, ModelError> {
-        let service = Arc::new(tilo_model_client::page_service::PageService::new(keys)?);
+        let service = Arc::new(tilo_model_gateway::page_service::PageService::new(keys)?);
         Ok(Rc::new(service.models(None)))
     }
     fn page_administration(
         keys: Arc<dyn ProviderKeys>,
     ) -> Result<Arc<dyn ProviderAdmin>, ModelError> {
-        Ok(Arc::new(tilo_model_client::page_service::PageService::new(
-            keys,
-        )?))
+        Ok(Arc::new(
+            tilo_model_gateway::page_service::PageService::new(keys)?,
+        ))
     }
     ModelClients {
         models,
