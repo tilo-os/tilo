@@ -1132,13 +1132,13 @@ fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
     );
     // The list step needs to read the notes app's folder, and the summary
     // says so without waiting for the save sheet.
-    let line = app
-        .harness()
+    app.harness()
         .expect(&SemanticExpectation::named("grant-summary-0").within(tilo_test_env::hang_bound()))
-        .expect("the summary lists what the step needs")
-        .node
-        .semantics
-        .and_then(|semantics| semantics.name)
+        .expect("the summary lists what the step needs");
+    let inspection = app.harness().inspection();
+    let line = inspection_node(&inspection.root, "grant-summary-0")
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|semantics| semantics.name.clone())
         .expect("the line says what the step is allowed to do");
     assert!(
         line.contains("notes"),
