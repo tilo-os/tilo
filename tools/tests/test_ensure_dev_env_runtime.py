@@ -18,7 +18,8 @@ class EnsureDevEnvRuntimeTests(unittest.TestCase):
             install.chmod(0o755)
             source = Path(directory) / "no-runtime"
             source.mkdir()
-            return subprocess.run(["bash", str(SCRIPT), str(source), str(install)],
+            return subprocess.run(["bash", str(SCRIPT), str(source), str(install),
+                                   str(Path(directory) / "out")],
                                   text=True, capture_output=True)
 
     def test_a_base_that_ships_a_runtime_keeps_it(self):
