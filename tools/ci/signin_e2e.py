@@ -1252,15 +1252,20 @@ cryptsetup close e2e-target
         evidence: dict = {"first_screen": kind}
         if kind == "boot-signin":
             self.cycle.keep_screen("recovery-boot-sign-in", path, text)
-            self.cycle.keys("ret")
-            kind, path, text, _ = self.wait_screen(label, {"disk-prompt"}, 180)
+            at = self.words_at(path, "can't", "sign", "in")
+            evidence["cant_sign_in_at"] = at
+            if at is None:
+                kind = "no \"Can't sign in\" on the boot sign-in screen"
+            else:
+                self.cycle.vm("click", *map(str, at))
+                kind, path, text, _ = self.wait_screen(label, {"disk-prompt"}, 180)
             evidence["after_cant_sign_in"] = kind
         if kind != "disk-prompt":
             self.cycle.keep_screen("recovery-no-prompt", path, text)
             self.item("6", "failed", f"no prompt for the recovery key after \"Can't sign in\" ({kind})",
                       **evidence)
-            # Sign in as usual so the boot completes and its initrd journal says what the empty
-            # answer did.
+            # Sign in as usual so the boot completes and its initrd journal says what the click
+            # did.
             self.cycle.type(self.account)
             self.cycle.keys("ret")
             try:
@@ -1416,6 +1421,28 @@ cryptsetup close e2e-target
         # pitches right of the middle whatever the gap between keys.
         keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
         return keys
+
+    @staticmethod
+    def words_at(path: Path, *words: str) -> tuple[int, int] | None:
+        """The centre of `words`, read in a row on a screenshot by tesseract, if they are."""
+        tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11", "tsv"],
+                             capture_output=True, text=True).stdout
+        found = []
+        for line in tsv.splitlines()[1:]:
+            cols = line.split("\t")
+            if len(cols) == 12 and cols[11].strip():
+                left, top, width, height = map(float, cols[6:10])
+                word = cols[11].strip().lower().replace("’", "'")
+                found.append((word, left, top, width, height))
+        for i in range(len(found) - len(words) + 1):
+            run = found[i:i + len(words)]
+            if [w for w, *_ in run] == list(words):
+                left = run[0][1]
+                right = run[-1][1] + run[-1][3]
+                top = min(t for _, _, t, _, _ in run)
+                bottom = max(t + h for _, _, t, _, h in run)
+                return round((left + right) / 2), round((top + bottom) / 2)
+        return None
 
     def card_matches(self, boot: Path, greeter: Path) -> tuple[bool, str]:
         """Whether the boot screen and the greeter after switch-root show the same card: the
