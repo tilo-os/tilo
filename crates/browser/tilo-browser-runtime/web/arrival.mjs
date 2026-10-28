@@ -16,29 +16,77 @@
  * to the console for debugging.
  */
 
-/** Seconds each phase takes, measured on warm loads: the share of the bar
- * it gets. The page cannot see where its own JavaScript ends and the
- * runtime's fetch begins, nor the GPU's set-up end before the first frame,
- * so those pairs are one segment each. */
-export const PHASE_SECONDS = {js: 0.8, fetch: 1.3, compile: 0.45, join: 1.3, open: 1.4, gpu: 1.6, frame: 0.3};
-const SEGMENT_PHASES = [
-  ['fetch', ['js', 'fetch']],
-  ['compile', ['compile']],
-  ['join', ['join']],
-  ['open', ['open']],
-  ['draw', ['gpu', 'frame']],
-];
-const TOTAL = Object.values(PHASE_SECONDS).reduce((sum, seconds) => sum + seconds, 0);
-/** Each segment's `[start, end]` on the bar (0…1) and expected seconds. */
-export const SEGMENTS = (() => {
+/** The steps the bar has, in the order a page goes through them. The page
+ * reports them as `data-arrival` (`load` covers the first two, split by
+ * whether the runtime module has been fetched). */
+export const STEPS = ['fetch', 'compile', 'join', 'open', 'draw'];
+
+/** Seconds each step takes on a device that has never loaded Tilo: what the
+ * bar is sized by before anything has been measured here. Only a first visit
+ * can read these; afterwards the bar is planned from what this device's last
+ * arrival actually took (`measure`), and each step's own time replaces its
+ * estimate as it completes, so the guesses are for the first visit alone. */
+export const FIRST_VISIT_SECONDS = {fetch: 1.6, compile: 0.9, join: 1.1, open: 1.3, draw: 1.6};
+
+/** `seconds` (a measurement or the first visit's) as each step's `[start,
+ * end]` share of the bar and its seconds: what the bar is sized by. */
+export function plannedSegments(seconds = FIRST_VISIT_SECONDS) {
+  const total = STEPS.reduce((sum, step) => sum + Math.max(0, seconds[step] ?? 0), 0) || 1;
   let at = 0;
-  return Object.fromEntries(SEGMENT_PHASES.map(([name, phases]) => {
-    const seconds = phases.reduce((sum, phase) => sum + PHASE_SECONDS[phase], 0);
-    const segment = {start: at / TOTAL, end: (at + seconds) / TOTAL, seconds};
-    at += seconds;
-    return [name, segment];
+  return Object.fromEntries(STEPS.map(step => {
+    const span = Math.max(0, seconds[step] ?? 0);
+    const segment = {start: at / total, end: (at + span) / total, seconds: span};
+    at += span;
+    return [step, segment];
   }));
-})();
+}
+
+/** The bar's segments for a first visit. */
+export const SEGMENTS = plannedSegments();
+
+/** `measured`'s steps that are a real time in ms, all else left out. */
+export function measuredSeconds(measured) {
+  const out = {};
+  for (const step of STEPS) {
+    const value = measured?.[step];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) out[step] = value;
+  }
+  return out;
+}
+
+/** A measurement (ms, as kept) as the bar's plan: seconds by step. */
+export function measuredPlan(measured) {
+  return Object.fromEntries(Object.entries(measuredSeconds(measured)).map(([step, ms]) => [step, ms / 1000]));
+}
+
+/** Where this device's last arrival's step times are kept, so the next bar
+ * is planned from what getting in actually took here. */
+export const MEASURED_KEY = 'tilo-arrival-seconds';
+
+/** This device's last arrival, by step (ms); empty when it has not had one,
+ * or when the page may not keep anything. */
+export function rememberedArrival(window = globalThis) {
+  try {
+    return measuredSeconds(JSON.parse(window.localStorage?.getItem(MEASURED_KEY) ?? 'null'));
+  } catch {
+    return {};
+  }
+}
+
+/** Keep `spent` (this arrival's step times, ms) for the next one. */
+export function rememberArrival(spent, window = globalThis) {
+  const seconds = measuredSeconds(spent);
+  if (Object.keys(seconds).length === 0) return;
+  try {
+    window.localStorage?.setItem(MEASURED_KEY, JSON.stringify(seconds));
+  } catch { /* No storage: the next bar is planned by the first visit's guess. */ }
+}
+
+/** The steps' times as one line for the console: `fetch 210 · compile 70 …`. */
+export function describeSpent(spent) {
+  return STEPS.filter(step => spent?.[step] !== undefined)
+    .map(step => `${step} ${Math.round(spent[step])} ms`).join(' · ');
+}
 
 /** The bar's segment for the page's step; `load` splits at the runtime
  * module's arrival. */
@@ -47,12 +95,13 @@ export function segmentOf(arrival, wasmFetched) {
   return arrival in SEGMENTS || arrival === 'done' || arrival === 'stopped' ? arrival : 'fetch';
 }
 
-/** How far the bar stands `elapsed` ms into `segment`: from the segment's
- * start creeping toward its end, never reaching it. Reduced motion steps:
- * the segment's start only. */
-export function progressIn(segment, elapsed, {reducedMotion = false} = {}) {
-  if (segment === 'done') return 1;
-  const span = SEGMENTS[segment];
+/** How far the bar stands `elapsed` ms into `step`, planned from `seconds`
+ * (measured, or a first visit's): from the step's start creeping toward its
+ * end, never reaching it, so the last step's creep ends where the arrival
+ * does. Reduced motion steps: the step's start only. */
+export function progressIn(step, elapsed, {reducedMotion = false, seconds = FIRST_VISIT_SECONDS} = {}) {
+  if (step === 'done') return 1;
+  const span = plannedSegments(seconds)[step];
   if (!span) return 0;
   if (reducedMotion) return span.start;
   const creep = 0.9 * (1 - Math.exp(-Math.max(0, elapsed) / (span.seconds * 1000)));
@@ -162,9 +211,16 @@ export const STALLED = ['arrival-stalled', 'This is taking longer than it should
  * Nothing the page waits on a person for (being let in, a pairing code)
  * stalls. A failed or stopped page shows no line, note or bar: its status
  * says what went wrong.
+ *
+ * `measured` is what this device's last arrival took, by step
+ * (`{fetch, compile, join, open, draw}` in ms, `measuredArrival`): the bar
+ * is planned from those instead of a first visit's guess, and each step's
+ * real time replaces its estimate as the step completes, so a bar planned
+ * from a slow arrival does not stall on a fast one.
  */
 export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, compile: 8000, join: 6000, open: 8000, draw: 10_000},
+  measured = null, delayMs = 1000, periodMs = 2500,
+  slowMs = {fetch: 8000, compile: 8000, join: 6000, open: 8000, draw: 10_000},
   stallMs = 30_000, slowNotes = {}} = {}) {
   let rotation = createRotation(lines, random);
   let line = null;
@@ -172,17 +228,34 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
   let segment = null;
   let since = 0;
   let progress = 0;
+  // Each step's planned seconds: this device's measurement where there is
+  // one, the first visit's guess elsewhere; a step that has run already says
+  // what it took.
+  let seconds = {...FIRST_VISIT_SECONDS, ...measuredPlan(measured)};
+  const spent = {};
   return {
     /** New lines (the locale file arrived): the next turn draws from them. */
     setLines(next) { rotation = createRotation(next, random); },
     get segment() { return segment; },
+    /** The seconds each step is planned by now, measured ones included. */
+    get seconds() { return seconds; },
+    /** What this arrival's steps have taken so far, by step. */
+    get spent() { return {...spent}; },
     update({arrival, wasmFetched = false, statusShown = false, gpuStalled = false}, now) {
       const current = segmentOf(arrival, wasmFetched);
       // The first segment runs from the page's start, before this module.
-      if (current !== segment) { since = segment === null ? 0 : now; segment = current; }
+      if (current !== segment) {
+        if (segment !== null && STEPS.includes(segment)) {
+          // The step's own time (ms, as kept) replaces its estimate (s).
+          spent[segment] = Math.max(0, now - since);
+          seconds = {...seconds, [segment]: spent[segment] / 1000};
+        }
+        since = segment === null ? 0 : now;
+        segment = current;
+      }
       if (segment === 'stopped') return {line: null, note: null, progress, bar: false, stalled: false};
       // Never backwards: a skipped step (no door to join) jumps forward.
-      progress = Math.max(progress, progressIn(segment, now - since, {reducedMotion}));
+      progress = Math.max(progress, progressIn(segment, now - since, {reducedMotion, seconds}));
       if (segment === 'done') return {line: null, note: null, progress, bar: false, stalled: false};
       // Graphics start-up has steps of its own, which only the runtime sees.
       const stalled = !statusShown && (segment === 'draw' ? gpuStalled : now - since >= stallMs);
@@ -452,7 +525,8 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   const mac = /Mac/.test(window.navigator?.platform ?? '');
   const slowNotes = {};
   let tipLabel = 'Tip';
-  const arrival = createArrival({reducedMotion, slowNotes});
+  // Planned from what getting in took here last time, where there was one.
+  const arrival = createArrival({reducedMotion, slowNotes, measured: rememberedArrival(window)});
   const now = () => window.performance.now();
   let wasmFetched = false;
   let observer = null;
@@ -486,6 +560,12 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     if (arrival.segment !== logged) {
       logged = arrival.segment;
       console.debug(`arrival: ${logged} at ${Math.round(now())} ms`);
+      // What getting in took here, for the next visit's bar and for a
+      // report of a slow one.
+      if (logged === 'done') {
+        rememberArrival(arrival.spent, window);
+        console.debug(`arrival: done in ${Math.round(now())} ms (${describeSpent(arrival.spent)})`);
+      }
     }
     root.dataset.arrivalProgress = view.progress.toFixed(3);
     barView.hidden = !view.bar;

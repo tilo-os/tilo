@@ -325,6 +325,12 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The desktop offers Invite in a room the page can invite to.
   const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope, window.location?.host);
+  // Asked beside the door, not before it (`deps.rendererUnavailable`): a
+  // browser that cannot draw opens no window, and the page says what to
+  // change instead. The answer is the browser's GPU process starting, which
+  // nothing admission needs waits on.
+  const unsupported = await deps.rendererUnavailable?.();
+  if (unsupported) return {peer, rendererUnavailable: unsupported};
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
