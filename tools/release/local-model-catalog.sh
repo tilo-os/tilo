@@ -13,10 +13,9 @@
 #   review COMPILER OUT sign dist/local-models/catalog-source.json with the runtimes this tree
 #                       builds for review: OUT/source.json and OUT/catalog.json become the
 #                       checked-in source and catalog
-#   dev ARCH COMPILER OUT
-#                       sign the same source with the runtimes for ARCH and a throwaway key into
-#                       OUT/catalog.json and keys.json, the catalog ARCH's dev images carry in
-#                       place of the release's
+#   dev ARCH OUT        build the compiler for this machine and sign the same source with the
+#                       runtimes for ARCH and a throwaway key into OUT/catalog.json and keys.json,
+#                       the catalog ARCH's dev images carry in place of the release's
 #   publish-runtime ID  upload runtime ID's archive as this tree builds it to its immutable package
 #                       URL with TILO_PACKAGES_TOKEN, so dev catalogs naming it download it
 #
@@ -121,13 +120,18 @@ release_seed() {
   unset TILO_MODEL_CATALOG_SIGNING_KEY
 }
 
+# Build tilo-model-catalog without credentials into $1/.
+build_compiler() {
+  cargo build --locked -p local-model-service --bin tilo-model-catalog
+  install -D -m 0755 "${CARGO_TARGET_DIR:-target}/debug/tilo-model-catalog" "$1/tilo-model-catalog"
+}
+
 command=${1:-}
 shift || true
 case $command in
   compiler)
     out=${1:?usage: local-model-catalog.sh compiler OUT}
-    cargo build --locked -p local-model-service --bin tilo-model-catalog
-    install -D -m 0755 "${CARGO_TARGET_DIR:-target}/debug/tilo-model-catalog" "$out/tilo-model-catalog"
+    build_compiler "$out"
     ;;
   sign)
     compiler=${1:?usage: local-model-catalog.sh sign COMPILER OUT} out=${2:?}
@@ -180,8 +184,12 @@ case $command in
     printf 'Signed the catalog source for review: t outputs review-model-catalog\n'
     ;;
   dev)
-    arch=${1:?usage: local-model-catalog.sh dev ARCH COMPILER OUT} compiler=${2:?} out=${3:?}
+    arch=${1:?usage: local-model-catalog.sh dev ARCH OUT} out=${2:?}
     work=$(mktemp -d "$scratch/model-catalog-dev.XXXXXX")
+    # Built here rather than taken from model-catalog-compiler, so it runs on whichever
+    # architecture's node this lands on.
+    build_compiler "$work/bin"
+    compiler=$work/bin/tilo-model-catalog
     built_source "$work/built.json" "$arch"
     jq --arg key "$dev_key_id" '.key_id = $key' "$work/built.json" > "$work/dev.json"
     stage "$work" "$work/dev.json"

@@ -6693,24 +6693,26 @@ requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 # Each architecture's dev catalog names the runtimes built for it, so neither architecture's dev
-# images wait for the other's builds.
+# images wait for the other's builds, and builds its own compiler, so it runs on either.
 [[check]]
 name = "model-catalog-dev-x86_64"
-run = "bash tools/release/local-model-catalog.sh dev x86_64 /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/dev/x86_64"
+run = "bash tools/release/local-model-catalog.sh dev x86_64 /target/model-catalog/dev/x86_64"
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/local-model-runtime.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "dist/local-models/**"]
-needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
+needs = ["local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
 outputs = ["/target/model-catalog/dev/x86_64/catalog.json", "/target/model-catalog/dev/x86_64/keys.json"]
-requires = ["arch=x86_64", "disk-100g"]
+cargo_packages = ["local-model-service"]
+requires = ["disk-100g"]
 cost = "minutes"
 default = false
 
 [[check]]
 name = "model-catalog-dev-aarch64"
-run = "bash tools/release/local-model-catalog.sh dev aarch64 /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/dev/aarch64"
+run = "bash tools/release/local-model-catalog.sh dev aarch64 /target/model-catalog/dev/aarch64"
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/local-model-runtime.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "dist/local-models/**"]
-needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-aarch64"]
+needs = ["local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-aarch64"]
 outputs = ["/target/model-catalog/dev/aarch64/catalog.json", "/target/model-catalog/dev/aarch64/keys.json"]
-requires = ["arch=x86_64", "disk-100g"]
+cargo_packages = ["local-model-service"]
+requires = ["disk-100g"]
 cost = "minutes"
 default = false
 
