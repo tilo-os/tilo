@@ -380,6 +380,7 @@ impl Relay {
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         tasks.extend(fetch.metrics);
+        tasks.push(tokio::spawn(maintain_records(web.clone())));
         let live = web.live.clone();
         tasks.push(
             match self.voice_carrier(
@@ -533,12 +534,51 @@ impl crate::peer::BrowserBridge for Bridge {
     }
 }
 
+/// How often the records kept for members are swept.
+pub(crate) const SWEEP_RECORDS_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Drop the records of people who are no longer members, at a walking
+/// pace: a host anyone may join takes records from everyone who passes
+/// through, and nothing else took them out again.
+async fn maintain_records(web: Arc<Web>) {
+    let mut tick = tokio::time::interval(SWEEP_RECORDS_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The first sweep waits a period, as the directory the records name
+    // settles at startup.
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        match web.prune_records(tilo_clock::unix_now_ms()).await {
+            Ok(0) => {}
+            Ok(dropped) => tracing::info!(dropped, "dropped the records of people gone"),
+            Err(error) => tracing::warn!(%error, "could not sweep the records kept for members"),
+        }
+    }
+}
+
+impl Web {
+    /// Drop the envelopes and profiles of roots `admitted` no longer
+    /// admits, once they have been gone for
+    /// [`envelopes::KEEP_GONE_MS`]; say how many went.
+    ///
+    /// # Errors
+    ///
+    /// The directories cannot be read.
+    pub(crate) async fn prune_records(&self, now_ms: u64) -> std::io::Result<usize> {
+        let envelopes = self
+            .envelopes
+            .sweep(now_ms, |root| admitted_anywhere(self, root));
+        let profiles = self
+            .profiles
+            .sweep(now_ms, |root| admitted_anywhere(self, root));
+        match (envelopes.await, profiles.await) {
+            (envelope, profile) => Ok(envelope? + profile?),
+        }
+    }
+}
+
 /// Look after the legacy windows on the live relay for as long as the
 /// listener runs: replays, indexes, and the departure of their sessions.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
 async fn maintain_legacy(
     legacy: Arc<legacy::LegacyWindows>,
     grants: Arc<live::LiveGrants>,

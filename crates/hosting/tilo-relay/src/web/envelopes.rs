@@ -99,6 +99,20 @@ const MAX_LINKED: usize = 4;
 /// The longest service name or handle a profile names, in characters.
 const MAX_HANDLE_CHARS: usize = 64;
 
+/// The most roots this host keeps records for, of either kind. A host that
+/// takes its members' records is as big as its membership; this keeps a
+/// world-facing one from growing with everyone who ever passed through.
+pub(super) const MAX_KEPT: usize = 65_536;
+
+/// How long what a person kept is kept after they are no member here any
+/// more: long enough that one away for a holiday finds their own envelope
+/// again, as a guest's place in a room is kept.
+pub(super) const KEEP_GONE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// A sweep over the kept records visits this many roots, so a big
+/// directory goes a part at a time rather than all at once.
+const SWEEP_VISIT_MAX: usize = 4_096;
+
 /// Whether `word` is a service name or handle a profile may carry.
 fn valid_handle(word: &str) -> bool {
     !word.is_empty()
@@ -278,6 +292,11 @@ impl Envelopes {
         self.dir.join(format!("{}.json", hex::encode(root)))
     }
 
+    /// The root an entry of the directory names, when it names one.
+    fn root_named(entry: &std::ffi::OsStr) -> Option<[u8; 32]> {
+        root_of(entry.to_str()?.strip_suffix(".json")?)
+    }
+
     fn kept(path: &Path) -> Option<Kept> {
         serde_json::from_slice(&std::fs::read(path).ok()?).ok()
     }
@@ -346,8 +365,18 @@ impl Envelopes {
         }
         let _write = self.write.lock().await;
         let path = self.path(&root);
-        if Self::kept(&path).is_some_and(|kept| kept.issued_at_ms >= publish.issued_at_ms) {
+        let existing = Self::kept(&path);
+        if existing
+            .as_ref()
+            .is_some_and(|kept| kept.issued_at_ms >= publish.issued_at_ms)
+        {
             return Err(Refusal::Stale);
+        }
+        if existing.is_none() && self.roots_kept() >= MAX_KEPT {
+            // A newcomer waits for a sweep to make room; a record kept for
+            // a member never does.
+            tracing::warn!(kind = self.kind.name(), "too many records kept");
+            return Err(Refusal::Storage);
         }
         let bytes = serde_json::to_vec(&Kept {
             issued_at_ms: publish.issued_at_ms,
@@ -364,6 +393,112 @@ impl Envelopes {
 fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     tilo_files::native::atomic::write_with_mode(path, bytes, 0o644)
+}
+
+/// How many roots records are kept for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Taken {
+    roots: u64,
+    bytes: u64,
+}
+
+impl Envelopes {
+    /// Drop the records of people who are no longer members here, once
+    /// they have not been members for [`KEEP_GONE_MS`], and say how many
+    /// went. `admitted` asks whether a root still belongs here now.
+    ///
+    /// The roots are visited a part at a time ([`SWEEP_VISIT_MAX`]), and
+    /// [`MAX_KEPT`] is refused rather than reached by a sweep.
+    pub(super) async fn sweep<F, Fut>(&self, now_ms: u64, admitted: F) -> std::io::Result<usize>
+    where
+        F: Fn([u8; 32]) -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Ok(0);
+        };
+        let mut dropped = 0;
+        let _write = self.write.lock().await;
+        for entry in entries.flatten().take(SWEEP_VISIT_MAX) {
+            let Some(root) = Envelopes::root_named(&entry.file_name()) else {
+                continue;
+            };
+            let Ok(kept) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(kept) = serde_json::from_slice::<Kept>(&kept) else {
+                // Not one of ours: an operator's file is not a record.
+                continue;
+            };
+            if admitted(root).await {
+                continue;
+            }
+            // Kept the month they are given, dropped when it is up.
+            if kept.issued_at_ms.saturating_add(KEEP_GONE_MS) > now_ms {
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {
+                    dropped += 1;
+                    tracing::debug!(kind = self.kind.name(), "dropped a record of someone gone");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    tracing::debug!(%error, kind = self.kind.name(), "could not drop a record")
+                }
+            }
+        }
+        Ok(dropped)
+    }
+
+    /// How many roots have a record here: one directory read of names only,
+    /// so a host at [`MAX_KEPT`] still answers a newcomer quickly.
+    fn roots_kept(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|entry| Envelopes::root_named(&entry.file_name()).is_some())
+            .count()
+    }
+
+    /// How many roots have a record here, and what those files take.
+    #[cfg(test)]
+    fn usage(&self) -> Taken {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Taken::default();
+        };
+        entries
+            .flatten()
+            .filter(|entry| Envelopes::root_named(&entry.file_name()).is_some())
+            .filter_map(|entry| entry.metadata().ok())
+            .filter(|metadata| metadata.is_file())
+            .fold(Taken::default(), |taken, metadata| Taken {
+                roots: taken.roots.saturating_add(1),
+                bytes: taken.bytes.saturating_add(metadata.len()),
+            })
+    }
+
+    /// The roots whose records this host still keeps.
+    #[cfg(test)]
+    fn roots(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut roots: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()?
+                    .strip_suffix(".json")
+                    .map(str::to_owned)
+            })
+            .collect();
+        roots.sort();
+        roots
+    }
 }
 
 #[cfg(test)]
@@ -648,5 +783,163 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_sweep_drops_what_a_member_gone_for_months_left_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let envelopes = Envelopes::new(dir.path().join("envelopes"));
+        let keep = SigningKey::from_bytes(&[7; 32]);
+        let gone = SigningKey::from_bytes(&[8; 32]);
+        let away = SigningKey::from_bytes(&[9; 32]);
+        let keep_root = keep.verifying_key().to_bytes();
+        let gone_root = gone.verifying_key().to_bytes();
+        let away_root = away.verifying_key().to_bytes();
+        let day = 24 * 60 * 60 * 1000;
+        for (root, at) in [
+            (&keep, 1_000),
+            (&gone, 1_000),
+            // Away, but back within the month they are given.
+            (&away, 100 * day),
+        ] {
+            envelopes
+                .publish(&statement(root, &envelope(root), at), at, |_| async {
+                    true
+                })
+                .await
+                .expect("kept");
+        }
+        assert_eq!(
+            envelopes.usage(),
+            Taken {
+                roots: 3,
+                bytes: envelopes.usage().bytes
+            }
+        );
+        assert_eq!(envelopes.usage().bytes, {
+            let read = |root: [u8; 32]| {
+                std::fs::metadata(envelopes.path(&root))
+                    .expect("kept")
+                    .len()
+            };
+            read(keep_root) + read(gone_root) + read(away_root)
+        });
+        // `gone` never joined: not a member here, but not long gone either.
+        let admitted = |root| async move { root == keep_root || root == away_root };
+        assert_eq!(
+            envelopes
+                .sweep(1_000 + KEEP_GONE_MS / 2, admitted)
+                .await
+                .expect("swept"),
+            0
+        );
+        // A millisecond short of their month, and there they stay.
+        assert_eq!(
+            envelopes
+                .sweep(1_000 + KEEP_GONE_MS - 1, admitted)
+                .await
+                .expect("swept"),
+            0
+        );
+        // A month on, `gone` has been gone long enough; `away` joined since.
+        assert_eq!(
+            envelopes
+                .sweep(1_000 + KEEP_GONE_MS, admitted)
+                .await
+                .expect("swept"),
+            1
+        );
+        assert_eq!(
+            envelopes.roots(),
+            vec![hex::encode(keep_root), hex::encode(away_root)]
+        );
+        // Once `away` is gone for the month too, their record goes with them.
+        let later = 100 * day + 2 * KEEP_GONE_MS;
+        let still_here = |root| async move { root == keep_root };
+        assert_eq!(envelopes.sweep(later, still_here).await.expect("swept"), 1);
+        assert_eq!(envelopes.roots(), vec![hex::encode(keep_root)]);
+        assert_eq!(
+            envelopes.sweep(later, still_here).await.expect("swept"),
+            0,
+            "a second sweep finds nothing more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_at_its_limit_takes_no_newcomer_but_keeps_its_members() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let envelopes = Envelopes::new(dir.path().join("envelopes"));
+        // A host already at `MAX_KEPT`, without writing sixty-five thousand
+        // records: the limit is asked of the directory, not a counter.
+        std::fs::create_dir_all(&envelopes.dir).expect("dir");
+        for index in 0..MAX_KEPT {
+            std::fs::write(envelopes.dir.join(format!("{index:064x}.json")), b"{}")
+                .expect("written");
+        }
+        assert_eq!(envelopes.roots_kept(), MAX_KEPT);
+        let newcomer = SigningKey::from_bytes(&[7; 32]);
+        let at = 1_000;
+        assert!(matches!(
+            envelopes
+                .publish(
+                    &statement(&newcomer, &envelope(&newcomer), at),
+                    at,
+                    |_| async { true }
+                )
+                .await,
+            Err(Refusal::Storage)
+        ));
+        // Someone whose record is already here is never turned away: what
+        // they kept is still theirs, whatever the host is at.
+        let member = SigningKey::from_bytes(&[8; 32]);
+        std::fs::write(
+            envelopes.path(&member.verifying_key().to_bytes()),
+            serde_json::to_vec(&Kept {
+                issued_at_ms: at,
+                envelope: envelope(&member),
+            })
+            .expect("json"),
+        )
+        .expect("written");
+        envelopes
+            .publish(
+                &statement(&member, &envelope(&member), at + 1),
+                at + 1,
+                |_| async { true },
+            )
+            .await
+            .expect("a member keeps what is theirs");
+    }
+
+    #[tokio::test]
+    async fn a_record_is_kept_for_a_member_who_is_still_here_forever() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let text = serde_json::json!({"version": 1, "user_public_key":
+            hex::encode(root.verifying_key().to_bytes()), "display_name": "Ada"})
+        .to_string();
+        let mut statement = PROFILE_LABEL.to_vec();
+        statement.extend_from_slice(&1_000u64.to_le_bytes());
+        statement.extend_from_slice(text.as_bytes());
+        let body = serde_json::to_vec(&serde_json::json!({
+            "profile": text,
+            "issued_at_ms": 1_000,
+            "signature": hex::encode(root.sign(&statement).to_bytes()),
+        }))
+        .expect("json");
+        profiles
+            .publish(&body, 1_000, |_| async { true })
+            .await
+            .expect("kept");
+        // Years later, still a member: what they kept is still theirs.
+        assert_eq!(
+            profiles
+                .sweep(1_000 + 365 * KEEP_GONE_MS, |_| async { true })
+                .await
+                .expect("swept"),
+            0
+        );
+        assert_eq!(profiles.roots().len(), 1);
     }
 }
