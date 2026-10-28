@@ -112,10 +112,10 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "app",
     "store",
     "system",
-    // The file actions: GNU's names, each one an action the broker checks
-    // against the environment's grants and records so it can be taken back.
-    // A guest that ships its own copy of one of these gets this one instead,
-    // because the copy could neither see the grants nor keep the history.
+    // The file actions: GNU's names, each one the environment record's own
+    // verb, checked against its grants and undone from its History. A guest
+    // that ships its own copy of one of these gets this one instead, because
+    // the copy could neither see the grants nor be an action.
     "cp",
     "mv",
     "rm",
@@ -129,7 +129,6 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "touch",
     "append",
     "history",
-    "undo",
     // A file's own history, read and restored through the mount's own
     // protocols, so a script or an agent reads the same revisions the file
     // manager's History view lists instead of a second store beside them.

@@ -26,6 +26,8 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-environment = { path = "../environment" }
 # The person's relays (home-peer registrations) and their personal workspace.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# Two sessions of one environment never carry the same file action out twice.
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Atomic writes of the host-shell decisions.
 tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
@@ -78,6 +80,9 @@ ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# History entries read as the history view reads them, in the file actions'
+# tests.
+tilo-actions = { path = "../../collab/actions" }
 
 [[test]]
 name = "it"
