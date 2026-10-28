@@ -343,12 +343,16 @@ jobs:
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
     env:
-      # The native ARM runner has enough memory for one of the largest test
-      # links, but not four simultaneously. Most compile work is served by
-      # sccache, so serialize ARM rustc/linker processes without slowing x86.
-      # The x86 runners have 16 or 24 CPUs; four jobs left the uncached test
-      # crates and links queueing behind each other.
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '8' }}
+      # Compiling and linking a shard's tests is the memory peak of the check.
+      # The native x86 class's 16 GiB job limit took a 22-package shard at
+      # eight concurrent links (killed 678 s in, exit 137: apps/agent,
+      # tilo-relay and tilo-room-host together), so the native class keeps
+      # four; the large class (36 GiB) keeps eight. The native ARM slot has
+      # memory for one of the largest test links but not four, and the large
+      # ARM slot four: ci-nightly builds the whole arm workspace that way.
+      CARGO_BUILD_JOBS: >-
+        ${{ (contains(matrix.runner, 'large') && (matrix.arch == 'aarch64' && '4' || '8'))
+            || (matrix.arch == 'aarch64' && '1' || '4') }}
     strategy:
       fail-fast: false
       max-parallel: 8
