@@ -3,7 +3,7 @@ use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
-use agent_provider_config::{ProviderConfig, ProviderProfile};
+use agent_provider_config::{Interaction, ProviderConfig, ProviderProfile};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
