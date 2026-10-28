@@ -2851,8 +2851,14 @@ impl WorkspaceTree {
     }
 
     /// Ask `room`'s governor for `request`. Nothing changes here until the
-    /// room's admitted document carries it, but for a sandbox capability
-    /// taken back ([`Self::narrow_sandbox`]), which stays taken back.
+    /// room's admitted document carries it, but for what is taken back: a
+    /// sandbox capability ([`Self::narrow_sandbox`]), which stays taken
+    /// back, and a grant revoked, which ends here at once, so no call this
+    /// device admits after the revocation, and no job it admitted before
+    /// that has yet to run, is decided on it while the room's governor
+    /// commits it. The grant stays out over every commit of the room until
+    /// the room no longer carries it, and comes back only if the governor
+    /// refuses the revocation ([`room_outbox`]).
     pub fn request_governance(&mut self, room: RoomId, request: GovernanceRequest) {
         let takes_back = match &request {
             GovernanceRequest::RevokeSandbox(id) => {
@@ -2864,7 +2870,24 @@ impl WorkspaceTree {
             }
             _ => None,
         };
-        self.send_to_room(room, RoomChange::Governance(request), takes_back);
+        let revokes = match &request {
+            GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(id)) => self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+                .and_then(|workspace| {
+                    // A built-in role's grant is never revoked: the
+                    // governor refuses it, so it is not ended here either.
+                    let before = workspace.policy.grants.len();
+                    workspace.policy.grants.retain(|grant| {
+                        &grant.id != id || tilo_action_policy::roles::is_role_grant(grant)
+                    });
+                    (workspace.policy.grants.len() != before).then(|| id.clone())
+                }),
+            _ => None,
+        };
+        self.send_to_room_revoking(room, RoomChange::Governance(request), takes_back, revokes);
     }
 
     /// Take back the sandbox capability `id` of `workspace_id` as `revoker`:
@@ -3116,6 +3139,12 @@ impl WorkspaceTree {
                 continue;
             };
             let operation = match request {
+                // Asking ended the grant here already (`request_governance`).
+                GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(id))
+                    if !workspace.policy.grants.iter().any(|grant| grant.id == id) =>
+                {
+                    continue;
+                }
                 GovernanceRequest::Policy(change) => {
                     workspace
                         .govern_as_at(actor, change, now)
