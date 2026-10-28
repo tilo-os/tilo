@@ -528,7 +528,7 @@ installer-preview-target-architecture-unsupported-processor-size = Tilo needs a 
 
 installer-preview-target-architecture-unsupported-byte-order = Tilo stores and shares its documents in a little-endian format, so it cannot run on this big-endian computer. Choose a little-endian computer.
 
-installer-preview-target-architecture-unsupported-graphics = No graphics driver for Vulkan compute exists for this computer’s processor, so Tilo cannot draw. Choose a computer with an AMD, Intel, NVIDIA or Qualcomm graphics card.
+installer-preview-target-architecture-unsupported-graphics = No graphics driver for Vulkan compute exists for this computer’s processor, so it cannot draw the desktop. Choose a computer with a graphics card that supports Vulkan compute.
 
 
 installer-preview-target-busy = Finish choosing a report before choosing another.
