@@ -147,6 +147,10 @@ fn every_mutable_method_of_the_bar_touches_its_drawing() {
         "set_popup_area",
         "set_dev_build",
         "set_desktop_control",
+        "set_shared",
+        "set_shared_by",
+        "set_share_mark",
+        "draw_shared_chip",
     ];
     let files = [
         ("tabs.rs", include_str!("tabs.rs")),
