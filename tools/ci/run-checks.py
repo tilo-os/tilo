@@ -249,6 +249,13 @@ class Runner:
         scratch = self.work / name.replace("/", "_")
         image = self.image(name)
         self.remove(scratch, image)
+        # t gives a check the outputs of the checks it needs, never its own from an earlier run.
+        for output in check.get("outputs", []):
+            if output.startswith("/target/"):
+                static = output.split("*")[0]
+                stale = self.target / static.removeprefix("/target/").rstrip("/")
+                if stale != self.target:
+                    self.remove(stale, image)
         (self.target / ".cargo-target").mkdir(exist_ok=True)
         dirs = ["tmp", "var-tmp"] + (["containers"] if vm else [])
         for d in dirs:
@@ -287,6 +294,11 @@ class Runner:
         if self.args.ref:
             env["T_REF"] = self.args.ref
         env.update(check.get("env", {}))
+        # Podman here runs as root of a user namespace, so it keeps its runtime files in
+        # XDG_RUNTIME_DIR as a rootless podman does; a VM step's root podman never reads it.
+        runtime = env.get("XDG_RUNTIME_DIR", "")
+        if vm and runtime.startswith("/tmp/"):
+            (scratch / "tmp" / runtime.removeprefix("/tmp/")).mkdir(parents=True, mode=0o700)
         for k, v in env.items():
             argv += ["-e", f"{k}={v}"]
         # A secret goes by name, from this environment, never on a command line or into the log.
