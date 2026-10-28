@@ -951,19 +951,21 @@ impl Room {
         let now = crate::shell::now_ms();
         let records: BTreeSet<(String, String)> = self.open_records().collect();
         for (app, record) in records {
-            let lane = ContentLane::of(&app, &record);
-            for hash in lane.take_requests().wants {
-                let Some(request) = self.content.ask(
-                    &device,
-                    (app.clone(), record.clone()),
-                    (&app, &self.uuid),
-                    &hash,
-                    now,
-                ) else {
-                    continue;
-                };
-                if self.peer.want_content(self.workspace, request).is_err() {
-                    lane.retry_want(hash);
+            // The record's windows each queue on a lane of their own.
+            for lane in ContentLane::on_route(&app, &record) {
+                for hash in lane.take_requests().wants {
+                    let Some(request) = self.content.ask(
+                        &device,
+                        (app.clone(), record.clone()),
+                        (&app, &self.uuid),
+                        &hash,
+                        now,
+                    ) else {
+                        continue;
+                    };
+                    if self.peer.want_content(self.workspace, request).is_err() {
+                        lane.retry_want(hash);
+                    }
                 }
             }
         }
@@ -997,7 +999,9 @@ impl Room {
             return false;
         };
         let (app, record) = arrived.tag;
-        ContentLane::of(&app, &record).arrive(arrived.hash, arrived.bytes);
+        for lane in ContentLane::on_route(&app, &record) {
+            lane.arrive(arrived.hash.clone(), arrived.bytes.clone());
+        }
         true
     }
 
