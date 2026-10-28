@@ -1,20 +1,7 @@
-[ratchets.closure_action_button]
-"apps/imager/src/app.rs" = 1
-"apps/imager/src/setup/view.rs" = 2
-
 [ratchets.closure_control]
 "apps/imager/src/app.rs" = 3
 "apps/imager/src/setup/import_view.rs" = 1
-"apps/imager/src/setup/journey/accounts.rs" = 6
-"apps/imager/src/setup/journey/accounts/batch.rs" = 2
-"apps/imager/src/setup/journey/accounts/icloud.rs" = 2
-"apps/imager/src/setup/journey/browser.rs" = 1
 "apps/imager/src/setup/journey/existing_identity.rs" = 1
-"apps/imager/src/setup/journey/mod.rs" = 3
-"apps/imager/src/setup/journey/service_sessions.rs" = 1
-"apps/imager/src/setup/journey/service_sessions/logins.rs" = 3
-"apps/imager/src/setup/journey/target.rs" = 2
-"apps/imager/src/setup/journey/view.rs" = 2
-"apps/imager/src/setup/journey/windows.rs" = 2
-"apps/imager/src/setup/journey/your_data.rs" = 4
+"apps/imager/src/setup/journey/mod.rs" = 2
+"apps/imager/src/setup/journey/service_sessions/logins.rs" = 1
 "apps/imager/src/write_setup.rs" = 1

@@ -78,14 +78,13 @@ impl ICloud {
     pub fn view(
         &self,
         dispatch: Rc<dyn Fn(AccountRequest)>,
-        edit: Rc<dyn Fn(&str, String)>,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
     ) -> Box<dyn ui::widget::Widget> {
         let mut body = page::related();
         if let Some(error) = self.flow.error() {
             body = body.push(Box::new(Text::new(&t(error))));
         }
         if !self.active() {
-            let submit = dispatch.clone();
             let key = ["icloud-login", "icloud-password", "icloud-code"][self.flow.field()];
             let label = [
                 "installer-accounts-icloud-login-label",
@@ -96,16 +95,22 @@ impl ICloud {
                 .push(Box::new(
                     Field::new(
                         t(label),
-                        TextInput::from_state(&self.fields[self.flow.field()])
-                            .with_id(&format!("installer.account.{key}"))
-                            .with_kind(if self.flow.field() == 0 {
-                                TextInputKind::Username
-                            } else {
-                                TextInputKind::Password
-                            })
-                            .with_secret(self.flow.field() != 0)
-                            .on_change(move |value| edit(key, value.to_string()))
-                            .on_submit(move |_| submit(AccountRequest::Confirm)),
+                        super::super::submits(
+                            actions,
+                            super::super::bound(
+                                actions,
+                                TextInput::from_state(&self.fields[self.flow.field()])
+                                    .with_id(&format!("installer.account.{key}"))
+                                    .with_kind(if self.flow.field() == 0 {
+                                        TextInputKind::Username
+                                    } else {
+                                        TextInputKind::Password
+                                    })
+                                    .with_secret(self.flow.field() != 0),
+                                super::field_effect(key),
+                            ),
+                            super::step_effect(AccountRequest::Confirm),
+                        ),
                     )
                     .with_label_placement(Some(LabelPlacement::Above)),
                 ))
