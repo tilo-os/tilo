@@ -247,7 +247,13 @@ fn without_marked_ids(text: &str) -> String {
                 );
                 rest = after;
             }
-            out.push_str(rest.trim_end_matches('^').replace("  |", " |").as_str());
+            // A changed line ends in its id alone: an edit cannot tell a
+            // block tag from the text's last space and a `^`.
+            out.push_str(
+                rest.trim_end_matches(['^', ' '])
+                    .replace("  |", " |")
+                    .as_str(),
+            );
             out.trim_end().to_owned()
         })
         .collect::<Vec<_>>()
