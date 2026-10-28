@@ -14,10 +14,13 @@
 //! [`describe()`] renders a grant set by node, for a log; [`sentences()`] says
 //! it the way a person reads it, one sentence per grant. [`agent_answers`] are
 //! the Allow, Ask first and Deny a person sets for one of their agents, per
-//! application, kind of resource or action.
+//! application, kind of resource or action. [`authorship`] makes the code
+//! between a person and an action (a tilolang program) one more bounding
+//! party.
 
 mod admission;
 pub mod agent_answers;
+pub mod authorship;
 pub mod bot;
 mod decide;
 pub mod describe;
