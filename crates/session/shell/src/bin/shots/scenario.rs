@@ -462,6 +462,12 @@ pub enum Action {
     /// wants reviewing. This writes the same `ChromeState::osd` the key
     /// handler writes.
     SeedOsd(&'static str),
+    /// Publish Clocks' running timer with its floating overlay, the panel
+    /// the bar's clock opens: an app's own live activity, which a `--shots`
+    /// render has no app to publish.
+    SeedTimerOverlay,
+    /// Withdraw that activity, so a later scenario starts with no timer.
+    EndTimerOverlay,
     /// Open quick settings on the Wi-Fi pane with a passphrase prompt
     /// up, by preset name (`empty`, `typed`, `rejected`).
     SeedWifiPrompt(&'static str),
@@ -1883,6 +1889,29 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             });
         }
         Action::SeedFilePicker(mode) => file_chooser::seed(driver, mode),
+        Action::SeedTimerOverlay => {
+            shell::shell::live_activities::board().show(
+                "so.tilo.clocks",
+                Some(serde_json::json!({
+                    "active": true,
+                    "activity_id": "timer-launch",
+                    "label": "Tea",
+                    "remaining_secs": 125,
+                    "stopwatch": false,
+                    "overlay": true,
+                })),
+            );
+            // The bar reads the activity board every
+            // `CLOCK_ACTIVITY_REFRESH` (250 ms of wall time), so the frames
+            // after this one are what puts it on screen.
+            driver.step_frames(24);
+            driver.relayout();
+        }
+        Action::EndTimerOverlay => {
+            shell::shell::live_activities::board().show("so.tilo.clocks", None);
+            driver.step_frames(24);
+            driver.relayout();
+        }
         _ => {}
     }
 }
@@ -3912,6 +3941,21 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(2),
                 Action::Relayout,
                 Action::Snapshot("02-guide"),
+            ],
+        },
+        Scenario {
+            name: "clock_overlay",
+            description: "Clocks' running timer floats over the desktop: the panel the bar's clock opens, drawn without a scenario until now.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("00-desktop"),
+                Action::SeedTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("01-timer-overlay"),
+                Action::EndTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("02-timer-gone"),
             ],
         },
         Scenario {
