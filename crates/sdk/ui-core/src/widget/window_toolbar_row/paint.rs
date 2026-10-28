@@ -34,7 +34,7 @@ impl ToolbarRow {
         presence: &PresenceCtx,
     ) {
         self.measure_views(theme);
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         self.start_slot_change(theme);
         if let Some((outgoing, opacity)) = self.fade.outgoing(now)
             && outgoing.is_some()

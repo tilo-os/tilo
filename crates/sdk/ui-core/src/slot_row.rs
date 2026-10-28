@@ -354,8 +354,7 @@ impl SlotRow {
     /// caret.
     pub(crate) fn needs_frame(&self) -> bool {
         self.shown.is_some()
-            && (self.row.needs_animation_frame(crate::time::now())
-                || self.search.needs_animation_frame())
+            && (self.row.needs_animation_frame() || self.search.needs_animation_frame())
     }
 
     /// The band the row paints, from the host's frame at `left` to the

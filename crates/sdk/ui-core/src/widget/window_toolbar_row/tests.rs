@@ -491,12 +491,12 @@ fn slots_shown_where_none_stood_are_at_rest_at_once() {
     let now = crate::time::now();
     row.show(7, Some(&browser()), Theme::dark().motion(), now);
     assert!(
-        !row.needs_animation_frame(now),
+        !row.needs_animation_frame(),
         "nothing faded out, so nothing fades in"
     );
     row.show(8, Some(&browser()), Theme::dark().motion(), now);
     assert!(
-        row.needs_animation_frame(now),
+        row.needs_animation_frame(),
         "another tab's slots cross-fade"
     );
 }
@@ -509,7 +509,7 @@ fn another_tab_cross_fades_and_drops_what_was_typed_in_this_one() {
     row.show(8, None, Theme::dark().motion(), now);
     assert!(!row.is_editing());
     assert!(row.toolbar().is_none());
-    assert!(row.needs_animation_frame(now), "the old slots fade out");
+    assert!(row.needs_animation_frame(), "the old slots fade out");
 }
 
 /// A calendar's slots: the sidebar, previous, next and today, the
@@ -1454,7 +1454,7 @@ fn a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide() {
         changed_to(&mut row, &with_sidebar, &theme);
         let back = row.slots().back;
         assert!(back.x0 > back_before.x0, "the sidebar pushed back along");
-        assert!(row.needs_animation_frame(t0), "the change moves");
+        assert!(row.needs_animation_frame(), "the change moves");
         let poses = row.slot_changes.poses(t0);
         let (opacity, _) = poses[&slot_change::SlotKey::Sidebar];
         assert!(opacity < 0.05, "the sidebar fades in from clear: {opacity}");
@@ -1471,7 +1471,7 @@ fn a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide() {
     });
     let end = later(t0);
     with_monotonic_time(end, || {
-        assert!(!row.needs_animation_frame(end), "and settles");
+        assert!(!row.needs_animation_frame(), "and settles");
         row.start_slot_change(&theme);
         assert!(row.slot_changes.poses(end).is_empty());
         assert_eq!(row.slot_at(row.slots().back.center()), Some(Slot::Back));
@@ -1480,6 +1480,29 @@ fn a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide() {
             Some(Slot::Sidebar)
         );
     });
+}
+
+#[test]
+fn a_frame_laid_out_while_the_slots_glide_asks_for_frames_at_its_own_instant() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    let frame = with_monotonic_time(t0, || {
+        changed_to(&mut row, &with_sidebar, &theme);
+        crate::motion::pin_frame()
+    });
+    // The frame's layout takes a while: the clock has moved on when the
+    // window asks whether another frame must follow.
+    let during = t0
+        .checked_add(crate::time::Duration::from_millis(30))
+        .unwrap_or(t0);
+    with_monotonic_time(during, || {
+        assert!(row.needs_animation_frame(), "the glide still moves");
+    });
+    drop(frame);
 }
 
 #[test]
@@ -1507,7 +1530,7 @@ fn a_slot_the_app_takes_away_fades_out_where_it_stood() {
     with_monotonic_time(end, || {
         row.start_slot_change(&theme);
         assert!(row.slot_changes.leaving().is_empty(), "and is gone");
-        assert!(!row.needs_animation_frame(end));
+        assert!(!row.needs_animation_frame());
     });
 }
 
@@ -1544,13 +1567,13 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
     with_monotonic_time(t0, || {
         crate::motion::note_source(MotionSource::Keyboard);
         changed_to(&mut row, &with_sidebar, &theme);
-        assert!(!row.needs_animation_frame(t0), "a key's change lands");
+        assert!(!row.needs_animation_frame(), "a key's change lands");
         crate::motion::note_source(MotionSource::Pointer);
         let mut opened = with_sidebar.clone();
         opened.sidebar = Some(true);
         changed_to(&mut row, &opened, &theme);
         assert!(
-            !row.needs_animation_frame(t0),
+            !row.needs_animation_frame(),
             "the sidebar opening moves no slot"
         );
     });

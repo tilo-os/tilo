@@ -1643,8 +1643,11 @@ impl ToolbarRow {
     }
 
     /// Whether a frame must follow: the cross-fade, slots arriving, leaving
-    /// or moving, the field's caret, or a menu arriving or leaving.
-    pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
+    /// or moving, the field's caret, or a menu arriving or leaving. Read at
+    /// the frame's instant: asked while a frame is laid out, the live clock
+    /// would read the motions at an instant the frame's passes never saw.
+    pub(crate) fn needs_animation_frame(&self) -> bool {
+        let now = crate::motion::frame_now();
         self.fade.is_moving(now)
             || self.strip.needs_frame()
             || self.slot_changes.is_moving(now)
