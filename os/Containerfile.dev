@@ -92,6 +92,7 @@ COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
 COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
+     os/scripts/clean-dnf-layer-state.sh \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh \
      os/scripts/install-env-runtime.sh os/scripts/ensure-dev-env-runtime.sh /tilo/os/scripts/
@@ -148,7 +149,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
     sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages openssh-server rsync
-RUN ldconfig
+# ldconfig's aux-cache records inode numbers and ctimes, which differ in every build.
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 # ---- The tilo-dev-tools sysext tree -------------------------------------------
 # The Rust toolchain (about 680 MB) and the test GUI clients (about 600 MB,
@@ -214,14 +216,17 @@ ARG SOURCE_DATE_EPOCH=0
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
     LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
       --setopt=install_weak_deps=False \
       chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm \
     && dnf clean all \
     && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
+    && sh /run/tilo-dev/os/scripts/clean-dnf-layer-state.sh \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
-RUN ldconfig
+# ldconfig's aux-cache records inode numbers and ctimes, which differ in every build.
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
