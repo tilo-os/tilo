@@ -17,8 +17,8 @@ Two consequences follow, and both are the point:
 
 ## Where a durable fact goes
 
-An agent that learns something durable ([`ROLE`] in a task's prompt below) puts
-it in the place a person would, with that place's action:
+An agent that learns something durable puts it in the place a person would,
+with that place's action (the paragraph a plan is given, below):
 
 | What it learned | Where it goes | Action it runs |
 |---|---|---|
@@ -62,14 +62,15 @@ or the note, reads it, and plans with it. Two rules keep that honest:
 - An agent writes a preference to the setting, then reads it from the setting
   when it needs it. It never keeps a private copy to skip the read.
 - The prompt says where durable facts belong and that nothing carries over
-  between tasks (the `ROLE` paragraph below). A plan that states a preference
-  without having read it is visible in its steps: there is no step that read it.
+  between tasks; the paragraph is quoted below. A plan that acts on a
+  preference without having read it shows that in its steps: there is no step
+  that read it.
 
 ## The paragraph a plan is given
 
-[`ROLE`] is the standing instruction in
-`crates/agent/agent-participant/src/model.rs`, carried in every plan's briefing.
-It is the whole of the convention as the model sees it:
+The paragraph is part of `PLANNER_INSTRUCTIONS` in
+`crates/agent/agent-participant/src/model/converse.rs`, which every plan is told
+before its briefing. It is the whole of the convention as the model sees it:
 
 ```
 Nothing you learned in an earlier task carries over to this one. To know a
