@@ -163,6 +163,7 @@ NOT_CONTROL_CALLBACKS = {
     "on_open": "answers the resource's published open action",
     "on_open_item": "answers the resource's published open action",
     "on_stage": "stages view state for a screenshot scenario",
+    "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a
