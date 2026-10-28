@@ -45,12 +45,25 @@ pub(super) fn spawn_readable_watcher(
     // leaves the watcher polling a number the process reused.
     let watched = stream.try_clone()?;
     let mut ends = [0 as libc::c_int; 2];
-    // SAFETY: `ends` has room for the two descriptors pipe2 writes.
-    if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+    // `pipe2` is Linux-only; macOS has `pipe` and the flags set afterwards.
+    // SAFETY: `ends` has room for the two descriptors pipe writes.
+    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: pipe2 succeeded, so both are fresh descriptors owned here alone.
+    // SAFETY: pipe succeeded, so both are fresh descriptors owned here alone.
     let (rearms, rearm) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    for end in [&rearms, &rearm] {
+        let fd = end.as_raw_fd();
+        // SAFETY: `fd` is an open descriptor owned above; these calls only
+        // change its flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0
+            || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } != 0
+            || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
     let parked_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let waiting = std::sync::Arc::clone(&parked_flag);
     tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
