@@ -163,7 +163,7 @@ impl Fixture {
         let service = NativeMediaService::new(
             lifecycle.clone(),
             Arc::new(Mutex::new(capture)),
-            super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+            tilo_network_actor::fabric::DeviceId::new("device-test").unwrap(),
         );
         assert!(service.install_consent(grants, prompts.clone()));
         let device = Arc::new(Device::default());
@@ -541,7 +541,7 @@ async fn absent_real_adapter_is_unavailable_and_never_prompts() {
     let service = NativeMediaService::new(
         fixture.lifecycle.clone(),
         fixture.service.capture_broker(),
-        super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+        tilo_network_actor::fabric::DeviceId::new("device-test").unwrap(),
     );
     let snapshot = service
         .command_for(
@@ -722,7 +722,7 @@ async fn pending_join_cannot_install_a_backend_after_leave() {
     let service = NativeMediaService::new(
         fixture.lifecycle.clone(),
         fixture.service.capture_broker(),
-        super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+        tilo_network_actor::fabric::DeviceId::new("device-test").unwrap(),
     );
     let consent = fixture.service.0.consent.get().unwrap().clone();
     assert!(service.install_consent(consent.grants, consent.prompts));

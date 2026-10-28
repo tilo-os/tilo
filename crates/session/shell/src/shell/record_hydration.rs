@@ -240,7 +240,7 @@ impl RecordSource for NetworkSource {
             completer.complete(Err("this session's network has ended".into()));
             return answer;
         };
-        let topic = crate::shell::network::room_topic_id(address.room);
+        let topic = tilo_network_actor::room_topic_id(address.room);
         let holders = network
             .room_devices(address.room)
             .into_iter()

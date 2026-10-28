@@ -89,7 +89,6 @@ agent-provider-config = { path = "../../agent/provider-config" }
 # The model gateway connection the report review binds, made by the shell on
 # the composer's behalf as a launcher makes one for an app.
 tilo-model-client = { path = "../../agent/model-client", default-features = false, features = ["runtime-client"] }
-fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -168,7 +167,6 @@ qcms.workspace = true
 
 iroh.workspace = true
 iroh-base.workspace = true
-iroh-gossip.workspace = true
 tilo-lan-discovery = { path = "../../collab/tilo-lan-discovery" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
@@ -308,6 +306,9 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 tilo-color-pipeline = { path = "../color-pipeline" }
 # The GPU passes that put a frame on an output.
 tilo-output-passes = { path = "../output-passes" }
+# The peer-to-peer transport: gossip topics, room host sessions, direct
+# links and the person's private device lane.
+tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
@@ -441,6 +442,8 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The hooks the network tests reach the actor through.
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # The write faults the settings-copy repair tests inject.
 settings-store = { path = "../../system/settings-store", features = ["watch", "test-support"] }
 # The calibrated test panels the presenter tests render through.

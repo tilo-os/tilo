@@ -1,7 +1,9 @@
 use super::*;
-use crate::network::{Actor, NetCmd, PeerIdentityStore};
+use crate::network::PeerIdentityStore;
 use crate::session_runtime::runtime;
 use iroh::{Endpoint, address_lookup::memory::MemoryLookup, endpoint::presets};
+use tilo_network_actor::Actor;
+use tilo_network_actor::NetCmd;
 struct Peer {
     rig: Rig,
     apps: crate::shell::in_process::InProcessApps,

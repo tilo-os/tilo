@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::{
+    DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect, FabricStamp,
+    MAX_FABRIC_ACTION_BYTES, MAX_FABRIC_CHECKPOINT_BYTES,
+};
 
 pub const FABRIC_SCHEMA_VERSION: u16 = 7;
 pub const MAX_DEVICES: usize = 64;
@@ -25,9 +28,6 @@ pub const MAX_SETTING_BYTES: usize = settings_store::continuity::MAX_PERSONAL_VA
 pub const MAX_WIFI_CREDENTIALS: usize = 256;
 pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
-/// Aggregate state is metadata and small clipboard payloads, never media data.
-pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 pub const MAX_DISPLAY_MOVE_AGE_MS: u64 = 10_000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
@@ -58,18 +58,6 @@ pub fn remote_audio_media_ns(media_ts: u64) -> Option<u64> {
         .checked_mul(1_000_000_000)?
         .checked_div(u128::from(REMOTE_AUDIO_SAMPLE_RATE_HZ))?;
     u64::try_from(ns).ok()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct FabricStamp {
-    pub counter: u64,
-    pub device: DeviceId,
-}
-
-impl FabricStamp {
-    pub fn is_newer_than(&self, other: &Self) -> bool {
-        (self.counter, self.device.as_str()) > (other.counter, other.device.as_str())
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1601,46 +1589,6 @@ impl WifiCredential {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl DisplayRect {
-    /// Logical geometry shared with the Displays arrangement control.
-    /// Malformed or overflowing screen bounds are never crossing targets.
-    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
-        let width = i32::try_from(self.width).ok()?;
-        let height = i32::try_from(self.height).ok()?;
-        if width <= 0 || height <= 0 {
-            return None;
-        }
-        self.x.checked_add(width)?;
-        self.y.checked_add(height)?;
-        Some(settings_store::display_placement::Placement::new(
-            self.x, self.y, width, height,
-        ))
-    }
-
-    fn contains_x(&self, x: i32) -> bool {
-        x >= self.x && x < self.x.saturating_add_unsigned(self.width)
-    }
-
-    fn contains_y(&self, y: i32) -> bool {
-        y >= self.y && y < self.y.saturating_add_unsigned(self.height)
-    }
-
-    pub fn intersects(&self, other: Self) -> bool {
-        self.x < other.x.saturating_add_unsigned(other.width)
-            && self.x.saturating_add_unsigned(self.width) > other.x
-            && self.y < other.y.saturating_add_unsigned(other.height)
-            && self.y.saturating_add_unsigned(self.height) > other.y
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayEdge {
     Left,
@@ -1659,15 +1607,6 @@ impl DisplayEdge {
             Self::Bottom => Self::Top,
         }
     }
-}
-
-/// A physical connector in its owner's logical seat coordinate space.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayConnectorPlacement {
-    pub connector: String,
-    pub label: String,
-    pub rect: DisplayRect,
-    pub scale_milli: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1951,14 +1890,6 @@ impl DeviceFabricSnapshot {
         unique(self.wifi.iter().map(|item| item.network_id))?;
         Ok(())
     }
-}
-
-/// Rich hardware facts accompanying the connector extension. They describe
-/// an output but never grant control or change its live geometry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayOutputObservation {
-    pub connector: String,
-    pub output: settings_store::person_displays::DeviceOutput,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3001,16 +2932,16 @@ mod tests {
 
     #[test]
     fn display_connectors_round_trip_as_their_pinned_bytes() {
-        let payload = crate::network::actor::PersonalFabricPayload::DisplayConnectors {
+        let payload = tilo_network_actor::PersonalFabricPayload::DisplayConnectors {
             stamp: stamp("peer", 1),
             outputs: Vec::new(),
         };
         let pinned = hex::decode("0701047065657200").unwrap();
         assert_eq!(postcard::to_allocvec(&payload).unwrap(), pinned);
-        let decoded: crate::network::actor::PersonalFabricPayload =
+        let decoded: tilo_network_actor::PersonalFabricPayload =
             postcard::from_bytes(&pinned).unwrap();
         assert!(matches!(decoded,
-            crate::network::actor::PersonalFabricPayload::DisplayConnectors { outputs, .. }
+            tilo_network_actor::PersonalFabricPayload::DisplayConnectors { outputs, .. }
                 if outputs.is_empty()));
     }
 

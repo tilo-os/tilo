@@ -7,7 +7,7 @@
 //! or at start when a room was hosted here before
 //! ([`ShellNetwork::open_hosted_rooms`]). A device that hosts nothing never
 //! opens it, and its router's handlers for it refuse every connection
-//! ([`crate::network::local_host`]).
+//! ([`tilo_network_actor::local_host`]).
 //!
 //! A new workspace is placed on this device's host
 //! ([`ShellNetwork::place_pending_workspaces`]): the tree made the workspace
@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::network::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
 use tilo_actions::remote::RemoteActionMessage;
+use tilo_network_actor::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
 use tilo_relay_session::rooms::{
     ATTACH_HOST, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
     HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
@@ -35,9 +35,9 @@ use tilo_relay_session::rooms::{
 use super::{
     NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
 };
-use crate::network::actor::room_governance;
-use crate::network::local_host::LocalHost;
 use crate::shell::state::WorkspaceId;
+use tilo_network_actor::local_host::LocalHost;
+use tilo_network_actor::room_governance;
 
 /// The directory, beside the native owner's state file, that this device's
 /// room host keeps its rooms in.
@@ -798,7 +798,7 @@ impl ShellNetwork {
 /// ([`room_host::PersonsHostSessions`]).
 struct DeviceSessions {
     cmd_tx: tokio::sync::mpsc::Sender<NetCmd>,
-    event_tx: tokio::sync::mpsc::Sender<crate::network::actor::NetEvent>,
+    event_tx: tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
     user: [u8; 32],
 }
 
@@ -823,7 +823,7 @@ impl room_host::PersonsHostSessions for DeviceSessions {
         let send = |command| self.cmd_tx.try_send(command).is_ok();
         let queued = send(NetCmd::ConnectHost {
             addr,
-            expectation: Some(crate::network::actor::HomePeerExpectation {
+            expectation: Some(tilo_network_actor::HomePeerExpectation {
                 user_public_key: self.user,
                 device_public_key: device,
             }),
@@ -856,7 +856,7 @@ mod tests;
 /// `ws`, through the host's in-process caller, and answer its result.
 fn serve_in_process(
     host: &RoomHost,
-    identity: &crate::network::actor::HostIdentity,
+    identity: &tilo_network_actor::HostIdentity,
     runtime: &tokio::runtime::Handle,
     ws: u64,
     invoke: tilo_actions::remote::InvokeRequest,
@@ -869,7 +869,7 @@ fn serve_in_process(
 /// answer, to wait for.
 fn serve_in_process_pending(
     host: &RoomHost,
-    identity: &crate::network::actor::HostIdentity,
+    identity: &tilo_network_actor::HostIdentity,
     ws: u64,
     invoke: tilo_actions::remote::InvokeRequest,
 ) -> Result<tilo_actions::remote::Pending<RemoteActionMessage>, String> {
@@ -899,7 +899,7 @@ fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, 
 /// action, asked through its in-process caller.
 struct OwnHostGovernor {
     host: Arc<RoomHost>,
-    identity: crate::network::actor::HostIdentity,
+    identity: tilo_network_actor::HostIdentity,
     runtime: tokio::runtime::Handle,
     tree: crate::shell::state::WorkspaceTreeHandle,
     device: [u8; 32],

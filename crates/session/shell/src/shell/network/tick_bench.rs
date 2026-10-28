@@ -36,7 +36,7 @@ fn network_tick_latency_while_the_desktop_changes() {
     let (mut net, mut commands) = shell_network_for_test(tree.clone(), 0xBE7C);
     net.personal_continuity_user = Some([0x5A; 32]);
     net.personal_continuity_device =
-        Some(crate::shell::personal_continuity::DeviceId::new("bench-device").expect("device id"));
+        Some(tilo_network_actor::fabric::DeviceId::new("bench-device").expect("device id"));
     net.personal_continuity_path = Some(dir.path().join("personal-continuity.postcard"));
     net.continuity_policy_override = Some(
         crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(

@@ -7,10 +7,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::shell::device_fabric::{DeviceKind, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::personal_tethering::{
     PersonalTethering, TetheringEvent, TetheringId, TetheringRoute, TetheringSignal,
 };
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TetheringConsentView {
@@ -1234,7 +1234,7 @@ mod tests {
             "not-a-real-password",
             provider,
             [requester.clone()],
-            crate::shell::device_fabric::FabricStamp {
+            tilo_network_actor::fabric::FabricStamp {
                 counter: 1,
                 device: provider.clone(),
             },

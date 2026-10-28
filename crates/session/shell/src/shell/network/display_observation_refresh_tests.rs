@@ -13,10 +13,10 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use super::{HostIdentity, NetCmd, ShellNetwork};
 use crate::compositor::selection::SelectionStore;
 use crate::notifications::NotificationBridge;
-use crate::shell::device_fabric::DisplayRect;
 use crate::shell::device_fabric_runtime::{DeviceFabricRuntime, LocalFabricCapabilities};
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::state::WorkspaceTree;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::DisplayRect;
 
 #[test]
 #[serial_test::serial]

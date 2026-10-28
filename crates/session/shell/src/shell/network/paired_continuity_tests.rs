@@ -3,7 +3,7 @@
 use super::*;
 use crate::compositor::selection::{self, SharedSelection, Target};
 use crate::shell::device_fabric_runtime::{DeviceFabricRuntime, LocalFabricCapabilities};
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 struct Session {
@@ -45,6 +45,7 @@ impl Session {
             workspace_revocations: std::collections::HashMap::new(),
             identity_paths: None,
         };
+        crate::network::install_actor_services();
         let (commands, actor) = Actor::spawn_reporting_addrs(
             endpoint.clone(),
             lookup,
@@ -53,7 +54,7 @@ impl Session {
         );
         let (mut network, _) = shell_network_for_test(
             tree.shared(),
-            crate::network::behaviour::peer_liveness_handle(&device.public()),
+            tilo_network_actor::behaviour::peer_liveness_handle(&device.public()),
         );
         network.cmd_tx = commands;
         network.keypair = device.clone();

@@ -27,9 +27,9 @@ use neighbour_wire::{
 use tilo_lock::MutexRecover as _;
 
 use super::{NetCmd, ShellNetwork, room_topic_id};
-use crate::network::actor::WorkspaceControlRoute;
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::RoomId;
+use tilo_network_actor::WorkspaceControlRoute;
 
 /// How often an unchanged, non-empty list is repeated.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -233,7 +233,7 @@ impl ShellNetwork {
         let mut by_host: BTreeMap<(iroh::EndpointId, RoomId), Vec<SurfaceView>> = BTreeMap::new();
         let mut apps: HashMap<(iroh::EndpointId, RoomId, u64), String> = HashMap::new();
         for (room, host, app_id, view) in shown {
-            let Ok(device) = crate::shell::personal_continuity::DeviceId::new(host.clone()) else {
+            let Ok(device) = tilo_network_actor::fabric::DeviceId::new(host.clone()) else {
                 continue;
             };
             if own.contains(&device) {

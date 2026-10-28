@@ -1196,6 +1196,7 @@ doc = false
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../../crates/system/net-answers", default-features = false, features = ["default", "fetch"] }
 "tilo-net-p2p" = { path = "../../../crates/platform/tilo-net-p2p", default-features = false, features = [] }
+"tilo-network-actor" = { path = "../../../crates/session/network-actor", default-features = false, features = [] }
 "tilo-network-secret-agent" = { path = "../../../crates/session/network-secret-agent", default-features = false, features = ["test-support"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
 "tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }

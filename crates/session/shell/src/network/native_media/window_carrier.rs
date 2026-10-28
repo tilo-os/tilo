@@ -13,9 +13,9 @@ use super::session::{Running, command, maintain};
 use super::{
     Arc, AtomicBool, Client, Mutex, NativeWorkspaceOwner, OPEN_DEADLINE, Operation, Ordering, Reply,
 };
-use crate::network::NetCmd;
 use crate::shell::state::RoomId;
 use runtime_collab::native_media::{Issue, State as CallState};
+use tilo_network_actor::NetCmd;
 use tokio::sync::mpsc;
 
 /// This device on one room's window carrier, while it holds it. Dropping it

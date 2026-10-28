@@ -295,10 +295,9 @@ mod identity_fs_tests {
             let bob_id = hex::encode(bob.as_bytes());
             let mut room_a = Workspace::new(WorkspaceId(1), "A");
             let mut room_b = Workspace::new(WorkspaceId(2), "B");
-            let primary_relay_scope =
-                crate::shell::network::room_topic_id(room_a.room()).to_string();
+            let primary_relay_scope = tilo_network_actor::room_topic_id(room_a.room()).to_string();
             let secondary_relay_scope =
-                crate::shell::network::room_topic_id(room_b.room()).to_string();
+                tilo_network_actor::room_topic_id(room_b.room()).to_string();
             let reader = |id: &str, person: &str, room: &str| {
                 Grant::new(
                     id,
@@ -443,7 +442,7 @@ impl PeerOrigin {
     /// room replication onto the same row per peer. One-way only, never
     /// for authority: a collision merges a display row, not a permission.
     pub fn liveness_handle(&self) -> Option<u64> {
-        Some(crate::network::behaviour::peer_liveness_handle(
+        Some(tilo_network_actor::behaviour::peer_liveness_handle(
             &self.endpoint()?,
         ))
     }
@@ -1658,7 +1657,7 @@ impl WorkspaceTree {
 
     /// The names `room` carries, keyed by the peer **handle** the
     /// presence path speaks in
-    /// ([`crate::network::behaviour::peer_liveness_handle`]), not the
+    /// ([`tilo_network_actor::behaviour::peer_liveness_handle`]), not the
     /// id — the document stores real identity, this bridges the gap. A
     /// peer with no entry is labelled with its handle.
     /// Every device the room names, by transport endpoint: the devices a
@@ -1677,7 +1676,7 @@ impl WorkspaceTree {
                 continue;
             };
             out.insert(
-                crate::network::behaviour::peer_liveness_handle(&parsed),
+                tilo_network_actor::behaviour::peer_liveness_handle(&parsed),
                 name,
             );
         }
@@ -1734,7 +1733,7 @@ impl WorkspaceTree {
                 }
                 let parsed = peer.parse::<iroh::EndpointId>().ok()?;
                 Some((
-                    crate::network::behaviour::peer_liveness_handle(&parsed),
+                    tilo_network_actor::behaviour::peer_liveness_handle(&parsed),
                     identity.device_cert,
                 ))
             })
@@ -2191,7 +2190,7 @@ impl WorkspaceTree {
             // Signed room membership is a separate projection from Files
             // access: who the room's policy lets read it, per relay shard.
             room_members.insert(
-                crate::shell::network::room_topic_id(workspace.room).to_string(),
+                tilo_network_actor::room_topic_id(workspace.room).to_string(),
                 workspace
                     .members
                     .iter()
@@ -6021,7 +6020,7 @@ mod workspace_tree_lifecycle_tests {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
                 tree.join_room("Plans", room);
-                let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+                let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
                 let app = crate::shell::personal_continuity::AppInstanceState::new(
                     crate::shell::personal_continuity::AppInstanceId(0x99),
                     crate::shell::personal_continuity::TabPlacement {
@@ -6064,7 +6063,7 @@ mod workspace_tree_lifecycle_tests {
                     None,
                     crate::shell::personal_continuity::ContinuityStamp {
                         counter: 1,
-                        device: crate::shell::personal_continuity::DeviceId::new("laptop").unwrap(),
+                        device: tilo_network_actor::fabric::DeviceId::new("laptop").unwrap(),
                     },
                 );
                 tree.materialize_continuation_workspace(
@@ -6097,7 +6096,7 @@ mod workspace_tree_lifecycle_tests {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
                 tree.join_room("Plans", room);
-                let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+                let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
                 let make = |strip, title_app: &str| {
                     crate::shell::personal_continuity::AppInstanceState::new(
                         crate::shell::personal_continuity::AppInstanceId(0x9b),
@@ -6158,9 +6157,10 @@ mod workspace_tree_lifecycle_tests {
             // Phase `continuation_placeholders_do_not_render_device_or_record_identifiers`.
             {
                 use crate::shell::personal_continuity::{
-                    AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent,
-                    TabPlacement, WorkspaceContinuation,
+                    AppInstanceId, AppInstanceState, ContinuityStamp, LaunchIntent, TabPlacement,
+                    WorkspaceContinuation,
                 };
+                use tilo_network_actor::fabric::DeviceId;
 
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
@@ -6251,9 +6251,10 @@ mod workspace_tree_lifecycle_tests {
     #[test]
     fn newer_app_winner_clears_an_old_file_reference_for_the_same_tab() {
         use crate::shell::personal_continuity::{
-            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent, TabPlacement,
+            AppInstanceId, AppInstanceState, ContinuityStamp, LaunchIntent, TabPlacement,
             WorkspaceContinuation,
         };
+        use tilo_network_actor::fabric::DeviceId;
 
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = RoomId::new();

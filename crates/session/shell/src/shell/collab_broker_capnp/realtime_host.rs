@@ -13,7 +13,7 @@ use tilo_action_broker::services::{RealtimeRequestContext, RealtimeServices};
 struct RealtimeBinding {
     id: crate::shell::realtime_session::RealtimeSessionId,
     app: crate::shell::realtime_session::VerifiedAppRegistration,
-    source: crate::shell::personal_continuity::DeviceId,
+    source: tilo_network_actor::fabric::DeviceId,
     owner_peer: u64,
     authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
     target_peer: Option<u64>,
@@ -135,7 +135,7 @@ fn acquire_realtime_capture_leases(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
     app: &crate::shell::realtime_session::VerifiedAppRegistration,
     session: &str,
-    target: &crate::shell::personal_continuity::DeviceId,
+    target: &tilo_network_actor::fabric::DeviceId,
     opaque_authorizations: &[String],
     required: &[crate::portal::CaptureKind],
     now: std::time::Instant,
@@ -159,7 +159,7 @@ fn realtime_capture_leases_ready(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
     app: &crate::shell::realtime_session::VerifiedAppRegistration,
     session: &str,
-    target: &crate::shell::personal_continuity::DeviceId,
+    target: &tilo_network_actor::fabric::DeviceId,
     leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
     now: std::time::Instant,
 ) -> Result<(), crate::portal::capture_broker::CaptureBrokerError> {
@@ -180,7 +180,7 @@ fn release_realtime_capture_session(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
     app: &crate::shell::realtime_session::VerifiedAppRegistration,
     session: &str,
-    target: &crate::shell::personal_continuity::DeviceId,
+    target: &tilo_network_actor::fabric::DeviceId,
 ) {
     if let Ok(binding) =
         crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
@@ -301,11 +301,11 @@ fn pause_realtime_consent_after_mint() {
 
 struct NativeRealtimeState {
     realtime: Mutex<RealtimeBridge>,
-    local: crate::shell::personal_continuity::DeviceId,
+    local: tilo_network_actor::fabric::DeviceId,
 }
 
 impl NativeRealtimeState {
-    fn new(local: crate::shell::personal_continuity::DeviceId) -> Arc<Self> {
+    fn new(local: tilo_network_actor::fabric::DeviceId) -> Arc<Self> {
         Arc::new(Self {
             realtime: Mutex::new(RealtimeBridge::default()),
             local,
@@ -330,7 +330,7 @@ pub struct RealtimeSourceUiView {
 pub struct RealtimeConsentUiView {
     pub session: String,
     pub room_label: String,
-    pub source: crate::shell::personal_continuity::DeviceId,
+    pub source: tilo_network_actor::fabric::DeviceId,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -424,7 +424,7 @@ impl RealtimeFabricAppBridge {
     pub fn propose_to(
         &self,
         session: &str,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
     ) -> Result<(), String> {
         if !crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
             .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
@@ -849,7 +849,7 @@ impl NativeRealtimeState {
         &self,
         app: &crate::shell::realtime_session::VerifiedAppRegistration,
         session: &str,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         selections: &[(crate::portal::CaptureKind, String)],
         now: std::time::Instant,
     ) -> Result<Vec<String>, String> {
@@ -1455,8 +1455,7 @@ mod tests {
     #[test]
     fn native_registration_binds_authenticated_context_and_disconnect_revokes_it() {
         let state = NativeRealtimeState::new(
-            crate::shell::personal_continuity::DeviceId::new("device-native-7")
-                .expect("valid device id"),
+            tilo_network_actor::fabric::DeviceId::new("device-native-7").expect("valid device id"),
         );
         let service = NativeRealtimeServices {
             state: Arc::clone(&state),

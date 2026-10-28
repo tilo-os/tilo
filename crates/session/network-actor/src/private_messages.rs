@@ -12,7 +12,7 @@ use tilo_messaging::SendError;
 use tilo_user_identity::DeviceCert;
 use zeroize::Zeroize;
 
-pub(crate) const ALPN: &[u8] = b"tilo-private-messages/1";
+pub const ALPN: &[u8] = b"tilo-private-messages/1";
 const MAX_FRAME: usize = 64 * 1024;
 const MAX_TEXT: usize = 16 * 1024;
 const BUDGET: Duration = Duration::from_secs(20);
@@ -21,7 +21,7 @@ type Completion<'a> = Pin<Box<dyn Future<Output = Result<(), SendError>> + Send 
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Material {
+pub struct Material {
     pub cert: DeviceCert,
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
@@ -29,7 +29,7 @@ pub(crate) struct Material {
 /// Implemented only by the protected private account owner. Every call checks
 /// original personal custody, the current Contacts route and live revocations.
 /// `receive` returns only after encrypted history has durably accepted the id.
-pub(crate) trait Account: Send + Sync {
+pub trait Account: Send + Sync {
     fn certificate(&self) -> Result<Material, SendError>;
     fn check_peer(&self, certificate: &Material) -> Result<(), SendError>;
     fn receive<'a>(&'a self, certificate: &'a Material, text: &'a Text) -> Completion<'a>;
@@ -37,7 +37,7 @@ pub(crate) trait Account: Send + Sync {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Text {
+pub struct Text {
     pub id: uuid::Uuid,
     pub timestamp_ms: u64,
     pub body: String,
@@ -68,7 +68,7 @@ struct Receipt {
 }
 
 #[derive(Clone)]
-pub(crate) struct Registry {
+pub struct Registry {
     local: EndpointId,
     account: Arc<Mutex<Option<Weak<dyn Account>>>>,
     incoming: Arc<tokio::sync::Semaphore>,
@@ -79,14 +79,14 @@ impl std::fmt::Debug for Registry {
     }
 }
 impl Registry {
-    pub(crate) fn new(local: EndpointId) -> Self {
+    pub fn new(local: EndpointId) -> Self {
         Self {
             local,
             account: Arc::new(Mutex::new(None)),
             incoming: Arc::new(tokio::sync::Semaphore::new(8)),
         }
     }
-    pub(crate) fn bind(&self, account: &Arc<dyn Account>) -> Result<(), SendError> {
+    pub fn bind(&self, account: &Arc<dyn Account>) -> Result<(), SendError> {
         let mut slot = self.account.lock().map_err(|_| SendError::Unavailable)?;
         if slot.as_ref().and_then(Weak::upgrade).is_some() {
             return Err(SendError::Unavailable);
@@ -109,13 +109,13 @@ impl Registry {
 pub struct Transport {
     endpoint: Endpoint,
     registry: Registry,
-    reachability: super::Reachability,
+    reachability: tilo_endpoint_reachability::Reachability,
 }
 impl Transport {
-    pub(crate) fn new(
+    pub fn new(
         endpoint: Endpoint,
         registry: Registry,
-        reachability: super::Reachability,
+        reachability: tilo_endpoint_reachability::Reachability,
     ) -> Self {
         Self {
             endpoint,
@@ -125,7 +125,7 @@ impl Transport {
     }
     /// Bind the account that receives this device's private texts. Its
     /// contacts dial this device, so a bound account makes it reachable.
-    pub(crate) fn bind(&self, account: &Arc<dyn Account>) -> Result<(), SendError> {
+    pub fn bind(&self, account: &Arc<dyn Account>) -> Result<(), SendError> {
         let certificate = account.certificate()?;
         verify(
             &certificate,
@@ -137,12 +137,12 @@ impl Transport {
         Ok(())
     }
     /// Whether an account is bound, so its contacts may dial this device.
-    pub(crate) fn is_bound(&self) -> bool {
+    pub fn is_bound(&self) -> bool {
         self.registry.account().is_ok()
     }
     /// The caller pins both recipient root and device from the selected route.
     /// A timeout is uncertain and must never cause an automatic resend.
-    pub(crate) async fn send(
+    pub async fn send(
         &self,
         peer: EndpointId,
         root: [u8; 32],
@@ -410,10 +410,10 @@ mod tests {
         sign_device_cert(&mut certificate, &root).unwrap();
         (endpoint, lookup, certificate)
     }
-    async fn transport(commands: &tokio::sync::mpsc::Sender<super::super::NetCmd>) -> Transport {
+    async fn transport(commands: &tokio::sync::mpsc::Sender<crate::NetCmd>) -> Transport {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         commands
-            .send(super::super::NetCmd::PrivateMessages(reply))
+            .send(crate::NetCmd::PrivateMessages(reply))
             .await
             .unwrap();
         receiver.await.unwrap()
@@ -452,8 +452,8 @@ mod tests {
         );
         lookup_a.add_endpoint_info(b.addr());
         lookup_b.add_endpoint_info(a.addr());
-        let (cmd_a, task_a) = super::super::Actor::spawn(a.clone(), lookup_a);
-        let (cmd_b, task_b) = super::super::Actor::spawn(b.clone(), lookup_b);
+        let (cmd_a, task_a) = crate::Actor::spawn(a.clone(), lookup_a);
+        let (cmd_b, task_b) = crate::Actor::spawn(b.clone(), lookup_b);
         let transport_a = transport(&cmd_a).await;
         let transport_b = transport(&cmd_b).await;
         let account_a = Arc::new(Protected {

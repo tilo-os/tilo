@@ -535,7 +535,9 @@ pub(super) fn window_shares_of(
 pub(crate) fn host_handle(host: &str) -> Option<u64> {
     let bytes: [u8; 32] = hex::decode(host).ok()?.try_into().ok()?;
     let endpoint = iroh::EndpointId::from_bytes(&bytes).ok()?;
-    Some(crate::network::behaviour::peer_liveness_handle(&endpoint))
+    Some(tilo_network_actor::behaviour::peer_liveness_handle(
+        &endpoint,
+    ))
 }
 
 /// Show in the workspace addressing `room` each of `shares` hosted on

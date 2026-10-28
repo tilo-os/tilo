@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 pub const MAX_REALTIME_SESSIONS: usize = 64;
 pub const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(2 * 60 * 60);

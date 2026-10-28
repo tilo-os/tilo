@@ -45,8 +45,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::shell::device_fabric::PersonalFabricAction;
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim};
+use tilo_network_actor::fabric::DeviceId;
 
 /// Sweep used for every member: 20 Hz to 20 kHz over three seconds.
 pub const SWEEP_START_HZ: f64 = 20.0; // a frequency, not a pixel length

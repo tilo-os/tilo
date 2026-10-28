@@ -2594,8 +2594,9 @@ mod tests {
         {
             use crate::shell::personal_continuity::{
                 AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
-                DeviceId, LaunchIntent, TabPlacement, WorkspaceContinuation,
+                LaunchIntent, TabPlacement, WorkspaceContinuation,
             };
+            use tilo_network_actor::fabric::DeviceId;
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_default();
             let room = crate::shell::state::RoomId::new();

@@ -1178,7 +1178,7 @@ fn spawn_inner(
             .collect();
         network
             .cmd_tx
-            .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
+            .try_send(tilo_network_actor::NetCmd::AttachActionBroker { queue, host, rooms })
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
     let personal_source = inner

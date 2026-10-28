@@ -69,7 +69,7 @@ fn live_frames_cross(devices: &[&Device], from: &Device, to: &Device, room: Room
 fn live_through(device: &Device, room: RoomId, through: iroh::EndpointId, other: &Device) -> bool {
     let other = iroh::EndpointId::from_bytes(&other.cert().device_public_key).unwrap();
     device.net().host_room_members.lock().unwrap().contains(&(
-        crate::shell::network::room_topic_id(room),
+        tilo_network_actor::room_topic_id(room),
         through,
         other,
     ))

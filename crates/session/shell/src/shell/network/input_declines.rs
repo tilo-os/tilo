@@ -1,7 +1,7 @@
 //! Private, root-bound manual display-input declines; never roamed or granted.
-use super::super::personal_continuity::DeviceId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
+use tilo_network_actor::fabric::DeviceId;
 
 const MAX_DECLINES: usize = 1024;
 const MAX_STORE_BYTES: usize = 262_144;
