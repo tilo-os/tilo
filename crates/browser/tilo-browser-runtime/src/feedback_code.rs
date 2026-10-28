@@ -129,23 +129,21 @@ pub(crate) fn configure(
     destination: FeedbackDestination,
 ) -> Result<(), String> {
     CONFIGURED.with_borrow_mut(|configured| configured.insert(id));
-    match FEEDBACK.get() {
-        Some(code) => (code.configure)(id, peer, reporter, owner, destination),
-        None => {
-            PENDING.with_borrow_mut(|pending| {
-                pending.insert(
-                    id,
-                    Pending {
-                        peer,
-                        reporter,
-                        owner,
-                        destination,
-                    },
-                )
-            });
-            Ok(())
-        }
+    if let Some(code) = FEEDBACK.get() {
+        return (code.configure)(id, peer, reporter, owner, destination);
     }
+    PENDING.with_borrow_mut(|pending| {
+        pending.insert(
+            id,
+            Pending {
+                peer,
+                reporter,
+                owner,
+                destination,
+            },
+        )
+    });
+    Ok(())
 }
 
 /// The code is in: the destinations configured meanwhile are selected.
