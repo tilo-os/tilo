@@ -1605,9 +1605,10 @@ impl Read {
     }
 }
 
-/// Whether a phrase heads a step that its own block follows.
+/// Whether a phrase heads a step that its own block follows. What an agent is
+/// told is quoted on its own line, so it has no block under it.
 fn opens_block(phrase: &str) -> bool {
-    phrase.starts_with("for each ") || phrase.starts_with("tell ") || phrase == "when"
+    phrase.starts_with("for each ") || phrase == "when"
 }
 
 impl Reader<'_> {
@@ -1706,7 +1707,7 @@ impl Reader<'_> {
                 output: None,
                 input,
             }
-        } else if opens_block(phrase) {
+        } else if phrase.starts_with("tell SaaSy ") {
             let told = body.strip_prefix("tell SaaSy ").unwrap_or_default();
             let (instruction, after) =
                 text_at(told).map_err(|message| TextParseError::at(number, message))?;

@@ -104,7 +104,7 @@ fn program() -> Shortcut {
             Step::new(
                 "each",
                 StepKind::ForEach {
-                    items: Binding::step(LISTED, "/titles"),
+                    items: Binding::step("listed", "/titles"),
                     item: "title".into(),
                     body: vec![step(
                         "filed",
@@ -448,10 +448,10 @@ fn every_kind_of_step_prints_the_same_program_back() {
             Step::new(
                 "each",
                 StepKind::ForEach {
-                    items: Binding::step("listed", "/titles"),
+                    items: Binding::step(LISTED, "/titles"),
                     item: "title".into(),
                     body: vec![Step::new(
-                        "kept",
+                        String::new(),
                         StepKind::SetVar {
                             name: "kept".into(),
                             value: Binding::Var("title".into()),
@@ -470,14 +470,14 @@ fn every_kind_of_step_prints_the_same_program_back() {
                         })),
                     ]),
                     then: vec![Step::new(
-                        "set0",
+                        String::new(),
                         StepKind::SetVar {
                             name: "first".into(),
                             value: Binding::Literal(Value::from(1)),
                         },
                     )],
                     otherwise: vec![Step::new(
-                        "set1",
+                        String::new(),
                         StepKind::SetVar {
                             name: "second".into(),
                             value: Binding::Literal(Value::from(2)),
@@ -487,8 +487,14 @@ fn every_kind_of_step_prints_the_same_program_back() {
             ),
             Step::new(
                 "asked",
+                // The line reads the parameter's own words, so its name is
+                // the words rather than a shorter identifier.
                 StepKind::Ask {
-                    param: ActionParam::required("note", ParamType::Text, "The note's name"),
+                    param: ActionParam::required(
+                        "The note's name",
+                        ParamType::Text,
+                        "The note's name",
+                    ),
                 },
             ),
             Step::new(
@@ -509,8 +515,9 @@ fn every_kind_of_step_prints_the_same_program_back() {
             ),
         ],
         step_timeout_secs: Some(45),
-        // A name a step set is referred to by the name, not by a result id.
-        output: Some(Binding::Var("kept".into())),
+        // What the shortcut gives back names an input, which is in scope
+        // where the steps' own variables are not.
+        output: Some(folder.clone()),
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
