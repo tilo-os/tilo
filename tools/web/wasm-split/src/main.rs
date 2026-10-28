@@ -29,6 +29,7 @@
 
 mod data;
 mod dedupe;
+mod parts;
 mod split;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,10 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+
+/// Parts of the program smaller than this in the start module are summed
+/// as `other` in `split.json`.
+const START_PART_FLOOR: u64 = 8 * 1024;
 
 fn main() -> Result<()> {
     let started = std::time::Instant::now();
@@ -62,6 +67,9 @@ fn main() -> Result<()> {
     let mut manifest = serde_json::json!({
         "schema": 1,
         "main": {"file": main_file, "bytes": outputs.main.bytes.len()},
+        // Function bytes by part of the program, before optimisation: what
+        // the size budget names when the start module grows.
+        "start_parts": parts::start_parts(&outputs.main.bytes, START_PART_FLOOR)?,
         "shared": [],
         "modules": [],
     });

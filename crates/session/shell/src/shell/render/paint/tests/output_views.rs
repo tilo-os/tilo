@@ -231,11 +231,11 @@ fn a_rotated_hdr_output_matches_the_readback_pq_encode() {
     // GPU. The encodes differ by at most 2 of 1023 code values
     // (`gpu_encode_matches_the_cpu_reference`); the turn must add nothing to that.
     let size = (90, 52);
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     let mut bridge = required_bridge(size.0, size.1);
     let scene = asymmetric_scene(size);
     let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
-    let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(white);
+    let encoder = tilo_color_pipeline::color_pipeline::SdrToPqEncoder::new(white);
     for (revision, transform) in (1..).zip(ORIENTATIONS) {
         let view =
             OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
@@ -290,7 +290,7 @@ fn a_calibrated_output_matches_the_readback_qcms_pass() {
     // its final GPU pass through the profile's `IccLut`, with no readback, and stays
     // within the LUT's stated tolerance of qcms (`icc_lut` module docs).
     let size = (90, 52);
-    let panel = crate::shell::render::icc_lut::tests::adobe_rgb();
+    let panel = tilo_output_passes::icc_lut::tests::adobe_rgb();
     let transform_icc = panel.transform();
     let lut = IccLut::from_transform(&transform_icc);
     let mut bridge = required_bridge(size.0, size.1);
@@ -375,8 +375,7 @@ fn an_hdr_output_ignores_its_icc_profile() {
     // The profile describes the panel's SDR response; in HDR the PQ encode replaces it,
     // on the GPU as on the readback.
     let size = (90, 52);
-    let lut =
-        IccLut::from_transform(&crate::shell::render::icc_lut::tests::adobe_rgb().transform());
+    let lut = IccLut::from_transform(&tilo_output_passes::icc_lut::tests::adobe_rgb().transform());
     let mut bridge = required_bridge(size.0, size.1);
     let scene = asymmetric_scene(size);
     let view = OutputView::at(crate::shell::render::OutputId(0), (0, 0), size)
@@ -461,8 +460,7 @@ fn pan_layers(size: (u32, u32), scroll_x: u32) -> crate::shell::frame::FrameCach
 #[test]
 fn a_turned_calibrated_or_hdr_output_composites_a_strip_pan_from_its_layers() {
     let size = (90, 52);
-    let lut =
-        IccLut::from_transform(&crate::shell::render::icc_lut::tests::adobe_rgb().transform());
+    let lut = IccLut::from_transform(&tilo_output_passes::icc_lut::tests::adobe_rgb().transform());
     let sdr = wgpu::TextureFormat::Bgra8Unorm;
     let hdr = wgpu::TextureFormat::Rgb10a2Unorm;
     // Channel steps for 8-bit outputs, code values for the 10-bit PQ

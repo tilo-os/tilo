@@ -104,6 +104,53 @@ deny = [
     { crate = "quick-xml@0.39.4", wrappers = ["zbus_xml"], reason = "AccessKit's current zbus_xml release has not adopted fixed quick-xml 0.41" },
     { crate = "crypto-bigint@0.5.5", wrappers = ["elliptic-curve"], reason = "RUSTSEC-2026-0387 has no patched 0.5 release; only elliptic-curve 0.13's unused NIST curves may keep it" },
     { crate = "crypto-bigint:>=0.6, <0.7.6", reason = "RUSTSEC-2026-0387: constant-time fixes need crypto-bigint 0.7.6" },
+    # TLS is rustls on ring, reached through tilo_net::http. OpenSSL would be a
+    # second certificate-verification path to review, a C library to patch in
+    # every image, and a runtime dependency an app could not assume on macOS,
+    # Windows or the web. A dependency that pulls one in by default usually has
+    # a `rustls` feature: select it and turn its default features off.
+    { crate = "openssl", reason = "rustls is the only TLS stack" },
+    { crate = "openssl-sys", reason = "rustls is the only TLS stack" },
+    { crate = "native-tls", reason = "rustls is the only TLS stack (native-tls is OpenSSL on Linux)" },
+    # Tilo's own components carry no telemetry, analytics or crash-upload client
+    # (docs/architecture/security.md, "What leaves the device by default"):
+    # panics stay in ~/.cache/tilo/crashes and feedback leaves only as a report
+    # the person approved. Local tracing never leaves the device by itself, so
+    # `tracing` and an exporter-less `opentelemetry` are fine.
+    { crate = "sentry", reason = "crash reporting service" },
+    { crate = "sentry-core", reason = "crash reporting service" },
+    { crate = "bugsnag", reason = "crash reporting service" },
+    { crate = "crash-handler", reason = "minidump capture exists to upload a crash elsewhere" },
+    { crate = "minidumper", reason = "minidump capture exists to upload a crash elsewhere" },
+    { crate = "posthog-rs", reason = "product analytics" },
+    { crate = "segment", reason = "product analytics" },
+    { crate = "opentelemetry-otlp", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-http", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-datadog", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-zipkin", reason = "exports spans and metrics off the device" },
+    # Two RustCrypto generations are in the lock: the current one, which iroh
+    # uses, and the previous one, which third-party crates still pull in. Only
+    # those upstreams may depend on the old one, so it leaves the lock when the
+    # last of them migrates instead of gaining direct users here. tilo-crypto's
+    # sha2 0.10 feeds authenticode, which has no release on digest 0.11.
+    { crate = "ed25519-dalek:<3", wrappers = ["openmls_basic_credential", "openmls_rust_crypto"], reason = "old RustCrypto generation" },
+    { crate = "x25519-dalek:<3", wrappers = ["hpke-rs-rust-crypto"], reason = "old RustCrypto generation" },
+    { crate = "rand:<0.10", wrappers = [
+        "davey", "librespot-connect", "librespot-core", "librespot-discovery", "librespot-playback", "lipsum",
+        "num-bigint-dig", "oauth2", "proptest", "rand_distr", "rustypipe", "smithay", "tantivy-columnar", "tungstenite",
+    ], reason = "old RustCrypto generation" },
+    { crate = "rand_core:<0.10", wrappers = [
+        "crypto-bigint", "crypto-common", "curve25519-dalek", "ed25519-dalek", "elliptic-curve", "ff", "frost-core",
+        "frost-ed25519", "frost-rerandomized", "group", "openmls_basic_credential", "openmls_rust_crypto", "rand",
+        "rand_chacha", "rand_xorshift", "rsa", "signature", "snow", "x25519-dalek",
+    ], reason = "old RustCrypto generation" },
+    { crate = "rand_chacha:<0.10", wrappers = ["lipsum", "openmls_rust_crypto", "proptest", "rand"], reason = "old RustCrypto generation" },
+    { crate = "sha2:<0.11", wrappers = [
+        "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2", "p256", "p384",
+        "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
+    ], reason = "old RustCrypto generation" },
+    { crate = "hmac:<0.13", wrappers = ["davey", "hkdf", "librespot-core", "librespot-discovery", "pbkdf2", "rfc6979"], reason = "old RustCrypto generation" },
+    { crate = "chacha20poly1305:<0.11", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow"], reason = "old RustCrypto generation" },
 ]
 
 [sources]

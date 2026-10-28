@@ -601,11 +601,23 @@ def touch_unlock(ctx, res):
             k = keys[name]
             ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
 
+        log_lines = _session_log_lines(ctx)
         for n, c in enumerate(passcode, 1):
             tap(c)
             wait_until(lambda: _lock_auth(ctx.state()).get("password_len") == n, 3, 0.1)
-        ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
-                       f"{len(passcode)} characters typed on the lock screen's keyboard")
+        try:
+            ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
+                           f"{len(passcode)} characters typed on the lock screen's keyboard")
+        except CheckFailed as exc:
+            # How each tap was routed (raw to a client or chrome, or turned into a click
+            # the lock reads): which key a finger missed, and why.
+            said = ctx.vm.exec(
+                f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+                '| grep -aE "tilo::input_route|lock" | tail -n 60 | cut -c1-300', check=False)
+            ctx.write("W21-lock-taps.log", f"aimed at: {[(c, keys[c]) for c in passcode]}\n"
+                      f"typed: {_lock_auth(ctx.state()).get('password_len')}\n{said}")
+            routed = [line for line in said.splitlines() if "touch contact routed" in line]
+            raise CheckFailed(f"{exc}; touches routed: {[l[l.find('x='):] for l in routed][-6:]}") from exc
         tap("enter")
         ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
                        "the session unlocked with the passcode typed by touch")

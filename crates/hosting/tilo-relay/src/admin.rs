@@ -1,5 +1,5 @@
-//! `tilo-relay-admin` — thin CLI to bind/unbind workspaces + inspect
-//! the running daemon by reading its on-disk state.
+//! `tilo-relay-admin` — thin CLI to manage home peers and revocations and
+//! inspect the running daemon by reading its on-disk state.
 //!
 //! Mutations are durable file updates which a running daemon reloads.
 //! `status` combines configuration, workspace state, and the daemon's
@@ -116,44 +116,6 @@ enum Cmd {
         #[arg(long)]
         service: String,
     },
-    /// Bind a workspace to this relay.
-    BindWorkspace {
-        /// Numeric workspace id.
-        workspace_id: u64,
-        /// Pin the workspace (persistent CRDT snapshot on disk).
-        #[arg(long, default_value_t = true)]
-        pin: bool,
-    },
-    /// Bind a user-facing room UUID, deriving its stable transport id.
-    BindRoom {
-        /// Durable room UUID shown by the shell.
-        room: String,
-        /// Pin the workspace (persistent CRDT snapshot on disk).
-        #[arg(long, default_value_t = true)]
-        pin: bool,
-    },
-    /// Unbind a workspace from this relay.
-    UnbindWorkspace {
-        /// Numeric workspace id.
-        workspace_id: u64,
-    },
-    /// List bound workspaces.
-    ListWorkspaces,
-    /// Add a device to a workspace's durable offline-delivery membership.
-    AddMember {
-        /// Numeric workspace id (derive it with `bind-room`).
-        workspace_id: u64,
-        /// 32-byte device public key, hex encoded.
-        device_pubkey_hex: String,
-    },
-    /// Remove a device from explicit shared-host membership. A matching-user
-    /// home host will admit the owner's device again; revoke it to deny access.
-    RemoveMember {
-        workspace_id: u64,
-        device_pubkey_hex: String,
-    },
-    /// List device keys admitted to a workspace.
-    ListMembers { workspace_id: u64 },
     /// Print daemon status (config + on-disk state summary).
     Status,
     /// Publish a `RevocationEntry` for a device pubkey (hex-encoded, 32 bytes).
@@ -182,19 +144,6 @@ fn device_key(value: &str) -> anyhow::Result<[u8; 32]> {
     bytes.try_into().map_err(|bytes: Vec<u8>| {
         anyhow::anyhow!("device pubkey must be 32 bytes; got {}", bytes.len())
     })
-}
-
-fn workspace_store(
-    cfg: &RelayConfig,
-    workspace_id: u64,
-) -> anyhow::Result<tilo_relay::store::WorkspaceStore> {
-    let binding = cfg
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == workspace_id)
-        .ok_or_else(|| anyhow::anyhow!("workspace {workspace_id} is not bound"))?;
-    tilo_relay::store::WorkspaceStore::open(&cfg.state_root, workspace_id, binding.pin)
-        .map_err(Into::into)
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -250,21 +199,6 @@ fn run() -> anyhow::Result<()> {
             device,
             service,
         } => cmd_home_peer_remove(&identity_root, identity_dir.as_deref(), &device, &service),
-        Cmd::BindWorkspace { workspace_id, pin } => {
-            cmd_bind_workspace(&cli.config, workspace_id, pin)
-        }
-        Cmd::BindRoom { room, pin } => cmd_bind_room(&cli.config, &room, pin),
-        Cmd::UnbindWorkspace { workspace_id } => cmd_unbind_workspace(&cli.config, workspace_id),
-        Cmd::ListWorkspaces => cmd_list_workspaces(&cli.config),
-        Cmd::AddMember {
-            workspace_id,
-            device_pubkey_hex,
-        } => cmd_add_member(&cli.config, workspace_id, &device_pubkey_hex),
-        Cmd::RemoveMember {
-            workspace_id,
-            device_pubkey_hex,
-        } => cmd_remove_member(&cli.config, workspace_id, &device_pubkey_hex),
-        Cmd::ListMembers { workspace_id } => cmd_list_members(&cli.config, workspace_id),
         Cmd::Status => cmd_status(&cli.config),
         Cmd::RevokeDevice {
             device_pubkey_hex,
@@ -683,97 +617,6 @@ fn update_home_peer_registry(
     Ok(())
 }
 
-fn cmd_bind_workspace(
-    config: &std::path::Path,
-    workspace_id: u64,
-    pin: bool,
-) -> anyhow::Result<()> {
-    let mut cfg = load(config)?;
-    let added = cfg.add_workspace(workspace_id, pin);
-    cfg.save(config)?;
-    if added {
-        println!("bound workspace {workspace_id} (pin={pin})");
-    } else {
-        println!("workspace {workspace_id} already bound");
-    }
-    Ok(())
-}
-
-fn cmd_bind_room(config: &std::path::Path, room: &str, pin: bool) -> anyhow::Result<()> {
-    let workspace_id = tilo_relay::room_workspace_id(room)
-        .with_context(|| format!("invalid room UUID {room:?}"))?;
-    let mut cfg = load(config)?;
-    let added = cfg.add_workspace(workspace_id, pin);
-    cfg.save(config)?;
-    println!(
-        "{} room {room} as workspace {workspace_id} (pin={pin})",
-        if added { "bound" } else { "already bound" }
-    );
-    Ok(())
-}
-
-fn cmd_unbind_workspace(config: &std::path::Path, workspace_id: u64) -> anyhow::Result<()> {
-    let mut cfg = load(config)?;
-    let removed = cfg.remove_workspace(workspace_id);
-    cfg.save(config)?;
-    if removed {
-        println!("unbound workspace {workspace_id}");
-    } else {
-        println!("workspace {workspace_id} was not bound");
-    }
-    Ok(())
-}
-
-fn cmd_list_workspaces(config: &std::path::Path) -> anyhow::Result<()> {
-    let cfg = load(config)?;
-    for ws in &cfg.workspaces {
-        println!("{}\tpin={}", ws.id, ws.pin);
-    }
-    Ok(())
-}
-
-fn cmd_add_member(
-    config: &std::path::Path,
-    workspace_id: u64,
-    device_pubkey_hex: &str,
-) -> anyhow::Result<()> {
-    let cfg = load(config)?;
-    let store = workspace_store(&cfg, workspace_id)?;
-    let device = device_key(device_pubkey_hex)?;
-    let mut members = store.load_membership()?;
-    if !members.contains(&device) {
-        members.push(device);
-        store.save_membership(&members)?;
-    }
-    println!("workspace {workspace_id}: admitted {}", hex::encode(device));
-    println!("a running tilo-relay reloads membership within one second");
-    Ok(())
-}
-
-fn cmd_remove_member(
-    config: &std::path::Path,
-    workspace_id: u64,
-    device_pubkey_hex: &str,
-) -> anyhow::Result<()> {
-    let cfg = load(config)?;
-    let store = workspace_store(&cfg, workspace_id)?;
-    let device = device_key(device_pubkey_hex)?;
-    let mut members = store.load_membership()?;
-    members.retain(|member| member != &device);
-    store.save_membership(&members)?;
-    println!("workspace {workspace_id}: removed {}", hex::encode(device));
-    println!("a running tilo-relay disconnects removed members within one second");
-    Ok(())
-}
-
-fn cmd_list_members(config: &std::path::Path, workspace_id: u64) -> anyhow::Result<()> {
-    let cfg = load(config)?;
-    for member in workspace_store(&cfg, workspace_id)?.load_membership()? {
-        println!("{}", hex::encode(member));
-    }
-    Ok(())
-}
-
 fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     let cfg = load(config)?;
     println!("tilo-relay-admin {}", tilo_relay::VERSION);
@@ -781,10 +624,6 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     println!("state:     {}", cfg.state_root.display());
     println!("identity:  {}", cfg.identity_root.display());
     println!("iroh:      {}", cfg.iroh_listen);
-    println!("bindings:");
-    for ws in &cfg.workspaces {
-        println!("  {}\tpin={}", ws.id, ws.pin);
-    }
     let workspace_root = cfg.state_root.join("workspaces");
     let mut durable: Vec<_> = std::fs::read_dir(&workspace_root)
         .into_iter()

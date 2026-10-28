@@ -153,6 +153,11 @@ pub struct PeerConfig {
     /// content keys of the records it opens from the room's steward over
     /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
     pub watching: bool,
+    /// The page keeps this session beside the room in front, only to
+    /// deliver for it (problem reports to the page's home workspace): the
+    /// host counts nobody online by it, so it takes no seat and shows no
+    /// face there ([`tilo_relay_protocol::web::SessionFinish::background`]).
+    pub background: bool,
 }
 
 /// Transport phase, in `SessionHealth` v1 vocabulary.
@@ -716,7 +721,7 @@ impl PeerHandle {
             ciphers: Ciphers::new(),
             channels,
             channel_changes: crate::channels::Changes::default(),
-            stewards: crate::stewards::Stewards::default(),
+            stewards: crate::stewards::OwnStewards::default(),
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
@@ -1251,7 +1256,7 @@ struct Task {
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
     /// The channels of the person's own room this page stewards.
-    stewards: crate::stewards::Stewards,
+    stewards: crate::stewards::OwnStewards,
     /// Documents opened per route, and those refused with the last reason,
     /// for the diagnostics.
     opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
@@ -3656,12 +3661,13 @@ impl Link {
 
 async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link, LinkError> {
     match &config.host {
-        Host::Https(client) => HttpsLink::connect(
+        Host::Https(client) => HttpsLink::connect_as(
             client.clone(),
             &config.cert,
             config.host_cert.device_public_key,
             &config.revocations,
             signer,
+            config.background,
         )
         .await
         .map(Link::Https),

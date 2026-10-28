@@ -9,18 +9,19 @@ use serde_json::json;
 use shell::shell::continuity_policy::ContinuityPolicySnapshot;
 use shell::shell::device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    FabricCapabilities, OwnerSession, PersonalFabricAction,
 };
 use shell::shell::fabric_clock::{
     CLOCK_SYNC_DEADLINE, ClockSyncFailure, ClockSyncState, FabricClockCore,
 };
-use shell::shell::personal_continuity::DeviceId;
 use shell::shell::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
 };
 use shell::shell::speaker_group_runtime::{
     Egress, GroupAudioSource, MemberSpec, SpeakerGroupCore, SpeakerSessionStatus, member_route_id,
 };
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 const SESSION: [u8; 16] = [8; 16];
 

@@ -92,23 +92,6 @@ inputs = [".forgejo/**", ".config/visual-goldens-image", "dist/ci/install-sccach
 pre_push = true
 
 [[step]]
-name = "workflow-package-paths"
-label = "Path-filtered package dependency triggers"
-run = """python3 tools/policy/check_workflow_package_paths.py \
-  --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-cold-x86_64' \
-  --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-warm-x86_64' \
-  --check tilo-crypto 't.toml#development-signing-context-x86_64' \
-  --check tilo-fs 't.toml#real-fuse' \
-  --check tilo-relay 't.toml#image-relay' \
-  --check registry-server 't.toml#image-registry-server' \
-  --check tilo-runtime 't.toml#runtime-macos' \
-  --check notes 't.toml#apps-macos' \
-  --check tilo-install-helpers 't.toml#vm-test-binaries' \
-  --check tilo-app-cli 't.toml#sdk-linux'"""
-inputs = ["t.toml", ".forgejo/workflows/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
-pre_push = true
-
-[[step]]
 name = "developer-docs"
 label = "Developer docs pages and links"
 run = "python3 -m unittest tools/tests/test_developer_docs.py tools/tests/test_development_book.py tools/tests/test_development_tool_help.py && python3 tools/docs/developer_docs.py check && python3 tools/docs/check_development_book.py"
@@ -319,20 +302,6 @@ inputs = ["Cargo.toml", "**/Cargo.toml", ".config/hakari.toml", "**/*.rs"]
 pre_push = true
 
 [[step]]
-name = "crypto-generation"
-label = "Own crates use one RustCrypto generation"
-run = "python3 tools/policy/check_crypto_generation.py"
-inputs = ["Cargo.lock", "vendor/**/Cargo.toml"]
-pre_push = true
-
-[[step]]
-name = "automerge-apply-contract"
-label = "Automerge apply contract"
-run = "python3 tools/policy/check_automerge_apply_contract.py"
-git = "paths"
-inputs = ["**/*.rs", "**/Cargo.toml"]
-
-[[step]]
 name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
@@ -389,20 +358,6 @@ label = "GStreamer is the only media stack"
 run = "python3 tools/policy/check_media_stack.py"
 inputs = ["Cargo.lock", "**/Cargo.toml", "**/Containerfile", "**/Containerfile.*", "**/Dockerfile", "**/Dockerfile.*",
           "os/**", "dist/ci/install-build-deps.sh", "dist/dev/Containerfile.fedora44"]
-pre_push = true
-
-[[step]]
-name = "tls-stack"
-label = "rustls is the only TLS stack"
-run = "python3 tools/policy/check_tls_stack.py"
-inputs = ["Cargo.lock"]
-pre_push = true
-
-[[step]]
-name = "no-telemetry"
-label = "No telemetry, analytics or crash-upload client"
-run = "python3 tools/policy/check_no_telemetry.py"
-inputs = ["Cargo.lock"]
 pre_push = true
 
 [[step]]

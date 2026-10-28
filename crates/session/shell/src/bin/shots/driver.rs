@@ -43,6 +43,8 @@ mod tab_bar_drop;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
+mod window_share_scene;
+mod window_shared_app_scene;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -185,7 +187,7 @@ impl ShellDriver {
         // offers no Invite.
         let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&owner);
+        tree.own_workspaces_for_test(|_| owner.clone());
         let hosted_tabs = hosted_app_tabs(&tree);
         // An owned fixture never reads the wall clock, so frames compare
         // across minutes; it shows the time it is given, like a session
@@ -1005,6 +1007,21 @@ impl ShellDriver {
         }
     }
 
+    /// The active workspace's room as a booted desktop holds it: placed on
+    /// this device's own host, which governs it, and entered through the
+    /// native owner, the driver acting as the person governing it. A room
+    /// no host holds offers no invitation, so its roster has no Invite. The
+    /// host is the shell's `test-support` fixture, which every build of
+    /// `shots` that renders the catalogue carries.
+    #[cfg(feature = "test-support")]
+    fn place_active_room_here(&mut self) {
+        let handle = self.chrome_handle();
+        let tree = handle.borrow().tree_handle();
+        let room = shell::shell::test_support::host_active_room(&tree);
+        handle.borrow_mut().act_as(room.person.clone());
+        self.held.push(Box::new(room));
+    }
+
     /// Record what an accepted invite and a couple of shares would have
     /// recorded: memberships in this room and in Research (whose peers
     /// are already present, so their faces are backed by a capability
@@ -1020,7 +1037,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
@@ -1034,7 +1051,7 @@ impl ShellDriver {
                 ("/var/workspace/design", "ada", Access::Write),
                 ("/var/workspace/brief.pdf", "bo", Access::Read),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
@@ -1052,7 +1069,7 @@ impl ShellDriver {
                 .collect();
             for id in research {
                 for (member, role) in [("alice", Role::Editor), ("bob", Role::Viewer)] {
-                    let _ = tree.admit_in_workspace(id, &owner, member, role);
+                    let _ = tree.admit_here_for_test(id, &owner, member, role);
                 }
             }
         }
@@ -1066,7 +1083,7 @@ impl ShellDriver {
             let st = handle.borrow();
             let person = st.local_user_id.clone();
             let mut tree = st.tree_mut();
-            tree.set_salt_override(crate::own_device::SHOWN_SALT);
+            tree.set_peer_salt(crate::own_device::SHOWN_SALT);
             let before = all_tab_ids(&tree);
             crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
             let after = all_tab_ids(&tree);
@@ -1104,7 +1121,7 @@ impl ShellDriver {
         handle
             .borrow()
             .tree_mut()
-            .set_salt_override(crate::own_device::SHOWN_SALT);
+            .set_peer_salt(crate::own_device::SHOWN_SALT);
         self.own_device = Some((
             crate::own_device::OwnDevice::laptop(&person),
             crate::own_device::board_list(),
@@ -1117,12 +1134,11 @@ impl ShellDriver {
         let Some((mut laptop, mut list)) = self.own_device.take() else {
             return;
         };
-        let person = self.chrome().local_user_id.clone();
         let handle = self.chrome_handle();
         let arrived = {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let arrived = laptop.deliver(&person, &mut tree, &mut list);
+            let arrived = laptop.deliver(&mut tree, &mut list);
             let shown = tree
                 .desktop
                 .workspaces
@@ -1178,8 +1194,8 @@ impl ShellDriver {
     /// Design. What the strip switcher shows faces for.
     pub fn seed_strips_with_people_for_shots(&mut self) {
         use shell::shell::state::{
-            AppKind, Collaborator, MintIds, ProcessIds, Strip, StripId, Tab, TileContent,
-            WindowGroup, WindowWidth,
+            AppKind, Collaborator, MintIds, Strip, StripId, Tab, TileContent, WindowGroup,
+            WindowWidth,
         };
         use tilo_action_policy::Role;
         self.seed_shared_room();
@@ -1189,7 +1205,8 @@ impl ShellDriver {
             let owner = st.local_user_id.clone();
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
-            let _ = tree.admit_in_workspace(ws_id, &owner, "cy", Role::Editor);
+            let _ = tree.admit_here_for_test(ws_id, &owner, "cy", Role::Editor);
+            let mut ids = tree.ids();
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return;
             };
@@ -1200,7 +1217,6 @@ impl ShellDriver {
                 ("Research", AppKind::Browser, "Browser"),
                 ("Design", AppKind::Other("Word".into()), "Document"),
             ] {
-                let mut ids = ProcessIds;
                 let tab = Tab {
                     id: ids.mint_id(),
                     title: label.into(),
@@ -1266,7 +1282,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace_id = tree.desktop.active;
             let changes = AgentPreset::Operator
                 .grants(
@@ -1280,7 +1296,7 @@ impl ShellDriver {
                 .into_iter()
                 .map(tilo_action_policy::Change::Grant)
                 .collect();
-            let _ = tree.govern_in_workspace(workspace_id, &owner, changes);
+            let _ = tree.govern_here_for_test(workspace_id, &owner, changes);
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
                 workspace.collaborators.insert(
@@ -1676,7 +1692,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
             let tab_ids = tree
                 .desktop
@@ -1700,7 +1716,7 @@ impl ShellDriver {
             .into_iter()
             .enumerate()
             {
-                let _ = tree.admit_in_workspace(
+                let _ = tree.admit_here_for_test(
                     workspace,
                     &owner,
                     id,
@@ -1741,9 +1757,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
-            let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
+            let _ = tree.admit_here_for_test(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
@@ -1993,9 +2009,8 @@ impl ShellDriver {
     }
 
     /// Seeds the active workspace with membership and granted capabilities
-    /// via `WorkspaceTree::grant_in_workspace` — the same authority-checked
-    /// path the settings panel and portal use, so this is a state the
-    /// compositor can actually be in.
+    /// as the room's admitted document would carry them, checked against the
+    /// room's policy, so this is a state the compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
         use tilo_action_policy::Role;
@@ -2004,10 +2019,10 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             for (app, scope, verb, expiry) in [
                 (
@@ -2029,13 +2044,13 @@ impl ShellDriver {
                     Expiry::AfterUse,
                 ),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
                 );
             }
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -2220,6 +2235,9 @@ impl ShellDriver {
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
             "tab-rename" => self.scene_tab_rename(),
+            "window-share-menu" => self.scene_window_share_menu(),
+            "window-shared" => self.scene_window_shared(),
+            "window-shared-app" => self.scene_window_shared_app(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
@@ -2301,7 +2319,7 @@ impl ShellDriver {
         let mut lounge = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
-            let id = tree.append_empty_workspace("Lounge");
+            let id = tree.create_hosted_workspace("Lounge").0;
             lounge = tree
                 .desktop
                 .workspaces
@@ -2437,29 +2455,31 @@ impl ShellDriver {
         query: &str,
         seed: &[(&str, &str, &str)],
     ) {
-        use shell::shell::state::{
-            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
-        };
-        let tab = Tab {
-            id: ProcessIds.mint_id(),
-            title: label.into(),
-            tile: TileContent::AppPlaceholder {
-                kind,
-                label: label.into(),
-            },
-            app_title: None,
-        };
-        let tab_id = tab.id;
+        use shell::shell::state::{MintIds, Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tab_id = 0;
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
+                // Minted under this tree's own salt, as the session mints.
+                let mut ids = tree.ids();
+                let tab = Tab {
+                    id: ids.mint_id(),
+                    title: label.into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind,
+                        label: label.into(),
+                    },
+                    app_title: None,
+                };
+                tab_id = tab.id;
+                let group = ids.mint_id();
                 if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for strip in &mut ws.strips {
                         strip.window_groups.clear();
                     }
                     if let Some(strip) = ws.strips.first_mut() {
                         strip.window_groups.push(WindowGroup {
-                            id: ProcessIds.mint_id(),
+                            id: group,
                             active_tab: tab_id,
                             tabs: vec![tab],
                             width: WindowWidth::Normal,
@@ -3161,6 +3181,8 @@ impl ShellDriver {
     /// one invited, and — the local user owning the room — the Invite / Join
     /// band and the Workspace activity footer row.
     fn scene_collaborators(&mut self) {
+        #[cfg(feature = "test-support")]
+        self.place_active_room_here();
         self.seed_shared_room();
         self.seed_agent_member_for_shots();
         self.seed_room_bots_for_shots();
@@ -3216,18 +3238,16 @@ impl ShellDriver {
     /// One saved window that didn't reopen, alone on the strip: its app
     /// `app_id` (shown as `label`) and what the restore found, `note`.
     fn scene_saved_window(&mut self, app_id: &str, label: &str, note: &str) {
-        use shell::shell::state::{
-            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
-        };
+        use shell::shell::state::{MintIds, Tab, TileContent, WindowGroup, WindowWidth};
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
+                let mut ids = tree.ids();
                 if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for strip in &mut ws.strips {
                         strip.window_groups.clear();
                     }
                     if let Some(strip) = ws.strips.first_mut() {
-                        let mut ids = ProcessIds;
                         let tab = Tab {
                             id: ids.mint_id(),
                             title: label.into(),
@@ -3490,9 +3510,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3501,7 +3521,7 @@ impl ShellDriver {
                     Access::Write,
                 ),
             );
-            let temp = tree.grant_sandbox_in_workspace(
+            let temp = tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3517,7 +3537,7 @@ impl ShellDriver {
             );
             tree.commit_room_change();
             if let Some(cap_id) = temp {
-                tree.revoke_sandbox_in_workspace(ws_id, &owner, &cap_id);
+                tree.narrow_sandbox(ws_id, &owner, &cap_id);
             }
             if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();

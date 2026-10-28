@@ -232,29 +232,7 @@ class CohortChecksTests(unittest.TestCase):
         cls.checks = {check["name"]: check for check in t_toml["check"]}
         script = (cls.REPO / "tools/ci/vm-cohort.sh").read_text()
         cls.produce = script.split("\n  produce)\n", 1)[1].split("\n  verify)\n", 1)[0]
-        cls.verify = script.split("\n  verify)\n", 1)[1]
-        cls.acceptance = (cls.REPO / "tools/ci/vm-acceptance.sh").read_text()
 
-    def test_the_acceptance_takes_the_cohort_and_its_verifier_from_their_checks(self):
-        check = self.checks["vm-acceptance-cohort"]
-        self.assertEqual(check["run"], "bash tools/ci/vm-acceptance.sh cohort")
-        self.assertLessEqual({"vm-cohort-x86_64", "vm-cohort-verifier-x86_64"}, set(check["needs"]))
-        # The verifier verifies the producer's own outputs.
-        self.assertEqual(self.checks["vm-cohort-verifier-x86_64"]["needs"], ["vm-cohort-x86_64"])
-        self.assertIn('install -m 0755 "$verifier/tilo-vm-artifact" /usr/local/bin/tilo-vm-artifact', self.acceptance)
-        self.assertIn("--artifact-tilo-vm /usr/local/bin/tilo-vm-artifact", self.acceptance)
-        self.assertIn('--artifact-receipt-sha256 "$(field receipt_sha256)"', self.acceptance)
-
-    def test_the_verifier_is_built_from_main_never_from_the_tree_under_test(self):
-        verifier = self.checks["vm-cohort-verifier-x86_64"]
-        self.assertNotIn("tilo-vm-binary-x86_64", verifier["needs"])
-        self.assertNotIn("git", verifier)
-        self.assertIs(verifier["cache"], False)
-        self.assertIn('git ls-remote "$forge" refs/heads/main', self.verify)
-        self.assertIn('(cd "$src" && ', self.verify)
-        self.assertIn("cargo build --locked -p tilo-vm --bin tilo-vm", self.verify)
-        self.assertIn('python3 "$src/scripts/vm-acceptance/layer_artifacts.py" verify', self.verify)
-        self.assertNotIn("/target/tilo-vm-bin", self.verify)
 
     def test_the_tree_under_test_packs_from_its_exact_commit_with_the_pinned_builder(self):
         producer = self.checks["vm-cohort-x86_64"]

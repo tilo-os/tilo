@@ -38,6 +38,9 @@ impl Default for RetentionOpts {
 #[derive(Debug, Clone)]
 pub(crate) struct GossipAddressLookup {
     endpoints: NodeMap,
+    /// TILO PATCH: wakes the eviction task when an entry is added, so it
+    /// sleeps for good while the map is empty.
+    added: Arc<tokio::sync::Notify>,
     _task_handle: Arc<AbortOnDropHandle<()>>,
 }
 
@@ -65,25 +68,47 @@ impl GossipAddressLookup {
 
     pub(crate) fn with_opts(opts: RetentionOpts) -> Self {
         let endpoints: NodeMap = Default::default();
+        let added = Arc::new(tokio::sync::Notify::new());
+        // TILO PATCH: evict when the oldest entry expires, and not at all
+        // while there is none, instead of every `evict_interval` for the life
+        // of the endpoint. `evict_interval` still spaces the sweeps.
         let task = {
             let endpoints = Arc::downgrade(&endpoints);
+            let added = Arc::clone(&added);
             n0_future::task::spawn(async move {
-                let mut interval = n0_future::time::interval(opts.evict_interval);
                 loop {
-                    interval.tick().await;
-                    let Some(endpoints) = endpoints.upgrade() else {
-                        break;
+                    let next = {
+                        let Some(endpoints) = endpoints.upgrade() else {
+                            break;
+                        };
+                        let now = SystemTime::now();
+                        let mut endpoints = endpoints.write().expect("poisoned");
+                        endpoints.retain(|_k, v| {
+                            let age = now.duration_since(v.last_updated).unwrap_or(Duration::MAX);
+                            age <= opts.retention
+                        });
+                        endpoints
+                            .values()
+                            .map(|v| {
+                                let age = now.duration_since(v.last_updated).unwrap_or_default();
+                                opts.retention.saturating_sub(age)
+                            })
+                            .min()
                     };
-                    let now = SystemTime::now();
-                    endpoints.write().expect("poisoned").retain(|_k, v| {
-                        let age = now.duration_since(v.last_updated).unwrap_or(Duration::MAX);
-                        age <= opts.retention
-                    });
+                    match next {
+                        Some(expiry) => {
+                            n0_future::time::sleep(expiry.max(opts.evict_interval)).await;
+                        }
+                        // `add` leaves a permit when nobody waits, so an entry
+                        // added since the map was read is not missed.
+                        None => added.notified().await,
+                    }
                 }
             })
         };
         Self {
             endpoints,
+            added,
             _task_handle: Arc::new(AbortOnDropHandle::new(task)),
         }
     }
@@ -108,6 +133,8 @@ impl GossipAddressLookup {
                 entry.insert(StoredEndpointInfo { data, last_updated });
             }
         }
+        drop(guard);
+        self.added.notify_one();
     }
 }
 

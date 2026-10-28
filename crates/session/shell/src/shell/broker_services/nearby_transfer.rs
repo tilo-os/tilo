@@ -16,7 +16,7 @@ use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric_runtime as fabric;
 use crate::shell::nearby_transfer::{SecureNearbyDestination, SecureNearbySource};
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// As long as transfer and destination handles: Files no longer re-asks
 /// every two seconds, so a target handle published through Files' actions is

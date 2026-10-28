@@ -11,14 +11,14 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use ui::presence::{PresenceCtx, PresenceKey};
 
 use super::{NeighbourMsg, ShellNetwork, room_topic_id, shell_network_for_test};
-use crate::network::actor::MembershipEpoch;
 use crate::shell::peer_presence::PeerPresence;
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_network_actor::MembershipEpoch;
 
 const TAB: u64 = 0x5eed;
 
 fn handle_of(device: &iroh::SecretKey) -> u64 {
-    crate::network::behaviour::peer_liveness_handle(&device.public())
+    tilo_network_actor::behaviour::peer_liveness_handle(&device.public())
 }
 
 /// `device` proves it belongs to `root`, as its identity hello does on
@@ -97,12 +97,14 @@ fn a_member_who_claims_anothers_identity_is_still_only_themselves() {
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = WorkspaceId(51);
-    for (device, called) in [(&alice_device, "Alice"), (&mallory_device, "Mallory")] {
-        assert!(
-            tree.name_peer(room, &alice, &device.public().to_string(), called),
-            "the room's owner names the devices in it",
-        );
-    }
+    // As the room's admitted document names them.
+    tree.cache_admitted_peer_names_for_test(
+        room,
+        &[
+            (alice_device.public().to_string(), "Alice"),
+            (mallory_device.public().to_string(), "Mallory"),
+        ],
+    );
     let tree = tree.shared();
     let (mut net, _commands) = shell_network_for_test(tree.clone(), 0xC);
     net.require_peer_identity = true;

@@ -32,6 +32,23 @@ pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
 }
 
+/// History in this thread's words: a step as [`sentence`] says it, and a
+/// person as a directory that knows nobody yet names them. What the history
+/// verbs below the toolkit (`steps::undo`) speak in for an app.
+pub struct ThreadWords;
+
+impl collaboration::history_source::authors::ResolveAuthor for ThreadWords {
+    fn resolve(&self, actor_hex: &str) -> crate::widget::history::HistoryAuthor {
+        super::AuthorDirectory::default().resolve(actor_hex)
+    }
+}
+
+impl collaboration::history_source::words::HistoryWords for ThreadWords {
+    fn sentence(&self, entry: &ActionContext) -> String {
+        sentence(entry)
+    }
+}
+
 /// What a history row says about one change: what it did, else what its
 /// actor said they were doing. `None` when the entry says neither.
 pub fn step_summary(entry: &ActionContext) -> Option<String> {

@@ -91,6 +91,28 @@ def localized_names(package: dict, name: str) -> list[str]:
     return names
 
 
+# The shapes a window may show while its app's code is on its way
+# (`ui::widget::SkeletonShape`), by the name a manifest declares. Only the
+# shapes a whole window makes sense in: a row or a chip is a region's shape,
+# not an app's.
+ARRIVAL_SKELETONS = {"page": "SkeletonShape::Page"}
+
+
+def arrival_skeleton(manifest: dict, manifest_path: pathlib.Path) -> str:
+    """The placeholder shape the app declares for its window, as the
+    registry names it: `[appearance] arrival-skeleton` in its manifest, the
+    toolkit's shape by name. Undeclared, the window's ground alone."""
+    declared = manifest.get("appearance", {}).get("arrival-skeleton")
+    if declared is None:
+        return "SkeletonShape::Ground"
+    if declared not in ARRIVAL_SKELETONS:
+        raise ValueError(
+            f"{manifest_path}: appearance.arrival-skeleton must be one of "
+            f"{sorted(ARRIVAL_SKELETONS)}, not {declared!r}"
+        )
+    return ARRIVAL_SKELETONS[declared]
+
+
 def all_apps(repo: pathlib.Path) -> list[dict]:
     apps = []
     for manifest_path in sorted((repo / "apps").glob("*/tilo-app.toml")):
@@ -119,6 +141,7 @@ def all_apps(repo: pathlib.Path) -> list[dict]:
                 platforms=list(platforms),
                 keywords=search_keywords(app_dir),
                 names=localized_names(package, package.get("name", package["id"])),
+                arrival_skeleton=arrival_skeleton(manifest, manifest_path),
             )
         )
     return apps
@@ -172,8 +195,11 @@ def apps_rs(apps: list[dict]) -> str:
             "\n"
             "    use ui::application::ApplicationDefinition;\n"
             "    use ui::application::registry::{self, Loading};\n"
+            "    use ui::widget::SkeletonShape;\n"
             "\n"
             "    use crate::split::Callback;\n"
+            "\n"
+            f"    const APP: &str = {json.dumps(app['id'])};\n"
             "\n"
             '    #[link(wasm_import_module = "./__wasm_split.js")]\n'
             '    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]\n'
@@ -191,11 +217,12 @@ def apps_rs(apps: list[dict]) -> str:
             "    }\n"
             "\n"
             "    fn open() -> Loading {\n"
-            "        Box::pin(crate::split::definition(load, definition))\n"
+            "        Box::pin(crate::split::definition(APP, load, definition))\n"
             "    }\n"
             "\n"
             "    pub(super) fn register() {\n"
-            f"        registry::defer({json.dumps(app['id'])}, {json.dumps(app['name'], ensure_ascii=False)}, open);\n"
+            f"        registry::defer_arriving(APP, "
+            f"{json.dumps(app['name'], ensure_ascii=False)}, {app['arrival_skeleton']}, open);\n"
             "    }\n"
             "}\n"
         )

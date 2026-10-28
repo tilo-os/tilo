@@ -3,7 +3,7 @@
 use super::*;
 use crate::compositor::selection::{self, SharedSelection, Target};
 use crate::shell::device_fabric_runtime::{DeviceFabricRuntime, LocalFabricCapabilities};
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 struct Session {
@@ -45,6 +45,7 @@ impl Session {
             workspace_revocations: std::collections::HashMap::new(),
             identity_paths: None,
         };
+        crate::network::install_actor_services();
         let (commands, actor) = Actor::spawn_reporting_addrs(
             endpoint.clone(),
             lookup,
@@ -53,7 +54,7 @@ impl Session {
         );
         let (mut network, _) = shell_network_for_test(
             tree.shared(),
-            crate::network::behaviour::peer_liveness_handle(&device.public()),
+            tilo_network_actor::behaviour::peer_liveness_handle(&device.public()),
         );
         network.cmd_tx = commands;
         network.keypair = device.clone();
@@ -77,7 +78,7 @@ impl Session {
         self.network.joined_topics.lock().unwrap().insert(topic);
         self.network
             .cmd_tx
-            .send(NetCmd::JoinWorkspace {
+            .send(NetCmd::JoinPersonalTopic {
                 ws: topic,
                 on_event: self.network.event_tx.clone(),
             })
@@ -219,9 +220,6 @@ async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
     })
     .await;
 }
-
-#[path = "cold_editor_record_tests.rs"]
-mod cold_editor_record_tests;
 
 #[path = "pump_load_tests.rs"]
 mod pump_load_tests;
@@ -653,19 +651,17 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .lock()
         .unwrap()
         .forget_local_tab(AppInstanceId(tab));
+    // The person's list brings the room to the right device; continuity
+    // carries only what runs in it.
+    right
+        .network
+        .tree
+        .write()
+        .join_room("Shared", room)
+        .expect("the room's workspace");
     right.network.dispatch_net_event(arrived);
-    assert!(
-        right
-            .network
-            .replica
-            .lock()
-            .unwrap()
-            .tree
-            .read()
-            .continuation_tabs
-            .contains(&tab)
-    );
-    let tree_handle = right.network.replica.lock().unwrap().tree.clone();
+    assert!(right.network.tree.read().continuation_tabs.contains(&tab));
+    let tree_handle = right.network.tree.clone();
     assert_eq!(
         tree_handle.read().desktop.active,
         local_workspace_id,
@@ -1140,7 +1136,7 @@ impl NativeEditorPair {
     }
 
     fn adopt_target(&self) {
-        let tree = self.right.network.replica.lock().unwrap().tree.clone();
+        let tree = self.right.network.tree.clone();
         let mut tree = tree.write();
         assert_eq!(
             crate::shell::tab_binding::adopt_toplevel_at(
@@ -1580,7 +1576,7 @@ async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp
             assert!(controls[1].0.generation > controls[0].0.generation);
         }
         // An unrelated workspace title update must not reelect its old local view.
-        let tree = session.network.replica.lock().unwrap().tree.clone();
+        let tree = session.network.tree.clone();
         tree.write().desktop.workspaces[0].name = "Local arrangement".into();
         in_owner_registry(registry, || {
             session.network.local_continuity_snapshot_bytes().unwrap();

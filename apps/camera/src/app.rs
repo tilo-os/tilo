@@ -140,8 +140,9 @@ type ScanViewKey = (u32, u32, i32, i32, u32);
 
 /// Where newly captured pixels are projected.
 enum Storage {
-    /// Live: real files under this directory.
-    Disk(PathBuf),
+    /// Live: real files under this directory; `None` when no directory
+    /// resolves, keeping captures only in the content store.
+    Disk(Option<PathBuf>),
     /// Hermetic (screenshots/tests): in-memory procedural samples.
     Sample,
 }
@@ -807,9 +808,9 @@ impl CameraApp {
             return Err("Camera job counter exhausted; restart Camera".into());
         };
         let dir = match &self.storage {
-            Storage::Disk(dir) => {
-                tilo_files::available(tilo_files::Feature::NativePaths).then(|| dir.clone())
-            }
+            Storage::Disk(dir) => dir
+                .clone()
+                .filter(|_| tilo_files::available(tilo_files::Feature::NativePaths)),
             Storage::Sample => None,
         };
         // AVI muxing can copy tens of MiB, including when screenshots/tests
@@ -2048,8 +2049,9 @@ impl CameraApp {
                 self.worker.submit(crate::worker::PhotoJob {
                     invocation,
                     generation,
-                    dir: tilo_files::available(tilo_files::Feature::NativePaths)
-                        .then(|| dir.clone()),
+                    dir: dir
+                        .clone()
+                        .filter(|_| tilo_files::available(tilo_files::Feature::NativePaths)),
                     frame,
                     format: self.settings.photo_format,
                     facing: self.facing,
@@ -3551,7 +3553,7 @@ mod tests {
             app.settings_sheet.offers_lenses(),
             "the sample phone has three"
         );
-        app.storage = Storage::Disk(std::env::temp_dir());
+        app.storage = Storage::Disk(Some(std::env::temp_dir()));
         app.multiple_cameras = false;
         app.present_controls();
         assert!(
@@ -4076,7 +4078,7 @@ mod tests {
     fn unavailable_camera_recovery_is_honest_semantic_and_fits_touch_rows() {
         {
             let dir = std::env::temp_dir().join("camera-recovery-test-no-device");
-            let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync_record(&mut doc, &root);
@@ -4094,7 +4096,7 @@ mod tests {
         }
         {
             let dir = std::env::temp_dir().join("camera-recovery-test-refresh");
-            let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera);
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync(&doc, &root);
@@ -4191,7 +4193,7 @@ mod tests {
                 .unwrap();
             let _entered = scope.enter();
 
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let video = Client::new(app_end)
                 .camera(&tilo_capture::CameraRequest {
                     device: None,
@@ -4261,7 +4263,7 @@ mod tests {
             // Point at a directory that does not exist → no fabricated media, never
             // fabricated samples.
             let dir = std::env::temp_dir().join("camera-empty-lib-xyz-does-not-exist");
-            let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
@@ -4271,7 +4273,7 @@ mod tests {
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-noframe-test-{}", std::process::id()));
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
@@ -4288,7 +4290,7 @@ mod tests {
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-vidrec-noframe-{}", std::process::id()));
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
@@ -4357,7 +4359,7 @@ mod tests {
                 std::env::temp_dir().join(format!("camera-shutter-test-{}", std::process::id()));
             std::fs::remove_dir_all(&dir).ok();
             std::fs::create_dir_all(&dir).unwrap();
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
@@ -4510,7 +4512,7 @@ mod tests {
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-vidrec-test-{}", std::process::id()));
-            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let mut app = CameraApp::with(Storage::Disk(Some(dir.clone())), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync_record(&mut doc, &root);
@@ -4574,7 +4576,7 @@ mod tests {
 
         fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
             let dir = CAPTURE_DIR.with(|dir| dir.borrow().clone()).unwrap();
-            cx.surface(CameraApp::with(Storage::Disk(dir), Screen::Camera))
+            cx.surface(CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera))
         }
     }
 

@@ -124,6 +124,12 @@ impl WorkspaceTreeHandle {
     }
 }
 impl WorkspaceAuthority for WorkspaceTreeHandle {
+    /// A test tree holds no room documents: none of its rooms revokes a
+    /// device.
+    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+        crate::services::room_in(&self.read().desktop, room)
+            .map(|_| tilo_user_identity::RevocationList::new())
+    }
     fn with_tree(
         &self,
         read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),

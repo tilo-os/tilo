@@ -24,6 +24,29 @@ pub const REACTIONS_FIELD: &str = "reactions";
 /// it covers every app's moderation, so presets need no list of verbs.
 pub const MODERATION_FIELD: &str = "moderation";
 
+/// The room host's verbs for the room's own changes, offered beside the
+/// [`governance`] actions on the room's governance resource: what a member
+/// asks the host for, each decided by the caller's own standing.
+pub mod owner_commands {
+    /// Rename the workspace: `{name}`.
+    pub const RENAME_WORKSPACE: &str = "workspace.rename";
+    /// Save a named grant set, replacing the one with the same name:
+    /// `{preset}`, the preset or its JSON text.
+    pub const SAVE_PRESET: &str = "preset.save";
+    /// Assign a saved grant set to a person, an app or an agent:
+    /// `{preset, subject_kind, subject, expires_unix?}`.
+    pub const ASSIGN_PRESET: &str = "preset.assign";
+    /// Let an app use one action of another app here:
+    /// `{app, target_app, resource, action, lifetime}`.
+    pub const GRANT_APP_ACTION: &str = "app-action.grant";
+    /// Take that back: `{app, target_app, resource, action}`.
+    pub const REVOKE_APP_ACTION: &str = "app-action.revoke";
+    /// Record a capability for the room's apps' sandbox: `{capability}`.
+    pub const GRANT_SANDBOX: &str = "sandbox.grant";
+    /// Take a sandbox capability back: `{capability}`, its id.
+    pub const REVOKE_SANDBOX: &str = "sandbox.revoke";
+}
+
 /// The room's governance actions.
 pub mod governance {
     /// Invite someone, carrying at most the inviter's role.
@@ -841,15 +864,17 @@ impl AgentPreset {
     }
 }
 
-/// The grant making application `app` an author of `room`: it reads and
-/// changes the room's content as the person using it, and reaches nothing
-/// outside it. Given when a person who may change the room opens the app.
+/// The grant making application `app` an author of its own records in
+/// `room`: it reads and changes what it keeps there as the person using it,
+/// and reaches nothing outside it. Another app's actions in the room stay
+/// behind the workspace's own grants and the person's consent. Given when a
+/// person who may change the room opens the app.
 #[must_use]
 pub fn app_authorship(room: &str, app: &str, granted_by: Subject) -> Grant {
     Grant::new(
         format!("app-author:{app}"),
         Subject::App(app.to_owned()),
-        TreePath::room(room),
+        TreePath::room(room).app(app),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         granted_by,

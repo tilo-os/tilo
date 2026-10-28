@@ -1134,3 +1134,36 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A past version reads through the `read` door and draws in the chat's own
+/// view with the channel as it was named then.
+#[test]
+fn a_past_version_reads_and_shows_its_channel() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    app.call(
+        "create-channel-with-id",
+        serde_json::json!({"id": "c_kumquat", "name": "kumquat-parade"}),
+    )
+    .unwrap();
+    let past = app.versions().pop().unwrap().hash;
+    app.call_on(
+        &item("channels", "c_kumquat"),
+        "rename-channel",
+        serde_json::json!({"name": "renamed-later"}),
+    )
+    .unwrap();
+
+    let read = app
+        .call("read", serde_json::json!({"version": past.to_string()}))
+        .unwrap()
+        .unwrap();
+    let content = read["content"].to_string();
+    assert!(content.contains("kumquat-parade"), "{read}");
+    assert!(!content.contains("renamed-later"), "{read}");
+
+    let texts = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        texts.iter().any(|text| text.contains("kumquat-parade")),
+        "{texts:?}"
+    );
+}

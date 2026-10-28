@@ -1,0 +1,51 @@
+[package]
+name = "tilolang-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The tilolang host: one process per room and author, without the toolkit, running each of that author's tilolang apps in that room as an instance on its own broker connection."
+
+[lib]
+name = "tilolang_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilolang-host"
+path = "src/main.rs"
+
+[dependencies]
+tilolang-tilo = { path = "../tilolang-tilo", features = ["room"] }
+# Each instance's connection to its room, opened by the session for that app's launch.
+collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
+# The door the session hands instances over.
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
+# The patch connection to each instance's window, and the sealed memfd its module comes in.
+tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-wake.workspace = true
+# The platform's phrases the standard library's frames say, without the toolkit.
+tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+chrono = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libc.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilolang = { path = "../../lang/tilolang" }
+automerge.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

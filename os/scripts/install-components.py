@@ -42,7 +42,7 @@ KINDS = ("userspace", "boot")
 # it with `dev_build`, installs it VM-wide as the next boot entry and reboots.
 DEV_SWAPS = ("reboot",)
 DEV_BUILD_RE = re.compile(r"^os/[A-Za-z0-9._/-]+$")
-PROFILES = ("release", "thin-app")
+PROFILES = ("release", "thin-app", "initrd")
 # The Containerfile copies `direct` files itself, straight from the builder
 # stage, because the build writes them at their final path.
 DIRECT_LAYER = "direct"

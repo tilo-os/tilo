@@ -2,9 +2,10 @@
 //!
 //! The daemon reads a TOML file — path is passed via `--config` and
 //! defaults to `/etc/tilo/relay.toml`. The file contains
-//! filesystem paths + a listen address + policy + a list of
-//! workspace bindings. Any secrets stay on disk under those paths
-//! and are never inlined here.
+//! filesystem paths + a listen address + policy. Which rooms a relay
+//! holds is decided by the rooms themselves (their governance), never by
+//! this file. Any secrets stay on disk under those paths and are never
+//! inlined here.
 //!
 //! Example:
 //!
@@ -24,16 +25,6 @@
 //!
 //! # Trust policy. See `TrustPolicy` for values.
 //! trust_policy = "allow_matching_user"
-//!
-//! # Which workspaces this relay pins. Every entry becomes a
-//! # persistent host slot in the WorkspaceDirectory.
-//! [[workspace]]
-//! id = 1
-//! pin = true
-//!
-//! [[workspace]]
-//! id = 2
-//! pin = false   # relay forwards but does not persist history
 //! ```
 
 use std::net::SocketAddr;
@@ -42,7 +33,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::mesh::{DeviceRole, ReplicationIntent, ServiceCapabilities};
+use crate::mesh::{DeviceRole, ServiceCapabilities};
 use crate::policy::TrustPolicy;
 
 /// Top-level relay configuration.
@@ -67,8 +58,8 @@ pub struct RelayConfig {
     #[serde(default = "default_full_replica_status")]
     pub full_replica_status: PathBuf,
 
-    /// The filesystem home-peer bundle. When present, its workspace tickets
-    /// are imported as durable full-workspace relay bindings at startup.
+    /// The filesystem home-peer bundle. When present, this relay serves
+    /// full-content replication and discovery for the workspaces it names.
     #[serde(default = "default_home_peer_bundle")]
     pub home_peer_bundle: PathBuf,
 
@@ -93,11 +84,6 @@ pub struct RelayConfig {
     /// proof.
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
-
-    /// Workspaces the relay pins and forwards for. Populated by
-    /// `tilo-relay-admin bind-workspace`; hand-editable.
-    #[serde(default, rename = "workspace")]
-    pub workspaces: Vec<WorkspaceBinding>,
 
     /// Other relays this one federates with. Each entry becomes an
     /// outbound dial on startup; the pair mutually auths using the
@@ -126,6 +112,11 @@ pub struct RelayConfig {
     /// room that pre-admits every visitor raises it. `None` keeps 1024.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_room_grants: Option<usize>,
+    /// The `[[workspace]]` tables older configurations listed. Which rooms a
+    /// relay holds is the rooms' own governance now, so they are read only
+    /// to be ignored (the daemon says so when it starts) and never written.
+    #[serde(default, rename = "workspace", skip_serializing)]
+    pub retired_workspaces: Option<toml::Value>,
 }
 
 /// How a relay's compute worker hosts members' environment sessions.
@@ -302,103 +293,12 @@ fn default_priority() -> i32 {
     0
 }
 
-/// Local recovery contract for an admitted checkpoint publisher. This is
-/// intentionally absent from persisted configuration and wire protocols.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CheckpointPrefixRecovery {
-    /// Generic SDK/browser/relay publishers have no automatic resend promise.
-    #[default]
-    Disabled,
-    /// The native session owner republishes its complete durable baseline on
-    /// every new Ready session after an uncertain send.
-    NativeOwnerDurableBaseline,
-}
-
-/// A single workspace this relay is bound to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceBinding {
-    /// Workspace id (matches
-    /// [`tilo_user_identity::WorkspaceId`]).
-    #[serde(with = "workspace_id_serde")]
-    pub id: u64,
-
-    /// When true, the relay holds a full replica of the
-    /// workspace's CRDT (a `WorkspaceDirectory` shard). When false,
-    /// the relay only stores-and-forwards for offline peers but
-    /// does not itself materialize history.
-    #[serde(default = "true_default")]
-    pub pin: bool,
-
-    /// Which existing collaboration/blob streams this device retains. The
-    /// standalone relay defaults to workspace records only because it does
-    /// not run the filesystem/blob host plane.
-    #[serde(default = "default_server_replication")]
-    pub replication: ReplicationIntent,
-    /// Signed filesystem-authority users permitted to use this relay room.
-    /// Home-peer import maintains this from the bundle; it is intentionally
-    /// room-scoped rather than a relay-wide collaborator union.
-    #[serde(default)]
-    pub admitted_users: Vec<String>,
-    /// Local shell governor pin supplied by the native owner. Neither workspace
-    /// membership nor a same-user relay identity implies this authority.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shell_authority: Option<crate::retention::RetentionAuthority>,
-    /// Programmatic host capability. Persisted/admin configuration cannot opt
-    /// into checkpoint-prefix recovery semantics.
-    #[serde(skip)]
-    pub checkpoint_prefix_recovery: CheckpointPrefixRecovery,
-}
-
-mod workspace_id_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Encoded {
-        Decimal(String),
-        Legacy(u64),
-    }
-
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde's with-module serialization callback requires a reference to the field"
-    )]
-    pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&id.to_string())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match Encoded::deserialize(deserializer)? {
-            Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
-            Encoded::Legacy(value) => Ok(value),
-        }
-    }
-}
-
-fn true_default() -> bool {
-    true
-}
-
 fn default_device_role() -> DeviceRole {
     DeviceRole::AlwaysOnServer
 }
 
 fn default_services() -> ServiceCapabilities {
     ServiceCapabilities::relay_only()
-}
-
-fn default_server_replication() -> ReplicationIntent {
-    // CRDT persistence is the only replication plane present in tilo-relay.
-    // FullWorkspace needs the separate filesystem/blob host, so an operator
-    // must opt into it only after deploying that service.
-    ReplicationIntent::WorkspaceOnly
 }
 
 fn default_identity_root() -> PathBuf {
@@ -434,12 +334,12 @@ impl Default for RelayConfig {
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),
-            workspaces: Vec::new(),
             peer_relays: Vec::new(),
             environments: None,
             web_entry: None,
             member_limits: None,
             max_room_grants: None,
+            retired_workspaces: None,
         }
     }
 }
@@ -512,31 +412,6 @@ impl RelayConfig {
         Ok(())
     }
 
-    /// Ensure a workspace binding exists; returns `true` if it was
-    /// added.
-    pub fn add_workspace(&mut self, id: u64, pin: bool) -> bool {
-        if self.workspaces.iter().any(|w| w.id == id) {
-            return false;
-        }
-        self.workspaces.push(WorkspaceBinding {
-            id,
-            pin,
-            replication: default_server_replication(),
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
-        });
-        true
-    }
-
-    /// Remove a workspace binding; returns `true` if it was
-    /// present.
-    pub fn remove_workspace(&mut self, id: u64) -> bool {
-        let before = self.workspaces.len();
-        self.workspaces.retain(|w| w.id != id);
-        before != self.workspaces.len()
-    }
-
     /// Ensure a peer-relay entry exists; returns `true` if it was
     /// added. Uniqueness is by iroh node id (case-insensitive hex).
     pub fn add_peer_relay(&mut self, iroh_node_id: &str, label: &str, priority: i32) -> bool {
@@ -571,7 +446,6 @@ mod tests {
         assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
         assert_eq!(cfg.iroh_listen.port(), 0);
-        assert!(cfg.workspaces.is_empty());
         assert_eq!(cfg.device_role, DeviceRole::AlwaysOnServer);
         assert!(cfg.services.workspace_replication);
         assert!(cfg.services.inbound_relay);
@@ -582,7 +456,7 @@ mod tests {
 
         // A minimal file names only the two roots.
         let cfg: RelayConfig = toml::from_str(PRELUDE).unwrap();
-        assert_eq!(cfg.workspaces.len(), 0);
+        assert!(cfg.peer_relays.is_empty());
 
         // Peer relays parse, with priority defaulting to 0.
         let cfg: RelayConfig = toml::from_str(&format!(
@@ -598,106 +472,24 @@ mod tests {
         // An unknown field is rejected rather than ignored.
         assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
 
-        // Workspace ids above TOML's integer range round-trip as strings, and
-        // legacy integer ids still parse.
-        let high = (i64::MAX as u64) + 42;
-        let binding = WorkspaceBinding {
-            id: high,
-            pin: true,
-            replication: ReplicationIntent::FullWorkspace,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
-        };
-        let text = toml::to_string(&binding).unwrap();
-        assert!(text.contains(&format!("id = \"{high}\"")));
-        assert_eq!(toml::from_str::<WorkspaceBinding>(&text).unwrap().id, high);
-        let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
-        assert_eq!(legacy.id, 42);
-    }
-
-    #[test]
-    fn shell_authority_config_accepts_exact_local_binding() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-        let mut governor = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Native workspace peer".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut governor, &root).unwrap();
-        let binding = serde_json::json!({"id": "42", "shell_authority": {
-            "room": "5e11f00d-7110-4000-8000-000000000001",
-            "governor": governor,
-        }});
-        let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
-        assert_eq!(
-            toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),
-            binding
-        );
-        assert_eq!(
-            binding.checkpoint_prefix_recovery,
-            CheckpointPrefixRecovery::Disabled
-        );
-        let encoded = toml::to_string(&binding).unwrap();
-        assert!(!encoded.contains("checkpoint_prefix_recovery"));
-        assert!(
-            toml::from_str::<WorkspaceBinding>(
-                "id = 42\ncheckpoint_prefix_recovery = \"NativeOwnerDurableBaseline\""
-            )
-            .is_err(),
-            "persisted configuration cannot opt into a process recovery contract"
-        );
-        assert!(
-            serde_json::from_value::<WorkspaceBinding>(serde_json::json!({"id": "42"}))
-                .unwrap()
-                .shell_authority
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn checkpoint_prefix_recovery_is_runtime_only_when_serializing_toml_and_json() {
-        let mut binding: WorkspaceBinding =
-            serde_json::from_value(serde_json::json!({"id": "42"})).unwrap();
-        binding.checkpoint_prefix_recovery = CheckpointPrefixRecovery::NativeOwnerDurableBaseline;
-
-        let toml_text = toml::to_string(&binding).unwrap();
-        assert!(!toml_text.contains("checkpoint_prefix_recovery"));
-        assert_eq!(
-            toml::from_str::<WorkspaceBinding>(&toml_text)
-                .unwrap()
-                .checkpoint_prefix_recovery,
-            CheckpointPrefixRecovery::Disabled
-        );
-
-        let json_value = serde_json::to_value(&binding).unwrap();
-        assert!(json_value.get("checkpoint_prefix_recovery").is_none());
-        assert_eq!(
-            serde_json::from_value::<WorkspaceBinding>(json_value)
-                .unwrap()
-                .checkpoint_prefix_recovery,
-            CheckpointPrefixRecovery::Disabled
-        );
+        // The workspace tables older configurations listed still load, and
+        // are never written back.
+        let cfg: RelayConfig = toml::from_str(&format!(
+            "{PRELUDE}\n[[workspace]]\nid = \"42\"\npin = true\nreplication = \"on_demand\"\n"
+        ))
+        .unwrap();
+        assert!(cfg.retired_workspaces.is_some());
+        // `[services] workspace_replication` is a different key and stays.
+        let written = toml::to_string(&cfg).unwrap();
+        let table: toml::Table = toml::from_str(&written).unwrap();
+        assert!(!table.contains_key("workspace"), "{written}");
+        let reread: RelayConfig = toml::from_str(&written).unwrap();
+        assert!(reread.retired_workspaces.is_none());
     }
 
     #[test]
     fn relay_config_edits_are_idempotent_and_persist() {
         let mut cfg = RelayConfig::default();
-        assert!(cfg.add_workspace(1, true));
-        assert!(!cfg.add_workspace(1, true), "adding twice is a no-op");
-        assert_eq!(cfg.workspaces.len(), 1);
-        assert_eq!(
-            cfg.workspaces[0].replication,
-            ReplicationIntent::WorkspaceOnly
-        );
-        assert!(cfg.remove_workspace(1));
-        assert!(!cfg.remove_workspace(1), "removing twice is a no-op");
-
         assert!(cfg.add_peer_relay("ABCD", "a", 1));
         assert!(!cfg.add_peer_relay("abcd", "again", 2));
         assert_eq!(cfg.peer_relays.len(), 1);
@@ -705,8 +497,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("relay.toml");
         let mut cfg = RelayConfig::default();
-        cfg.add_workspace(7, true);
-        cfg.add_workspace(9, false);
+        cfg.add_peer_relay("ef", "west", 100);
         cfg.save(&path).unwrap();
         assert_eq!(cfg, RelayConfig::load(&path).unwrap());
     }

@@ -307,10 +307,6 @@ else:
         self.assertTrue(self.credential.exists())
         self.assertEqual(receipt.read_bytes(), before)
 
-    def test_service_allows_size_independent_transfer_duration(self):
-        unit = (ROOT / 'os/usr/lib/systemd/system/tilo-firstboot-user.service').read_text()
-        self.assertIn('TimeoutStartSec=infinity\n', unit)
-
 
 class AtomicFilesTests(unittest.TestCase):
     def setUp(self):

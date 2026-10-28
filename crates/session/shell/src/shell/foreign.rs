@@ -317,11 +317,11 @@ impl CpuLayout {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-use crate::shell::hdr_surface::half_to_f32;
+use tilo_color_pipeline::hdr_surface::half_to_f32;
 use tilo_lock::MutexRecover as _;
 
 /// Append one row of a 10-bit or half-float buffer to `texels` as the
-/// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
+/// matching [`tilo_color_pipeline::hdr_surface::HdrTexelFormat`]: 10-bit words with
 /// red in the low bits, half floats red first, padding alpha made opaque.
 /// Other layouts carry no HDR plane and append nothing.
 #[cfg(any(test, target_os = "linux"))]
@@ -358,10 +358,12 @@ fn append_hdr_texels(layout: CpuLayout, src: &[u8], texels: &mut Vec<u8>) {
 /// The texel format [`append_hdr_texels`] writes for `layout`, when it
 /// writes any.
 #[cfg(any(test, target_os = "linux"))]
-fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrTexelFormat> {
+fn hdr_texel_format(layout: CpuLayout) -> Option<tilo_color_pipeline::hdr_surface::HdrTexelFormat> {
     match layout {
-        CpuLayout::Rgb10 { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgb10a2),
-        CpuLayout::Half { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgba16Float),
+        CpuLayout::Rgb10 { .. } => Some(tilo_color_pipeline::hdr_surface::HdrTexelFormat::Rgb10a2),
+        CpuLayout::Half { .. } => {
+            Some(tilo_color_pipeline::hdr_surface::HdrTexelFormat::Rgba16Float)
+        }
         CpuLayout::Rgba8(_) | CpuLayout::P010 => None,
     }
 }
@@ -372,13 +374,13 @@ fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrT
 fn hdr_signal(
     layout: CpuLayout,
     colorimetry: neighbour_wire::colorimetry::Colorimetry,
-) -> Option<crate::shell::hdr_surface::SurfaceSignal> {
+) -> Option<tilo_color_pipeline::hdr_surface::SurfaceSignal> {
     if matches!(layout, CpuLayout::Rgba8(_)) {
         return None;
     }
-    crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+    tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
         colorimetry,
-        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
     )
 }
 
@@ -391,7 +393,7 @@ fn convert_rows<'a>(
     (width, height): (u32, u32),
     colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
-) -> Option<crate::shell::hdr_surface::HdrPlane> {
+) -> Option<tilo_color_pipeline::hdr_surface::HdrPlane> {
     let signal = hdr_signal(layout, colorimetry);
     let format = hdr_texel_format(layout).filter(|_| signal.is_some());
     let mut texels = Vec::new();
@@ -414,7 +416,7 @@ fn convert_rows<'a>(
             append_hdr_texels(layout, row, &mut texels);
         }
     }
-    crate::shell::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
+    tilo_color_pipeline::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
 }
 
 /// Convert one row of a 10-bit or half-float buffer to RGBA8: SDR signals
@@ -427,10 +429,13 @@ fn convert_row(
     colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
 ) {
-    let tonemap = crate::shell::hdr_tonemap::HdrTonemapConfig::default();
+    let tonemap = tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default();
     let mut push = |rgb: [f32; 3], alpha: u8| {
-        let [r, g, b] =
-            crate::shell::hdr_tonemap::tonemap_rgb_signal_to_srgb8(rgb, colorimetry, tonemap);
+        let [r, g, b] = tilo_color_pipeline::hdr_tonemap::tonemap_rgb_signal_to_srgb8(
+            rgb,
+            colorimetry,
+            tonemap,
+        );
         out.extend_from_slice(&[r, g, b, alpha]);
     };
     match layout {
@@ -554,7 +559,7 @@ pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
     colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
     let format = dmabuf.format();
@@ -645,7 +650,7 @@ fn import_p010(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
     colorimetry: neighbour_wire::colorimetry::Colorimetry,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     let width = dmabuf.width();
     let height = dmabuf.height();
@@ -712,7 +717,7 @@ fn import_p010(
     };
     let luma = plane(0, y_stride, height)?;
     let chroma = plane(1, uv_stride, chroma_rows)?;
-    let rgba = crate::shell::hdr_tonemap::tonemap_p010_to_rgba8(
+    let rgba = tilo_color_pipeline::hdr_tonemap::tonemap_p010_to_rgba8(
         &luma,
         &chroma,
         y_stride / 2,
@@ -720,12 +725,12 @@ fn import_p010(
         width,
         height,
         colorimetry,
-        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
     );
     out.clear();
     out.extend_from_slice(&rgba);
     *hdr = hdr_signal(CpuLayout::P010, colorimetry).and_then(|signal| {
-        crate::shell::hdr_surface::HdrPlane::p010(
+        tilo_color_pipeline::hdr_surface::HdrPlane::p010(
             &luma,
             &chroma,
             (y_stride / 2, uv_stride / 2),
@@ -836,7 +841,7 @@ struct ForeignEntry {
     colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
-    hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     /// The current frame when it stayed on the GPU; `rgba` is then empty and
     /// read back only on demand.
     gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
@@ -1128,7 +1133,7 @@ pub struct FrameSnapshot {
     pub seq: u64,
     /// The frame at full precision, the same size as `rgba`, when it
     /// carries an HDR signal and nothing is composited over it.
-    pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    pub hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
 }
 
 /// A subsurface's pixels, tightly packed RGBA.
@@ -1562,7 +1567,7 @@ struct ShmSpare {
 struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
-    hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    hdr: Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
     /// The frame, when it stayed on the GPU; `rgba` is then empty.
     gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
@@ -2482,14 +2487,14 @@ fn share_dmabuf(
 ///
 /// A 10-bit or half-float buffer is read back at its own precision and
 /// converted like the CPU import, so an HDR description yields its
-/// [`crate::shell::hdr_surface::HdrPlane`] on either route. P010 cannot be
+/// [`tilo_color_pipeline::hdr_surface::HdrPlane`] on either route. P010 cannot be
 /// read back through GL, so it goes to the CPU first.
 #[cfg(target_os = "linux")]
 fn decode_dmabuf(
     dmabuf: &Dmabuf,
     rgba: &mut Vec<u8>,
     colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32, DmabufRoute), String> {
     *hdr = None;
     let layout = CpuLayout::for_fourcc(dmabuf.format().code);
@@ -2985,7 +2990,7 @@ impl ForeignFrameStore {
         token: u64,
         result: Result<(u32, u32, CaptureRoute), String>,
         rgba: &mut Vec<u8>,
-        hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+        hdr: Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
     ) -> bool {
         let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
@@ -3158,7 +3163,7 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
         rgba: &[u8],
-        hdr: crate::shell::hdr_surface::HdrPlane,
+        hdr: tilo_color_pipeline::hdr_surface::HdrPlane,
     ) {
         let (width, height) = (hdr.width(), hdr.height());
         self.publish_frame(id, rgba, width, height, Some(Arc::new(hdr)));
@@ -3170,7 +3175,7 @@ impl ForeignFrameStore {
         rgba: &[u8],
         width: u32,
         height: u32,
-        hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+        hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     ) {
         // Copied before the lock: painting takes it too.
         let pixels = Arc::new(rgba.to_vec());
@@ -3766,7 +3771,10 @@ impl ForeignFrameStore {
     pub fn frame_image(
         &self,
         id: SurfaceId,
-    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+    ) -> Option<(
+        ImageData,
+        Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
+    )> {
         let shared = self.with_frames(id, |guard, children| {
             if !children.is_empty() {
                 return None;
@@ -4019,10 +4027,16 @@ impl ForeignFrameStore {
     /// past the one frame budget its first frame may hold the window's
     /// ([`ui::arriving`]). A launch is settled once it does.
     pub fn stands(&self, id: SurfaceId) -> bool {
+        self.stands_at(id, Instant::now())
+    }
+
+    /// Whether `id`'s window stands at `now` ([`Self::stands`]).
+    pub fn stands_at(&self, id: SurfaceId, now: Instant) -> bool {
         let guard = self.entries.lock_recover();
-        guard
-            .get(&id)
-            .is_some_and(|e| e.presented || e.first_seen.elapsed() >= ui::arriving::frame_budget())
+        guard.get(&id).is_some_and(|e| {
+            e.presented
+                || now.saturating_duration_since(e.first_seen) >= ui::arriving::frame_budget()
+        })
     }
 
     /// When the store next decides something about `id`'s window by itself
@@ -4429,7 +4443,7 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     /// The cached frame at full precision, when it carries an HDR signal.
-    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    cached_hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     cached_seq: u64,
     /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
     sheet_images: Vec<(SheetLink, ImageData)>,
@@ -4860,7 +4874,7 @@ impl ForeignSurfaceWidget {
         } else {
             dst.intersect(self.rect)
         };
-        crate::shell::hdr_surface::record(
+        tilo_color_pipeline::hdr_surface::record(
             plane,
             image,
             brush_transform,
@@ -4981,7 +4995,7 @@ enum SharedFrame {
     Cpu(
         Arc<Vec<u8>>,
         (u32, u32),
-        Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+        Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     ),
 }
 
@@ -6114,7 +6128,7 @@ mod tests {
 
     #[test]
     fn hdr_frames_keep_a_full_precision_plane() {
-        use crate::shell::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
         let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
         let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
 
@@ -6177,12 +6191,12 @@ mod tests {
         {
             let frames = ForeignFrameStore::default();
             let root = sid(80);
-            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+            let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
                 pq,
-                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+                tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
             )
             .expect("PQ");
-            let plane = crate::shell::hdr_surface::HdrPlane::from_signal_rgb(
+            let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
                 4,
                 4,
                 (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
@@ -6241,9 +6255,12 @@ mod tests {
         fn a_surface_just_heard_of_holds_its_first_frame() {
             let id = sid(50);
             store().forget(id);
+            // Asked at the moment it is heard of: a loaded machine can
+            // spend the whole budget between two lines of this test.
+            let heard = Instant::now();
             store().note_placement(id, TILE);
             assert!(
-                !store().stands(id),
+                !store().stands_at(id, heard),
                 "an app that may still draw in time must not have its place put up \
                  empty first",
             );

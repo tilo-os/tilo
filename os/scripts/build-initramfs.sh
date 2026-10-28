@@ -43,14 +43,14 @@ sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' 
 # diagnostics while disabling the distro's default syslog sink.
 printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf
 omit_modules="network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"
-required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"
+required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter"
 log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
     --omit-drivers "amdgpu nouveau xe xfs" \
     --add-drivers ext4 \
-    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-face" \
+    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter tilo-boot-face" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
 test -s "/usr/lib/modules/$kver/initramfs.img"
@@ -78,6 +78,27 @@ done
 grep -qx tilo-boot-face /usr/lib/tilo/initramfs-modules.txt || {
   echo "dracut did not include tilo-boot-face; the boot screen would not draw in the login screen's face" >&2
   exit 1; }
+# The greeter is the initramfs's largest part: its build, faces, keymaps,
+# voices and sound stack, measured by its module as it installs them. They
+# grow only on purpose: raise the budget with the change that needs it.
+# Measured at 64,188,287 bytes on x86_64 (aarch64's build is smaller) with the greeter
+# linked with fat LTO and one codegen unit; aborting on a panic (profile `initrd`,
+# Cargo.toml) took 6 MB more off its binary since. A greeter linked with the release
+# build's thin LTO and parallel codegen adds 76.7 MB, so os/image/compile.sh links it
+# as its profile says. One linked without LTO (TILO_GREETER_BUDGET=report,
+# os/Containerfile) adds about 80.8 MB: its size is reported, not held to the budget.
+greeter_budget=65000000
+greeter_bytes="$(sed -n 's/.*tilo-greeter: the greeter adds \([0-9]*\) bytes.*/\1/p' "$log")"
+[ -n "$greeter_bytes" ] || {
+  echo "dracut did not report what the greeter adds to the initramfs" >&2; exit 1; }
+if [ "$greeter_bytes" -gt "$greeter_budget" ]; then
+  echo "the greeter adds $greeter_bytes bytes to the initramfs, over its budget of $greeter_budget" >&2
+  if [ "${TILO_GREETER_BUDGET:-enforce}" = report ]; then
+    echo "(reported only: this greeter was linked without LTO, which releases always use)" >&2
+  else
+    exit 1
+  fi
+fi
 # A board image (one with a hardware-profile definition) also reads its
 # initramfs back: the profile's firmware and boot modules, and the Wi-Fi pieces
 # sibling unlock installs only optionally. Generic images skip this.

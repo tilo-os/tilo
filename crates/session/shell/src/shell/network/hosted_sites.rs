@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
-use crate::shell::state::{RoomId, WorkspaceId};
+use crate::shell::state::{RoomId, RoomReadiness, WorkspaceId};
 
 /// How long establishing a connection to a site or host may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -111,11 +111,14 @@ pub(super) struct State {
     joins: Mutex<BTreeMap<RoomId, SiteJoinState>>,
     /// Joins installed since chrome last looked.
     arrivals: Mutex<Vec<Arrival>>,
+    /// Woken as a join starts, fails or ends: an app waiting for its
+    /// room learns why it waits, or that it will not be joined.
+    readiness: RoomReadiness,
 }
 
 impl State {
     /// What `state_dir` keeps; nothing yet, or nothing readable, is none.
-    pub(super) fn open(state_dir: &Path) -> Self {
+    pub(super) fn open(state_dir: &Path, readiness: RoomReadiness) -> Self {
         let path = hosted_rooms_path(state_dir);
         let rooms = std::fs::read(&path)
             .ok()
@@ -124,6 +127,16 @@ impl State {
         Self {
             path: Some(path),
             rooms: Mutex::new(rooms),
+            readiness,
+            ..Self::default()
+        }
+    }
+
+    /// Nothing kept, waking `readiness` as joins change.
+    #[cfg(test)]
+    pub(super) fn with_readiness(readiness: RoomReadiness) -> Self {
+        Self {
+            readiness,
             ..Self::default()
         }
     }
@@ -131,11 +144,16 @@ impl State {
     /// Say where joining `room` stands now.
     pub(super) fn set_join(&self, state: SiteJoinState) {
         self.joins.lock_recover().insert(state.room, state);
+        self.readiness.announce();
     }
 
     /// Joining `room` is over: it installed, or the person left it.
     pub(super) fn end_join(&self, room: RoomId) -> Option<SiteJoinState> {
-        self.joins.lock_recover().remove(&room)
+        let ended = self.joins.lock_recover().remove(&room);
+        if ended.is_some() {
+            self.readiness.announce();
+        }
+        ended
     }
 
     /// Where joining `room` stands, while it does.
@@ -779,7 +797,7 @@ mod tests {
     fn hosted_rooms_are_kept_across_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let room = RoomId::new();
-        let state = State::open(dir.path());
+        let state = State::open(dir.path(), RoomReadiness::default());
         assert_eq!(state.origin(room), None);
         let site = site_entry("example.org").unwrap();
         state
@@ -793,7 +811,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let reopened = State::open(dir.path());
+        let reopened = State::open(dir.path(), RoomReadiness::default());
         assert_eq!(
             reopened.origin(room).as_deref(),
             Some("https://eu1.example")
@@ -810,7 +828,7 @@ mod tests {
         state
             .expect_arrival(room, Some("so.tilo.chat".into()))
             .unwrap();
-        let reopened = State::open(dir.path());
+        let reopened = State::open(dir.path(), RoomReadiness::default());
         reopened.arrive(room);
         assert_eq!(
             reopened.take_arrivals(|_| true),
@@ -821,10 +839,13 @@ mod tests {
             "a join that installs after a restart still arrives"
         );
         state.set_left(&site, true).unwrap();
-        assert!(State::open(dir.path()).left(&site));
+        assert!(State::open(dir.path(), RoomReadiness::default()).left(&site));
         state.forget(room).unwrap();
-        assert_eq!(State::open(dir.path()).origin(room), None);
+        assert_eq!(
+            State::open(dir.path(), RoomReadiness::default()).origin(room),
+            None
+        );
         state.set_left(&site, false).unwrap();
-        assert!(!State::open(dir.path()).left(&site));
+        assert!(!State::open(dir.path(), RoomReadiness::default()).left(&site));
     }
 }

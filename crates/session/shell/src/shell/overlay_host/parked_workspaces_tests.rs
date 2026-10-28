@@ -14,7 +14,7 @@ fn desktop() -> (
     WorkspaceId,
 ) {
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.append_empty_workspace("Second");
+    tree.create_hosted_workspace("Second");
     let home = tree.desktop.active;
     let strip = tree.desktop.active_strip[&home];
     let next = tree
@@ -188,7 +188,7 @@ fn only_the_most_recently_shown_workspaces_are_kept() {
         chrome
             .borrow()
             .tree_mut()
-            .append_empty_workspace(&format!("More {index}"));
+            .create_hosted_workspace(&format!("More {index}"));
     }
     chrome.borrow_mut().bump();
     host.tick_workspace_content_for_tests();

@@ -8,6 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod click_client;
 pub mod desktop;
 pub mod headless_wayland;
 pub mod host;

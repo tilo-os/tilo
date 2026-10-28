@@ -18,6 +18,9 @@ mod app_scope;
 mod fallback_tests;
 mod fallbacks;
 pub mod files_index;
+mod held_pages;
+#[cfg(test)]
+mod held_pages_tests;
 pub mod invocation_wake;
 pub mod launcher;
 mod merge;
@@ -649,10 +652,12 @@ pub trait SearchProvider {
     /// compatible provider tests; registry/palette/agent discovery always
     /// call this method.
     ///
-    /// The conservative default is intentionally only suitable for tiny,
-    /// static providers. Keeping the fallback lets third-party providers
-    /// upgrade without an ABI-breaking trait change; shell providers that
-    /// can grow must override it with retained-index paging.
+    /// The default pages [`Self::query`]'s whole answer
+    /// ([`held_pages::unpaged_page`]): each page asks again, and a
+    /// continuation goes on while the answer is still the one it was cut
+    /// from. The registry pages such a provider from one held answer instead
+    /// ([`Self::pages_itself`]). A provider that can grow overrides this with
+    /// retained-index paging.
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -660,20 +665,18 @@ pub trait SearchProvider {
         budget: SearchBudget,
     ) -> SearchPage {
         let revision = self.search_revision(&ctx);
-        if cursor.is_some_and(|cursor| cursor.revision != revision || !cursor.token.is_empty()) {
-            return SearchPage::stale(revision);
-        }
-        let mut results = self.query(ctx);
-        let total = results.len();
-        let emitted = total.min(budget.max_results);
-        results.truncate(emitted);
-        let exhausted = emitted == total;
-        SearchPage::continuing(
-            revision,
-            results,
-            (!exhausted).then(|| "legacy-truncated".into()),
-        )
+        held_pages::unpaged_page(revision, self.query(ctx), cursor, budget)
     }
+
+    /// Whether [`Self::query_page`] pages this provider's own retained index.
+    /// `false` for a provider on the default, which answers in one piece: a
+    /// listing the registry pages takes its [`Self::query`] once, on the
+    /// listing's first page, and pages that answer itself, so the listing
+    /// reads one snapshot however the provider's state moves meanwhile.
+    fn pages_itself(&self) -> bool {
+        false
+    }
+
     /// Top of this provider's own score scale. Scores are only meaningful
     /// within one provider — files award 120 for a leaf-name prefix while
     /// applications cap at 100, so raw numbers would rank `Calculator.h`
@@ -994,6 +997,13 @@ pub struct SearchRegistry {
     providers: Vec<Rc<dyn SearchProvider>>,
     preferences: SearchPreferencesHandle,
     provider_catalog: SearchProviderCatalogHandle,
+    /// The answers listings in flight page through, of the providers that
+    /// answer in one piece ([`SearchProvider::pages_itself`]).
+    held: held_pages::HeldSnapshots,
+    /// Each provider's revision as a query last read it, by provider and
+    /// scope: a move is traced, so what keeps an idle desktop's listings
+    /// moving can be found.
+    revisions: RefCell<HashMap<(String, String), String>>,
 }
 
 // Keep each source's order while visiting continuations fairly across sources.
@@ -1060,6 +1070,8 @@ impl SearchRegistry {
             providers: Vec::new(),
             preferences: Rc::new(RefCell::new(SearchPreferences::default())),
             provider_catalog: Rc::new(RefCell::new(Vec::new())),
+            held: held_pages::HeldSnapshots::default(),
+            revisions: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1072,6 +1084,8 @@ impl SearchRegistry {
             providers: Vec::new(),
             preferences,
             provider_catalog: Rc::new(RefCell::new(Vec::new())),
+            held: held_pages::HeldSnapshots::default(),
+            revisions: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1328,7 +1342,10 @@ impl SearchRegistry {
         if wanted.is_empty() {
             return Some(SearchPage::exhausted("not-wanted", Vec::new()));
         }
-        Some(provider.query_page(
+        // The caller holds the cursor to follow it: a provider answering in
+        // one piece is paged from the answer its first page took.
+        Some(self.held.page(
+            provider.as_ref(),
             SearchContext {
                 query_scope: Some(args.scope),
                 include_programmatic: false,
@@ -1340,6 +1357,7 @@ impl SearchRegistry {
             },
             cursor,
             budget,
+            true,
         ))
     }
 
@@ -1466,9 +1484,9 @@ impl SearchRegistry {
             }
             out.push_str(provider.id());
             out.push('\0');
-            {
+            let revision = {
                 let _cost = timing::Cost::new("search/provider-revision", provider.id());
-                out.push_str(&provider.search_revision(&SearchContext {
+                provider.search_revision(&SearchContext {
                     query_scope: Some(args.scope),
                     include_programmatic: false,
                     needle: args.needle,
@@ -1476,11 +1494,35 @@ impl SearchRegistry {
                     chrome: args.chrome,
                     doc: args.doc,
                     doc_root: args.doc_root,
-                }));
-            }
+                })
+            };
+            self.trace_revision(provider.id(), args, &revision);
+            out.push_str(&revision);
             out.push('\0');
         }
         out
+    }
+
+    /// Trace `provider`'s revision for `args` when it moved since a query
+    /// last read it.
+    fn trace_revision(&self, provider: &str, args: &QueryArgs<'_>, revision: &str) {
+        if !tracing::enabled!(target: "tilo::publications", tracing::Level::DEBUG) {
+            return;
+        }
+        let key = (provider.to_owned(), format!("{:?}", args.scope));
+        let mut revisions = self.revisions.borrow_mut();
+        if revisions.get(&key).is_some_and(|last| last == revision) {
+            return;
+        }
+        if let Some(last) = revisions.insert(key, revision.to_owned()) {
+            tracing::debug!(
+                target: "tilo::publications",
+                provider,
+                before = %last,
+                after = %revision,
+                "search provider revision moved"
+            );
+        }
     }
 
     /// Fan out `needle` to every provider whose id passes the scope
@@ -1576,7 +1618,11 @@ impl SearchRegistry {
                 }
                 let page = {
                     let _cost = timing::Cost::new("search/provider-query", source.provider.id());
-                    source.provider.query_page(
+                    // An exhaustive listing follows every cursor, so a
+                    // provider answering in one piece is paged from the
+                    // answer its first page took.
+                    self.held.page(
+                        source.provider,
                         SearchContext {
                             query_scope: Some(args.scope),
                             include_programmatic,
@@ -1588,14 +1634,14 @@ impl SearchRegistry {
                         },
                         source.cursor.as_ref(),
                         budget,
+                        exhaustive,
                     )
                 };
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);
                 if page.stale_cursor {
-                    // Keep any earlier valid page, including legacy providers'
-                    // first page when their synthetic continuation is stale.
+                    // Keep any earlier valid page.
                     source.done = true;
                     continue;
                 }
@@ -1981,12 +2027,12 @@ mod tests {
     use std::fmt::Write as _;
     use std::rc::Rc;
 
-    struct FakeProvider {
-        id: String,
-        kinds: Vec<ResourceKind>,
-        results: Vec<SearchResult>,
+    pub(super) struct FakeProvider {
+        pub(super) id: String,
+        pub(super) kinds: Vec<ResourceKind>,
+        pub(super) results: Vec<SearchResult>,
         /// Top of this fake's own score scale. `None` takes the trait default.
-        max_score: Option<i32>,
+        pub(super) max_score: Option<i32>,
     }
 
     impl SearchProvider for FakeProvider {
@@ -2011,7 +2057,7 @@ mod tests {
         }
     }
 
-    fn mk_result(
+    pub(super) fn mk_result(
         kind: ResourceKind,
         provider: &str,
         id: &str,
@@ -2021,13 +2067,13 @@ mod tests {
         SearchResult::nullary(kind, provider, id, title, None, score, |_, _, _| {})
     }
 
-    fn mk_chrome() -> crate::shell::chrome_state::Chrome {
+    pub(super) fn mk_chrome() -> crate::shell::chrome_state::Chrome {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
-    fn mk_doc() -> (AutoCommit, ObjId) {
+    pub(super) fn mk_doc() -> (AutoCommit, ObjId) {
         let doc = AutoCommit::new();
         (doc, automerge::ROOT)
     }
@@ -2236,7 +2282,9 @@ mod tests {
             assert_eq!(later_calls.get(), 1);
         }
 
-        // Phase `exhaustive_query_limits_legacy_provider_defaults`.
+        // Phase `exhaustive_query_pages_a_default_provider_to_its_end`: a
+        // provider on the default `query_page` with more rows than one page
+        // holds is listed whole, and the listing says it is complete.
         {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
@@ -2266,14 +2314,16 @@ mod tests {
                     .collect(),
                 max_score: None,
             }));
-            let rows = legacy.query_exhaustive(&args);
+            let (rows, completion) = legacy.query_catalogue(&args, false);
             assert!(rows.iter().any(|row| row.id == "legacy-0"));
+            assert!(rows.iter().any(|row| row.id == "legacy-59"));
             assert_eq!(
                 rows.iter()
                     .filter(|row| row.provider_id == "legacy")
                     .count(),
-                48
+                60
             );
+            assert!(completion.complete, "{completion:?}");
         }
     }
 
@@ -2336,6 +2386,10 @@ mod tests {
         fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
             Vec::new()
         }
+        fn pages_itself(&self) -> bool {
+            true
+        }
+
         fn query_page(
             &self,
             _ctx: SearchContext<'_>,

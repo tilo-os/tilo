@@ -135,7 +135,6 @@ release = ["sha-{commit}"]               # tags a signed release pushes; {versio
 
 [product.context]                        # optional: a step that prepares the build context
 run = "bash tools/ci/publish/web-entry-context.sh {dir}/context /target/publish/web-desktop/bundle"
-inputs = ["crates/browser/tilo-browser-runtime/container/**"]
 needs = ["web-desktop-bundle"]           # checks whose outputs the context takes
 outputs = ["{dir}/context/**"]
 
@@ -153,7 +152,7 @@ Tags may name `{commit}`, `{version}` (on `v<version>` tags), `{rust}` (the chan
 `rust-toolchain.toml` pins) and `{fingerprint}` (the published directory's `fingerprint` file). A
 tag written `once:<tag>` never moves: where it exists already, nothing is published.
 
-A product with `[product.provenance]` (`run`, `inputs`, `outputs`) gets a `provenance-<name>`
+A product with `[product.provenance]` (`run`, `outputs`) gets a `provenance-<name>`
 check, no secrets, that writes `provenance.json` beside the index (or each image): the SLSA
 predicate, naming the image's digest as `expectedReleaseDigest` and the commit as `{commit}`.
 `sign-<name>` then also signs it as an in-toto attestation for that digest (`oci-attest.sh`,
@@ -165,10 +164,9 @@ check on main is `sign-dev-<name>`.
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
-field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `requirement`,
-`timeout_secs`, `needs`, `privileged`, `cargo_packages`, …) goes to the check as written; the
-generator adds the publishing scripts to `inputs`, `arch=<arch>` to `requires` and `default =
-false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
+field of `[product.context]` and `[product.build]` (`requires`, `requirement`, `timeout_secs`,
+`needs`, `isolation`, …) goes to the check as written; the generator adds `arch=<arch>` to
+`requires` and `default = false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
 publish from a working tree by mistake.
 
 A release whose image differs from the one the build tested names a step that derives it,
@@ -251,7 +249,7 @@ throwaway key and publishing an OCI layout in the step.
 ## Without t
 
 `tools/ci/run-checks.py` runs t.toml's checks on one machine with python3, git and a local
-podman: the named checks and everything they need, each in its image with its setup, env and
+podman: the named checks and everything they need, each in its image with its env and
 `isolation`, in dependency order, with one shared `/target`; a check that passed with the same
 key is kept. It runs a committed checkout (its `HEAD`), so a builder runs a publishing chain in
 one command, for example main's dev image up to its gate and the model runtimes' uploads:
@@ -265,7 +263,10 @@ Secrets come from its environment, named with `--secret`. Of the identity tokens
 registry.tilo.so's has a stand-in: `REGISTRY_TOKEN`, a Forgejo token that may push to this
 repository, which the registry takes from its owner (lib.sh `registry_login`). Signing needs
 t's identity token, so a check that signs runs on t; where its outputs were made another way,
-`--given CHECK` takes it as passed.
+`--given CHECK` takes it as passed. A micro-VM step runs in a privileged container on the
+machine's own kernel, so os-dev-disk-<arch>, which installs onto a loop-mounted btrfs disk,
+needs a VM: tools/ci/builder-vm-guest.sh `disk` installs an image layout the same way in a worker
+VM booted from main's published dev disk.
 
 ## Mirrored images
 
@@ -518,9 +519,10 @@ ring compiles with plain `clang` whatever it is told, so `tools/ci/windows/build
 building but not redistribute them, so they are not in the builder image, which anyone can
 pull: `build/windows-sdk-<arch>` downloads them into t's store, which only t's nodes read.
 Inno Setup's license allows using and redistributing it, commercially too (its authors ask
-commercial users to buy a license, which is a request, not a condition). Fedora builds Wine for
-x86 only, so everything that runs Windows programs (packaging both arches, the Wine checks) runs
-on x86_64 nodes.
+commercial users to buy a license, which is a request, not a condition). Wine runs x86
+programs, so only the x86_64 builder has it (built from source with a patch,
+`os/external-assets/wine/README.md`), and everything that runs Windows programs (packaging
+both arches, the Wine checks) runs on x86_64 nodes.
 
 **Signing** needs these secrets, on `tag:imager-v*` and for `release` nodes only:
 

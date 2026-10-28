@@ -1,257 +1,278 @@
 # One workspace
 
-A workspace is one thing everywhere: on the native desktop, on a workspace
-host, in the standalone runtime and in the browser. It has three parts, and
-all three live in one room:
+A workspace is the one unit of collaboration. It is the same thing on the
+native desktop, on a workspace host, in the standalone runtime and in the
+browser. There is no second unit beside or under it: no room, no personal
+space, no continuity lane.
+
+A workspace has three parts:
 
 1. **Layout**: its strips, the window groups on them and the apps open in
    them.
-2. **People**: its collaborators, their roles and grants, how someone is
-   invited and admitted, and who may hold its channel keys.
-3. **State and history**: the records its apps keep, its tasks, receipts and
+2. **People**: its members, their roles and grants, and how someone is
+   invited and admitted.
+3. **State and history**: the resources its apps keep, its tasks and
    shortcuts, and the history of all of these.
 
-This page is the model and the plan for getting the code to match it. The
-reasoning behind rooms and records is in [`rooms.md`](rooms.md), what is
-checked on admission and why in [`collaboration.md`](collaboration.md).
+A person has as many workspaces as they like, and every one of them is on
+every one of their devices. None of them is special. A new workspace starts
+empty.
 
-## The model
+## Members and devices
 
-**A workspace is a room.** `tilo_desktop_model::Workspace` is the type and
-`Workspace::room` its identity: a workspace that exists is a room that
-exists, including a person's own. Nothing else names a workspace across
-devices.
+**A member is a person's identity**: a certified human root
+([`collaboration.md`](collaboration.md), "Identity"). Membership, roles,
+grants and history name members, never devices.
 
-**A workspace's room never changes.** It is given when the workspace is made
-(`Workspace::new` and `Workspace::create` mint one, `Workspace::in_room` takes
-the room created or joined) and read with `Workspace::room`; nothing can set
-it. A new workspace's local id is its room's own (`WorkspaceId::of_room`, the
-transport shard Activity, the relay and custody derive), the same on every
-device; a workspace stored before keeps its id, and an id a workspace no
-longer carries resolves through the device's aliases
-(`WorkspaceTree::workspace_aliases`). Action ids name the room
-(`workspace.select.<room>`); the older `workspace.select.<number>` resolves
-through the same aliases.
+**A member has devices.** Each device has its own key, certified by the root;
+the device key is its iroh `EndpointId`. Pairing brings the identity to a new
+device; any of the person's devices can pair another, and the devices that hold
+the identity key approve it. Revocations travel in the same hellos as
+certificates and win over them. Another person's device is never admitted
+through pairing; it comes in through an invitation to a workspace, as that
+person's device.
 
-**The rooms a device holds are its workspace list.** The native owner's
-record (`native_authority`: installed replicas and joins in flight) and, until
-the shell's own engine goes, its rooms define which workspaces exist;
-`desktop.workspaces` adds only the device's presentation. A join knows the
-room it joins before it talks to the host (the door's and every invitation's
-grant names it), so the workspace is made for that room at once and says
-Joining… until the replica installs (`WorkspaceTree::join_native_room`); a
-failed join keeps it, saying why, with Join again. Deleting or leaving a
-host's room takes the workspace and the replica off together
-(`native_workspace_owner::release_workspace_room`). Moving a workspace to the
-person's home relay keeps its room: the relay takes over governing the same
-room. A state file from before is brought to this on load
-(`WorkspaceTree::bind_workspaces_to_rooms`), nothing deleted and no id
-changed. A workspace can be archived on a device: kept whole with its
-room, off that device's switcher and desktop, listed in workspace settings
-to restore or delete (`WorkspaceTree::archived_workspaces`). Archiving is the
-device's presentation, never the room's; the migration archives what nobody
-showed there (a room held with no workspace, a placeholder that holds files).
+**Each device has a role in each workspace it holds:**
 
-**A room is one admitted document plus the records it references.** The room
-document (schema: `tilo_desktop_model::projection`) carries:
+- **Participant**: it holds the workspace's keys, reads and writes its state,
+  and can do work in it.
+- **Store**: it holds the workspace's encrypted data and serves it, and can
+  read none of it.
 
-| Part | Keys | Who writes |
-|---|---|---|
-| Layout | `contents` (strips, groups, tabs), `contents_owners_v1`, `desktop_counter_v1` | each device its own namespace |
-| People | `owner`, `members`, `members_joined_v1`, `grants`, `sandbox`, `peer_identities_v1`, `invitation_receipts_v1`, `media_policy_v1`, bots and delegates | the governor |
-| State | `records` (the record index), `tasks_v1`, `effect_receipts_v1`, `automations_v1`, `schedule_claims_v1`, `presets_v1`, `name` | members, under the room's grants |
-| Custody | checkpoint coverage, durable receipts, import proposals | the governor |
-| Sharing scope | `layout_v1` (`shared` or `personal`) | the governor |
+One device can be a participant in some workspaces and a store for others.
+The two roles add up: a workspace can have any number of each.
 
-Each record is its own document on its own `(app, room, record)` route
-beside the room document, because an Automerge change graph cannot be served
-in part ([`rooms.md`](rooms.md), "What it costs").
+**Each device decides how much it wants to do.** A server may want to store
+and sync every resource and file of every workspace it holds. A home server
+or workstation may also take its person's work: run actions on their behalf,
+answer search, run agents. A laptop or phone hydrates on demand. What a device
+offers depends on the device itself (power, battery, load, capacity,
+availability) and changes as those change. When several devices offer the
+same work, placement picks among the eligible ones by operator priority, then
+power (external, charging, unknown, battery), then load as a fraction of
+capacity, then latency, and finally the device key, so equal candidates
+always resolve alike; a passed-over device carries its reason.
 
-What one device decided for itself stays out of the room: which strip and
-group are focused, widths, maximized groups, outputs, the paths of local
-files, which windows are legacy windows hosted here. That is the device's
-desktop (`DesktopTree` plus the shell's local fields), never a second copy of
-the workspace.
+A host is not a different kind of node. "Workspace hosting" is a device with
+a large appetite, usually always on. Anyone can run it, with the same
+software and the same protocol as every other device.
 
-**Layout across devices.** Each device, member or host writes only its own
-namespace of `contents`, which the governor registers in
-`contents_owners_v1` when it admits the device; a member publishes its own
-strips and windows into the room, the governor does not commit them on its
-behalf. Rearranging a window another device owns is a request to that
-owner (`tilo_desktop_model::commands::DesktopCommand`), never a write into
-its namespace. Such a request is room state like any other: the host
-retains it while the owner is offline, the owner applies each request once
-when it next holds the room, and it records which it applied in its own
-namespace so a restart neither drops nor repeats one. A window someone moved
-therefore stays where they put it instead of snapping back when its owner
-returns. Following someone (focus, scroll position) is presence, not room
-state.
+## Transport
 
-**Sharing scope is room policy.** The room's governance says whether it
-shares its members' layout (`tilo_desktop_model::projection::RoomLayout`).
-In a *shared* room (the default, an invite-only room's) layout crosses
-devices as above. In a *personal* room each member's strips and windows stay
-on their device; only its records and its people are shared. Its governor
-admits no member's change that puts anything into `contents` (a member may
-only take its own out), the relay's doors refuse members' layout writes, and
-devices send none and mirror none. A room admitted through a public door (a
-community site's persistent room, `tilo-relay room --layout`, personal
-unless its host says otherwise) or with open admission (listed in a public
-directory, unless its governor chose) is personal. Windows of host or
-unconfined programs (a terminal, any Wayland or X client) are shared like
-every other window, by the room's scope. They have no resources to render
-natively, so they cross as hosted on the device running them, and their
-content goes to the members viewing them as a live stream of just that
-window: a member's device that shows the tab tells its host so, to the host
-alone (`SurfaceViewRequest`), and the host encodes the window only while
-someone views it, damage-driven, with the hardware encoder where there is
-one, and sends it to that viewer alone over the authenticated direct route,
-end-to-end encrypted to its device. A member only watches; driving someone's
-window needs its owner's control grant. In a personal room nothing streams.
+Devices talk over iroh, and nothing else. A device reaches the other devices
+that hold a workspace, directly or through any device that stores it;
+store-and-forward is what a store does. There is no separate relay protocol,
+no second send path, and no gossip lane beside it.
 
-**Presence is per resource, layout is per person.** Inside a resource
-several people have open (a note, a chat channel) each sees the others'
-caret, selection, typing, pointer and who is in it: that is collaboration on
-the document, in shared and personal rooms alike. Under "That I'm here" (a
-public room's default) nothing else leaves the device: not which windows,
-tabs or apps someone has, their desktop pointer, whom they follow, what they
-say beside their pointer, or what the machine infers (an automatic status,
-idle or away from a quiet or locked screen). "Nothing" hides them
+## State
+
+**All state is a CRDT-backed resource.** That includes settings and
+preferences. An app's state is per (app, workspace): opening an app in a
+workspace opens that workspace's state of it, and an app opened in a new
+workspace starts empty. Within it an app keeps typed resources
+(`#[derive(Model)]`, [`resources.md`](resources.md)) with stable ids; a
+resource that outgrows one document is its own document, because an Automerge
+change graph cannot be served in part.
+
+**A resource exists once; workspaces reference it.** Bringing a resource into
+a workspace adds a reference and moves no bytes; edits through either
+workspace are edits to the one document. The reference grants access, and
+removing it stops future changes from flowing; it cannot un-share what a
+device already synced. "Duplicate here" is a different verb: it forks a new
+resource with a provenance link. Bringing something in is a search result:
+search lists resources from the person's other workspaces, labelled with
+where they live, and activating one brings it here.
+
+**A file is a resource whose identity is a path.** History, sharing and
+permissions have one implementation, and the file case is not privileged.
+
+## People
+
+Membership and permissions are workspace state, changed by actions like any
+other state and checked by the action policy
+([`permissions.md`](permissions.md)). A participant with the grant admits a
+member or a device and hands over the keys; there is no single device that
+owns the workspace's governance.
+
+**Late joiners get the full history.** A member or device added later reads
+all of the workspace's existing state and history. Content keys are separate
+from the keys of any one membership epoch; a joiner receives the past keys
+with its admission and loads older history on demand, without any other
+member being online. Removal stops future access; it cannot recall what was
+already shared.
+
+### Membership is a resource
+
+A workspace's members, their roles, their grants and the devices each member
+has in it are one resource of the workspace, `workspace.members`. Inviting,
+admitting, changing a role, granting, removing and leaving are its actions.
+Each is a signed op: its author's device key, certified by the author's root,
+signs it, and the op names the ops it was written on (its causal heads), as
+every op does.
+
+Every participant replays the resource and checks every op under the action
+policy against the membership **as the op's author saw it**: the state at the
+op's own heads, not the receiver's current state. An op its author was not
+granted at that point is kept, so replicas stay byte-identical, but has no
+effect. No device decides for the others; every participant reaches the same
+answer from the same ops.
+
+**Concurrent changes merge by one rule.** Ops that do not depend on each
+other are applied in a fixed order: the author's role first (owner, then
+administrator, then the rest), then the op id. Each op is checked at its place
+in that order, so a change that a concurrent, earlier-ordered op made
+unauthorised has no effect. Two administrators removing each other: the one
+ordered first wins, and the other's removal comes from someone no longer
+granted. A role change racing a removal of the same member: the removal is
+kept if it orders first, the role change is moot if it orders later.
+Concurrent edits that do not conflict (two people invited at once) both
+apply.
+
+**Admitting.** An invitation is an op naming the role it grants and, when
+narrowed, the person it is for. Redeeming it is the joiner's op, written on
+the invitation's ops and signed by the joiner's device; any participant that
+holds the invitation admits it, with no particular device needed online. A
+member's own further devices need no invitation: a device certified by a
+member's root is that member's device, and any participant admits it when it
+first asks. Which role the device takes in the workspace (participant or
+store) is the member's choice, recorded in the same resource.
+
+### Keys follow membership
+
+Content is sealed under content keys (`channel-crypto`), one per key epoch.
+The key epoch's group is an MLS group whose members are exactly the
+workspace's participant devices: a projection of `workspace.members`, never a
+second record of who belongs.
+
+- **Any participant commits.** When the membership resource admits a
+  participant device or removes one, any participant that sees the group
+  differ from the projection writes the MLS commit that brings it in line:
+  `Add` with a `Welcome` and the bundle of every past content key for an
+  admitted device, `Remove` and a fresh key epoch for a removed one. A
+  participant checks every commit it receives against the projection at the
+  commit's place and refuses one that adds or removes anyone the resource
+  does not.
+- **One commit per epoch.** MLS orders commits linearly. When two
+  participants commit on the same epoch, every device keeps the commit with
+  the lower hash; the other committer applies it and, if the group still
+  differs from the projection, commits again on top. Commits only enact what
+  the resource decided, so a lost race loses nothing.
+- **Removal does not wait for a commit.** From the op that removes a member,
+  every participant refuses that member's further ops, whatever key epoch
+  they are sealed under. The commit that rotates the key comes from the next
+  participant online, and protects content written from then on.
+- **Late joiners read everything.** The bundle in an admission carries the
+  key of every past epoch, sealed to the joiner's first epoch, so a joiner
+  reads the whole history locally. It grows with membership changes, never
+  with content.
+
+A store never enters the group and never holds a key. It keeps and forwards
+sealed ops, and refuses ones that are not signed by a member's device. To
+tell, it reads the one part of `workspace.members` that is not sealed: the
+device keys of the current members (no names, roles or grants), carried in
+the signed envelope of each membership op.
+
+## Layout
+
+**Layout across devices.** Each device writes only its own namespace of the
+workspace's `contents`. Rearranging a window another device owns is a request
+to that owner (`tilo_desktop_model::commands::DesktopCommand`), never a write
+into its namespace. The request is workspace state: it is kept while the
+owner is offline, applied once when the owner next holds the workspace, and
+recorded in the owner's namespace so a restart neither drops nor repeats it.
+Following someone (focus, scroll position) is presence, not state.
+
+What one device decided for itself stays on that device: which strip and group
+are focused, widths, maximized groups, outputs, local file paths. That is the
+device's desktop, never a second copy of the workspace.
+
+**Sharing a window.** A window of an outside program (a terminal, any Wayland
+or X client) keeps its state in its process, so its device streams that window
+alone to the members viewing it, end-to-end encrypted, only while someone
+views it. A Tilo app's window is a view of a resource the workspace already
+holds, so sharing it shares the resource and nothing is streamed: other
+members open the same resource in the same app. Driving someone else's window
+needs its owner's control grant.
+
+## Presence
+
+Presence is per resource, layout is per person. Inside a resource several
+people have open, each sees the others' caret, selection, typing, pointer and
+who is in it. Under "That I'm here" nothing else leaves the device: not which
+windows or apps someone has, their desktop pointer, whom they follow, or what
+the machine infers (an automatic status, idle or away). "Nothing" hides them
 everywhere, inside resources too.
 
-**History nests.** A workspace's history is the room document's history
-(layout, people, tasks, receipts) as the outer level and each record's own
-history as the inner one ([`rooms.md`](rooms.md), "History nests"). Undo,
-Activity and Replay read those two levels; nothing keeps a third log of the
-same changes.
+## History
 
-**One engine decides what a room is.** `tilo_peer_state::StatePeer` admits
-every change to a room, on every host, in one of two roles:
+A workspace's history is two levels: the outer level is actions on the
+workspace itself (references added and removed, members joined and left,
+grants changed, layout), the inner level is each resource's own history. The
+workspace timeline shows a resource's edits as roll-ups ("Alice made 12
+changes to Chapter 3") that expand into the resource's history, and filters
+mean the same at both levels. Undo, Activity and Replay read those two levels;
+nothing keeps a third log of the same changes.
 
-- **Governor**: the device or host that holds the room's governance
-  (`StatePeer::new`). Today a workspace host (`tilo-relay`), the room
-  service, the standalone runtime for its profile room.
-- **Member**: a device that holds a replica (`StatePeer::joined`, kept by
-  `tilo_joined_room::NativeWorkspaceOwner`).
+## The shell
 
-The engine is transport agnostic: a carrier hands it `(origin, message)` and
-sends what it returns. Carriers are the relay session (Iroh or HTTPS), HTTPS
-delivery to the browser and, for direct peers, gossip.
-
-Invitations are `tilo-workspace-join` invitations, redeemed into the room by
-`governance::admit_invited_member`. MLS stays in `channel-crypto` behind the
-action broker: the room decides who may hold a channel's key
-(`StatePeer::governed_access`), the broker keeps the group.
-
-**One projection.** Every host reads an admitted room into a `Workspace`
-through the same functions, and the browser, the relay and the shell write
-layout through the same `contents` schema.
-
-## Where the code is today
-
-Shared already: the types (the shell's `WorkspaceTree` wraps the desktop
-model's `DesktopTree` rather than copying it), room admission (every
-receiver runs `tilo_peer_state::room::admit_room_changes`, and the
-retained-proof verifier its `check_candidate`), the reading of an admitted
-room into its workspace (`tilo_peer_state::room::adopt_room`, on the shell's
-two paths and in the runtime), the rule for which document frame starts a
-retained baseline (`collab_types::DocumentFrame::retention`), and one
-invitation format besides the shell's own. What is still doubled:
-
-1. **Two engines in the shell.** Rooms a host governs go through
-   `NativeWorkspaceOwner` (`WorkspaceTree::requires_native_owner`). Every
-   other room (one this device minted, one joined with a direct invite, a
-   person's own and continuation rooms) goes through the shell's own engine:
-   `room_docs`, `room_authority`, `sync_room_doc`, `apply_room_changes`,
-   `name_peer`, `certify_peer_identity`, `redeem_invited_identity`,
-   `peer_room_allows`, `network/replica.rs`, the `PeerInviteToken` format in
-   `network/invite.rs` and the hello store in `network/identity.rs`, about
-   6,000 lines plus their tests. It re-implements what `StatePeer` does:
-   identity rows (`GovernedPeerIdentity` beside `GovernedIdentity`),
-   redemption (`redeem_invited_identity` beside `admit_invited_member`),
-   membership writes, media binding (`media_authority_admitted` beside
-   `validate_media_bindings`) and sender authorization (`peer_room_allows`
-   beside `StatePeer::permissions`).
-2. **Three layout schemas.** The room document's `contents` (native), the
-   `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
-   browser, relay, agent participant) and the device's whole-desktop
-   document (`desktop_doc.rs`). In the browser one room holds many
-   workspaces, so `Workspace::room` is not the room it replicates in.
-
-## Migration
-
-Each step lands on `main` on its own, green, and deletes the copy it
-replaces. Pre-alpha: old paths are removed, not kept beside the new ones;
-state of an older shape is refused and fetched again, not migrated.
-
-1. **The shell governs its own rooms with `StatePeer`.** The pieces are
-   in place: the engine follows a revoked governor's root-named successor
-   (`StatePeer::follow_successions`) and the device's owner keeps the
-   successions with the room; the owner holds rooms this device governs
-   beside joined ones (`NativeWorkspaceOwner::create_governed`, seeded by
-   `tilo_peer_state::workspace_seed`, no host custody of its writes); and
-   the shell admits the windows it opens into such a room under its own
-   registered namespace. What remains is creating new workspaces that way,
-   then moving existing ones, after which `room_docs`, `sync_room_doc`,
-   `apply_room_changes`, `try_sync_room_doc` and `ContentOwnership::Salted`
-   go. Doing so before steps 2 and 3 would cost two things the shell's own
-   engine does today: a person's other devices hold their own workspaces as
-   co-governors over gossip, and a room is shared without a home relay with
-   a direct invitation. So new workspaces move once a governed room can be
-   carried to the person's other devices and to an invited person.
-2. **Direct peers on the same engine.** Gossip becomes a carrier for
-   `StatePeer` (`SyncResp` and `AppDocument` from an authenticated device,
-   like a relay delta). A direct invitation is a workspace-join invitation
-   redeemed by the governing device. `network/invite.rs`
-   (`PeerInviteToken`), `redeem_invited_identity`, `name_peer`,
-   `certify_peer_identity`, `GovernedPeerIdentity`, `peer_room_allows`,
-   `room_gate.rs`'s legacy table and `network/replica.rs` go. (The shell's
-   identity rows are persisted and compared byte for byte by every peer, so
-   they change with this step rather than on their own.)
-3. **One governor per room, also for a person's own rooms.** A person's own
-   and continuation rooms are governed by the device that made them (or the
-   person's home relay once moved there); their other devices are members
-   with the owner's role and change governance through governor actions,
-   as members of host rooms do. `RoomAuthority`, `room_authority`,
-   `adopt_governed_peers` and the continuation pins go.
-4. **One layout schema.** The browser, the relay's operator strips and the
-   agent participant write `contents`; `shared_record.rs` and the relay's
-   `desktop_guard` go (the topology registry decides who moves what). A new
-   workspace in the browser is a new room.
-5. **Requests to rearrange another device's windows are retained room
-   state** applied once by their owner, with the applied ids in its
-   namespace. Today a device may move and close only the windows it
-   opened; this lets a person arrange the windows of their other devices,
-   offline ones included.
-6. **The device desktop holds only what is the device's.** `desktop_doc`
-   keeps the workspace list and presentation; Activity and Replay read
-   the room documents' history for everything else.
-
-Steps 2 and 3 come before workspaces move onto the engine (the rest of
-step 1); 4, 5 and 6 are independent of them. When 3 has landed,
-`tilo-peer-state` is the room core and `tilo-joined-room` its carriers;
-renaming them is then mechanical and optional.
+The shell's surfaces (launcher, top bar, overview, quick settings,
+notifications, onboarding, sheets and dialogs) are apps on exactly the same
+toolkit and resource/action/view model as every other app. The workspace,
+its layout and the shell's own state are resources like any other. The
+compositor stays thin: windows, input, outputs and scanout. Rendering
+capabilities the shell needs (retained layers, damage tracking, interactive
+animation) belong in the toolkit, so every app has them.
 
 ## Records that outgrow a snapshot
 
 Chat keeps its messages in a chain of `ChatPart` records
-(`tilo_app::framework::chain`), because one record outgrows what a
-snapshot can carry: the relay folds a channel into one snapshot only up to
-16 MiB, and a fold always carries the record's whole history. The chain is
-an app-level segmentation, and the question is where it belongs.
+(`tilo_app::framework::chain`), because one record outgrows what a snapshot
+can carry: a snapshot folds a channel only up to 16 MiB, and a fold always
+carries the record's whole history.
 
-It stays in the SDK, as one resource. Segmenting one record's history in
-the storage layer would need what Automerge does not have (a snapshot
-without the history before it) and a compaction checkpoint every peer
-agrees on, and it would not help: a chat's current state grows with it, so
-a newcomer would still load all of it. Every layer below (the engine's
-per-route documents, coverage, the relay's folds, sealed compaction, the
-transfer limits) already treats a record as the unit, and serves whole
-records on demand.
+The chain stays in the SDK, as one resource. Segmenting one record's history
+in the storage layer would need what Automerge does not have (a snapshot
+without the history before it) and a compaction checkpoint every device
+agrees on, and it would not help: a chat's current state grows with it, so a
+newcomer would still load all of it. Every layer below already treats a
+record as the unit and serves whole records on demand.
 
-So the chain's consumers see one resource and never parts:
-`Chain::publish` already presents every held part as one resource, and the
-framework, not the app, holds an earlier part when a reader scrolls or
-pages back to it. Headless readers (bots, moderation, the Discord bridge,
-agents) read and page the chain through that resource instead of
-enumerating parts themselves.
+So the chain's consumers see one resource and never parts: `Chain::publish`
+presents every held part as one resource, and the framework, not the app,
+holds an earlier part when a reader scrolls back to it. Headless readers
+(bots, moderation, the Discord bridge, agents) read and page the chain through
+that resource instead of enumerating parts themselves.
+
+## Where the code differs
+
+The code still carries models this page does not have. Each goes, not beside
+the model but instead of it:
+
+- **Rooms.** `RoomId` and the room/workspace split, `(app, room, record)`
+  routes, per-room app directories and the package document keyed by room.
+  The workspace is the key.
+- **Governance by one device.** The governor, the pinned governance writer,
+  the separate governance document with its receipts, custody and succession,
+  and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
+  workspace state changed by actions.
+- **Stewards.** A device that alone admits devices to a channel, steward
+  takeover and genesis epochs, in the broker, the host and the browser. Any
+  participant with the grant admits.
+- **Per-person spaces.** The own room, the person room and the personal
+  continuity shard, each derived from the root key under its own domain
+  string, and the gossip-only personal fabric lane.
+- **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
+  Shared scopes, the settings registry and `settings.json`. Settings are
+  resources.
+- **Engines outside the one peer.** The shell's own workspace engine and
+  admission caller, the separately written browser peer with its own layout
+  schema, and the device-replica wrappers in the shell and the standalone
+  runtime.
+- **Two send paths.** Every message sent both to iroh-gossip and to host
+  sessions. One iroh path.
+- **Hosts as a certificate class.** `can_act_as_host` and the other host
+  flags, a host's second identity, and the parallel ideas of where work runs.
+  Role and appetite are per device and per workspace.
+- **A second platform in the shell.** Its own widget host, frame pipeline,
+  persistence, collaboration, history, undo and action authority. The shell
+  uses the app stack.

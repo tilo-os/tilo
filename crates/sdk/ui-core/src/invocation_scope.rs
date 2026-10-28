@@ -5,75 +5,17 @@ pub use runtime_collab::approved_checks::{
 };
 use tilo_sort::CompactSort as _;
 
+#[cfg(feature = "broker-transport")]
+pub use ::collaboration::invocation_scope::ExternalModerationReply;
+pub use ::collaboration::invocation_scope::{
+    InvokerScope, WriteAttributionReceipt, current_invoker, current_participant,
+    delivered_invocation,
+};
+
 /// A host moderation receipt, suitable for an existing action worker.
 pub type ExternalModerationFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
 >;
-
-#[cfg(feature = "broker-transport")]
-type ExternalModerationSender =
-    tokio::sync::oneshot::Sender<Result<registry_types::ModerationCase, String>>;
-
-/// Cloneable one-shot response custody for the collaboration request queue.
-#[cfg(feature = "broker-transport")]
-#[derive(Clone, Debug)]
-pub struct ExternalModerationReply(
-    std::sync::Arc<std::sync::Mutex<Option<ExternalModerationSender>>>,
-);
-#[cfg(feature = "broker-transport")]
-impl ExternalModerationReply {
-    pub(crate) fn is_closed(&self) -> bool {
-        self.0.lock().map_or(true, |reply| {
-            reply
-                .as_ref()
-                .is_none_or(tokio::sync::oneshot::Sender::is_closed)
-        })
-    }
-    pub(crate) fn send(&self, result: Result<registry_types::ModerationCase, String>) {
-        if let Ok(mut reply) = self.0.lock()
-            && let Some(reply) = reply.take()
-        {
-            let _ = reply.send(result);
-        }
-    }
-    pub(crate) fn new() -> (
-        Self,
-        tokio::sync::oneshot::Receiver<Result<registry_types::ModerationCase, String>>,
-    ) {
-        let (send, receive) = tokio::sync::oneshot::channel();
-        (
-            Self(std::sync::Arc::new(std::sync::Mutex::new(Some(send)))),
-            receive,
-        )
-    }
-}
-
-/// The host's answer to naming the paths an invocation is about to write
-/// ([`ResourceInvocationScope::attribute_writes`]). Wait for it before
-/// writing, so the versions those writes make record who caused them.
-#[derive(Debug)]
-pub struct WriteAttributionReceipt(std::sync::mpsc::Receiver<Result<(), String>>);
-
-impl WriteAttributionReceipt {
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker lane answers a write attribution")
-    )]
-    pub(crate) fn new(receive: std::sync::mpsc::Receiver<Result<(), String>>) -> Self {
-        Self(receive)
-    }
-
-    /// Wait at most `timeout` for the host's answer. Whatever it is, the
-    /// writes go ahead: a refusal or no answer leaves them the person's.
-    ///
-    /// # Errors
-    /// Returns the host's refusal, or that it did not answer in time.
-    pub fn wait(self, timeout: std::time::Duration) -> Result<(), String> {
-        self.0
-            .recv_timeout(timeout)
-            .map_err(|_| "the host did not answer the write attribution".to_owned())?
-    }
-}
 
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
@@ -158,49 +100,6 @@ impl PublishedInvocationRequest {
             Some(participant) => invoker.with_participant(participant.clone()),
             None => invoker,
         }
-    }
-}
-
-thread_local! {
-    /// Each scope's invoker, with the broker invocation it was delivered
-    /// under when it was one.
-    static CURRENT_INVOKERS: std::cell::RefCell<
-        Vec<(tilo_actions::ActionInvoker, Option<tilo_actions::InvocationId>)>,
-    > = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// The invoker whose resource tree a delivered invocation resolves against,
-/// for the duration of its resolution and dispatch on this thread.
-///
-/// Resource collection for resolution
-/// ([`crate::resources::PublishesResources::resources_for`]) and view operations read it,
-/// so an invocation is resolved against the invoker's own view, rebuilt at
-/// invoke time, never against a published snapshot. Scopes nest; dropping
-/// the guard restores the enclosing invoker.
-#[must_use = "the invoker applies only while the guard is alive"]
-pub struct InvokerScope(());
-impl InvokerScope {
-    pub fn enter(invoker: tilo_actions::ActionInvoker) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, None)));
-        Self(())
-    }
-
-    /// Enter the invoker of `invocation`, which the broker delivered: a
-    /// request the app makes for it meanwhile names it
-    /// ([`delivered_invocation`]).
-    pub fn delivered(
-        invoker: tilo_actions::ActionInvoker,
-        invocation: tilo_actions::InvocationId,
-    ) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, Some(invocation))));
-        Self(())
-    }
-}
-impl Drop for InvokerScope {
-    fn drop(&mut self) {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| {
-            invokers.pop();
-        });
     }
 }
 
@@ -340,29 +239,6 @@ pub(crate) fn check_continuation(
         }),
         _ => Ok(()),
     }
-}
-
-/// The invoker of the delivered invocation being resolved on this thread.
-/// `None` outside any delivered invocation (the local person acting).
-pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().map(|(invoker, _)| invoker.clone()))
-}
-
-/// The broker invocation being dispatched on this thread, when the broker
-/// delivered it: what a request the app makes to the shell for it (opening
-/// another app) names, so the shell admits it as that invocation's caller.
-/// `None` for the local person acting, whose own press is the proof.
-pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|(_, invocation)| *invocation))
-}
-
-/// The participant whose view the current resolution builds, if any.
-pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
-    CURRENT_INVOKERS.with_borrow(|invokers| {
-        invokers
-            .last()
-            .and_then(|(invoker, _)| invoker.participant.clone())
-    })
 }
 
 /// Whether `actor` may invoke the View operation `contract` here. The local
@@ -1270,6 +1146,18 @@ impl std::fmt::Debug for DocumentAuthorization {
         f.write_str("DocumentAuthorization(..)")
     }
 }
+impl ::collaboration::DocumentCustody for DocumentAuthorization {
+    fn check(
+        &self,
+        route: &RouteSpec,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), String> {
+        DocumentAuthorization::check(self, route, mutation)
+    }
+    fn retained_bytes(&self) -> Option<usize> {
+        DocumentAuthorization::retained_bytes(self)
+    }
+}
 impl DocumentAuthorization {
     /// Inert captured frontiers for the concrete bounded body/range evaluator.
     /// These are not a substitute for its actual parsed causal-coverage proof.
@@ -1363,20 +1251,21 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    #[cfg(feature = "broker-transport")]
     pub(crate) fn retained_bytes(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<DocumentAuthorizationInner>();
         bytes = bytes
             .checked_add(self.0.from.capacity().checked_mul(32)?)?
             .checked_add(self.0.to.capacity().checked_mul(32)?)?;
-        bytes = bytes
-            .checked_add(self.0.exported.len().checked_mul(64)?)?
-            .checked_add(
+        bytes = bytes.checked_add(self.0.exported.len().checked_mul(64)?)?;
+        #[cfg(feature = "broker-transport")]
+        {
+            bytes = bytes.checked_add(
                 self.0
                     .acknowledgements
                     .capacity()
                     .checked_mul(std::mem::size_of::<Arc<AtomicBool>>())?,
             )?;
+        }
         for group in &self.0.contributions {
             bytes = bytes
                 .checked_add(std::mem::size_of::<Contribution>())?

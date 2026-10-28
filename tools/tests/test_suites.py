@@ -73,8 +73,8 @@ class SelectTests(unittest.TestCase):
              "scripts/tests/test_headless_error_handling.py"),
             ("scripts/vm-acceptance/acceptance/core.py",
              "scripts/vm-acceptance/tests/test_error_paths.py"),
-            ("scripts/perf/resource_bench.py",
-             "scripts/perf/resource_bench_test.py"),
+            ("scripts/perf/render_bench.py",
+             "scripts/perf/render_bench_test.py"),
         ):
             with self.subTest(changed=changed):
                 self.assertIn(expected, suites.select(manifest, [changed]))

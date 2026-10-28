@@ -3,13 +3,13 @@
 //! device after asking.
 
 use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
-use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Toggle, Widget};
+use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
     DeviceMeshEffect, DeviceMeshModel, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus,
     last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
     replication_description, replication_shown, revoke_shown, role_shown, runtime_status_tone,
-    shows_advanced_services, workspace_key,
+    shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -294,35 +294,12 @@ impl DeviceMeshModel {
             ));
         }
         out.push(self.files_row());
-        for workspace in &self.discovered_workspaces {
-            let key = workspace_key(workspace.id);
-            let selected = self
-                .config
-                .workspaces
-                .iter()
-                .any(|binding| binding.id == workspace.id);
-            let id = workspace.id;
-            out.push(setting_row_described(
-                &workspace.name,
-                &t("mesh-keep-workspace"),
-                Box::new(self.cx.bind(
-                    Toggle::from_state(&ui::LocalState::new(selected)).with_id(&key),
-                    effect(DeviceMeshEffect::SET_SYNCED_WORKSPACE).map(move |on: bool| (id, on)),
-                )),
-            ));
-        }
         if shows_advanced_services(self.config.device_role) {
             out.extend(self.service_rows());
-        }
-        if self.discovered_workspaces.is_empty() {
-            out.push(note(&t("mesh-workspaces-empty")));
         }
         out.push(note(&t(match self.config.device_role {
             DeviceRole::Interactive => "mesh-role-hint-personal",
             DeviceRole::Hybrid => "mesh-role-hint-hybrid",
-            DeviceRole::AlwaysOnServer if self.config.workspaces.is_empty() => {
-                "mesh-role-hint-server-empty"
-            }
             DeviceRole::AlwaysOnServer
                 if self.common_replication() == ReplicationIntent::FullWorkspace =>
             {
@@ -336,7 +313,7 @@ impl DeviceMeshModel {
     /// What this device keeps of the workspaces it syncs.
     fn files_row(&self) -> crate::widgets::Item {
         let files = t("mesh-files");
-        if self.config.workspaces.is_empty() {
+        if !self.config.device_role.can_serve() {
             return value_row(&files, &t("mesh-download-opened"));
         }
         let repl_shown = replication_shown(&self.common_replication());

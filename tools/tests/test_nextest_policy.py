@@ -24,10 +24,17 @@ def native_4k_tests() -> set[str]:
     return names
 
 
+PEER_SYNC_TESTS = SHELL / "shell" / "network" / "one_host_tests"
+
+
 def peer_sync_budget_tests() -> set[str]:
-    source = (SHELL.parent / "tests" / "peer_sync_test.rs").read_text(encoding="utf-8")
-    pattern = re.compile(r"^\s*async\s+fn\s+([a-zA-Z0-9_]+_budget)\s*\(", re.MULTILINE)
-    return {f"peer_sync_test::{name}" for name in pattern.findall(source)}
+    """Latency budgets of an edit crossing devices, as the shell's unit-test paths."""
+    names: set[str] = set()
+    pattern = re.compile(r"^\s*(?:async\s+)?fn\s+([a-zA-Z0-9_]+_budget)\s*\(", re.MULTILINE)
+    for source in sorted(PEER_SYNC_TESTS.rglob("*.rs")):
+        module = "::".join(source.relative_to(SHELL).with_suffix("").parts)
+        names.update(f"{module}::{name}" for name in pattern.findall(source.read_text(encoding="utf-8")))
+    return names
 
 
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:
@@ -127,6 +134,32 @@ class NextestPolicyTests(unittest.TestCase):
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
         self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "MICRO_VM_FILTER"])
+
+    def test_every_composed_filter_is_defined_by_the_shared_file(self) -> None:
+        # A removed key must not leave a `$..._FILTER` reference behind:
+        # nextest parses the composed expression, and an empty `not ()` is a
+        # missing expression (exit 94) before any test is selected.
+        defined = {
+            f"{key.upper()}_FILTER"
+            for key in tomllib.loads(FILTERS.read_text(encoding="utf-8"))
+        }
+        consumers = [
+            REPO / ".forgejo" / "workflows" / "check.yml",
+            REPO / ".forgejo" / "workflows" / "ci-nightly.yml",
+            REPO / "tools" / "ci" / "local-affected.sh",
+        ]
+        referenced: set[str] = set()
+        for path in consumers:
+            text = path.read_text(encoding="utf-8")
+            # A consumer may also define a filter for one step of its own.
+            defined.update(re.findall(r"(?m)^\s*([A-Z][A-Z0-9_]*_FILTER)\s*[:=]", text))
+            referenced.update(re.findall(r"\b([A-Z][A-Z0-9_]*_FILTER)\b", text))
+        self.assertEqual(referenced - defined, set())
+        # An empty term is what nextest rejects, so no consumer may compose
+        # one even if every name it mentions is defined.
+        for path in consumers:
+            with self.subTest(consumer=path.name):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"not\s*\(\s*\)")
 
 if __name__ == "__main__":
     unittest.main()

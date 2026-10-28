@@ -14,7 +14,8 @@ use super::{
     LINUX_FENCE_WAIT, LINUX_FRAME_BUDGET, LINUX_MAP_CALLBACK_WAIT, MAX_VELLO_BINS, PIPELINE_WARMUP,
     RESILIENT_RENDER_ATTEMPTS, RetainedGpuTarget, SceneDamage, VELLO_BIN_PIXELS, VelloDrmBridge,
 };
-use crate::shell::render::{strip_layers, warmup};
+use crate::shell::render::strip_layers;
+use tilo_output_passes::warmup;
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
 static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =

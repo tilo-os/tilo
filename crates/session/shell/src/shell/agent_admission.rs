@@ -271,11 +271,21 @@ struct Waiting {
     decide: tokio::sync::oneshot::Sender<Consent>,
 }
 
+/// A connection the person admitted, waiting for its room's governor to
+/// commit the agent's membership: the room's document makes it a member,
+/// not the answer, so it is served once the workspace here says so.
+struct Admitting {
+    room: String,
+    agent: String,
+    decide: tokio::sync::oneshot::Sender<Consent>,
+}
+
 /// The compositor thread's half of the door: it asks the person, adds the
 /// agent they choose and remembers what they said to remember.
 pub struct AgentDoorConsent {
     requests: std::sync::mpsc::Receiver<DoorRequest>,
     waiting: Vec<Waiting>,
+    admitting: Vec<Admitting>,
     session: HashMap<BindingKey, String>,
     always: HashMap<BindingKey, String>,
     /// Where "Always" is kept: this account's private state, never the
@@ -308,6 +318,7 @@ pub fn channel(
         AgentDoorConsent {
             requests,
             waiting: Vec::new(),
+            admitting: Vec::new(),
             session: HashMap::new(),
             always,
             always_path,
@@ -349,9 +360,64 @@ impl AgentDoorConsent {
                     Consent::Refuse(t("agent-door-withdrawn"))
                 }
             };
-            let _ = waiting.decide.send(consent);
+            match consent {
+                Consent::Admit { room, agent } => self.admitting.push(Admitting {
+                    room,
+                    agent,
+                    decide: waiting.decide,
+                }),
+                refused @ Consent::Refuse(_) => {
+                    let _ = waiting.decide.send(refused);
+                }
+            }
         }
         self.waiting = still;
+        self.admit_members(chrome);
+    }
+
+    /// Let in each admitted client whose agent its room now has as a
+    /// member, and turn away one whose room's governor refused it or whose
+    /// workspace left this device.
+    fn admit_members(&mut self, chrome: &Chrome) {
+        let refused = std::mem::take(&mut chrome.borrow_mut().refused_agent_admissions);
+        if self.admitting.is_empty() {
+            return;
+        }
+        let now = tilo_clock::unix_now();
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let mut still = Vec::with_capacity(self.admitting.len());
+        for admitting in std::mem::take(&mut self.admitting) {
+            if admitting.decide.is_closed() {
+                continue;
+            }
+            let member = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room().to_string() == admitting.room)
+                .map(|workspace| workspace.agent_role_at(&admitting.agent, now).is_some());
+            let refusal = refused
+                .iter()
+                .find(|(room, agent, _)| room == &admitting.room && agent == &admitting.agent)
+                .map(|(_, _, reason)| reason.clone());
+            let consent = match (member, refusal) {
+                (None, _) => Consent::Refuse(t("agent-door-workspace-gone")),
+                (Some(true), _) => Consent::Admit {
+                    room: admitting.room,
+                    agent: admitting.agent,
+                },
+                (Some(false), Some(reason)) => Consent::Refuse(reason),
+                (Some(false), None) => {
+                    still.push(admitting);
+                    continue;
+                }
+            };
+            let _ = admitting.decide.send(consent);
+        }
+        drop(tree);
+        drop(state);
+        self.admitting = still;
     }
 
     fn remembered(&self, key: Option<&BindingKey>) -> Option<&String> {

@@ -236,10 +236,30 @@ the rows that carry it. It asks every running app at once, and an app that
 does not answer is named as not searched rather than failing the search; a
 search that no app answered fails and says so. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
-parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
+parameters when it is wanted. Results are text, with no structured copy beside them unless a program asks for one (below). Measured (the
 `mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
 JSON against 4,546 for the classic one, and a four-block Notes page reads as 71
 bytes of markdown against 370 for the structured `read` answer of the same page.
+
+A program (an agent's tilolang program, run for its task) reads and acts
+through the same tools, with two things a model does not need, both asked
+for in the call's `_meta`:
+
+- **One undo step per task step.** `{"so.tilo.mcp": {"step": "<name>"}}`
+  joins every call of this session naming the same step into one undo
+  step: all the invocations one program makes are taken back together, as
+  the task's. Without it each call is a step of its own (a `calls` batch
+  included). The gesture the changes record is derived from the session's
+  execution, its run and the name; a client never chooses it, and the app
+  rebinds it under the caller's group again, so a step can only ever group
+  the caller's own changes.
+- **A structured read.** `{"so.tilo.mcp": {"structured": true}}` on
+  `tilo_read` answers the same read typed, as `structuredContent` (the text
+  beside it is the same JSON): `path`, `kind`, `fields` (the app's answer,
+  typed as the app typed it), `children` (what the resource holds: `list`,
+  `name`, `item` and the `path` that reads or acts on it) and `cursor`, the
+  app's own next page, passed back as `cursor`. The markdown read is a
+  rendering of this answer, made by the same reader at the same cost.
 
 A client that parses directory rows (peer ids, `tilo_query`'s grouped pages)
 is served the **classic** tools, below, anywhere but the door.
@@ -626,45 +646,3 @@ Building or running this binary does not configure an MCP client, change an
 account, enable a cloud relay, or add remote federation. Assistant setup remains
 explicit. `TILO_RUNTIME_STANDALONE=1` is a deliberate test/diagnostic opt-out
 when no inherited Tilo connection exists; it is not the ordinary default.
-
-## Native acceptance proof
-
-Capture the host inputs, build the host from those inputs, then run the
-ordinary-launch proof in that order. Do not rebuild or edit the captured source
-between these commands:
-
-```sh
-python3 scripts/runtime-auto-attach-proof.py \
-  --capture-host-source-snapshot /absolute/path/to/host-build-source-hashes.json
-cargo build -p shell --bin tilo-runtime-mcp --no-default-features
-python3 scripts/runtime-auto-attach-proof.py \
-  --host-source-snapshot /absolute/path/to/host-build-source-hashes.json \
-  --output /absolute/path/to/new-evidence
-```
-
-The runner opens Writer, Files, and Photos with literal ordinary `cargo run`
-commands, waits for the first app to start the daemon, and only then opens an
-explicit `--connect` proxy. Calculator starts late through its own ordinary
-`cargo run`, demonstrating generic joining rather than a three-app allowlist.
-The runner requires four distinct peer registrations, invokes Calculator's
-declared `add-function` through MCP, and polls its canonical status to
-`succeeded`. It then closes Writer and requires Files, Photos, Calculator, the
-daemon, and MCP client to remain live.
-
-Evidence includes exact commands, relevant source hashes before and after the
-run, executable hashes, actual app/runtime/MCP PIDs, the complete MCP transcript,
-terminal action output, app logs, and exact-PID cleanup. App data and runtime
-authority use separate isolated directories. `proof.json` appears only after
-the proxy exits cleanly, every known PID is absent, and the temporary runtime
-profile has been removed. `cleanup.json` records profile-removal success or its
-exact error; failed attempts retain `failure.txt` instead.
-
-Verified on macOS on 2026-09-17 at
-`target/runtime-proof/runtime-auto-attach/native-3/proof.json`: Writer, Files,
-Photos, and late Calculator registered as peers 1–4 in daemon PID 28409;
-Calculator invocation 1 reached `succeeded`; after Writer PID 28361 exited, the
-other three registrations, daemon, and MCP PID 28548 remained live. Cleanup
-confirmed all six known PIDs absent. The relevant source snapshot was unchanged
-and exact binary hashes are retained with the run. This qualifies native shared
-runtime behavior, not visible frames, performance, Photos History acceptance,
-all 47 apps, or Windows.

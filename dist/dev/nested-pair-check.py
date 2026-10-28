@@ -111,8 +111,21 @@ class Session:
                        "limit": 500, "detail": "compact"}
             if cursor:
                 request["cursor"] = cursor
-            answer = ok(self.control, request)["answer"]
+            else:
+                # An app's actions may still be on their way (its directory
+                # page asked for again): wait for the listing to be whole
+                # rather than read a part of it.
+                request["wait_ms"] = 10000
+            response = call(self.control, request)
+            if cursor and (response.get("err") or {}).get("code") == "stale_cursor":
+                # The listing changed under the pages: list it again.
+                rows, cursor = [], None
+                continue
+            if "err" in response:
+                raise Failed(f"actions_enumerate refused: {response['err']}")
+            answer = response["answer"]
             rows += answer["actions"]
+            self.last_completion = (answer.get("complete"), answer.get("completion"))
             cursor = answer.get("next_cursor")
             if not cursor:
                 return rows
@@ -133,6 +146,17 @@ class Session:
             raise Failed(f"actions_invoke refused: {response['err']}")
         receipt = response["answer"].get("receipt", {})
         update = receipt.get("update") or {}
+        # Admitted and still running when the wait ran out: follow the job
+        # until it settles, as its receipt asks.
+        deadline = time.monotonic() + SETTLE
+        while (update.get("state") in ("accepted", "progress", "item")
+               and receipt.get("broker_invocation_id") is not None and time.monotonic() < deadline):
+            status = call(self.control, {"op": "actions_status",
+                                         "invocation_id": receipt["broker_invocation_id"], "wait_ms": 20000})
+            if "err" in status:
+                raise Failed(f"actions_status refused: {status['err']}")
+            receipt = status["answer"].get("receipt", receipt)
+            update = receipt.get("update") or {}
         if update.get("state") != "succeeded":
             raise Failed(f"{self.name}: {row['id'].split(chr(31))[-1]} ended {update.get('state')}: "
                          f"{json.dumps(update)[:400]}")
@@ -316,7 +340,14 @@ def check_document(a: Session, b: Session):
 
 
 def check_pointer(a: Session, b: Session, a_on_b: dict):
-    tab, (ax, ay, aw, ah), (bx, by, _, _) = shared_chat_window(a, b)
+    tab, tile_a, tile_b = shared_chat_window(a, b)
+    pointer_reaches(a, b, a_on_b, tab, tile_a, tile_b)
+
+
+def pointer_reaches(a: Session, b: Session, a_on_b: dict, tab: int, tile_a: list, tile_b: list):
+    """A points into tab `tab`, shown on A at `tile_a` and on B at
+    `tile_b`, and B draws A's pointer at the same offset from its tile."""
+    (ax, ay, aw, ah), (bx, by, _, _) = tile_a, tile_b
     offset = (round(min(220.0, aw / 3)), round(min(160.0, ah / 3)))
     wiggle(a, ax + offset[0], ay + offset[1])
     expected = (bx + offset[0], by + offset[1])

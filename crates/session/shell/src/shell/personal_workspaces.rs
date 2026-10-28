@@ -23,11 +23,16 @@
 //! devices a workspace shows on (every device, unless the person keeps it
 //! off some).
 //!
-//! Membership belongs to the person, not to a device, so the list holds
-//! every room the person is in: the rooms they own, which any of their
-//! devices governs, and rooms someone else invited them to, listed with the
-//! peer that governs them so another of their devices pins that same
-//! governor instead of trusting whichever device answers first.
+//! Each entry names the device hosting the room (`WorkspaceMeta::
+//! host_devices`): the device that made it, whose own host serves it, or a
+//! home relay of the person's. Another of the person's devices that does not
+//! hold a listed room yet enters it at that host and enrolls as a member
+//! ([`Adoption::enter`]), when the list brings it: nothing asks the hosts
+//! on a timer.
+//!
+//! The list holds the person's own rooms: those a host of theirs governs.
+//! A room someone else invited them to is joined on each device through
+//! its own invitation.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,15 +42,41 @@ use tilo_user_identity::{
     DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
 };
 
-use crate::shell::state::{PeerOrigin, RoomAuthority, RoomId, UserId, WorkspaceTree};
+use crate::shell::state::{RoomId, WorkspaceTree};
 
 /// One workspace as the person's list holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {
     pub name: String,
-    /// The peer governing a room someone else owns, as an origin
-    /// (`iroh:<endpoint>`); `None` for a room the person owns.
-    pub governor: Option<String>,
+    /// The device hosting the room: its device key.
+    pub host: Option<[u8; 32]>,
+}
+
+/// The person's own rooms this device holds, each with the device hosting
+/// it: what the native owner's admitted state says, read outside the tree's
+/// lock.
+pub type HeldRooms = BTreeMap<RoomId, [u8; 32]>;
+
+/// A room the person's list names that this device does not hold: entered
+/// at its host, which issues the invitation this device enrolls with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToEnter {
+    pub room: RoomId,
+    pub name: String,
+    /// The device hosting it.
+    pub host: [u8; 32],
+}
+
+/// What bringing the list into a tree asks of the network.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Adoption {
+    /// Whether the tree changed.
+    pub changed: bool,
+    /// Rooms to enter at their hosts.
+    pub enter: Vec<ToEnter>,
+    /// Rooms to let go: deleted on another device, or kept off this one.
+    /// Releasing one takes its workspace and replica off together.
+    pub release: Vec<RoomId>,
 }
 
 /// The person's workspace list as this device holds and last agreed it.
@@ -59,6 +90,9 @@ pub struct PersonalWorkspaces {
     agreed: BTreeMap<RoomId, Listed>,
     /// Their order at the last reconciliation.
     agreed_order: Vec<RoomId>,
+    /// Listed rooms handed to the network to enter, until their workspace
+    /// is here: none of them is taken for one deleted here meanwhile.
+    entering: std::collections::BTreeSet<RoomId>,
     /// Where the directory and `agreed` survive a restart; `None` keeps
     /// them in memory only.
     store: Option<PathBuf>,
@@ -79,27 +113,18 @@ struct PublishInputs {
     listed: BTreeMap<RoomId, Listed>,
     /// Every workspace room of the tree, in its order.
     order: Vec<RoomId>,
-    /// The listed rooms still waiting for their governor to be pinned.
-    unpinned: Vec<RoomId>,
 }
 
 impl PublishInputs {
-    fn of(tree: &WorkspaceTree, person: &str) -> Self {
-        let listed = member_workspaces(tree, person);
-        let unpinned = listed
-            .keys()
-            .copied()
-            .filter(|room| tree.room_authority(*room) == RoomAuthority::Unpinned)
-            .collect();
+    fn of(tree: &WorkspaceTree, held: &HeldRooms) -> Self {
         Self {
-            listed,
+            listed: member_workspaces(tree, held),
             order: tree
                 .desktop
                 .workspaces
                 .iter()
                 .map(crate::shell::state::Workspace::room)
                 .collect(),
-            unpinned,
         }
     }
 }
@@ -123,53 +148,29 @@ pub struct DeviceChoice {
     pub here: bool,
 }
 
-/// The rooms of `tree` that `person` is in, with their names and who
-/// governs them: rooms the person owns, and rooms where they hold a live
-/// membership under a governor this device pinned. A room governed by a
-/// durable host has its own enrollment and a room only offered by another
-/// device's continuation is not a workspace yet, so neither is listed; nor
-/// is someone else's room whose governor this device does not know.
-pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId, Listed> {
-    let person = person.to_string();
+/// The workspaces of `tree` whose rooms are the person's own and held
+/// here (`held`), with their names and the devices hosting them. A room
+/// still joining or being placed is listed once it is held.
+pub fn member_workspaces(tree: &WorkspaceTree, held: &HeldRooms) -> BTreeMap<RoomId, Listed> {
     tree.desktop
         .workspaces
         .iter()
-        .filter(|workspace| {
-            !workspace.room().is_nil()
-                && !tree.requires_native_owner(workspace.room())
-                && !tree.continuation_rooms.contains(&workspace.room())
-        })
         .filter_map(|workspace| {
-            let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
-                None
-            } else {
-                let member = workspace.role_of(&person).is_some();
-                match tree.room_authority(workspace.room()) {
-                    RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
-                    _ => return None,
-                }
-            };
+            let host = held.get(&workspace.room())?;
             Some((
                 workspace.room(),
                 Listed {
                     name: workspace.name.clone(),
-                    governor,
+                    host: Some(*host),
                 },
             ))
         })
         .collect()
 }
 
-/// The governing peer an entry names, when it names a real endpoint.
-fn governor_origin(governor: &str) -> Option<PeerOrigin> {
-    let endpoint = governor.strip_prefix("iroh:")?;
-    endpoint.parse::<iroh::EndpointId>().ok()?;
-    Some(PeerOrigin::peer_id(endpoint))
-}
-
 /// The directory's stable id for `room`: the room's collaboration topic.
 fn entry_id(room: RoomId) -> u64 {
-    crate::shell::network::room_topic_id(room)
+    tilo_network_actor::room_topic_id(room)
 }
 
 /// The directory's entries that carry a valid room, in the person's order.
@@ -206,6 +207,7 @@ impl PersonalWorkspaces {
             label: None,
             agreed: BTreeMap::new(),
             agreed_order: Vec::new(),
+            entering: std::collections::BTreeSet::new(),
             store: None,
             published: None,
             #[cfg(test)]
@@ -256,8 +258,8 @@ impl PersonalWorkspaces {
     /// Called after every write to the tree, so when neither the tree's
     /// workspaces nor the directory changed since the last call it only
     /// compares the tree with what it offered then.
-    pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
-        let inputs = PublishInputs::of(tree, person);
+    pub fn publish_local(&mut self, tree: &WorkspaceTree, held: &HeldRooms) -> bool {
+        let inputs = PublishInputs::of(tree, held);
         if self.published.as_ref() == Some(&inputs) {
             return false;
         }
@@ -289,21 +291,15 @@ impl PersonalWorkspaces {
         let mut appended = 0.0;
         for (room, entry) in listed {
             let fresh = !self.agreed.contains_key(room);
-            // Enrollment gives us a room ID before its real name arrives.
-            // Do not publish that provisional name as a rename on the owner's
-            // other devices. An adopted directory entry already has an agreed
-            // baseline, so its later local renames can still be published.
-            if fresh && tree.room_authority(*room) == RoomAuthority::Unpinned {
-                continue;
-            }
             if self.agreed.get(room) == Some(entry) {
                 continue;
             }
             let id = entry_id(*room);
+            let hosts: Vec<[u8; 32]> = entry.host.into_iter().collect();
             let written = self
                 .directory
                 .add_room_workspace(id, &room.to_string(), &entry.name)
-                .and_then(|()| self.directory.set_governor(id, entry.governor.as_deref()))
+                .and_then(|()| self.directory.set_host_devices(id, &hosts))
                 .and_then(|()| {
                     if fresh {
                         appended += 1.0;
@@ -331,10 +327,13 @@ impl PersonalWorkspaces {
             .iter()
             .map(crate::shell::state::Workspace::room)
             .collect();
+        // A room being entered has no workspace here yet; it was not
+        // deleted here.
+        self.entering.retain(|room| !present.contains(room));
         let deleted: Vec<RoomId> = self
             .agreed
             .keys()
-            .filter(|room| !present.contains(room))
+            .filter(|room| !present.contains(room) && !self.entering.contains(room))
             .copied()
             .collect();
         for room in deleted {
@@ -415,43 +414,49 @@ impl PersonalWorkspaces {
     }
 
     /// Bring what changed in the directory since the last agreement into
-    /// `tree`: join each new workspace's room as `person`'s, take new names
-    /// and the person's order, and drop workspaces deleted on another device
-    /// or no longer shown on this one. Returns whether `tree` changed.
-    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
+    /// `tree`: the person's order, and which listed rooms this device lets go
+    /// (deleted on another device, or no longer shown on this one) or
+    /// enters at their hosts (listed, shown here, and not held). A room is
+    /// entered only at a host the list names; `here` is this device, which
+    /// enters nothing at itself.
+    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, here: &[u8; 32]) -> Adoption {
         self.published = None;
         let entries = entries_of(&self.directory);
-        let mut changed = false;
+        let mut adoption = Adoption::default();
         let mut shown_here: Vec<RoomId> = Vec::new();
         for (room, meta) in &entries {
             if !shows_on(meta, &self.device) {
-                if self.agreed.remove(room).is_some() {
-                    changed |= tree.forget_personal_room(*room).is_some();
+                if self.agreed.remove(room).is_some() && tree.has_workspace(*room) {
+                    adoption.release.push(*room);
                 }
+                self.entering.remove(room);
                 continue;
             }
             shown_here.push(*room);
             let entry = Listed {
                 name: meta.name.clone(),
-                governor: meta.governor.clone(),
+                host: meta.host_devices.first().copied(),
             };
-            // An agreed room still unpinned — adopted before rooms pinned their
-            // governor from this list — is adopted again so the list pins it.
-            if self.agreed.get(room) == Some(&entry)
-                && tree.room_authority(*room) != RoomAuthority::Unpinned
-            {
+            // Held here: nothing to enter. A workspace of the room is not
+            // enough (one kept from an earlier build may never have been
+            // entered), nor is a join left from the session before: entering
+            // it is how that join goes on. Entering is idempotent: one
+            // already running at the host is not started again.
+            if tree.holds_room(*room) {
+                self.agreed.insert(*room, entry);
                 continue;
             }
-            let governor = match entry.governor.as_deref() {
-                None => None,
-                Some(governor) => match governor_origin(governor) {
-                    Some(origin) => Some(origin),
-                    // An entry naming no usable governor is skipped: a
-                    // device must never guess who governs someone's room.
-                    None => continue,
-                },
+            // A device must never guess where someone's room lives: an
+            // entry naming no host is left until one lists it.
+            let Some(host) = entry.host.filter(|host| host != here) else {
+                continue;
             };
-            changed |= tree.adopt_personal_room(*room, &entry.name, person, governor.as_ref());
+            adoption.enter.push(ToEnter {
+                room: *room,
+                name: entry.name.clone(),
+                host,
+            });
+            self.entering.insert(*room);
             self.agreed.insert(*room, entry);
         }
         let listed_rooms: std::collections::BTreeSet<RoomId> =
@@ -464,9 +469,12 @@ impl PersonalWorkspaces {
             .collect();
         for room in gone {
             self.agreed.remove(&room);
-            changed |= tree.forget_personal_room(room).is_some();
+            self.entering.remove(&room);
+            if tree.has_workspace(room) {
+                adoption.release.push(room);
+            }
         }
-        changed |= tree.arrange_rooms(&shown_here);
+        adoption.changed |= tree.arrange_rooms(&shown_here);
         self.agreed_order = tree
             .desktop
             .workspaces
@@ -475,7 +483,7 @@ impl PersonalWorkspaces {
             .filter(|room| self.agreed.contains_key(room))
             .collect();
         self.persist();
-        changed
+        adoption
     }
 
     /// The person's devices as the menu of `room`'s workspace offers them,

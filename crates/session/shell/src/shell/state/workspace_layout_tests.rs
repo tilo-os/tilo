@@ -21,22 +21,15 @@ fn key(salt: u16) -> String {
     hex::encode(device_key(salt))
 }
 
-fn origin(salt: u16) -> PeerOrigin {
-    PeerOrigin::peer(&iroh::EndpointId::from_bytes(&device_key(salt)).expect("a device key"))
-}
-
 /// One of the person's devices, minting in `salt`.
 fn device(salt: u16) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
-    tree.set_salt_override(salt);
+    tree.set_peer_salt(salt);
     tree.local_person = Some(PERSON);
     tree.window_hosting = Some(WindowHosting {
         device: key(salt),
         device_label: format!("device {salt:x}"),
     });
-    for other in [LAPTOP, DESK] {
-        tree.authenticated_persons.insert(origin(other), PERSON);
-    }
     tree
 }
 
@@ -187,9 +180,8 @@ fn receive(
 fn two_devices() -> (WorkspaceTree, WorkspaceTree, RoomId) {
     let person = person_id_of(PERSON).expect("a person id");
     let mut laptop = device(LAPTOP);
-    let ws = laptop.append_empty_workspace("Home");
-    let room = laptop.room_of(ws).expect("a workspace is its room");
-    laptop.adopt_ownerless_workspaces(&person);
+    let (_, room) = laptop.create_hosted_workspace("Home");
+    laptop.own_workspaces_for_test(|_| person.clone());
     workspace_mut(&mut laptop, room).strips = vec![
         Strip {
             id: StripId(laptop_id(1)),
@@ -206,7 +198,7 @@ fn two_devices() -> (WorkspaceTree, WorkspaceTree, RoomId) {
         },
     ];
     let mut desk = device(DESK);
-    assert!(desk.adopt_personal_room(room, "Home", &person, None));
+    assert!(desk.adopt_personal_room(room, "Home"));
     hear(&mut desk, &mut laptop, room, LAPTOP);
     assert_eq!(places(&desk, room), places(&laptop, room));
     (laptop, desk, room)
@@ -383,13 +375,10 @@ impl Page {
     }
 }
 
-/// The device of the person's phone, whose browser shows the workspace,
-/// as `tree` authenticated it.
-fn phone(tree: &mut WorkspaceTree) -> [u8; 32] {
-    let phone = iroh::SecretKey::from_bytes(&[0x77; 32]).public();
-    tree.authenticated_persons
-        .insert(PeerOrigin::peer(&phone), PERSON);
-    *phone.as_bytes()
+/// The device of the person's phone, whose browser shows the workspace.
+/// The room's host decided its writes before they reach `_tree`.
+fn phone(_tree: &mut WorkspaceTree) -> [u8; 32] {
+    *iroh::SecretKey::from_bytes(&[0x77; 32]).public().as_bytes()
 }
 
 /// The page's own copy of the workspace, for its edits.
@@ -506,26 +495,4 @@ fn a_device_and_a_browser_page_moving_one_window_at_once_agree_where_it_is() {
             "the window is in exactly one place: {merged:?}"
         );
     }
-}
-
-/// A page of someone else in the room may not close what the person made:
-/// the device refuses the change and its layout stays as it was.
-#[test]
-fn a_page_of_someone_else_closing_the_persons_window_is_refused() {
-    let (mut laptop, _desk, room) = two_devices();
-    let guest = iroh::SecretKey::from_bytes(&[0x55; 32]).public();
-    let guest_person = [0x66; 32];
-    laptop
-        .authenticated_persons
-        .insert(PeerOrigin::peer(&guest), guest_person);
-    let mut page = Page::join(&mut laptop, room, &hex::encode(guest_person));
-    let before = places(&laptop, room);
-    let closes = page.change(|workspace| {
-        for group in &mut page_strip(workspace, laptop_id(6)).window_groups {
-            group.tabs.retain(|tab| tab.id != laptop_id(8));
-        }
-    });
-    let refused = receive(&mut laptop, room, *guest.as_bytes(), &closes).unwrap_err();
-    assert!(refused.contains("may not close"), "{refused}");
-    assert_eq!(places(&laptop, room), before);
 }

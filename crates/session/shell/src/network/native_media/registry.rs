@@ -1,10 +1,10 @@
 use super::{Arc, CallTarget, Command, NativeWorkspaceOwner, Operation, Reply, Ticket, Weak};
-use crate::network::actor::{HostIdentity, native_ingress::NOT_CONNECTED};
 use crate::shell::{native_workspace_owner::NativeCommittedView, state::RoomId};
 use runtime_collab::native_media::Roster;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tilo_joined_room::voice::Channel;
+use tilo_network_actor::{HostIdentity, native_ingress::NOT_CONNECTED};
 use tilo_relay_protocol::voice::CallSummary;
 use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 

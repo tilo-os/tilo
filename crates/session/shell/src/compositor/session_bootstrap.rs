@@ -19,8 +19,8 @@ pub(crate) struct LoadedSession {
 }
 
 /// Load this machine's desktop state and bring it up to the invariants
-/// later stages assume: a persist path, a durable room identity per
-/// workspace, and an owner per room — an unowned room has no administrators.
+/// later stages assume: a persist path and a durable room identity per
+/// workspace. Each room's owner is what its host's admitted document says.
 ///
 /// Peer sync may come up only when it was asked for *and* the device key
 /// loads, since the id salt comes from it and an unsalted id space lets peers
@@ -30,7 +30,7 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
 
     let path = persist::state_json_path();
 
-    // The id salt is set **before** the tree is loaded — load-bearing order.
+    // The tree gets its device's id salt **as** it is loaded — load-bearing.
     //
     // Two peers minting ids from the same counter collide, and CRDT sync
     // folds them into one row. The salt (from the Iroh keypair) puts each
@@ -41,10 +41,13 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
     // room would collide. Re-seeding afterwards didn't help: it fixes ids minted *next*, not ones already in the tree.
     let mut peer_sync_possible = enable_peer_sync;
     let peer_key_path = crate::shell::network::peer_key_path();
-    match crate::shell::session_policy::load_or_create_workspace_salt(&path, &peer_key_path) {
+    let salt = match crate::shell::session_policy::load_or_create_workspace_salt(
+        &path,
+        &peer_key_path,
+    ) {
         Ok(salt) => {
-            crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
             tracing::info!("workspace id salt set to 0x{:04x}", salt);
+            salt
         }
         Err(error) => {
             peer_sync_possible = false;
@@ -52,10 +55,11 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
                 %error,
                 "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
             );
+            0
         }
-    }
+    };
     if peer_sync_possible {
-        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
+        match tilo_network_actor::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
                 tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
             }
@@ -71,7 +75,7 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
 
     // Carried out to `run`, which has the chrome to show it — silently handing
     // someone a bootstrapped demo tree is indistinguishable from losing their work.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
+    let (mut tree, state_notice) = persist::load_device_tree_or_default(&path, salt);
     // Recover cards written by builds that mistook a host window's toolkit
     // identity for an uninstalled package. The host catalogue is available
     // before the frame loop starts, so this one-shot migration can distinguish
@@ -98,26 +102,14 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
         tree.queue_save();
     }
 
-    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-    if !adopted.is_empty() {
+    let claimed = tree.claim_own_unhosted_rooms(crate::shell::state::local_user_id_for_room);
+    if !claimed.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by their selected identities",
-            adopted.len()
+            "capabilities: {} workspace(s) of this device's own belong to their selected identities until their host holds them",
+            claimed.len()
         );
     }
-    if let Some(account) = std::env::var("USER")
-        .ok()
-        .filter(|account| !account.is_empty())
-    {
-        let rebound = tree
-            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
-        if !rebound.is_empty() {
-            tracing::info!(
-                "capabilities: {} workspace(s) created before this device's identity now belong to it",
-                rebound.len()
-            );
-        }
-    }
+
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
     // background publisher coalesces this with any immediate mutation.
@@ -222,6 +214,12 @@ fn bind_session_collab_broker(
         return Err(BrokerStartFailure::SocketTaken);
     }
 
+    // Workspaces waiting for this device's own host are placed before any
+    // app starts: placing one is local, so an app restored into it (Notes
+    // in Home on a first boot, online or not) opens at once.
+    if let Some(network) = peer_sync {
+        network.place_before_launches();
+    }
     let network = peer_sync.cloned();
     let action_offload = session_action_offload(&membership);
     let spawned = crate::shell::collab_broker::spawn_native_offloading(
@@ -306,23 +304,9 @@ pub(crate) fn spawn_session_collab_broker(
 mod tests {
     use super::*;
     use crate::compositor::frame::FrameBuilder;
-    use crate::shell::state::{NEXT_ID, NEXT_ID_PEER_SALT, Strip, StripId, WorkspaceTree};
+    use crate::shell::state::{NEXT_ID, Strip, StripId, WorkspaceTree};
     use std::sync::atomic::Ordering;
     use tilo_desktop_model::{compose_id, counter_of, peer_salt_of};
-
-    /// Puts the process-wide id salt back, so a test that boots a session
-    /// does not leave every later test minting under its salt.
-    struct SaltGuard(u16);
-    impl SaltGuard {
-        fn new() -> Self {
-            Self(NEXT_ID_PEER_SALT.load(Ordering::Relaxed))
-        }
-    }
-    impl Drop for SaltGuard {
-        fn drop(&mut self) {
-            WorkspaceTree::set_process_peer_salt(self.0);
-        }
-    }
 
     /// A private state directory for one boot: the state file, the id salt
     /// beside it, a device key that does not exist and an FS export path.
@@ -342,7 +326,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env, next_id_statics)]
     fn load_session_tree_salts_before_loading_and_seeds_ids_past_the_loaded_tree() {
-        let _salt = SaltGuard::new();
         let dir = tempfile::tempdir().expect("tempdir");
         let salt: u16 = 0x0abc;
         let (_env, state_path) = isolated_session_env(dir.path(), salt);
@@ -371,7 +354,7 @@ mod tests {
         );
         let tree = loaded.tree.read();
         assert_eq!(
-            tree.peer_salt(),
+            tree.local_salt(),
             salt,
             "the session mints under the salt stored beside its state"
         );
@@ -385,9 +368,9 @@ mod tests {
         );
         assert_eq!(tree.persist_path.as_deref(), Some(state_path.as_path()));
         assert!(tree.fs_acl_path.is_some(), "capabilities are exported");
+        let minted = tree.mint_id();
         drop(tree);
 
-        let minted = crate::shell::state::next_id();
         assert_eq!(peer_salt_of(minted), salt);
         assert!(
             counter_of(minted) > persisted_counter,
@@ -398,7 +381,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env, next_id_statics)]
     fn load_session_tree_never_persists_over_a_refused_state_file() {
-        let _salt = SaltGuard::new();
         let dir = tempfile::tempdir().expect("tempdir");
         let (_env, state_path) = isolated_session_env(dir.path(), 0x0abd);
         std::fs::write(&state_path, b"not a desktop").expect("write damaged state");

@@ -56,7 +56,9 @@ class ReceiptProductionPathTests(unittest.TestCase):
                     self.assertEqual(set(kwargs['env']), {'PATH', 'LANG', 'LC_ALL'})
                     self.assertNotIn('ACTIONS_ID_TOKEN_REQUEST_TOKEN', kwargs['env'])
                     self.assertNotIn('LD_PRELOAD', kwargs['env'])
-                    if command[0] == str(bundle_tool):
+                    # The adapter resolves both binaries before running them, so
+                    # the fixture cannot compare them by the path it wrote.
+                    if Path(command[0]).resolve() == bundle_tool.resolve():
                         self.assertIn('--require-signature', command)
                         self.assertEqual(command[command.index('--require-publisher') + 1], '2' * 64)
                         self.assertEqual(command[command.index('--require-arch') + 1], 'x86_64')
@@ -148,7 +150,8 @@ class ReceiptProductionPathTests(unittest.TestCase):
             self.assertIn('dist/app-release/publication-receipt.json', workflow)
             self.assertIn('dist/app-release/verification-policy.json', workflow)
             self.assertNotIn('dist/app-release/work/**', workflow)
-            self.assertIn('    branches: [main]', workflow)
+            # Releases run from the promotion ref, never from main.
+            self.assertIn('    branches: [stable]', workflow)
             publish = workflow.split('\n  publish:\n', 1)[1] + (root / 'tools/apps/publish-collections.sh').read_text()
             self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
             # The digest itself is owned by release-apps.yml; require only that the

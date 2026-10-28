@@ -1855,7 +1855,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// and what happened here is History's.
     fn collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1874,7 +1874,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// reading a bare peer id once the guest arrives.
     fn collaborator_invite_button_asks_who_before_minting() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1903,11 +1903,11 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     }
 
     /// Peer sync off means nothing can mint a token, so the button must not
-    /// offer to. The room is adopted first so peer-sync is the *only*
+    /// offer to. The room is held and governed here first so peer-sync is the *only*
     /// capability missing.
     fn collaborator_actions_are_absent_when_peer_sync_is_off() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         assert!(!h.chrome.borrow().peer_sync_enabled);
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1951,7 +1951,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// where a button used to be stays clickable.
     fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1979,7 +1979,19 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 fn adopt_rooms(h: &Harness) {
     let st = h.chrome.borrow();
     st.tree_mut()
-        .adopt_ownerless_workspaces_with(|room| st.local_user_for_room(room));
+        .own_workspaces_for_test(|room| st.local_user_for_room(room));
+}
+
+/// The active workspace's room held as one this device's own host governs,
+/// the chrome acting as the person governing it: an invitation is the
+/// host's to issue, so this is what the invite composer needs. The room
+/// stays held while the guard lives.
+pub(super) fn host_active_room(
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> crate::shell::test_support::OwnHostedRoom {
+    let hosted = crate::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
+    chrome.borrow_mut().act_as(hosted.person.clone());
+    hosted
 }
 
 /// A click anywhere inside the popover asks the network for nothing.
@@ -2849,7 +2861,7 @@ fn capture_people_completed(h: &mut Harness, name: &str) {
 #[test]
 fn people_completed_submit_release_stays_owned_after_invite_opens() {
     let mut h = roster_follow_fixture();
-    adopt_rooms(&h);
+    let _room = host_active_room(&h.chrome);
     h.chrome.borrow_mut().peer_sync_enabled = true;
     paint(&mut h);
     let mods = Modifiers::default();
@@ -3872,4 +3884,84 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
         );
     });
     assert!(!h.chrome.borrow().strip_switcher_open());
+}
+
+/// A portal review sheet is the one floating card (HIG §9.1): its body is
+/// the panel ground with the card's inner hairline on its outline. It was
+/// hand-painted — a bare `e4` shadow, then an opaque
+/// `ChromeRole::Panel.surface` fill and no edge at all — so the sheet was
+/// the one Panel in the shell with no hairline to close its silhouette
+/// against the dimmed window behind it.
+#[test]
+fn the_portal_sheet_is_the_floating_card() {
+    use crate::shell::portal_dialog::PortalDialogQueue;
+
+    let mut h = build_harness();
+    let queue = PortalDialogQueue::default();
+    h.host.set_portal_dialog_queue(queue.clone());
+    let drive = ntfs_mount::protocol::Drive {
+        id: "nvme0n1p3:1".into(),
+        label: "Windows".into(),
+        size_bytes: 475_000_000_000,
+        placement: ntfs_mount::protocol::Placement::Internal,
+        hot_added: false,
+        remembered: None,
+        needs_consent: true,
+        preselect: ntfs_mount::protocol::Mode::Open,
+        can_remember: ntfs_mount::protocol::RememberOffer::AnyMode,
+        mounted: None,
+    };
+    let request = crate::shell::drives::consent_request(&drive, "consent-card-test".into());
+    // Nobody answers a test frame; the dropped receiver reads as "Not now".
+    let _ = queue.enqueue_drive_consent(request);
+    h.host.pump_portal_dialogs();
+
+    let area = h.host.overlay_area();
+    let layout = h
+        .host
+        .portal_dialogs
+        .layout(area)
+        .expect("the drive sheet is up");
+    let theme = Theme::dark();
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    h.host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::empty(),
+    );
+
+    let (width, height) = (
+        ui::num::u32_of_f64(area.width()),
+        ui::num::u32_of_f64(area.height()),
+    );
+    let rgba = ui::offscreen::OffscreenRenderer::new(width, height).render(&scene, Color::BLACK);
+    let ground = ui::chrome::panel_ground(&theme).to_rgba8();
+    let at = |x: f64, y: f64| {
+        ui::offscreen::OffscreenRenderer::sample(
+            &rgba,
+            width,
+            ui::num::u32_of_f64(x),
+            ui::num::u32_of_f64(y),
+        )
+    };
+    // Well inside the sheet, clear of its seal band, its labels and the two
+    // answers: the card's own body.
+    let body = at(layout.sheet.center().x, layout.sheet.y1 - 12.0);
+    assert_eq!(
+        body,
+        (ground.r, ground.g, ground.b, ground.a),
+        "the sheet's body is the panel ground"
+    );
+    // The row on its outline: the floating card's inner hairline, which
+    // stands the body off the dimmed window rather than meeting it as the
+    // same tone.
+    let edge = at(layout.sheet.center().x, layout.sheet.y1 - 1.0);
+    assert_ne!(
+        edge,
+        (ground.r, ground.g, ground.b, ground.a),
+        "the sheet carries the Panel's inner hairline on its outline"
+    );
 }

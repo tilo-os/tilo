@@ -24,7 +24,7 @@ use tilo_user_identity::{
 };
 
 use tilo_relay::{
-    RelayConfig, WorkspaceBinding,
+    RelayConfig,
     daemon::{Relay, RelayIdentity},
 };
 
@@ -178,16 +178,6 @@ async fn spawn_relay_with(
         state_root: state_root.to_path_buf(),
         ..Default::default()
     };
-    for id in workspaces {
-        cfg.workspaces.push(WorkspaceBinding {
-            id: *id,
-            pin: true,
-            replication: tilo_relay::ReplicationIntent::FullWorkspace,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        });
-    }
     let identity = RelayIdentity {
         user_public_key: user.user_pk,
         device_signing_key: relay_dev.sk.clone(),
@@ -199,12 +189,31 @@ async fn spawn_relay_with(
         .await
         .unwrap();
     for id in workspaces {
-        relay
-            .set_workspace_membership(*id, true, members.to_vec(), state_root.to_path_buf())
-            .await
-            .unwrap();
+        admit_members(&relay, *id, members, state_root).await;
     }
     relay
+}
+
+/// Make `members` the room's member devices, as the room's governor does:
+/// the devices are all the relay owner's.
+pub async fn admit_members(
+    relay: &Relay,
+    workspace: u64,
+    members: &[[u8; 32]],
+    state_root: &std::path::Path,
+) {
+    relay
+        .replace_governed_workspace_access(
+            workspace,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_devices: members.to_vec(),
+                member_user_roots: vec![relay.own_user_public_key()],
+            },
+            state_root.to_path_buf(),
+        )
+        .await
+        .unwrap();
 }
 
 /// Bind a plain iroh endpoint the tests can use to dial a relay.
@@ -276,42 +285,39 @@ pub fn print_phase_diagnostic() {
 
 /// The app surfaces a process decides received changes against
 /// (`tilo_peer_state::decide_with_surfaces`) are one per process, and a
-/// single-process `cargo test` run shares them across this binary's tests.
-/// A test that installs surfaces holds [`install_process_surfaces`]'s guard;
-/// one that depends on none holds [`no_process_surfaces`]. Neither runs
-/// beside the other, and the surfaces are taken off again when the guard
-/// drops.
-pub struct ProcessSurfaces {
-    _lock: std::sync::MutexGuard<'static, ()>,
-}
-
-fn process_surfaces_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Decide every change of this process against `surfaces`, naming `of`'s
-/// surface for each app, until the guard drops.
+/// relay or replica reads them when it starts. A test that installs some
+/// runs in a process of its own ([`in_own_process`]), so no other test of
+/// this binary ever runs under them.
 pub fn install_process_surfaces(
     surfaces: collab_types::Surfaces,
     of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
-) -> ProcessSurfaces {
-    let lock = process_surfaces_lock();
+) {
     tilo_peer_state::decide_with_surfaces(surfaces, of);
-    ProcessSurfaces { _lock: lock }
 }
 
-/// Run with no process-wide app surfaces installed: changes are decided by
-/// their record.
-pub fn no_process_surfaces() -> ProcessSurfaces {
-    let lock = process_surfaces_lock();
-    tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
-    ProcessSurfaces { _lock: lock }
-}
+/// Names the one test a process of its own runs, see [`in_own_process`].
+const OWN_PROCESS: &str = "TILO_RELAY_TEST_OWN_PROCESS";
 
-impl Drop for ProcessSurfaces {
-    fn drop(&mut self) {
-        tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
+/// Whether the test `test` (its path in this binary) is to run its body
+/// here: in the process this binary started for it alone. Anywhere else the
+/// test runs this binary again for itself, waits for it to pass, and answers
+/// `false`, leaving nothing more to do.
+pub fn in_own_process(test: &str) -> bool {
+    if std::env::var_os(OWN_PROCESS).is_some_and(|own| own == test) {
+        return true;
     }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .env(OWN_PROCESS, test)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("{stdout}");
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{test} did not pass in its own process: {}",
+        output.status
+    );
+    false
 }

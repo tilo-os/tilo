@@ -1,4 +1,6 @@
 use crate::keyboard::{KeyCode, PhysicalKey};
+#[cfg(any(x11_platform, wayland_platform))]
+use crate::keyboard::{Key, KeyLocation};
 
 // TODO: Describe what this value contains for each platform
 
@@ -47,4 +49,14 @@ impl PhysicalKeyExtScancode for KeyCode {
     fn from_scancode(scancode: u32) -> PhysicalKey {
         <PhysicalKey as PhysicalKeyExtScancode>::from_scancode(scancode)
     }
+}
+
+/// The logical key and location xkb's `keysym` names, as a keyboard event on
+/// X11 or Wayland reports them, so a host that reads the keyboard itself (a
+/// KMS host through libinput and xkbcommon) names keys as winit does. A
+/// keysym that names no key winit knows is `Key::Unidentified`; the caller
+/// takes the key's text instead.
+#[cfg(any(x11_platform, wayland_platform))]
+pub fn keysym_to_key(keysym: u32) -> (Key, KeyLocation) {
+    (crate::platform_impl::keysym_to_key(keysym), crate::platform_impl::keysym_location(keysym))
 }

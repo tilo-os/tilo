@@ -39,11 +39,8 @@ pub const SANDBOX_APP_DIR: &str = "/run/tilo/app";
 /// "the directory the system gave me" rather than inferring it from `HOME`.
 pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
-/// The room a launch with no workspace belongs to.
-///
-/// `docs/architecture/rooms.md`: "Your own room is not special — same kind of room,
-/// one member." A slug like any other, deliberately not a UUID, so it
-/// cannot collide with a workspace id.
+/// The directory a launch with no workspace belongs to. A slug like any
+/// other, deliberately not a UUID, so it cannot collide with a workspace id.
 pub const PERSONAL_ROOM: &str = "personal";
 
 /// Directory under the user's data home that holds every room.

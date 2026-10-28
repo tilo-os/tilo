@@ -84,10 +84,9 @@ than reverted. `stable` is the release branch: it is moved by hand when a
 release is cut (it requires signed commits), and it is the only ref
 publications build from.
 
-- `check.yml` runs after every push to `main` and plans what that push added,
-  relative to the main commit it was pushed onto (`github.event.before`). Every
-  push gets its own run; none is cancelled by a later push, so every commit is
-  planned exactly once.
+- `check.yml` runs after every push to `main` and plans from the main commit
+  the push landed on (`github.event.before`). Every push runs; a newer push
+  never skips, cancels or replaces an older run.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the

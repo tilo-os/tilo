@@ -39,38 +39,16 @@ use durable_store::{Revision, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{
-    FORMERLY, ObjectAt, RecordCheckout, RecordId, RecordKind, RecordOpenError, StringAt, identity,
-    meta_obj, meta_ro, object_at, string_at, validate_identity,
+    FORMERLY, ObjectAt, RecordCheckout, RecordId, RecordKind, RecordOpenError, identity, meta_obj,
+    meta_ro, object_at, validate_identity,
 };
 
 /// The kind an app's own document ([`Origin::AppDocument`]) takes when it
 /// arrives in another room as a record.
 pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 
-/// Key, in a record's meta map, marking a record that left its room.
-pub(super) const RETIRED: &str = "retired";
-
-/// Where a moved record went and who moved it, as its retirement records.
-pub use collab_types::handoff::Successor;
-
-/// Why a record is retired, as stamped into its last change.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Retirement {
-    /// Moved to another room; the successor there carries its history.
-    /// `None` only for a stamp that no longer says where.
-    Moved(Option<Successor>),
-    /// Imported for a transfer that did not complete; nothing ever opened it.
-    Abandoned,
-}
-
-impl Retirement {
-    fn reason(&self) -> &'static str {
-        match self {
-            Self::Moved(_) => "moved",
-            Self::Abandoned => "abandoned",
-        }
-    }
-}
+pub(super) use ::collaboration::record::retirement::RETIRED;
+pub use ::collaboration::record::retirement::{Retirement, Successor, is_retired, retirement};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransferError {
@@ -107,37 +85,6 @@ impl From<durable_store::StoreError> for TransferError {
             other => Self::Store(other.into()),
         }
     }
-}
-
-/// The retirement stamped into `doc`, when it has left its room.
-pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
-    let meta = meta_ro(doc)?;
-    let stamp = match object_at(doc, &meta, RETIRED, ObjType::Map) {
-        ObjectAt::Object(stamp) => stamp,
-        ObjectAt::Missing => {
-            // Present in some other shape: retired all the same.
-            return (!matches!(string_at(doc, &meta, RETIRED), StringAt::Missing))
-                .then_some(Retirement::Moved(None));
-        }
-        ObjectAt::Invalid => return Some(Retirement::Moved(None)),
-    };
-    let field = |key: &str| match string_at(doc, &stamp, key) {
-        StringAt::String(value) => Some(value),
-        StringAt::Missing | StringAt::Invalid => None,
-    };
-    if field("reason").as_deref() == Some("abandoned") {
-        return Some(Retirement::Abandoned);
-    }
-    let successor = match (field("room"), field("record"), field("by")) {
-        (Some(room), Some(record), Some(by)) => Some(Successor { room, record, by }),
-        _ => None,
-    };
-    Some(Retirement::Moved(successor))
-}
-
-/// Whether `doc` is a record that left its room.
-pub fn is_retired(doc: &AutoCommit) -> bool {
-    retirement(doc).is_some()
 }
 
 /// Stamp `doc` retired, in one change of its own, unless it already is.

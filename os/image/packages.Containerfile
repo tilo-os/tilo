@@ -140,8 +140,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # alsa-ucm: the per-machine ALSA profiles PipeWire opens DSP sound cards with
     # (Qualcomm X1E, Intel SOF). Without one such a card lists no sink or source
     # (os/tests/board_audio_contract.sh).
+    # espeak-ng: the voice of the login screen's screen reader in the initramfs
+    # (os/usr/lib/dracut/modules.d/94tilo-greeter), where no speech-dispatcher runs.
     && dnf install -y --setopt=reposdir=/repo \
     alsa-ucm \
+    espeak-ng \
     pipewire \
     pipewire-pulseaudio \
     pipewire-utils \

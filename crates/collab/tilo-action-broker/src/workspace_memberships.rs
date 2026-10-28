@@ -17,12 +17,28 @@ const AGENT_PREFIX: &str = "desktop:agent:";
 const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
 impl CapnpBrokerState {
+    /// [`Self::stage_workspace_membership`], started once its admission is
+    /// durable, on a thread that may block: never the broker's loop.
     pub(crate) fn invoke_workspace_membership(
         &self,
         room: &str,
         command: &WorkspaceMembershipCommand,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<super::InvocationJob, String> {
+        self.stage_workspace_membership(room, command, certificate)?
+            .start_blocking(self)
+    }
+
+    /// Admit one membership command as `certificate`'s person. Nobody hears
+    /// of it before its admission is durable: the caller starts it, waiting
+    /// for that on its own thread or, on the broker's loop, without holding
+    /// the loop.
+    fn stage_workspace_membership(
+        &self,
+        room: &str,
+        command: &WorkspaceMembershipCommand,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
@@ -93,6 +109,77 @@ impl CapnpBrokerState {
         )
     }
 
+    /// Let the app `route` names author its room before it opens there as
+    /// `certificate`'s person, when the room does not let it yet and that
+    /// person may let it there
+    /// ([`super::services::WorkspaceMemberships::app_opens_by_granting`]):
+    /// the same membership invocation a launch asks, started once its
+    /// admission is durable. Nothing to do otherwise.
+    ///
+    /// A room this device's own host serves decides through this device's
+    /// owner: what an app opening there needs is for the owner to record.
+    ///
+    /// # Errors
+    /// The invocation could not be admitted or started. A refusal after it
+    /// started is logged when it comes.
+    pub(crate) async fn admit_opening_app(
+        &self,
+        route: &CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if route.app_id.is_empty() {
+            return Ok(());
+        }
+        let Some(memberships) = self.services.workspace_memberships.as_ref() else {
+            return Ok(());
+        };
+        // This device hosts the room, or its own owner decides the same
+        // question a member's owner does: either way the app opens here.
+        let decided_here = certificate.capabilities.can_act_as_host
+            || memberships.hosted_here(&route.cluster_id)
+            || memberships.app_opens_by_granting(&route.cluster_id, &route.app_id, certificate);
+        if !decided_here {
+            return Ok(());
+        }
+        // This runs on the broker's loop, which answers every other app
+        // meanwhile: the admission's write is waited for without holding it.
+        let job = self
+            .stage_workspace_membership(
+                &route.cluster_id,
+                &WorkspaceMembershipCommand::GrantAppAuthorship {
+                    app: route.app_id.clone(),
+                },
+                certificate,
+            )?
+            .start(self)
+            .await?;
+        // Its answer comes when the room's owner has recorded the grant,
+        // or when the invocation fails or expires. Nobody acts on it: the
+        // app asks for its keys again when the grant is in. It is heard on
+        // a thread of its own, which neither the broker's loop nor its
+        // runtime's shutdown waits for.
+        let room = route.cluster_id.clone();
+        let app = route.app_id.clone();
+        std::thread::Builder::new()
+            .name("app-authorship".into())
+            .spawn(move || match job.completion.recv() {
+                Ok(completed) if completed.code.is_empty() => {}
+                Ok(completed) => tracing::warn!(
+                    %room,
+                    %app,
+                    error = %completed.message,
+                    "an opening app was not let author its room"
+                ),
+                Err(_) => tracing::debug!(
+                    %room,
+                    %app,
+                    "an opening app's authorship ended without an answer"
+                ),
+            })
+            .map(drop)
+            .map_err(|error| format!("app authorship answer unheard: {error}"))
+    }
+
     fn invoke_workspace_person_action(
         &self,
         room: &str,
@@ -100,7 +187,7 @@ impl CapnpBrokerState {
         action: &str,
         argument: Option<&str>,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<super::InvocationJob, String> {
+    ) -> Result<super::StagedJob, String> {
         let route = CrdtRoute::record(APP, room, RECORD);
         let peers = self
             .surfaces
@@ -171,9 +258,55 @@ impl CapnpBrokerState {
                 admitted: Box::new(admitted),
                 time,
             }),
-        )?
-        // A host-side call from the shell's threads, never the broker's loop.
-        .start_blocking(self)
+        )
+    }
+
+    /// Whether `room`'s membership actions are published on this broker.
+    pub(crate) fn membership_published(&self, room: &str) -> bool {
+        self.workspace_membership_peers
+            .lock()
+            .is_ok_and(|peers| peers.contains_key(room))
+    }
+
+    /// Told whether `room`'s membership actions are published: at once when
+    /// they are, else once the broker's loop has refreshed its membership
+    /// surfaces, which this asks for. A room this device just made or joined
+    /// is published by that refresh; an app opening there right away asks
+    /// its membership of the room only then. The receiver's sender drops
+    /// with the broker, which also answers that they are not.
+    pub(crate) fn await_membership_surface(&self, room: &str) -> std::sync::mpsc::Receiver<bool> {
+        let (told, published) = std::sync::mpsc::channel();
+        if self.membership_published(room) {
+            let _ = told.send(true);
+            return published;
+        }
+        if let Ok(mut waiting) = self.membership_surface_waiters.lock() {
+            waiting.push((room.to_owned(), told));
+        }
+        tilo_identity_host::policy_change::announce();
+        published
+    }
+
+    /// The opens waiting for a membership refresh, taken before it reads
+    /// the rooms ([`Self::await_membership_surface`]).
+    pub(super) fn take_membership_surface_waiters(
+        &self,
+    ) -> Vec<(String, std::sync::mpsc::Sender<bool>)> {
+        self.membership_surface_waiters
+            .lock()
+            .map(|mut waiting| std::mem::take(&mut *waiting))
+            .unwrap_or_default()
+    }
+
+    /// Tell `waiting` whether their rooms' membership actions are published
+    /// now that the refresh they waited for ran.
+    pub(super) fn answer_membership_surface_waiters(
+        &self,
+        waiting: Vec<(String, std::sync::mpsc::Sender<bool>)>,
+    ) {
+        for (room, told) in waiting {
+            let _ = told.send(self.membership_published(&room));
+        }
     }
 
     pub(super) fn refresh_workspace_membership_services(self: &Arc<Self>) -> Result<(), String> {
@@ -198,15 +331,15 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         })?;
         for (room, mut actions) in rooms {
-            if service.requires_room(&room) {
-                actions.extend(super::workspace_checkpoints::actions());
-            } else if service.grants_authorship_at_host(&room) {
-                // Governed by the node that stewards it: this device keeps
-                // the room's own membership changes and asks that host to
-                // commit them, but a checkpoint is this device's custody
-                // and is not the host's to make.
-            } else {
+            // A room its host stewards keeps its own membership changes
+            // here too: this device asks that host to commit them.
+            if !(service.requires_room(&room) || service.grants_authorship_at_host(&room)) {
                 continue;
+            }
+            // Checkpoints are their governor's custody: offered where this
+            // device governs the room, whichever model its records follow.
+            if service.keeps_checkpoints(&room) {
+                actions.extend(super::workspace_checkpoints::actions());
             }
 
             let existing = self
@@ -293,7 +426,7 @@ impl CapnpBrokerState {
         pending: &super::PendingInvocation,
         service: &dyn crate::services::WorkspaceMemberships,
     ) -> Result<serde_json::Value, String> {
-        if !service.requires_room(room) {
+        if !service.keeps_checkpoints(room) {
             return Err("checkpoint room changed".into());
         }
         if command.mutates() {
@@ -976,6 +1109,64 @@ mod tests {
                         .iter()
                         .any(|(resource, _)| *resource == "desktop:checkpoints"),
                     "a checkpoint is this device's custody, not the host's"
+                );
+                drop(state);
+            })
+            .await;
+    }
+
+    /// An app opened in a room that appeared since the broker last published
+    /// its rooms' membership actions waits for the broker's loop to publish
+    /// them, rather than being refused because it came first.
+    #[tokio::test]
+    async fn an_open_in_a_new_room_is_told_once_its_membership_actions_are_published() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Made just now",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                assert!(!state.membership_published(&room));
+                let published = state.await_membership_surface(&room);
+                assert!(
+                    published.try_recv().is_err(),
+                    "not told before the broker's loop has looked"
+                );
+                state.refresh_policy_surfaces();
+                assert_eq!(published.try_recv(), Ok(true));
+                assert_eq!(
+                    state.await_membership_surface(&room).try_recv(),
+                    Ok(true),
+                    "a room already published is told at once"
+                );
+
+                let unknown = uuid::Uuid::new_v4().to_string();
+                let refused = state.await_membership_surface(&unknown);
+                state.refresh_policy_surfaces();
+                assert_eq!(
+                    refused.try_recv(),
+                    Ok(false),
+                    "a room the broker publishes nothing for is told so, not left waiting"
                 );
                 drop(state);
             })

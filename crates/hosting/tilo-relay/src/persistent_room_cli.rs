@@ -1944,7 +1944,7 @@ const ROLES_FILE_EVERY_SECS: u64 = 2;
 /// What the room last said about who is online, and when it last wrote
 /// down when each member was last seen.
 struct OnlineWatch {
-    last_online: Option<(u32, u32, Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    last_online: Option<RoomEvent>,
     last_seen_written: tokio::time::Instant,
 }
 
@@ -1978,24 +1978,16 @@ impl OnlineWatch {
             .presence(&context.room, &here)
             .await
             .unwrap_or_default();
-        let online = (
-            u32::try_from(people).unwrap_or(u32::MAX),
-            u32::try_from(spectators).unwrap_or(u32::MAX),
-            faces,
+        let online = RoomEvent::Online {
+            people: u32::try_from(people).unwrap_or(u32::MAX),
+            spectators: u32::try_from(spectators).unwrap_or(u32::MAX),
+            here: faces,
             // The spectator person is a member nobody counts.
-            members.saturating_sub(1),
-        );
+            members: members.saturating_sub(1),
+            online: here.iter().map(hex::encode).collect(),
+        };
         if self.last_online.as_ref() != Some(&online) {
-            println!(
-                "{}",
-                RoomEvent::Online {
-                    people: online.0,
-                    spectators: online.1,
-                    here: online.2.clone(),
-                    members: online.3,
-                }
-                .to_line()
-            );
+            println!("{}", online.to_line());
             self.last_online = Some(online);
         }
         let now = tilo_clock::unix_now_ms();

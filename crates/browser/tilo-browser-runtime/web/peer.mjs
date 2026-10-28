@@ -669,6 +669,11 @@ export function createLiveLayer(peer, runtime, room, {
  *                               with keys the room's steward hands it, and
  *                               writes nothing: no channel access request,
  *                               live join, presence, voice or `here`.
+ * @param options.background     `true`: the page keeps this peer beside the
+ *                               room in front, only to deliver for it
+ *                               (problem reports to its home workspace).
+ *                               The host counts nobody online by it: no
+ *                               seat, no face, no online count.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -711,7 +716,7 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  watching = false,
+  watching = false, background = false,
 }) {
   if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
@@ -778,6 +783,9 @@ async function connect({
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
+  /** Called after each published status, so a surface follows the session
+   * (the transport, the admission, the store) and not only its mount. */
+  const statusListeners = new Set();
   const pendingRecordWaits = new Set();
   let peer;
   let live;
@@ -832,6 +840,9 @@ async function connect({
     remoteEvents = '[]';
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
+    for (const listener of [...statusListeners]) {
+      try { listener(snapshot); } catch {}
+    }
   };
   const untilSnapshot = (settled, timeoutMs, timeoutMessage) => new Promise((resolve, reject) => {
     const check = () => {
@@ -993,7 +1004,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, watching}),
+      withStartFields(certified, {displayName, watching, background: background || undefined}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -1103,6 +1114,7 @@ async function connect({
       stopLive();
       peer?.dispose();
       listeners.clear();
+      statusListeners.clear();
       await storage?.release();
     })().then(resolve, reject);
     return disposal;
@@ -1147,6 +1159,9 @@ async function connect({
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    /** Read the session's own status after every change to it (`onStatus`),
+     * so a page can follow it rather than only its first snapshot. */
+    onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     /** The live layer of the joined room, or `undefined` without a room. */
     get live() { return live; },
     /** The room's agents (`agents.mjs`), or `undefined` without a room. */
@@ -1222,6 +1237,15 @@ async function connect({
       }, 30_000, 'Feedback owner admission timed out');
     },
     feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
+    /** Send this room's reports through `carrier`, the page's peer in the
+     * room whose channel takes them (a web host's home workspace): reports
+     * reach it from whichever room the page is in. */
+    sendFeedbackThrough(carrier) {
+      const id = carrier?.runtimeId;
+      if (disposed || typeof id !== 'number') throw new Error('Feedback needs a connected peer to send through');
+      if (typeof peer?.sendFeedbackThrough !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
+      peer.sendFeedbackThrough(id);
+    },
 
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {

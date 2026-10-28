@@ -44,7 +44,6 @@ impl ResourceApp for NotesShell {
         let author = UserId(cx.me().unwrap_or("local").to_owned());
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
-        cx.saves().shown_by_view();
         let mut app = NotesApp::empty_surface(&author, cx.save_status());
         if let Some((page, _)) = launched_note(&cx.launch()) {
             app.open_when_present(page);
@@ -142,10 +141,6 @@ fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> 
 }
 
 impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
-    fn take_save_retry(&mut self) -> bool {
-        self.take_save_retry_request()
-    }
-
     fn effect(&mut self, effect: NotesEffect, cx: &mut EffectCx<Notebook, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }

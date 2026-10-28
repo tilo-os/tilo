@@ -77,6 +77,10 @@ pub struct Core {
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
+    /// What the program being run printed and kept, while one runs.
+    pub program: RefCell<Option<crate::program::ProgramIo>>,
+    /// What finds resources by text for programs' `find`.
+    pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -173,6 +177,8 @@ impl Core {
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
+            program: RefCell::new(None),
+            text_search: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -285,6 +291,9 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
             EventValue | Actions | Lenses | MetaOf | Phrase => self.platform_import(imp, a),
+            Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
+                self.program_import(imp, a)
+            }
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

@@ -187,6 +187,39 @@ pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
     Ok(runtime.block_on(future))
 }
 
+/// Run `future` on `runtime` and wait for its output on the calling thread.
+///
+/// The one way synchronous code calls into a runtime it does not drive — a
+/// daemon's network, a service's host — from a thread of its own: the
+/// future runs as a task of `runtime`, and the caller waits on a plain
+/// channel, outside any runtime. Unlike `Runtime::block_on` on a shared
+/// handle, the caller's thread never enters `runtime`, so it may be any
+/// thread that may block. Async code awaits the future instead.
+///
+/// # Errors
+///
+/// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] on a thread
+/// that drives async tasks (a worker of any runtime from this crate,
+/// `runtime`'s own included, where waiting would stall the tasks queued
+/// behind the caller, or deadlock a runtime with one worker), and
+/// [`Error::TaskFailed`] when the task panicked or `runtime` shut down
+/// before it finished.
+pub fn wait_on<F>(runtime: &Handle, future: F) -> Result<F::Output, Error>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    check_may_block()?;
+    if cfg!(target_family = "wasm") {
+        return Err(Error::UiThread);
+    }
+    let (answer, answered) = std::sync::mpsc::sync_channel(1);
+    runtime.spawn(async move {
+        let _ = answer.send(future.await);
+    });
+    answered.recv().map_err(|_| Error::TaskFailed)
+}
+
 /// Park the calling thread for `duration`: the sanctioned replacement for
 /// `std::thread::sleep`. Async code awaits [`sleep`] instead.
 ///
@@ -350,6 +383,70 @@ mod tests {
             spin = std::hint::black_box(spin.wrapping_add(1));
         }
         assert!(thread_cpu_time().unwrap() > start.saturating_add(slept));
+    }
+
+    #[test]
+    fn wait_on_runs_on_the_runtime_and_refuses_its_drivers() {
+        let runtime = daemon("wait-on-test").workers(1).build().unwrap();
+        // phase: a_plain_thread_waits_for_a_task_that_needs_the_timer
+        {
+            let value = wait_on(runtime.handle(), async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                tokio::spawn(async { 3 }).await.unwrap()
+            })
+            .unwrap();
+            assert_eq!(value, 3);
+        }
+        // phase: a_worker_of_the_same_one_worker_runtime_is_refused_not_deadlocked
+        {
+            let handle = runtime.handle().clone();
+            let nested = wait_on(
+                runtime.handle(),
+                async move { wait_on(&handle, async { 4 }) },
+            )
+            .unwrap();
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+        // phase: a_worker_of_another_runtime_is_refused
+        {
+            let other = daemon("wait-on-other").workers(1).build().unwrap();
+            let handle = runtime.handle().clone();
+            let nested =
+                wait_on(other.handle(), async move { wait_on(&handle, async { 5 }) }).unwrap();
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+        // phase: a_blocking_pool_thread_may_wait
+        {
+            let handle = runtime.handle().clone();
+            let inner = wait_on(runtime.handle(), async move {
+                tokio::task::spawn_blocking(move || wait_on(&handle, async { 6 }))
+                    .await
+                    .unwrap()
+            })
+            .unwrap();
+            assert_eq!(inner.unwrap(), 6);
+        }
+        // phase: a_ui_thread_is_refused
+        {
+            let handle = runtime.handle().clone();
+            let result = spawn_thread("ui-wait-on-test", move || {
+                mark_ui_thread();
+                wait_on(&handle, async { 1 })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            assert!(matches!(result, Err(Error::UiThread)));
+        }
+        // phase: a_shut_down_runtime_answers_task_failed
+        {
+            let handle = runtime.handle().clone();
+            runtime.shutdown_background();
+            assert!(matches!(
+                wait_on(&handle, async { 2 }),
+                Err(Error::TaskFailed)
+            ));
+        }
     }
 
     #[test]

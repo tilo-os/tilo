@@ -131,18 +131,24 @@ fn main() {
         harness.render_png(&path);
         println!("{}", path.display());
 
-        let stage = harness.root_mut::<Stage>();
+        // A person reaches both by clicking the bar's Tilo mark, so the
+        // frame is drawn in the pointer's modality: no focus ring on the
+        // control that happens to receive focus (`ui::focus_visible`).
+        ui::focus_visible::note(&ui::synthetic_input::mouse_press());
+        let mut stage = harness.root_mut::<Stage>();
         let (anchor, area) = (stage.bar.tilo_mark_rect(), stage.rect);
         stage.menu.toggle(anchor, area);
         stage.bar.set_tilo_menu_open(true);
+        drop(stage);
         harness.settle_for_capture(settle);
         let path = out.join(format!("menu-{variant}.png"));
         harness.render_png(&path);
         println!("{}", path.display());
 
-        let stage = harness.root_mut::<Stage>();
+        let mut stage = harness.root_mut::<Stage>();
         stage.menu.show_about();
         stage.bar.set_tilo_menu_open(false);
+        drop(stage);
         harness.settle_for_capture(settle);
         let path = out.join(format!("about-{variant}.png"));
         harness.render_png(&path);

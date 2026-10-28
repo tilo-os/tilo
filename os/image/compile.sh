@@ -61,6 +61,12 @@ if [[ ${1:-} == --dev ]]; then
   dev_bins=$(python3 os/scripts/install-components.py --dev --dry-run --format bins)
   [[ -n $dev_cargo_args && -n $dev_bins ]] || { echo 'install-components.py names no dev components' >&2; exit 1; }
   printf 'dev image build: cargo build --release %s\n' "$dev_cargo_args"
+  # Cargo compares mtimes, and a tree synced to a build host (rsync keeps the checkout's
+  # times) can hand it an edited source older than the kept artifact, which it would link
+  # stale: the files whose contents changed since the last build are made newer first, as
+  # for the image's own compile (TILO_CARGO_FRESHNESS=content).
+  dev_built_sources="$CARGO_TARGET_DIR/.tilo-built-sources-dev"
+  sh os/scripts/cargo-freshness.sh "$(pwd)" "$dev_built_sources" || cargo clean --release
   # The image compile's settings without LTO (16 codegen units, no line tables, which the
   # release profile strips from what it links anyway), so the crates both build come from
   # one compiler cache entry, and the shell, rebuilt by most changes, compiles in parallel.
@@ -69,6 +75,7 @@ if [[ ${1:-} == --dev ]]; then
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=$([ "$TILO_DEV_RUST_LTO" = off ] && echo 16 || echo 8) \
   CARGO_PROFILE_RELEASE_DEBUG=0 \
     bash tools/ci/measure.sh "dev cargo" -- cargo build --release $dev_cargo_args
+  sh os/scripts/cargo-freshness.sh --built "$dev_built_sources"
   for b in $dev_bins; do cp "$CARGO_TARGET_DIR/release/$b" "$out/"; done
   os/scripts/verify-elf-hardening.sh "$out"
   exit 0
@@ -193,6 +200,15 @@ build_phase() {
   started=$now
 }
 trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; command -v sccache >/dev/null && sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT
+# The greeter is built twice. The release build above resolves features for
+# the whole workspace through workspace-hack, which hands the greeter the media
+# stack other members enable. Its initramfs copy (phase rust-boot-greeter,
+# profile `initrd`) links the empty os/initrd/workspace-hack instead, so it
+# takes only what its own manifests name and every boot unpacks no GStreamer or
+# PipeWire. The resolve that build writes to Cargo.lock is put back after it.
+# It links as its profile says (fat LTO, one codegen unit), which keeps it
+# within the initramfs's budget, not with the release build's thin LTO; an
+# image linked without LTO links it without LTO too.
 if [[ $TILO_COMPILER_CACHE == off ]]; then
   if [[ -n ${RUSTC_WRAPPER:-}${SCCACHE_BUCKET:-}${SCCACHE_ENDPOINT:-}${SCCACHE_DIR:-}${ACTIONS_CACHE_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${AWS_ACCESS_KEY_ID:-} ]]; then
     echo 'a build without the compiler cache received compiler-cache settings' >&2; exit 1
@@ -360,8 +376,8 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-net-answers \
           $target/release/tilo-identity \
           "$out"/ \
-    && ln -s app "$out"/store \
-    && ln -s tilo "$out"/system \
+    && ln -sfn app "$out"/store \
+    && ln -sfn tilo "$out"/system \
     && mkdir -p "$out"/completions/bash "$out"/completions/fish "$out"/completions/zsh \
     && $target/release/tilo completions bash > "$out"/completions/bash/tilo \
     && $target/release/app completions bash > "$out"/completions/bash/app \
@@ -406,6 +422,15 @@ case "$TILO_RUST_LTO" in \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" "$out"/; \
        fi \
+    && build_phase rust-boot-greeter \
+    && cp Cargo.lock "$scratch/Cargo.lock" \
+    && if [ "$TILO_RUST_LTO" = off ]; then initrd_lto=off initrd_units=16; else initrd_lto=fat initrd_units=1; fi \
+    && { CARGO_PROFILE_INITRD_LTO="$initrd_lto" \
+         CARGO_PROFILE_INITRD_CODEGEN_UNITS="$initrd_units" \
+         cargo build --profile initrd -p greeter --bin tilo-greeter \
+           --config 'patch.crates-io.workspace-hack.path="os/initrd/workspace-hack"'; \
+         boot_status=$?; cp "$scratch/Cargo.lock" Cargo.lock; [ "$boot_status" = 0 ]; } \
+    && cp $target/initrd/tilo-greeter "$out"/tilo-greeter-boot \
     && build_phase chromium-engine \
     && if [ "${TILO_WITH_BROWSER}" = 0 ] || [ "${TILO_CHROMIUM_ENGINE:-}" = apart ]; then \
          :; \
@@ -421,7 +446,10 @@ case "$TILO_RUST_LTO" in \
     && build_phase rust-cleanup \
     && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
          find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
-       fi
+       fi \
+    || exit
+# errexit ignores a failure anywhere in the list above but in its last command,
+# so `|| exit` is what stops the build at a phase that fails.
 
 build_phase elf-hardening
 os/scripts/verify-elf-hardening.sh "$out" \

@@ -417,6 +417,20 @@ impl HttpsLink {
         revocations: &RevocationList,
         signer: &dyn DeviceSigner,
     ) -> Result<Self, LinkError> {
+        Self::connect_as(client, cert, host_device, revocations, signer, false).await
+    }
+
+    /// [`Self::connect`], as a background session when `background`: one a
+    /// page keeps beside the room it is in, which counts nobody online
+    /// ([`SessionFinish::background`]).
+    pub async fn connect_as(
+        client: Arc<dyn HttpClient>,
+        cert: &DeviceCert,
+        host_device: [u8; 32],
+        revocations: &RevocationList,
+        signer: &dyn DeviceSigner,
+        background: bool,
+    ) -> Result<Self, LinkError> {
         let client_nonce: [u8; 32] = rand::random();
         let challenge: SessionChallenge = postcard::from_bytes(
             &handshake_raw(
@@ -452,6 +466,7 @@ impl HttpsLink {
                     ack2: HelloAck2 {
                         sig_over_server_nonce,
                     },
+                    background,
                 })?,
             )
             .await?,

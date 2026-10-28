@@ -35,8 +35,6 @@ mod commit_dedup;
 mod compute_content;
 #[path = "compute_session.rs"]
 mod compute_session;
-#[path = "cross_user_workspace_host.rs"]
-mod cross_user_workspace_host;
 #[path = "device_certification.rs"]
 mod device_certification;
 #[path = "durable_host_restart.rs"]
@@ -66,8 +64,8 @@ mod governed_rooms;
 mod governed_workspace_access;
 #[path = "hosting_cost.rs"]
 mod hosting_cost;
-#[path = "interactive_workspace_owner.rs"]
-mod interactive_workspace_owner;
+#[path = "hosting_member.rs"]
+mod hosting_member;
 #[cfg(target_os = "linux")]
 #[path = "legacy_on_kvm.rs"]
 mod legacy_on_kvm;
@@ -95,6 +93,8 @@ mod relay_daemon;
 mod remote_action_routing;
 #[path = "room_admission.rs"]
 mod room_admission;
+#[path = "room_host.rs"]
+mod room_host;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "tenant_isolation.rs"]

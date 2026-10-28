@@ -249,7 +249,7 @@ impl ScreenshotSendBridge for FabricSendBridge<'_> {
 
     fn offer_to_device(&mut self, id: &str, screenshot: PreparedNearbyDrop) -> Result<(), String> {
         let network = self.network.ok_or_else(|| t("screenshot-send-sync-off"))?;
-        let device = crate::shell::personal_continuity::DeviceId::new(id)
+        let device = tilo_network_actor::fabric::DeviceId::new(id)
             .map_err(|_| t("screenshot-send-device-offline"))?;
         crate::shell::device_fabric_runtime::request_prepared_nearby_drop(
             network,

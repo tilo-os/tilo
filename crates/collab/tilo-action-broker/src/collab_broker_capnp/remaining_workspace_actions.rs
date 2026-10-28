@@ -271,7 +271,7 @@ impl CapnpBrokerState {
         reason = "one ordered admission of a shortcut library operation: descriptor, witness, decode, catalogue and run"
     )]
     fn admitted_shortcut_library(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
         authority: (&Workspace, &BrokerActor, u64),
@@ -363,38 +363,57 @@ impl CapnpBrokerState {
             )?;
             Ok((plan, actor))
         })?;
-        let result = match plan {
-            crate::automation::LibraryPlan::Answer(output) => Ok(output),
+        let (change, output) = match plan {
+            crate::automation::LibraryPlan::Answer(output) => {
+                return self.finish_framework_action(admitted, Ok(output));
+            }
             crate::automation::LibraryPlan::Stop(stop) => {
                 let stopped = self.ended_runs.running.running.stop(
                     &room,
                     &stop,
                     "asked for from the shortcuts library",
                 );
-                Ok(crate::automation::stopped_output(&stopped))
+                return self.finish_framework_action(
+                    admitted,
+                    Ok(crate::automation::stopped_output(&stopped)),
+                );
             }
-            crate::automation::LibraryPlan::Change { change, output } => library
-                .store(&crate::services::ShortcutLibraryRequest {
-                    room: &room,
-                    actor: &actor,
-                    change: &change,
-                    context: request
-                        .context
-                        .clone()
-                        .unwrap_or_else(|| crate::automation::library_context(&descriptor)),
-                    invocation: admitted.invocation,
-                })
-                .map(|()| output)
-                .map_err(|message| {
-                    Box::new(ActionFailure {
-                        code: "shortcut_library_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    })
-                }),
+            crate::automation::LibraryPlan::Change { change, output } => (change, output),
         };
-        self.finish_framework_action(admitted, result)
+        let failed = |message: String| {
+            Box::new(ActionFailure {
+                code: "shortcut_library_failed".into(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        };
+        // The change commits at the room's governor, which may be another
+        // device's host: awaited on the library's runtime, and the invocation
+        // finishes when it does.
+        let runtime = match library.runtime() {
+            Ok(runtime) => runtime,
+            Err(message) => return self.finish_framework_action(admitted, Err(failed(message))),
+        };
+        let stored = library.store(crate::services::ShortcutLibraryRequest {
+            room,
+            actor: actor.id().to_owned(),
+            change,
+            context: request
+                .context
+                .clone()
+                .unwrap_or_else(|| crate::automation::library_context(&descriptor)),
+            invocation: admitted.invocation,
+        });
+        let id = admitted.id;
+        let broker = Arc::clone(self);
+        runtime.spawn(async move {
+            let result = stored.await.map(|()| output).map_err(failed);
+            if let Err(error) = broker.finish_framework_action(admitted, result) {
+                tracing::warn!(?error, "a shortcut change finished after its invocation");
+            }
+        });
+        Ok(id)
     }
 
     fn admitted_keyboard_shortcut(

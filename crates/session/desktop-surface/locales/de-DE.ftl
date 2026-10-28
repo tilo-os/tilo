@@ -496,6 +496,7 @@ desktop-app-unavailable = Anwendung nicht verfügbar
 desktop-app-identity-unavailable = Anwendungsidentität nicht verfügbar
 desktop-app-integration-unavailable = { $app }: Anwendungsintegration oder benötigter Dienst nicht verfügbar
 desktop-app-no-adapter = Kein semantischer Anwendungsadapter; prozesslokale Pixel lassen sich nicht wiederherstellen
+desktop-search-copied = Kopiert
 desktop-view-switch-workspace = Zu { $workspace } wechseln
 desktop-view-review-activity = Arbeitsbereich-Aktivität ansehen
 desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden
@@ -518,11 +519,14 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
+search-window-share-tab = „{ $tab }“ mit dem Arbeitsbereich teilen
+search-window-unshare-tab = „{ $tab }“ nicht mehr teilen
 search-window-focus-place-strip = Leiste „{ $strip }“
 # Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
 # Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
 search-window-verb-close = schließen beenden close quit
 search-window-verb-relocate = verschieben kopieren senden move copy send
+search-window-verb-share = teilen zeigen beenden share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück

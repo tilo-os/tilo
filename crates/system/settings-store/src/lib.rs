@@ -104,6 +104,8 @@ pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;
+#[cfg(any(test, feature = "test-support"))]
+pub mod faults;
 pub mod hardware;
 pub mod identity;
 pub mod index;

@@ -24,7 +24,7 @@ pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
 pub use ::collaboration::record::{
     MAX_FORMER_IDS, MAX_RECORD_RELATION_BYTES, RecordCheckout, RecordId, RecordKind, RecordRef,
-    valid_label,
+    RecordSaveStatus, valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -47,8 +47,7 @@ pub mod person;
 pub mod transfer;
 pub mod workspace;
 
-/// Key, in a record's own document, of the map holding its identity.
-const META: &str = "tilo:record";
+use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
 /// Key in a record document for the room that owns this local replica.
 /// `RecordId` is a user/application name; it is not an authority boundary.
 const ROOM: &str = "room";
@@ -63,66 +62,12 @@ const FORMERLY: &str = "formerly";
 pub const MAX_DISCOVERED_ROOM_RECORDS: usize = 64;
 const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
 
-enum ObjectAt {
-    Missing,
-    Object(ObjId),
-    Invalid,
-}
-
-enum StringAt {
-    Missing,
-    String(String),
-    Invalid,
-}
-
-fn object_at(doc: &AutoCommit, object: &ObjId, key: &str, kind: ObjType) -> ObjectAt {
-    let Ok(mut values) = doc.get_all(object, key) else {
-        return ObjectAt::Invalid;
-    };
-    if values.is_empty() {
-        return ObjectAt::Missing;
-    }
-    if values.len() != 1 {
-        return ObjectAt::Invalid;
-    }
-    match values.pop() {
-        Some((Value::Object(found), id)) if found == kind => ObjectAt::Object(id),
-        _ => ObjectAt::Invalid,
-    }
-}
-
-fn string_at(doc: &AutoCommit, object: &ObjId, key: &str) -> StringAt {
-    let Ok(mut values) = doc.get_all(object, key) else {
-        return StringAt::Invalid;
-    };
-    if values.is_empty() {
-        return StringAt::Missing;
-    }
-    if values.len() != 1 {
-        return StringAt::Invalid;
-    }
-    match values.pop() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            ScalarValue::Str(value) => StringAt::String(value.to_string()),
-            _ => StringAt::Invalid,
-        },
-        _ => StringAt::Invalid,
-    }
-}
-
 /// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     match object_at(doc, &ROOT, META, ObjType::Map) {
         ObjectAt::Missing => doc.put_object(&ROOT, META, ObjType::Map).ok(),
         ObjectAt::Object(object) => Some(object),
         ObjectAt::Invalid => None,
-    }
-}
-
-fn meta_ro(doc: &AutoCommit) -> Option<ObjId> {
-    match object_at(doc, &ROOT, META, ObjType::Map) {
-        ObjectAt::Object(object) => Some(object),
-        ObjectAt::Missing | ObjectAt::Invalid => None,
     }
 }
 
@@ -1075,12 +1020,13 @@ impl RecordSet {
                     .record(&self.package_id, &self.home, want)
                     .inspect_err(|error| {
                         // A record on its way fails nothing.
-                        if let RecordOpenError::Initialization(error) = error {
+                        if let crate::collaboration::native_initial::RecordReadError::Initialization(error) = error {
                             crate::collaboration::native_initial::fail(error);
                         }
                     })
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
         let mut doc = if let Some(read) = &initial {
             read.with_mutation(|mutation| {
                 let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
@@ -1121,10 +1067,11 @@ impl RecordSet {
         &self,
         record_key: &str,
     ) -> Result<app_state::DocStore, app_state::StoreError> {
-        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
-        app_state::DocStore::shared(
-            Rc::clone(self.documents()?),
-            StorageKey::record(&self.package_id, &self.home, record_key),
+        ::collaboration::record::save::record_document(
+            self.documents()?,
+            &self.package_id,
+            &self.home,
+            record_key,
         )
     }
 
@@ -1368,13 +1315,22 @@ impl RecordSet {
                     .native_initial
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge.record(&self.package_id, &self.home, want)?;
+                let read = bridge
+                    .record(&self.package_id, &self.home, want)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, want, &self.home, &read)?;
             }
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
-        if let Some(bridge) = &self.native_initial {
-            let read = bridge.record(&self.package_id, &self.home, want)?;
+        // A record no committed read answers (the app's own channel serves
+        // it) opens below, as without a bridge.
+        if let Some(read) = self
+            .native_initial
+            .as_ref()
+            .map(|bridge| bridge.record(&self.package_id, &self.home, want))
+            .transpose()?
+            .flatten()
+        {
             let store = if want.id.is_package_primary() {
                 app_state::DocStore::shared(backend, key)?
             } else {
@@ -1641,7 +1597,9 @@ impl RecordStore {
         if workspace.id != self.0.borrow().home {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        initialization.validate_original(&original, checkout, &workspace.id)?;
+        initialization.validate_original(checkout, |read| {
+            validate_creation_capture(&original, checkout, &workspace.id, read)
+        })?;
         let original_heads = original.base_heads();
         let mut document = original.clone();
         genesis(&mut document, checkout, &workspace.id, initialize)?;
@@ -1761,7 +1719,8 @@ impl RecordOwners {
             app_state::validate_record_identity(package_id, workspace_id, "validation")?;
         }
         if let Some(cache) = &self.portable
-            && let Some(owner) = cache.record_owner(package_id, workspace_id)
+            && let Some(owner) =
+                cache.record_owner::<std::cell::RefCell<RecordSet>>(package_id, workspace_id)
         {
             return Ok(RecordStore(owner));
         }
@@ -1958,14 +1917,6 @@ impl RoomNotices {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordSaveStatus {
-    Saved,
-    Saving,
-    Failed(String),
-    MemoryOnly,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecordOpenOutcome {
     Loaded,
@@ -2107,6 +2058,17 @@ fn validate_created_identity(
         return Err(RecordOpenError::IdentityMismatch);
     }
     Ok(())
+}
+
+impl From<crate::collaboration::native_initial::RecordReadError> for RecordOpenError {
+    fn from(error: crate::collaboration::native_initial::RecordReadError) -> Self {
+        use crate::collaboration::native_initial::RecordReadError;
+        match error {
+            RecordReadError::IdentityMismatch => Self::IdentityMismatch,
+            RecordReadError::Arriving => Self::Arriving,
+            RecordReadError::Initialization(error) => Self::Initialization(error),
+        }
+    }
 }
 
 pub(crate) fn validate_creation_capture(
@@ -2497,7 +2459,9 @@ impl RecordStore {
                     .native_initial
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge.record(&set.package_id, &set.home, checkout)?;
+                let read = bridge
+                    .record(&set.package_id, &set.home, checkout)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
             }
@@ -2797,7 +2761,14 @@ impl RecordStore {
         if set.portable.is_some() {
             return self.reserve_portable(&mut set, want);
         }
-        if set.native_initial.is_some() {
+        // A record the app's own channel answers (one a sealed room does not
+        // hold yet) is new, and the app makes it: reserved as without a
+        // bridge. Every other new record waits for its creation admission.
+        if set
+            .native_initial
+            .as_ref()
+            .is_some_and(|bridge| !bridge.answered_by_own_channel(want))
+        {
             return Err(RecordOpenError::Initialization(
                 "native new document requires governor creation admission before canonical reservation".into(),
             ));
@@ -2862,19 +2833,7 @@ impl RecordStore {
             ));
         }
         if let Some(saver) = &slot.autosave {
-            let snapshot = saver.durability_snapshot();
-            if let Some(error) = snapshot.error {
-                return Ok(RecordSaveStatus::Failed(error));
-            }
-            // A record that was never written holds nothing durable; while
-            // it has no changes either (a pristine record) there is nothing
-            // to save, so it reads as saved rather than saving.
-            let durable = snapshot.durable_heads.unwrap_or_default();
-            return Ok(if doc.pending_ops() == 0 && durable == doc.base_heads() {
-                RecordSaveStatus::Saved
-            } else {
-                RecordSaveStatus::Saving
-            });
+            return Ok(RecordSaveStatus::of_writer(doc, saver));
         }
         Ok(if set.persistent {
             RecordSaveStatus::Failed("record persistence unavailable".to_owned())
@@ -3941,6 +3900,9 @@ mod identity_tests;
 mod arrival;
 mod opening;
 pub use opening::RecordOpening;
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
+mod named_creation_tests;
 #[cfg(test)]
 mod replica_merge_tests;
 

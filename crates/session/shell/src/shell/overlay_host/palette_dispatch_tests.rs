@@ -17,6 +17,20 @@ fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) 
     (host, chrome)
 }
 
+/// A host acting as the person who governs the active room, a room this
+/// device holds: where an invitation can be issued. Keep the guard alive
+/// for the test's length.
+fn host_governing_its_room() -> (
+    ShellOverlayHost,
+    crate::shell::chrome_state::Chrome,
+    crate::shell::native_workspace_owner::GovernedRoomGuard,
+) {
+    let (chrome, guard) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+    let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    (host, chrome, guard)
+}
+
 fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
     let (mut host, chrome) = host_with_chrome();
     host.desktop_controls = DesktopControlsSource::Persisted(
@@ -470,19 +484,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
         };
 
-        let (mut host, chrome) = host_with_chrome();
-        {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let workspace = tree
-                .desktop
-                .active_workspace_mut()
-                .expect("active workspace");
-            workspace.set_owner(crate::shell::state::local_user_id_for_room(
-                &workspace.room(),
-            ));
-            drop(tree);
-        }
+        let (mut host, chrome, _governed) = host_governing_its_room();
         chrome.borrow_mut().peer_sync_enabled = true;
         let mut document = AutoCommit::new();
         let action = {
@@ -1532,13 +1534,7 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     /// An empty field is the question still unanswered. Minting anyway
     /// is exactly what left the host looking at a number.
     fn the_composer_refuses_to_mint_for_nobody() {
-        let (mut h, chrome) = host_with_chrome();
-        {
-            let state = chrome.borrow();
-            state
-                .tree_mut()
-                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-        }
+        let (mut h, chrome, _governed) = host_governing_its_room();
         chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
             Ok(PeerSyncResponse::Message("a-token".to_string()))
@@ -1569,22 +1565,15 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 }
 
 /// The invite composer, the policy and the issuer give one answer: a member
-/// holding a delegated `Invite` grant in a room another person governs is not
-/// offered a composer the issuer would refuse, and the issuer refuses with the
-/// policy's reason; without the grant both refuse for lack of permission.
+/// without the `Invite` grant is not offered a composer, and the issuer
+/// refuses with the policy's reason.
 #[test]
-fn delegated_inviter_follows_the_capability_policy() {
+fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
     use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
-    use crate::shell::state::{PeerOrigin, RoomAuthority};
 
     let mut tree = WorkspaceTree::default();
-    let local = tree.append_empty_workspace("Joined room");
+    let local = tree.create_hosted_workspace("Joined room").0;
     tree.desktop.active = local;
-    let room = tree.room_of(local).expect("room");
-    tree.room_authority.insert(
-        room,
-        RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
-    );
     tree.desktop
         .workspaces
         .iter_mut()
@@ -1596,8 +1585,7 @@ fn delegated_inviter_follows_the_capability_policy() {
     chrome.borrow_mut().peer_sync_enabled = true;
     let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());
-    let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
-    let carol = crate::shell::state::local_user_id_for_room(&room);
+    let (net, _commands) = crate::shell::network::shell_network_for_test(handle, 0x354);
     let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
     let issue = || {
         net.issue_invite_named_with_role(
@@ -1614,33 +1602,6 @@ fn delegated_inviter_follows_the_capability_policy() {
     assert_eq!(
         issue().expect_err("and the issuer refuses her"),
         refused.refusal().expect("a refusal has a reason"),
-    );
-
-    crate::shell::invite_policy::tests::grant_invite(
-        handle
-            .write()
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == local)
-            .expect("workspace"),
-        &carol,
-    );
-
-    assert_eq!(
-        route(),
-        InviteRoute::ViaGovernor,
-        "the grant lets Carol invite, but only the governing device signs invitations"
-    );
-    assert!(
-        !host.may_invite_here(),
-        "the composer is not offered where the issuer cannot issue"
-    );
-    assert_eq!(
-        issue().expect_err("the issuer sends Carol to the owner"),
-        InviteRoute::ViaGovernor
-            .refusal()
-            .expect("a refusal has a reason"),
     );
 }
 
@@ -1710,13 +1671,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
     /// with the card saying so. Splitting mint from Copy is how the copy
     /// gets skipped — nobody thinks to do the second half.
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
-        let (mut h, chrome) = host_with_chrome();
-        {
-            let state = chrome.borrow();
-            state
-                .tree_mut()
-                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-        }
+        let (mut h, chrome, _governed) = host_governing_its_room();
         chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
             PeerSyncRequest::IssueInviteFor { name, .. } => {
@@ -1731,6 +1686,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             ))),
             PeerSyncRequest::AcceptInvite(_)
             | PeerSyncRequest::LeaveSite(_)
+            | PeerSyncRequest::DeleteWorkspace(_)
             | PeerSyncRequest::RetryJoin(_)
             | PeerSyncRequest::InviteDevice
             | PeerSyncRequest::DevicesAsking
@@ -1742,7 +1698,8 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             | PeerSyncRequest::ReportWorkspace { .. }
             | PeerSyncRequest::Publication(_)
             | PeerSyncRequest::Publish { .. }
-            | PeerSyncRequest::AskForBot { .. } => Err("not here".to_string()),
+            | PeerSyncRequest::AskForBot { .. }
+            | PeerSyncRequest::ShareWindow { .. } => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }
@@ -2130,7 +2087,7 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
         let state = chrome.borrow();
         state
             .tree_mut()
-            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+            .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
     }
     chrome.borrow_mut().peer_sync_enabled = true;
     let pending_id = [0x42; 32];
@@ -2641,13 +2598,7 @@ fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
 
 #[test]
 fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
-    let (mut h, chrome) = host_with_chrome();
-    {
-        let state = chrome.borrow();
-        state
-            .tree_mut()
-            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-    }
+    let (mut h, chrome, _governed) = host_governing_its_room();
     h.set_peer_sync_enabled(true);
     chrome
         .borrow_mut()

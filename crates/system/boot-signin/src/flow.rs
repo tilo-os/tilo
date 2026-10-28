@@ -60,7 +60,8 @@ pub enum Unlock {
 }
 
 /// The line under the field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Note {
     None,
     Wrong {

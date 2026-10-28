@@ -97,10 +97,11 @@ pub fn show_install_under_way_for_shots(
         tilo_desktop_model::commands::OpenIntent::Launch,
         None,
     );
+    let id = tree.mint_id();
     let tab = crate::shell::tab_binding::place_tab(
         tree,
         crate::shell::state::Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: label.to_owned(),
             tile: TileContent::PeerWindow {
                 app_id: app_id.to_owned(),
@@ -480,7 +481,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         // A governed room's window opens the record its owner created for
         // it; wait until this device has admitted it.
-        if !item.local && tree.requires_native_owner(workspace.room()) {
+        if !item.local {
             match prepare_hosted_record(tree, &item) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -649,7 +650,9 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     };
     let room = ws.room();
     let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
-        let Some(record) = ui::record::RecordId::parse(&record) else {
+        // A route: a window shared with a personal room may show its app's
+        // own record of the room, which travels under the empty one.
+        let Some(record) = ui::record::RecordId::from_route(&record) else {
             return Ok(false);
         };
         record
@@ -896,16 +899,13 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     // Profile-backed windows need their exact record before launch. Native
     // committed rooms read through their owner: an app profile is neither
     // required nor an authority fallback for that path.
-    if !item.local && !tree.commits_native_documents(ws.room()) {
+    if !item.local && tree.seals_records(ws.room()) {
         bring_over_continued_record(item, ws.room())?;
     }
     stage_continuation_for_tab(tree, item);
     // The instance runs as the tab, whose saved view names the record the
     // room's owner created for it (`prepare_hosted_record`).
-    if !item.local
-        && tree.requires_native_owner(ws.room())
-        && tree.room_tab_record(ws.room(), item.tab).is_some()
-    {
+    if !item.local && tree.room_tab_record(ws.room(), item.tab).is_some() {
         launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
@@ -1849,6 +1849,112 @@ mod tests {
         (tree, tab_id)
     }
 
+    /// Records of governed rooms as this device reads them through their
+    /// host: (room, app, record) and the record's bytes.
+    type HeldRecords = Vec<(RoomId, String, ui::record::RecordId, Vec<u8>)>;
+    static HELD_RECORDS: std::sync::Mutex<HeldRecords> = std::sync::Mutex::new(Vec::new());
+
+    /// What a governed window's record needs to be reachable here: this
+    /// device's data home, and the reader of hosted records.
+    struct HeldRecord {
+        _data_home: tempfile::TempDir,
+        _env: tilo_test_env::ScopedEnv,
+    }
+
+    /// The room's document binds `tab` of the peer's window to a record of
+    /// `app` that its host holds, as the room's governor created it.
+    fn hold_the_windows_record(tree: &mut WorkspaceTree, tab: u64, app: &str) -> HeldRecord {
+        use automerge::transaction::Transactable as _;
+        use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+        let ws = &tree.desktop.workspaces[0];
+        let room = ws.room();
+        let holder = tempfile::tempdir().unwrap();
+        let profile_dir = crate::shell::record_hydration::profile_root(holder.path(), room, app);
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let profile =
+            ui::application::NativeProfile::open(&profile_dir, Some(&room.to_string())).unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("draft"));
+        let records = RecordOwners::new(profile_dir)
+            .open(app, profile.workspace_id())
+            .unwrap();
+        records.create_record(&checkout).unwrap();
+        records
+            .with(&checkout.id, |doc| {
+                doc.put(automerge::ROOT, "body", "written by the room's owner")
+                    .unwrap();
+            })
+            .unwrap();
+        records.try_flush().unwrap();
+        drop(records);
+        let bytes = ui::record::transfer::read_by_id(
+            profile.store(),
+            app,
+            profile.workspace_id(),
+            &checkout.id,
+        )
+        .unwrap()
+        .save();
+
+        // The peer who opened the window publishes it, and the room's
+        // governor names its record.
+        let mut published = ws.clone();
+        published.strips.truncate(1);
+        let mut document = automerge::AutoCommit::new();
+        tilo_desktop_model::shared_record::write(
+            &mut document,
+            &tilo_desktop_model::ownership::SharedDesktop {
+                tree: tilo_desktop_model::DesktopTree {
+                    active: published.id,
+                    workspaces: vec![published],
+                    ..tilo_desktop_model::DesktopTree::default()
+                },
+                records: vec![(tab, checkout.id.as_str().to_owned())],
+                authors: tilo_desktop_model::ownership::Authors::default(),
+            },
+        )
+        .unwrap();
+        tree.layout_docs.insert(room, document);
+
+        HELD_RECORDS
+            .lock()
+            .unwrap()
+            .push((room, app.to_owned(), checkout.id, bytes));
+        set_hosted_record_reader(Box::new(|room, app, record| {
+            HELD_RECORDS
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|held| held.0 == room && held.1 == app && &held.2 == record)
+                .map(|held| held.3.clone())
+                .ok_or_else(|| "not held".to_owned())
+        }));
+        let data_home = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data_home.path());
+        HeldRecord {
+            _data_home: data_home,
+            _env: env,
+        }
+    }
+
+    /// Examine until the waiting window's app has been started: its record
+    /// is kept here first, which reaches the disk on the store's thread.
+    fn examine_until_started(tree: &mut WorkspaceTree) {
+        tilo_test_env::wait_until("the window to stop waiting for its record", || {
+            let _ = examine(tree);
+            !tree
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|ws| &ws.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| {
+                    matches!(&tab.tile, TileContent::PeerWindow { note, .. } if note.is_empty())
+                })
+        });
+    }
+
     /// An id carrying a salt that isn't this process's, so tabs built
     /// with it look like a peer's.
     fn peer_id() -> u64 {
@@ -1901,7 +2007,7 @@ mod tests {
         other.strips = vec![strip];
         let other_id = other.id;
         tree.desktop.workspaces.push(other);
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
 
         assert_eq!(
             opened_here(&tree, SETTINGS),
@@ -1941,7 +2047,8 @@ mod tests {
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
+            let (mut tree, tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
+            let _held = hold_the_windows_record(&mut tree, tab, FILES);
 
             assert!(
                 !may_read(&tree.desktop.workspaces[0], FILES, &home),
@@ -1949,7 +2056,7 @@ mod tests {
                  or this test cannot tell a granted one from a pre-granted one"
             );
 
-            let _ = examine(&mut tree);
+            examine_until_started(&mut tree);
 
             assert!(
                 may_read(&tree.desktop.workspaces[0], FILES, &home),
@@ -1961,9 +2068,10 @@ mod tests {
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
+            let (mut tree, tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
+            let _held = hold_the_windows_record(&mut tree, tab, APP);
 
-            let _ = examine(&mut tree);
+            examine_until_started(&mut tree);
 
             assert!(
                 !may_read(&tree.desktop.workspaces[0], APP, &home),

@@ -7,14 +7,35 @@
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 
-FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
+FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b AS fedora
+
+# Wine built from pinned source with Tilo's patches (os/external-assets/wine/
+# README.md), in its own stage so its compilers stay out of the image. x86_64
+# only: the programs it runs are x86 Windows programs. Elsewhere it builds
+# nothing and the image copies an empty tree.
+FROM fedora AS wine
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-wine.sh,target=/tmp/install-wine.sh,ro \
+    --mount=type=bind,source=os/external-assets/wine,target=/tmp/wine-patches,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    mkdir -p /wine \
+    && if [ "$(uname -m)" = x86_64 ]; then \
+      dnf install -y --setopt=install_weak_deps=False \
+        gcc make flex bison patch mingw32-gcc mingw64-gcc \
+        freetype-devel fontconfig-devel gnutls-devel \
+      && bash /tmp/install-wine.sh /tilo-assets /wine /tmp/tilo-assets.tsv /tmp/wine-patches; \
+    fi
+
+FROM fedora
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    CHROME=/usr/lib64/chromium-browser/chromium-browser
 
 # The workspace's build dependencies, the test suites' runtime (GStreamer
-# plugins, fonts, lavapipe, PulseAudio, the sandbox/LUKS/TPM test subjects) and
+# plugins, fonts, lavapipe, PulseAudio, the sandbox/LUKS/TPM test subjects, the
+# OSTree/Flatpak fixtures' tools and the Chromium that CHROME names) and
 # the pinned cargo-nextest come from the same script and profile the developer
 # distrobox (dist/dev/Containerfile.fedora44) installs, so CI builds and tests
 # against exactly what developers do. The script also bootstraps the pinned Rust
@@ -69,17 +90,6 @@ RUN dnf install -y \
       nodejs \
       ripgrep time yt-dlp \
     && dnf clean all
-
-# The launcher's signed OSTree/OpenPGP capture fixture (launcher-root) commits
-# a GPG-signed OSTree repository and compiles the OpenPGP engine probe against
-# gpgme, as the image build of that engine does.
-RUN dnf install -y --setopt=install_weak_deps=False ostree gpgme-devel \
-    && dnf clean all && rm -rf /var/cache/dnf
-
-# The imager backend's signed offline Flatpak fixture (imager-tests-<arch>) restores a
-# GPG-signed repository into a user installation with the native flatpak tool.
-RUN dnf install -y --setopt=install_weak_deps=False flatpak \
-    && dnf clean all && rm -rf /var/cache/dnf
 
 # Required by production PDF capture tests. Use the same verified external
 # asset context as sccache; runtime/library upgrades do not touch Fedora packages.
@@ -174,16 +184,15 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && tar -xzf "/tilo-assets/${archive}" -C /usr/local/bin cargo-xwin \
     && chmod 0755 /usr/local/bin/cargo-xwin \
     && cargo-xwin --version && clang-cl --version && lld-link --version
-# x86_64 only, because Fedora builds Wine for x86 only: Wine runs Inno Setup's
-# compiler (the imager's Windows installer, apps/imager/packaging/
-# package-windows.sh) and the x86_64 Windows test executables. Inno Setup is
-# installed into a throwaway Wine prefix and only its program directory kept,
-# at /opt/inno-setup. jsign signs Authenticode with a key that stays in AWS
-# KMS (no OpenSSL here: os/tests/no_openssl_runtime.sh keeps it out of every
-# image; the JDK checks the signing certificate). PyYAML and
-# jsonschema check the WinGet manifests against WinGet's published schemas.
-# wine-core alone loops forever creating a prefix: wine.inf copies files that
-# wine-common (winmd metadata) and wine-cms (the sRGB profile) ship.
+# x86_64 only, like Wine: Wine runs Inno Setup's compiler (the imager's
+# Windows installer, apps/imager/packaging/package-windows.sh) and the x86_64
+# Windows test executables. Inno Setup is installed into a throwaway Wine
+# prefix and only its program directory kept, at /opt/inno-setup. jsign signs
+# Authenticode with a key that stays in AWS KMS (no OpenSSL here:
+# os/tests/no_openssl_runtime.sh keeps it out of every image; the JDK checks
+# the signing certificate). PyYAML and jsonschema check the WinGet manifests
+# against WinGet's published schemas.
+COPY --from=wine /wine/ /
 ARG INNO_SETUP_VERSION=6.7.3
 ARG JSIGN_VERSION=7.6
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
@@ -191,7 +200,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=tools/ci/windows/wine-prefix.sh,target=/tmp/wine-prefix.sh,ro \
     if [ "$(uname -m)" = x86_64 ]; then \
       dnf install -y --setopt=install_weak_deps=False \
-        wine-core wine-common wine-cms java-25-openjdk-headless \
+        freetype fontconfig gnutls java-25-openjdk-headless \
         python3-pyyaml python3-jsonschema \
       && dnf clean all && rm -rf /var/cache/dnf \
       && for archive in "innosetup-${INNO_SETUP_VERSION}.exe" "jsign-${JSIGN_VERSION}.jar"; do \
@@ -212,14 +221,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && chmod 0755 /usr/local/bin/jsign \
       && jsign --help >/dev/null; \
     fi
-
-# Native browser tests use Fedora's signed Chromium RPM, not a per-job download.
-# Bypass its desktop launcher: tests supply their own flags and fresh profiles.
-# Keep this late so browser updates do not rebuild the cross toolchains.
-ENV CHROME=/usr/lib64/chromium-browser/chromium-browser
-RUN dnf install -y --setopt=install_weak_deps=False chromium \
-    && dnf clean all && rm -rf /var/cache/dnf \
-    && test -x "$CHROME" && "$CHROME" --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.

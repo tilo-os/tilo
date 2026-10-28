@@ -18,7 +18,7 @@ impl ShellNetwork {
             return false;
         };
         let others: Vec<[u8; 32]> = self
-            .room_devices(room)
+            .room_people_devices(room)
             .iter()
             .map(|d| *d.as_bytes())
             .collect();

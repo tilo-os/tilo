@@ -105,6 +105,19 @@ impl DynEdit {
             edit: Box::new(self),
         }
     }
+
+    /// Whether the edit queues an outside effect, rather than only changing the record.
+    #[must_use]
+    pub fn reaches_outside(&self) -> bool {
+        match self {
+            Self::OutboxPush { .. } => true,
+            Self::In { edit, .. } => edit.reaches_outside(),
+            Self::Create { .. }
+            | Self::Edit { .. }
+            | Self::Remove { .. }
+            | Self::OutboxSettle { .. } => false,
+        }
+    }
 }
 
 /// A tilolang action as recorded: what was invoked, by whom, and exactly what it wrote.
@@ -137,6 +150,18 @@ fn ensure_map(
 }
 
 impl DynAction {
+    /// What this action is, by what it writes: one that queues an outside effect reaches outside
+    /// the record, as the package action that planned it is declared to; every other one is an
+    /// undoable change of the record. What a room's grants must allow to commit it.
+    #[must_use]
+    pub fn need(&self) -> tilo_actions::ActionNeed {
+        tilo_actions::ActionNeed::of(if self.edits.iter().any(DynEdit::reaches_outside) {
+            tilo_actions::ActionKind::Outside
+        } else {
+            tilo_actions::ActionKind::Undoable
+        })
+    }
+
     /// Encode under [`ACTION_TYPE`], the framework's action encoding.
     ///
     /// # Errors

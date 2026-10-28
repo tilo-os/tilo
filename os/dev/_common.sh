@@ -237,6 +237,15 @@ composefs_sealed_digest() {
   { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
 }
 
+# `podman run` flags that give files a build container writes to bind mounts this user's
+# ownership. Rootless, --userns=keep-id does it; as root (a build container's root, such as
+# the rcargo builder's, whose user namespace maps only 65536 ids) there is nothing to keep,
+# and keep-id would make podman copy and re-own each image layer, which fails there on ids
+# outside that range.
+keep_id_args() {
+  [ "$(id -u)" -eq 0 ] || printf '%s\n' --userns=keep-id
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
@@ -300,6 +309,19 @@ hmp() {
   fi
 }
 
+# One QMP command on the socket TILO_VM_INPUT=touch opens, after the
+# capabilities handshake every QMP session starts with.
+qmp() {
+  local session
+  session="$(printf '{"execute":"qmp_capabilities"}\n%s\n' "$(printf '%s' "$1" | tr -d '\n')")"
+  if command -v socat >/dev/null 2>&1; then
+    printf '%s\n' "$session" | socat -t1 - "unix:$TILO_QMP" | grep -q '"error"' && return 1
+  else
+    printf '%s\n' "$session" | inenv "socat -t1 - 'unix:$TILO_QMP'" | grep -q '"error"' && return 1
+  fi
+  return 0
+}
+
 # Keep the distrobox command scope alive until QEMU has finished its cold-start
 # work and published the monitor socket. Returning immediately after `disown`
 # races distrobox's scope cleanup on large, cold images and can kill a healthy
@@ -320,8 +342,19 @@ start_qemu() {
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host
-# since that's where the forwarded port binds). Returns the command's output.
+# since that's where the forwarded port binds; with TILO_SSH_IDENTITY, that key
+# instead, as vm.sh hands the guest root's public key in TILO_VM_ROOT_KEY_FILE).
+# Returns the command's output.
 gssh() {
+  if [ -n "${TILO_SSH_IDENTITY:-}" ]; then
+    ${TILO_SSH_BOUND:+timeout -k 2 "$TILO_SSH_BOUND"} \
+      ssh -F /dev/null -p "$TILO_SSH_PORT" -i "$TILO_SSH_IDENTITY" -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+      -o LogLevel=ERROR -o BatchMode=yes -o PreferredAuthentications=publickey \
+      "$TILO_USER@127.0.0.1" "$@"
+    return
+  fi
   # VM automation must never fall through to the desktop's graphical askpass
   # helper. sshpass owns the one permitted password prompt; if it cannot
   # answer, fail the test instead of disrupting the physical session.
@@ -619,12 +652,14 @@ machine_args() {
     printf -- '-machine virt,gic-version=max'
     return
   fi
+  local keyboard=""
+  [ "$TILO_VM_INPUT" != touch ] || keyboard=",i8042=off"
   if [ "$TILO_FW_SMM" = "1" ]; then
-    printf -- '-machine q35,smm=on'
+    printf -- '-machine q35,smm=on%s' "$keyboard"
   elif [ "$TILO_VM_S3" = 1 ]; then
-    printf -- '-machine q35 -global ICH9-LPC.disable_s3=0'
+    printf -- '-machine q35%s -global ICH9-LPC.disable_s3=0' "$keyboard"
   else
-    printf -- '-machine q35'
+    printf -- '-machine q35%s' "$keyboard"
   fi
 }
 
@@ -694,7 +729,31 @@ lan_qemu_args() {
     "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MODEL" "$TILO_VM_LAN_MAC"
 }
 
+# The guest's input devices. "keyboard" (the default) is a tablet and a
+# keyboard. "touch" is a virtio multitouch screen and no keyboard at all (the
+# PC machine's own i8042 is switched off too), as on a tablet with its keyboard
+# detached, so text can only come from an on-screen keyboard; `vm.sh tap`
+# touches the screen through a QMP socket next to the monitor.
+TILO_VM_INPUT="${TILO_VM_INPUT:-keyboard}"
+case "$TILO_VM_INPUT" in
+  keyboard|touch) ;;
+  *) die "TILO_VM_INPUT must be keyboard or touch" ;;
+esac
+TILO_QMP="$TILO_RUN/qmp.sock"
+# TILO_VM_AUDIO_WAV=PATH gives the guest a sound card whose output QEMU writes
+# to PATH as a WAV file, so a check can hear what the guest said.
+TILO_VM_AUDIO_WAV="${TILO_VM_AUDIO_WAV:-}"
+audio_qemu_args() {
+  [ -n "$TILO_VM_AUDIO_WAV" ] || return 0
+  printf -- '-audiodev wav,id=tiloaudio,path=%s -device virtio-sound-pci,audiodev=tiloaudio' \
+    "$TILO_VM_AUDIO_WAV"
+}
+
 input_qemu_args() {
+  if [ "$TILO_VM_INPUT" = touch ]; then
+    printf -- '-device virtio-multitouch-pci -qmp unix:%s,server=on,wait=off' "$TILO_QMP"
+    return
+  fi
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.
     printf -- '-device qemu-xhci -device usb-tablet -device usb-kbd'

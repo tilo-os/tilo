@@ -36,6 +36,7 @@ const ALLOWED: &[(&str, &str)] = &[
         "shell/remote_action_link.rs",
         "the peer did not finish the action in time",
     ),
+    ("shell/foreign_ask.rs", "the device did not answer in time"),
     (
         "shell/launcher.rs",
         "the command does not fit a terminal launch",
@@ -72,7 +73,7 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
     tilo_copy_lint::CopyLint::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
         .allow(ALLOWED)
         // Developer binaries and test trees are not desktop copy.
-        .skip_dirs(&["bin", "tests"])
+        .skip_dirs(&["bin", "tests", "one_host_tests"])
         .skip_files(&[
             "tests.rs",
             "test_support.rs",

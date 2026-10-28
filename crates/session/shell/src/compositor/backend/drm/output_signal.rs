@@ -446,7 +446,7 @@ impl AdaptiveSync {
 /// Software dimming in the CRTC's colour pipeline: the `GAMMA_LUT` the
 /// display engine applies to every plane after composition, so a dimmed
 /// display stays dimmed while a fullscreen client's buffer is scanned out
-/// directly ([`crate::shell::software_dim`]). Like adaptive sync, it is
+/// directly ([`tilo_color_pipeline::software_dim`]). Like adaptive sync, it is
 /// written between flips through the legacy `SETPROPERTY` ioctl, and the
 /// decision of what to write is kept here, testable without a device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -497,7 +497,7 @@ impl CrtcGamma {
     /// Let `light` through (`1.0`: undimmed) on a signal that is PQ when
     /// `pq`, else sRGB.
     pub(super) fn want(&mut self, light: f32, pq: bool) {
-        self.wanted = if crate::shell::software_dim::dims(light) {
+        self.wanted = if tilo_color_pipeline::software_dim::dims(light) {
             (light.to_bits(), pq)
         } else {
             UNDIMMED
@@ -525,7 +525,7 @@ impl CrtcGamma {
         device: &D,
         crtc: drm_re::control::crtc::Handle,
     ) -> Result<(), String> {
-        use crate::shell::software_dim::{Transfer, gamma_lut, gamma_lut_blob};
+        use tilo_color_pipeline::software_dim::{Transfer, gamma_lut, gamma_lut_blob};
         let (Some((light, pq)), Some(property)) = (self.pending_write(), self.property) else {
             return Ok(());
         };
@@ -656,7 +656,7 @@ mod tests {
     /// backlight never touches the LUT; this is the software-dimmed one.)
     #[test]
     fn a_wake_after_a_dimmed_blank_shows_no_lut_and_no_lut_is_ever_black() {
-        use crate::shell::software_dim::{Transfer, gamma_lut};
+        use tilo_color_pipeline::software_dim::{Transfer, gamma_lut};
         let mut gamma = CrtcGamma::new(Some(handle()), 1024);
         // Dimmed before the blank, and written while the CRTC scanned out.
         gamma.want(0.3, false);

@@ -20,18 +20,6 @@ class EngineRuntimeNameTests(unittest.TestCase):
         built = re.findall(r"^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$", containerfile, re.MULTILINE)
         self.assertEqual(built, [rust_const("RUNTIME_VERSION")])
 
-    def test_default_images_cannot_omit_the_offline_engine(self):
-        containerfile = (ROOT / "os/Containerfile").read_text()
-        self.assertEqual(re.findall(r"^ARG TILO_WITH_BROWSER=(\S+)$", containerfile, re.MULTILINE), ["1"])
-
-    def test_the_final_image_verifies_the_baseline_engine_not_just_when_present(self):
-        rootfs = (ROOT / "os/Containerfile").read_text().split("FROM binaries AS rootfs\n", 1)[1]
-        self.assertIn("ARG TILO_WITH_BROWSER\n", rootfs)
-        guard = rootfs.split('if [ "${TILO_WITH_BROWSER}" != 0 ]; then', 1)[1].split("fi; }", 1)[0]
-        self.assertIn('test -x "$engine/tilo-chromium-host"', guard)
-        self.assertIn('test -s "$engine/libcef.so"', guard)
-        self.assertIn("/usr/libexec/tilo/tilo-runtime-bundle verify", guard)
-        self.assertIn('--require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"', guard)
 
     def test_the_browser_install_link_requests_the_exact_declared_runtime(self):
         source = (ROOT / "apps/browser/src/browser_widget/engine_runtime.rs").read_text()

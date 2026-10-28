@@ -13,6 +13,9 @@
 //! - `POST /edit?message=&content=` and `POST /delete?message=` change or
 //!   remove a message, as its author would.
 //! - `GET /messages?channel=` answers the channel's messages, oldest first.
+//! - `POST /delete-webhook?webhook=` or `POST /delete-webhook?channel=`
+//!   deletes that webhook, or every webhook of the channel, as an admin
+//!   does in the channel's settings; answers `{"deleted": [ids]}`.
 //! - `POST /slash?user=&name=&command=&avatar=` runs a slash command as
 //!   that user in #general (`command=link`, `command=unlink`), as Discord
 //!   delivers it: an interaction on the gateway; answers `{"id": ...}`.
@@ -186,6 +189,7 @@ async fn control(
             (200, json!({}))
         }
         ("GET", "/messages") => (200, json!(fake.messages_in(&arg("channel")))),
+        ("POST", "/delete-webhook") => (200, delete_webhook(fake, &arg)),
         ("POST", "/slash") => {
             let id = fake.slash(&person(&arg), &arg("command"));
             (200, json!({ "id": id }))
@@ -227,7 +231,7 @@ async fn control(
         ("GET", "/voice/state") => (200, fake.voice_state_json()),
         _ => (
             404,
-            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies, /react, /unreact, /reactions, /emojis, /expressions or /voice/..." }),
+            json!({ "error": "use /post, /edit, /delete, /messages, /delete-webhook, /slash, /replies, /react, /unreact, /reactions, /emojis, /expressions or /voice/..." }),
         ),
     };
     Response::builder()
@@ -275,6 +279,20 @@ fn heard(fake: &fake_discord::FakeDiscord, hz: &str, seconds: &str) -> Value {
         .map(|(name, hz)| (name, json!(fake_discord::tone::share(&samples, hz))))
         .collect();
     json!({"frames": frames.len(), "share": shares})
+}
+
+/// Delete the webhook `webhook=`, or every webhook of `channel=`, as an
+/// admin does in the channel's settings; the ids deleted.
+fn delete_webhook(fake: &fake_discord::FakeDiscord, arg: &dyn Fn(&str) -> String) -> Value {
+    let webhook = arg("webhook");
+    let deleted = if webhook.is_empty() {
+        fake.delete_webhooks_in(&arg("channel"))
+    } else if fake.delete_webhook(&webhook) {
+        vec![webhook]
+    } else {
+        Vec::new()
+    };
+    json!({ "deleted": deleted })
 }
 
 /// The reaction and emoji routes: a user's reaction added or taken back,

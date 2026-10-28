@@ -67,6 +67,12 @@ fn run_script_with(script_name: &str, env: &[(&str, PathBuf)]) -> std::process::
     Command::new("python3")
         .arg(&script)
         .env("TILO_SHELL_BINARY", shell_binary())
+        // The scripts bound what may take as long as a hang (a snapshot's
+        // first render) by the same bound as this test.
+        .env(
+            tilo_test_env::hang::HANG_BOUND_ENV,
+            tilo_test_env::hang_bound().as_secs().to_string(),
+        )
         .envs(env.iter().map(|(key, value)| (*key, value)))
         .current_dir(repo_root())
         .output()

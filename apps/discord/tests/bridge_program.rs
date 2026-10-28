@@ -254,7 +254,27 @@ fn pass() -> Vec<Step> {
             if let StepKind::Invoke { args, .. } = &mut mapped.kind {
                 args.insert("root".into(), item("root"));
             }
-            vec![guild("send", "send", &[("op", item("op"))]), mapped]
+            // A send that found the channel's webhook gone from Discord
+            // went out through a new one, which takes the old one's place.
+            let replaced = Step::new(
+                "replaced-webhook",
+                StepKind::If {
+                    cond: Condition::Truthy(plan_step("send", "/webhook_id")),
+                    then: vec![map(
+                        "map-replaced-webhook",
+                        "webhook",
+                        item("channel"),
+                        plan_step("send", "/webhook_id"),
+                        "tilo",
+                    )],
+                    otherwise: Vec::new(),
+                },
+            );
+            vec![
+                guild("send", "send", &[("op", item("op"))]),
+                replaced,
+                mapped,
+            ]
         }),
         each("edits", vec![guild("edit", "edit", &[("op", item(""))])]),
         each(
@@ -711,7 +731,6 @@ fn program() -> Shortcut {
         |name: &'static str, ty, about: &'static str| ActionParam::required(name, ty, about);
     Shortcut {
         id: "discord-bridge".into(),
-        step_timeout_secs: None,
         name: "Discord Bridge".into(),
         inputs: vec![
             param("event", ParamType::Object, "What fired"),
@@ -760,10 +779,12 @@ fn program() -> Shortcut {
                 },
             ),
         ],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: triggers(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 

@@ -398,6 +398,9 @@ pub enum StreamEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     Unavailable,
+    /// No model provider is set up for this person yet: nothing failed,
+    /// there is just nothing to ask.
+    NoProvider,
     Authentication,
     PermissionDenied,
     InvalidRequest,
@@ -433,6 +436,7 @@ impl ModelError {
     pub fn new(kind: ErrorKind) -> Self {
         let message = match kind {
             ErrorKind::Unavailable => "Model service unavailable",
+            ErrorKind::NoProvider => "No model provider is set up yet",
             ErrorKind::Authentication => {
                 "Provider authentication failed; check the credential in Settings"
             }
@@ -471,6 +475,8 @@ impl ModelError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Recovery {
+    /// Set up a model provider (an API key) in Model Providers.
+    AddProvider,
     /// Reload the authoritative snapshot; do not overwrite concurrent edits.
     RefreshSettings,
     SignIn,
@@ -487,6 +493,9 @@ pub enum Recovery {
 impl Recovery {
     pub fn guidance(self) -> &'static str {
         match self {
+            Self::AddProvider => {
+                "Open Model Providers to add a provider with its API key and choose its model."
+            }
             Self::RefreshSettings => {
                 "Refresh provider settings and review the current values before saving again."
             }
@@ -515,6 +524,7 @@ impl ModelError {
     pub fn recovery(&self) -> Recovery {
         match self.kind {
             ErrorKind::Conflict => Recovery::RefreshSettings,
+            ErrorKind::NoProvider => Recovery::AddProvider,
             ErrorKind::Authentication => Recovery::SignIn,
             ErrorKind::CreditsExhausted => Recovery::AddCredits,
             ErrorKind::RateLimited => Recovery::WaitAndRetry,

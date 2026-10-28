@@ -59,14 +59,7 @@ impl ShellNetwork {
         {
             return;
         }
-        let Some(generation) = self
-            .replica
-            .lock()
-            .ok()
-            .map(|replica| replica.tree.generation())
-        else {
-            return;
-        };
+        let generation = self.tree.generation();
         let now = Instant::now();
         let moved = self.personal_reconcile.seen.lock().is_ok_and(|seen| {
             seen.generation != Some(generation) || seen.retry_at.is_some_and(|at| now >= at)
@@ -97,21 +90,25 @@ impl ShellNetwork {
     pub(super) fn reconcile_personal_workspaces(&self) -> bool {
         #[cfg(test)]
         self.personal_reconcile.runs.fetch_add(1, Ordering::Relaxed);
-        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return false;
-        };
+        let tree = self.tree.clone();
         // Loaded before the read: the read sees every write up to it.
         let generation = tree.generation();
-        let (Some(workspaces), Some(person)) =
-            (self.personal_workspaces.as_ref(), self.personal_person())
-        else {
+        let (Some(workspaces), Some(here)) = (
+            self.personal_workspaces.as_ref(),
+            self.host_identity
+                .as_ref()
+                .map(|identity| identity.device_cert.device_public_key),
+        ) else {
             self.note_personal_reconciled(generation, true);
             return false;
         };
+        // Read from the owner before the tree is held: the owner's lock
+        // comes first.
+        let held = self.held_personal_rooms();
         let (mut changed, settle, complete) = {
             let tree = tree.read();
             let (changed, complete) = workspaces.lock().map_or((false, false), |mut workspaces| {
-                let changed = workspaces.publish_local(&tree, &person);
+                let changed = workspaces.publish_local(&tree, &held);
                 (changed, workspaces.publish_settled())
             });
             let settle = !tree.personal_device_requests.is_empty()
@@ -121,16 +118,26 @@ impl ShellNetwork {
         };
         self.note_personal_reconciled(generation, complete);
         if changed || settle {
-            let mut tree = tree.write();
-            if let Ok(mut workspaces) = workspaces.lock() {
-                for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests) {
-                    changed |= workspaces.set_shown(room, device, shown);
+            let mut adoption = None;
+            {
+                let mut tree = tree.write();
+                if let Ok(mut workspaces) = workspaces.lock() {
+                    for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests)
+                    {
+                        changed |= workspaces.set_shown(room, device, shown);
+                    }
+                    // Keeping a workspace off this device takes it off at once.
+                    adoption = Some(workspaces.adopt_into(&mut tree, &here));
+                    refresh_device_choices(&mut tree, &workspaces);
                 }
-                // Keeping a workspace off this device takes it off at once.
-                workspaces.adopt_into(&mut tree, &person);
-                refresh_device_choices(&mut tree, &workspaces);
+                drop(tree);
             }
-            drop(tree);
+            if let Some(adoption) = adoption {
+                self.follow_list_off_loop(adoption);
+            }
+            if changed {
+                self.enter_configured_host_rooms_off_loop(None);
+            }
         }
         let due = self
             .last_personal_workspaces_snapshot

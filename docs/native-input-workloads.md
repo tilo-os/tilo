@@ -206,13 +206,8 @@ caret state. `caret_text` is the current body paragraph only; header/footer text
 is omitted to avoid materializing an entire running region. Diagnostic logs can
 contain document text, so run these workloads against controlled fixture files.
 
-`scripts/perf/word_processor_effects.py` validates exact single-character and
-backspace transitions, body focus, unchanged block identity, no selection,
-complete ordered evidence and continuity between edits. This is state evidence,
-not proof that pixels reached the display. Snapshot allocation and text logging
-are diagnostic overhead; fixture paragraph sizes must remain representative.
-Seven native scheduler tests and 34 Python reporting tests pass. Native app
-measurements are still required before any Word Processor qualification.
+Native app measurements are still required before any Word Processor
+qualification.
 
 
 The first optimized 200-paragraph typing workload failed:

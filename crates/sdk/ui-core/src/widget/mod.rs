@@ -687,6 +687,19 @@ impl<I> ActionEmitter<I> {
         }
     }
 
+    /// A submit emitter: a press the host has not collected yet is replaced by
+    /// the next, so one batch of gestures submits once rather than once per
+    /// press (see [`ActionEmitter::new`] for the queueing form).
+    pub fn new_replace_one(binding: tilo_actions::ActionBinding<I>) -> Self {
+        Self {
+            binding,
+            pending: crate::control_custody::ControlHolder::new(
+                crate::control_custody::ControlProducerDiscipline::ReplaceOne,
+            ),
+            available: true,
+        }
+    }
+
     /// Construct already registered, including for emitting inside a builder.
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
         let mut emitter = Self::new(binding);
@@ -3236,7 +3249,7 @@ pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
+pub use tabs::{SharedBy, SharedWith, TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,

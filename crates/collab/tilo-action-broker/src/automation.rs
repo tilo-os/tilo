@@ -71,6 +71,7 @@ const MAX_FINISHED_RUNS: usize = 64;
 /// actions, then `run` on each saved shortcut.
 #[must_use]
 pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
+    let saved = tilo_automation::decode_saved(&workspace.shortcuts);
     [
         CREATE_ACTION,
         UPDATE_ACTION,
@@ -81,7 +82,7 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
     ]
     .into_iter()
     .filter_map(library_descriptor)
-    .chain(workspace.shortcuts.iter().map(run_descriptor))
+    .chain(saved.iter().map(run_descriptor))
     .collect()
 }
 
@@ -441,7 +442,7 @@ pub fn check_triggers(
         }
     }
     let room = workspace.room().to_string();
-    let others = &workspace.shortcuts;
+    let others = &tilo_automation::decode_saved(&workspace.shortcuts);
     let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
     for trigger in &shortcut.triggers {
@@ -570,13 +571,7 @@ pub struct SaveContext<'a> {
     pub fixed_label: &'a dyn Fn(&settings_store::keyboard_shortcuts::FixedShortcut) -> String,
 }
 
-/// A shortcut to store, or remove, in one workspace.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ShortcutChange {
-    Save(Box<Shortcut>),
-    /// Remove the saved shortcut with this id.
-    Delete(String),
-}
+pub use tilo_automation::ShortcutChange;
 
 /// What one library invocation does: answer from what is saved, or change it.
 #[derive(Clone, Debug, PartialEq)]
@@ -613,7 +608,7 @@ pub fn plan_library(
     operation: LibraryOperation,
     context: &SaveContext<'_>,
 ) -> Result<LibraryPlan, String> {
-    let saved = &workspace.shortcuts;
+    let saved = &tilo_automation::decode_saved(&workspace.shortcuts);
     let (shortcut, replacing) = match operation {
         LibraryOperation::List => {
             return Ok(LibraryPlan::Answer(ActionOutput {
@@ -642,6 +637,8 @@ pub fn plan_library(
     };
     let mut shortcut = shortcut;
     shortcut.saved_by = Some(context.saver.to_string());
+    // The device that stores it signs it; whatever proof came in is not its.
+    shortcut.saved_proof = None;
     let exists = saved.iter().any(|other| other.id == shortcut.id);
     if exists && !replacing {
         return Err(format!(
@@ -1289,6 +1286,7 @@ pub fn readable_folder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automation::SavedShortcut;
 
     fn shortcut(json: Value) -> Shortcut {
         serde_json::from_value(json).expect("shortcut JSON")
@@ -1434,13 +1432,13 @@ mod tests {
     #[test]
     fn a_workspace_publishes_its_library_and_one_run_per_shortcut() {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId(1), "Desk");
-        workspace.shortcuts.push(shortcut(serde_json::json!({
+        workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
             "id": "tidy",
             "name": "Tidy",
             "inputs": [{"name": "folder", "ty": "text", "required": true, "description": "Where"}],
             "steps": [],
             "output": {"input": "folder"}
-        })));
+        }))));
         let published = descriptors(&workspace);
         let addresses: Vec<_> = published
             .iter()
@@ -1464,7 +1462,7 @@ mod tests {
             ]
         );
         let run = published.last().expect("the shortcut's run");
-        assert_eq!(run.params, workspace.shortcuts[0].inputs);
+        assert_eq!(run.params, workspace.shortcuts[0].decode().unwrap().inputs);
         assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
         assert_eq!(run_target(&run.address), Some("tidy"));
     }

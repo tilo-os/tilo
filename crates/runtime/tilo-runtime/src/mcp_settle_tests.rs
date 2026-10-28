@@ -30,6 +30,10 @@ pub(crate) struct GatedHost {
     /// Take every invocation without ever answering its admission, as a
     /// broker whose admission journal waits on a slow disk.
     admission_unanswered: bool,
+    /// What, naming a revision other than `revision`, is refused as a
+    /// directory that moved on refuses it.
+    stale: Option<Stale>,
+    revision: Arc<StdMutex<String>>,
     unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
     queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
 }
@@ -46,6 +50,36 @@ enum WithoutRevision {
     /// As the broker refuses a directory action that asks for confirmation
     /// without one.
     NeedsConfirmation,
+}
+
+/// What a host that moved past the revision a caller named refuses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stale {
+    /// A read: [`CataloguePage::stale_cursor`] answers a resolve that named
+    /// one, and the read itself refuses.
+    Reads,
+    /// An invocation, as a directory that moved on since the caller read it.
+    Invokes,
+}
+
+/// A half-polled answer put back as a [`Pending`], for the few tests that
+/// have to look at a page before answering it.
+fn map_poll(
+    poll: tilo_actions::remote::PendingPoll<Result<CataloguePage, ActionHostError>>,
+) -> Pending<Result<CataloguePage, ActionHostError>> {
+    match poll {
+        tilo_actions::remote::PendingPoll::Ready(answer) => Pending::ready(answer),
+        tilo_actions::remote::PendingPoll::Waiting => {
+            Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "the host answered nothing".into(),
+            }))
+        }
+        tilo_actions::remote::PendingPoll::Abandoned => {
+            Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "the host gave up".into(),
+            }))
+        }
+    }
 }
 
 impl GatedHost {
@@ -94,7 +128,25 @@ impl ActionHost for GatedHost {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         self.queries.lock().unwrap().push(query.clone());
-        self.stub.query(caller, query)
+        let revision = self.revision.lock().unwrap().clone();
+        let named = query.revision.clone();
+        let moved = named.as_deref().is_some_and(|named| named != revision);
+        if self.stale == Some(Stale::Reads) && moved {
+            return Pending::ready(Err(ActionHostError::StaleRevision));
+        }
+        let mut answer = self.stub.query(caller, query);
+        if !moved {
+            return answer;
+        }
+        // The page itself is read from the host's own stub; only what a
+        // resolve learns about the revision it named is the directory's.
+        match answer.poll_ready() {
+            tilo_actions::remote::PendingPoll::Ready(Ok(mut page)) => {
+                page.stale_cursor = true;
+                Pending::ready(Ok(page))
+            }
+            other => map_poll(other),
+        }
     }
 
     fn invoke(
@@ -114,6 +166,14 @@ impl ActionHost for GatedHost {
                 }
                 None => {}
             }
+        }
+        if self.stale == Some(Stale::Invokes)
+            && request
+                .revision
+                .as_deref()
+                .is_some_and(|revision| revision != self.revision.lock().unwrap().as_str())
+        {
+            return Pending::ready(Err(ActionHostError::StaleRevision));
         }
         self.owner.lock().unwrap().replace(caller.clone());
         let answer = self.stub.invoke(caller, request);
@@ -809,4 +869,56 @@ fn phrase_retry_names_the_revision_it_read() {
         Some("1"),
         "the phrase retry is bound to the revision its phrase was read at"
     );
+}
+
+fn current_resolve() -> Value {
+    json!({"peer_id": 71, "resource": "test.note:1", "action": tilo_resource::APPLY})
+}
+
+/// A directory that moved past the revision a caller named answers what
+/// happened and what to do, rather than a bare code: the caller read a
+/// revision the app has since left.
+#[test]
+fn a_stale_read_says_what_happened_and_what_to_do() {
+    let host = GatedHost {
+        stale: Some(Stale::Reads),
+        ..GatedHost::default()
+    };
+    let endpoint = gated_endpoint(host);
+    run(async {
+        let session = gated_session(&endpoint).await;
+        let mut args = current_resolve();
+        args["revision"] = json!("0");
+        let reply = call(&endpoint, &session, "tilo_resolve", args).await;
+        let said = reply["isError"].as_bool().unwrap_or(false);
+        let text = reply.to_string();
+        assert!(said, "{text}");
+        for expected in ["changed", "now", "omit revision"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+    });
+}
+
+/// An invoke that named a revision the directory left behind is the one
+/// answer a caller cannot act on by itself: what happened, which revision
+/// it named, which it is at now, and what to do next.
+#[test]
+fn a_stale_invoke_says_what_to_do_rather_than_a_code() {
+    let host = GatedHost {
+        at_once: true,
+        stale: Some(Stale::Invokes),
+        ..GatedHost::default()
+    };
+    let endpoint = gated_endpoint(host);
+    run(async {
+        let session = gated_session(&endpoint).await;
+        let mut args = current_invoke();
+        args["revision"] = json!("0");
+        let reply = call(&endpoint, &session, "tilo_invoke", args).await;
+        let text = reply.to_string();
+        for expected in ["changed", "now", "omit revision", "tilo_query"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("invalid request"), "{text}");
+    });
 }

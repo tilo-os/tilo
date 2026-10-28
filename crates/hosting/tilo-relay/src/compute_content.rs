@@ -517,7 +517,7 @@ async fn choose_source(
         return Err("not_authorised");
     };
     let (source, max_bytes, connection, scope) = job_source(
-        &*workspace.lock().await,
+        &mut *workspace.lock().await,
         &context.trust(),
         peer,
         (job_id, digest),
@@ -544,7 +544,10 @@ async fn observe_input(
     };
     let now_ms = tilo_clock::unix_now_ms();
     if scope.expires_at_ms > now_ms {
-        observe(&mut workspace.lock().await.compute, now_ms);
+        observe(
+            crate::compute_transport::compute_state(&mut *workspace.lock().await),
+            now_ms,
+        );
     }
 }
 
@@ -555,7 +558,7 @@ type JobSource = (DeviceKey, u64, Option<Connection>, JobScope);
 /// [`choose_source`] under the workspace lock: the peer's admission, the
 /// job's record, and the live connection of the end holding the bytes.
 fn job_source(
-    workspace: &crate::workspace::WorkspaceRuntime,
+    workspace: &mut crate::workspace::WorkspaceRuntime,
     trust: &room_access::RelayTrust<'_>,
     peer: &AuthenticatedPeer,
     (job_id, digest): ([u8; 16], [u8; 32]),
@@ -564,9 +567,10 @@ fn job_source(
     if !room_access::decide(workspace, trust, peer, RoomOperation::Compute).admitted() {
         return Err("not_authorised");
     }
-    let record = workspace
-        .store
-        .load_compute_job(&job_id)
+    // The routing ends the jobs a restart left unfinished before any record
+    // is read.
+    let (compute, store) = crate::compute_transport::compute_parts(workspace);
+    let record = crate::compute_transport::ComputeJobs::load_compute_job(&*store, &job_id)
         .map_err(|_| "unavailable")?
         .ok_or("not_authorised")?;
     let (source, max_bytes) = rule(
@@ -578,7 +582,7 @@ fn job_source(
     Ok((
         source,
         max_bytes,
-        workspace.compute.worker_connection(&source),
+        compute.worker_connection(&source),
         JobScope {
             job_id,
             pair: (record.spec.requester, record.spec.worker),

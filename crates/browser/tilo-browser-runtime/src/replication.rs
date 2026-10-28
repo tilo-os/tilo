@@ -80,6 +80,19 @@ struct Replica {
     snapshotted: bool,
 }
 
+/// How a page sends its desktop to the room.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DesktopSending {
+    /// Nothing sent yet: the next change goes as the whole document.
+    Snapshot,
+    /// The room has the document: changes go as deltas.
+    Changes,
+    /// The room keeps no member's layout: it refused this page's desktop as
+    /// a public room does. The attached desktops are their people's own
+    /// from then on: sent to nobody, and not replaced by the room's.
+    KeptOwn,
+}
+
 struct Mounted {
     attachment: Attachment,
     records: HashMap<(String, String), Replica>,
@@ -98,7 +111,8 @@ pub(crate) struct Room {
     ready: bool,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
-    desktop_snapshotted: bool,
+    /// How this page sends its desktop to the room.
+    desktop_sending: DesktopSending,
     /// The room's desktop as this page last published or applied it.
     desktop_value: Option<serde_json::Value>,
     /// This page's own desktop as it last wrote it into the record: a
@@ -153,10 +167,6 @@ pub(crate) struct Room {
     permitted: BTreeMap<ui::permissions::TreePath, (String, bool)>,
     /// The room's answers about those nodes, not applied yet.
     permit_answers: Arc<Mutex<Vec<(String, bool)>>>,
-    /// The room keeps no member's layout: it refused this page's desktop as
-    /// a public room does. The attached desktops are their people's own
-    /// from then on: sent to nobody, and not replaced by the room's.
-    own_layout: bool,
     /// The room's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
@@ -213,7 +223,7 @@ pub(crate) fn open(
         ready: false,
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
-        desktop_snapshotted: false,
+        desktop_sending: DesktopSending::Snapshot,
         desktop_value: None,
         local_value: None,
         stored: BTreeSet::new(),
@@ -228,7 +238,6 @@ pub(crate) fn open(
         own,
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
-        own_layout: false,
         members: None,
         in_flight: HashMap::new(),
         content: ContentWants::default(),
@@ -455,7 +464,9 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
             warn(&format!("shared desktop not applied: {error}"));
         }
         if let Some((_, shared)) = &attachment.desktop {
-            shared.own_layout.set(room.own_layout);
+            shared
+                .own_layout
+                .set(room.desktop_sending == DesktopSending::KeptOwn);
             shared.watching.set(room.peer.watching());
             shared.members.replace(room.members.clone());
             room.moderates = Arc::clone(&shared.moderates);
@@ -1005,7 +1016,7 @@ impl Room {
             && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
         if personal {
             // Expected in a public room, not a fault: said once, quietly.
-            if !self.own_layout {
+            if self.desktop_sending != DesktopSending::KeptOwn {
                 debug("this room keeps each member's layout to themselves");
                 self.keep_own_layout(woken);
             }
@@ -1402,7 +1413,7 @@ impl Room {
             return Ok(());
         }
         // A desktop of the person's own keeps what they arranged.
-        if self.own_layout {
+        if self.desktop_sending == DesktopSending::KeptOwn {
             self.desktop_value = Some(value);
             return Ok(());
         }
@@ -1524,7 +1535,7 @@ impl Room {
     /// governance as soon as the page hears it, or from the room refusing
     /// this page's desktop as personal.
     fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
-        self.own_layout = true;
+        self.desktop_sending = DesktopSending::KeptOwn;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.own_layout.set(true);
@@ -1538,7 +1549,9 @@ impl Room {
     /// asked on joining, for a scope heard before this room listened, and
     /// whenever a room's scope changes.
     fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
-        if !self.own_layout && self.peer.status().personal_rooms.contains(&self.uuid) {
+        if self.desktop_sending != DesktopSending::KeptOwn
+            && self.peer.status().personal_rooms.contains(&self.uuid)
+        {
             self.keep_own_layout(woken);
         }
     }
@@ -1560,7 +1573,7 @@ impl Room {
     }
 
     fn send_desktop(&mut self) {
-        if self.own_layout {
+        if self.desktop_sending == DesktopSending::KeptOwn {
             return;
         }
         let Some((value, author)) = self.mounts.values().find_map(|mounted| {
@@ -1610,11 +1623,11 @@ impl Room {
             // work on the desktop.
             self.authored = self.authored.saturating_add(1);
         }
-        if !wrote && self.desktop_snapshotted {
+        if !wrote && self.desktop_sending == DesktopSending::Changes {
             self.local_value = Some(value);
             return;
         }
-        let mutation = if self.desktop_snapshotted {
+        let mutation = if self.desktop_sending == DesktopSending::Changes {
             let (delta, heads) = self.desktop.pending_outbound_delta();
             if delta.is_empty() {
                 return;
@@ -1627,7 +1640,7 @@ impl Room {
         let route = self.route(DESKTOP_APP, DESKTOP_RECORD);
         if self.peer.publish(route, &mutation.0).is_ok() {
             self.desktop.advance_outbound(mutation.1);
-            self.desktop_snapshotted = true;
+            self.desktop_sending = DesktopSending::Changes;
             self.desktop_value = desktop_value(self.desktop.document());
             self.local_value = Some(value);
         }

@@ -5,7 +5,7 @@ use crate::history_mode::restore::{
 };
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use tilo_sort::CompactSort as _;
+pub(crate) use collaboration::state::{OwnedActionAttribution, OwnedActionReceipt, same_frontier};
 
 /// Private, synchronous admission staging. Only the History hosts' doors in
 /// this module construct one, after binding current authority and the exact
@@ -368,11 +368,6 @@ pub(crate) fn describe_history(
     }
 }
 #[derive(Debug)]
-pub(crate) struct OwnedActionReceipt {
-    pub(crate) after: Vec<ChangeHash>,
-    pub(crate) changed: bool,
-}
-#[derive(Debug)]
 pub(crate) enum OwnedRestoreError {
     PendingEdits,
     StaleReview,
@@ -386,25 +381,6 @@ pub(crate) enum OwnedRestoreError {
     /// The record's current authority does not grant this author Write.
     Denied,
 }
-/// Existing native commits and new owned restores use this same attribution.
-pub(super) struct OwnedActionAttribution {
-    pub(super) author: Option<UserId>,
-    pub(super) instance_id: Option<InstanceId>,
-    pub(super) focused_node_idx: Option<usize>,
-    pub(super) widget_metadata: Option<String>,
-    pub(super) message: Option<String>,
-}
-
-pub(crate) fn same_frontier(left: &[ChangeHash], right: &[ChangeHash]) -> bool {
-    let normalize = |heads: &[ChangeHash]| {
-        let mut heads = heads.to_vec();
-        heads.compact_sort();
-        heads.dedup();
-        heads
-    };
-    normalize(left) == normalize(right)
-}
-
 /// What a confirmed restore writes: the schema-declared content of a version,
 /// or, for a resource without a content schema, the whole document returned to
 /// the version's frontier as one forward change.
@@ -484,7 +460,7 @@ impl<'a> OwnedContentAction<'a> {
         if !same_frontier(&doc.base_heads(), expected_heads) {
             return Err(OwnedRestoreError::StaleReview);
         }
-        if !same_frontier(&history.last_heads, expected_heads) {
+        if !same_frontier(history.last_heads(), expected_heads) {
             return Err(OwnedRestoreError::UnfinishedActionBoundary);
         }
         if !history.can_bump() {
@@ -582,39 +558,6 @@ impl Drop for OwnedContentAction<'_> {
         }
     }
 }
-impl UndoLog {
-    /// The canonical physical stamp + explicit undo span finalizer. Capacity is
-    /// reserved by the caller before any writes; no user callbacks run here.
-    pub(super) fn commit_owned_pending(
-        &mut self,
-        doc: &mut AutoCommit,
-        before: Vec<ChangeHash>,
-        attribution: OwnedActionAttribution,
-    ) -> OwnedActionReceipt {
-        let message = self.stamp(attribution.message, attribution.author.as_ref());
-        let committed = tilo_resource::history::commit_stamped_with_message(doc, message).is_some();
-        let after = doc.get_heads();
-        if committed {
-            self.record_committed_span(
-                doc,
-                before.clone(),
-                after.clone(),
-                attribution.focused_node_idx,
-                attribution.widget_metadata,
-                attribution.author,
-                attribution.instance_id,
-            );
-        } else {
-            // Native no-op commits historically refresh their baseline. Restore
-            // no-ops never enter this finalizer and preserve all bookkeeping.
-            self.last_heads.clone_from(&after);
-        }
-        OwnedActionReceipt {
-            after,
-            changed: committed,
-        }
-    }
-}
 impl State {
     #[cfg(test)]
     pub(crate) fn restore_prepared_owned(
@@ -646,7 +589,7 @@ impl State {
         mutation: &collab_types::DocumentMutation,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
         if self.doc.pending_ops() != 0
-            || !same_frontier(&self.undo.last_heads, &self.doc.base_heads())
+            || !same_frontier(self.undo.last_heads(), &self.doc.base_heads())
         {
             return Ok(None);
         }

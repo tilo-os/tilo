@@ -147,7 +147,6 @@ suites = [
   "os/tests/firstboot_password_hash.sh",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
-  "os/tests/test_oci_archive_layer_report.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/env_runtime_fingerprint.sh",
@@ -169,7 +168,6 @@ suites = [
   "os/tests/portal_config_validity.sh",
   "os/tests/sealed_extensions.sh",
   "os/tests/validation_access.sh",
-  "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
@@ -191,9 +189,7 @@ suites = [
   "os/tests/test_fetch_windows_guest_assets.py",
   "os/tests/test_finalization_driver.py",
   "os/tests/test_finalization_staging.py",
-  "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
-  "os/tests/test_identity_public_key.py",
   "os/tests/test_image_apps_once.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
@@ -216,7 +212,6 @@ suites = [
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_pack_apps_surface.py",
   "os/tests/test_shipped_runtimes.py",
-  "os/tests/test_dev_tools_sysext.py",
   "os/tests/test_image_build_script_copies.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
@@ -568,6 +563,7 @@ suites = [
   "scripts/vm-acceptance/test_report.py",
   "scripts/vm-acceptance/test_clock.py",
   "scripts/vm-acceptance/test_selected_groups.py",
+  "scripts/vm-acceptance/test_budgets.py",
 ]
 
 [[group]]
@@ -632,11 +628,9 @@ suites = [
   "scripts/perf/presentation_feedback_test.py",
   "scripts/perf/render_bench_test.py",
   "scripts/perf/render_boundaries_test.py",
-  "scripts/perf/resource_bench_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
   "scripts/perf/settings_effects_test.py",
-  "scripts/perf/word_processor_effects_test.py",
   "scripts/perf/worker_handoff_test.py",
   "tools/perf/test_ab.py",
   "tools/perf/test_adapters.py",
@@ -717,6 +711,10 @@ suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
 reason = "its country names come from Intl.DisplayNames, which the ci-fast image's node lacks (it answers the region code); browsers ship it. Gate it once the suite's node carries full ICU"
 
 [[unrequired]]
+suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
+reason = "launches the repository's own Chrome through tools/web/chrome.mjs to mux and play back real media; every CI image is browser-free, so it runs where a Chrome is installed"
+
+[[unrequired]]
 suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
 reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
 
@@ -739,6 +737,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
   "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/connection-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
@@ -1114,7 +1113,7 @@ package = "greeter"
 # greeter's theme and committed as the plymouth theme's look.json, which the
 # test compares.
 inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session", "os/usr/share/plymouth/themes/tilo/look.json"]
-readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
+readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
 
 [[cargo]]
 package = "pam-tilo"
@@ -1596,7 +1595,7 @@ file = "crates/session/shell/tests/headless_examples_smoke.rs"
 reason = "#[ignore]d: runs scripts/headless-examples/ against a built compositor on request"
 
 [[cargo-exempt]]
-file = "crates/session/shell/src/bin/ux_bench_support/tests.rs"
+file = "crates/dev/ux-bench/src/ux_bench_support/tests.rs"
 reason = "#[ignore]d: writes evidence under target/ from a prebuilt ux-bench"
 
 # Exercised by a suite that is already gated.
@@ -2081,10 +2080,6 @@ reason = "drives distrobox and host GPU encoders"
 [[unrequired]]
 suite = "scripts/test-local.sh"
 reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
-
-[[unrequired]]
-suite = "scripts/tests/test_runtime_auto_attach_proof.py"
-reason = "needs procps (ps), absent from the ci-fast image"
 
 [[unrequired]]
 suite = "scripts/two-host-sync-test.sh"

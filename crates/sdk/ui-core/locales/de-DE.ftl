@@ -4,6 +4,7 @@ tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
 tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion von { $installer }
+tab-shared-with = Geteilt mit { $place }
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
@@ -231,6 +232,7 @@ history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
 history-sync-reconnecting = Verbinde. Änderungen werden synchronisiert, sobald die Verbindung steht.
+history-sync-join-refused = Dieser Arbeitsbereich hat die App nicht beitreten lassen: { $reason }. Deine Änderungen bleiben auf diesem Gerät.
 arriving-loading = Wird geladen
 arriving-from = Von { $source }
 arriving-received-of = { $received } von { $total }
@@ -240,6 +242,9 @@ arriving-retry = Erneut versuchen
 content-unavailable = Keines der verbundenen Geräte hat es
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
+room-sync-unreachable = { $workspace } ist gerade nicht erreichbar
+room-sync-unreachable-unnamed = Der Host dieses Arbeitsbereichs ist gerade nicht erreichbar
+room-sync-unreachable-body = Das hier ist, was dieses Gerät hat. Deine Änderungen bleiben hier und werden synchronisiert, sobald der Host wieder da ist.
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
@@ -645,6 +650,7 @@ save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
+save-status-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 save-status-retry = Erneut versuchen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.

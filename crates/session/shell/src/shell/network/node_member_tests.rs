@@ -2,11 +2,11 @@
 //! governs. The founder's root certifies two devices on the node: the relay
 //! (a node that hosts, governs and stewards her rooms) and the session (a
 //! plain device of hers, with its own key). Her browser creates the company
-//! workspace on the relay and writes a sealed record. The session finds the
-//! workspace among the rooms its person's host governs, joins it, gets the
-//! record's channel keys from the relay's steward and reads the record; a
-//! record its app writes reaches the browser the same way. The relay keeps
-//! ciphertext only.
+//! workspace on the relay and writes a sealed record. The session asks its
+//! configured host for the rooms it holds for her and enters the workspace
+//! there, joins it, gets the record's channel keys from the relay's steward
+//! and reads the record; a record its app writes reaches the browser the same
+//! way. The relay keeps ciphertext only.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -155,6 +155,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                 host_cert: node.clone(),
                 revocations: RevocationList::new(),
                 watching: false,
+                background: false,
             },
             Arc::new(browser_key),
             Arc::new(MemoryPeerStore::default()),
@@ -177,7 +178,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     tree.persist_path = Some(session_dir.join("state.json"));
     let tree = tree.shared();
     let session_cert = Arc::new(Mutex::new(None));
-    let net = {
+    let net = Arc::new({
         let session_cert = Arc::clone(&session_cert);
         ShellNetwork::spawn_with(
             tree.clone(),
@@ -203,7 +204,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             },
         )
         .unwrap()
-    };
+    });
     let (session_key, session_cert) = session_cert.lock().unwrap().clone().unwrap();
     assert!(!session_cert.capabilities.can_act_as_host);
     let _ = net.join_default_workspace();
@@ -213,27 +214,26 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             vault: channel_crypto::VaultKey::new([9; 32]),
             device_key: session_key.clone(),
         },
-        Box::new(WorkspaceChannelDirectory::new(
-            tree.clone(),
-            Box::new(|_| Vec::new()),
-        )),
+        Box::new(
+            WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
+                .with_stewards(ShellNetwork::room_stewards(&net)),
+        ),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )
     .unwrap();
 
-    // It finds the workspace among its host's rooms and joins it, through
-    // the host's own `tilo.host` actions on its continuity workspace: it
-    // lists the rooms and enters this one, and the host answers the
-    // invitation it redeems.
+    // Its host session is up: the session asks the node, once, for the
+    // rooms it holds for Ada and enters this one there, through the host's
+    // own `tilo.host` actions on its continuity workspace, and the host
+    // answers the invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
-    net.join_host_rooms();
+    net.enter_configured_host_rooms(None);
     // Its workspace is made as the join starts; the room is held once the
     // replica installs into it.
     until("the session to hold the company workspace", || {
         net.tick();
         let tree = tree.read();
-        (tree.requires_native_owner(room)
-            && !tree.is_joining(room)
+        (!tree.is_joining(room)
             && tree
                 .desktop
                 .workspaces
@@ -247,10 +247,10 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         "the first host room is the session's active workspace"
     );
     assert!(
-        !tree.read().commits_native_documents(room),
+        tree.read().seals_records(room),
         "its records are sealed channels the apps open, not committed documents"
     );
-    net.join_host_rooms();
+    net.enter_configured_host_rooms(None);
     assert_eq!(
         tree.read()
             .desktop
@@ -267,7 +267,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
+            channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -347,7 +347,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
+        channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")
@@ -397,6 +397,57 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .iter()
             .any(|invitation| invitation.invite_id == issued.invite_id),
         "a cancelled invitation is no longer pending at the relay"
+    );
+
+    // The session, a device of Ada's that does not host, saves a shortcut
+    // into the room its relay hosts: signed here as Ada's, committed there,
+    // and back in the room as the session holds it.
+    let ada_person = hex::encode(session_cert.user_public_key);
+    let shortcut: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
+        "id": "standup",
+        "name": "Standup notes",
+        "steps": [],
+        "saved_by": ada_person,
+    }))
+    .unwrap();
+    let saving = runtime.spawn(
+        crate::shell::broker_services::NativeShortcutLibrary::commit(
+            tree.clone(),
+            Some(Arc::clone(&net)),
+            room,
+            ada_person.clone(),
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+        ),
+    );
+    until("the room's host to commit the shortcut", || {
+        net.tick();
+        saving.is_finished().then_some(())
+    });
+    runtime
+        .block_on(saving)
+        .unwrap()
+        .expect("the room's host commits the session's shortcut");
+    let held = until("the session to hold the saved shortcut", || {
+        net.tick();
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)?
+            .shortcuts
+            .iter()
+            .find(|shortcut| shortcut.id() == "standup")
+            .and_then(|shortcut| shortcut.decode().ok())
+    });
+    assert_eq!(
+        tilo_peer_state::room::proven_saver(
+            &acme.room,
+            &held,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        ),
+        Some(ada_person),
+        "saved with the session device's proof"
     );
 
     // The browser announces no identity to the session, yet its actions

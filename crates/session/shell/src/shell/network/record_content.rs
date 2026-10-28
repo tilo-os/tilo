@@ -14,13 +14,13 @@
 use super::{
     NetCmd, PersonalFabricPayload, ShellNetwork, personal_continuity_topic_id, room_topic_id,
 };
-use crate::network::actor::RecordContentDelivery;
 use crate::shell::state::RoomId;
 use neighbour_wire::NeighbourMsg;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use tilo_action_broker::record_content::{ContentPeer, ContentPiece, ContentSources};
 use tilo_action_broker::route::CrdtRoute;
+use tilo_network_actor::RecordContentDelivery;
 
 /// Devices whose transport this device remembers for a direct answer.
 const MAX_REMEMBERED_REQUESTERS: usize = 256;
@@ -106,8 +106,9 @@ impl ShellNetwork {
     /// for a room record the room's peers and the workspace hosts serving
     /// it.
     pub fn record_content_sources(&self, route: &CrdtRoute) -> ContentSources {
-        let handle =
-            |endpoint: &iroh::EndpointId| crate::network::behaviour::peer_liveness_handle(endpoint);
+        let handle = |endpoint: &iroh::EndpointId| {
+            tilo_network_actor::behaviour::peer_liveness_handle(endpoint)
+        };
         if self.is_local_person_room(&route.cluster_id) {
             let Some(user) = self.personal_continuity_user else {
                 return ContentSources::default();
@@ -173,7 +174,12 @@ impl ShellNetwork {
     ) {
         if let Ok(mut members) = self.host_room_members.lock() {
             if active {
-                members.insert((ws, host, device));
+                // A member that joined the room's live plane has not heard
+                // where a resting pointer is: it is said again for them, as
+                // for a peer joining any other way.
+                if members.insert((ws, host, device)) {
+                    self.note_peer_joined();
+                }
             } else {
                 members.remove(&(ws, host, device));
             }
@@ -431,7 +437,7 @@ impl ShellNetwork {
         let Some(room) = self.local_person_room() else {
             return;
         };
-        let peer = crate::network::behaviour::peer_liveness_handle(&transport);
+        let peer = tilo_network_actor::behaviour::peer_liveness_handle(&transport);
         let entry = match payload {
             PersonalFabricPayload::RecordContentWant { app_id, hash } => {
                 self.remember_requester(ws, peer, transport);
@@ -540,7 +546,7 @@ pub(super) mod tests {
         let transport = iroh::SecretKey::from_bytes(&[seed; 32]).public();
         let (net, commands) = super::super::shell_network_for_test(
             tree.shared(),
-            crate::network::behaviour::peer_liveness_handle(&transport),
+            tilo_network_actor::behaviour::peer_liveness_handle(&transport),
         );
         let net = Arc::new(net);
         let content = content_over(&net);
@@ -653,7 +659,7 @@ pub(super) mod tests {
     /// transport reports; the broker drains what that changed.
     fn link(device: &Device, peer: &Device, room: RoomId, up: bool) {
         let ws = room_topic_id(room);
-        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
         device.net.dispatch_net_event(if up {
             super::super::NetEvent::PeerJoined {
                 ws,
@@ -777,7 +783,7 @@ pub(super) mod tests {
                             to.dispatch_personal_fabric(
                                 ws,
                                 from.public(),
-                                crate::network::actor::MembershipEpoch::for_test(1),
+                                tilo_network_actor::MembershipEpoch::for_test(1),
                                 user,
                                 payload,
                             );
@@ -817,7 +823,7 @@ pub(super) mod tests {
             None,
             false,
             NeighbourMsg::RecordContentWant {
-                requester: crate::network::behaviour::peer_liveness_handle(&phone.public()),
+                requester: tilo_network_actor::behaviour::peer_liveness_handle(&phone.public()),
                 app_id: route.app_id,
                 cluster_id: route.cluster_id,
                 hash,

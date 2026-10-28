@@ -35,7 +35,6 @@ impl NotesApp {
         note: Option<(&str, String)>,
         sidebar_open: bool,
         adds_notes: bool,
-        edited: bool,
     ) -> WindowToolbar {
         let title = note.as_ref().map(|(title, _)| *title);
         // New note is offered only to someone who may make one.
@@ -53,10 +52,8 @@ impl NotesApp {
                 label: title.to_owned(),
                 placeholder: ui::i18n!("notes-title-placeholder"),
                 anchor: Some(anchor),
-                // The note being written is not yet on disk: the bar says so
-                // wherever the window is shown, as every other document app's
-                // does (`APP-notes-03`).
-                edited,
+                // Unsaved work is marked by the window's framework, from the
+                // record's save.
                 ..ToolbarLocation::default()
             }),
             actions: new_note
@@ -114,20 +111,13 @@ impl NotesApp {
         let title = self.main.title().map(str::to_owned);
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        // Work the store has not made durable yet: the save in flight, or one
-        // that failed. A note held only for this session is not "edited" —
-        // its band says that, and stays until it can be saved.
-        let edited = matches!(
-            self.status.state().save_status,
-            crate::status_bar::SaveStatus::Saving | crate::status_bar::SaveStatus::Failed
-        );
-        let key = (title.zip(anchor), open, adds, edited);
+        let key = (title.zip(anchor), open, adds);
         if self.declared_bar.as_ref() != Some(&key) {
             let note = key
                 .0
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds, edited)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds)));
             self.declared_bar = Some(key);
         }
         let header = Rc::clone(&self.header);
@@ -188,7 +178,7 @@ mod tests {
     #[test]
     fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
-        for scenario in ["status", "import_success", "first_note"] {
+        for scenario in ["table", "import_success", "first_note"] {
             for (width, docked) in [(420, false), (1280, true)] {
                 let mut notes = notes_at(scenario, (width, 800));
                 let (tree, note, body) = tops(&mut notes);
@@ -245,26 +235,6 @@ mod tests {
                 .count(),
             1,
             "the bar holds New note once"
-        );
-    }
-
-    /// The note being written is marked in the bar, wherever the window is
-    /// shown, not only in this app's status band (`APP-notes-03`). The slots
-    /// are built here rather than through the hosted window bar, because the
-    /// bar's hosted flag is process-wide and a test that flips it races the
-    /// others.
-    #[test]
-    fn the_window_bar_marks_a_note_that_is_not_on_disk_yet() {
-        let note = Some(("Shopping", "notes.page.1".to_owned()));
-        let written = NotesApp::window_toolbar(note.clone(), false, true, false);
-        assert!(
-            !written.location.expect("the bar names the note").edited,
-            "a note the store has written is not marked"
-        );
-        let unsaved = NotesApp::window_toolbar(note, false, true, true);
-        assert!(
-            unsaved.location.expect("the bar names the note").edited,
-            "a note whose save is in flight or failed is marked"
         );
     }
 }

@@ -190,6 +190,12 @@ class EndToEnd(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir()
+        # The fake groups build into the checkout's own target/, so the run
+        # looks there too, whatever target directory the caller builds into
+        # (t sets CARGO_TARGET_DIR).
+        target = mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(self.repo / "target")})
+        target.start()
+        self.addCleanup(target.stop)
         self.env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
         self.git("init", "--quiet", "--initial-branch=work")
@@ -374,5 +380,16 @@ class Groups(unittest.TestCase):
             self.assertTrue(group.builds or group.tests, group.name)
 
 
+class Artifacts(unittest.TestCase):
+    def test_a_build_into_its_own_target_directory_is_found_there(self):
+        repo = Path("/src")
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target"}):
+            self.assertEqual(ab.artifact(repo, "target/debug/shell"), Path("/target/debug/shell"))
+            self.assertEqual(ab.artifact(repo, "crates/x/fixture"), Path("/src/crates/x/fixture"))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ab.artifact(repo, "target/debug/shell"), Path("/src/target/debug/shell"))
+
+
 if __name__ == "__main__":
     unittest.main()
+

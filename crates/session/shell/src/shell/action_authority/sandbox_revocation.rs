@@ -265,7 +265,7 @@ mod tests {
         )
         .with_id("document");
         tree.desktop.workspaces[0].sandbox.push(grant.clone());
-        tree.append_empty_workspace("Other isolated room");
+        tree.create_hosted_workspace("Other isolated room");
         let other_room = tree.desktop.workspaces.last_mut().unwrap();
         other_room.sandbox.push(grant.clone());
         let other_room = other_room.room();
@@ -433,6 +433,53 @@ mod tests {
             reconcile(&mut published);
             assert!(process.stopped(), "{scope:?}");
         }
+    }
+
+    /// Two exports of one tree reach its authority out of order: the later
+    /// snapshot, which holds a new grant, lands first and a sandbox launches
+    /// with that grant. The earlier snapshot, arriving after it, withdraws
+    /// nothing and interrupts no one.
+    #[test]
+    fn an_earlier_export_arriving_after_a_later_one_withdraws_no_grant() {
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room();
+        let authority = tree.native_runtime.action_authority();
+        let earlier = super::super::Export::of(&tree);
+        let grant = CapOverride::grant(
+            Subject::app("so.tilo.reader"),
+            Scope::FsPath("/disposable/granted-later".into()),
+            Access::Write,
+        )
+        .with_id("granted-later");
+        tree.desktop.workspaces[0].sandbox.push(grant.clone());
+        super::super::Export::of(&tree).publish();
+        let mut process = Process::new();
+        let status = {
+            let mut published = super::super::lock(&authority.published);
+            process.register(
+                &mut published,
+                room,
+                "so.tilo.reader",
+                std::slice::from_ref(&grant),
+            );
+            published.sandboxes[&process.0.id()].authorization_status(&published)
+        };
+        assert_eq!(status, Ok(()));
+        earlier.publish();
+        let mut published = super::super::lock(&authority.published);
+        assert!(
+            published.rooms[&room].sandbox.contains(&grant),
+            "the published policy still holds the later grant"
+        );
+        assert!(
+            published.sandboxes.remove(&process.0.id()).is_some(),
+            "the sandbox launched with it still runs under it"
+        );
+        drop(published);
+        assert!(
+            process.0.try_wait().unwrap().is_none(),
+            "nothing interrupted it"
+        );
     }
 
     #[test]

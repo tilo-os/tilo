@@ -23,12 +23,12 @@ path = "src/lib.rs"
 # Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
 # test barriers, and the replay and staging entry points the shell replay
 # adapter's selection tests drive the store through.
-test-support = ["tilo-relay-store/test-support"]
+test-support = ["tilo-room-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
+web = ["tilo-relay-shell/web", "tilo-room-host/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 # The legacy_stream_source example: a session streaming a window through the
 # production encoder (H.264, VP9 or AV1; needs the GStreamer stack). No binary uses it.
 stream-source = ["dep:tilo-media"]
@@ -164,7 +164,6 @@ uuid.workspace = true
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
-n0-future = "0.3.2"
 thiserror.workspace = true
 
 # Observability.
@@ -226,7 +225,6 @@ tilo-environment = { path = "../../runtime/environment" }
 env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # App surfaces, fetched by hash from the registry's reviewed payload blobs.
-app-registry = { path = "../../packaging/app-registry" }
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
@@ -245,7 +243,6 @@ tilo-fs = { path = "../../system/fs" }
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The workspace-join exchange every governor answers, over this relay's rooms.
-tilo-governor = { path = "../../collab/tilo-governor" }
 collab-types = { path = "../../collab/collab-types" }
 # A node stewards the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }
@@ -253,9 +250,10 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The seam the core asks about opaque co-edit bodies, the desktop's adapter
 # `Relay::start` injects, and (with `web`) the browser legacy-window bridge.
 tilo-relay-shell = { path = "../tilo-relay-shell" }
+# The room host every device runs, which the relay embeds.
+tilo-room-host = { path = "../tilo-room-host" }
 # Retained-store primitives the workspace store shares with the shell replay
 # adapter, and the seam it drives shell replay selection through.
-tilo-relay-store = { path = "../tilo-relay-store" }
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -278,15 +276,14 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# Native enrollment and private owner assertions in the remote person fixtures.
+# The room host's fixtures: a certified test host and the devices around it.
+tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # The shell-selection fixture, the selection construction counter and the
 # barriers inside selection that the store, peer and persistence tests use.
 tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
-tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 tilo-doc = { path = "../../doc/tilo-doc" }

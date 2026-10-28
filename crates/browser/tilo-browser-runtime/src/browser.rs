@@ -250,22 +250,31 @@ struct Config {
 }
 
 impl Config {
+    /// The host's administration grant, else the page's own model service's,
+    /// which only Model Providers is ever lent.
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
-        self.provider_management
-            .as_ref()
-            .map(crate::host_services::ProviderManagementConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.provider_management {
+            Some(granted) => granted.connect().map_err(error),
+            None => Ok(crate::host_services::page_provider_admin()),
+        }
     }
 
+    /// Lend Model Providers the administration; any other application
+    /// gets none.
+    fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
+        if crate::host_services::provider_admin_app(context.app_id()) {
+            crate::host_services::provide_provider_admin(context, self.provider_admin()?)
+                .map_err(error)?;
+        }
+        Ok(())
+    }
+
+    /// The host's model service, else the page's own.
     fn models(&self) -> Result<ui::models::Models, JsValue> {
-        self.models
-            .as_ref()
-            .map(crate::host_services::ModelConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.models {
+            Some(lent) => lent.connect().map_err(error),
+            None => Ok(crate::host_services::page_models()),
+        }
     }
     fn author(&self) -> String {
         self.author
@@ -371,6 +380,7 @@ fn release_gpu(id: u64, gpu: Gpu) {
         SHARED_GPU.with_borrow_mut(|shared| {
             if shared.as_ref().is_some_and(|s| Rc::ptr_eq(s, &gpu.shared)) {
                 *shared = None;
+                ui::offscreen::provide_page_gpu(None);
             }
         });
     }
@@ -1272,24 +1282,15 @@ fn present_component(
     context.provide_content(crate::page_content());
     context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
-    crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
-        .map_err(error)?;
+    config.lend_provider_admin(&mut context)?;
+    crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
-    let destination = Rc::clone(&loaders);
-    let component = ui::ImageStore::with_host_factory_with_max_dimension(
-        Rc::new(move |max_dimension| {
-            let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
-            destination.borrow_mut().push(loader);
-            image
-        }),
-        || definition.instantiate(context, target, restore),
-    )
-    .map_err(error)?;
-    let checkout = component.record().clone();
     let image_owners = crate::page_content::ImageOwners::default();
-    if let Some(content) = component.content() {
-        crate::page_content::own_loaders(&image_owners, 0..loaders.borrow().len(), &content);
-    }
+    crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
+    let component = definition
+        .instantiate(context, target, restore)
+        .map_err(error)?;
+    let checkout = component.record().clone();
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores,
@@ -1792,6 +1793,10 @@ async fn shared_gpu(
         *uncaptured.lock_recover() = Some(format!("WebGPU error: {e}; call recover"));
         wake(&p, &error_mounts);
     }));
+    let page_gpu = ui::offscreen::SharedGpu {
+        device: handle.device.clone(),
+        queue: handle.queue.clone(),
+    };
     let shared = Rc::new(RefCell::new(SharedGpu {
         cx,
         renderer,
@@ -1802,6 +1807,9 @@ async fn shared_gpu(
         overflows: ui::render_bump_recovery::Overflows::default(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    // Apps that composite on the GPU themselves (the video editor) borrow
+    // this device: the page cannot wait for one of their own.
+    ui::offscreen::provide_page_gpu(Some(page_gpu));
     // A renderer made anew (after a lost device) compiles its own.
     DEFERRED_PIPELINES_ASKED.set(false);
     Ok((shared, surface))

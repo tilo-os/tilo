@@ -119,14 +119,6 @@ async fn start_host(
         state_root: state.to_path_buf(),
         ..Default::default()
     };
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace(),
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        shell_authority: None,
-    });
     cfg.services.app_serving = true;
     let relay = Relay::start_with_app_serving(
         cfg,

@@ -69,7 +69,7 @@ class ShardTest(unittest.TestCase):
 
     def test_the_shards_are_t_tomls_and_cover_every_area_once(self):
         checks = {c["name"]: c for c in tomllib.loads((HERE.parents[1] / "t.toml").read_text())["check"]}
-        self.assertEqual(checks["vm-acceptance"]["shards"], list(run.SHARDS))
+        self.assertEqual(checks["vm-acceptance/{shard}"]["matrix"]["shard"], list(run.SHARDS))
         areas = [a for part in run.SHARDS.values() for a in part.split(",") if a in run.core.AREAS]
         self.assertEqual(sorted(areas), sorted(run.core.AREAS))
 

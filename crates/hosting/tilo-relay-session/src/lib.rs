@@ -43,7 +43,9 @@ pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 
 /// Whether low-volume, payload-free event correlation is logged. The same
-/// switch as the daemon's, so one variable correlates both ends.
+/// switch as the daemon's, so one variable correlates both ends. Only the
+/// native session logs them.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn correlated_diagnostics() -> bool {
     std::env::var_os("TILO_RELAY_CORRELATED_DIAGNOSTICS").is_some()
 }

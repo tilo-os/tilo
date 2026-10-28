@@ -72,8 +72,8 @@ use super::output_signal::{
     device_has_adaptive_sync, find_property, hdr_capability,
 };
 use super::outputs::DrmOutputKey;
-use crate::shell::color_pipeline::SdrToPqEncoder;
 use settings_store::hardware::HdrUnavailable;
+use tilo_color_pipeline::color_pipeline::SdrToPqEncoder;
 use tilo_lock::MutexRecover as _;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
@@ -2673,7 +2673,7 @@ impl DrmScanout {
 
     /// The CRTC dims this output itself: every plane, a client buffer
     /// scanned out directly included. Otherwise the compositor's final pass
-    /// must ([`crate::shell::software_dim::final_pass_dim`]).
+    /// must ([`tilo_color_pipeline::software_dim::final_pass_dim`]).
     pub fn software_dim_in_crtc(&self) -> bool {
         self.crtc_gamma.carries()
     }

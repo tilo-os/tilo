@@ -338,6 +338,7 @@ impl LauncherServices for Apps {
         pid: u32,
         app: &str,
         room: &str,
+        _window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         if !self.launched.attest(pid, app, room) {
             return Ok(None);

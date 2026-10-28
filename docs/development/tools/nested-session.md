@@ -12,16 +12,20 @@ From the checkout root, on the host's Wayland desktop:
 dist/dev/nested-session.sh --apps "notes chat"
 ```
 
-Required locally: `t`, Bash, Python 3, jq, bubblewrap, readelf, sha256sum, the
+Required locally: `rcargo` or `t`, Bash, Python 3, jq, bubblewrap, readelf, sha256sum, the
 usual Linux command-line tools and the runtime libraries the binaries load
 (including `libxkbcommon.so.0`). `XDG_RUNTIME_DIR` must exist. No local Rust
 toolchain is needed. Run the windowed script on the host, not inside a
 toolbox/container: it checks that boundary before launch.
 
-The script asks t for the architecture-specific `nested-session` build and
-downloads its outputs. Apps and `libruntime_dylib.so` must come from the same
-build; fetching individual executables is not a replacement. `--apps` selects
-which apps to install from that build's fixed set, not which apps t compiles.
+The script builds remotely with `dist/dev/nested-session-build.sh`: with rcargo
+on PATH as one `rcargo exec` on the builder rcargo's configuration names (of
+this machine's architecture), fetching the build into `target/nested-session`;
+otherwise as t's architecture-specific `nested-session` check, downloading its
+outputs. `--builder rcargo|t` chooses. Apps and `libruntime_dylib.so` must come
+from the same build; fetching individual executables is not a replacement.
+`--apps` selects which apps to install from that build's fixed set, not which
+apps are compiled.
 Discover the current set without building:
 
 ```sh
@@ -57,7 +61,12 @@ State defaults to `$XDG_STATE_HOME/tilo-nested`, falling back to
 `~/.local/state/tilo-nested`. `--state DIR` selects another private profile.
 
 It contains the scratch HOME/XDG tree, app store, signed runtime, publisher key,
-throwaway identity and `logs/`. Re-running preserves app data and repackages
+throwaway identity and `logs/`. Its `system/` store holds what a device's
+`/usr/share/tilo-apps` would: the env-runtime Terminal's environments start
+from. The ush supervisor runs beside the shell with its user unit's command
+line and environment (`os/usr/lib/systemd/user/tilo-ush.service`), so Terminal
+opens a shell; `dist/dev/nested-terminal-check.py` (t check `nested-terminal`)
+proves it. Re-running preserves app data and repackages
 changed payloads. The private runtime directory and D-Bus session avoid
 socket/service collisions, but this is not a VM: audio is connected to the
 host's sound server.
@@ -70,7 +79,7 @@ host's sound server.
 
 A throwaway identity is not a personal identity backup. The script refreshes it
 before expiry; do not use this state for durable personal work. Inspect
-`logs/shell.log`, `identity.log`, `model-gateway.log` and `native.log` for the
+`logs/shell.log`, `identity.log`, `model-gateway.log`, `ush.log` and `native.log` for the
 corresponding startup failure rather than deleting state as a routine fix.
 Configure a model provider in the nested Settings app before asking its agent to
 work.

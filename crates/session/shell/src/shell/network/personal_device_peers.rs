@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_files::native::Watched;
 
 use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// Where this person's own devices are recorded.
 pub(super) struct Sources {

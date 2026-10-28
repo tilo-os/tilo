@@ -45,10 +45,12 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+mod saved;
 pub mod scenario;
 pub mod shortcut;
 mod template;
 pub mod text;
+mod text_read;
 mod types;
 
 #[cfg(test)]
@@ -71,14 +73,16 @@ pub use run::{
     RunTrigger, STEP_FACET, StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch,
     invocation_id, run,
 };
+pub use saved::{SavedShortcut, decode_saved};
 pub use scenario::{
     Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
     ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
-    FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
-    StepPolicy, TimeOfDay, TriggerSpec, Weekday,
+    FOCUS_SCHEDULE, FocusTransition, SAVED_SHORTCUT_DOMAIN, SavedProof, Schedule, ScheduleClaim,
+    Selector, Shortcut, ShortcutChange, Step, StepKind, StepPolicy, TimeOfDay, TriggerSpec,
+    Weekday,
 };
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";

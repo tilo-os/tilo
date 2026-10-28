@@ -478,6 +478,7 @@ desktop-app-unavailable = Application unavailable
 desktop-app-identity-unavailable = Application identity unavailable
 desktop-app-integration-unavailable = { $app }: application integration or required service unavailable
 desktop-app-no-adapter = No semantic application adapter; process-local pixels cannot be reconstructed
+desktop-search-copied = Copied
 desktop-view-switch-workspace = Switch to { $workspace }
 desktop-view-review-activity = Review workspace activity
 desktop-view-explore-activity = Explore workspace activity
@@ -500,11 +501,14 @@ search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ 
 }
 search-window-close-tab = Close tab “{ $tab }”
 search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
+search-window-share-tab = Share “{ $tab }” with the workspace
+search-window-unshare-tab = Stop sharing “{ $tab }”
 search-window-focus-place-strip = Strip “{ $strip }”
 # Words that ask for a window's close or move/copy rows; a search for a
 # window by name only offers going to it. Space-separated, lowercase.
 search-window-verb-close = close quit
 search-window-verb-relocate = move copy send
+search-window-verb-share = share show unshare stop
 
 # Notifications: banner stack and notification centre
 drill-in-back = Back

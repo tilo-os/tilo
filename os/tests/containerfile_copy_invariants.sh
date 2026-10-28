@@ -335,7 +335,11 @@ containerfile="$repo/os/Containerfile"
 # each of runtime-image-payload and app-store, from /signatures, so the
 # runtimes and app trees are the same layer whenever their bytes are; the
 # installed paths are unchanged.
-expected_contract=f2e3124a3aacffc1d12256bd068f5a342f6082b3d2a624ed0fbb068e34fd874a
+# The 94tilo-greeter dracut module, which carries the greeter into the
+# initramfs as the boot's sign-in screen, rides the rollback files with the
+# dracut modules beside it, and the greeter's initramfs build (the boot-greeter
+# component) with the component files.
+expected_contract=abf4a75096ee7c060116eeb3af80e58bf135662d9e4f931c020f04c05afda15d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -395,8 +399,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(
 # stage of their pieces, the seal's included, 151 of them.
 # The signed records of the runtimes and of the app store, each copied apart
 # from the bytes they sign, add two COPYs (158).
-[ "$instructions" -le 158 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 158)" >&2
+# Declaring TILO_RUST_LTO in the rootfs piece, which tells the initramfs build whether the
+# greeter's size budget is enforced or reported, adds one ARG (159).
+[ "$instructions" -le 159 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 159)" >&2
   exit 1
 }
 

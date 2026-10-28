@@ -80,8 +80,17 @@ impl super::FrameHarness {
         );
         handle.settle(|| {
             self.relayout();
+            // As the live window idles: a frame after the idle tick only when
+            // it changed the document or something asked for one. A frame
+            // with nothing to take up still re-admits the components, which
+            // makes the next look at what they publish read it all again.
+            let before = crate::doc::settle_mark(&self.state.doc);
             self.idle_control_tick();
-            self.relayout();
+            if crate::doc::settle_mark(&self.state.doc) != before
+                || self.frame_schedule_demands_frame()
+            {
+                self.relayout();
+            }
         });
     }
 

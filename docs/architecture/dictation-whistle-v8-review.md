@@ -88,7 +88,7 @@ This ledger records the original streaming adapter at commit
 reproduce its exact bundle. The current harness and source qualify the separate
 [endpoint and lifecycle review](dictation-whistle-v8-endpoint-review.md).
 
-`tools/release/qualify_whistle_v8_scope.py` verifies the exact owned artifact bundle
+[`qualify_whistle_v8_scope.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/qualify_whistle_v8_scope.py) verifies the exact owned artifact bundle
 against the ledger and checked-out source, materializes only verified public PCM,
 runs bwrap with no home/network/hardware access, and calls the existing resource
 observer. Missing resource observation or an incomplete stream fails the check.

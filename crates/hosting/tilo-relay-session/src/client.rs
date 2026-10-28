@@ -27,7 +27,12 @@ use crate::transport::{
 };
 use tilo_relay_client::frame::{read_frame, write_frame};
 
+mod handshake;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::session_carrier::StreamCarrier;
 use crate::session_carrier::{CarrierHandle, HttpsCarrier, IrohCarrier, SessionChannels};
+use handshake::authenticate_server;
 use tilo_delivery_protocol::peer_actions::SignedDirectedAction;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
@@ -110,6 +115,9 @@ struct InteractiveWorkspaceScope {
 struct ExpectedServer {
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
+    /// The pinned device is one of this person's own, hosting rooms
+    /// itself: it proves `user` and `device` but needs no host capability.
+    own_device: bool,
     interactive_scope: Option<InteractiveWorkspaceScope>,
 }
 
@@ -710,6 +718,7 @@ impl RelayClient {
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
+                own_device: false,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -778,6 +787,7 @@ impl RelayClient {
             ExpectedServer {
                 user: expected_server_user,
                 device: expected_server_device,
+                own_device: false,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -809,6 +819,7 @@ impl RelayClient {
             ExpectedServer {
                 user: Some(expected_server_user),
                 device: Some(expected_server_device),
+                own_device: false,
                 interactive_scope: None,
             },
             ClientCredentials {
@@ -819,6 +830,120 @@ impl RelayClient {
             },
         )
         .await
+    }
+
+    /// Connect to `expected_device`, one of this person's own devices
+    /// (`own_user`) that hosts rooms itself, signing the private actions
+    /// this device sends. The host proves exactly that device under the
+    /// person's root; neither side needs host capability. The session is
+    /// the person's own: the host answers its rooms' listing and entry on
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect`]; [`ClientError::Auth`] when the host is not
+    /// that device of this person.
+    pub async fn connect_v2_to_own_device(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        own_user: [u8; 32],
+        expected_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        if own_cert.user_public_key != own_user {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
+        Self::connect_version(
+            endpoint,
+            relay_addr,
+            ExpectedServer {
+                user: Some(own_user),
+                device: Some(expected_device),
+                own_device: true,
+                interactive_scope: None,
+            },
+            ClientCredentials {
+                cert: own_cert,
+                signer: &own_sk,
+                revocations,
+                action_key: Some(own_sk.clone()),
+            },
+        )
+        .await
+    }
+
+    /// A session over `read`/`write`, a byte stream pair to a host in the
+    /// same process, through the same handshake and session as over Iroh,
+    /// private action channel included. The host must prove
+    /// `expected_device` of this device's own person; it needs no host
+    /// capability.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect`], without the dial.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn connect_v2_over_stream<R, W>(
+        mut read: R,
+        mut write: W,
+        expected_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let relay_peer = authenticate_server(
+            &mut write,
+            &mut read,
+            &own_cert,
+            &own_sk,
+            &revocations,
+            &ExpectedServer {
+                user: Some(own_cert.user_public_key),
+                device: Some(expected_device),
+                own_device: true,
+                interactive_scope: None,
+            },
+        )
+        .await?;
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
+        let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
+        let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
+        let carrier = StreamCarrier::start(async move {
+            let mut reader = SessionReader::new(read);
+            if run_v2_pump(
+                &mut write,
+                &mut reader,
+                &mut outbound_rx,
+                &mut action_rx,
+                &inbound_tx,
+                &action_inbound_tx,
+                None,
+            )
+            .await
+            {
+                use tokio::io::AsyncWriteExt as _;
+                let _ = write.shutdown().await;
+            }
+        });
+        let mut client = Self::from_authenticated_session(
+            relay_peer,
+            own_cert.device_public_key,
+            SessionChannels {
+                outbound: outbound_tx,
+                inbound: inbound_rx,
+                action_outbound: Some(action_tx),
+                action_inbound: action_inbound_rx,
+            },
+            Box::new(carrier),
+        );
+        client.action_key = Some(own_sk);
+        Ok(client)
     }
 
     /// Connect to the exact primary device authorized by a verified signed
@@ -849,6 +974,7 @@ impl RelayClient {
             ExpectedServer {
                 user: None,
                 device: None,
+                own_device: false,
                 interactive_scope: Some(scope),
             },
             ClientCredentials {
@@ -861,21 +987,13 @@ impl RelayClient {
         .await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     async fn connect_version(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         server: ExpectedServer,
         credentials: ClientCredentials<'_>,
     ) -> Result<Self, ClientError> {
-        let ExpectedServer {
-            user: expected_server_user,
-            device: expected_server_device,
-            interactive_scope,
-        } = server;
+        let interactive_scope = server.interactive_scope.clone();
         let ClientCredentials {
             cert: own_cert,
             signer,
@@ -893,64 +1011,15 @@ impl RelayClient {
             .open_bi()
             .await
             .map_err(|e| ClientError::Iroh(e.to_string()))?;
-
-        let mut client_nonce = [0u8; 32];
-        {
-            use rand::Rng;
-            rand::rng().fill_bytes(&mut client_nonce);
-        }
-        let hello = Hello::new(own_cert.clone(), client_nonce);
-        let hello_bytes =
-            postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
-        write_frame(&mut send, &hello_bytes).await?;
-
-        // Nothing at all back is told apart from a broken answer: it is how
-        // a refusal, and a host from before versioned handshakes, look.
-        let ack_bytes =
-            match tilo_relay_client::frame::read_frame_or_eof(&mut recv, MAX_FRAME_BYTES).await {
-                Ok(Some(bytes)) => bytes,
-                Ok(None) => {
-                    return Err(ClientError::NoHandshakeAnswer("the stream ended".into()));
-                }
-                Err(error) => return Err(ClientError::NoHandshakeAnswer(error.to_string())),
-            };
-        let ack: HelloAck = handshake_frame(&ack_bytes)?;
-        let now_ns = tilo_clock::unix_now_ns();
-        let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
-            auth::verify_interactive_owner_ack(
-                &ack,
-                &scope.authority,
-                &revocations,
-                now_ns,
-                &client_nonce,
-            )?
-        } else {
-            match expected_server_user.as_ref() {
-                Some(expected_user) => {
-                    let relay_peer = auth::verify_hello_ack(
-                        &ack,
-                        expected_user,
-                        &revocations,
-                        now_ns,
-                        &client_nonce,
-                    )?;
-                    if expected_server_device.is_some_and(|expected_device| {
-                        relay_peer.cert.device_public_key != expected_device
-                    }) {
-                        return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
-                    }
-                    relay_peer
-                }
-                None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns, &client_nonce)?,
-            }
-        };
-
-        let ack2 = tilo_relay_client::signer::signed_ack2(signer, &ack.server_nonce)
-            .await
-            .map_err(ClientError::Sign)?;
-        let own_ack2_bytes =
-            postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
-        write_frame(&mut send, &own_ack2_bytes).await?;
+        let relay_peer = authenticate_server(
+            &mut send,
+            &mut recv,
+            &own_cert,
+            signer,
+            &revocations,
+            &server,
+        )
+        .await?;
 
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);

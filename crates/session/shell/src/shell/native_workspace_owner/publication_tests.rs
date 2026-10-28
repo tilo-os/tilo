@@ -822,13 +822,23 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let reservation = &mut encoded["native_authority"]["rooms"][room.to_string()]["publication"]
             ["reservation"];
+        let stored = reservation.clone();
         reservation["state_bytes"] = serde_json::json!(0);
         std::fs::write(&path, serde_json::to_vec_pretty(&encoded).unwrap()).unwrap();
         let mut tree = persist::load_tree_from(&path).unwrap();
+        let reread: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let on_disk =
+            reread["native_authority"]["rooms"][room.to_string()]["publication"]["reservation"]
+                .clone();
+        let loaded = serde_json::to_value(&tree.native_authority).unwrap()["rooms"]
+            [room.to_string()]["publication"]["reservation"]
+            .clone();
         tree.persist_path = Some(path);
         assert!(
             open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
-            "restore must derive capacity proof from actual obligations"
+            "restore must derive capacity proof from actual obligations \
+             ({point:?}: stored {stored}, on disk after load {on_disk}, loaded {loaded})"
         );
     }
 }

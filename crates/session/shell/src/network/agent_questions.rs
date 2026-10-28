@@ -22,8 +22,8 @@ use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::actor::HostIdentity;
 use crate::shell::portal_dialog::PortalDialogQueue;
+use tilo_network_actor::HostIdentity;
 
 /// How often an open session asks its host for new questions.
 const POLL: Duration = Duration::from_millis(250);

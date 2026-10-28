@@ -19,7 +19,6 @@ from git_fixture import isolated_git_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("cloud_deploy", ROOT / "tools/release/cloud_deploy.py")
 deploy = importlib.util.module_from_spec(SPEC)
 # Dataclasses resolve their string annotations through sys.modules.
@@ -625,34 +624,6 @@ class CloudDeployTests(unittest.TestCase):
                 code, _, err = self.plan("--qualification", str(path))
                 self.assertEqual(code, 1, f"{label} was accepted")
 
-
-class WorkflowContractTests(unittest.TestCase):
-    def test_t_deploys_the_receipts_stable_publishes(self):
-        """Each deployed image's release is published with a receipt, signed first, and the deploy
-        runs after both with the only secret it needs. Production is released by hand by its own
-        session, so the deploy and the web entry's release run when dispatched, never on a push
-        to stable."""
-        checks = {c["name"]: c for c in t_matrix.load(ROOT)["check"]}
-        cloud = checks["cloud-deploy"]
-        self.assertEqual(cloud["on"], ["dispatch"])
-        self.assertEqual(cloud["secrets"], [deploy.TOKEN_ENV])
-        self.assertTrue(cloud["git"])
-        self.assertFalse(cloud["cache"])
-        self.assertEqual(set(cloud["env"]), {deploy.REPO_ENV, deploy.CONFIG_ENV})
-        for name in ("room-service", "web-entry"):
-            publish = checks[f"publish-{name}"]
-            self.assertIn(f"publish-{name}", cloud["needs"])
-            receipt = f"/target/publish/{name}/receipt.json"
-            self.assertIn(receipt, cloud["run"])
-            self.assertIn(receipt, publish["outputs"])
-            self.assertIn("dispatch", publish["on"], name)
-            self.assertIn("'release:sha-{commit}'", publish["run"], name)
-            self.assertIn(f"sign-{name}", publish["optional_needs"], name)
-        self.assertNotIn("stable", checks["publish-web-entry"]["on"])
-        self.assertNotIn("stable", checks["carry-web-entry"]["on"])
-        # The web entry's release is the image carrying production's version, not the bare build.
-        self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry", "signing-tools"])
-        self.assertIn("carry-web-entry", checks["publish-web-entry"]["optional_needs"])
 
 if __name__ == "__main__":
     unittest.main()

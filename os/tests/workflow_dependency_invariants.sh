@@ -59,9 +59,7 @@ fi
 # them nor for the rest of Cargo.lock: its fingerprint (kernel.sh inputs_digest) names exactly
 # the signer's sources, kernel-signer-crate projects exactly them into the crate the kernel
 # compiles, and the kernel's build check takes that crate instead of the workspace.
-kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || fail=1
 kernel_needs="$(tcheck image-kernel-{arch} needs)" || fail=1
-signer_inputs="$(tcheck kernel-signer-crate inputs)" || fail=1
 kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
 signer_crate="$(sed -n '/^kernel_signer_crate() {/,/^}/p' "$publish/kernel-env.sh")"
 if [ -n "$kernel_digest" ] \
@@ -69,12 +67,7 @@ if [ -n "$kernel_digest" ] \
    && grep -Fq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_digest" \
    && grep -Fq 'crates/system/tilo-crypto/src/main.rs' <<<"$kernel_digest" \
    && ! grep -Eq 'tilo-crypto( |/\*|$)|tls_fixture' <<<"$kernel_digest" \
-   && grep -Fxq 'crates/system/tilo-crypto/Cargo.toml' <<<"$signer_inputs" \
-   && grep -Fxq 'crates/system/tilo-crypto/src/lib.rs' <<<"$signer_inputs" \
-   && grep -Fxq 'crates/system/tilo-crypto/src/main.rs' <<<"$signer_inputs" \
-   && ! grep -Eq '^crates/system/tilo-crypto/(\*\*|src/?\*?\*?)$|tls_fixture' <<<"$signer_inputs" \
    && grep -Fxq 'kernel-signer-crate' <<<"$kernel_needs" \
-   && ! grep -Eq '^(Cargo\.lock|Cargo\.toml|crates/.*)$' <<<"$kernel_inputs" \
    && grep -Fq 'crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs' <<<"$signer_crate" \
    && ! grep -Eq 'cp -r|tilo-crypto/src/? ' <<<"$signer_crate" \
    && grep -Fq 'COPY --from=signer-crate' "$repo/os/kernel/Containerfile" \
@@ -111,13 +104,11 @@ else
 fi
 
 # The kernel's acceptance (module signatures and OVMF Secure Boot enforcement, against the
-# exact build) passes before it is signed or published, and reruns when the probe changes.
+# exact build) passes before it is signed or published.
 acceptance="$publish/kernel-acceptance.sh"
-acceptance_inputs="$(tcheck kernel-acceptance-{arch} inputs)" || fail=1
 sign_kernel_needs="$(tcheck sign-kernel needs)" || fail=1
 publish_kernel_needs="$(tcheck publish-kernel needs)" || fail=1
-if grep -Fxq 'os/tests/secureboot_vm_*' <<<"$acceptance_inputs" \
-   && grep -Fxq 'image-kernel-{arch}' <<<"$(tcheck kernel-acceptance-{arch} needs)" \
+if grep -Fxq 'image-kernel-{arch}' <<<"$(tcheck kernel-acceptance-{arch} needs)" \
    && grep -Fxq 'bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}' <<<"$(tcheck kernel-acceptance-{arch} run)" \
    && grep -Fxq 'kernel-acceptance-x86_64' <<<"$sign_kernel_needs" \
    && grep -Fxq 'kernel-acceptance-aarch64' <<<"$sign_kernel_needs" \

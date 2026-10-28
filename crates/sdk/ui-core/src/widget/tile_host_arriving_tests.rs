@@ -120,3 +120,95 @@ fn a_window_that_declares_no_shape_paints_no_skeleton_bars() {
         }
     }
 }
+
+#[test]
+fn a_window_whose_app_declared_its_shape_shows_it_before_the_code_is_in() {
+    let theme = Theme::default();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    // The same window, told what the app declared (and told nothing).
+    let painted = |shows: Option<SkeletonShape>| {
+        let mut host = with_monotonic_time(t0, || {
+            let host =
+                TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.coffee"));
+            match shows {
+                Some(shape) => host.with_arrival_shape(shape),
+                None => host,
+            }
+        });
+        host.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);
+        let paths = |host: &mut TileHost, ms: u64| {
+            with_monotonic_time(at(ms), || paint(host, &theme).encoding().n_paths)
+        };
+        let ground = paths(&mut host, 50);
+        let skeleton = paths(&mut host, 400);
+        (ground, skeleton)
+    };
+    let (no_ground, no_skeleton) = painted(None);
+    assert_eq!(
+        no_skeleton, no_ground,
+        "an app that declared nothing stays its ground: nothing guesses its content"
+    );
+    let (ground, skeleton) = painted(Some(SkeletonShape::Page));
+    assert_eq!(
+        ground, no_ground,
+        "the first frames are the same either way"
+    );
+    assert!(
+        skeleton > ground,
+        "the app's declared page stands in while its code is on its way: {ground} -> {skeleton}"
+    );
+}
+
+#[test]
+fn a_window_whose_app_has_not_drawn_yet_shows_what_its_manifest_declared() {
+    let theme = Theme::default();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    // The app is built (`TileContent::App`), but its first frame is not
+    // drawn: `Declaring(None)` declares nothing of its own, so the window
+    // stands with what the app's manifest said before its code was in.
+    let painted = |shows: Option<SkeletonShape>| {
+        let mut host = with_monotonic_time(t0, || {
+            let host = TileHost::new(TileContent::App(Box::new(Declaring(None))))
+                .arriving_from(Source::host("tilo.coffee"));
+            match shows {
+                Some(shape) => host.with_arrival_shape(shape),
+                None => host,
+            }
+        });
+        host.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);
+        let paths = |host: &mut TileHost, ms: u64| {
+            with_monotonic_time(at(ms), || paint(host, &theme).encoding().n_paths)
+        };
+        let ground = paths(&mut host, 50);
+        let skeleton = paths(&mut host, 400);
+        (ground, skeleton)
+    };
+    let (no_ground, no_skeleton) = painted(None);
+    assert_eq!(no_skeleton, no_ground, "nothing declared, nothing drawn");
+    let (ground, skeleton) = painted(Some(SkeletonShape::Page));
+    assert_eq!(ground, no_ground);
+    assert!(
+        skeleton > ground,
+        "the declared page stands in until the app draws: {ground} -> {skeleton}"
+    );
+    // And an app that declares its own shape keeps it, whatever the manifest said.
+    let t1 = crate::time::now();
+    let mut own = with_monotonic_time(t1, || {
+        TileHost::new(TileContent::App(Box::new(Declaring(Some(
+            SkeletonShape::Text { lines: 3 },
+        )))))
+        .arriving_from(Source::host("tilo.coffee"))
+        .with_arrival_shape(SkeletonShape::Page)
+    });
+    own.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);
+    with_monotonic_time(t1 + Duration::from_millis(400), || {
+        let _ = paint(&mut own, &theme);
+        assert_eq!(
+            own.arrival_shape(),
+            SkeletonShape::Text { lines: 3 },
+            "the app's own shape wins"
+        );
+    });
+}

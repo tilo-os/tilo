@@ -602,7 +602,7 @@ What it can read depends on the channel and on its certificate:
 ## What leaves the device by default
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
-such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
+such crate is in the build (cargo-deny bans them in `deny.toml`), panics and desktop freezes are written only to
 `~/.cache/tilo/crashes/` (`crash_log`), the kernel's records of the computer stopping (pstore) are copied
 there at the next start (`shell::crash_records`), and the image removes `systemd-coredump`. Settings → About
 lists those records and an agent reads them through the host's `tilo.crash-records` actions, under the same

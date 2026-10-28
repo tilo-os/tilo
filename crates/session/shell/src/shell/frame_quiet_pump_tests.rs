@@ -27,6 +27,10 @@ fn a_quiet_pump_announces_no_tree_write_and_reads_no_launchpad_request() {
     );
     frame.relayout();
     let _ = frame.paint_with_damage();
+    // The demo's Notes window saves its startup record; the writer's
+    // acknowledgment, landing whenever its thread gets to it, would change
+    // the window from Saving to Saved under one of the quiet pumps.
+    frame.acknowledge_notes_startup_writes(1);
     let mut doc = AutoCommit::new();
     assert!(
         (0..50).any(|_| !frame.pump_apps(&mut doc, &automerge::ROOT)),
@@ -36,11 +40,18 @@ fn a_quiet_pump_announces_no_tree_write_and_reads_no_launchpad_request() {
     let tree = frame.chrome().tree_handle();
     let generation = tree.generation();
     let revision = frame.chrome_revision();
+    let rested_at = std::time::Instant::now();
+    let waking = frame.wake_deadline_owners();
+    let due = frame
+        .next_wake_deadline()
+        .map(|due| due.saturating_duration_since(rested_at));
     let ((), phases) = tilo_resource::profiling::observe(|| {
-        for _ in 0..20 {
+        for pump in 0..20 {
             assert!(
                 !frame.pump_apps(&mut doc, &automerge::ROOT),
-                "nothing changed on a quiet desktop"
+                "nothing changed on a quiet desktop: pump {pump}, {:?} after it came to rest, \
+                 which waited on {waking:?} in {due:?}",
+                rested_at.elapsed()
             );
         }
     });

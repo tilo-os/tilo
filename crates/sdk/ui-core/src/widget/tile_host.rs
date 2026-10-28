@@ -485,6 +485,10 @@ pub struct TileHost {
     /// app's slots in the window's bar ([`Self::set_hosted_window`]).
     hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
+    /// The shape the app whose code is on its way declared for its window
+    /// ([`Self::with_arrival_shape`]); `None` for a tile that was told
+    /// nothing, which shows its ground.
+    declared_arrival_shape: Option<super::SkeletonShape>,
     /// How far [`Self::offset_layout`] moved the tile from where layout put
     /// it. The content keeps its own layout rect, so it is drawn this much
     /// further right instead.
@@ -871,6 +875,7 @@ impl TileHost {
             panic_scope: std::cell::Cell::new(None),
             hosted_window: None,
             rect: Rect::ZERO,
+            declared_arrival_shape: None,
             content_shift: 0.0,
             content_damage: ContentDamage::new(),
             focused: false,
@@ -892,6 +897,29 @@ impl TileHost {
         }
         tile.arrival = tile.begin_arrival(None);
         tile
+    }
+
+    /// Whether the app in this tile is asking the person to type: a text
+    /// field of it holds the keyboard (`Widget::ime_content`). A stub, a
+    /// notice, a window whose code is on its way, or another device's page
+    /// asks nothing.
+    #[must_use]
+    pub fn asking_for_input(&self) -> bool {
+        match &self.content {
+            TileContent::App(app) => app.ime_content().is_some(),
+            _ => false,
+        }
+    }
+
+    /// What the app whose code is on its way declared its window shows
+    /// meanwhile ([`crate::widget::SkeletonShape`]): the shape the app's
+    /// manifest declares, read from the registry before its code is in. A
+    /// tile told nothing shows its ground alone, as a window that declared
+    /// no shape does.
+    #[must_use]
+    pub fn with_arrival_shape(mut self, shape: super::SkeletonShape) -> Self {
+        self.declared_arrival_shape = Some(shape);
+        self
     }
 
     /// Content whose first frame comes from `from`: an [`TileContent::Arriving`]
@@ -3417,35 +3445,6 @@ impl crate::presence::capability::PublishesPresence for TileHost {
     }
 }
 
-impl crate::search::capability::SearchSource for TileHost {
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        match &self.content {
-            TileContent::App(app) => crate::search::capability::search_providers(app.as_ref()),
-            _ => Vec::new(),
-        }
-    }
-    fn search_provider_descriptors(
-        &self,
-    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
-        match &self.content {
-            TileContent::App(app) => {
-                crate::search::capability::search_provider_descriptors(app.as_ref())
-            }
-            _ => Vec::new(),
-        }
-    }
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) {
-        if let TileContent::App(app) = &mut self.content {
-            crate::search::capability::activate_search_result(app.as_mut(), action_id, doc, path);
-        }
-    }
-}
-
 impl crate::widget::controls::ActionControls for TileHost {
     fn install_control_custody(
         &mut self,
@@ -3826,8 +3825,16 @@ impl TileHost {
     /// The shape the content declared for its placeholder; none declared,
     /// the window's ground alone.
     fn arrival_shape(&self) -> super::SkeletonShape {
+        let declared = self.declared_arrival_shape;
         match &self.content {
-            TileContent::App(app) => app.arrival_shape(),
+            // What the app's own root declares, and while it declares
+            // nothing (its first frame is not drawn yet), what its manifest
+            // declared for the window before the code was in.
+            TileContent::App(app) => match app.arrival_shape() {
+                super::SkeletonShape::Ground => declared.unwrap_or(super::SkeletonShape::Ground),
+                own => own,
+            },
+            TileContent::Arriving => declared.unwrap_or(super::SkeletonShape::Ground),
             _ => super::SkeletonShape::Ground,
         }
     }
@@ -3935,6 +3942,7 @@ fn draw_card_text(
 mod arrival;
 mod held;
 mod history;
+mod search;
 pub use held::{hold_windows, release_windows};
 #[cfg(test)]
 mod held_tests;

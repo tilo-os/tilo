@@ -179,6 +179,27 @@ pub const fn device_salt(folded: u16) -> u16 {
     }
 }
 
+/// The salt the device whose public key is `key` mints its ids under: the
+/// key's 64-bit FNV-1a hash folded to 16 bits ([`device_salt`]). Every
+/// device derives its own from its key, and anyone who knows a device's key
+/// knows which ids are its, with no registry between them.
+#[must_use]
+pub const fn device_salt_of_key(key: &[u8]) -> u16 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET;
+    let mut rest = key;
+    while let [byte, tail @ ..] = rest {
+        h = (h ^ *byte as u64).wrapping_mul(PRIME);
+        rest = tail;
+    }
+    let folded = ((h & 0xFFFF) as u16)
+        ^ (((h >> 16) & 0xFFFF) as u16)
+        ^ (((h >> 32) & 0xFFFF) as u16)
+        ^ (((h >> 48) & 0xFFFF) as u16);
+    device_salt(folded)
+}
+
 /// Extract the low-48-bit counter component of a salted id.
 pub const fn counter_of(id: u64) -> u64 {
     id & PEER_ID_COUNTER_MASK

@@ -1,10 +1,9 @@
 name: CI / affected packages
 
 # Main is allowed to be unstable, so a commit is never gated before it lands;
-# this workflow measures every push after the fact. Selection diffs each push
-# against the main commit it was pushed onto (the push's `before`), so every
-# commit main gains is planned exactly once, and no run is cancelled by a later
-# push. `stable` is moved by hand when a release is cut; nothing here writes it.
+# this workflow measures pushes after the fact. Every push runs and plans from
+# the main commit it landed on; no run is skipped or superseded by a newer one.
+# `stable` is moved by hand when a release is cut; nothing here writes it.
 #
 # Affected reverse dependencies are checked on native x86; changed packages,
 # their direct dependants (up to one shard's cost, REVERSE_TEST_COST_BUDGET) and
@@ -23,8 +22,8 @@ on:
         type: string
 
 concurrency:
-  # One run per pushed commit: each push plans only the commits it added, so
-  # cancelling a run would leave those commits untested.
+  # One run per pushed commit. A later run never cancels or replaces an earlier
+  # one: every head on main is tested.
   group: check-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: false
 
@@ -55,7 +54,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+      image: registry.tilo.so/tilo/ci-control@sha256:585b2dacdaa651cb37ea66a57ec8203301d3724726f1b8c700ee55d2438ef728
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -77,7 +76,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -147,16 +146,69 @@ jobs:
   # pushes retain every selected native result even when this boundary fails.
   # Pull requests containing only audited prose or self-tested quality helpers
   # may omit this independent suite.
-  security:
+  # The boundary invariants run five fixture binaries built from the merged
+  # tree, as t's security check depends on its vm-test-binaries check. Build
+  # them where the compiler and cache are warm: the checks themselves are
+  # mostly text, but their first cold build on a 2-CPU lane spent a 30-minute
+  # timeout inside one invariant and reported no result at all.
+  security-fixtures:
     if: needs.select.outputs.security_required == 'true'
-    needs: [select]
-    runs-on: runner-quality
-    timeout-minutes: 30
+    needs: [builder, select]
+    # The native class, not the large one: the shell shard holds a large
+    # runner for up to two hours, and the boundary fixtures queued behind it
+    # for longer than a whole run, which starved the boundary and the
+    # aggregate behind it. Six crates compile here through the shared cache,
+    # two jobs at a time so the linker stays inside the native limit.
+    runs-on: runner
+    timeout-minutes: 60
     env:
-      # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout security fixture sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the security fixture binaries
+        run: |
+          cargo build --locked -p tilo-image-policy-check -p tilo-crypto \
+            -p tilo-esp-write -p tilo-board-successor
+          cargo build --locked -p tilo-install-helpers --bin tilo-staging-handoff
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: security-fixtures
+          path: |
+            target/debug/tilo-image-policy-check
+            target/debug/tilo-crypto
+            target/debug/tilo-esp-write
+            target/debug/tilo-board-successor
+            target/debug/tilo-staging-handoff
+          if-no-files-found: error
+          retention-days: 1
+
+  # Stands beside the compile matrix, not in front of it (see the note above
+  # `test`); `checks` requires its success, so it is still a gate on the run.
+  security:
+    if: needs.select.outputs.security_required == 'true'
+    needs: [select, security-fixtures]
+    runs-on: runner-quality
+    timeout-minutes: 60
+    env:
+      # The complete suite passes in the quality lane's 2 CPU / 5 GiB job limit
+      # once its fixtures are built (security-fixtures); t declares the same
+      # check as a 1-core, minutes-long job.
+      CARGO_BUILD_JOBS: '2'
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -165,6 +217,23 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: security-fixtures
+          path: target/debug
+
+      - name: Use the fixture binaries the builder produced
+        run: |
+          for binary in tilo-image-policy-check tilo-crypto tilo-esp-write \
+                        tilo-board-successor tilo-staging-handoff; do
+            chmod 0755 "target/debug/$binary"
+          done
+          printf 'TILO_IMAGE_POLICY_CHECK_BIN=%s/target/debug/tilo-image-policy-check\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_CRYPTO_BIN=%s/target/debug/tilo-crypto\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_ESP_WRITE_BIN=%s/target/debug/tilo-esp-write\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_BOARD_SUCCESSOR_BIN=%s/target/debug/tilo-board-successor\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_STAGING_HANDOFF_BIN=%s/target/debug/tilo-staging-handoff\n' "$PWD" >> "$GITHUB_ENV"
 
       # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
       # check them explicitly so EFI/RPM tests cannot skip.
@@ -190,7 +259,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -244,11 +313,13 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
-  # Admit native PR work only after the required security boundary passes.
-  # A failed boundary already fails the aggregate; do not spend native slots
-  # on that invalid PR. Explicit cancellation and builder/selector predicates
-  # allow main diagnostics after a failed boundary without running a bad plan.
-  # No new admission job or runner reservation is introduced.
+  # The compile jobs below do not wait for the security boundary. It used to
+  # gate them so a red boundary would not spend native slots, but the boundary
+  # suite runs the whole repository's invariant scripts and one slow or hung
+  # invariant then leaves test/check/clippy permanently blocked ("incomplete
+  # matrix"), which hides every product result in the run. The boundary is
+  # still required: the `checks` aggregate fails the run when it fails or is
+  # skipped unexpectedly.
   # Tests and the Clippy gate run as parallel jobs rather than one after
   # another on one runner. Test jobs are sharded by recorded test time, Clippy
   # by structural cost (tools/ci/affected_packages.py). Clippy type-checks
@@ -257,19 +328,30 @@ jobs:
   # instead. The jobs share compiler outputs through sccache; each keeps its
   # own target tree. The `checks` aggregate below requires all of them.
   test:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select]
+    # Linking a shard's test binaries is the memory peak of the whole check:
+    # the kernel killed a whole-workspace shard's build on both architectures
+    # at the native class's 16 GiB job limit (exit 137, ~100 packages each).
+    # The planner therefore names the class in `matrix.runner`:
+    # tools/ci/affected_packages.py asks for runner-large / runner-large-arm64
+    # when a shard's own links exceed the native class (a whole-workspace
+    # shard, or one carrying the tree's largest test link).
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
     env:
-      # The native ARM runner has enough memory for one of the largest test
-      # links, but not four simultaneously. Most compile work is served by
-      # sccache, so serialize ARM rustc/linker processes without slowing x86.
-      # The x86 runners have 16 or 24 CPUs; four jobs left the uncached test
-      # crates and links queueing behind each other.
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '8' }}
+      # Compiling and linking a shard's tests is the memory peak of the check.
+      # The native x86 class's 16 GiB job limit took a 22-package shard at
+      # eight concurrent links (killed 678 s in, exit 137: apps/agent,
+      # tilo-relay and tilo-room-host together), so the native class keeps
+      # four; the large class (36 GiB) keeps eight. The native ARM slot has
+      # memory for one of the largest test links but not four, and the large
+      # ARM slot four: ci-nightly builds the whole arm workspace that way.
+      CARGO_BUILD_JOBS: >-
+        ${{ (contains(matrix.runner, 'large') && (matrix.arch == 'aarch64' && '4' || '8'))
+            || (matrix.arch == 'aarch64' && '1' || '4') }}
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -335,7 +417,7 @@ jobs:
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
-          -E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
+          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
       # Each nextest phase writes the same ci-profile JUnit path. Preserve
       # its report before a later phase starts, including on test failure.
@@ -458,8 +540,8 @@ jobs:
           if-no-files-found: warn
 
   check:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
+    needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -529,8 +611,8 @@ jobs:
           if-no-files-found: warn
 
   clippy:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -617,8 +699,8 @@ jobs:
   # platform and build tools, and the host code paths it would add run only on
   # a device. The NDK's host tools are x86_64-only.
   android:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.android_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.android_required == 'true' }}
+    needs: [builder, select]
     runs-on: runner
     timeout-minutes: 90
     env:
@@ -663,8 +745,8 @@ jobs:
   # web-capable examples, built for the web. The browser bundle build and its
   # tests run elsewhere.
   wasm:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.wasm_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.wasm_required == 'true' }}
+    needs: [builder, select]
     # wasm32 output is host-independent; main still qualifies it on x86.
     # The portable label admits only qualified x86 general and ARM large slots.
     runs-on: runner
@@ -724,8 +806,8 @@ jobs:
   # them when their files change (VENDORED_TEST_CRATES in
   # tools/ci/affected_packages.py); ci-nightly.yml runs every one.
   vendored:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.vendored_required == 'true' }}
-    needs: [builder, select, security]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.vendored_required == 'true' }}
+    needs: [builder, select]
     runs-on: runner
     timeout-minutes: 45
     container:
@@ -787,12 +869,12 @@ jobs:
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
   checks:
-    if: always()
+    if: ${{ always() }}
     needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate

@@ -130,7 +130,7 @@ if want clippy; then
   done < <(rows clippy_matrix)
 fi
 
-pull_filter="not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER) and not ($PUSH_ONLY_FILTER)"
+pull_filter="not ($GOLDEN_FILTER) and not ($PUSH_ONLY_FILTER)"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   shard=$(field "$row" shard)

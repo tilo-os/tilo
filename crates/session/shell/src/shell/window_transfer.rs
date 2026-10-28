@@ -696,8 +696,17 @@ fn plan(
     if !tree.may_hold_app(target, &app_id) {
         return Err(MoveTabError::Personal);
     }
+    // A room whose records are documents its owner commits is governed: a
+    // window leaves or enters it only through that owner. A room whose
+    // records are sealed channels its apps open themselves keeps them in
+    // this device's app profiles, so a window moves through those, as it
+    // does in this person's own room still being placed on its host. A room
+    // still being joined is taken as governed, so nothing leaves or enters
+    // it unchecked meanwhile.
     let governed = |room: RoomId| {
-        tree.requires_native_owner(room) || hosted.is_some_and(|hosted| hosted.hosts(room))
+        tree.commits_native_documents(room)
+            || tree.is_joining(room)
+            || hosted.is_some_and(|hosted| hosted.hosts(room))
     };
     let source_hosted = governed(source_ws.room());
     if (source_hosted || governed(destination_ws.room())) && hosted.is_none() {
@@ -1108,7 +1117,7 @@ fn follow(
         }
     };
     forget(&follower.address);
-    let instance = crate::shell::state::next_id();
+    let instance = st.tree().mint_id();
     if !reopen_on(&follower.address, &data_home, instance, record.as_ref()) {
         return Some(follower);
     }
@@ -1121,12 +1130,13 @@ fn follow(
 /// View are on the disk.
 fn open_followed(st: &mut ChromeState, follower: Follower, instance: u64) -> Option<()> {
     let strip = destination_strip(st, follower.workspace)?;
+    let id = st.tree().mint_id();
     let tab = place_in(
         st,
         follower.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: follower.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: follower.address.app_id.clone(),
@@ -1624,12 +1634,13 @@ fn open_fresh(st: &mut ChromeState, plan: &Plan) {
         failed(st, plan, &t("window-move-unknown-workspace"));
         return;
     };
+    let id = st.tree().mint_id();
     place_in(
         st,
         plan.destination.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: plan.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: plan.app_id.clone(),
@@ -1863,7 +1874,7 @@ fn begin(
         destination: profile_root(&data_home, plan.destination.room, &plan.app_id),
         instance: match mode {
             TransferMode::Move => *instance,
-            TransferMode::Copy => crate::shell::state::next_id(),
+            TransferMode::Copy => st.tree().mint_id(),
         },
     };
     if plan.source.hosted {
@@ -2006,12 +2017,13 @@ fn carry_over(
 /// `None` when the destination workspace is gone.
 fn pending_place(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
     let strip = destination_strip(st, plan.destination.workspace)?;
+    let id = st.tree().mint_id();
     Some(place_in(
         st,
         plan.destination.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: plan.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: plan.app_id.clone(),

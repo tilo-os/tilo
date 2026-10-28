@@ -158,7 +158,7 @@ fn all_hosts(hosts: &RoomHosts) -> std::collections::HashSet<u64> {
 struct LegacyShareInputs {
     /// [`crate::shell::state::WorkspaceTreeHandle::generation`].
     tree: u64,
-    /// Whether the backend was watched once the plan had asked for it.
+    /// Whether the backend was watched: someone reads the desktop's pixels.
     watched: bool,
     viewer_hosts: RoomHosts,
     personal: PersonalViewers,
@@ -183,15 +183,13 @@ struct LegacySharePlan {
 impl LegacySharePlan {
     /// Derive the shares again if `tree` was written, or the viewers or the
     /// backend's `watched` state changed, since they were last derived.
-    /// `watch` is told whether a viewer needs the backend watched for it and
-    /// answers whether the backend is watched then. Returns whether the
-    /// shares were derived again, which is when what they feed is told.
+    /// Returns whether the shares were derived again, which is when what
+    /// they feed is told.
     fn refresh(
         &mut self,
         tree: &crate::shell::state::WorkspaceTreeHandle,
         viewers: (RoomHosts, PersonalViewers, MemberViewers),
         watched: bool,
-        watch: impl FnOnce(bool) -> bool,
     ) -> bool {
         let (viewer_hosts, personal, members) = viewers;
         // Loaded before the tree is read: a write racing the read below is
@@ -206,18 +204,26 @@ impl LegacySharePlan {
         }) {
             return false;
         }
-        let (desired, watched) = {
+        let desired = {
             let tree = tree.read();
             // A headless session whose rooms have hosts shows their legacy
             // windows to the hosts' viewers (browsers that opened them), and
-            // the person's other devices the windows they show: it paints and
-            // encodes while it has a viewer, and stops with the last.
-            let for_host = has_hosted_legacy_windows(&tree, &viewer_hosts)
+            // the person's other devices the windows they show: it encodes
+            // while it has a viewer, and stops with the last. A stream is
+            // encoded from the window's own buffers, so it never makes the
+            // backend rasterize the desktop: that is only for someone who
+            // reads the desktop's pixels.
+            let for_viewer = has_hosted_legacy_windows(&tree, &viewer_hosts)
                 || hosts_viewed_window(&tree, &personal, &members);
-            let watched = watch(for_host);
-            let desired = desired_legacy_shares(&tree, watched, &viewer_hosts, &personal, &members);
+            let desired = desired_legacy_shares(
+                &tree,
+                watched || for_viewer,
+                &viewer_hosts,
+                &personal,
+                &members,
+            );
             drop(tree);
-            (desired, watched)
+            desired
         };
         self.shares = desired
             .iter()
@@ -836,6 +842,7 @@ impl WakeTally {
     }
 }
 
+mod listing;
 mod lock_media;
 mod lock_view;
 use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
@@ -3380,6 +3387,9 @@ struct FrameBuilderControlState<'a> {
     /// Where an `actions_invoke` leaves the address it resolved, for its
     /// execution in the same request; fixtures that run nothing omit it.
     resolved: Option<&'a std::cell::RefCell<Option<ResolvedInvocation>>>,
+    /// The paged listings in flight, read on their first page; fixtures
+    /// that keep none omit it, and each page reads its listing afresh.
+    listings: Option<&'a super::listing_snapshots::ListingSnapshots>,
 }
 
 impl FrameBuilderControlState<'_> {
@@ -3419,118 +3429,6 @@ impl FrameBuilderControlState<'_> {
         drop(tree);
         drop(chrome);
         displays
-    }
-
-    /// The action listing for `query` through the *same* provider registry
-    /// that feeds the Ctrl+K palette — but rendering nothing. With `page`,
-    /// that page of it ([`test_control::ListingRequest`]); without, all of it.
-    /// Only the answered rows become JSON: describing every row of a large
-    /// catalogue cost more than building it.
-    fn listing(
-        &self,
-        query: &str,
-        include_programmatic: bool,
-        page: Option<&test_control::ListingRequest>,
-    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
-        let (doc, root) = self.doc.ok_or_else(|| {
-            test_control::ActionRefusal::listing_failed("control state has no live document")
-        })?;
-        let chrome_handle = self.fb.chrome_handle();
-        // The borrow lives only for the closure; `ActionCatalog` owns its results
-        // outright, so the catalogue outlives the guards it was built through.
-        let (catalog, launcher, complete) = with_action_gate(&chrome_handle, |chrome, gate| {
-            let args = crate::shell::search::QueryArgs {
-                needle: query,
-                scope: crate::shell::chrome_state::SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome,
-                doc,
-                doc_root: root,
-            };
-            let first_use_gate = super::admin_control::FirstUseVisibility {
-                base: gate,
-                first_use: self.fb.host().onboarding_active(),
-            };
-            let catalog =
-                self.fb
-                    .host()
-                    .action_catalog_query(&args, &first_use_gate, include_programmatic);
-            let launcher = self.fb.host().launcher_answer(&args, page, &first_use_gate);
-            // Read after the query, which may itself have started the work
-            // that leaves the listing incomplete.
-            let complete = self.fb.host().action_listing_complete(&args);
-            (catalog, launcher, complete)
-        })
-        .map_err(test_control::ActionRefusal::listing_failed)?;
-        // A paged listing is an agent's: apps' own resources and actions
-        // first, files only when asked.
-        let mut catalog = catalog;
-        if let Some(page) = page {
-            catalog.arrange(&page.kinds, page.files);
-        }
-        let fingerprint = test_control::listing_fingerprint(catalog.addresses());
-        let window = page
-            .map(|page| page.window(catalog.len(), fingerprint))
-            .transpose()?;
-        let compact = page.is_some_and(|page| !page.detail.is_full());
-        let rows = window
-            .as_ref()
-            .map_or(0..catalog.len(), |window| window.rows.clone());
-        let actions: Vec<serde_json::Value> = catalog
-            .enumerate_rows(rows)
-            .into_iter()
-            .map(|a| {
-                let hierarchy = a.hierarchy.as_ref();
-                let mut row = serde_json::json!({
-                    "provider": a.resource.provider,
-                    "id": a.resource.id,
-                    "kind": a.kind.id(),
-                    "operation_kind": a.operation_kind,
-                    "title": a.title,
-                    "subtitle": a.subtitle,
-                    "score": a.score,
-                    // What to pass; empty for the nullary majority. A parameter list describes
-                    // an invocation, it is not one, so enumeration stays side-effect-free.
-                    "params": params_json(&a.params),
-                    "contract": a.contract,
-                    // The provider resolves identity from its authenticated source;
-                    // opaque invocation IDs and presentation labels stay independent.
-                    "application": hierarchy.map(|value| &value.application),
-                    "room": hierarchy.map(|value| &value.room),
-                    "record": hierarchy.map(|value| &value.record),
-                    "resource": hierarchy.map(|value| &value.resource),
-                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
-                    "operation": hierarchy.map(|value| &value.operation),
-                });
-                if compact && let Some(row) = row.as_object_mut() {
-                    row.remove("contract");
-                }
-                row
-            })
-            .collect();
-        let mut answer = serde_json::Map::new();
-        answer.insert("query".into(), query.into());
-        answer.insert("count".into(), actions.len().into());
-        answer.insert("actions".into(), actions.into());
-        if let Some(launcher) = launcher {
-            answer.insert("launcher".into(), launcher);
-        }
-        if let Some(window) = window {
-            window.describe(&mut answer);
-        }
-        // Which listing this is — the identity its cursors are cut from — and
-        // whether it is final. `truncated` says this page is not all of the
-        // listing; `complete: false` says the listing itself is not all there
-        // yet: an index build or an app's directory page that would add to it
-        // is still on its way. `wait_ms` waits for that.
-        answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert(
-            "complete".into(),
-            (complete && catalog.completion().complete).into(),
-        );
-        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
-        Ok(serde_json::Value::Object(answer))
     }
 }
 
@@ -3808,10 +3706,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         serde_json::Value::Array(frames)
     }
 
-    /// Grant on the active workspace, on behalf of the local user, through
-    /// `Workspace::grant_as` — which refuses a grantor who neither owns the
-    /// room nor holds `Admin`, surfaced as an error, so this op cannot widen
-    /// access past what the driver already holds.
+    /// Ask the active workspace's governor for a sandbox grant, on behalf
+    /// of the local user. The governor decides; the grant shows here once
+    /// the room's admitted document carries it.
     fn grant_capability(
         &self,
         subject: &str,
@@ -3827,10 +3724,10 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
         let subject = test_control::parse_subject(subject)?;
         let scope = test_control::parse_scope(scope)?;
@@ -3839,16 +3736,13 @@ impl ControlState for FrameBuilderControlState<'_> {
         if let Some(id) = id {
             cap = cap.with_id(id);
         }
-        // Through the tree's entry point, not `grant_as` directly, so this answers
-        // with the same authority the rest of the compositor grants under.
-        let granted = tree
-            .grant_sandbox_in_workspace(ws_id, &user, cap)
-            .ok_or_else(|| {
-                format!("{user} may not administer this workspace, so nothing was granted")
-            })?;
-        // Nothing past this point touches the tree.
+        let requested = cap.id.clone();
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::GrantSandbox(cap),
+        );
         drop(tree);
-        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+        Ok(serde_json::json!({ "requested": requested, "grantor": user }))
     }
 
     /// Give a grant on the active workspace through the room's governance,
@@ -3880,24 +3774,28 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let (ws_id, room) = tree
+        let (room, node_of_room) = tree
             .desktop
             .active_workspace()
-            .map(|w| (w.id, w.node()))
+            .map(|w| (w.room(), w.node()))
             .ok_or_else(|| "no active workspace".to_string())?;
         let grant = tilo_action_policy::Grant::new(
             id.map_or_else(|| format!("grant:{}", uuid::Uuid::new_v4()), str::to_owned),
             subject,
-            room.join(&node),
+            node_of_room.join(&node),
             kinds,
             answer,
             tilo_action_policy::Subject::person(user.clone()),
         );
-        let granted = tree
-            .grant_in_workspace(ws_id, &user, grant)
-            .ok_or_else(|| format!("{user} may not grant that in this workspace"))?;
+        let requested = grant.id.clone();
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Grant(
+                grant,
+            )),
+        );
         drop(tree);
-        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+        Ok(serde_json::json!({ "requested": requested, "grantor": user }))
     }
 
     /// Take back a grant on the active workspace through its governance.
@@ -3907,18 +3805,19 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let revoked = tree.revoke_in_workspace(ws_id, &user, &tilo_action_policy::GrantId::new(id));
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(
+                tilo_action_policy::GrantId::new(id),
+            )),
+        );
         drop(tree);
-        if revoked {
-            Ok(serde_json::json!({ "revoked": id, "revoker": user }))
-        } else {
-            Err(format!("{user} took back nothing named {id}"))
-        }
+        Ok(serde_json::json!({ "requested": id, "revoker": user }))
     }
 
     /// Admit a person with a role on the active workspace, as the user at
@@ -3939,16 +3838,20 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let admitted = tree.admit_in_workspace(ws_id, &user, person, role);
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
+                person: person.to_owned(),
+                role,
+            }),
+        );
         drop(tree);
-        admitted
-            .map(|_| serde_json::json!({ "admitted": person, "admitter": user }))
-            .ok_or_else(|| format!("{user} may not admit {person} to this workspace"))
+        Ok(serde_json::json!({ "requested": person, "admitter": user }))
     }
 
     /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
@@ -3978,7 +3881,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
-        let removed = tree.revoke_sandbox_in_workspace(ws_id, &user, id);
+        let removed = tree.narrow_sandbox(ws_id, &user, id);
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
@@ -4122,8 +4025,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         let overlays = &chrome.overlays;
         let native_broker = chrome
             .native_app_opening
-            .as_ref()
-            .and_then(|opening| opening.0.upgrade().ok());
+            .attached()
+            .and_then(|broker| broker.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         let room_sync = room_sync_json(&chrome.tree());
@@ -4370,13 +4273,19 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "trims": crate::shell::heap_trim::trims_completed(),
                 }),
             );
+            // Frames drawn so far: a waiter counts repaints with it, so a
+            // slow frame cannot pass for a settled layout.
+            fields.insert(
+                "frames_drawn".into(),
+                serde_json::json!(self.fb.frames_drawn()),
+            );
         }
         dump
     }
 }
 
 /// Each workspace's room for `state_dump`: where it stands with its host
-/// ([`crate::shell::room_sync`], `null` for a room with no host), the apps
+/// ([`tilo_network_actor::room_sync`], `null` for a room with no host), the apps
 /// its grants make authors, and how many grants it holds, as this device
 /// last received them.
 fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
@@ -4388,8 +4297,8 @@ fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Valu
             serde_json::json!({
                 "workspace": workspace.name,
                 "room": workspace.room().to_string(),
-                "state": crate::shell::room_sync::state(
-                    crate::shell::network::room_topic_id(workspace.room()),
+                "state": tilo_network_actor::room_sync::state(
+                    tilo_network_actor::room_topic_id(workspace.room()),
                 ),
                 "app_authors": workspace.launch_grants(now).authors,
                 "grants": workspace.policy.grants.len(),
@@ -4508,6 +4417,9 @@ struct TestControlCtx {
     /// The address an `actions_invoke` resolved while it was dispatched,
     /// which the same request then runs without resolving it again.
     resolved_invocation: std::cell::RefCell<Option<ResolvedInvocation>>,
+    /// The `actions_enumerate` listings being paged, each read once on its
+    /// first page ([`super::listing_snapshots`]).
+    listing_snapshots: super::listing_snapshots::ListingSnapshots,
 }
 
 /// One `actions_invoke` address as its request's dispatch resolved it:
@@ -4541,6 +4453,7 @@ impl TestControlCtx {
             pending_snapshot: None,
             deferred_snapshot_reply: None,
             resolved_invocation: std::cell::RefCell::new(None),
+            listing_snapshots: super::listing_snapshots::ListingSnapshots::default(),
         }
     }
 
@@ -5029,6 +4942,7 @@ fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
         PasscodeKey::Char(c) => c.to_string(),
         PasscodeKey::Shift => "shift".into(),
         PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Letters => "letters".into(),
         PasscodeKey::Space => "space".into(),
         PasscodeKey::Backspace => "backspace".into(),
         PasscodeKey::Enter => "enter".into(),
@@ -6518,6 +6432,7 @@ fn dispatch_control_command(
                 lock: Some(lock),
                 seat: Some(state),
                 resolved: Some(&ctx.resolved_invocation),
+                listings: Some(&ctx.listing_snapshots),
             };
             test_control::dispatch_command(&cmd, &state)
         }
@@ -7264,7 +7179,7 @@ fn portal_capture_event(
 
 #[derive(Clone, Debug)]
 struct SpatialControlSession {
-    target: crate::shell::personal_continuity::DeviceId,
+    target: tilo_network_actor::fabric::DeviceId,
     lease_nonce: [u8; 16],
     output: Option<String>,
     return_edge: crate::shell::device_fabric::DisplayEdge,
@@ -7382,7 +7297,7 @@ fn queue_personal_fabric_input(
 #[cfg(test)]
 pub(crate) fn teardown_spatial_control_for_test(
     network: &crate::shell::network::ShellNetwork,
-    target: crate::shell::personal_continuity::DeviceId,
+    target: tilo_network_actor::fabric::DeviceId,
     nonce: [u8; 16],
     held: (
         std::collections::BTreeSet<u32>,
@@ -7568,7 +7483,7 @@ fn move_to_observed_display(
     point: (f64, f64),
 ) -> crate::compositor::spatial_pointer::SpatialMotion {
     use crate::compositor::spatial_pointer::SpatialMotion;
-    let Ok(target) = crate::shell::personal_continuity::DeviceId::new(destination.0) else {
+    let Ok(target) = tilo_network_actor::fabric::DeviceId::new(destination.0) else {
         return SpatialMotion::Local;
     };
     let Some(lease) = crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &target)
@@ -8200,7 +8115,7 @@ fn start_session_peer_sync(
             let _ = net.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             net.join_at_boot();
-            net.follow_host_rooms();
+            net.open_hosted_rooms();
             net.follow_community();
             Ok(net)
         }),
@@ -8306,8 +8221,14 @@ fn attach_collab_broker_bridges(
             crate::shell::app_action_consent::SheetPrompter::session(),
         ));
         // Native openings asked for while the broker was binding run with it.
+        // The chrome's opening is the one slot the broker is attached to
+        // (`attach_app_action_broker`, below), shared with the launch session.
         crate::shell::launcher::attach_native_app_opening(
-            crate::shell::launcher::NativeAppOpening(action_broker.downgrade()),
+            frame_builder
+                .chrome_handle()
+                .borrow()
+                .native_app_opening
+                .clone(),
         );
         frame_builder
             .host_mut()
@@ -9846,6 +9767,8 @@ pub fn run() {
     if boot_network || local_broker_due {
         crate::shell::launcher::hold_launches();
     }
+    // Window labels and tiles are served the installed apps from memory.
+    crate::shell::launcher::load_installed_apps();
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
@@ -10661,9 +10584,6 @@ pub fn run() {
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
     let mut legacy_shares = LegacySharePlan::default();
-    // Whether this loop, not a viewer's watch request, made the headless
-    // backend watched: for legacy windows its room's host relays.
-    let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
     // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
@@ -12811,6 +12731,10 @@ pub fn run() {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
                 }
+                // A shared window used here is kept when its share ends, an
+                // unused one closes.
+                let used = state.take_used_surfaces();
+                chrome.close_unused_ended_shared_windows(&used);
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
@@ -13288,7 +13212,7 @@ pub fn run() {
             // one it moves in.
             let (width, height) = logical_geometry(backend.outputs());
             let display =
-                (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+                (width > 0 && height > 0).then_some(tilo_network_actor::fabric::DisplayRect {
                     x: 0,
                     y: 0,
                     width,
@@ -13365,7 +13289,7 @@ pub fn run() {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
                     use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
-                    let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                    let peer_label = |peer: &tilo_network_actor::fabric::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
                             || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
@@ -13424,24 +13348,12 @@ pub fn run() {
                 RoomHosts::new()
             };
             let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-            let watched_before = backend.watched();
             // Members of each room viewing this device's windows there.
             let member_viewers = net.room_window_viewers();
             let replanned = legacy_shares.refresh(
                 &tree_handle,
                 (viewer_hosts, personal_viewers, member_viewers),
-                watched_before,
-                |for_host| {
-                    if for_host != watched_for_host
-                        && (for_host != backend.watched() || watched_for_host)
-                    {
-                        if backend.set_watched(for_host) {
-                            injected_redraw_pending = true;
-                        }
-                        watched_for_host = for_host;
-                    }
-                    backend.watched()
-                },
+                backend.watched(),
             );
             // What the shares feed is a function of them and their viewers,
             // so it is told only when they were derived again.
@@ -13490,7 +13402,7 @@ pub fn run() {
                         .collect(),
                 );
                 state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
-                    (*surface, crate::shell::network::room_topic_id(*room))
+                    (*surface, tilo_network_actor::room_topic_id(*room))
                 }));
             }
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
@@ -13869,13 +13781,13 @@ pub fn run() {
             .borrow()
             .native_app_opening
             .clone();
-        if let Some(opening) = copy_opening
+        if copy_opening.attached().is_some()
             && !identity_setup_active
             && let Some(request) = frame_builder.host_mut().take_original_copy_request()
             && let Err(error) = crate::shell::launcher::original_copy::start(
                 request,
                 tree_handle.clone(),
-                opening,
+                copy_opening,
                 Arc::clone(&session_wake),
             )
         {
@@ -14022,6 +13934,13 @@ pub fn run() {
             // Launches that waited for a network that never came are
             // reported, not silently started without it; later launches
             // run normally.
+            // Each launch then waits for its own room, if that is not ready.
+            crate::shell::launcher::room_hold::set_source(
+                crate::shell::broker_services::RoomStatusSource::new(
+                    tree_handle.clone(),
+                    peer_sync.clone(),
+                ),
+            );
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
                 Some(error) => {
@@ -15060,12 +14979,10 @@ pub fn run() {
                 }
             }
         }
-        if let Some(watching) = test_control_ctx.watch_request.take() {
-            // A viewer's own lease governs from here on.
-            watched_for_host = false;
-            if backend.set_watched(watching) {
-                injected_redraw_pending = true;
-            }
+        if let Some(watching) = test_control_ctx.watch_request.take()
+            && backend.set_watched(watching)
+        {
+            injected_redraw_pending = true;
         }
         // An agent driving the screen answers the shell's choosers; a viewer
         // only watching cannot click one.
@@ -15291,12 +15208,6 @@ pub fn run() {
                 ("app-liveness", state.app_liveness_deadline()),
                 ("super-hold", super_tap.deadline()),
                 ("screen-reader-hold", screen_reader_chord.deadline()),
-                (
-                    "network-retry",
-                    peer_sync
-                        .as_ref()
-                        .and_then(|network| network.next_deadline()),
-                ),
                 (
                     "ask-agent",
                     frame_builder.host().ask_agent_deadline(park_now),
@@ -17308,23 +17219,15 @@ mod tests {
             })
         };
         let mut plan = LegacySharePlan::default();
-        let mut asked = 0;
 
         // Phase `idle_wakeups_walk_nothing`.
-        assert!(plan.refresh(&tree, nobody(), true, |_| {
-            asked += 1;
-            true
-        }));
+        assert!(plan.refresh(&tree, nobody(), true));
         assert_eq!(viewers_of(&plan), Some([9].into()));
         for _ in 0..100 {
-            assert!(!plan.refresh(&tree, nobody(), true, |_| {
-                asked += 1;
-                true
-            }));
+            assert!(!plan.refresh(&tree, nobody(), true));
         }
         assert_eq!(
-            (plan.derivations, asked),
-            (1, 1),
+            plan.derivations, 1,
             "a hundred wakeups without a change walk the tabs once"
         );
 
@@ -17332,15 +17235,14 @@ mod tests {
         tree.write().desktop.workspaces[0]
             .shared_surfaces
             .share(7, 10);
-        assert!(plan.refresh(&tree, nobody(), true, |_| true));
+        assert!(plan.refresh(&tree, nobody(), true));
         assert_eq!(viewers_of(&plan), Some([9, 10].into()));
 
         // Phase `a_new_viewer_is_derived_on_the_next_wakeup`.
         let personal = std::collections::BTreeMap::from([(
             12,
             vec![WindowViewer {
-                device: crate::shell::personal_continuity::DeviceId::new(hex::encode([1; 32]))
-                    .unwrap(),
+                device: tilo_network_actor::fabric::DeviceId::new(hex::encode([1; 32])).unwrap(),
                 peer: 501,
                 width: 800,
                 height: 600,
@@ -17348,26 +17250,27 @@ mod tests {
             }],
         )]);
         let with_device = || (RoomHosts::new(), personal.clone(), MemberViewers::new());
-        assert!(plan.refresh(&tree, with_device(), true, |for_host| {
-            assert!(
-                for_host,
-                "a device showing the window wants the backend watched"
-            );
-            true
-        }));
+        assert!(plan.refresh(&tree, with_device(), true));
         assert_eq!(viewers_of(&plan), Some([9, 10, 501].into()));
         assert_eq!(
             plan.viewers().map(|(_, personal, _)| personal.len()),
             Some(1),
             "what the shares feed is told the viewers they were derived for"
         );
-        assert!(!plan.refresh(&tree, with_device(), true, |_| true));
+        assert!(!plan.refresh(&tree, with_device(), true));
+
+        // Phase `a_device_showing_the_window_streams_it_to_an_unwatched_backend`.
+        // Its stream is encoded from the window's buffers: nobody needs the
+        // desktop rasterized for it.
+        assert!(plan.refresh(&tree, with_device(), false));
+        assert_eq!(viewers_of(&plan), Some([9, 10, 501].into()));
+        assert!(!plan.refresh(&tree, with_device(), false));
 
         // Phase `the_backend_going_unwatched_is_derived_on_the_next_wakeup`.
-        assert!(plan.refresh(&tree, nobody(), false, |_| false));
+        assert!(plan.refresh(&tree, nobody(), false));
         assert!(plan.shares.is_empty() && plan.desired.is_empty());
-        assert!(!plan.refresh(&tree, nobody(), false, |_| false));
-        assert_eq!(plan.derivations, 4);
+        assert!(!plan.refresh(&tree, nobody(), false));
+        assert_eq!(plan.derivations, 5);
     }
 
     /// A desktop of 8 workspaces with 24 legacy windows each, every one
@@ -17428,14 +17331,12 @@ mod tests {
             &tree,
             (nobody.clone(), no_device.clone(), MemberViewers::new()),
             true,
-            |_| true
         ));
         for _ in 0..2_000 {
             assert!(!plan.refresh(
                 &tree,
                 (nobody.clone(), no_device.clone(), MemberViewers::new()),
                 true,
-                |_| true
             ));
         }
         assert_eq!(plan.derivations, 1);
@@ -17472,7 +17373,6 @@ mod tests {
             &tree,
             (nobody.clone(), no_device.clone(), MemberViewers::new()),
             true,
-            |_| true
         ));
         let started = Instant::now();
         for _ in 0..WAKEUPS {
@@ -17480,7 +17380,6 @@ mod tests {
                 &tree,
                 (nobody.clone(), no_device.clone(), MemberViewers::new()),
                 true,
-                |_| true
             ));
         }
         let gated = started.elapsed();
@@ -17533,8 +17432,7 @@ mod tests {
         let room = background.room();
         tree.desktop.workspaces.push(background);
         let viewer = |device: u8, peer: u64, width: u32, height: u32| WindowViewer {
-            device: crate::shell::personal_continuity::DeviceId::new(hex::encode([device; 32]))
-                .unwrap(),
+            device: tilo_network_actor::fabric::DeviceId::new(hex::encode([device; 32])).unwrap(),
             peer,
             width,
             height,
@@ -20191,6 +20089,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let animating = state.chrome_state_json()["animating"].clone();
             assert!(
@@ -20266,6 +20165,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             }
             .chrome_state_json()["displays"]
                 .clone()
@@ -20313,6 +20213,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let chrome = state.chrome_state_json();
             let overlays = chrome
@@ -20349,6 +20250,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
 
             let scope = &state.chrome_state_json()["search_resource_scope"];
@@ -20432,6 +20334,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let answer = state.enumerate_actions("").expect("enumerated actions");
             let row = answer["actions"]
@@ -20462,6 +20365,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let workspaces = tree
@@ -20487,6 +20391,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let (resp, actions) = test_control::dispatch_command(
                 &test_control::Command::StateDump {
@@ -20526,6 +20431,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         let whole = state.enumerate_actions("").expect("the whole listing");
         let ids = |answer: &serde_json::Value| -> Vec<String> {
@@ -20603,6 +20509,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         // The tree as the reply carries it; the chrome beside it is not history.
         let dump = |include_history| {
@@ -20699,6 +20606,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let found = tree
@@ -20732,6 +20640,7 @@ mod tests {
                 lock: Some(&lock),
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let chrome = state.chrome_state_json();
             let auth = chrome
@@ -20758,6 +20667,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
 
             let presence = &state.chrome_state_json()["presence"];
@@ -20842,6 +20752,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let rows = state
                 .sharing_json()
@@ -21068,6 +20979,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         let icons = state.chrome_state_json()["tab_icons"].clone();
         crate::compositor::toplevel_icon::forget(surface);

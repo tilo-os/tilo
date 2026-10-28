@@ -26,10 +26,10 @@ use ui::gpu::RenderContext;
 use vello::{Renderer, wgpu};
 use wgpu::util::TextureBlitter;
 
-use super::hdr_composite::{HdrCompositor, HdrPass};
-use super::hdr_encode::HdrEncodePipeline;
-use super::orientation::OrientedCopy;
-pub use super::xrgb_history::{
+use tilo_output_passes::hdr_composite::{HdrCompositor, HdrPass};
+use tilo_output_passes::hdr_encode::HdrEncodePipeline;
+use tilo_output_passes::orientation::OrientedCopy;
+pub use tilo_output_passes::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbHistoryTransaction, XrgbTargetHistory,
 };
 

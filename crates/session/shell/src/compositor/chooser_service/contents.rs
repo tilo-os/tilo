@@ -153,11 +153,9 @@ pub(super) fn standing(context: &ChooserContext, caller: &PortalCaller) -> Stand
     let tree = handle.read();
     match tree.desktop.active_workspace() {
         Some(workspace) if workspace.id == caller.workspace_id => {
-            if tree.governs_room(workspace.room())
-                && workspace.may_administer(&crate::shell::state::local_user_id_for_room(
-                    &workspace.room(),
-                ))
-            {
+            if workspace.may_administer(&crate::shell::state::local_user_id_for_room(
+                &workspace.room(),
+            )) {
                 Standing::Owner
             } else {
                 Standing::NotManaged

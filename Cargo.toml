@@ -13,6 +13,8 @@ exclude = [
     "crates/doc/tilo-doc-codec-markdown-wasm",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
     "crates/platform/tilolang-tilo/bench/imagefilter",
+    # The empty workspace-hack of the greeter's initramfs build (os/image/compile.sh).
+    "os/initrd/workspace-hack",
     "vendor/vello",
     "vendor/vello_encoding",
     "vendor/vello_shaders",
@@ -45,6 +47,7 @@ exclude = [
     "vendor/rustypipe",
     "vendor/miracast",
     "vendor/davey",
+    "vendor/zbus",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -177,6 +180,7 @@ members = [
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
+    "crates/sdk/ui-kms",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -234,6 +238,8 @@ members = [
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
     "crates/dev/ui-examples",
+    "crates/dev/click-test-client",
+    "crates/dev/ux-bench",
 
     # Doc
     "crates/doc/bounded-zip",
@@ -257,6 +263,7 @@ members = [
     "crates/hosting/tilo-relay-session",
     "crates/hosting/tilo-relay-shell",
     "crates/hosting/tilo-relay-store",
+    "crates/hosting/tilo-room-host",
 
     # Media
     "crates/media/ocr",
@@ -310,6 +317,7 @@ members = [
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/platform/tilolang-tilo",
+    "crates/platform/tilolang-host",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-sort",
     "crates/platform/tilo-selector",
@@ -397,6 +405,7 @@ members = [
     "crates/runtime/env-tools",
 
     # Session
+    "crates/session/color-pipeline",
     "crates/session/console-control",
     "crates/session/control-cli",
     "crates/session/desktop-model",
@@ -409,7 +418,9 @@ members = [
     "crates/session/install-profile-model",
     "crates/session/installer",
     "crates/session/liveness",
+    "crates/session/network-actor",
     "crates/session/network-secret-agent",
+    "crates/session/output-passes",
     "crates/session/polkit-agent",
     "crates/session/quick-settings",
     "crates/session/session-record",
@@ -1089,6 +1100,17 @@ opt-level = 3
 # The OS image, RPM, Debian and Arch packages ship these binaries as built
 # (the RPM spec and PKGBUILD turn their strip passes off); Nix's default
 # debug-only strip keeps the symbol table too.
+# Instruction profiling needs optimized code and symbols, not a whole-program
+# release link on every iteration. Keep incremental off so sccache can reuse
+# crate compilations without changing the production release profile.
+[profile.bench]
+opt-level = 3
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
+strip = "none"
+incremental = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -1210,6 +1232,21 @@ codegen-units = 16
 [profile.thin-app.package.imager-backend]
 codegen-units = 16
 
+# The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
+# release code without its symbol table, since every boot unpacks the
+# initramfs and nothing there reads symbols. The initramfs holds it to a size
+# budget (os/scripts/build-initramfs.sh), so it links as small as it can. Fat
+# LTO and one codegen unit: with the image compile's thin LTO and 8 units its
+# binary is 66.2 MB on x86_64, with these 54.2 MB. A panic aborts, which leaves
+# out the unwind tables and landing pads: 48.2 MB. A greeter that exits ends
+# its link, and tilo-boot-signin asks through Plymouth or the console instead.
+[profile.initrd]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
 [profile.demo]
@@ -1248,6 +1285,9 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# zbus's blocking API runs on a runtime of its own with a worker thread per
+# host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
+zbus = { path = "vendor/zbus" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.

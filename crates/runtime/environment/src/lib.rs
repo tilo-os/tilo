@@ -12,6 +12,13 @@
 //! [`Environment::ADD_TOOL`]; `perm trust-dir` is [`Environment::GRANT_DIR`]
 //! and `perm allow-host` is [`Environment::ALLOW_HOST`].
 //! History and undo come from the record layer.
+//!
+//! The file commands a guest answers (`cp`, `mv`, `rm`, …) are the record's
+//! verbs too ([`files`]): one action per command, checked against
+//! [`Environment::grants`] as a whole and carried out by the device whose
+//! disk it changes.
+
+pub mod files;
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
@@ -19,7 +26,14 @@ use std::str::FromStr;
 
 use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 pub use tilo_app_package::PackageId;
-use tilo_resource::{JsonSchema, Model, ModelError, resource};
+use tilo_resource::{
+    ActionCx, Id, Invoke, JsonSchema, Model, ModelError, Outbox, Undoing, resource,
+};
+
+use crate::files::{
+    AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
+    RestoreOp, RevertOp, TruncateOp, UndoEntry, paths_of,
+};
 
 /// The app id every environment grant is written against — an app in the
 /// capability vocabulary, because that is what the permissions panel renders
@@ -50,6 +64,9 @@ pub struct Environment {
     pub grants: Vec<CapOverride>,
     /// Whether the home survives the session.
     pub home: HomePolicy,
+    /// File actions, each settled by the device that carried it out with
+    /// what it changed.
+    pub files: Outbox<FileTask, Vec<UndoEntry>>,
 }
 
 /// An `env-runtime` release and its image per architecture.
@@ -242,9 +259,360 @@ impl Environment {
         name.clone_into(&mut self.name);
         Ok(())
     }
+
+    /// Copy files.
+    ///
+    /// Copies `sources` to `destination` on the environment's device: into
+    /// it when it is a folder or several sources are named. Every path must
+    /// be granted to the environment, or nothing is copied. A file the copy
+    /// replaces is kept aside; undo removes the copies and puts it back.
+    #[action(undo = Self::revert_queued, keywords = "cp")]
+    pub fn copy(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths to copy")] sources: Vec<String>,
+        #[param("Absolute path of the copy, or of the folder the copies go into")]
+        destination: String,
+        #[param("Copy folders with everything in them")] recursive: Option<bool>,
+        #[param(
+            "Where a file is already there: `replace` (the default; it is kept aside), `keep` (refuse the copy) or `older` (replace only an older file)",
+            example = "replace"
+        )]
+        if_exists: Option<String>,
+    ) -> Result<(), String> {
+        let (update, no_clobber) = match if_exists.as_deref().map(str::trim) {
+            None | Some("" | "replace") => (false, false),
+            Some("keep") => (false, true),
+            Some("older") => (true, false),
+            Some(other) => {
+                return Err(format!(
+                    "if_exists is replace, keep or older, not {other:?}"
+                ));
+            }
+        };
+        let action = FileAction::Copy(CopyOp {
+            sources: paths_of(sources),
+            destination: destination.into(),
+            recursive: recursive.unwrap_or(false),
+            update,
+            no_clobber,
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Move files.
+    ///
+    /// Moves `sources` to `destination` on the environment's device: into it
+    /// when it is a folder or several sources are named. Every path must be
+    /// granted to the environment, or nothing moves. A file the move
+    /// replaces is kept aside; undo moves everything back.
+    #[action(id = "move", undo = Self::revert_queued, keywords = "mv, rename")]
+    pub fn move_paths(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths to move")] sources: Vec<String>,
+        #[param("Absolute path to move to, or of the folder they go into")] destination: String,
+        #[param("Never replace what is there")] no_clobber: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::Move(MoveOp {
+            sources: paths_of(sources),
+            destination: destination.into(),
+            no_clobber: no_clobber.unwrap_or(false),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Remove files.
+    ///
+    /// Moves `paths` into the environment's recoverable store rather than
+    /// unlinking them; undo puts them back.
+    #[action(undo = Self::revert_queued, keywords = "rm, delete")]
+    pub fn remove(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths to remove")] paths: Vec<String>,
+        #[param("Remove folders with everything in them")] recursive: Option<bool>,
+        #[param("Say nothing of a path that is not there")] force: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::Remove(RemoveOp {
+            paths: paths_of(paths),
+            recursive: recursive.unwrap_or(false),
+            force: force.unwrap_or(false),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Make folders.
+    #[action(undo = Self::revert_queued, keywords = "mkdir")]
+    pub fn make_dir(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the folders")] dirs: Vec<String>,
+        #[param("Make missing parent folders too")] parents: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::MakeDir(MakeDirOp {
+            dirs: paths_of(dirs),
+            parents: parents.unwrap_or(false),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Remove empty folders.
+    #[action(undo = Self::revert_queued, keywords = "rmdir")]
+    pub fn remove_dir(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the empty folders")] dirs: Vec<String>,
+        #[param("Remove each parent that is left empty too")] parents: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::RemoveDir(RemoveDirOp {
+            dirs: paths_of(dirs),
+            parents: parents.unwrap_or(false),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Make a link.
+    #[action(undo = Self::revert_queued, keywords = "ln, symlink")]
+    pub fn link(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("What the link points to")] target: String,
+        #[param("Absolute path of the link")] path: String,
+        #[param("A symbolic link rather than a hard one")] symbolic: Option<bool>,
+        #[param("Replace what is at the path, keeping it aside")] force: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::Link(LinkOp {
+            target: target.into(),
+            path: path.into(),
+            symbolic: symbolic.unwrap_or(false),
+            force: force.unwrap_or(false),
+            into_directory: false,
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Truncate files.
+    ///
+    /// Sets each file to `size` bytes, keeping what it held aside.
+    #[action(undo = Self::revert_queued, keywords = "truncate")]
+    pub fn truncate(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the files")] paths: Vec<String>,
+        #[param("The size in bytes")] size: u64,
+        #[param("Make a file that is not there (the default)")] create: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::Truncate(TruncateOp {
+            files: paths_of(paths),
+            size,
+            create: create.unwrap_or(true),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Touch files.
+    ///
+    /// Creates each file that is missing; one that is there keeps its text.
+    #[action(undo = Self::revert_queued, keywords = "touch, new file")]
+    pub fn touch(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the files")] paths: Vec<String>,
+    ) -> Result<(), String> {
+        let action = FileAction::Touch(AppendFileOp {
+            files: paths_of(paths),
+            text: String::new(),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Append text.
+    ///
+    /// Adds `text` to the end of each file, making one that is missing.
+    #[action(undo = Self::revert_queued, keywords = "append, add line")]
+    pub fn append(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the files")] paths: Vec<String>,
+        #[param("The text to add, as given")] text: String,
+    ) -> Result<(), String> {
+        let action = FileAction::Append(AppendFileOp {
+            files: paths_of(paths),
+            text,
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
+    /// Restore a kept file.
+    ///
+    /// Puts back one thing the environment's recoverable store keeps, by
+    /// the id `history` lists it under, at the path it came from.
+    #[action(undo = Self::revert_queued)]
+    pub fn restore(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("The kept entry's id")] kept: String,
+    ) -> Result<(), String> {
+        if kept.is_empty() || !kept.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(format!("{kept:?} is not a kept entry's id"));
+        }
+        self.queue_file(cx, files, device, FileAction::Restore(RestoreOp { kept }))
+    }
+
+    /// Take back a file action: the device that carried it out walks back
+    /// what it recorded, latest first.
+    #[action(item = files)]
+    pub fn revert(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        entry: Id,
+    ) -> Result<(), String> {
+        let queued = files.get(&entry).ok_or("no such file action")?;
+        if queued.settled.is_none() {
+            // Not carried out yet: now it never will be.
+            files.forget(&entry);
+            return Ok(());
+        }
+        let device = queued.value.device.clone();
+        files.push(
+            cx.id(),
+            FileTask {
+                device,
+                action: FileAction::Revert(RevertOp {
+                    entry: entry.as_str().to_owned(),
+                }),
+            },
+        );
+        Ok(())
+    }
 }
 
 impl Environment {
+    /// Queue `action` for `device`, once the record's grants admit all of
+    /// it, forgetting the oldest settled tasks beyond
+    /// [`files::KEPT_TASKS`].
+    fn queue_file(
+        &self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        device: String,
+        action: FileAction,
+    ) -> Result<(), String> {
+        if device.trim().is_empty() {
+            return Err("the device whose files change is named".into());
+        }
+        let now = u64::try_from(cx.now_ms() / 1000).ok();
+        action.admit(&self.grants, now)?;
+        files.push(cx.id(), FileTask { device, action });
+        files.prune(files::KEPT_TASKS);
+        Ok(())
+    }
+
+    /// The verb that queues `action` for `device`, with its arguments: what
+    /// a command line typed in a guest invokes.
+    #[must_use]
+    pub fn file_invoke(device: &str, action: &FileAction) -> Invoke<Self> {
+        let device = device.to_owned();
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let texts = |paths: &[std::path::PathBuf]| paths.iter().map(|p| text(p)).collect();
+        match action {
+            FileAction::Copy(op) => Self::COPY.with(environment::Copy {
+                device,
+                sources: texts(&op.sources),
+                destination: text(&op.destination),
+                recursive: Some(op.recursive),
+                if_exists: Some(
+                    match (op.no_clobber, op.update) {
+                        (true, _) => "keep",
+                        (false, true) => "older",
+                        (false, false) => "replace",
+                    }
+                    .to_owned(),
+                ),
+            }),
+            FileAction::Move(op) => Self::MOVE_PATHS.with(environment::MovePaths {
+                device,
+                sources: texts(&op.sources),
+                destination: text(&op.destination),
+                no_clobber: Some(op.no_clobber),
+            }),
+            FileAction::Remove(op) => Self::REMOVE.with(environment::Remove {
+                device,
+                paths: texts(&op.paths),
+                recursive: Some(op.recursive),
+                force: Some(op.force),
+            }),
+            FileAction::MakeDir(op) => Self::MAKE_DIR.with(environment::MakeDir {
+                device,
+                dirs: texts(&op.dirs),
+                parents: Some(op.parents),
+            }),
+            FileAction::RemoveDir(op) => Self::REMOVE_DIR.with(environment::RemoveDir {
+                device,
+                dirs: texts(&op.dirs),
+                parents: Some(op.parents),
+            }),
+            FileAction::Link(op) => Self::LINK.with(environment::Link {
+                device,
+                target: text(&op.target),
+                // `ln TARGET DIR` names the link inside the folder.
+                path: match (op.into_directory, op.target.file_name()) {
+                    (true, Some(name)) => text(&op.path.join(name)),
+                    _ => text(&op.path),
+                },
+                symbolic: Some(op.symbolic),
+                force: Some(op.force),
+            }),
+            FileAction::Truncate(op) => Self::TRUNCATE.with(environment::Truncate {
+                device,
+                paths: texts(&op.files),
+                size: op.size,
+                create: Some(op.create),
+            }),
+            FileAction::Touch(op) => Self::TOUCH.with(environment::Touch {
+                device,
+                paths: texts(&op.files),
+            }),
+            FileAction::Append(op) => Self::APPEND.with(environment::Append {
+                device,
+                paths: texts(&op.files),
+                text: op.text.clone(),
+            }),
+            FileAction::Restore(op) => Self::RESTORE.with(environment::Restore {
+                device,
+                kept: op.kept.clone(),
+            }),
+            FileAction::Revert(op) => Self::REVERT.with(Id::from_raw(op.entry.clone())),
+        }
+    }
+
+    /// Undoing a file action queues its revert for the same device.
+    fn revert_queued<P>(undoing: Undoing<'_, Self, P>) -> Option<Invoke<Self>> {
+        Some(Self::REVERT.with(undoing.minted.first()?.clone()))
+    }
+
     /// Write this environment as the whole of a fresh record document — how
     /// a record is created; every later change is an action.
     ///

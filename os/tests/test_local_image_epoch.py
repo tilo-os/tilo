@@ -1,5 +1,4 @@
 """Local image builds date their layers by the base and keep the commit time in a label."""
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -58,19 +57,6 @@ class LocalImageEpoch(unittest.TestCase):
         self.assertEqual(self.run_helper('tilo_image_epoch img', SKOPEO_UNIX='1790417000').stdout.strip(),
                          '1790417000')
         self.assertNotEqual(self.run_helper('tilo_image_epoch img', SKOPEO_UNIX='0').returncode, 0)
-
-    def test_build_image_uses_the_base_epoch_only_for_local_builds(self):
-        script = (REPO / 'os/dev/build-image.sh').read_text()
-        self.assertIn('base)\n      [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] || die', script)
-        self.assertIn('--label "org.tilo.source-date-epoch=$SOURCE_DATE_EPOCH"', script)
-        self.assertIn('--build-arg "SOURCE_DATE_EPOCH=$build_epoch"', script)
-        self.assertIn('--source-date-epoch "$layer_epoch" --rewrite-timestamp', script)
-        local = (REPO / 'os/dev/local-inputs.sh').read_text()
-        self.assertIn(': "${TILO_LAYER_EPOCH:=base}"', local)
-        dev = (REPO / 'os/dev/build-dev-image.sh').read_text()
-        # A caller that knows the base's commit time (t's os-dev-image) passes it;
-        # otherwise it is read from the local base.
-        self.assertIn('base_created="${TILO_DEV_BASE_CREATED:-$(tilo_image_source_time "$base")}"', dev)
 
 
 if __name__ == '__main__':

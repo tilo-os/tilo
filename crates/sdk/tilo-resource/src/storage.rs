@@ -673,6 +673,13 @@ impl Bytes {
         self.len() == 0
     }
 
+    /// The content address the data is fetched by, however it is stored:
+    /// `blake3:<hex>:<len>`.
+    #[must_use]
+    pub fn address(&self) -> String {
+        Self::reference(&self.hash(), self.len())
+    }
+
     fn reference(hash: &[u8; 32], len: u64) -> String {
         format!("blake3:{}:{len}", blake3::Hash::from_bytes(*hash).to_hex())
     }

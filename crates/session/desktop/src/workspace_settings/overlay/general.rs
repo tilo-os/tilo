@@ -263,9 +263,7 @@ pub(super) fn content(model: &super::WorkspaceSettingsModel<'_>) -> GeneralConte
         description: t(description),
     };
     let workspace = model.desktop.active_workspace();
-    let can_invite = workspace.is_some_and(|workspace| {
-        model.governs_active_room && workspace.may_administer(model.acting_user)
-    });
+    let can_invite = workspace.is_some_and(|workspace| workspace.may_administer(model.acting_user));
     let invite_description = if can_invite {
         "workspace-settings-invite-description"
     } else {

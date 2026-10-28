@@ -1,6 +1,6 @@
-//! Host apps' launches end with their windows: closing the last window of an
-//! unconfined launch stops it, a Wine session's helper windows neither crash
-//! nor toast, and a second X11 window stays addressable by its group.
+//! Host windows of unconfined launches: what closing them stops, how a
+//! Wine session's windows are told apart, and who hears the running set
+//! change.
 
 use super::*;
 
@@ -434,4 +434,25 @@ fn closing_one_of_two_host_windows_leaves_the_launch() {
         "a second window of the same host app keeps the launch"
     );
     unregister_launched_process(standin.pid());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+#[serial_test::serial(process_env)]
+fn running_set_changes_wake_observers_on_launch_and_exit() {
+    // The background portal's monitor waits on exactly this receiver.
+    let mut changes = subscribe_running_changes();
+    changes.borrow_and_update();
+    let standin = LauncherStandIn::spawn();
+    register_launched_process(standin.pid(), "org.example.Running", None, true);
+    let launched = changes.has_changed().unwrap();
+    let running = verified_running_packages().contains(&"org.example.Running".to_string());
+    changes.borrow_and_update();
+    unregister_launched_process(standin.pid());
+    let exited = changes.has_changed().unwrap();
+    let gone = !verified_running_packages().contains(&"org.example.Running".to_string());
+    assert!(launched, "a launch must wake running-set observers");
+    assert!(running);
+    assert!(exited, "an exit must wake running-set observers");
+    assert!(gone);
 }

@@ -54,9 +54,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         source
     };
+    // A catalog in OUT_DIR is named from the profile directory up (`build/<unit>/out/fonts`),
+    // which `checkout_root` finds above the running program: the build directory's own
+    // path is no input of the crate, so the same sources build the same bytes wherever the
+    // build directory is.
+    let out = std::env::var_os("OUT_DIR").map(PathBuf::from);
+    let named = out
+        .as_deref()
+        .and_then(|out| out.parent()?.parent()?.parent())
+        .and_then(|profile| root.strip_prefix(profile).ok())
+        .unwrap_or(&root);
     println!(
         "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT={}",
-        root.display()
+        named.display()
     );
     Ok(())
 }

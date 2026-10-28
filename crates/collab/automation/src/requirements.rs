@@ -98,6 +98,7 @@ mod tests {
             grant: Vec::new(),
             triggers,
             saved_by: None,
+            saved_proof: None,
         }
     }
 

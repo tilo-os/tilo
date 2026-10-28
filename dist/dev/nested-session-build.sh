@@ -1,36 +1,61 @@
 #!/usr/bin/env bash
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
-# model gateway, tilo-control, the native-room governor fixture), the
-# workspace host and room service a local site runs (nested-pair.sh), the thin
-# apps, the tilolang runtime binary (apps/tilolang, which nested-session.sh
-# bakes into the tilolang runtime bundle), the shared runtime library they link and its engines, the Rust
-# standard library that runtime was linked against, and a dbus-daemon for
+# model gateway, the ush supervisor, tilo-control, the native-room governor
+# fixture), the workspace host and room service a local site runs
+# (nested-pair.sh), the thin apps, the tilolang runtime binary (apps/tilolang,
+# which nested-session.sh bakes into the tilolang runtime bundle), the shared
+# runtime library they link and
+# its engines, the Rust standard library that runtime was linked against, the
+# env-runtime image Terminal's environments start from, and a dbus-daemon for
 # hosts that have none.
 #
-# t.toml's `nested-session` check runs it on a t node, and the session script
-# downloads its output with `t outputs nested-session`. The thin apps and
-# libruntime_dylib.so must come from one Cargo graph (a Rust dylib's symbols
-# carry crate hashes), so they travel together as one check's outputs rather
-# than through `t cargo build`, which copies back programs only.
+# It runs where the builds are warm, never on the machine that runs the
+# session: nested-session.sh has t.toml's `nested-session` check run it on a t
+# node and downloads its output with `t outputs nested-session`, or has rcargo
+# run it on an rcargo builder (`rcargo --fetch nested-session exec`) and fetch
+# the target directory's nested-session. The thin apps and libruntime_dylib.so
+# must come from one Cargo graph (a Rust dylib's symbols carry crate hashes),
+# so they travel together as one build's output rather than through `t cargo
+# build` or `rcargo build`, which copy back programs only.
 #
 # Usage:
-#   dist/dev/nested-session-build.sh OUT        build into OUT (replaced)
+#   dist/dev/nested-session-build.sh [OUT]      build into OUT (replaced), by
+#                                               default the target directory's
+#                                               nested-session
 #   dist/dev/nested-session-build.sh --apps     print the apps it builds
+#
+# The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
+# check builds from the tree's own RPM package set, as a run's dev images get
+# theirs: TILO_ENV_RUNTIME_TREES names the directory holding
+# env-runtime-tree-ARCH.tar. A builder without those trees (the rcargo
+# builder has no RPM snapshot) builds everything else, and the session it
+# runs has no env-runtime: Terminal has no environment to start a shell in.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
-apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"}
+apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets tasks file-explorer browser terminal web-search"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
 fi
-out=$(realpath -m "${1:?usage: nested-session-build.sh OUT | --apps}")
+(($# <= 1)) || { echo "usage: nested-session-build.sh [OUT] | --apps" >&2; exit 2; }
+out=${1:+$(realpath -m "$1")}
 cd "$repo_root"
+arch=$(uname -m)
+env_runtime_trees=
+if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
+    env_runtime_trees=$(realpath -m "$TILO_ENV_RUNTIME_TREES")
+    [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
+        || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
+else
+    echo "TILO_ENV_RUNTIME_TREES is not set: the session gets no env-runtime (Terminal opens no shell)" >&2
+fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+out=${out:-$target/nested-session}
 # Build scripts fetch their test assets into the build directory; on t the
 # sources are read-only.
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
@@ -72,7 +97,7 @@ profile_args() {
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
 host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-control)
+           tilo-model-gateway tilo-ush tilo-control)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -83,6 +108,7 @@ build_host() {
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-model-gateway --bin tilo-model-gateway \
+        -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control
 }
 # The workspace host and the room service in front of it, as the room
@@ -120,8 +146,31 @@ build_thin() {
         os/scripts/build-thin-apps.sh
 }
 
+# The env-runtime Terminal's environments start from, sealed with a throwaway
+# key into the layout os/scripts/install-env-runtime.sh installs from, as a
+# run's dev images get theirs (os/scripts/ensure-dev-env-runtime.sh): the
+# session ships it in a system store of its own, with that key as the store's
+# image publisher, and the ush supervisor finds it there as on a Tilo device.
+# Sealing takes minutes; it needs only the host build's packer, so it runs
+# beside the site build rather than after everything.
+env_runtime=$target/nested-session-env-runtime
+seal_env_runtime() {
+    rm -rf "$env_runtime"
+    [[ -n $env_runtime_trees ]] || return 0
+    local began=$SECONDS
+    bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
+    printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
+}
+build_host_then_site() {
+    build_host 2>&1 | label host || return 1
+    local seal
+    seal_env_runtime 2>&1 | label seal & seal=$!
+    build_site 2>&1 | label site || { wait "$seal"; return 1; }
+    wait "$seal"
+}
+
 pids=()
-(build_host 2>&1 | label host && build_site 2>&1 | label site) & pids+=($!)
+build_host_then_site & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
@@ -142,6 +191,7 @@ while IFS= read -r file; do
 done < <(cat "$target/thin-app/runtime-engines"
          echo tilolang-app
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
+[[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \

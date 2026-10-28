@@ -174,7 +174,7 @@ pub enum PhotosEffect {
     /// Save edited photograph: the photograph this window shows.
     #[effect(job)]
     Save {
-        #[param("Direct filesystem path; omit for the suggested path beside the original")]
+        #[param("Absolute filesystem path; omit to ask where with the Save chooser")]
         path: Option<String>,
     },
     /// Recognize text locally and share only bounded text and provenance.

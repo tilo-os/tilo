@@ -481,15 +481,13 @@ fn paint_empty_state(
         Some(waiting) => {
             replaced = EmptyStateContent {
                 // The spinner takes the hero slot; the slot is still sized.
-                icon: Some(if waiting.spinner_since.is_some() {
-                    Icon::Info
-                } else {
-                    Icon::Download
-                }),
+                icon: Some(waiting.icon),
                 illustration: None,
                 title: &waiting.title,
                 message: waiting.message.as_deref(),
-                action_label: None,
+                // While the host cannot be reached, the person works on what
+                // this device has: the app's action stays.
+                action_label: content.action_label.filter(|_| waiting.keeps_action()),
                 error: false,
             };
             if let Some(since) = waiting.spinner_since {
@@ -1321,7 +1319,7 @@ impl EmptyState {
         if rect.width() <= 0.0
             || rect.height() <= 0.0
             || content.action_label.is_none()
-            || crate::room_sync::waiting().is_some()
+            || crate::room_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
         {
             return None;
         }
@@ -1359,7 +1357,8 @@ impl EmptyState {
     /// Whether the action is the first of the accessibility node's children:
     /// it is, unless a room that has not synced says so in its place.
     fn lists_action(&self) -> bool {
-        self.resolved.2.is_some() && crate::room_sync::waiting().is_none()
+        self.resolved.2.is_some()
+            && crate::room_sync::waiting().is_none_or(|waiting| waiting.keeps_action())
     }
 
     fn content(&self) -> EmptyStateContent<'_> {
@@ -1713,7 +1712,11 @@ impl Widget for EmptyState {
             node = node.with_live(Politeness::Polite);
         }
         let mut children = Vec::new();
-        if let Some(action) = self.resolved.2.as_ref().filter(|_| waiting.is_none()) {
+        if let Some(action) = self.resolved.2.as_ref().filter(|_| {
+            waiting
+                .as_ref()
+                .is_none_or(|waiting| waiting.keeps_action())
+        }) {
             node = node.with_state(
                 AccessState::new()
                     .focusable(true)
@@ -2845,6 +2848,16 @@ mod tests {
             "the connecting state turns a spinner and damages its slot alone"
         );
 
+        crate::room_sync::set(told(RoomSyncState::Unreachable));
+        assert!(
+            paint(&mut scene).is_some(),
+            "with its host out of reach the person works here: the app's action stays"
+        );
+        assert!(
+            crate::room_sync::take_spinner_damage().is_none(),
+            "a host out of reach is no wait to spin through"
+        );
+
         crate::room_sync::set(told(RoomSyncState::HostNeedsUpdate));
         assert!(paint(&mut scene).is_none());
         assert!(
@@ -2929,6 +2942,23 @@ mod tests {
         assert!(waiting.name.as_deref().unwrap().contains("Lounge"));
         assert!(waiting.state.busy, "the connecting state is on its way");
         assert!(waiting.children.is_empty(), "the app's action waits too");
+
+        crate::room_sync::set(told(RoomSyncState::Unreachable));
+        let unreachable = Widget::accessibility(&empty).unwrap();
+        assert!(unreachable.name.as_deref().unwrap().contains("Lounge"));
+        assert!(!unreachable.state.busy, "nothing is on its way");
+        assert!(
+            unreachable.description.is_some(),
+            "it says changes stay here"
+        );
+        assert_eq!(
+            unreachable
+                .children
+                .first()
+                .and_then(|action| action.name.as_deref()),
+            Some("New note"),
+            "the person works on what is here"
+        );
 
         crate::room_sync::set(told(RoomSyncState::Synced));
         let empty_room = Widget::accessibility(&empty).unwrap();

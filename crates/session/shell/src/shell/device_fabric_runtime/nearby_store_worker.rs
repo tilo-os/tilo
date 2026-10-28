@@ -399,17 +399,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn drive_every_loop_entry_point(network: &ShellNetwork) {
         use crate::shell::device_fabric::PersonalFabricAction;
-        use crate::shell::personal_continuity::DeviceId;
+        use tilo_network_actor::fabric::DeviceId;
 
         let source = DeviceId::new("loop-guard-source").expect("device id");
         let transfer_id = [0x5a; 16];
         let request_id = [0x5b; 16];
-        let chunk = crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES;
+        let chunk = tilo_network_actor::PERSONAL_TRANSFER_CHUNK_BYTES;
         for offset in [0, chunk] {
             super::super::handle_nearby_transfer_frame(
                 network,
                 &source,
-                crate::network::actor::PersonalNearbyTransferFrame::Chunk {
+                tilo_network_actor::PersonalNearbyTransferFrame::Chunk {
                     transfer_id,
                     request_id,
                     offset: u64::try_from(offset).expect("offset fits"),
@@ -420,7 +420,7 @@ mod tests {
         super::super::handle_nearby_transfer_frame(
             network,
             &source,
-            crate::network::actor::PersonalNearbyTransferFrame::Finish {
+            tilo_network_actor::PersonalNearbyTransferFrame::Finish {
                 transfer_id,
                 request_id,
                 content_hash: [2; 32],

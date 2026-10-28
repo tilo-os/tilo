@@ -373,7 +373,9 @@ impl HeadlessBackend {
         // Going through the `Result` is what lets
         // the headless backend honour the rest of the `Backend::new`
         // contract — return an error, don't take `main` down with us.
-        let renderer = OffscreenRenderer::try_new(width, height).map_err(|e| {
+        // Its frames are shown and replaced; a capture (`snapshot`, the
+        // capture service) renders the scene again in a fixed segment order.
+        let renderer = OffscreenRenderer::try_new_live(width, height).map_err(|e| {
             format!("HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height}: {e}")
         })?;
         #[cfg(target_os = "linux")]
@@ -840,7 +842,7 @@ impl SimulatedVblankPresenter {
                 .checked_add(SIMULATED_FRAME_DEADLINE)
                 .unwrap_or(started),
             OutputSignal {
-                sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                sdr_white_nits: tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 hdr_layers: &frame.hdr_layers,
                 color_lut: None,
                 // Headless has no physical display brightness to control.

@@ -19,8 +19,7 @@ use tilo_relay::environment_host::{
 use tilo_relay::legacy_host::{LegacyApp, LegacyVmHost, LegacyWorker, request_legacy_launch};
 use tilo_relay::{
     ComputeAccelerator, ComputeClient, ComputeEnvelope, ComputeWorkerAdvertisement,
-    PowerAvailability, Relay, RelayConfig, TrustPolicy, WorkerEnvironments, WorkspaceBinding,
-    serve_worker_stream,
+    PowerAvailability, Relay, RelayConfig, WorkerEnvironments, serve_worker_stream,
 };
 use tilo_relay_client::{
     EnvironmentClientError, PtyEvent, RemoteRelay, attach_remote_environment, open_legacy_windows,
@@ -329,15 +328,6 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
     let relay = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            trust_policy: TrustPolicy::AllowAny,
-            workspaces: vec![WorkspaceBinding {
-                id: WORKSPACE,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-            }],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -350,15 +340,23 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
     .await
     .unwrap();
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             WORKSPACE,
             true,
-            vec![
-                worker_device.device_pubkey(),
-                alice_laptop.device_pubkey(),
-                alice_phone.device_pubkey(),
-                bob_laptop.device_pubkey(),
-            ],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![
+                    worker_device.device_pubkey(),
+                    alice_laptop.device_pubkey(),
+                    alice_phone.device_pubkey(),
+                    bob_laptop.device_pubkey(),
+                ],
+                member_user_roots: vec![
+                    worker_device.cert.user_public_key,
+                    alice_laptop.cert.user_public_key,
+                    alice_phone.cert.user_public_key,
+                    bob_laptop.cert.user_public_key,
+                ],
+            },
             state.path().to_path_buf(),
         )
         .await
@@ -406,7 +404,20 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
     expect_output(&mut second, b"ls\n").await;
 
     // Bob is a member of the workspace but not the session's owner; Carol
-    // is not a member at all.
+    // is not a member of it. She belongs to another room this relay hosts,
+    // which is what lets her through the handshake to be refused here.
+    relay
+        .replace_governed_workspace_access(
+            WORKSPACE + 1,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![carol_laptop.device_pubkey()],
+                member_user_roots: vec![carol_laptop.cert.user_public_key],
+            },
+            state.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
     let bobs =
         attach_remote_environment(&remote(&relay, &bob_laptop).await, WORKSPACE, session, SIZE)
             .await;
@@ -425,13 +436,17 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
         None,
     )
     .await;
-    assert!(matches!(
-        carols,
-        Err(EnvironmentClientError::Refused {
-            reason: Refusal::NotAMember,
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            carols,
+            Err(EnvironmentClientError::Refused {
+                reason: Refusal::NotAMember,
+                ..
+            })
+        ),
+        "{:?}",
+        carols.as_ref().err()
+    );
 
     // A legacy launch from Alice's session reaches her window stream, and
     // her input reaches the app.
@@ -575,14 +590,6 @@ async fn a_relay_says_whether_its_workers_run_environments() {
     let relay = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![WorkspaceBinding {
-                id: WORKSPACE,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-            }],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -595,10 +602,16 @@ async fn a_relay_says_whether_its_workers_run_environments() {
     .await
     .unwrap();
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             WORKSPACE,
             true,
-            vec![worker_device.device_pubkey(), owner_laptop.device_pubkey()],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![worker_device.device_pubkey(), owner_laptop.device_pubkey()],
+                member_user_roots: vec![
+                    worker_device.cert.user_public_key,
+                    owner_laptop.cert.user_public_key,
+                ],
+            },
             state.path().to_path_buf(),
         )
         .await
@@ -673,14 +686,6 @@ async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
     let relay = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![WorkspaceBinding {
-                id: WORKSPACE,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-            }],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -693,10 +698,16 @@ async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
     .await
     .unwrap();
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             WORKSPACE,
             true,
-            vec![worker_device.device_pubkey(), laptop.device_pubkey()],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![worker_device.device_pubkey(), laptop.device_pubkey()],
+                member_user_roots: vec![
+                    worker_device.cert.user_public_key,
+                    laptop.cert.user_public_key,
+                ],
+            },
             state.path().to_path_buf(),
         )
         .await

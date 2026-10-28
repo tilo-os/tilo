@@ -1,8 +1,8 @@
 use super::*;
-use crate::network::HostIdentity;
-use crate::network::actor::native_ingress::NOT_CONNECTED;
 use crate::shell::native_workspace_owner::test_enrolled_owner;
 use crate::shell::state::RoomId;
+use tilo_network_actor::HostIdentity;
+use tilo_network_actor::native_ingress::NOT_CONNECTED;
 
 fn identity_for(
     owner: &NativeWorkspaceOwner,

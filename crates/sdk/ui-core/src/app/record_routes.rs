@@ -131,7 +131,7 @@ impl RecordRouteParticipant {
             .or_else(|| self.manager.primary_route().cloned());
         #[cfg(not(test))]
         let witness = self.manager.primary_route().cloned();
-        let primary = witness.as_ref().map(|witness| witness.route.clone());
+        let primary = witness.as_ref().map(|witness| witness.route().clone());
         let joins = self.routes.reconcile_owners(owners, witness, outer);
         let routes: Vec<RouteSpec> = primary
             .iter()
@@ -257,6 +257,26 @@ impl RouteDocument {
         let manager = {
             let _entry = scope.enter();
             CollaborationManager::for_route_host_in_background(connector, route.clone(), kind)
+        };
+        Self::with_manager(manager, route, scope)
+    }
+
+    /// [`Self::connect`] for a host that reaches the broker its own way:
+    /// `manager` makes the connection to `route`, inside the scope `wake`
+    /// runs from, as [`Self::connect`]'s connector's is.
+    #[must_use]
+    pub fn connect_with(
+        manager: impl FnOnce() -> CollaborationManager,
+        route: RouteSpec,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let mut scope = crate::WakeScope::new();
+        if let Err(error) = scope.bind(move |_| wake()) {
+            tracing::warn!(%error, "a held route is not woken by the broker");
+        }
+        let manager = {
+            let _entry = scope.enter();
+            manager()
         };
         Self::with_manager(manager, route, scope)
     }

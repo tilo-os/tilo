@@ -345,7 +345,8 @@ for artifact in \
     && ok "$artifact is carried into the release" \
     || bad "$artifact is absent from the release workflow"
 done
-grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
+grep -Fq '"arch":"x86_64","runner":"runner-release"' "$workflow" \
+  && grep -Fq '"arch":"aarch64","runner":"runner-large-arm64"' "$workflow" \
   && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
   && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
   && grep -Fq 'runner: imager-windows-x86_64' "$workflow" \
@@ -402,7 +403,9 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq 'linuxX64Flatpak linuxArm64Flatpak linuxX64AppImage linuxArm64AppImage' \
+  && grep -Fq 'declared_downloads' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'release does not carry the %s artifact for %s %s' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'landing page does not expose required release asset' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -633,13 +636,13 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
   || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
-[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 1 ] \
-  && grep -Fq "if: github.event_name != 'push' || github.ref != 'refs/heads/main'" "$workflow" \
+[ "$(grep -Fc 'branches: ["stable"]' "$workflow")" -eq 1 ] \
+  && [ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
+  && grep -Fq "if: github.event_name != 'push' || github.ref != 'refs/heads/stable'" "$workflow" \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+  && grep -Fq '"arch":"x86_64","runner":"runner-release"' "$workflow" \
+  && grep -Fq '"arch":"aarch64","runner":"runner-large-arm64"' "$workflow" \
   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
-  && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
   && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}' "$workflow" \
   && grep -Fq "github.event.inputs.installer_only != 'true'" "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \

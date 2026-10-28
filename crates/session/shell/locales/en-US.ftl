@@ -27,8 +27,6 @@ workspace-first-reached = This is the first workspace
 workspace-last-reached = This is the last workspace
 strip-first-reached = This is the first strip
 strip-last-reached = This is the last strip
-workspace-deleted-toast = Deleted { $name }
-workspace-deleted-undo = Undo
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
@@ -38,6 +36,7 @@ workspace-personal-name = Personal
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
 workspace-not-joined-yet = Not joined yet
+workspace-not-ready-no-documents = This workspace isn't ready yet: apps can open documents in it once it is.
 workspace-join-again-needs-invitation = Ask for a new invitation to join this workspace
 # A workspace kept for what was opened in it before it was joined to its room.
 workspace-kept-before-joining = { $name } before joining
@@ -1071,12 +1070,17 @@ shell-window-menu-width-equal = Equalise all
 shell-window-menu-move-to-strip = Move to strip
 shell-window-menu-move-to-display = Move to display
 shell-window-menu-move-to-workspace = Move to workspace
+shell-window-menu-share = Share with { $place }
+shell-window-menu-stop-sharing = Stop sharing
 shell-window-menu-new-tab = New tab
 shell-window-menu-rename-tab = Rename tab
 shell-tab-rename-field = Tab name
 shell-window-menu-close-window = Close window
 shell-window-menu-unnamed-strip = Strip { $number }
 shell-window-menu-tell-agent = Tell an agent…
+window-share-failed = Couldn’t share the window
+window-unshare-failed = Couldn’t stop sharing the window
+window-share-end-failed = A closed window is still shared
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
@@ -1585,6 +1589,11 @@ search-action-identity-remove = Remove an identity from this device
 search-action-identity-remove-subtitle = Delete an identity you no longer use here, with its key
 search-action-identity-protect = Protect an identity's key
 search-action-identity-protect-subtitle = Move an identity's key from a plain file into protected storage
+search-action-home-relay-resource = Home relay
+search-action-home-relay-workspaces = List workspaces on your home relay
+search-action-home-relay-workspaces-subtitle = Show which of the workspaces this device hosts your home relay also hosts
+search-action-home-relay-set = Host a workspace on your home relay
+search-action-home-relay-set-subtitle = Have your home relay also host a workspace this device hosts, or stop
 search-action-identity-devices-list = List your trusted devices
 search-action-identity-devices-list-subtitle = Show the devices trusted under this workspace's identity and which are revoked
 search-action-identity-home-peer-remove = Remove a home server
@@ -1605,6 +1614,11 @@ search-action-member-role-set = Change a member's role
 search-action-member-role-set-subtitle = Make a workspace member a viewer, commenter, or editor
 search-action-member-remove = Remove a member
 search-action-member-remove-subtitle = Take a member out of this workspace and revoke everything they could do here
+governance-change-members = Change a member's standing
+governance-change-access = Change access to this workspace
+governance-change-presets = Change this workspace's presets
+governance-change-settings = Change this workspace's settings
+governance-change-history = Record what was done in this workspace's history
 search-action-invitation-issue = Create an invitation
 search-action-invitation-issue-subtitle = Mint an invitation to this workspace with a role and a lifetime
 search-action-invitation-list = List pending invitations
@@ -2080,8 +2094,6 @@ peer-sync-link-note-anyone = Anyone who opens the link can join. It stops workin
 peer-sync-copy-invite = Copy invite
 peer-sync-revoke = Revoke
 peer-sync-done = Done
-peer-sync-code-hint = They see this code when they open the invite
-peer-sync-code-check = Check that the person who invited you sees the same code
 peer-sync-paste-link = Paste link
 peer-sync-join-field-label = Link or site
 peer-sync-who-heading = Who
@@ -2146,9 +2158,11 @@ peer-sync-received-role-expires = { $role } access, { $unit ->
        *[other] { $count } days
     }
 }
+peer-sync-code-check = Check that the person who invited you sees the same code
 peer-sync-role-viewer = Viewer
 peer-sync-role-commenter = Commenter
 peer-sync-role-editor = Editor
+peer-sync-role-moderator = Moderator
 peer-sync-copy = Copy
 peer-sync-cancel = Cancel
 peer-sync-join = Join
@@ -3413,3 +3427,6 @@ search-apps-remove-from-apps = Remove from apps
 # The pinned people overlay's message box
 people-overlay-messages-unavailable = Direct messages are not available right now
 people-overlay-message-failed = The message to { $name } did not go
+# Where a window held until its room is ready comes from, as its place says it.
+pending-window-from-own-host = this device's host
+pending-window-from-room = the room

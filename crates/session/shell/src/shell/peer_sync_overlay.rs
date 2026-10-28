@@ -48,6 +48,10 @@ pub enum PeerSyncRequest {
     /// Leave a site's workspace: it goes from this computer, and is not
     /// joined again unasked.
     LeaveSite(crate::shell::state::RoomId),
+    /// Delete a workspace: this device's windows shared with its room stop
+    /// being shared at its host, then the room and the workspace go
+    /// together ([`crate::shell::network::ShellNetwork::release_room`]).
+    DeleteWorkspace(crate::shell::state::RoomId),
     /// Try again to join a workspace whose join failed, or that needs
     /// joining again: from the workspace itself, which is the room.
     RetryJoin(crate::shell::state::RoomId),
@@ -92,6 +96,19 @@ pub enum PeerSyncRequest {
         room: crate::shell::state::RoomId,
         ask: crate::shell::network::BotAsk,
     },
+    /// Share this device's window `tab` of `app_id` with the workspace in
+    /// `room` (`share`), or stop sharing it: the room's record of the share,
+    /// written by its host ([`tilo_desktop_model::window_share`]). A Tilo
+    /// app's window is shared with what it shows (`shows`, the node of its
+    /// record or of the item it is at), which the others open; an outside
+    /// window has none, and is streamed.
+    ShareWindow {
+        room: crate::shell::state::RoomId,
+        tab: crate::shell::state::TabId,
+        app_id: String,
+        share: bool,
+        shows: Option<String>,
+    },
 }
 
 /// What an `invitation.issue` action asks to be minted for the active
@@ -125,6 +142,9 @@ pub fn network_action_output(
         ) => Ok(serde_json::json!({ "invite": token })),
         (PeerSyncRequest::CancelInvitation(_), PeerSyncResponse::Message(_)) => {
             Ok(serde_json::json!({ "canceled": true }))
+        }
+        (PeerSyncRequest::ShareWindow { tab, share, .. }, PeerSyncResponse::Message(_)) => {
+            Ok(serde_json::json!({ "tab": tab.to_string(), "shared": share }))
         }
         (PeerSyncRequest::ListPendingInvitations, PeerSyncResponse::PendingInvitations(rows)) => {
             let invitations: Vec<serde_json::Value> = rows
@@ -622,6 +642,7 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::CancelEnrollment(_)
                 | PeerSyncRequest::PrepareInvitation
                 | PeerSyncRequest::LeaveSite(_)
+                | PeerSyncRequest::DeleteWorkspace(_)
                 | PeerSyncRequest::RetryJoin(_)
                 | PeerSyncRequest::InviteDevice
                 | PeerSyncRequest::DevicesAsking
@@ -631,7 +652,8 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::ReportWorkspace { .. }
                 | PeerSyncRequest::Publication(_)
                 | PeerSyncRequest::Publish { .. }
-                | PeerSyncRequest::AskForBot { .. },
+                | PeerSyncRequest::AskForBot { .. }
+                | PeerSyncRequest::ShareWindow { .. },
                 _,
             ) => {}
 
@@ -1350,10 +1372,6 @@ fn short_pairing_link(link: &str) -> String {
         .unwrap_or_else(|| "…".to_owned())
 }
 
-fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
-    crate::network::invite::validate_invite_token(token.trim()).ok()
-}
-
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
     let tail = chars.get(chars.len().saturating_sub(8)..).unwrap_or(&[]);
@@ -1472,7 +1490,7 @@ mod tests {
 
     /// Change the overlay as its host does between frames.
     fn with(frame: &mut FrameHarness, change: impl FnOnce(&mut PeerSyncOverlay)) {
-        change(frame.root_mut::<PeerSyncOverlay>());
+        change(&mut frame.root_mut::<PeerSyncOverlay>());
         frame.recompose().expect("the sheet lays out");
     }
 
@@ -1881,14 +1899,38 @@ mod tests {
         mounted(join, Theme::dark())
     }
 
-    /// An invitation minted as a room's owner shares one, carrying the room
-    /// and role it grants.
+    /// An invitation minted as a room's host issues one for whoever holds
+    /// it, carrying the room and role it grants.
     fn shared_invitation() -> String {
-        let owner = iroh::SecretKey::from_bytes(&[7; 32]);
-        let workspace = crate::network::invite::test_workspace(41);
-        let addr =
-            iroh::EndpointAddr::new(owner.public()).with_ip_addr("127.0.0.1:4242".parse().unwrap());
-        crate::network::invite::make_invite_token(&owner, &workspace, &addr, 3600).unwrap()
+        use tilo_peer_state::join::{InviteGrant, MemberRole};
+        let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut host = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Host".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut host, &root).unwrap();
+        let grant = InviteGrant {
+            workspace_id: 41,
+            room: crate::shell::state::RoomId::new().to_string(),
+            authority: host.clone(),
+            issuer: host,
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [5; 16],
+            recipient_user_public_key: None,
+            invitee_name: None,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+            transport: Vec::new(),
+        };
+        tilo_peer_state::join::encode_invitation_text(
+            &tilo_peer_state::join::issue_invitation(grant, &device).unwrap(),
+        )
     }
 
     /// Text that is an invitation is shown as the invitation it is, under

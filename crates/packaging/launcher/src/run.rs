@@ -29,6 +29,7 @@ use crate::services::{
 use entrypoint_runtime::{preflight_entrypoint_runtime, resolve_launch_runtimes};
 
 mod entrypoint_runtime;
+pub mod tilolang_host;
 
 struct SeccompFds {
     clone3_compat: OwnedFd,

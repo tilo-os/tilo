@@ -142,9 +142,9 @@ fn holds(
 ) -> bool {
     read_unchanged(
         service,
+        service.record_read(ROOM, "so.tilo.notes", ""),
         || Ok(context(custody)),
         &Arc::new(Budget::default()),
-        ROOM,
         known,
         absent,
     )
@@ -222,9 +222,9 @@ fn a_refusal_ends_the_wait_so_the_reader_s_open_meets_it() {
     assert!(
         read_unchanged(
             service.as_ref(),
+            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
             || Err("committed read admission ended".into()),
             &Arc::new(Budget::default()),
-            ROOM,
             Some([1; 32]),
             false,
         )
@@ -253,9 +253,9 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     assert!(
         read_unchanged(
             service.as_ref(),
+            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
             || Ok(context(&custody)),
             &budget,
-            ROOM,
             Some([1; 32]),
             false,
         )
@@ -267,9 +267,9 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     assert!(
         read_unchanged(
             service.as_ref(),
+            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
             || Ok(context(&custody)),
             &budget,
-            ROOM,
             Some([1; 32]),
             false,
         )

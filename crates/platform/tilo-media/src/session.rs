@@ -256,6 +256,13 @@ impl SessionPool {
             return s.clone();
         }
         self.evict_to_capacity();
+        #[cfg_attr(
+            web_page,
+            expect(
+                clippy::arc_with_non_send_sync,
+                reason = "on a page a session holds the page's media element, and the page has one thread"
+            )
+        )]
         let session = Arc::new(Mutex::new(EngineSession::open(
             source.clone(),
             key.clone(),

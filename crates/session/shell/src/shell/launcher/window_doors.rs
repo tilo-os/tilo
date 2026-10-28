@@ -12,8 +12,9 @@
 //! connections to the session, admitted here as the launch's:
 //!
 //! - collaboration, recorded as the window's launch before the shell
-//!   connects it (`register_in_process_window`), so the broker attests it,
-//!   window instance included, as it attests a launched app;
+//!   connects it (`register_in_process_window`), keyed by the window's
+//!   instance, which the connection names, so the broker attests it, window
+//!   instance included, as it attests a launched app;
 //! - shell-ui, connected here and attributed to the process's launch
 //!   ([`take_window_shell_ui`]).
 //!
@@ -95,6 +96,16 @@ pub(super) enum Routed {
     Opened,
     /// No process of the app serves the room: start one.
     NotRunning,
+}
+
+/// Whether a process of `package_id` already serves `room` and opens the
+/// windows asked of it: another window of the app there is a new window in
+/// that process, not a second copy.
+pub(crate) fn opens_more_windows(package_id: &str, room: RoomId) -> bool {
+    lock(&DOORS)
+        .as_ref()
+        .and_then(|doors| doors.get(&key(package_id, room)))
+        .is_some_and(|door| door.serves == Serves::Yes)
 }
 
 /// Reserve the door of the process about to start for `package_id` in
@@ -455,10 +466,15 @@ fn door_pair() -> std::io::Result<(OwnedFd, OwnedFd)> {
 /// The window's own collaboration connection, attested as the launch of
 /// `instance` of `app_id` in `room`.
 fn window_collaboration(app_id: &str, room: &str, instance: u64) -> std::io::Result<OwnedFd> {
-    super::register_in_process_window(app_id, room, Some(instance));
     let mut stream =
         std::os::unix::net::UnixStream::connect(::launcher::services::collab_socket())?;
-    ::launcher::services::write_collab_handoff(&mut stream, app_id, room)?;
+    super::register_in_process_window(app_id, room, instance);
+    if let Err(error) =
+        ::launcher::services::write_collab_window_handoff(&mut stream, app_id, room, instance)
+    {
+        super::withdraw_in_process_launch(app_id, room, Some(instance));
+        return Err(error);
+    }
     Ok(stream.into())
 }
 

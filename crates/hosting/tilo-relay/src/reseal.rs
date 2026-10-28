@@ -346,7 +346,7 @@ mod tests {
         )
         .unwrap();
         assert!(untar.wait().unwrap().success());
-        let (key, cert) = crate::rooms::tests::governor_with(
+        let (key, cert) = crate::rooms::fixtures::governor_with(
             tilo_user_identity::cloud_enrollment::host_capabilities(),
         );
         let identity = RelayIdentity {

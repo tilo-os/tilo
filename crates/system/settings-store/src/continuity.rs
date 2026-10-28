@@ -201,6 +201,9 @@ policies! {
         "tilo.appearance.wallpaper_path",
         "tilo.appearance.distribution_defaults",
         "tilo.device.name",
+        // Whether the person's comforts reach this device's login screens: a
+        // shared machine and a laptop of their own want different answers.
+        "tilo.accessibility.apply_to_sign_in",
         "tilo.display.hardware.edid",
         "tilo.network.interface.mac",
         "tilo.storage.mount.usb",

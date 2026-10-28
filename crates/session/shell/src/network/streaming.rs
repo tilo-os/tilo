@@ -298,8 +298,7 @@ mod tests {
                 EventLoop::try_new().expect("calloop event loop");
             let display: Display<State> = Display::new().expect("wayland display");
             let mut state = State::new(event_loop.handle(), display.handle());
-            let controller =
-                crate::shell::personal_continuity::DeviceId::new("controller").unwrap();
+            let controller = tilo_network_actor::fabric::DeviceId::new("controller").unwrap();
             assert!(state.apply_personal_fabric_input(
                 &controller,
                 FabricInputEvent::PointerMotion { x: 320, y: 180 }

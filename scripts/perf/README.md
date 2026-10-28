@@ -68,10 +68,6 @@ executable stand-alone; the higher-level flow is described below.
   wrong last frame or lost press. t's performance run runs it as the
   `stream` group (`tools/perf/adapters.py native-stream`).
 
-- `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
-  given dir) for shell + terminal + file-explorer + tilo-relay + fs +
-  tilo-install, emit a `{name: bytes}` JSON blob on stdout.
-
 - `qemu-boot-measure.sh <qcow2> <label>` — headless QEMU boot of a
   qcow2 using qemu-system-x86_64 + OVMF. Set `TILO_DISTROBOX` when those
   tools are in a distrobox. Snapshots the base so consecutive runs are hermetic; polls
@@ -86,9 +82,6 @@ executable stand-alone; the higher-level flow is described below.
   rootless everywhere; then boots a throwaway backing-file snapshot
   under OVMF and emits `boot_ms` in the same units as
   `qemu-boot-measure.sh`. Emits JSON on stdout for CI.
-
-- `compare.sh <base.json> <cur.json>` — diff two runs (either output
-  format) and print a percentage-change table.
 
 - `agent_rtt.py (--socket PATH | --spawn SHELL)` — the agent round trip:
   actions list, state dump, a no-op invoke (accepted, and completed through
@@ -223,5 +216,4 @@ do not treat an old run as a repository baseline.
 `tools/perf/compare.py` compares a record only with stored records from the same
 environment. Scheduled results and their baselines are kept in the
 `tilo-perf-results` package; see
-[Performance results](../../docs/measurements/performance.md). Use
-`compare.sh` for a one-off diff of two local runs.
+[Performance results](../../docs/measurements/performance.md).

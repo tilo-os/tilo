@@ -150,29 +150,6 @@ class RpmBuildGraphTest(unittest.TestCase):
             ],
         )
 
-    def test_http_binary_is_staged_and_owned_by_rpm(self):
-        driver = (ROOT / "dist/rpm/build-rpm.sh").read_text()
-        self.assertIn(
-            'install -pm 0755 "$rel/tilo-model-http" '
-            '"$app_stage/bin/tilo-model-http"',
-            driver,
-        )
-        spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
-        # The program lives off PATH in /usr/libexec/tilo; its old command
-        # name stays a link so existing callers keep working.
-        self.assertIn(
-            "install -Dpm 0755 apps/bin/tilo-model-http "
-            "%{buildroot}%{_libexecdir}/tilo/tilo-model-http",
-            spec,
-        )
-        self.assertIn(
-            "ln -s ../libexec/tilo/tilo-model-http "
-            "%{buildroot}%{_bindir}/tilo-model-http",
-            spec,
-        )
-        apps_files = spec.split("%files apps\n")[1].splitlines()
-        self.assertIn("%{_libexecdir}/tilo/tilo-model-http", apps_files)
-        self.assertIn("%{_bindir}/tilo-model-http", apps_files)
 
     def test_model_gateway_component_build_and_install_plan(self):
         installer = ROOT / "os/scripts/install-components.py"

@@ -297,6 +297,8 @@ mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
 mod retained_layout;
+mod root_access;
+pub use root_access::{Framed, RootAndStateMut, RootMut};
 mod root_wake;
 mod search_open;
 mod sidebar_button;
@@ -571,6 +573,9 @@ pub struct FrameHarness {
     pointer_buttons: u32,
     /// A coalesced input event was dispatched since the last frame.
     input_frame_pending: bool,
+    /// A save-status-only owner service changed what an owner shows since
+    /// the last frame.
+    owner_save_shown: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -745,70 +750,6 @@ pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
         reason = "`as` saturates and maps NaN to zero, which is the documented contract"
     )]
     (w as u32, h as u32)
-}
-
-/// A [`FrameHarness`] over one concrete root that reads as that root.
-///
-/// Dereferencing yields the widget; a mutable dereference makes the next
-/// frame recompose from scratch (see [`FrameHarness::root_mut`]). Harness
-/// operations are associated functions so they never shadow the root's own
-/// methods.
-pub struct Framed<W: Widget + 'static> {
-    harness: FrameHarness,
-    root: std::marker::PhantomData<fn() -> W>,
-}
-
-impl<W: Widget + 'static> Framed<W> {
-    /// Mount `root` over `state` and run its first frame at `viewport`.
-    pub fn new(state: State, root: W, viewport: (u32, u32), theme: Theme) -> Self {
-        Self::from_harness(FrameHarness::for_root(state, root, viewport, theme))
-    }
-
-    /// [`Self::new`] with every construction option spelled out.
-    pub fn with_options(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        options: FrameOptions,
-    ) -> Self {
-        Self::from_harness(FrameHarness::for_root_with(state, root, viewport, options))
-    }
-
-    fn from_harness(harness: FrameHarness) -> Self {
-        let _: &W = harness.root();
-        Self {
-            harness,
-            root: std::marker::PhantomData,
-        }
-    }
-
-    pub fn harness(this: &Self) -> &FrameHarness {
-        &this.harness
-    }
-
-    pub fn harness_mut(this: &mut Self) -> &mut FrameHarness {
-        &mut this.harness
-    }
-
-    /// The root and the live document at once; see
-    /// [`FrameHarness::root_and_state_mut`].
-    pub fn split(this: &mut Self) -> (&mut W, &mut State) {
-        this.harness.root_and_state_mut()
-    }
-}
-
-impl<W: Widget + 'static> std::ops::Deref for Framed<W> {
-    type Target = W;
-
-    fn deref(&self) -> &W {
-        self.harness.root()
-    }
-}
-
-impl<W: Widget + 'static> std::ops::DerefMut for Framed<W> {
-    fn deref_mut(&mut self) -> &mut W {
-        self.harness.root_mut()
-    }
 }
 
 impl FrameHarness {
@@ -1075,15 +1016,22 @@ impl FrameHarness {
         &mut self,
     ) -> crate::owner_wake::OwnerModelServiceReport {
         let mut attempted = false;
+        let mut presented = false;
         let mut completed = 0;
-        let result = self.service_owner_model_batch(&mut attempted, &mut completed);
+        let result = self.service_owner_model_batch(&mut attempted, &mut presented, &mut completed);
         // The host asks whenever it idles; only work actually taken up can
         // have changed what the next frame reads.
         if attempted {
             self.invalidate_local();
         }
+        if presented {
+            // The owner's bar says something new: the next frame draws it.
+            self.invalidate_local();
+            self.owner_save_shown = true;
+        }
         crate::owner_wake::OwnerModelServiceReport {
             attempted,
+            presented,
             completed,
             result,
         }
@@ -1109,12 +1057,29 @@ impl FrameHarness {
     fn service_owner_model_batch(
         &mut self,
         attempted: &mut bool,
+        presented: &mut bool,
         completed: &mut usize,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         let Some(queue) = self.owner_wake_queue.clone() else {
             return Ok(());
         };
         let mut batch = queue.take_batch();
+        // Saves that moved on, and nothing else: each owner shows its save
+        // status alone, the layout stands and the next frame need not sync:
+        // no model callback ran. A frame follows only when an owner shows
+        // something new; a save that landed in time (each keystroke's)
+        // shows nothing, and draws no second frame after the key's.
+        if batch.front().is_some() && batch.all_save_progress_only() {
+            while let Some(work) = batch.front() {
+                let _profile =
+                    tilo_resource::profiling::Phase::start("ui.owner_wake.save_progress");
+                *presented |=
+                    crate::bound_dispatch::service_owner_save_progress(self.root.as_mut(), work)?;
+                batch.complete_front();
+                *completed += 1;
+            }
+            return Ok(());
+        }
         let mut aside = None;
         if batch.front().is_some() {
             // An unknown visitor can replace descendants before it locates the
@@ -1190,16 +1155,6 @@ impl FrameHarness {
             crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
         );
         self.discard_layout_tree();
-    }
-
-    /// Drop the raw layout maps so no later frame re-solves a composition
-    /// whose widgets may have been replaced; the next frame rebuilds.
-    fn discard_layout_tree(&mut self) {
-        self.serviced_layout = None;
-        self.bindings.clear();
-        self.node_map.clear();
-        self.layout_maps.clear();
-        self.layout_built = false;
     }
 
     /// The app root's structure flag, and framework History's: it is laid
@@ -1901,6 +1856,7 @@ impl FrameHarness {
             coalesce_input_frames: false,
             pointer_buttons: 0,
             input_frame_pending: false,
+            owner_save_shown: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
@@ -1921,121 +1877,6 @@ impl FrameHarness {
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d
-    }
-
-    /// Mount one concrete widget as the root so a test can read and adjust
-    /// it through [`Self::root`] and [`Self::root_mut`] between frames.
-    pub fn for_root<W: Widget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        theme: Theme,
-    ) -> Self {
-        Self::for_root_with(
-            state,
-            root,
-            viewport,
-            FrameOptions {
-                theme: Some(theme),
-                ..FrameOptions::default()
-            },
-        )
-    }
-
-    /// [`Self::for_root`] for an app: its window's bar
-    /// ([`Self::present_in_window_bar`]) wears the app's icon and title, as
-    /// a desktop window's tab does.
-    pub fn for_app<W: crate::widget::AppWidget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        theme: Theme,
-    ) -> Self {
-        let app = (root.app_kind(), root.app_title().to_owned());
-        let mut harness = Self::for_root(state, root, viewport, theme);
-        harness.window_app = Some(app);
-        harness
-    }
-
-    /// [`Self::for_root`] with every construction option spelled out.
-    pub fn for_root_with<W: Widget + 'static>(
-        state: State,
-        root: W,
-        viewport: (u32, u32),
-        options: FrameOptions,
-    ) -> Self {
-        let FrameOptions {
-            theme,
-            text,
-            host_style,
-            content_height,
-        } = options;
-        let mut harness = Self::with_inputs_styled(
-            state,
-            Box::new(root),
-            viewport,
-            theme.unwrap_or_else(Theme::dark),
-            text.unwrap_or_default(),
-            HostLayout {
-                style: host_style.unwrap_or_default(),
-                content_height,
-            },
-        );
-        harness.root_type = Some(std::any::TypeId::of::<W>());
-        harness
-    }
-
-    /// The root mounted by [`Self::for_root`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    #[must_use]
-    pub fn root<W: Widget + 'static>(&self) -> &W {
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root: the root was not mounted as this type"
-        );
-        // SAFETY: `root_type` records the concrete type `root` was boxed from
-        // and is cleared whenever `root` is replaced.
-        unsafe { &*std::ptr::from_ref::<dyn Widget>(self.root.as_ref()).cast::<W>() }
-    }
-
-    /// Mutable access to the root mounted by [`Self::for_root`]. Anything
-    /// may change through it, so the next frame recomposes from scratch.
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    pub fn root_mut<W: Widget + 'static>(&mut self) -> &mut W {
-        self.invalidate_local();
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root_mut: the root was not mounted as this type"
-        );
-        self.discard_layout_tree();
-        // SAFETY: as in `root`; the raw layout maps that pointed into this
-        // tree were discarded above.
-        unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() }
-    }
-
-    /// The root mounted by [`Self::for_root`] together with the live
-    /// document, for calls that take both. Invalidates as [`Self::root_mut`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
-    pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
-        self.invalidate_local();
-        assert_eq!(
-            self.root_type,
-            Some(std::any::TypeId::of::<W>()),
-            "FrameHarness::root_and_state_mut: the root was not mounted as this type"
-        );
-        self.discard_layout_tree();
-        // SAFETY: as in `root_mut`.
-        let root =
-            unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() };
-        (root, &mut self.state)
     }
 
     /// Run one frame at `viewport`, even when neither the size nor the
@@ -3016,8 +2857,9 @@ impl FrameHarness {
                 "owner wake queued",
                 self.owner_wake_queue
                     .as_ref()
-                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending),
+                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending_model_work),
             ),
+            ("owner save status shown", self.owner_save_shown),
             ("presence redraw", self.presence_redraw),
             ("tooltip", self.tooltips.schedule().0),
             ("search pending", self.search_pending),
@@ -3044,10 +2886,12 @@ impl FrameHarness {
         let queued_work = self.layout_requested
             || self.input_frame_pending
             || self.owner_service_layout_retired
+            // A save that moved on asks for its service, not for a frame.
             || self
                 .owner_wake_queue
                 .as_ref()
-                .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
+                .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending_model_work)
+            || self.owner_save_shown
             || self.presence_redraw
             || self.tooltips.schedule().0
             || self.search_pending
@@ -3664,6 +3508,7 @@ impl FrameHarness {
         };
         if result.is_ok() {
             self.input_frame_pending = false;
+            self.owner_save_shown = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
@@ -3889,7 +3734,7 @@ impl FrameHarness {
             && (self.history_chrome_enabled
                 || self.history.is_some()
                 || crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref()));
-        let structure = self.full_relayout_forced_now()
+        let mut structure = self.full_relayout_forced_now()
             || !self.layout_built
             || recompose_for_viewport
             || structure_changed
@@ -3940,6 +3785,10 @@ impl FrameHarness {
                 self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
             }
             if structure || (rebuild && !remount_only) || (in_place && !remounted) {
+                // Carried out by this build, as the live host's rebuild
+                // clears its pending structure: a change the build's layout
+                // then reports is remounted in place by the next pass.
+                structure = false;
                 self.remount = false;
                 rebuilt_this_pass = true;
                 stats.rebuilt = true;
@@ -5912,10 +5761,8 @@ impl FrameHarness {
     /// When the root was not mounted as an [`EmbeddedApp`].
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
-        let root = self
-            .root_mut::<crate::app::EmbeddedApp>()
-            .app_mut()
-            .root_widget_mut();
+        let mut embedded = self.root_mut::<crate::app::EmbeddedApp>();
+        let root = embedded.app_mut().root_widget_mut();
         let mut out = std::collections::HashMap::new();
         collect_targets(root, "", &mut std::collections::HashMap::new(), &mut out);
         out
@@ -10862,8 +10709,8 @@ mod tests {
     /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
     /// the first draw happened to show: a scroll thumb mid-fade, or a page
     /// still drawn from the bitmap of the width it had a moment ago, which is
-    /// a difference about the capture and reads as a layout difference to
-    /// `tools/ci/capture_parity.py`.
+    /// a difference about the capture and reads as a layout difference when
+    /// two captures are compared.
     #[cfg(feature = "native")]
     #[test]
     fn writing_a_shot_runs_the_animation_out_first() {

@@ -126,7 +126,7 @@ pub struct FramePaint {
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
-    pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    pub hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// What `scene`'s floating surfaces are drawn over. A renderer that
     /// composites materials blurs these before rendering the scene; any
     /// other shows the surfaces opaque.
@@ -453,7 +453,10 @@ impl FramePaint {
 
     /// The same frame, with `layers` composited where HDR is shown.
     #[must_use]
-    pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+    pub fn with_hdr_layers(
+        mut self,
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Self {
         if !layers.is_empty() {
             self.cache = None;
             self.repaint_copies();
@@ -815,6 +818,9 @@ pub struct FrameBuilder {
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
     peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
+    /// The tabs marked with a sharer's presence because they show a window
+    /// shared with their room ([`crate::shell::mark_shared_windows`]).
+    shared_window_marks: Vec<(u64, String)>,
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
@@ -892,6 +898,10 @@ pub struct FrameBuilder {
     frame_only_moved: bool,
     /// Scene builds so far, numbering each for [`ui::retained_present::PanReplay`].
     scene_builds: u64,
+    /// Frames drawn since this builder was made, dense and retained alike:
+    /// a test that waits for the desktop to come to rest counts repaints
+    /// with it rather than wall-clock time, which a busy runner stretches.
+    frames_drawn: u64,
     /// A frame changed the desktop since the presenter's layers were last
     /// drawn ([`Self::layers_stale`]).
     layers_stale: bool,
@@ -914,7 +924,7 @@ pub struct FrameBuilder {
     /// copies; it keeps glyph outlines between frames.
     draw_bounds: std::cell::RefCell<tilo_cpu_raster::DrawBounds>,
     /// HDR layers of the latest [`Self::paint`], until taken.
-    painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    painted_hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
     painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
@@ -1225,6 +1235,7 @@ impl FrameBuilder {
                 ctx
             },
             peer_presence: None,
+            shared_window_marks: Vec::new(),
             osk_overlay: None,
             shots_keyboard: None,
             floating_overlays: Vec::new(),
@@ -1254,6 +1265,7 @@ impl FrameBuilder {
             drawing_layers_at_rest: false,
             frame_only_moved: false,
             scene_builds: 0,
+            frames_drawn: 0,
             layers_stale: false,
             layers_generation: 0,
             layers_off: None,
@@ -1524,13 +1536,22 @@ impl FrameBuilder {
         // Rebuilt overlays can retain their own focus while the compositor
         // still names a desktop control. Only one live widget may own the
         // keyboard and its accessibility cursor, even when ids are replaced.
+        // A widget gaining focus it does not hold is not blurred first: a
+        // press is what asks to focus it, and a blur ends the press it is in
+        // the middle of, so the click it would have completed never did.
+        let gaining = target.and_then(|new| self.node_map.get(&new).copied());
         for &widget in self.node_map.values() {
+            // SAFETY: every pointer belongs to the current live tree.
+            if gaining.is_some_and(|gaining| std::ptr::addr_eq(gaining, widget))
+                && !unsafe { (*widget).is_focused() }
+            {
+                continue;
+            }
             // SAFETY: every pointer belongs to the current live tree.
             unsafe { (*widget).set_focus(false) };
         }
-        if let Some(new) = target
-            && let Some(&widget) = self.node_map.get(&new)
-        {
+        if let Some(widget) = gaining {
+            // SAFETY: the pointer belongs to the current live tree.
             unsafe { (*widget).set_focus(true) };
             if reveal {
                 self.host
@@ -1764,18 +1785,21 @@ impl FrameBuilder {
         if self.active_tile_is_terminal() {
             return self.active_terminal_node();
         }
-        // Overflowing scroll regions are keyboard targets too, but an
-        // unnamed container must not take the initial focus from the setup
-        // form's first control. Keep it in the Tab order for keyboard scrolling.
+        // Overflowing scroll regions are keyboard targets too, but a scroll
+        // region (named or not) or an unnamed container must not take the
+        // initial focus from the setup form's first control. Keep them in the
+        // Tab order for keyboard scrolling.
         order
             .iter()
             .copied()
             .find(|id| {
                 self.node_map.get(id).is_some_and(|&widget| {
                     // SAFETY: this map belongs to the current, live layout tree.
-                    unsafe { (*widget).accessibility() }.is_none_or(|node| {
-                        node.role != ui::a11y::Role::Group || node.name.is_some()
-                    })
+                    let widget = unsafe { &*widget };
+                    widget.name() != "Scrollable"
+                        && widget.accessibility().is_none_or(|node| {
+                            node.role != ui::a11y::Role::Group || node.name.is_some()
+                        })
                 })
             })
             .or_else(|| order.first().copied())
@@ -2380,11 +2404,11 @@ impl FrameBuilder {
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         let backdrop = BackdropRecording::begin();
         let (logical, sections) = self.paint_logical();
         let surfaces = backdrop.finish();
-        let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
+        let layers = recording.map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
         // A surface drawn into a section sits over the sections below it;
         // one drawn over them all, into the scene itself (layer 0), over
@@ -2395,7 +2419,7 @@ impl FrameBuilder {
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
-    pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+    pub fn take_hdr_layers(&mut self) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
     }
 
@@ -2474,8 +2498,8 @@ impl FrameBuilder {
     /// the scene they were drawn in: once per display, magnified and clipped.
     fn hdr_layers_to_scene(
         &self,
-        layers: Vec<crate::shell::hdr_surface::HdrLayer>,
-    ) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         match &self.outputs {
             Some(outputs) if !output_scene::is_identity(outputs) => outputs
                 .iter()
@@ -2635,6 +2659,11 @@ impl FrameBuilder {
         self.frame_only_moved = only_moved;
     }
 
+    /// How many frames this builder has drawn, dense and retained alike.
+    pub fn frames_drawn(&self) -> u64 {
+        self.frames_drawn
+    }
+
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. Both draw the host's sections
     /// ([`crate::shell::overlay_host::ShellOverlayHost::draw_scene_sections`]).
@@ -2687,7 +2716,7 @@ impl FrameBuilder {
         // they would be recorded in canvas coordinates.
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         // Layers drawn at rest are no frame: they leave the pans' motion as
         // the frames noted it.
         let panning = self.drawing_layers_at_rest
@@ -2827,7 +2856,7 @@ impl FrameBuilder {
         let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
-                .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
+                .map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
         let panned = std::mem::take(&mut sections.panned);
@@ -2929,6 +2958,9 @@ impl FrameBuilder {
         // last drawing at rest), so one still holding it rasterises only
         // those tiles of its chrome: a clock tick at rest, the strip rail
         // during a pan.
+        // A frame in screen space since leaves the presenter holding the
+        // last drawing at rest it was handed, so that is what a pan's first
+        // frame measures from.
         let measured_from = if self.drawing_layers_at_rest {
             self.layers_drawn
                 .as_ref()
@@ -2937,6 +2969,11 @@ impl FrameBuilder {
             self.last_produced_sections
                 .as_ref()
                 .and_then(|previous| previous.layers_generation.map(|since| (since, previous)))
+                .or_else(|| {
+                    self.layers_drawn
+                        .as_ref()
+                        .map(|(since, previous)| (*since, previous))
+                })
         };
         let chrome_damage =
             measured_from
@@ -3116,12 +3153,30 @@ impl FrameBuilder {
         {
             return None;
         }
-        let sections = self.last_produced_sections.take();
+        let mut sections = self.last_produced_sections.take();
+        // Right after frames drawn as layers, the presenter holds the last
+        // of them, not an older drawing at rest: the drawing's chrome damage
+        // is measured from that frame, so a change at that moment (the strip
+        // indicators going after their hold) rasterises its tiles, not the
+        // whole chrome.
+        let measured_from_last_frame = self.layers_drawn.is_none()
+            && sections
+                .as_ref()
+                .is_some_and(|previous| previous.layers_generation.is_some());
+        if measured_from_last_frame
+            && let Some(previous) = sections.take()
+            && let Some(since) = previous.layers_generation
+        {
+            self.layers_drawn = Some((since, previous));
+        }
         let revision = self.next_scene_revision;
         self.drawing_layers_at_rest = true;
         let drawn = self.paint_with_damage();
         self.drawing_layers_at_rest = false;
         self.next_scene_revision = revision;
+        if measured_from_last_frame {
+            sections = self.layers_drawn.take().map(|(_, previous)| previous);
+        }
         let drawn_sections = std::mem::replace(&mut self.last_produced_sections, sections);
         if handed_over
             && let (Some(cache), Some(drawn_sections)) = (drawn.cache.as_ref(), drawn_sections)
@@ -4368,7 +4423,7 @@ impl FrameBuilder {
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host (`crate::shell::room_sync`); `None` for a workspace
+    /// with its host (`tilo_network_actor::room_sync`); `None` for a workspace
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
@@ -4376,8 +4431,8 @@ impl FrameBuilder {
             .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
-            crate::shell::room_sync::told(
-                crate::shell::network::room_topic_id(workspace.room()),
+            tilo_network_actor::room_sync::told(
+                tilo_network_actor::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )
@@ -4508,8 +4563,13 @@ impl FrameBuilder {
                 Instant::now(),
             );
         }
+        let marked = crate::shell::mark_shared_windows(
+            &self.chrome.borrow().tree(),
+            &mut self.presence,
+            &mut self.shared_window_marks,
+        );
         let Some(relay) = self.peer_presence.as_ref() else {
-            return !arrived.is_empty();
+            return !arrived.is_empty() || marked;
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());
@@ -4939,6 +4999,7 @@ impl FrameBuilder {
     /// the window groups' once-per-drawn-frame motion is told the frame
     /// turned. Every paint says it here, whoever asked for the paint.
     fn frame_drawn(&mut self, motions_at: Instant) {
+        self.frames_drawn = self.frames_drawn.wrapping_add(1);
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
         // The scene this frame issued has just landed. The list is a window,
@@ -7124,77 +7185,6 @@ mod tests {
             );
         }
 
-        /// A window from a peer must reach the widget tree, not just the
-        /// workspace tree: peer-sync writes the tree from the network thread,
-        /// which can't bump the chrome revision `resync_strips_from_tree` gates
-        /// its rebuild on. Drives the ingest and per-frame pump.
-        fn a_peers_changes_landing_make_the_frame_rebuild() {
-            use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{Access, CapOverride, Scope, Subject};
-
-            // A room owned by somebody else, with something in it.
-            let owner = "ada".to_string();
-            let mut host = WorkspaceTree::default();
-            let host_ws = host.append_empty_workspace("Shared");
-            host.adopt_ownerless_workspaces(&owner);
-            let room = host
-                .room_of(host_ws)
-                .expect("the host's workspace has a room");
-            host.grant_sandbox_in_workspace(
-                host_ws,
-                &owner,
-                CapOverride::grant(
-                    Subject::app("files"),
-                    Scope::FsPath("/shared".to_string()),
-                    Access::Read,
-                ),
-            )
-            .expect("the owner may grant in their own room");
-            host.sync_room_doc(room);
-            let changes = host
-                .export_room_changes_since(room, &[])
-                .expect("the host is in the room");
-            assert!(!changes.is_empty(), "the host must have something to send");
-
-            // This session joins it.
-            let mut fb = FrameBuilder::new((1600, 900));
-            let joined = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                let active = tree.desktop.active;
-                // Joined through the peer's invite, which pins it (hub 1)
-                // as the room's governor.
-                tree.stand_in_room(active, room)
-                    && tree.pin_room_authority(room, PeerOrigin::hub(1))
-            };
-            assert!(joined, "this session joins the peer's room");
-
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT;
-            // Settle: pump once so the builder is past its first frame and
-            // any revision movement below is attributable to the arrival.
-            fb.pump_apps(&mut doc, &doc_root);
-            let before = fb.chrome_revision();
-
-            let landed = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
-                    .expect("well-formed changes parse")
-            };
-            assert!(
-                landed,
-                "the peer's changes must merge into this session's tree"
-            );
-
-            fb.pump_apps(&mut doc, &doc_root);
-            assert!(
-                fb.chrome_revision() > before,
-                "a peer's change landed in the tree and nothing told the shell \
-                 to rebuild, so it would never be drawn"
-            );
-        }
-
         /// `widget_registry` is idempotent — two consecutive calls with no
         /// layout/chrome mutation between return the same keys mapped to the
         /// same rects; the walker may not mutate anything.
@@ -7243,7 +7233,6 @@ mod tests {
         frame_builder_chrome_round_trips();
         frame_builder_resize_paints_again();
         a_quiet_frame_does_not_rebuild();
-        a_peers_changes_landing_make_the_frame_rebuild();
         widget_registry_is_idempotent_between_calls();
         external_scene_append_is_an_unversioned_retained_boundary();
     }
@@ -7732,14 +7721,18 @@ mod tests {
     fn hdr_surfaces_are_recorded_as_frame_layers() {
         const SURFACE: u64 = 9_900_702;
         let _env_lock = tilo_test_env::lock();
-        let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+        let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
             neighbour_wire::colorimetry::Colorimetry::hdr10(),
-            crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+            tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
         )
         .expect("PQ");
-        let plane =
-            crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
-                .expect("plane");
+        let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
+            2,
+            2,
+            [[0.6; 3]; 4],
+            signal,
+        )
+        .expect("plane");
         let plane_id = plane.id();
         crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
         let mut fb = FrameBuilder::new((1600, 900));
@@ -10682,8 +10675,24 @@ mod window_bar_keyboard_tests;
 mod quiet_pump_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder is the test's subject from its first layout to its last assertion"
+)]
+#[path = "frame_launchpad_press_tests.rs"]
+mod launchpad_press_tests;
+
+#[cfg(test)]
 #[path = "frame_layout_owed_tests.rs"]
 mod layout_owed_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder is the test's subject from its first layout to its last assertion"
+)]
+#[path = "frame_ready_focus_tests.rs"]
+mod ready_focus_tests;
 
 #[cfg(test)]
 #[allow(

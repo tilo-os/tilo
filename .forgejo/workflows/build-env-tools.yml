@@ -40,7 +40,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+      image: registry.tilo.so/tilo/ci-control@sha256:585b2dacdaa651cb37ea66a57ec8203301d3724726f1b8c700ee55d2438ef728
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
       runtime: ${{ steps.plan.outputs.runtime }}

@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::shell::device_fabric::FabricStamp;
 use crate::shell::speaker_group::{SpeakerGroupMember, SpeakerRole, StereoSide};
+use tilo_network_actor::fabric::FabricStamp;
 
 fn id(value: &str) -> DeviceId {
     DeviceId::new(value).unwrap()

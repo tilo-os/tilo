@@ -26,14 +26,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::shell::device_fabric::{DeviceFabric, FabricStamp, PersonalFabricAction};
+use crate::shell::device_fabric::{DeviceFabric, PersonalFabricAction};
 use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
     SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
     SpeakerRole, SpeakerTrim,
 };
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 mod endpoints;
 mod listening;

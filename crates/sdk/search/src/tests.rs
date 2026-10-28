@@ -579,6 +579,83 @@ fn alike_documents() -> Vec<Document> {
         .collect()
 }
 
+/// Ranks a keyword above a title, as a list of the person's own shortcuts
+/// does: a table of its own, so the scan cannot assume the default tiers.
+fn keyword_first(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
+    let percent = tier.percent();
+    match weight {
+        FieldWeight::KEYWORD => Some(percent.saturating_add(10)),
+        FieldWeight::TITLE => Some(percent),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_rank_per_record_is_what_a_search_over_every_record_answers() {
+    // `SearchIndex::ranks` leaves out the ordering and the page a search
+    // returns, which its caller (a list asked a rank per row) throws away.
+    // It still answers every record's rank as a search does, so a row can
+    // never be ranked one way to a list and another to a page of hits.
+    let queries = [
+        "",
+        "s",
+        "wi",
+        "wi-fi",
+        "wifi",
+        "keyboard layout",
+        "keybord",
+        "einstellungen",
+        "einstelungen",
+        "scrennshot part",
+        "dark mode",
+        "mode dark",
+        "email",
+        "e-mail",
+        "2026",
+        ".rs",
+        "nots",
+        "zzz",
+    ];
+    let first: Vec<Document> = alike_documents();
+    // The same index again after its records are replaced, which rebuilds
+    // what a scan holds.
+    let replaced: Vec<Document> = first.iter().take(12).cloned().collect();
+    for ranks in [None, Some(keyword_first as crate::Ranks)] {
+        for matching in [Matching::LOOSE, Matching::default()] {
+            for tantivy in [false, true] {
+                let mut index = if tantivy {
+                    SearchIndex::new(matching).through_tantivy()
+                } else {
+                    SearchIndex::new(matching)
+                };
+                if let Some(ranks) = ranks {
+                    index = index.with_ranks(ranks);
+                }
+                for documents in [first.clone(), replaced.clone()] {
+                    index.replace_all(documents);
+                    index.commit().unwrap();
+                    for query in queries {
+                        let mut ranked: Vec<(u64, Option<i32>)> = index.ranks(query);
+                        ranked.sort_unstable();
+                        let mut paged: Vec<(u64, Option<i32>)> = index
+                            .search(query, Page::first(index.len()))
+                            .hits
+                            .into_iter()
+                            .map(|hit| (hit.key, hit.rank))
+                            .collect();
+                        paged.sort_unstable();
+                        assert_eq!(ranked, paged, "{query:?} {matching:?} tantivy={tantivy}");
+                        let keys: Vec<u64> = ranked.iter().map(|(key, _)| *key).collect();
+                        let mut unique = keys.clone();
+                        unique.dedup();
+                        assert_eq!(keys, unique, "a record answered twice: {query:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn direct_and_tantivy_answer_alike() {
     let documents = alike_documents();

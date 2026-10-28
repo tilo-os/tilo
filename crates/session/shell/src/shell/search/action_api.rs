@@ -660,6 +660,10 @@ mod tests {
         ) -> Option<super::super::QueryIncompleteReason> {
             (!self.0.get()).then_some(super::super::QueryIncompleteReason::Pending)
         }
+        fn pages_itself(&self) -> bool {
+            true
+        }
+
         fn query_page(
             &self,
             _: super::super::SearchContext<'_>,

@@ -78,9 +78,7 @@ fn keep_index(
             device: None,
         },
         tilolang_tilo::runtime::Principal::new("seed"),
-        |_: &tilolang_tilo::runtime::Principal, _: &tilolang_tilo::runtime::ActionInfo| {
-            tilolang_tilo::runtime::Decision::Deny
-        },
+        tilolang_tilo::authority::holding_nothing("seed"),
     )
     .map_err(|e| e.to_string())?;
     for compiled in packages {

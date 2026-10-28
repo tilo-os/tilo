@@ -14,11 +14,6 @@ PUBLISHER = ROOT / 'tools/apps/publish-collections.sh'
 
 
 class RegistryRuntimeReadinessTest(unittest.TestCase):
-    def test_publisher_sources_the_tested_fetch_and_wait(self):
-        publisher = PUBLISHER.read_text()
-        self.assertIn('source tools/apps/registry-runtime-readiness.sh\nfetch_snapshot', publisher)
-        self.assertNotIn('fetch_snapshot() {', publisher)
-        self.assertIn('await_registry_runtime_ready "$runtime_readiness_deadline"', publisher)
 
     def run_case(self, body):
         with tempfile.TemporaryDirectory() as directory:

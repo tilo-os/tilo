@@ -2,7 +2,7 @@ use super::*;
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding};
+use tilo_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use uuid::Uuid;
 
@@ -169,8 +169,8 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(fixture.state.certificate_authority.set(authority.clone()).is_ok());
         assert!(invoke(&request).validate(), "empty canonical package-primary record is valid");
         let (relay_key, relay_cert) = device(55, true);
-        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
-        relay.set_workspace_membership(ws, true, vec![device(52, false).1.device_public_key, device(53, false).1.device_public_key, device(54, false).1.device_public_key], relay_root.path().into()).await.unwrap();
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        relay.replace_governed_workspace_access(ws, true, tilo_peer_state::GovernedAccess { member_devices: vec![device(52, false).1.device_public_key, device(53, false).1.device_public_key, device(54, false).1.device_public_key], member_user_roots: vec![relay.own_user_public_key()] }, relay_root.path().into()).await.unwrap();
         let caller = client(&relay, 52, room).await;
         let other = client(&relay, 53, room).await;
         let host_client = client(&relay, 54, room).await;
@@ -198,7 +198,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(catalogue["surfaces"].as_array().unwrap().iter().any(|s| s["app_id"] == request.app_id));
         // Enrol a further certified caller after startup, outside the fixture's
         // former fixed device list; current root authority accepts it dynamically.
-        relay.set_workspace_membership(ws, true, [52,53,54,56].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), relay_root.path().into()).await.unwrap();
+        relay.replace_governed_workspace_access(ws, true, tilo_peer_state::GovernedAccess { member_devices: [52,53,54,56].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), member_user_roots: vec![relay.own_user_public_key()] }, relay_root.path().into()).await.unwrap();
         let dynamic = client(&relay, 56, room).await;
         let dynamic_catalogue = send(
             &dynamic,
@@ -504,14 +504,6 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             let relay = Relay::start(
                 RelayConfig {
                     state_root: relay_root.path().into(),
-                    workspaces: vec![WorkspaceBinding {
-                        id: ws,
-                        pin: true,
-                        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                        admitted_users: vec![],
-                        shell_authority: None,
-                        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
-                    }],
                     ..Default::default()
                 },
                 RelayIdentity {
@@ -524,13 +516,16 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             .await
             .unwrap();
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     ws,
                     true,
-                    [52, 54]
-                        .into_iter()
-                        .map(|seed| device(seed, false).1.device_public_key)
-                        .collect(),
+                    tilo_peer_state::GovernedAccess {
+                        member_devices: [52, 54]
+                            .into_iter()
+                            .map(|seed| device(seed, false).1.device_public_key)
+                            .collect(),
+                        member_user_roots: vec![relay.own_user_public_key()],
+                    },
                     relay_root.path().into(),
                 )
                 .await
@@ -787,8 +782,8 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         let authority = Arc::new(LiveAuthority { room, root: device(52, false).1.user_public_key, revocations: Mutex::new(RevocationList::new()) });
         assert!(fixture.state.certificate_authority.set(authority).is_ok());
         let (relay_key, relay_cert) = device(55, true);
-        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
-        relay.set_workspace_membership(ws, true, [52, 53, 54].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), relay_root.path().into()).await.unwrap();
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        relay.replace_governed_workspace_access(ws, true, tilo_peer_state::GovernedAccess { member_devices: [52, 53, 54].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), member_user_roots: vec![relay.own_user_public_key()] }, relay_root.path().into()).await.unwrap();
         let host_client = client(&relay, 54, room).await;
         let session = Arc::new(RelayCoeditSession::join(host_client, ws, device(54, false).1.device_public_key).unwrap());
         assert!(matches!(session.recv().await, Some(tilo_relay::Inbound::Ready { .. })));

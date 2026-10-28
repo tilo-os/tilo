@@ -441,6 +441,7 @@ pub(crate) fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         grant: notes_grant(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 

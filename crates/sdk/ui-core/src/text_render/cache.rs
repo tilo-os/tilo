@@ -237,7 +237,7 @@ impl<'a> CacheQuery<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct BucketKey {
     fingerprint: u64,
     width: Option<u32>,
@@ -245,6 +245,25 @@ struct BucketKey {
     scale: u32,
     distinguish_everywhere: bool,
     hyphenator_version: Option<u64>,
+}
+
+impl Hash for BucketKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Keep every equality bit, including Some(0) versus None, but feed the
+        // keyed map hasher once rather than restarting its write path per field.
+        // Explicit words avoid padding, allocation and assumptions about layout.
+        let flags = u64::from(self.width.is_some())
+            | (u64::from(self.distinguish_everywhere) << 1)
+            | (u64::from(self.hyphenator_version.is_some()) << 2);
+        let words = [
+            self.fingerprint,
+            self.generation,
+            u64::from(self.width.unwrap_or(0)) | (u64::from(self.scale) << 32),
+            self.hyphenator_version.unwrap_or(0),
+            flags,
+        ];
+        state.write(words.map(u64::to_ne_bytes).as_flattened());
+    }
 }
 
 #[derive(Clone, Copy)]

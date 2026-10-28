@@ -44,7 +44,9 @@ pub struct Awaiting {
 /// What this desktop needs from governed rooms to carry a document into or
 /// out of one.
 pub trait HostedRooms {
-    /// Whether `room` is governed by an owner this desktop reaches.
+    /// Whether `room` is governed by an owner this desktop reaches: its
+    /// records are documents that owner commits, not sealed channels each
+    /// app opens itself.
     fn hosts(&self, room: RoomId) -> bool;
     /// `app`'s `record` in `room` as the room committed it, read as this device.
     ///
@@ -116,7 +118,21 @@ impl NativeHostedRooms {
 impl HostedRooms for NativeHostedRooms {
     fn hosts(&self, room: RoomId) -> bool {
         match self.0.native_owner_status() {
-            NativeOwnerStatus::Open(owner) => owner.contains_room(room),
+            // A room whose host stewards its channels is sealed: its
+            // records are channels each app opens and keeps in its own
+            // profile, never documents the owner commits or reads out.
+            NativeOwnerStatus::Open(owner) => {
+                owner.contains_room(room)
+                    && !owner
+                        .with_current(room, |view| {
+                            Ok(view
+                                .peer()
+                                .authority()
+                                .capabilities
+                                .stewards_room_channels())
+                        })
+                        .unwrap_or(false)
+            }
             // Not known yet: treated as governed, so nothing leaves or
             // enters it unchecked meanwhile.
             NativeOwnerStatus::Opening => true,

@@ -9,6 +9,7 @@ use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::WorkspaceId;
+use std::sync::Arc;
 
 /// A room held through the web, as the switcher shows it: which site it is
 /// the workspace of, and whether that site is this computer's community.
@@ -104,8 +105,10 @@ impl ShellNetwork {
     }
 
     fn join_site_with(&self, entry: &url::Url, background: bool) -> Result<SiteJoin, SiteError> {
-        let runtime = self.runtime_handle().map_err(SiteError::Unreachable)?;
-        let site = runtime.block_on(hosted_sites::resolve_site(entry))?;
+        let entry = entry.clone();
+        let site = self
+            .wait_on(async move { hosted_sites::resolve_site(&entry).await })
+            .map_err(SiteError::Unreachable)??;
         self.join_site_workspace(&site, background)
     }
 
@@ -167,13 +170,7 @@ impl ShellNetwork {
         site: &SiteWorkspace,
         background: bool,
     ) -> Result<SiteJoin, SiteError> {
-        let runtime = self.runtime_handle().map_err(SiteError::Unreachable)?;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| SiteError::Refused("the workspaces are unavailable".into()))?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         // The site's workspace held already needs no door; one this device
         // still holds a membership of (the person left it here and came
         // back) gets its place back.
@@ -183,7 +180,11 @@ impl ShellNetwork {
             return Ok(join);
         }
         let (user, name) = self.site_person()?;
-        let answer = runtime.block_on(hosted_sites::admit(site, user, &name))?;
+        let answer = {
+            let (site, name) = (site.clone(), name.clone());
+            self.wait_on(async move { hosted_sites::admit(&site, user, &name).await })
+                .map_err(SiteError::Unreachable)??
+        };
         let invitation = tilo_peer_state::join::decode_and_verify_invitation_text(
             &answer.invitation,
             Some(user),
@@ -200,8 +201,12 @@ impl ShellNetwork {
             return Ok(join);
         }
         let http = HostHttp::new(&answer.origin).map_err(SiteError::Unreachable)?;
-        let host = runtime
-            .block_on(tilo_relay_client::https::host_info(http.as_ref()))
+        let host = self
+            .wait_on({
+                let http = Arc::clone(&http);
+                async move { tilo_relay_client::https::host_info(http.as_ref()).await }
+            })
+            .map_err(SiteError::Unreachable)?
             .map_err(|error| SiteError::Unreachable(error.to_string()))?
             .host_cert
             .device_public_key;
@@ -248,6 +253,61 @@ impl ShellNetwork {
             let _ = self.poll_enrollment(enrollment);
         }
         Ok(joined)
+    }
+
+    /// Where the person arrives in `room` once its join installs, the same
+    /// whichever way they joined it: the app the invitation names, when it
+    /// names one, else the workspace's own, the app its site's entry names.
+    ///
+    /// A site's entry names its workspace by the host it is on, so the
+    /// workspace's site is the one whose door let the person in, else the
+    /// site whose host holds the room among those this device knows: the
+    /// sites it holds workspaces of, the site the join came by, and the
+    /// community it follows. A workspace no site names opens in nothing;
+    /// the person still arrives in it.
+    pub(super) fn expect_arrival(&self, room: RoomId, arriving: &Arriving<'_>) {
+        let app = arriving
+            .invitation
+            .or(arriving.site)
+            .map(str::to_owned)
+            .or_else(|| self.site_app_at(arriving.hosts, arriving.by));
+        tracing::info!(%room, app = app.as_deref().unwrap_or("none"), "the person arrives in the workspace once its join installs");
+        if let Err(error) = self.hosted_sites.expect_arrival(room, app) {
+            tracing::warn!(%error, %room, "where the person arrives is not kept across a restart");
+        }
+    }
+
+    /// The app the entry of the site whose host is one of `hosts` names,
+    /// among the sites this device knows ([`Self::expect_arrival`]).
+    fn site_app_at(&self, hosts: &[[u8; 32]], by: Option<&url::Url>) -> Option<String> {
+        if let Some(app) = hosts
+            .iter()
+            .find_map(|host| self.hosted_sites.site_app_at(&hex::encode(host)))
+        {
+            return Some(app);
+        }
+        if hosts.is_empty() {
+            return None;
+        }
+        let community = self
+            .hosted_sites
+            .community()
+            .filter(|community| Some(community) != by);
+        by.cloned().into_iter().chain(community).find_map(|entry| {
+            let site = self
+                .wait_on(async move { hosted_sites::resolve_site(&entry).await })
+                .ok()?
+                .ok()?;
+            let app = site.app?;
+            let http = HostHttp::new(&site.origin).ok()?;
+            let info = self
+                .wait_on(async move { tilo_relay_client::https::host_info(http.as_ref()).await })
+                .ok()?
+                .ok()?;
+            hosts
+                .contains(&info.host_cert.device_public_key)
+                .then_some(app)
+        })
     }
 
     /// Redeem `enrollment`'s invitation into its slot, and say that the
@@ -316,6 +376,21 @@ impl ShellNetwork {
         }
     }
 
+    /// Why `room` will not be joined on this device until the person acts:
+    /// its join failed, or its host admits them no more.
+    pub(crate) fn join_refusal(&self, room: RoomId) -> Option<String> {
+        match self.hosted_sites.join_of(room)?.progress {
+            JoinProgress::Joining => None,
+            JoinProgress::Failed(error) => Some(crate::shell::i18n::t_args(
+                "directory-join-failed-line",
+                &[("error", error.into())],
+            )),
+            JoinProgress::NeedsJoinAgain => {
+                Some(crate::shell::i18n::t("workspace-needs-join-again"))
+            }
+        }
+    }
+
     /// Where the joins of site workspaces this session runs stand: each
     /// joining, or failed and why.
     pub(crate) fn site_joins(&self) -> Vec<SiteJoinState> {
@@ -338,77 +413,22 @@ impl ShellNetwork {
         }
     }
 
-    /// Where the person arrives in `room` once its join installs, the same
-    /// whichever way they joined it: the app the invitation names, when it
-    /// names one, else the workspace's own, the app its site's entry names.
-    ///
-    /// A site's entry names its workspace by the host it is on, so the
-    /// workspace's site is the one whose door let the person in, else the
-    /// site whose host holds the room among those this device knows: the
-    /// sites it holds workspaces of, the site the join came by, and the
-    /// community it follows. A workspace no site names opens in nothing;
-    /// the person still arrives in it.
-    pub(super) fn expect_arrival(&self, room: RoomId, arriving: &Arriving<'_>) {
-        let app = arriving
-            .invitation
-            .or(arriving.site)
-            .map(str::to_owned)
-            .or_else(|| self.site_app_at(arriving.hosts, arriving.by));
-        tracing::info!(%room, app = app.as_deref().unwrap_or("none"), "the person arrives in the workspace once its join installs");
-        if let Err(error) = self.hosted_sites.expect_arrival(room, app) {
-            tracing::warn!(%error, %room, "where the person arrives is not kept across a restart");
-        }
-    }
-
-    /// The app the entry of the site whose host is one of `hosts` names,
-    /// among the sites this device knows ([`Self::expect_arrival`]).
-    fn site_app_at(&self, hosts: &[[u8; 32]], by: Option<&url::Url>) -> Option<String> {
-        if let Some(app) = hosts
-            .iter()
-            .find_map(|host| self.hosted_sites.site_app_at(&hex::encode(host)))
-        {
-            return Some(app);
-        }
-        if hosts.is_empty() {
-            return None;
-        }
-        let runtime = self.runtime_handle().ok()?;
-        let community = self
-            .hosted_sites
-            .community()
-            .filter(|community| Some(community) != by);
-        by.cloned().into_iter().chain(community).find_map(|entry| {
-            let site = runtime.block_on(hosted_sites::resolve_site(&entry)).ok()?;
-            let app = site.app?;
-            let http = HostHttp::new(&site.origin).ok()?;
-            let info = runtime
-                .block_on(tilo_relay_client::https::host_info(http.as_ref()))
-                .ok()?;
-            hosts
-                .contains(&info.host_cert.device_public_key)
-                .then_some(app)
-        })
-    }
-
-    /// The site workspaces whose joins installed since this was last asked:
-    /// chrome brings the person into each, in the app its site names.
+    /// The workspaces whose joins installed since this was last asked:
+    /// chrome brings the person into each, in the app the arrival rule
+    /// chose ([`Self::expect_arrival`]).
     ///
     /// An arrival waits until this device shows the room's own desktop: its
     /// windows decide whether the site's app is already open there. Decided
     /// before they arrived, the arrival opened the app a second time beside
     /// the room's own window of it.
     pub(crate) fn take_arrivals(&self) -> Vec<Arrival> {
-        let Ok(replica) = self.replica.lock() else {
-            return Vec::new();
-        };
-        let tree = replica.tree.clone();
-        drop(replica);
+        let tree = self.tree.clone();
         self.hosted_sites
             .take_arrivals(|room| tree.read().room_docs.contains_key(&room))
     }
 
-    /// Open the app `arrival`'s site names in the workspace its join
-    /// installed: where the person arrives, once. Waits on the launch.
+    /// Open `arrival`'s app in the workspace its join installed: where the
+    /// person arrives, once. Waits on the launch.
     ///
     /// The workspace's windows are everyone's: when someone already has the
     /// app open there, the person arrives at that window (their own copy of
@@ -419,12 +439,7 @@ impl ShellNetwork {
         let Some(app) = arrival.app.as_deref() else {
             return Ok(());
         };
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let workspace = tree
             .read()
             .desktop
@@ -463,10 +478,9 @@ impl ShellNetwork {
 
     /// An enrollment into `room`'s workspace `local` ended: installed, or
     /// failed with its error, which is logged as the failure it is. A
-    /// workspace that installed is arrived in, whether it was reached
-    /// through a site or an invitation alone, in the app its site names when
-    /// it has one; one that failed stays, saying why, for the person to try
-    /// again.
+    /// workspace the person joined that installed is arrived in, however
+    /// they joined it ([`Self::expect_arrival`]); one that failed stays,
+    /// saying why, for the person to try again.
     pub(super) fn enrollment_ended(
         &self,
         room: RoomId,
@@ -559,15 +573,12 @@ impl ShellNetwork {
         let Some(room) = self.hosted_sites.room_of_site(site) else {
             return false;
         };
-        self.replica.lock().is_ok_and(|replica| {
-            replica
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == room)
-        })
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room() == room)
     }
 
     /// Leave the workspace of `site`, held or not: it is not joined again
@@ -615,7 +626,6 @@ impl ShellNetwork {
         let entry = self
             .site_of_room(room)
             .ok_or("that workspace is not a site's")?;
-        let runtime = self.runtime_handle()?;
         let (user, name) = self.site_person().map_err(|error| error.to_string())?;
         let identity = self
             .host_identity
@@ -627,19 +637,18 @@ impl ShellNetwork {
         if key.verifying_key().to_bytes() != device.device_public_key {
             return Err("the room's enrollment names another device".into());
         }
-        let connect = crate::network::actor::native_ingress::Connect::new(owner, room)?;
+        let connect = tilo_network_actor::native_ingress::Connect::new(owner, room)?;
         let origin = self
             .hosted_sites
             .origin(room)
             .ok_or("the workspace's host is unknown")?;
-        let https = crate::network::actor::HttpsRoute(HostHttp::new(&origin)?);
-        runtime
-            .block_on(readmit(&entry, room, (user, name), device, &key))
+        let https = tilo_network_actor::HttpsRoute(HostHttp::new(&origin)?);
+        self.wait_on(async move { readmit(&entry, room, (user, name), device, &key).await })?
             .map_err(|error| error.to_string())?;
         tracing::info!(%room, "joined a site's workspace again after its host let the person go");
         self.hosted_sites.end_join(room);
         self.cmd_tx
-            .try_send(crate::network::actor::NetCmd::NativeConnect(
+            .try_send(tilo_network_actor::NetCmd::NativeConnect(
                 connect,
                 Some(https),
             ))

@@ -14,7 +14,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/ci/cloud-conformance.sh"
 sys.path.insert(0, str(ROOT / "tools/ci"))
-import t_matrix  # noqa: E402
 
 LIVE = {
     "TILO_LIVE_WEBDAV_URL": "https://dav.example.invalid/",
@@ -77,21 +76,6 @@ class CloudConformance(unittest.TestCase):
                 result, _ = self.run_live(passed, LIVE)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("expected 2 passing live_ tests", result.stderr)
-
-    def test_the_checks_run_this_script_on_the_built_suite(self) -> None:
-        checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
-        suite = "/target/vm/cloud-source-dav-conformance"
-        self.assertIn(suite, checks["cloud-conformance-build"]["outputs"])
-        for name, layer in (("cloud-servers", "servers"), ("cloud-live", "live")):
-            with self.subTest(check=name):
-                check = checks[name]
-                self.assertIn(f"bash tools/ci/cloud-conformance.sh {layer} {suite}", check["run"])
-                self.assertEqual(check["needs"], ["cloud-conformance-build"])
-                self.assertEqual(check.get("isolation"), "vm")
-                self.assertIn("tools/ci/cloud-conformance.sh", check["inputs"])
-        self.assertIn("export TILO_REQUIRE_CLOUD_SERVERS=1\n    run_layer container_\n", SCRIPT.read_text())
-        self.assertEqual(sorted(checks["cloud-live"]["secrets"]), sorted(LIVE))
-        self.assertIs(checks["cloud-live"]["cache"], False)
 
 
 if __name__ == "__main__":

@@ -13,9 +13,7 @@ use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
 use std::net::Ipv4Addr;
-use tilo_relay::{
-    Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding, daemon::RelayIdentity,
-};
+use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -43,14 +41,6 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             users: vec![hex::encode(user.user_pk)],
         },
         iroh_listen: (Ipv4Addr::LOCALHOST, 0).into(),
-        workspaces: vec![WorkspaceBinding {
-            id: workspace_id,
-            pin: true,
-            replication: tilo_relay::ReplicationIntent::FullWorkspace,
-            admitted_users: vec![],
-            shell_authority: None,
-            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        }],
         ..Default::default()
     };
     let identity = RelayIdentity {
@@ -72,10 +62,13 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         vec![&url]
     );
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             workspace_id,
             true,
-            vec![a.device_pubkey(), b.device_pubkey()],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![a.device_pubkey(), b.device_pubkey()],
+                member_user_roots: vec![a.cert.user_public_key, b.cert.user_public_key],
+            },
             tmp.path().to_owned(),
         )
         .await

@@ -31,6 +31,7 @@ mod live;
 pub mod meta;
 mod num;
 pub mod platform;
+pub mod program;
 pub mod project;
 pub mod query;
 mod query_host;

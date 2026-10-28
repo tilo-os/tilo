@@ -229,7 +229,10 @@ class ContinuousRelease(unittest.TestCase):
     def test_workflow_keeps_native_signing_and_scoped_scheduling(self):
         workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
         push = section(workflow, "push", 2)
-        self.assertIn('branches: ["main"]', push)
+        # A release builds from the promotion ref, never from main: what main
+        # has not had promoted is not published.
+        self.assertIn('branches: ["stable"]', push)
+        self.assertNotIn('branches: ["main"]', push)
         self.assertIn('tags: ["imager-v*"]', push)
         self.assertIn("    paths:", push)
         self.assertTrue(section(workflow, "workflow_dispatch", 2))

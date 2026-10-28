@@ -3760,6 +3760,24 @@ impl GroupRow {
         self.over_background(self.last_cursor)
     }
 
+    /// Whether the pointer rests on the strip's own chrome rather than in a
+    /// window's content: canvas, or a window's bar, where no app of the
+    /// strip can scroll what a wheel turns. A seam a resize takes is
+    /// neither.
+    #[must_use]
+    pub fn pointer_over_chrome(&self) -> bool {
+        let p = self.last_cursor;
+        self.rect.contains(p)
+            && self.edge_grab_at(p).is_none()
+            && !self.groups.iter().enumerate().any(|(i, group)| {
+                !self.layout_hides_group(i)
+                    && group
+                        .presentation_bounds()
+                        .client
+                        .is_some_and(|client| client.contains(p))
+            })
+    }
+
     /// Whether `p` is canvas no window, tab bar or resize seam covers.
     fn over_background(&self, p: Point) -> bool {
         self.rect.contains(p)

@@ -72,19 +72,10 @@ async fn main() {
     let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::host());
     let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
-    let workspace = tilo_relay_protocol::room_workspace_id(ROOM).expect("room id");
-    let mut cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_relay::RelayConfig {
         state_root: state.path().to_path_buf(),
         ..Default::default()
     };
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace,
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        shell_authority: None,
-    });
     let relay = Relay::start(
         cfg,
         RelayIdentity {

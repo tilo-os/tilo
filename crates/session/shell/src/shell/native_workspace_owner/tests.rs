@@ -778,6 +778,30 @@ pub(crate) fn test_enrolled_owner() -> (
         SigningKey::from_bytes(&[63; 32]),
     )
 }
+/// An owner whose desktop shows its room still being placed on this
+/// device's own host, as a session's first workspace is as it starts: the
+/// enrollment is prepared, not committed. The returned call commits it.
+pub(crate) fn test_owner_before_enrollment() -> (
+    tempfile::TempDir,
+    NativeWorkspaceOwner,
+    RoomId,
+    Box<dyn FnOnce() + Send>,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let room = RoomId::parse(ROOM).unwrap();
+    tree.write().pending_placements.insert(room);
+    let owner = open(tree).unwrap();
+    let fixture = fixture(&owner);
+    let committing = owner.clone();
+    let commit = Box::new(move || {
+        committing
+            .install(&fixture.enrollment, fixture.now)
+            .unwrap();
+    });
+    (directory, owner, room, commit)
+}
 pub(crate) fn test_descriptor(
     owner: &NativeWorkspaceOwner,
     generation: u64,
@@ -841,7 +865,6 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
         .unwrap();
     let disk = persist::load_tree_from(&path).unwrap();
     assert_eq!(disk.room_of(local), Some(room));
-    assert!(disk.requires_native_owner(room));
 }
 #[test]
 fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_proof() {
@@ -956,10 +979,9 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, _) = fresh_slot(&path);
-    let owner = open(tree.clone()).unwrap();
+    let owner = open(tree).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
     let room = intent.room();
-    assert!(!tree.read().requires_native_owner(room));
     assert!(
         with_failure(Checkpoint::AfterPublish, || owner.prepare_enrollment_into(
             &intent,
@@ -972,7 +994,6 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
         owner.contains_room(room),
         "possibly published pending intent cannot revert to legacy"
     );
-    assert!(tree.read().requires_native_owner(room));
     assert!(owner.with_current(room, |_| Ok(())).is_err());
     assert!(
         owner.pending_enrollment(room).is_err(),
@@ -1002,7 +1023,6 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
             open(tree.clone()).is_err(),
             "partial {removed} cannot reset an acknowledged floor or skip descriptor validation"
         );
-        assert!(tree.read().requires_native_owner(room));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }
@@ -1122,5 +1142,86 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     assert!(
         !observed_acl.exists(),
         "stale save refusal must also refuse its authority export"
+    );
+}
+
+/// The workspace standing in the fixture's room, as `owner` shows it.
+fn fixture_workspace(owner: &NativeWorkspaceOwner) -> crate::shell::state::Workspace {
+    tree_of(owner)
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room() == RoomId::parse(ROOM).unwrap())
+        .cloned()
+        .expect("the room's workspace")
+}
+
+#[test]
+fn a_claimed_room_keeps_its_owner_when_its_host_holds_it_and_the_hosts_policy_replaces_its_own() {
+    // The room as its host records it, projected into a desktop that never
+    // claimed it.
+    let unclaimed = tempfile::tempdir().unwrap();
+    let owner = open(tree_at(&unclaimed.path().join("state.json"))).unwrap();
+    let held = fixture(&owner);
+    owner.install(&held.enrollment, held.now).unwrap();
+    let hosted = fixture_workspace(&owner);
+    let creator = hosted
+        .owner()
+        .cloned()
+        .expect("the host records the room's owner");
+    drop(owner);
+
+    // The same room claimed first, with no host, by the person who creates
+    // it there.
+    let claimed = tempfile::tempdir().unwrap();
+    let tree = tree_at(&claimed.path().join("state.json"));
+    tree.write().claim_own_unhosted_rooms(|_| creator.clone());
+    let workspace = tree.read().desktop.active;
+    let room = tree
+        .read()
+        .desktop
+        .active_workspace()
+        .expect("a workspace")
+        .room();
+    let owner = open(tree).unwrap();
+    assert_eq!(fixture_workspace(&owner).owner(), Some(&creator));
+    let fixture = fixture(&owner);
+    owner.install(&fixture.enrollment, fixture.now).unwrap();
+
+    let shown = fixture_workspace(&owner);
+    assert_eq!(
+        shown.id, workspace,
+        "holding the room changes no workspace id"
+    );
+    assert_eq!(shown.room(), room, "nor its room");
+    assert_eq!(
+        tree_of(&owner)
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room() == room)
+            .count(),
+        1,
+        "the room shows once, as the workspace that claimed it"
+    );
+    assert_eq!(
+        shown.owner(),
+        Some(&creator),
+        "the owner is the one the host records"
+    );
+    // Each fixture admits its member at its own clock: who joined is the
+    // host's, when is each install's.
+    let (mut shown_policy, mut hosted_policy) = (shown.policy, hosted.policy);
+    assert!(
+        shown_policy.joined.keys().eq(hosted_policy.joined.keys()),
+        "the host's members joined, no one else"
+    );
+    shown_policy.joined.clear();
+    hosted_policy.joined.clear();
+    assert_eq!(
+        shown_policy, hosted_policy,
+        "the host's policy replaces the claimed one, with nothing of it kept beside"
     );
 }

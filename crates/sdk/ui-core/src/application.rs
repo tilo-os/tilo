@@ -25,7 +25,7 @@ pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
-pub type InstanceId = u64;
+pub use collaboration::state::InstanceId;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
@@ -387,6 +387,9 @@ pub struct Reopener {
     files: Option<crate::storage::AppFiles>,
     private: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
+    /// The window this reopener opens in place of: what serves its image
+    /// stores serves the window opened in its place too.
+    window: WakeHandle,
 }
 
 impl Reopener {
@@ -437,6 +440,9 @@ impl Reopener {
         context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
+        // The window opened in this one's place shows in the same host: its
+        // pictures load the way this one's do.
+        crate::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
         Ok((context, target))
     }
 
@@ -496,6 +502,7 @@ impl HostContext {
             files: self.files.clone(),
             private: self.private,
             replacement: Rc::clone(&self.replacement),
+            window: self.wake_handle(),
         }
     }
 
@@ -1233,6 +1240,9 @@ impl ApplicationDefinition {
                 component.application_view = application;
             }
             component.prepared = true;
+            // The pictures a host loads for this window are read from the
+            // content the window now reads its record's content from.
+            crate::image_store::window_built(&component.context.wake_handle(), component.content());
             Ok(component)
         });
         drop(entry);
@@ -1519,8 +1529,10 @@ impl AppComponent {
         let captured = self.callback_binding();
         let context = &self.context;
         let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
+            // The store's write moving on changes the save status and
+            // nothing the model holds: the owner shows the status alone.
             let handle = context.wake_handle();
-            std::sync::Arc::new(move || handle.wake())
+            std::sync::Arc::new(move || handle.wake_save_progress())
         }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
@@ -1569,22 +1581,36 @@ impl AppComponent {
                 .is_some_and(|previous| *previous != status);
         self.record_save = Some(status);
         if changed {
-            // The caller syncs the root again with the new state; a frame
-            // shows it. An `App` asks for that frame through
-            // `take_save_status_presentation`; a host that does not ask
-            // presents it as a structure change.
+            // The caller, a sync, syncs the root again with the new state,
+            // and the frame that sync belongs to shows it: an `App` asks
+            // through `take_save_status_presentation`, a host through the
+            // widget's redraw. No wake: one would run the owner model's
+            // update and sync again and draw another frame for every save
+            // that lands, a second frame after each keystroke.
             self.save_status_changed = true;
-            self.context.wake_handle().wake();
         }
         changed
     }
 
-    /// Whether the record's last sampled durability is still being written.
+    /// Whether the record's durability is still being written. A save that
+    /// landed since the last sample is asked of the store: its status is
+    /// shown without a sync of this component
+    /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]), which
+    /// leaves the sample behind.
     pub(crate) fn record_saving(&self) -> bool {
-        matches!(
+        if !matches!(
             &self.record_save,
             Some(crate::record::RecordSaveStatus::Saving)
-        )
+        ) {
+            return false;
+        }
+        let binding = self.callback_binding();
+        binding
+            .records
+            .save_status(&binding.checkout.id)
+            .map_or(true, |status| {
+                status == crate::record::RecordSaveStatus::Saving
+            })
     }
 
     /// Whether the delivered durability changed since this was last asked,

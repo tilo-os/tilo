@@ -209,7 +209,7 @@ impl ProjectionCapture {
             return false;
         };
         if self.renderer_size != (width, height) {
-            self.renderer = OffscreenRenderer::try_new(width, height).ok();
+            self.renderer = OffscreenRenderer::try_new_live(width, height).ok();
             self.renderer_size = (width, height);
         }
         let Some(renderer) = self.renderer.as_mut() else {
