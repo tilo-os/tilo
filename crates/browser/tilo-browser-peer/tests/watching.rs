@@ -259,11 +259,12 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     let status = watcher.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
+    // Alice also holds the room's shared desktop record, which the room was
+    // seeded with; the page's edit would have arrived on the note's route.
     assert!(
-        alice_page
-            .drain()
-            .iter()
-            .all(|event| !matches!(event, PeerEvent::Document(_))),
+        alice_page.drain().iter().all(
+            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
+        ),
         "the watching page wrote to Alice"
     );
 
@@ -289,13 +290,31 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         async move { held.then_some(()) }
     })
     .await;
-    assert_eq!(paths.asked("/channel-keys"), vec![403]);
+    // One request per sealed record the page holds (the note, and the
+    // room's shared desktop it was seeded with), each refused.
+    let refused = paths.asked("/channel-keys");
     assert!(
-        sealed_off
-            .drain()
-            .iter()
-            .all(|event| !matches!(event, PeerEvent::Document(_))),
-        "a page opened a private room's note"
+        !refused.is_empty() && refused.iter().all(|status| *status == 403),
+        "{refused:?}"
+    );
+    // The room's own seed of its shared desktop is no member's sealed
+    // writing; what a member sealed (the note, and any sealed desktop
+    // change) the page never opens.
+    let opened: Vec<_> = sealed_off
+        .drain()
+        .into_iter()
+        .filter_map(|event| match event {
+            PeerEvent::Document(document)
+                if document.route == route || document.decrypted_payload.is_some() =>
+            {
+                Some(document.route.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        opened.is_empty(),
+        "a page opened a private room's sealed records: {opened:?}"
     );
 
     sealed_off.close();
