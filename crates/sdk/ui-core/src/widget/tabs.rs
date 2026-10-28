@@ -1067,8 +1067,12 @@ impl TabBar {
                 ..crate::window_toolbar::ToolbarLocation::default()
             });
         }
-        self.toolbar_row
-            .show(active, toolbar.as_ref(), self.motion, crate::time::now());
+        self.toolbar_row.show(
+            active,
+            toolbar.as_ref(),
+            self.motion,
+            crate::motion::frame_now(),
+        );
     }
 
     /// How far the tabs' bodies have grown in: `0` while the window shows
@@ -4620,7 +4624,7 @@ impl TabBar {
             || drag_lift
             || resisting
             || self.tabbed_in_flight()
-            || self.toolbar_row.needs_animation_frame(crate::time::now())
+            || self.toolbar_row.needs_animation_frame()
     }
 
     /// Visual-slot ordering (pinned first) plus each slot's fitted width and

@@ -528,6 +528,10 @@ const HIDPI_WINDOWS = [
     const focused = await mirrorLiesOverEveryControl(hidpi, `${app}'s focused text field "${field.name}" keeps its editable mirror over it at device scale 2`,
       minimum, p => p.controls.some(c => c.name === field.name && c.focused && c.active));
     const now = focused.find(c => c.name === field.name);
+    // A runtime that stopped leaves its last tree, focus and all, behind an
+    // inert page that takes no focus: say it stopped.
+    assert.deepEqual(hidpi.log.filter(line => line.startsWith('EXC') || /panic/i.test(line)), [],
+      `no page exception while ${app}'s text field takes the keyboard at device scale 2`);
     assert.ok(now?.editable && now.focused && now.active,
       `${app}'s text field "${field.name}" holds the keyboard in the app and in the page: ${JSON.stringify(now)}`);
   }
