@@ -447,9 +447,30 @@ name = "unit"
 label = "Repository policy unit tests"
 run = "python3 tools/policy/run_unit_tests.py tools/tests"
 tests = true
-# Some 240 test files of tools across the tree, which read what those tools read.
+# Some 240 test files of tools across the tree, which read what those tools read. Each that reads
+# only some of the tree is a check of its own, keyed by what it reads and run with just that
+# (tools/policy/unit_test_inputs.py); those that read the whole tree, and those that read the
+# commit's history through Git, run together in policy/tests/unit.
 inputs = ["**"]
 history = true
+split = true
+# Test files that run in policy/tests/unit whatever they are found to read: those that read the
+# commit's history through Git, and those that check the tree as a whole (that it passes a policy,
+# that every workspace package or app has something), whose reads are the tree's.
+whole_tree_tests = [
+  "tools/tests/test_browser_runtime_release.py", "tools/tests/test_check_image_interpreters.py",
+  "tools/tests/test_check_seeded_state_history.py", "tools/tests/test_image_builder_inputs.py",
+  "tools/tests/test_macos_collection.py", "tools/tests/test_signal_provider_release.py",
+  "tools/tests/test_signal_runtime_staging.py", "tools/tests/test_suites.py",
+  "tools/tests/test_test_environment.py", "tools/tests/test_workflow_package_paths.py",
+  "tools/tests/test_check_host_data_apps.py", "tools/tests/test_component_manifest.py",
+  "tools/tests/test_copy_language.py", "tools/tests/test_dependency_cycles.py",
+  "tools/tests/test_developer_docs.py", "tools/tests/test_development_book.py",
+  "tools/tests/test_extension_resolve.py", "tools/tests/test_language_packs.py",
+  "tools/tests/test_package_sets.py", "tools/tests/test_policy_steps.py",
+  "tools/tests/test_registry_metadata.py", "tools/tests/test_security_boundary_invariants.py",
+  "tools/tests/test_ui_build_inputs.py", "tools/tests/test_vm_artifact_handoff.py",
+]
 pre_push = true
 
 [[step]]

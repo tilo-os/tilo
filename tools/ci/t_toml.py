@@ -161,10 +161,14 @@ def workspace_layout_reads() -> str:
     return f"inputs = {array(reads)}\n"
 
 
-# What each policy step must be able to pass with: one core and the memory a Python scan of the
-# tree or `cargo metadata` takes. The suite's unit tests run their files side by side.
-POLICY_REQUIREMENT = '{ cores = 1, memory = "2GiB" }'
-POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "4GiB" }'
+# What each policy step must be able to pass with, measured over its runs (t.toml's rule: the
+# peak memory with half again as much room, rounded up): one core, and at most 600 MiB, which
+# policy/too-many-arguments peaks at (`cargo metadata`); most scans of the tree stay under 300.
+POLICY_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
+# The suite's tests that read the whole tree, their files side by side: 1.3 GiB at most.
+POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "2GiB" }'
+# A test file's own check (steps.split_checks): 161 MiB at most.
+POLICY_TEST_FILE_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
 
 
 def policy_checks(root: Path = ROOT) -> str:
@@ -173,7 +177,7 @@ def policy_checks(root: Path = ROOT) -> str:
     has to run the same command."""
     declared = {check["name"]: check for check in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("check", [])}
     blocks = []
-    for step in policy_steps.load(root):
+    for step in policy_steps.expanded(root):
         if step.covered_by is not None:
             check = declared.get(step.covered_by)
             if check is None or step.run not in " ".join(check["run"].split()):
@@ -186,7 +190,7 @@ def policy_checks(root: Path = ROOT) -> str:
             "[[check]]",
             f"name = {json.dumps(step.check)}",
             'requires = ["arch=any"]',
-            f"requirement = {POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
+            f"requirement = {POLICY_TEST_FILE_REQUIREMENT if step.pruned else POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
             f"run = {json.dumps(step.t_command)}",
             # Policy steps read the tree and build nothing (their tests stub cargo): no build
             # snapshot to lease and no target/ to prepare, which cost each step over a minute.
@@ -195,7 +199,8 @@ def policy_checks(root: Path = ROOT) -> str:
             # writable view of the tree. Those that read the commit's history (release contracts
             # at HEAD) get t's own .git too, which keys their result per commit.
             *(["git = true"] if step.history else []),
-            *(["writable_sources = true"] if step.tests else []),
+            # A pruned test file runs in a copy of its inputs, which it may write to.
+            *(["writable_sources = true"] if step.tests and not step.pruned else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
@@ -209,7 +214,10 @@ T_TOML_READS = ["t.toml", "tools/ci/suites.toml", "tools/ci/products.toml", "too
                 "tools/policy/steps.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image",
                 "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
                 "dist/apps/app-collections.toml", "tools/apps/app_release.py",
-                "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST]
+                "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST,
+                # The test files' own checks are keyed by the paths of the tree their tests name
+                # (steps.split_checks): which of those exist is the whole tree's to say.
+                "**"]
 
 
 def t_toml_reads(manifest: suites.Manifest, root: Path = ROOT) -> str:
