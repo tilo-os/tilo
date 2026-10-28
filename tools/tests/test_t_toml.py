@@ -272,6 +272,15 @@ class PlanTests(unittest.TestCase):
         cls.packages = packages
         cls.dirs = {name: Path(p["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
                     for name, p in packages.items()}
+        cls._built = {}
+
+    def built(self, name: str) -> set[str]:
+        """The packages check `name` builds, worked out once for every commit asked about."""
+        if name not in self._built:
+            check = self.checks[name]
+            self._built[name] = t_toml.local_closure(self.packages, set(check.get("cargo_packages", [])),
+                                                     check.get("cargo_dev_dependencies", True))
+        return self._built[name]
 
     def owner(self, path: str) -> str | None:
         owners = [name for name, directory in self.dirs.items() if path.startswith(directory + "/")]
@@ -293,9 +302,7 @@ class PlanTests(unittest.TestCase):
             if check.get("default") is False:
                 continue
             globs = [*check.get("inputs", ["**"] if not check.get("cargo_packages") else []), *top]
-            built = t_toml.local_closure(self.packages, set(check.get("cargo_packages", [])),
-                                         check.get("cargo_dev_dependencies", True))
-            if any(matches(path, glob) for path in paths for glob in globs) or touched & built:
+            if touched & self.built(name) or any(matches(path, glob) for path in paths for glob in globs):
                 found.add(name)
         stack = list(found)
         while stack:
