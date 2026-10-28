@@ -28,7 +28,9 @@
 # The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
 # check builds from the tree's own RPM package set, as a run's dev images get
 # theirs: TILO_ENV_RUNTIME_TREES names the directory holding
-# env-runtime-tree-ARCH.tar.
+# env-runtime-tree-ARCH.tar. A builder without those trees (the rcargo
+# builder has no RPM snapshot) builds everything else, and the session it
+# runs has no env-runtime: Terminal has no environment to start a shell in.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -44,9 +46,14 @@ fi
 out=${1:+$(realpath -m "$1")}
 cd "$repo_root"
 arch=$(uname -m)
-env_runtime_trees=$(realpath -m "${TILO_ENV_RUNTIME_TREES:?TILO_ENV_RUNTIME_TREES names the env-runtime trees (the outputs of the image-env-runtime-dev-tree-ARCH check)}")
-[[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
-    || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
+env_runtime_trees=
+if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
+    env_runtime_trees=$(realpath -m "$TILO_ENV_RUNTIME_TREES")
+    [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
+        || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
+else
+    echo "TILO_ENV_RUNTIME_TREES is not set: the session gets no env-runtime (Terminal opens no shell)" >&2
+fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
 out=${out:-$target/nested-session}
 # Build scripts fetch their test assets into the build directory; on t the
@@ -148,6 +155,8 @@ build_thin() {
 # beside the site build rather than after everything.
 env_runtime=$target/nested-session-env-runtime
 seal_env_runtime() {
+    rm -rf "$env_runtime"
+    [[ -n $env_runtime_trees ]] || return 0
     local began=$SECONDS
     bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
     printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
@@ -182,7 +191,7 @@ while IFS= read -r file; do
 done < <(cat "$target/thin-app/runtime-engines"
          echo tilolang-app
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
-cp -rp "$env_runtime" "$out/env-runtime"
+[[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \

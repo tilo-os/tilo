@@ -204,8 +204,9 @@ if [[ -n $machine ]] && ! readelf -hW "$bin/shell" | grep -q "Machine:.*$machine
 fi
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
+# A build without the env-runtime trees ships none (nested-session-build.sh).
 [[ -f $build_out/env-runtime/publisher.hex ]] \
-    || die "no env-runtime in $build_out/env-runtime (run without --no-build)"
+    || say "no env-runtime in $build_out/env-runtime: Terminal opens no shell in this session"
 # Each shell gets a private session bus (dist/dev/session-bus.sh). Tilo OS
 # hosts have no dbus-daemon of their own; the build carries one.
 session_bus=$repo_root/dist/dev/session-bus.sh
@@ -361,8 +362,10 @@ fi
 # does not: the env-runtime every environment starts from, and its publisher
 # as the store's trusted image publisher. Installed by the script the OS image
 # and the session package install theirs with, once per build.
-env_runtime_id=$(<"$build_out/env-runtime/env-runtime-$(uname -m).id")
-if [[ ! -d $system_store/pkgs/${env_runtime_id#tapp:} ]]; then
+env_runtime_id=
+[[ ! -f $build_out/env-runtime/publisher.hex ]] \
+    || env_runtime_id=$(<"$build_out/env-runtime/env-runtime-$(uname -m).id")
+if [[ -n $env_runtime_id && ! -d $system_store/pkgs/${env_runtime_id#tapp:} ]]; then
     say "installing the env-runtime $env_runtime_id"
     rm -rf "$system_store"
     env -u TILO_APPS_SYSTEM_DIR "$repo_root/os/scripts/install-env-runtime.sh" "$build_out/env-runtime" \
