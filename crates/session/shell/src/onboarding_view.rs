@@ -2105,9 +2105,7 @@ impl OnboardingView {
                 Screen::Done => (3, t("onboarding-stage-backup")),
             }
         };
-        // The page's scroll region, a keyboard stop while it overflows, is
-        // named after the step it shows.
-        let region_label = stage.clone();
+        let region_label = stage.clone(); // names the page's scroll region
         let body: Box<dyn Widget> = if self.prepared_pending {
             self.prepared_body(theme)
         } else {
@@ -5067,11 +5065,13 @@ impl Widget for OnboardingView {
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
-        // Keep a readable measure on large displays and shrink all the way to
-        // a phone-like viewport. The body scrolls vertically when its copy is
-        // taller than the bounded setup surface.
+        // A readable measure on large displays, shrinking to a phone-like
+        // one; the body scrolls when its copy is taller than the panel. The
+        // width is definite so a page is measured at the width it is laid
+        // out at (as the display's width under a maximum, the ready page's
+        // paragraph measured a line short and overflowed on wide displays).
         if let Ok(mut cs) = taffy.style(child).cloned() {
-            cs.size.width = taffy::Dimension::percent(1.0);
+            cs.size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
             // Pages with little content should own only the space they need.
             // The scroll viewport above caps longer pages, so this still
             // cannot exceed the safe laptop-height panel.
@@ -5093,7 +5093,7 @@ impl Widget for OnboardingView {
             // previously put tall restore pages flush against (or beyond)
             // the physical display edge despite the parent's safety gutter.
             cs.min_size.height = taffy::Dimension::length(0.0);
-            cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
+            cs.max_size.width = taffy::Dimension::percent(1.0);
             cs.max_size.height = taffy::Dimension::length(panel_height);
             cs.flex_basis = taffy::Dimension::auto();
             cs.flex_grow = 0.0;
@@ -5467,10 +5467,7 @@ mod tests {
     mod current_identity {
         include!("onboarding_current_identity_tests.rs");
     }
-    mod ready_focus {
-        use super::*;
-        include!("onboarding_view/ready_focus_tests.rs");
-    }
+    mod ready_focus;
     #[test]
     fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
         let (home, directory, declaration) = crate::onboarding_browser::tests::fixture();
