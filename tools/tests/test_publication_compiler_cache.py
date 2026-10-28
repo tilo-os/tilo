@@ -168,7 +168,7 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
                 build = workflow_steps[name]
                 self.assertIn(
                     "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
-                    "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
+                    "github.ref != 'refs/heads/stable' && !startsWith(github.ref, 'refs/tags/') "
                     "&& '1' || '0' }}", build)
         # One unchanged cache predicate now covers both tag and candidate builds.
         # Signing has a separate job and cannot start a second compilation graph.

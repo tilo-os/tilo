@@ -4,14 +4,17 @@ name: Build / RPM snapshot
 # registry.tilo.so/tilo/rpms:set-<fingerprint>, where the fingerprint is the
 # content address of both architectures' package sets, BASE_REF, and the files
 # that shape the snapshot. Exits early when that tag already resolves. Runs
-# standalone on relevant main pushes or explicit dispatch. Forgejo v13 does not
+# standalone on relevant stable pushes, the nightly, or explicit dispatch. Forgejo v13 does not
 # supply OIDC credentials to expanded reusable jobs, so signing must stay here.
 # There is no hand-kept pin file and no pin pull request.
 
 on:
   workflow_dispatch:
+  schedule:
+    # Nightly backstop for both architectures' snapshot.
+    - cron: "23 2 * * *"
   push:
-    branches: [main]
+    branches: [stable]
     paths:
       - os/Containerfile
       - os/base-snapshot.env
@@ -83,14 +86,14 @@ jobs:
             echo "::notice::frozen RPM snapshot already published as $tag"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no published snapshot for $tag; create when on main"
+            echo "::notice::no published snapshot for $tag; create when on stable"
           fi
 
   signing-preflight:
     needs: fingerprint
     if: >-
       needs.fingerprint.outputs.exists != 'true'
-      && github.ref == 'refs/heads/main'
+      && github.ref == 'refs/heads/stable'
     runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
@@ -111,7 +114,7 @@ jobs:
     needs: [fingerprint, signing-preflight]
     if: >-
       needs.fingerprint.outputs.exists != 'true'
-      && github.ref == 'refs/heads/main'
+      && github.ref == 'refs/heads/stable'
     enable-openid-connect: true
     strategy:
       fail-fast: false
@@ -235,7 +238,7 @@ jobs:
     needs: [fingerprint, snapshot]
     if: >-
       needs.fingerprint.outputs.exists != 'true'
-      && github.ref == 'refs/heads/main'
+      && github.ref == 'refs/heads/stable'
     runs-on: runner
     timeout-minutes: 30
     enable-openid-connect: true

@@ -79,7 +79,7 @@ on:
 
 jobs:
   boot:
-    runs-on: ${{ github.event.inputs.architecture == 'x86_64' && 'runner-disk-100g' || 'runner-disk-100g-arm64' }}
+    runs-on: ${{ github.event.inputs.architecture == 'x86_64' && 'runner-disk-100g' || 'runner-large-arm64' }}
     # A boot assessment adds a staged update and four boots to the diagnosis.
     timeout-minutes: 90
     env:

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Resolve this checkout's frozen RPM snapshot, waiting for a build-rpms.yml
-# run on main that is building the same package-set fingerprint.
+# run on the promotion branch that is building the same package-set fingerprint.
 #
 # A commit that changes the snapshot's inputs starts build-rpms.yml and the
 # image builds together, and later commits with the same fingerprint do not
 # start it again, so the snapshot is often still being built when a build
-# asks for it. This waits while a queued or running build-rpms.yml main run,
-# at any commit, has this checkout's fingerprint, and fails when none does or
-# the one it waited for ended without publishing.
+# asks for it. This waits while a queued or running build-rpms.yml run on
+# `stable`, at any commit, has this checkout's fingerprint, and fails when none
+# does or the one it waited for ended without publishing.
 #
 #   await-rpm-snapshot.sh           wait, then print the verified RPMS_REF
 #                                   (resolve-rpm-snapshot.sh)
@@ -62,7 +62,7 @@ exists() {
   esac
 }
 
-# Sets fp to the package-set fingerprint of a main commit, from its sources.
+# Sets fp to the package-set fingerprint of a branch commit, from its sources.
 # Other commits go into a scratch object store, never the caller's checkout.
 fingerprint_at() {
   local sha="$1" tree
@@ -80,7 +80,7 @@ fingerprint_at() {
   fp="${fingerprints[$sha]}"
 }
 
-# Sets runs to the queued and running build-rpms.yml main runs ("id #number")
+# Sets runs to the queued and running build-rpms.yml stable runs ("id #number")
 # building this fingerprint.
 building() {
   local status id number sha
@@ -89,7 +89,7 @@ building() {
     curl -fsS -o "$work/runs.json" \
       "$api/actions/runs?workflow_id=build-rpms.yml&status=$status&limit=50" \
       || { printf 'await-rpm-snapshot: cannot list build-rpms.yml runs\n' >&2; exit 3; }
-    jq -r '.workflow_runs[] | select(.prettyref == "main")
+    jq -r '.workflow_runs[] | select(.prettyref == "stable")
       | "\(.id) \(.index_in_repo) \(.commit_sha)"' "$work/runs.json" > "$work/runs.txt"
     while read -r id number sha; do
       fingerprint_at "$sha"
@@ -115,7 +115,7 @@ while :; do
           "${run#* }" "$conclusion" "$tag" >&2
       done
     else
-      printf 'await-rpm-snapshot: no published snapshot for %s and no build-rpms.yml run on main is building it\n' \
+      printf 'await-rpm-snapshot: no published snapshot for %s and no build-rpms.yml run on stable is building it\n' \
         "$tag" >&2
     fi
     exit 1
