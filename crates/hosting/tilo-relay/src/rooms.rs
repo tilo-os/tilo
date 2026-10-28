@@ -290,6 +290,9 @@ impl GovernedRoom {
         now: SystemTime,
     ) -> Result<Self, String> {
         let name = valid_name(name)?;
+        if !authority.capabilities.can_own_workspaces {
+            return Err("a device that may not own workspaces cannot govern a room".into());
+        }
         let room = uuid::Uuid::parse_str(room)
             .map_err(|_| "a room is a UUID".to_owned())?
             .hyphenated()

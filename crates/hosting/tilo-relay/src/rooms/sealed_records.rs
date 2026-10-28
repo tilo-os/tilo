@@ -432,9 +432,10 @@ impl Rooms {
         app: &str,
         record: &str,
     ) -> Result<Option<RecordKeys>, String> {
-        let Some(steward) = room.stewardship.clone() else {
-            return room.record_keys(app, record).await;
-        };
+        let steward = room
+            .stewardship
+            .clone()
+            .ok_or("this relay does not steward the room's channels")?;
         let held_in_the_clear = room.peer().holds_document(app, record)
             && !room.peer().publication().is_sealed_record(app, record);
         if held_in_the_clear && !self.resealing() {

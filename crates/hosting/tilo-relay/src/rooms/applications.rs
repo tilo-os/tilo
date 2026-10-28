@@ -535,7 +535,7 @@ impl Rooms {
         let mut candidate = governed.peer().clone();
         publish_genesis(
             &mut candidate,
-            keys.as_ref(),
+            &keys,
             (app, record),
             genesis,
             (&self.inner.host.key, system_time(now)),
@@ -599,34 +599,18 @@ fn publish_authored(
 }
 
 /// Publish an app's `genesis` of a new `record` into `candidate` as the
-/// room's host: sealed under `keys` where the record's channel has them, so
-/// nothing it holds is ever written in the clear.
+/// room's host, sealed under `keys` so nothing it holds is ever written in
+/// the clear.
 fn publish_genesis(
     candidate: &mut tilo_peer_state::StatePeer,
-    keys: Option<&super::sealed_records::RecordKeys>,
+    keys: &super::sealed_records::RecordKeys,
     (app, record): (&str, &str),
     genesis: Vec<u8>,
     (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
 ) -> Result<(), CollaborationError> {
-    if let Some(keys) = keys {
-        let changes = automerge::AutoCommit::load(&genesis)
-            .map_err(|error| CollaborationError::new(error.to_string()))?
-            .save_after(&[]);
-        super::sealed_records::start_sealed(candidate, keys, (app, record), changes, key, now)?;
-    } else {
-        // Establish ownership through the same governor-only StatePeer path
-        // as native prepare_application_record, then merge the standard
-        // factory.
-        candidate.publication_mut().publish_document(
-            app,
-            record,
-            automerge::AutoCommit::new().save(),
-            key,
-            now,
-        )?;
-        candidate
-            .publication_mut()
-            .publish_document(app, record, genesis, key, now)?;
-    }
+    let changes = automerge::AutoCommit::load(&genesis)
+        .map_err(|error| CollaborationError::new(error.to_string()))?
+        .save_after(&[]);
+    super::sealed_records::start_sealed(candidate, keys, (app, record), changes, key, now)?;
     Ok(())
 }

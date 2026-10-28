@@ -1,10 +1,10 @@
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-/// A relay certified only to host rooms: it governs them without stewarding
-/// their channels.
+/// A relay certified to own workspaces, as the relay's own setup demands:
+/// it stewards the channels of the rooms it governs.
 pub(crate) fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
+    governor_with(tilo_user_identity::cloud_enrollment::host_capabilities())
 }
 
 /// A relay device of the person's own, certified with `capabilities`.
@@ -1629,9 +1629,9 @@ struct AskedForAChannel {
 /// Start a relay certified with `capabilities`, create a room on it, admit
 /// a member device of the person, and hand the room that device's MLS
 /// access request for a fresh record channel, as its runtime sends one.
-async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+async fn a_member_asks_for_a_channel() -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(capabilities);
+    let (key, cert) = governor();
     let relay = view_read_relay(&dir.path().join("relay"), &key, &cert).await;
     let rooms = relay
         .rooms()
@@ -1725,36 +1725,24 @@ impl AskedForAChannel {
     }
 }
 
-/// security.md, "What a workspace host reads and originates": a host
-/// certified only to host rooms governs them without stewarding their
-/// channels and holds no channel key. A member's request for a record's key
-/// reaches the room's steward pass and finds no steward: no MLS group, no
-/// channel state on disk, nothing to lend.
+/// security.md, "What a workspace host reads and originates": a device that
+/// governs a room stewards every record's channel. A device certified only to
+/// host rooms stewards none, so it governs no room at all: it creates none and
+/// opens none. Nothing is left for a record to be written into in the clear.
 #[tokio::test]
-#[cfg_attr(
-    feature = "agents",
-    expect(
-        clippy::significant_drop_tightening,
-        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
-    )
-)]
-async fn a_plain_host_governs_a_room_without_stewarding_its_channels() {
-    let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
-    tilo_test_env::within("the room's steward pass takes the request", async {
-        while asked.waiting() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+async fn a_plain_host_certificate_governs_no_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(DeviceCapabilities::host());
+    let relay = view_read_relay(&dir.path().join("relay"), &key, &cert).await;
+    let rooms = relay
+        .rooms()
+        .expect("a certified host holds a relay")
+        .clone();
+    let refused = rooms.create("Unstewarded").await;
     assert!(
-        asked.stewardship().await.is_none(),
-        "a plain host certificate must never steward a governed room's channels"
+        refused.is_err(),
+        "a device that may not own workspaces cannot govern a room"
     );
-    assert!(
-        !asked.channels_dir().exists(),
-        "a plain host keeps no channel state for the room"
-    );
-    asked.shut_down().await;
 }
 
 /// The other half of the same claim, so the plain host's test observes its
@@ -1770,9 +1758,7 @@ async fn a_plain_host_governs_a_room_without_stewarding_its_channels() {
     )
 )]
 async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
+    let asked = a_member_asks_for_a_channel().await;
     let steward = asked
         .stewardship()
         .await
@@ -1826,9 +1812,7 @@ pub(crate) fn steward_pass_hook(room: &str) {
     )
 )]
 async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
+    let asked = a_member_asks_for_a_channel().await;
     let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
     let (release, released_rx) = std::sync::mpsc::channel::<()>();
     let entered_tx = std::sync::Mutex::new(entered_tx);
