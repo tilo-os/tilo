@@ -83,10 +83,16 @@ impl Arch {
     /// This machine's architecture, the guest's when none is named.
     #[must_use]
     pub fn host() -> Self {
-        if std::env::consts::ARCH == "aarch64" {
-            Self::Aarch64
-        } else {
-            Self::X86_64
+        Self::parse(std::env::consts::ARCH).unwrap_or(Self::X86_64)
+    }
+
+    /// An architecture by any of its names (`uname -m`, Debian's, Rust's).
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "x86_64" | "amd64" => Some(Self::X86_64),
+            "aarch64" | "arm64" => Some(Self::Aarch64),
+            _ => None,
         }
     }
 
@@ -948,7 +954,6 @@ impl Machine {
 
     /// The root key credential for `-smbios`.
     pub fn credential(&self) -> Result<Option<String>, QemuError> {
-        use base64::Engine as _;
         let Some(path) = &self.root_key else {
             return Ok(None);
         };
@@ -968,9 +973,9 @@ impl Machine {
                 "name a public key file with one key line",
             ));
         }
-        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{public}\n"));
         Ok(Some(format!(
-            "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root={encoded}"
+            "type=11,value={}",
+            crate::sshkey::smbios_credential(public)
         )))
     }
 
@@ -1654,13 +1659,19 @@ mod tests {
     use clap::Parser;
 
     #[derive(Parser)]
+    #[command(args_override_self = true)]
     struct Probe {
         #[command(flatten)]
         machine: MachineArgs,
     }
 
     fn machine(flags: &[&str]) -> Machine {
-        let args = Probe::parse_from(std::iter::once("probe").chain(flags.iter().copied())).machine;
+        let args = Probe::parse_from(
+            ["probe", "--arch", "x86_64"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .machine;
         Machine::try_from(&args).unwrap()
     }
 
@@ -1847,6 +1858,24 @@ mod tests {
         assert!(Machine::try_from(&args).is_err());
         let args = Probe::parse_from(["probe", "--resolution", "wide"]).machine;
         assert!(Machine::try_from(&args).is_err());
+    }
+
+    #[test]
+    fn a_later_flag_overrides_an_earlier_one() {
+        use crate::cli::{Cli, Command, QemuCommand};
+        let cli = Cli::try_parse_from([
+            "tilo-vm", "qemu", "args", "--accel", "tcg", "--accel", "kvm", "--disk", "/a",
+            "--disk", "/b",
+        ])
+        .unwrap();
+        let Some(Command::Qemu(command)) = cli.command else {
+            panic!("not a qemu command");
+        };
+        let QemuCommand::Args { machine } = *command else {
+            panic!("not qemu args");
+        };
+        assert_eq!(machine.accel, Accel::Kvm);
+        assert_eq!(machine.disks, ["/a", "/b"]);
     }
 
     #[test]

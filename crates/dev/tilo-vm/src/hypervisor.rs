@@ -101,6 +101,13 @@ pub struct SystemRunner {
 impl SystemRunner {
     fn command(&self, line: &CommandLine) -> std::process::Command {
         let mut command = std::process::Command::new(&line.program);
+        // os/dev/vm.sh starts QEMU through `tilo-vm qemu`: this binary, rather
+        // than one it would build.
+        if std::env::var_os("TILO_VM_BIN").is_none()
+            && let Ok(exe) = std::env::current_exe()
+        {
+            command.env("TILO_VM_BIN", exe);
+        }
         command
             .args(&line.args)
             .envs(line.env.iter().map(|(k, v)| (k, v)));
@@ -743,9 +750,10 @@ impl Hypervisor for Libvirt {
 }
 
 /// The headless adapter for CI and scenario tests: it drives `os/dev/vm.sh`
-/// from the worktree root, with that script's own conventions. A VM made
-/// this way is invisible to virt-manager and Boxes, so it is never the
-/// default; people use libvirt.
+/// from the worktree root, with that script's own conventions, and the
+/// script starts QEMU through this binary's `tilo-vm qemu`. A VM made this
+/// way is invisible to virt-manager and Boxes, so it is never the default;
+/// people use libvirt.
 pub struct Qemu;
 
 impl Qemu {
