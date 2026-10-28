@@ -14103,10 +14103,15 @@ pub fn run() {
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
         // A frame still waiting for the render thread is replaced by the one built now (latest
-        // wins), so a full pipe whose newest frame has not started takes it too.
-        let pipe_ready = present_pipe
-            .as_ref()
-            .is_none_or(|pipe| pipe.has_capacity() || pipe.can_replace_queued());
+        // wins), so a full pipe whose newest frame has not started takes it too, for what that
+        // frame does not show yet. Motion alone waits for room instead: the waiting frame shows
+        // the motion already, and while a slow render holds the pipe the frame clock stays due,
+        // so replacing it on every tick rebuilt the scene back to back (thousands of frames a
+        // second) for frames that were never rendered.
+        let replaces_for_change = !redraw_reasons.only_motion(session.is_locked());
+        let pipe_ready = present_pipe.as_ref().is_none_or(|pipe| {
+            pipe.has_capacity() || (replaces_for_change && pipe.can_replace_queued())
+        });
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
             cadence_due,
