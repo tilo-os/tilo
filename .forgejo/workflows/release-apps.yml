@@ -175,7 +175,7 @@ jobs:
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
               ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
-              ('tools/ci/images.toml', 1502, '95e464bcd5c21301b5fbce9c2e9af21ee539ac2866606c780cf2503c7acb549c'),
+              ('tools/ci/images.toml', 1502, '1b3d9b534fdf4fde26d304726acf47411c12be11e5bb213c7028a75546ea39a7'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
@@ -247,7 +247,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}
       signal_provider_only: ${{ steps.engine-mode.outputs.signal_provider_only }}

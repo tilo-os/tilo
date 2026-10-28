@@ -561,7 +561,7 @@ and URL are placeholders: the release generates the real set from the signed ins
 
 [[matrix.check]]
 name = "imager-winget-acceptance"
-image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
+image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 run = '''
 [[ -n ${TILO_SITE_TOKEN:-} ]] || {
   echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2
@@ -837,7 +837,7 @@ report and source.json, each tested RPM's size and SHA-256."""
 
 [[matrix.check]]
 name = "publish-desktop-payload"
-image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
+image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 # Only packages that logged in on stock Fedora become the payload an OS build installs.
@@ -1885,7 +1885,7 @@ tools/ci/os/image-size.sh replays os-board-{board}'s layers, writes the breakdow
 directory, file and package as image-size.md and fails when /usr is over the ceiling or carries
 what the Windows compatibility extension owns. publish-os-board-{board} needs it, so an image
 over budget is never pushed to the boards that follow it."""
-image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
+image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 run = "bash tools/ci/os/image-size.sh board-{board} /target/publish/os-board/{board}/oci /target/publish/os-board-size/{board}"
 inputs = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py", "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
 needs = ["os-board-{board}"]
