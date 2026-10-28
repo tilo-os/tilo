@@ -15194,7 +15194,6 @@ dependencies = [
  "app-catalogue",
  "app-cli",
  "ash",
- "backtrace",
  "base64 0.22.1",
  "blake3",
  "bounded-command",
@@ -15324,6 +15323,7 @@ dependencies = [
  "tilo-installed-apps",
  "tilo-joined-room",
  "tilo-lan-discovery",
+ "tilo-liveness",
  "tilo-location",
  "tilo-lock",
  "tilo-lockdown-policy",
@@ -18986,6 +18986,21 @@ name = "tilo-libvirt-domain"
 version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-liveness"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "calloop",
+ "durable-store",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -26614,6 +26629,7 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-lan-discovery",
  "tilo-libvirt-domain",
+ "tilo-liveness",
  "tilo-locale",
  "tilo-location",
  "tilo-lock",

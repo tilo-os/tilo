@@ -407,6 +407,7 @@ members = [
     "crates/platform/imager-backend",
     "crates/session/install-profile-model",
     "crates/session/installer",
+    "crates/session/liveness",
     "crates/session/network-secret-agent",
     "crates/session/polkit-agent",
     "crates/session/quick-settings",
