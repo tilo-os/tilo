@@ -2793,7 +2793,14 @@ impl App {
             .pop_front()
             .map(|intent| (intent, None, crate::bound_dispatch::Origin::Person))
             .or_else(|| {
-                crate::bound_dispatch::take_attributed_with_origin(self.root_widget.as_mut())
+                // The next invocation the widgets' queues hand over, the
+                // effect invocation it continues, and who asked for it.
+                let (taken, _, origin) = crate::bound_dispatch::capture_physical_drain(|| {
+                    crate::widget::controls::take_attributed_control_invocation(
+                        self.root_widget.as_mut(),
+                    )
+                });
+                taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
             })
         {
             // Only what the person asked for is refused over the window; the

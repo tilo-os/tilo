@@ -38,10 +38,10 @@ mod input_provenance;
 #[cfg(test)]
 pub(crate) use input_provenance::physical_text;
 pub(crate) use input_provenance::{
-    Input, input, note_drained_input, note_drained_origin, take_attributed_with_origin, with_input,
+    Input, capture_physical_drain, input, note_drained_input, note_drained_origin, with_input,
     with_physical_text,
 };
-use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
+use input_provenance::{native_text_input, with_native_text};
 
 pub(crate) use crate::widget::controls::Origin;
 

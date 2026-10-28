@@ -1087,7 +1087,7 @@ impl AgentParticipant {
         let granted: Vec<&str> = self
             .catalogue
             .iter()
-            .map(|definition| definition.app_id())
+            .map(ui::application::ApplicationDefinition::app_id)
             .filter(|app| self.identity.delegation.permits_app(app))
             .collect();
         let fresh = named_without_documents(text, &granted, &held);
