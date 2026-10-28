@@ -289,6 +289,7 @@ fn session_matches_full_renders(sparse: bool) {
         let (regions, full_redraw) = match &repaint {
             Repaint::Full(_) => (&[][..], true),
             Repaint::Regions(regions) => (regions.as_slice(), false),
+            Repaint::Copies(presented) => (presented.raster.as_slice(), false),
         };
         raster
             .rasterize(

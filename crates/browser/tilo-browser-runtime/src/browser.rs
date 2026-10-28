@@ -805,6 +805,11 @@ const CONSERVATIVE_IMAGE_ATLAS_MAX: u32 = 4096;
 fn describe_repaint(repaint: &ui::retained_raster::Repaint, window: u64) -> String {
     match repaint {
         ui::retained_raster::Repaint::Full(unknown) => format!("full: {unknown:?}"),
+        ui::retained_raster::Repaint::Copies(presented) => format!(
+            "{} copies, {} regions repainted",
+            presented.copies.len(),
+            presented.raster.len()
+        ),
         ui::retained_raster::Repaint::Regions(regions) => {
             let area: f64 = regions.iter().map(ui::kurbo::Rect::area).sum();
             #[allow(
@@ -1608,7 +1613,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // CPU rasterizes this mount's frames into the page's canvas.
     let on_cpu = !presenter.is_null() && !presenter.is_undefined();
     if on_cpu {
-        mount.cpu = Some(Cpu::new(presenter));
+        let Some(cpu) = Cpu::new(presenter) else {
+            return Err(error(
+                "the code the CPU renderer draws with is not loaded: await load_cpu_raster() first",
+            ));
+        };
+        mount.cpu = Some(cpu);
         mount.viewport.surface_installed();
         mount.queue_resize();
         mount.pending = true;
@@ -2405,10 +2415,21 @@ impl Mount {
         let parts = self.frame.scene_parts();
         // Compared with the frame the target shows, command by command: a
         // change no part proves is bounded (an unknown one) repaints it all.
-        let repaint = self.retained.frames.repaint(frame.scene, parts, key);
-        let (damage, full_redraw) = match &repaint {
-            ui::retained_raster::Repaint::Full(_) => (&[][..], true),
-            ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
+        // A CPU mount keeps its pixels between frames, so a strip that only
+        // panned shows its windows by moving them (`ui::scroll_copy`) instead
+        // of drawing them again; a device mount draws them where they are.
+        let repaint =
+            self.retained
+                .frames
+                .repaint_with_copies(frame.scene, parts, key, self.cpu.is_some());
+        let (damage, copies, full_redraw) = match &repaint {
+            ui::retained_raster::Repaint::Full(_) => (&[][..], &[][..], true),
+            ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), &[][..], false),
+            ui::retained_raster::Repaint::Copies(presented) => (
+                presented.raster.as_slice(),
+                presented.copies.as_slice(),
+                false,
+            ),
         };
         let content = ui::retained_raster::FrameContent {
             scene: &physical,
@@ -2416,7 +2437,7 @@ impl Mount {
             height: viewport.height,
             base_color: frame.background,
             damage_regions: damage,
-            scroll_copies: &[],
+            scroll_copies: copies,
             full_redraw,
             backdrop: &ui::backdrop::BackdropFrame::default(),
         };
@@ -2444,6 +2465,13 @@ impl Mount {
             .checked_div(window)
             .unwrap_or(100);
         let render_stage = match (&repaint, percent) {
+            (ui::retained_raster::Repaint::Copies(presented), _) => {
+                if presented.copies.is_empty() {
+                    "render:unchanged"
+                } else {
+                    "render:copy"
+                }
+            }
             (ui::retained_raster::Repaint::Full(unknown), _) => {
                 use ui::retained_raster::Unknown;
                 use ui::scene_parts::Unproven;
@@ -3241,6 +3269,17 @@ fn relayout_all() {
             web_sys::console::warn_1(&error);
         }
     }
+}
+
+/// Fetch the code the CPU renderer draws with, once `rendererChoice` picked
+/// the CPU and before the first [`mount`]: resolves `true` once a canvas can
+/// be made, `false` when the page could not fetch it. A page on WebGPU never
+/// calls this, and never downloads the rasterizer.
+#[wasm_bindgen]
+pub fn load_cpu_raster() -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
+        Ok(JsValue::from_bool(ui::cpu_canvas::load_cpu_raster().await))
+    })
 }
 
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.

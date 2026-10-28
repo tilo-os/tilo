@@ -765,6 +765,33 @@ pub enum Repaint {
     Full(Unknown),
     /// Only these target pixels (none: nothing changed).
     Regions(Vec<Rect>),
+    /// These copies of the presented pixels, then these target pixels
+    /// ([`crate::scene_parts::Presented`]): a strip that only panned moved
+    /// what it shows, and what it shows did not change.
+    Copies(crate::scene_parts::Presented),
+}
+
+impl Repaint {
+    /// The target pixels this repaint draws, copies' fringes included; empty
+    /// for [`Self::Full`], which repaints the whole target.
+    #[must_use]
+    pub fn raster(&self) -> &[Rect] {
+        match self {
+            Self::Full(_) => &[],
+            Self::Regions(regions) => regions,
+            Self::Copies(presented) => &presented.raster,
+        }
+    }
+
+    /// The copies to make within the target before anything is drawn, in
+    /// target pixels.
+    #[must_use]
+    pub fn copies(&self) -> &[crate::scroll_copy::DeviceCopy] {
+        match self {
+            Self::Full(_) | Self::Regions(_) => &[],
+            Self::Copies(presented) => &presented.copies,
+        }
+    }
 }
 
 /// Why a frame is repainted in full.
@@ -810,6 +837,21 @@ impl RetainedFrames {
         parts: Option<&crate::scene_parts::SectionParts>,
         key: TargetKey,
     ) -> Repaint {
+        self.repaint_with_copies(scene, parts, key, false)
+    }
+
+    /// [`Self::repaint`] for a host that presents each frame over the pixels
+    /// of the one before and can move them: `copies` asks for the copies a
+    /// pointed part's damage hint offers ([`crate::scene_parts::DamageHint`]),
+    /// which the caller then makes and repaints
+    /// [`Repaint::copies`]/[`Repaint::raster`] around.
+    pub fn repaint_with_copies(
+        &self,
+        scene: &Scene,
+        parts: Option<&crate::scene_parts::SectionParts>,
+        key: TargetKey,
+        copies: bool,
+    ) -> Repaint {
         if self.lost {
             return Repaint::Full(Unknown::LostGeometry);
         }
@@ -822,11 +864,48 @@ impl RetainedFrames {
         if *last_key != key {
             return Repaint::Full(Unknown::Target);
         }
-        let changed = match crate::scene_parts::damage(last, last_parts, scene, parts) {
-            Ok(changed) => changed,
-            Err(unproven) => return Repaint::Full(Unknown::Unproven(unproven)),
-        };
         let target = Rect::new(0.0, 0.0, f64::from(key.width), f64::from(key.height));
+        let changed = if copies {
+            // What a part that moved without changing says it moved, made by
+            // a host that keeps the presented pixels: its copy, then what is
+            // drawn over it and what it exposed.
+            let mut bounds = tilo_cpu_raster::DrawBounds::default();
+            match crate::scene_parts::damage_with_copies(
+                last,
+                last_parts,
+                scene,
+                parts,
+                &mut bounds,
+            ) {
+                Ok(damage) => {
+                    if !damage.copies.is_empty() {
+                        let presented = crate::scene_parts::present_copies(
+                            &damage.copies,
+                            damage.rects.clone(),
+                            &[],
+                            key.to_device,
+                            (key.width, key.height),
+                        );
+                        // What is over a copy and what it exposed arrive a
+                        // rect at a time; a host presenting region by region
+                        // has a bounded number to draw.
+                        if !presented.copies.is_empty() && presented.raster.len() <= 96 {
+                            return Repaint::Copies(presented);
+                        }
+                    }
+                    match crate::scene_parts::damage(last, last_parts, scene, parts) {
+                        Ok(changed) => changed,
+                        Err(unproven) => return Repaint::Full(Unknown::Unproven(unproven)),
+                    }
+                }
+                Err(unproven) => return Repaint::Full(Unknown::Unproven(unproven)),
+            }
+        } else {
+            match crate::scene_parts::damage(last, last_parts, scene, parts) {
+                Ok(changed) => changed,
+                Err(unproven) => return Repaint::Full(Unknown::Unproven(unproven)),
+            }
+        };
         Repaint::Regions(
             changed
                 .into_iter()

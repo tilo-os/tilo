@@ -417,6 +417,10 @@ pub struct GroupRow {
     replayed_groups: Vec<u64>,
     /// The theme [`Self::pan_drawings`] were drawn in.
     pan_theme: Option<Theme>,
+    /// Where each group was drawn in the frame before, by id: a window drawn
+    /// again on a frame that only moved offers a copy of what it replaces
+    /// from here ([`Self::pan_copy`]).
+    pan_last: Vec<(u64, Rect)>,
     /// The frame ([`crate::retained_present::pan_frame`]) this row was last
     /// drawn in.
     pan_drawn_frame: Option<u64>,
@@ -1363,6 +1367,7 @@ impl GroupRow {
             pan_kept: Vec::new(),
             replayed_groups: Vec::new(),
             pan_theme: None,
+            pan_last: Vec::new(),
             pan_drawn_frame: None,
             overlay_groups: Vec::new(),
             strip_desktop_shift: Vec::new(),
@@ -5016,6 +5021,11 @@ impl Widget for GroupRow {
             self.apart_window =
                 unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
             let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
+            // A group is a damage part of the strip of its own: every pixel it
+            // paints, its shadow and glow included, stays inside its sprites'
+            // reach and the lane's clip, so a strip that only panned damages
+            // the windows that moved and not the lane they moved in.
+            let group_bounds = Rect::new(clip.x0, clip.y0, clip.x1, clip.y1);
             // When a group is maximized, siblings stay out of layout so
             // they are not squashed; they still paint under a fade.
             let maximized_idx =
@@ -5055,11 +5065,10 @@ impl Widget for GroupRow {
             self.draw_groups(
                 scene,
                 transform,
-                tr,
-                theme,
-                presence,
+                (tr, theme, presence),
                 maximized_idx,
                 &in_run,
+                group_bounds,
             );
             // A window this draw left off screen keeps the picture it had,
             // which no longer follows it: shown as it last looked.
@@ -5581,11 +5590,10 @@ impl GroupRow {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
         maximized_idx: Option<usize>,
         in_run: &[bool],
+        group_bounds: Rect,
     ) {
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
@@ -5621,7 +5629,13 @@ impl GroupRow {
                 if self.shown_elsewhere.contains(&id) {
                     self.culled_groups.push(id);
                 } else {
-                    self.draw_group_plain(max_i, scene, transform, (tr, theme, presence));
+                    self.draw_group_plain(
+                        max_i,
+                        scene,
+                        transform,
+                        group_bounds,
+                        (tr, theme, presence),
+                    );
                 }
             }
             return;
@@ -5700,7 +5714,7 @@ impl GroupRow {
                 Some(window)
                     if !source_is_lifted && !fading_sibling && dx.abs() <= f64::EPSILON =>
                 {
-                    self.draw_group_apart(i, window, scene, t, (tr, theme, presence));
+                    self.draw_group_apart(i, window, scene, t, group_bounds, (tr, theme, presence));
                 }
                 // Only a group at rest in its slot, as above.
                 None if crate::retained_present::pan_replay()
@@ -5708,7 +5722,7 @@ impl GroupRow {
                     && !fading_sibling
                     && dx.abs() <= f64::EPSILON =>
                 {
-                    self.draw_group_replaying(i, scene, t, (tr, theme, presence));
+                    self.draw_group_replaying(i, scene, t, group_bounds, (tr, theme, presence));
                 }
                 _ => {
                     // A frame that only moved but draws every window keeps
@@ -5721,7 +5735,7 @@ impl GroupRow {
                     {
                         self.pan_kept.push(id);
                     }
-                    self.draw_group_plain(i, scene, t, (tr, theme, presence));
+                    self.draw_group_plain(i, scene, t, group_bounds, (tr, theme, presence));
                 }
             }
             if source_is_lifted {
@@ -5731,6 +5745,11 @@ impl GroupRow {
                 scene.pop_layer();
             }
         }
+        // Where each group was drawn, for the copy the next frame's draw of
+        // it offers ([`Self::pan_copy_drawn`]).
+        self.pan_last.clear();
+        self.pan_last
+            .extend(self.groups.iter().map(|group| (group.id, group.get_rect())));
         if self.apart_window.is_some() {
             let groups = &self.groups;
             self.apart_drawings
@@ -5790,6 +5809,7 @@ impl GroupRow {
         window: ApartWindow,
         scene: &mut Scene,
         transform: Affine,
+        row_bounds: Rect,
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
@@ -5801,12 +5821,9 @@ impl GroupRow {
         // the screen). Everything it paints stays inside its sprites' reach
         // and the lane's clip.
         let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
-        let bounds = vec![transform.transform_rect_bbox(Rect::new(
-            reach.x0,
-            window.rows.0,
-            reach.x1,
-            window.rows.1,
-        ))];
+        let bounds = vec![transform.transform_rect_bbox(
+            Rect::new(reach.x0, window.rows.0, reach.x1, window.rows.1).intersect(row_bounds),
+        )];
         let kept = self
             .apart_drawings
             .iter()
@@ -5865,14 +5882,40 @@ impl GroupRow {
         i: usize,
         scene: &mut Scene,
         transform: Affine,
+        row_bounds: Rect,
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
-        if !crate::window_pictures::wanted(self.groups[i].id) {
-            self.groups[i].draw(scene, transform, tr, theme, presence);
+        let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+        let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let bounds = vec![transform.transform_rect_bbox(
+            Rect::new(reach.x0, row_bounds.y0, reach.x1, row_bounds.y1).intersect(row_bounds),
+        )];
+        // A window drawn on a frame that only moved is unchanged, so a host
+        // that keeps the strip's pixels shows the frame before by moving
+        // them: what it replaces is one delta away.
+        let frame = crate::retained_present::pan_frame();
+        let hint = self.pan_copy_drawn(key, id, rect, row_bounds, transform, frame);
+        let move_key = crate::scene_parts::PartKey::new("ui.strip-group-move", id);
+        if !crate::window_pictures::wanted(id) && hint.is_none() {
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                self.groups[i].draw(scene, transform, tr, theme, presence);
+            });
             return;
         }
-        let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, presence));
-        let carried = drawing.append_to(scene);
+        let drawing = if hint.is_some() {
+            // Recorded apart: the copy explains the whole window, so nothing
+            // inside it is damaged besides the delta's far edge.
+            self.record_group(i, Scene::new(), transform, (tr, theme, presence))
+        } else {
+            self.record_group(i, Scene::new(), transform, (tr, theme, presence))
+        };
+        let carried = crate::scene_parts::part(scene, key, bounds, |scene| match hint {
+            Some(hint) => crate::scene_parts::hinted(scene, move_key, Some(hint), |scene| {
+                drawing.append_to(scene)
+            }),
+            None => drawing.append_to(scene),
+        });
         drawing.offer_picture(carried);
     }
 
@@ -5943,13 +5986,23 @@ impl GroupRow {
         i: usize,
         scene: &mut Scene,
         transform: Affine,
+        row_bounds: Rect,
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
-            self.draw_group_plain(i, scene, transform, (tr, theme, presence));
+            self.draw_group_plain(i, scene, transform, row_bounds, (tr, theme, presence));
             return;
         }
+        let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        // The part a replayed group's move is reported inside: a part of its
+        // own, so the move damages the copy's far edge and not the window.
+        let move_key = crate::scene_parts::PartKey::new("ui.strip-group-move", id);
+        let bounds = vec![transform.transform_rect_bbox(
+            Rect::new(reach.x0, row_bounds.y0, reach.x1, row_bounds.y1).intersect(row_bounds),
+        )];
+        let frame = crate::retained_present::pan_frame();
         let kept = self
             .pan_drawings
             .iter()
@@ -5969,7 +6022,29 @@ impl GroupRow {
             let dx = rect.x0 - drawing.rect.x0;
             let moved =
                 Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
-            crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
+            // Nothing in the drawing changed, so a host that keeps the strip's
+            // pixels shows it by moving them (a scroll's copy,
+            // `crate::scroll_copy`): what the part drew is one delta away from
+            // the frame before, and only what moved in and out is painted. A
+            // host that makes no copies repaints where it lands.
+            let hint = self.pan_copy(key, drawing.rect, rect, row_bounds, transform, frame);
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                if let Some(hint) = hint {
+                    // Without the drawing's parts: the hint explains all of
+                    // it, so nothing inside it is damaged besides the copy's
+                    // far edge.
+                    crate::scene_parts::hinted(scene, move_key, Some(hint), |scene| {
+                        crate::scene_parts::append(scene, &drawing.scene, None, Some(moved));
+                    });
+                } else {
+                    crate::scene_parts::append(
+                        scene,
+                        &drawing.scene,
+                        drawing.parts.as_ref(),
+                        Some(moved),
+                    );
+                }
+            });
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
@@ -5983,13 +6058,103 @@ impl GroupRow {
             .unwrap_or_default();
         // Culled as on any frame: a window the pan brings further on screen
         // is drawn again until it shows no more than a drawing of it saw.
+        // A window drawn on a frame that only moved is unchanged too, when
+        // the whole of it showed where it was: it is drawn (its widgets note
+        // where they are now), and a host that keeps the strip's pixels
+        // shows the frame before by moving its pixels.
         let drawing = self.record_group(i, local, transform, (tr, theme, presence));
-        let carried = drawing.append_to(scene);
+        let hint = self.pan_copy_drawn(key, id, rect, row_bounds, transform, frame);
+        let carried = crate::scene_parts::part(scene, key, bounds, |scene| match hint {
+            Some(hint) => crate::scene_parts::hinted(scene, move_key, Some(hint), |scene| {
+                drawing.append_to(scene)
+            }),
+            None => drawing.append_to(scene),
+        });
         drawing.offer_picture(carried);
         match drawing.keep(carried) {
             Some(drawing) => self.pan_drawings.push(drawing),
             None => self.pan_unkept.push(id),
         }
+    }
+
+    /// The copy a window that only moved offers a host that keeps the
+    /// strip's pixels: the pixels it shows at `new` are the ones it showed
+    /// at `old`, one delta away, so only what moved out and in is painted.
+    ///
+    /// `row_bounds` is the lane's clip: the copy reads only pixels the
+    /// previous frame drew inside it.
+    fn pan_copy(
+        &self,
+        key: crate::scene_parts::PartKey,
+        old: Rect,
+        new: Rect,
+        row_bounds: Rect,
+        transform: Affine,
+        frame: u64,
+    ) -> Option<crate::scene_parts::DamageHint> {
+        if old.x0.to_bits() == new.x0.to_bits() {
+            return None;
+        }
+        // What both frames show: the pixels to move, and where they belong.
+        let both = old.intersect(new).intersect(row_bounds);
+        if both.width() <= 0.0 || both.height() <= 0.0 {
+            return None;
+        }
+        let delta = transform * Point::new(new.x0 - old.x0, 0.0) - transform * Point::ORIGIN;
+        // What the move leaves and reveals, painted where it is.
+        let mut rects = Vec::with_capacity(4);
+        let mut moved_out = |from: Rect, to: Rect| {
+            if from.x0 < to.x0 {
+                rects.push(Rect::new(from.x0, from.y0, to.x0.min(from.x1), from.y1));
+            }
+            if from.x1 > to.x1 {
+                rects.push(Rect::new(from.x0.max(to.x1), from.y0, from.x1, from.y1));
+            }
+        };
+        moved_out(old, new);
+        moved_out(new, old);
+        let rects = rects
+            .into_iter()
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .map(|rect| transform.transform_rect_bbox(rect))
+            .collect();
+        Some(crate::scene_parts::DamageHint {
+            source: key.value(),
+            from: frame.wrapping_sub(1),
+            to: frame,
+            placement: transform,
+            rects,
+            copies: vec![crate::scroll_copy::MovedRegion {
+                source: transform.transform_rect_bbox(both) - delta,
+                delta,
+            }],
+            earlier: Vec::new(),
+        })
+    }
+
+    /// [`Self::pan_copy`] for a window drawn again rather than replayed: it
+    /// offers one when the frame before drew it, and this one only moved it.
+    fn pan_copy_drawn(
+        &self,
+        key: crate::scene_parts::PartKey,
+        id: u64,
+        new: Rect,
+        row_bounds: Rect,
+        transform: Affine,
+        frame: u64,
+    ) -> Option<crate::scene_parts::DamageHint> {
+        if !crate::retained_present::pan_frame_kind().only_moved() {
+            return None;
+        }
+        let old = self
+            .pan_last
+            .iter()
+            .find(|(group, _)| *group == id)
+            .map(|(_, rect)| *rect)?;
+        if old.size() != new.size() || old.y0.to_bits() != new.y0.to_bits() {
+            return None;
+        }
+        self.pan_copy(key, old, new, row_bounds, transform, frame)
     }
 
     /// Paint the window group being reordered as the same kind of lifted,
@@ -6108,7 +6273,19 @@ impl GroupRow {
             } else {
                 transform
             };
-            h.draw(scene, t, tr, theme, presence);
+            // A part of its own: a strip that only panned moves its seams
+            // with its windows, and a presenter that keeps the strip's pixels
+            // copies the windows and repaints the seams where they are.
+            let bounds = vec![t.transform_rect_bbox(h.get_rect().inflate(
+                crate::scroll_copy::EFFECT_REACH,
+                crate::scroll_copy::EFFECT_REACH,
+            ))];
+            crate::scene_parts::part(
+                scene,
+                crate::scene_parts::PartKey::new("ui.strip-seam", i),
+                bounds,
+                |scene| h.draw(scene, t, tr, theme, presence),
+            );
         }
     }
 

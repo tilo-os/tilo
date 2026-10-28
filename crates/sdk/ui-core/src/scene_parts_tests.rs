@@ -633,3 +633,92 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
         Ok(vec![Rect::new(100.0, 0.0, 110.0, 10.0)])
     );
 }
+
+/// Where a window's content is drawn, `dx` to the right of where it was.
+fn window_at(dx: f64, frame: u64) -> (Box<Scene>, SectionParts) {
+    section(move |scene| {
+        fill(
+            scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 200.0, 50.0),
+            Color::BLACK,
+        );
+        let reach =
+            vec![Rect::new(0.0, 0.0, 90.0, 20.0).union(Rect::new(dx, 0.0, dx + 90.0, 20.0))];
+        part(
+            scene,
+            PartKey::new("window", 1_u64),
+            reach.clone(),
+            |scene| {
+                hinted(
+                    scene,
+                    PartKey::new("window-move", 1_u64),
+                    (frame >= 2).then(|| DamageHint {
+                        source: PartKey::new("window", 1_u64).value(),
+                        from: frame.saturating_sub(1),
+                        to: frame,
+                        placement: Affine::IDENTITY,
+                        rects: Vec::new(),
+                        copies: vec![crate::scroll_copy::MovedRegion {
+                            source: Rect::new(0.0, 0.0, 90.0, 20.0),
+                            delta: vello::kurbo::Vec2::new(dx, 0.0),
+                        }],
+                        earlier: Vec::new(),
+                    }),
+                    |scene| {
+                        fill(
+                            scene,
+                            Affine::translate((dx, 0.0)),
+                            Rect::new(0.0, 0.0, 90.0, 20.0),
+                            Color::WHITE,
+                        );
+                    },
+                );
+            },
+        );
+    })
+}
+
+/// A window that only moved offers the pixels it showed before, one delta
+/// away: a host that keeps its last frame copies them instead of repainting
+/// the window (`crate::scroll_copy`).
+#[test]
+fn a_window_that_only_moved_offers_the_copy_of_what_it_showed() {
+    // Frames 2 and 3: the hint of the second has to follow on from the
+    // first's, as one that explains a move always does.
+    let (old, old_parts) = window_at(0.0, 2);
+    let (new, new_parts) = window_at(20.0, 3);
+    let mut bounds = DrawBounds::default();
+    let damage = damage_with_copies(&old, &old_parts, &new, &new_parts, &mut bounds)
+        .expect("a moved part is proven");
+    assert_eq!(
+        damage.rects,
+        Vec::new(),
+        "nothing is repainted where it moved"
+    );
+    assert_eq!(damage.copies.len(), 1);
+    let copy = &damage.copies[0];
+    assert_eq!(copy.moved.delta, vello::kurbo::Vec2::new(20.0, 0.0));
+    assert_eq!(copy.moved.source, Rect::new(0.0, 0.0, 90.0, 20.0));
+    assert!(copy.plain_layers, "no blend layer holds the window");
+
+    // A host that makes no copies repaints where the copy would land.
+    let repainted = damage.clone().without_copies();
+    assert_eq!(repainted, vec![Rect::new(20.0, 0.0, 110.0, 20.0).expand()]);
+
+    // What is drawn over the window where the copy lands is repainted.
+    let presented = present_copies(
+        &damage.copies,
+        damage.rects.clone(),
+        &[],
+        Affine::IDENTITY,
+        (200, 50),
+    );
+    assert_eq!(presented.copies.len(), 1);
+    assert!(
+        presented
+            .raster
+            .iter()
+            .all(|rect| rect.area() < 90.0 * 20.0)
+    );
+}

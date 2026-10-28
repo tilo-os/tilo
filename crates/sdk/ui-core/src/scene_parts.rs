@@ -38,22 +38,33 @@ use vello_encoding::{Encoding, Patch};
 
 /// Bounds what a section draws outside its parts ([`damage_with_copies`],
 /// [`drawn_bounds`]); keep one across frames.
-#[cfg(feature = "native")]
 pub use tilo_cpu_raster::DrawBounds;
 
 /// Identifies one part among the parts of a section. Two frames' parts are
 /// matched by key and position, so a key must name the same thing in both.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PartKey(u64);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PartKey(u64, &'static str);
+
+impl std::fmt::Debug for PartKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}({})", self.1, self.0)
+    }
+}
 
 impl PartKey {
+    /// The key as a number: what a [`DamageHint::source`] of a part keyed
+    /// like this is.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
     /// A key for `kind` (a fixed name for the draw site) and `id`, which tells
     /// apart several parts of the same kind (a window's id, a peer's index).
     pub fn new(kind: &'static str, id: impl Hash) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         kind.hash(&mut hasher);
         id.hash(&mut hasher);
-        Self(hasher.finish())
+        Self(hasher.finish(), kind)
     }
 }
 
@@ -668,7 +679,6 @@ pub fn damage(
 ///
 /// # Errors
 /// As [`damage`].
-#[cfg(feature = "native")]
 pub fn damage_with_copies(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -710,7 +720,6 @@ pub fn damage_with_copies(
 /// Where `scene`, drawn with `parts` (if it was), paints anything: inside a
 /// bounded part by that part's bounds, anywhere else by its draw bounds.
 /// `None` when some of it cannot be bounded.
-#[cfg(feature = "native")]
 pub fn drawn_bounds(
     scene: &Scene,
     parts: Option<&SectionParts>,
@@ -725,7 +734,6 @@ pub fn drawn_bounds(
     }
 }
 
-#[cfg(feature = "native")]
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     let mut depth = 0_usize;
     for (index, event) in events.iter().enumerate().skip(begin) {
@@ -748,7 +756,6 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
 /// cover that part too, so their bounds would say everything after it is
 /// over it: a piece only they bound counts by its draw bounds, and by
 /// theirs only where those cannot bound it.
-#[cfg(feature = "native")]
 fn drawn_from(
     scene: &Scene,
     events: &[Event],
@@ -768,7 +775,12 @@ fn drawn_from(
             let around = around.get_or_insert_with(|| open.clone());
             let range = piece_range(scene.encoding(), events, piece);
             let piece_scene = slice(scene.encoding(), range)?;
-            if !piece_scene.encoding().draw_tags.is_empty() {
+            // A stretch that only opens or closes a layer paints nothing.
+            let paints = piece_scene.encoding().draw_tags.iter().any(|tag| {
+                *tag != vello_encoding::DrawTag::BEGIN_CLIP
+                    && *tag != vello_encoding::DrawTag::END_CLIP
+            });
+            if paints {
                 let inside = open
                     .iter()
                     .rev()
