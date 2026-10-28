@@ -103,8 +103,8 @@ and three rules cover everything:
 - **Text search is the system's.** The shell keeps one persistent index of what the workspace
   holds (`app_content_index`), published into by whatever holds the resources, and it answers
   even when nothing that published is running. Nobody keeps a private copy.
-- **Resources that live elsewhere** (a mail server, a video site) are searched by the
-  capability their place offers, invoked by the system and merged into one ranking. What was
+- **Resources with an outside origin** (an IMAP server, YouTube) are searched through that
+  origin's search capability, invoked by the system and merged into one ranking. What was
   fetched is cached and indexed like the rest.
 - **The list index** (each list's order and filter columns, so a list opens by reading one
   page) is still kept next to the record, because most workspaces' records aren't yet held by the

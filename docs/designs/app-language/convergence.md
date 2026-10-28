@@ -3,26 +3,27 @@
 How resources stay correct when people and agents change them at the same time, offline, or
 when the resources live on outside services.
 
-## 1. Where a resource lives
+## 1. Origins
 
-Every resource lives somewhere, and that place has the final say on it:
+Every resource has an **origin**: the server with the authoritative copy, which orders and
+accepts its changes. Everything else holds a replica or a cache.
 
-| Resource | Lives in | Final say |
-|---|---|---|
-| A note, a todo, a card, a file in Tilo | the workspace | the workspace's host |
-| A mail, a draft | the mail account | the mail server |
-| A video, a playlist | YouTube | YouTube |
-| A feed entry | the workspace (the feed only delivered it) | the workspace's host |
+| Resource | Origin |
+|---|---|
+| A note, a todo, a card, a file in Tilo | the workspace host |
+| A mail, a draft | the IMAP server |
+| A video, a playlist | YouTube |
+| A feed entry | the workspace host (the feed only delivered it) |
 
-- What lives there is true: a mail deleted on the server is gone.
-- One resource can mix: a video's title lives on YouTube, whether you watched it lives in the
-  workspace.
-- What you may change is the lesser of your Tilo grants and what the place allows (you can
-  like someone's video, not retitle it). What you can't do isn't offered.
+- The origin's state is authoritative: a mail deleted on the server is gone.
+- Fields can have different origins: a video's title has YouTube as origin, whether you watched
+  it has the workspace host.
+- Permission is the lesser of your Tilo grants and what the origin allows (you can like
+  someone's video, not retitle it). Actions you can't perform aren't offered.
 
 ## 2. Actions
 
-- **An action records its arguments.** Every device applies a place's actions in that place's
+- **An action records its arguments.** Every device applies an origin's actions in that origin's
   order. Actions marked `commutes` (text edits, counter adds, set adds) need no order, so normal
   editing never waits or conflicts.
 - **Anything that would differ on replay is recorded like an argument:** a web response, a
@@ -37,11 +38,11 @@ Every resource lives somewhere, and that place has the final say on it:
 
 ## 3. Provisional, then final
 
-- Your device applies your actions at once, provisionally, and adjusts when the place's order
+- Your device applies your actions at once, provisionally, and adjusts when the origin's order
   arrives.
 - Each action has two facts: **final** (provisional → final or rejected, with a reason) and
-  **delivered** (this device → the place → the people it concerns → seen by them).
-- **`hosted`** means "don't show it as done until the place commits". Use it where order is
+  **delivered** (this device → the origin → the people it concerns → seen by them).
+- **`hosted`** means "don't show it as done until the origin accepts it". Use it where order is
   worth gaming (the last seat), where time must be trusted (deadlines), or where it can't be
   taken back (paying, sending).
 - Membership and permissions are always decided by the platform, never by an app.
@@ -59,13 +60,13 @@ type Workshop {
 - An action that would break an invariant of anything it touches is rejected, the same way
   everywhere, and its author is told why.
 - Invariants come with the type: reuse a `Workshop` and its capacity rule comes along.
-- An invariant can only cover data in one place. Across places there are flows (§6).
+- An invariant can only cover data with one origin. Across origins there are flows (§6).
 - An outside service's own rules ("attachment too large") come back as the same kind of
   rejection.
 
 ## 5. Outside services
 
-A service isn't a separate concept: its resources are types that live there, and the glue is
+A service isn't a separate concept: its resources are types whose origin is the service, and the glue is
 ordinary actions that `use web`.
 
 ```
@@ -85,14 +86,14 @@ action refresh(feed: Feed) uses web {
   `starred`) only by people, so refreshing never undoes what someone did.
 - A failure is state (`trouble`), shown on that feed; it never blocks others.
 - When it runs is a trigger (a default shortcut such as "every 30 minutes"), not syntax.
-- For mail, YouTube and Drive: getting and searching are capabilities of the resource's place,
+- For mail, YouTube and Drive: getting and searching are capabilities of the resource's origin,
   invoked by the system (any view, global or scoped search). What was fetched is cached and
   indexed locally. Writes ("archive", "like") apply at once and become final when the service
   accepts.
 
 ## 6. Flows
 
-An action is atomic in one place; nothing is atomic across places. So calling another place's
+An action is atomic at one origin; nothing is atomic across origins. So calling another origin's
 action is only allowed in a `flow`, a durable sequence of steps:
 
 ```
@@ -104,7 +105,7 @@ flow book(w: Workshop, p: Principal, card: Card) {
 ```
 
 - Each step runs only once the previous one is final: no charge for a rejected booking.
-- Each step carries the flow's id so the place can drop duplicates. Where a service can't
+- Each step carries the flow's id so the origin can drop duplicates. Where a service can't
   (SMTP), one device sends, and a crash mid-call is shown as **outcome unknown**, never retried
   silently.
 
@@ -119,7 +120,7 @@ payment shows finality.
 
 - **The log is the truth.** Each entry holds what was asked (the action and its arguments),
   what it did (its writes), and what it read (field versions).
-- **The author's device runs the action;** the place checks that what it read hasn't changed
+- **The author's device runs the action;** the origin checks that what it read hasn't changed
   since and that the writes are allowed, then orders it. Checking needs versions, not values,
   so it works in encrypted workspaces.
 - **Everyone else applies the writes** without running app code.
@@ -135,7 +136,7 @@ payment shows finality.
 - A device holds what it opened, pinned or searched, and pages in the rest.
 - Order is only needed among actions touching the same data, so a host splits the work by
   subtree. Large workspaces spread subtrees across hosts, cut along containment so invariants
-  stay in one place, and replicate each part to standbys.
+  stay at one origin, and replicate each part to standbys.
 - The host fans each change out once. Presence is sampled and not stored.
 - In encrypted workspaces the host can't index, so search covers what the device holds.
 - Never: one host ordering a whole large workspace, every device holding everything, or
