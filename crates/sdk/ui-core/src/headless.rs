@@ -5896,6 +5896,25 @@ impl FrameHarness {
         out
     }
 
+    /// The rects the widgets inside the [`EmbeddedApp`] root answer to, by
+    /// name, in the frame's own pixels.
+    ///
+    /// [`targets`](Self::targets) stops at the app: an embedded app keeps
+    /// its widget tree to itself, so a caller that drives the app alone (a
+    /// recording of it) reads them from here instead.
+    ///
+    /// # Panics
+    /// When the root was not mounted as an [`EmbeddedApp`].
+    pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
+        let root = self
+            .root_mut::<crate::app::EmbeddedApp>()
+            .app_mut()
+            .root_widget_mut();
+        let mut out = std::collections::HashMap::new();
+        collect_targets(root, "", &mut std::collections::HashMap::new(), &mut out);
+        out
+    }
+
     /// Perform one semantic action against a stable widget id or fallback
     /// path, through the same routing contract as live assistive technology.
     /// A control a widget paints itself and publishes as a semantic child

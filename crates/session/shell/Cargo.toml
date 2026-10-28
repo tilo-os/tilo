@@ -190,6 +190,7 @@ tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-fe
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser" }
 notes = { path = "../../../apps/notes" }
+activity = { path = "../../../apps/activity" }
 code-editor = { path = "../../../apps/code-editor" }
 word-processor = { path = "../../../apps/word-processor" }
 # The tracker's record, read for the runs of issues assigned to agents.

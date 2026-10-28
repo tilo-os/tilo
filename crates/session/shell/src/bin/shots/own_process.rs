@@ -97,6 +97,24 @@ impl OwnProcessApp {
         self.present();
     }
 
+    /// The size the app lays out at, in its window's own pixels.
+    pub fn window_size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The rects the app's own widgets answer to, by name, in the window's
+    /// own pixels.
+    pub fn targets(&mut self) -> std::collections::HashMap<String, vello::kurbo::Rect> {
+        self.frame.embedded_targets()
+    }
+
+    /// Hand the app one window event, as its own window would, then lay it
+    /// out again.
+    pub fn send(&mut self, event: &winit::event::WindowEvent) {
+        self.frame.dispatch_to_root(event);
+        self.frame.relayout();
+    }
+
     /// Lay the app out at its window's size and publish its frame as the
     /// surface's.
     fn present(&mut self) {

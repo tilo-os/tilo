@@ -33,6 +33,9 @@ mod desktop_control;
 mod downloaded_scene;
 mod invite_scenes;
 mod now_playing_fixture;
+
+#[cfg(feature = "test-support")]
+mod own_process_window;
 mod scene_catalogue;
 mod search_seed;
 mod secret_prompt_sim_scene;
