@@ -20,6 +20,8 @@ use tilo_quick_settings::QuickSettingsState;
 
 use ui::widget::Widget;
 
+use crate::support::host::{Layout, lay_out_with_text};
+
 #[test]
 fn bootstrap_root_builds_and_seeds_the_demo_tabs_in_order() {
     // Phase `root_builds_without_panic_for_bootstrap_tree`.
@@ -670,8 +672,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             widget.name() == "WorkspaceMenu" || widget.children().into_iter().any(menu_shown)
         }
         use automerge::AutoCommit;
-        use std::collections::HashMap;
-        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+        use taffy::NodeId;
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -687,36 +688,11 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         assert!(!chrome.borrow().overlays.overview);
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
-        let vp = taffy
-            .new_with_children(
-                Style {
-                    size: Size::from_lengths(W, H),
-                    ..Default::default()
-                },
-                &[root_node],
-            )
-            .unwrap();
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                vp,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        root.apply_layout(&taffy, root_node, Point::ORIGIN);
+        let Layout {
+            taffy,
+            child_node: root_node,
+        } = lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
 
         // A draw pass is required so the inner TopBarChrome populates its
         // workspace pill, which handle_event hit-tests against.
@@ -762,13 +738,11 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     // and freezes (the "overview button doesn't work" report).
     {
         use automerge::AutoCommit;
-        use std::collections::HashMap;
-        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
         use vello::Scene;
-        use vello::kurbo::{Affine, Point};
+        use vello::kurbo::Affine;
 
         const W: f32 = 1600.0;
         const H: f32 = 900.0;
@@ -787,36 +761,8 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         chrome.borrow_mut().bump();
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = root.build_layout(&mut taffy, &theme, &mut node_map);
-        let vp = taffy
-            .new_with_children(
-                Style {
-                    size: Size::from_lengths(W, H),
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                vp,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, nid, _, _| {
-                    if let Some(&ptr) = node_map.get(&nid) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        root.apply_layout(&taffy, node, Point::ORIGIN);
+        lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
 
         // First draw: sets `overview_target = 1.0` and arms `transition_started`.
         let mut scene = Scene::new();

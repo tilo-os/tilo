@@ -989,38 +989,11 @@ fn build_harness_with_host(
     mut host: ShellOverlayHost,
     chrome: crate::shell::chrome_state::Chrome,
 ) -> Harness {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let viewport = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(1600.0, 900.0),
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            viewport,
-            Size {
-                width: taffy::AvailableSpace::Definite(1600.0),
-                height: taffy::AvailableSpace::Definite(900.0),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
+    let crate::shell::test_support::LaidOut {
+        taffy,
+        node: child,
+        nodes: node_map,
+    } = crate::shell::test_support::lay_out_in_viewport(&mut host, 1600.0, 900.0, &Theme::dark());
 
     Harness {
         host,
