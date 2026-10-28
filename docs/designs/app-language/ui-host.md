@@ -158,7 +158,25 @@ Views are pure functions of resources, so they can run where the data is:
    lists.
 2. **The tilolang host.** A launcher-started process per room and author, running the tilolang
    runtime with instances per app, with custody, grants and broker routes per instance. Hot
-   reload and tiered execution are per instance.
+   reload and tiered execution are per instance. In three parts, each landing on its own:
+   - **2a. Undo, history and save state below the toolkit.** The data half of ui-core's undo log
+     (`state/undo_log.rs`) and history steps (`history_source`: steps, authors, compensation,
+     restore) moves into `collaboration`, beside the record it describes. Presentation (History
+     views, `history_mode`, i18n, widgets) stays in ui-core. Native apps' `RecordStore` keeps
+     using the same undo log from there: one undo, one history, for both kinds of app. Save state
+     (the record's on-disk copy in a room this device governs) gets the same treatment.
+   - **2b. The tilolang host process.** The launcher opens each instance's broker connection
+     with that app's custody and passes it to the tilolang host (§2.1 point 1). Each instance
+     holds a `RoomRecord` on its own connection, with its undo log and save state from 2a.
+     Actions, agent invocations and presence go over that connection too. The window stays in
+     `apps/tilolang` for now, driven by patches from the host (step 1's protocol, in two
+     processes).
+   - **2c. Windows from the UI host.** Step 3 below.
+
+   Why not hold a `RoomRecord` inside today's one-process app first: the framework owns the
+   launch's one broker connection, and undo, publication, sync and History all sit on its
+   `RecordStore`. Teaching ui-core a second record holder would be the parallel model this
+   design removes.
 3. **Surfaces per app window from the UI host,** attributed through the broker. The window bar,
    History, actions and accessibility as before.
 4. **Measure against the targets:**
