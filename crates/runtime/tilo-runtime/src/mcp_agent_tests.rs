@@ -1230,6 +1230,107 @@ fn an_app_reads_as_the_list_of_what_it_holds() {
     });
 }
 
+/// A structured read of `path` (with `cursor`), as a program asks for it:
+/// the typed answer, and the cost of the call ([`work_of`]).
+fn structured_read(host: &Notes, path: &str, cursor: Option<&str>) -> (Value, usize, usize) {
+    host.take_asked();
+    host.take_answered();
+    let mut arguments = json!({"path": path});
+    if let Some(cursor) = cursor {
+        arguments["cursor"] = json!(cursor);
+    }
+    let reply = run(
+        agent(host).handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"tilo_read","arguments":arguments,
+            "_meta":{"so.tilo.mcp":{"structured":true}}}})),
+    )
+    .unwrap();
+    let result = &reply["result"];
+    assert_eq!(result["isError"], false, "{reply}");
+    let structured = result["structuredContent"].clone();
+    assert_eq!(
+        result["content"][0]["text"].as_str(),
+        Some(structured.to_string().as_str()),
+        "the text beside it is the same answer"
+    );
+    (structured, host.take_asked().len(), host.take_answered())
+}
+
+/// A program reads the same resource the markdown read renders, typed: its
+/// fields as the app typed them, what it holds as children with the path
+/// each reads by, and the app's own paging; at the same cost.
+#[test]
+fn a_structured_read_is_the_typed_answer_the_markdown_read_renders() {
+    let host = Notes::new(true);
+    // A note: its fields, typed.
+    let (text_asked, text_answered, text) =
+        work_of(&host, "tilo_read", &json!({"path": "notes/Todo"}));
+    let (note, asked, answered) = structured_read(&host, "notes/Todo", None);
+    assert_eq!(
+        (asked, answered),
+        (text_asked, text_answered),
+        "reads cost what they touch"
+    );
+    assert_eq!(note["path"], "notes/Todo");
+    assert_eq!(note["kind"], "notes.page");
+    assert_eq!(note["fields"]["title"], "Todo");
+    assert_eq!(
+        note["fields"]["blocks"][1],
+        json!({"id": "b2", "kind": {"checklist": 0, "done": true}, "text": "bread"})
+    );
+    assert!(
+        note.get("children").is_none() && note.get("cursor").is_none(),
+        "{note:#}"
+    );
+    let fields = note["fields"]["markdown"].as_str().unwrap();
+    assert_eq!(
+        text,
+        format!("# Todo\n{fields}"),
+        "the markdown read renders these fields"
+    );
+
+    // The app: what it holds, each with the path that reads it.
+    let (_, _, listing) = work_of(&host, "tilo_read", &json!({"path": "notes"}));
+    let (app, _, _) = structured_read(&host, "notes", None);
+    let children = app["children"].as_array().unwrap();
+    assert_eq!(children.len(), 2, "{app:#}");
+    assert_eq!(children[0]["list"], "pages");
+    assert_eq!(children[0]["name"], "Todo");
+    assert_eq!(children[0]["item"], TODO);
+    for child in children {
+        let line = format!(
+            "  {}  ({})",
+            child["name"].as_str().unwrap(),
+            child["item"].as_str().unwrap()
+        );
+        assert!(
+            listing.contains(&line),
+            "the listing renders each child: {listing}"
+        );
+    }
+    assert!(
+        app["fields"].get("pages").is_none(),
+        "children are not fields too: {app:#}"
+    );
+    // A child's path is a ref the other tools take: it reads that note.
+    let path = children[0]["path"].as_str().unwrap();
+    let (child, _, _) = structured_read(&host, path, None);
+    assert_eq!(child["fields"]["title"], "Todo", "{child:#}");
+
+    // Paging is the app's own: the cursor it gave, passed back, reads the rest.
+    *host.long.lock().unwrap() = Some(3);
+    let (first, _, _) = structured_read(&host, "notes/Todo", None);
+    assert_eq!(first["cursor"], "second", "{first:#}");
+    let (second, _, _) = structured_read(&host, "notes/Todo", Some("second"));
+    assert!(second.get("cursor").is_none(), "{second:#}");
+    assert!(
+        second["fields"]["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("item 1-000")
+    );
+}
+
 #[test]
 fn a_do_answers_with_its_result_and_never_a_receipt() {
     let host = Notes::new(true);
@@ -1254,6 +1355,66 @@ fn a_do_answers_with_its_result_and_never_a_receipt() {
         )
         .await;
         assert_eq!((text.as_str(), failed), ("ok", false));
+    });
+}
+
+/// The undo step each invocation the host was asked for joins, in order.
+fn gestures(host: &Notes) -> Vec<Option<tilo_actions::ActionId>> {
+    host.invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.as_ref().and_then(|context| context.gesture))
+        .collect()
+}
+
+#[test]
+fn the_calls_of_one_task_step_share_its_undo_step_and_each_other_call_has_its_own() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host).with_agent_run("task:7", "Tidy the notes");
+        let call = |text: &str, meta: Value| {
+            let mut request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"tilo_do",
+                "arguments":{"path":"notes/Todo/body#append-paragraph","args":{"text":text}}}});
+            if !meta.is_null() {
+                request["params"]["_meta"] = meta;
+            }
+            request
+        };
+        let step = json!({"so.tilo.mcp": {"step": "program-1"}});
+        for text in ["milk", "bread"] {
+            let reply = server.handle(call(text, step.clone())).await.unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+        for text in ["eggs", "tea"] {
+            let reply = server.handle(call(text, Value::Null)).await.unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+        let steps = gestures(&host);
+        assert_eq!(steps.len(), 4);
+        assert!(steps.iter().all(Option::is_some), "{steps:?}");
+        assert_eq!(steps[0], steps[1], "one task step, one undo step");
+        assert_ne!(steps[2], steps[3], "two calls, two steps");
+        assert!(!steps[2..].contains(&steps[0]));
+        // The step a client names is this session's: another session naming
+        // it does not join it.
+        let other = agent(&host).with_agent_run("task:7", "Tidy the notes");
+        other.handle(call("jam", step.clone())).await.unwrap();
+        assert_ne!(gestures(&host)[4], steps[0]);
+        // Every invocation is attributed to the task.
+        assert!(host.invoked.lock().unwrap().iter().all(|request| {
+            request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref())
+                .is_some_and(|group| group.id == "task:7")
+        }));
+        let refused = server
+            .handle(call("x", json!({"so.tilo.mcp": {"step": 7}})))
+            .await
+            .unwrap();
+        assert!(refused.get("error").is_some(), "{refused}");
     });
 }
 
