@@ -139,11 +139,15 @@ impl PresenceHue {
 
     /// The hue nearest an sRGB colour's OKLCH hue, or `None` for a grey
     /// (chroma under 0.02): how a roster's packed colour or a desktop accent
-    /// reads as a presence hue. The `OKLab` conversion is the toolkit's
-    /// (`ui::color::Oklch::from_color`), so both read a colour alike.
+    /// reads as a presence hue. The `OKLab` conversion is `tilo_face`'s, which
+    /// the toolkit's `ui::color::Oklch::from_color` reads a colour with too.
     #[must_use]
     pub fn nearest_to_srgb(red: u8, green: u8, blue: u8) -> Option<Self> {
-        let (_, a, b) = linear_to_oklab(decode_srgb(red), decode_srgb(green), decode_srgb(blue));
+        let (_, a, b) = tilo_face::linear_to_oklab(
+            tilo_face::decode_srgb(red),
+            tilo_face::decode_srgb(green),
+            tilo_face::decode_srgb(blue),
+        );
         let chroma = a.hypot(b);
         let hue = if chroma < 1e-6 {
             0.0
@@ -177,32 +181,6 @@ impl PresenceHue {
             .as_str()
             .and_then(Self::from_id)
     }
-}
-
-/// An sRGB channel as linear light.
-fn decode_srgb(v: u8) -> f64 {
-    let s = f64::from(v) / 255.0;
-    if s <= 0.04045 {
-        s / 12.92
-    } else {
-        ((s + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Linear sRGB in `OKLab` (Björn Ottosson's matrices).
-#[allow(
-    clippy::many_single_char_names,
-    reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
-)]
-fn linear_to_oklab(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
-    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
-    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
-    (
-        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
-        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
-        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
-    )
 }
 
 /// Stable identity colour for a collaborator who has not chosen one: the

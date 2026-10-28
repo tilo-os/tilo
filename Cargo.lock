@@ -21107,6 +21107,7 @@ dependencies = [
 name = "tilo-ui-paint"
 version = "0.1.0"
 dependencies = [
+ "tilo-face",
  "tilo-vello",
  "workspace-hack",
 ]
