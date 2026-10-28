@@ -53,7 +53,8 @@ pub mod stdlib;
 pub mod toolkit;
 pub mod types;
 
-pub use diag::{Diagnostic, Span, diagnostics_json};
+pub use checker::{RESOURCE_TYPE_NAME, resource_key};
+pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean};
 pub use host::{
     HOST_APP, INVOCATION_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE, RESULT_VALUE,
     host_meta,
@@ -61,9 +62,10 @@ pub use host::{
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
 pub use meta::{PackageMeta, custom_section};
 pub use package::{
-    BlockKind, Compiled, CompiledBlock, FileSyntax, check, check_package, compile_block,
-    compile_block_for, compile_package, compile_package_source, compile_package_source_with,
-    compile_package_with, parse, parse_package, parse_package_files,
+    Binding, BlockKind, Compiled, CompiledBlock, CompiledProgram, FileSyntax, PROGRAM_APP_PREFIX,
+    check, check_package, compile_block, compile_block_for, compile_package,
+    compile_package_source, compile_package_source_with, compile_package_with, compile_program,
+    parse, parse_package, parse_package_files,
 };
 pub use print::{print_file, print_module};
 pub use source::{PackageSource, SourceFile};
