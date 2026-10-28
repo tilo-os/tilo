@@ -28,5 +28,11 @@ needs no deobfuscation data: that version's player answers carry plain
 stream URLs, and its progressive streams serve every byte range of the file
 without a PoToken, where the release's player clients either fail to
 deobfuscate the current player script or are refused past the first segment.
-Every other source file is the release's. The archive's `Cargo.lock` is omitted. 0.11.4 is the newest release (checked 2026-10-22). See
+The playlist page reads the videos YouTube now lists in the page's item
+section itself (`src/client/playlist.rs`, `src/client/response/playlist.rs`,
+`src/client/response/video_item.rs`), where the release expected them inside
+a `playlistVideoListRenderer` and failed with "itemSectionRenderer empty".
+`new_visitor_data` (`src/util/visitor_data.rs`) returns a failed visitor-data
+fetch as an error instead of panicking on it. Every other source file is the
+release's. The archive's `Cargo.lock` is omitted. 0.11.4 is the newest release (checked 2026-10-22). See
 `vendor/PATCHES.md`, "Accessibility and YouTube manifests".

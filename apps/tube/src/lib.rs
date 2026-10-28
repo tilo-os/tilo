@@ -1,7 +1,7 @@
 //! Tube — a privacy-respecting `YouTube` client for Tilo.
 //!
-//! No ads, no tracking, no Google player. Video search + metadata come from
-//! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
+//! No ads, no tracking, no Google player. Video search, metadata and streams
+//! come from `YouTube` through rustypipe; `SponsorBlock` marks and auto-skips sponsor /
 //! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
 //! native `ui` toolkit. Likes, the watch queue, subscriptions, and comment
@@ -11,7 +11,7 @@
 //! without reaching collaborators.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
-//! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
+//! from live results. The bundled [`sample`]
 //! exists solely for the hermetic `--shots`/demo review path (and tests), where
 //! a cold screenshot needs to be fully populated. Live fetch (`api`) runs on a
 //! worker thread
@@ -41,6 +41,9 @@ pub mod captions;
 pub mod history;
 pub mod i18n;
 pub mod images;
+/// `YouTube`'s web API read through `tilo_net`: the source of a build
+/// without rustypipe, which cannot build for a browser page.
+#[cfg(any(not(feature = "live"), test))]
 pub mod innertube;
 pub mod model;
 pub mod recommend;

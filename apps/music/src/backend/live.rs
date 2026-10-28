@@ -404,7 +404,7 @@ impl MusicBackend for RustyPipeBackend {
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         let q = self.rp.query();
         let player = self.block("player", innertube::player(&q, video_id))?;
-        let best = innertube::whole_file_stream(&player, Some(0))
+        let best = innertube::whole_file_stream(&player.video_streams, Some(0))
             .ok_or_else(|| BackendError("no playable stream".to_string()))?;
         if !crate::backend::trusted_googlevideo_url(&best.url) {
             return Err(BackendError(

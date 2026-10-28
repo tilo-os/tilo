@@ -16,9 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type VideoId = String;
 pub type ChannelId = String;
 
-/// Normalize a channel display name for cross-source matching. yt-dlp and
-/// rustypipe can key the same creator by slightly different ids/names, so cards
-/// reconcile avatars by this normalized name as well as by id.
+/// Normalize a channel display name for matching: one creator can arrive
+/// under slightly different ids (a search's creator row, a video's byline),
+/// so cards reconcile avatars by this normalized name as well as by id.
 pub fn norm_channel_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
@@ -1068,9 +1068,9 @@ impl TubeModel {
     }
 
     /// Fill any avatar-less channel record from another record describing the
-    /// same creator (same normalized name) that already carries an avatar. Two
-    /// sources (yt-dlp / rustypipe) can produce two records for one creator, only
-    /// one of which has the photo; this bridges them so every card resolves.
+    /// same creator (same normalized name) that already carries an avatar. One
+    /// creator can arrive as two records, only one of which has the photo;
+    /// this bridges them so every card resolves.
     pub fn reconcile_channel_avatars(&mut self) {
         let mut by_name: BTreeMap<String, String> = BTreeMap::new();
         for ch in &self.channels {

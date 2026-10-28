@@ -13,8 +13,8 @@ path = "src/lib.rs"
 name = "tube"
 path = "src/main.rs"
 
-# The page build keeps playback (`media`) and drops the extractors, which
-# run subprocesses, and Grayjay sync, which needs raw TCP.
+# The page build keeps playback (`media`) and drops rustypipe, which does not
+# build for wasm32, and Grayjay sync, which needs raw TCP.
 [package.metadata.tilo]
 web-features = ["media"]
 
@@ -37,17 +37,14 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
-# worker and excluded from the shots path.
+# Live fetch (SponsorBlock / DeArrow / dislikes, and YouTube in a page),
+# driven by a background worker and excluded from the shots path.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
-# Fully-rangeable playback URLs through Invidious media proxies.
-tilo-invidious = { path = "../../crates/platform/tilo-invidious" }
 # Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 
-# Live YouTube backend (off by default): rustypipe handles InnerTube requests
-# and botguard tokens without ffmpeg or yt-dlp.
+# Live YouTube backend: rustypipe handles the InnerTube requests and streams
+# without ffmpeg or yt-dlp.
 #
 # rustls without a bundled provider avoids OpenSSL and aws-lc: the client uses
 # the ring provider `tilo_net::install_crypto_provider` installs and the system
@@ -90,8 +87,8 @@ runtime-engine = ["thin", "live", "tilo-youtube-engine/thin"]
 # hermetic at runtime because their live workers are not spawned; Grayjay sync
 # also fails closed if the system secret store is unavailable.
 default = ["live", "media", "grayjay-sync"]
-# YouTube data via yt-dlp with rustypipe as a fallback source.
-live = ["dep:rustypipe", "dep:tilo-innertube", "dep:bounded-command"]
+# YouTube data and streams via rustypipe.
+live = ["dep:rustypipe", "dep:tilo-innertube"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
 # The watch-page player publishes now-playing and accepts media keys through
 # the toolkit's MPRIS service, which `ui` always provides.

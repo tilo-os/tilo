@@ -98,7 +98,7 @@ impl TubeApp {
     }
 
     /// Test/shots hook: replace the model wholesale (e.g. a channel page built
-    /// from real yt-dlp data) so an offscreen render shows real content.
+    /// from real `YouTube` data) so an offscreen render shows real content.
     #[must_use]
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
         self.stage_model_for_test(model);

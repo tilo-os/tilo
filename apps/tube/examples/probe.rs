@@ -8,8 +8,6 @@
 //!   composed "popular" feed (view-count-sorted search).
 //! - `--probe-engine [ID]`: resolve a stream and decode moving frames through
 //!   the same shared [`media::MediaEngine`] used by the watch page.
-//! - `--probe-ytdlp [Q]`, `--probe-avatars [Q]`: the yt-dlp extractor and the
-//!   creator-avatar pipeline.
 //! - `--live-shots DIR [Q]`: offscreen stills from live data.
 //! - `--bench-scroll [FRAMES] [--watch [--loaded]]`: time the per-frame passes
 //!   of a scrolled Home grid or watch page.
@@ -64,20 +62,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_live_shots(&dir, &query);
     }
 
-    // `--probe-ytdlp [query]` — exercise the yt-dlp extractor: search + video +
-    // channel (with avatar/banner urls). Requires `--features live`.
-    if let Some(query) = parse_opt_query(&args, "--probe-ytdlp", "blender open movie") {
-        return run_probe_ytdlp(&query);
-    }
-
-    // `--probe-avatars [query]` — diagnose the creator-avatar pipeline: what
-    // channel id/name/avatar yt-dlp vs rustypipe report for the same search, the
-    // by-id fold match rate, and whether a per-channel fetch returns +
-    // decodes an avatar. Requires `--features live`.
-    if let Some(query) = parse_opt_query(&args, "--probe-avatars", "blender open movie") {
-        return run_probe_avatars(&query);
-    }
-
     // `--probe [query]` — run a live backend query.
     if let Some(query) = parse_probe_arg(&args) {
         return run_probe(&query);
@@ -102,7 +86,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!(
-        "usage: probe --probe [Q] | --probe-trending | --probe-engine [ID] | --probe-ytdlp [Q] | --probe-avatars [Q] | --live-shots DIR [Q] | --bench-scroll [FRAMES] [--watch [--loaded]]"
+        "usage: probe --probe [Q] | --probe-trending | --probe-engine [ID] | --live-shots DIR [Q] | --bench-scroll [FRAMES] [--watch [--loaded]]"
     );
     Ok(())
 }
@@ -152,19 +136,9 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
     None
 }
 
-/// The rangeable Invidious proxy's stream URL and quality for `id`.
-#[cfg(all(feature = "live", feature = "media"))]
-fn resolve_proxied(id: &str) -> Option<(String, String)> {
-    ui::rt::block_on(tube::backend::proxy::resolve_rangeable(id, None))
-        .ok()
-        .flatten()
-        .map(|r| (r.url, r.quality))
-}
-
 /// `--probe-engine [id]`: exercise playback through the shared `media::MediaEngine`
-/// — the exact path the watch page streams through. Resolves a directly-playable
-/// stream (direct extractor first, then the rangeable Invidious proxy), opens the
-/// engine, plays, and decodes a sequence of frames; prints engine events and a
+/// — the exact path the watch page streams through. Resolves the stream the
+/// watch page plays, opens the engine, plays, and decodes a sequence of frames; prints engine events and a
 /// per-frame checksum. Exits non-zero if no frame decodes.
 #[cfg(all(feature = "live", feature = "media"))]
 #[allow(
@@ -175,17 +149,15 @@ fn resolve_proxied(id: &str) -> Option<(String, String)> {
 )]
 fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
-    use tube::backend::{YtBackend, ytdlp::YtDlpBackend};
     use ui::time::Duration;
 
-    eprintln!("probe-engine: constructing the yt-dlp backend…");
-    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
-    let (url, quality) = backend
-        .resolve_playback_source(id, None)
-        .ok()
-        .map(|s| (s.url, s.quality))
-        .or_else(|| resolve_proxied(id))
-        .ok_or("no directly-playable stream resolved")?;
+    eprintln!("probe-engine: constructing the rustypipe backend…");
+    let backend = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("rustypipe backend: {e}"))?;
+    let source = backend
+        .play(id, None)
+        .map_err(|said| said.unwrap_or_else(|| "no directly-playable stream resolved".into()))?;
+    let (url, quality) = (source.url, source.quality);
     println!(
         "probe-engine: resolved {quality}; url(host)={}",
         short_url(&url)
@@ -287,29 +259,6 @@ fn parse_live_shots_arg(args: &[String]) -> Option<(String, String)> {
     None
 }
 
-/// Parse `--flag [query]` / `--flag=<query>` with a default when the flag is
-/// present but no value follows.
-fn parse_opt_query(args: &[String], flag: &str, default: &str) -> Option<String> {
-    let eq = format!("{flag}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return Some(match iter.next() {
-                Some(q) if !q.starts_with("--") => q.clone(),
-                _ => default.to_string(),
-            });
-        }
-        if let Some(rest) = arg.strip_prefix(eq.as_str()) {
-            return Some(if rest.is_empty() {
-                default.to_string()
-            } else {
-                rest.to_string()
-            });
-        }
-    }
-    None
-}
-
 /// `--probe-trending`: show `YouTube`'s dedicated trending endpoint failing,
 /// then the composed popular feed (view-count-sorted search) that replaces it.
 #[cfg(feature = "live")]
@@ -396,7 +345,7 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 
 /// `--live-shots <dir> [query]`: render REAL offscreen stills — a search page
 /// with real `YouTube` results + fetched thumbnails, and a watch page with a real
-/// frame decoded through the shared media engine from a rangeable proxy stream.
+/// frame decoded through the shared media engine.
 #[cfg(all(feature = "live", feature = "media"))]
 #[allow(
     clippy::too_many_lines,
@@ -406,14 +355,15 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 )]
 fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
-    use tube::backend::{BackendResult, YtBackend, yt_thumb_url, ytdlp::YtDlpBackend};
+    use tube::backend::{BackendResult, YtBackend, yt_thumb_url};
     use tube::model::{DataSource, Route, TubeModel, Video};
 
     let out_dir = std::path::Path::new(dir);
     if let Ok((parent, name)) = tilo_files::file_at(out_dir) {
         let _ = tilo_files::blocking::create_dir_all(&parent, &name);
     }
-    let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
+    let backend = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("rustypipe backend: {e}"))?;
 
     // ---- Real watch page with a real decoded frame ----
     //
@@ -449,15 +399,10 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             live: false,
         },
     };
-    // For a single-frame still, decode the yt-dlp direct progressive URL first
-    // (small + fast to preroll — the live app instead uses the rangeable
-    // Invidious proxy for seekable, full-length playback), falling back to the
-    // proxy if the direct extractor is unavailable.
     let resolved = backend
-        .resolve_playback_source(watch_id, None)
+        .play(watch_id, None)
         .ok()
-        .map(|s| (s.url, s.quality))
-        .or_else(|| resolve_proxied(watch_id));
+        .map(|s| (s.url, s.quality));
     match resolved {
         Some((url, quality)) => {
             println!("  resolved {quality} stream; decoding a real frame via the media engine…");
@@ -494,20 +439,17 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         }
         None => {
             eprintln!(
-                "live-shots[watch]: no Invidious proxy served bytes and no direct URL resolved \
-                 — skipped the watch still (reported honestly, not faked)."
+                "live-shots[watch]: no stream resolved — skipped the watch still (reported \
+                 honestly, not faked)."
             );
         }
     }
 
     // ---- Search / home / playlist pages with thumbnails + avatars ----
     //
-    // Use rustypipe's search: it returns videos (with creator avatars),
-    // playlists AND creator rows in one call — exactly the enrichment the live
-    // app folds into the yt-dlp results, so these stills cover avatars, the
+    // The search returns videos (with creator avatars), playlists and creator
+    // rows in one call, so these stills cover avatars, the
     // Video·Playlist·Creator filter, and playlists end to end.
-    let rp = tube::backend::live::RustyPipeBackend::new()
-        .map_err(|e| format!("rustypipe backend: {e}"))?;
 
     // Prewarm every thumbnail + avatar into one shared store so both the search
     // and home stills paint fetched images.
@@ -520,7 +462,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
     };
 
     println!("live-shots[search]: rustypipe search for {query:?}…");
-    match rp.search_items(query) {
+    match backend.search_items(query) {
         Ok(items)
             if !(items.videos.is_empty()
                 && items.playlists.is_empty()
@@ -659,11 +601,10 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             )?;
             println!("  wrote {}", home_png.display());
 
-            // ---- Playlist page: yt-dlp resolves playlists reliably (rustypipe's
-            // current parser does not); try each search-result playlist until one
+            // ---- Playlist page: try each search-result playlist until one
             // resolves (some listed playlists are stale/empty). ----
             let resolved_pl = items.playlists.iter().find_map(|p| {
-                println!("live-shots[playlist]: fetching {} via yt-dlp…", p.id);
+                println!("live-shots[playlist]: fetching {}…", p.id);
                 backend.playlist(&p.id).ok()
             });
             if let Some((pl, pvids)) = resolved_pl {
@@ -728,353 +669,6 @@ fn short_url(url: &str) -> String {
     } else {
         head.to_string()
     }
-}
-
-/// `--probe-ytdlp [query]`: prove the yt-dlp extractor end-to-end — search,
-/// video metadata, and a channel page with its real avatar + banner URLs.
-#[cfg(feature = "live")]
-#[allow(
-    clippy::exit,
-    reason = "a diagnostic CLI probe: an empty/malformed live result is reported \
-              with a distinct machine-readable exit code, not folded into the generic \
-              error path main() already uses for construction/network failures"
-)]
-fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use tube::backend::{BackendResult, YtBackend};
-
-    eprintln!("probe-ytdlp: constructing the yt-dlp backend…");
-    let backend =
-        tube::backend::ytdlp::YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
-    println!("probe-ytdlp: backend = {}", backend.name());
-
-    println!("probe-ytdlp: searching YouTube for {query:?} …");
-    let (first_id, first_channel) = if let BackendResult::Videos(vs) = backend.search(query)? {
-        println!("  {} REAL results from YouTube:", vs.len());
-        for (i, v) in vs.iter().take(10).enumerate() {
-            println!(
-                "  {:>2}. [{}] {} — {} ({} views)\n        thumb={}",
-                i + 1,
-                v.id,
-                v.title,
-                v.channel_name,
-                v.views,
-                short_url(&v.thumbnail_url)
-            );
-        }
-        let Some(top) = vs.first() else {
-            eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
-            std::process::exit(2);
-        };
-        (top.id.clone(), top.channel_id.clone())
-    } else {
-        println!("probe-ytdlp: unexpected result variant");
-        return Ok(());
-    };
-
-    println!("\nprobe-ytdlp: video_details [{first_id}] …");
-    if let BackendResult::Video(v) = backend.video(&first_id)? {
-        println!(
-            "  title={:?} channel={:?} views={} likes={} desc_len={}\n  thumb={}",
-            v.title,
-            v.channel_name,
-            v.views,
-            v.likes,
-            v.description.len(),
-            short_url(&v.thumbnail_url)
-        );
-    }
-
-    println!("\nprobe-ytdlp: channel [{first_channel}] …");
-    if let BackendResult::Channel { channel, uploads } = backend.channel(&first_channel)? {
-        println!(
-            "  {:?} ({} subscribers, verified={}); {} uploads",
-            channel.name,
-            channel.subscribers,
-            channel.verified,
-            uploads.len()
-        );
-        println!("  avatar_url = {}", short_url(&channel.avatar_url));
-        println!("  banner_url = {}", short_url(&channel.banner_url));
-        if channel.avatar_url.is_empty() || channel.banner_url.is_empty() {
-            eprintln!("probe-ytdlp: WARNING — channel avatar/banner url missing.");
-        }
-        for u in uploads.iter().take(3) {
-            println!(
-                "    upload [{}] {} — thumb={}",
-                u.id,
-                u.title,
-                short_url(&u.thumbnail_url)
-            );
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "live"))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
-)]
-fn run_probe_ytdlp(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("probe-ytdlp: built WITHOUT `live` — rebuild with `--features live`.");
-    Ok(())
-}
-
-/// `--probe-avatars [query]`: diagnose the creator-avatar pipeline end to end.
-#[cfg(feature = "live")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one diagnostic step per pipeline stage (backend construction, fetch, \
-              decode, report); the length is the number of steps probed, not \
-              accidental complexity in any one of them"
-)]
-fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashMap;
-    use tube::backend::{BackendResult, YtBackend, ytdlp::YtDlpBackend};
-
-    eprintln!("probe-avatars: constructing yt-dlp + rustypipe backends…");
-    let yt = YtDlpBackend::new().map_err(|e| format!("yt-dlp: {e}"))?;
-    let rp = tube::backend::live::RustyPipeBackend::new().map_err(|e| format!("rustypipe: {e}"))?;
-
-    // 1) yt-dlp search: what channel id/name/avatar does each result carry?
-    println!("\n== yt-dlp search {query:?} ==");
-    let yt_videos = match yt.search(query)? {
-        BackendResult::Videos(v) => v,
-        _ => Vec::new(),
-    };
-    let mut yt_channel_freq: HashMap<String, (String, usize)> = HashMap::new();
-    for v in yt_videos.iter().take(12) {
-        println!(
-            "  [{}] chan_id={:?} name={:?} avatar={}",
-            v.id,
-            v.channel_id,
-            v.channel_name,
-            if v.channel_avatar_url.is_empty() {
-                "<EMPTY>"
-            } else {
-                "present"
-            }
-        );
-    }
-    for v in &yt_videos {
-        let e = yt_channel_freq
-            .entry(v.channel_id.clone())
-            .or_insert_with(|| (v.channel_name.clone(), 0));
-        e.1 += 1;
-    }
-
-    // 2) rustypipe search: videos (with channel avatar?) + creator rows.
-    println!("\n== rustypipe search_items {query:?} ==");
-    let items = rp.search_items(query)?;
-    println!(
-        "  {} videos, {} playlists, {} creators",
-        items.videos.len(),
-        items.playlists.len(),
-        items.channels.len()
-    );
-    let mut rp_avatars: HashMap<String, String> = HashMap::new();
-    for v in items.videos.iter().take(12) {
-        println!(
-            "  vid [{}] chan_id={:?} name={:?} avatar={}",
-            v.id,
-            v.channel_id,
-            v.channel_name,
-            if v.channel_avatar_url.is_empty() {
-                "<none>".into()
-            } else {
-                short_url(&v.channel_avatar_url)
-            }
-        );
-        if !v.channel_id.is_empty() && !v.channel_avatar_url.is_empty() {
-            rp_avatars
-                .entry(v.channel_id.clone())
-                .or_insert_with(|| v.channel_avatar_url.clone());
-        }
-    }
-    for c in &items.channels {
-        println!(
-            "  creator id={:?} name={:?} avatar={}",
-            c.id,
-            c.name,
-            if c.avatar_url.is_empty() {
-                "<none>".into()
-            } else {
-                short_url(&c.avatar_url)
-            }
-        );
-        if !c.id.is_empty() && !c.avatar_url.is_empty() {
-            rp_avatars
-                .entry(c.id.clone())
-                .or_insert_with(|| c.avatar_url.clone());
-        }
-    }
-
-    // 2b) Fetch-test every distinct rustypipe avatar URL through the REAL image
-    // store (same reqwest fetch + `image` decode the render path uses), so a URL
-    // that is "present" but unrenderable is caught here rather than silently
-    // degrading to initials on the card.
-    println!("\n== fetch-test rustypipe avatar URLs through the real ImageStore ==");
-    let store = tube::images::image_store();
-    for url in rp_avatars.values() {
-        store.get(url);
-    }
-    store.block_until_idle(std::time::Duration::from_secs(30));
-    for (cid, url) in &rp_avatars {
-        let ok = store.get(url).is_some();
-        println!(
-            "  {} id={cid:?}\n     {}",
-            if ok { "DECODED" } else { "FAILED " },
-            url
-        );
-    }
-
-    // 3) By-id fold match rate: how many yt-dlp videos get an avatar?
-    let matched = yt_videos
-        .iter()
-        .filter(|v| rp_avatars.contains_key(&v.channel_id))
-        .count();
-    println!(
-        "\n== by-CHANNEL-ID fold match: {}/{} yt-dlp videos would get an avatar ==",
-        matched,
-        yt_videos.len()
-    );
-    // Name-based match (normalized), to see if names line up when ids don't.
-    let norm = |s: &str| s.trim().to_lowercase();
-    let rp_names: HashMap<String, String> = items
-        .videos
-        .iter()
-        .filter(|v| !v.channel_avatar_url.is_empty())
-        .map(|v| (norm(&v.channel_name), v.channel_avatar_url.clone()))
-        .chain(
-            items
-                .channels
-                .iter()
-                .filter(|c| !c.avatar_url.is_empty())
-                .map(|c| (norm(&c.name), c.avatar_url.clone())),
-        )
-        .collect();
-    let matched_name = yt_videos
-        .iter()
-        .filter(|v| rp_names.contains_key(&norm(&v.channel_name)))
-        .count();
-    println!(
-        "== by-NORMALIZED-NAME fold match: {}/{} yt-dlp videos would get an avatar ==",
-        matched_name,
-        yt_videos.len()
-    );
-
-    // 4) Dominant yt-dlp channel: can a per-channel fetch resolve its avatar?
-    if let Some((cid, (cname, freq))) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n) {
-        println!("\n== dominant yt-dlp channel: {cname:?} id={cid:?} ({freq} videos) ==");
-        match yt.channel(cid) {
-            Ok(BackendResult::Channel { channel, .. }) => println!(
-                "  yt-dlp channel({cid}) → id={:?} name={:?} subs={} avatar={}",
-                channel.id,
-                channel.name,
-                channel.subscribers,
-                if channel.avatar_url.is_empty() {
-                    "<EMPTY>".into()
-                } else {
-                    short_url(&channel.avatar_url)
-                }
-            ),
-            Ok(_) => println!("  yt-dlp channel: unexpected variant"),
-            Err(e) => println!("  yt-dlp channel FAILED: {e}"),
-        }
-        match rp.channel(cid) {
-            Ok(BackendResult::Channel { channel, .. }) => println!(
-                "  rustypipe channel({cid}) → id={:?} name={:?} subs={} avatar={}",
-                channel.id,
-                channel.name,
-                channel.subscribers,
-                if channel.avatar_url.is_empty() {
-                    "<EMPTY>".into()
-                } else {
-                    short_url(&channel.avatar_url)
-                }
-            ),
-            Ok(_) => println!("  rustypipe channel: unexpected variant"),
-            Err(e) => println!("  rustypipe channel FAILED: {e}"),
-        }
-    }
-
-    // 5) Fetch + decode the ACTUAL avatar URLs the cards would load — this is
-    //    where "URL present in model" and "photo paints on the card" diverge.
-    //    We hit the very same reqwest fetcher the shots/live app use, then decode
-    //    with the `image` crate exactly like the ImageStore, and report the
-    //    content-type + decode result per URL.
-    println!("\n== fetch + decode avatar URLs (real transport + ImageStore decoder) ==");
-    let fetch = tube::images::image_fetcher();
-    let store = tube::images::image_store();
-    let magic = |b: &[u8]| -> &'static str {
-        if b.get(0..3) == Some(b"\xFF\xD8\xFF".as_slice()) {
-            "JPEG"
-        } else if b.get(0..4) == Some(b"\x89PNG".as_slice()) {
-            "PNG"
-        } else if b.get(0..4) == Some(b"RIFF".as_slice())
-            && b.get(8..12) == Some(b"WEBP".as_slice())
-        {
-            "WEBP"
-        } else if b.get(0..4) == Some(b"GIF8".as_slice()) {
-            "GIF"
-        } else {
-            "OTHER"
-        }
-    };
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut probe_one = |label: &str, url: &str| {
-        if url.is_empty() || !seen.insert(url.to_string()) {
-            return;
-        }
-        // Production decode path: kick the store, wait, ask if it produced an image.
-        let _ = store.get(url);
-        store.block_until_idle(std::time::Duration::from_secs(15));
-        let store_ok = store.get(url).is_some();
-        match fetch(url) {
-            Some(bytes) => println!(
-                "  {label}: {} bytes, format={}, ImageStore.decode={} — {}",
-                bytes.len(),
-                magic(&bytes),
-                if store_ok { "OK" } else { "FAILED" },
-                short_url(url),
-            ),
-            None => println!(
-                "  {label}: FETCH FAILED (store.decode={store_ok}) — {}",
-                short_url(url)
-            ),
-        }
-    };
-    // The dominant channel's avatar from each source the app might use.
-    if let Some(v) = items
-        .videos
-        .iter()
-        .find(|v| !v.channel_avatar_url.is_empty())
-    {
-        probe_one("rustypipe video-item avatar", &v.channel_avatar_url);
-    }
-    if let Some(c) = items.channels.iter().find(|c| !c.avatar_url.is_empty()) {
-        probe_one("rustypipe creator-row avatar", &c.avatar_url);
-    }
-    if let Some((cid, _)) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n)
-        && let Ok(BackendResult::Channel { channel, .. }) = yt.channel(cid)
-    {
-        probe_one("yt-dlp channel-page avatar", &channel.avatar_url);
-    }
-    // A known-good thumbnail for comparison (these always paint on the cards).
-    if let Some(v) = items.videos.iter().find(|v| !v.thumbnail_url.is_empty()) {
-        probe_one("video thumbnail (control)", &v.thumbnail_url);
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "live"))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
-)]
-fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("probe-avatars: built WITHOUT `live` — rebuild with `--features live`.");
-    Ok(())
 }
 
 /// Construct the live backend, query `YouTube`, and print the response.

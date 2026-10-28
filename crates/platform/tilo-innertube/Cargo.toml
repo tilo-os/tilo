@@ -23,5 +23,8 @@ path = "src/lib.rs"
 rustypipe = { workspace = true, features = ["rustls-no-provider"] }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

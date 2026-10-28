@@ -2,7 +2,7 @@
 //!
 //! Wires the toolkit's [`ui::ImageStore`] (async fetch + decode + GPU-image
 //! cache, keyed by URL) to a `tilo_net` transport so the real
-//! i.ytimg.com / yt3.googleusercontent.com images yt-dlp reports are fetched,
+//! i.ytimg.com / yt3.googleusercontent.com images `YouTube` names are fetched,
 //! decoded and painted. Until a URL's image is ready — and always on the
 //! hermetic `--shots`/offline path — the caller shows the seed gradient /
 //! initials fallback.

@@ -177,9 +177,9 @@ pub fn next_comments<'a>(
     Box::pin(page.next(q))
 }
 
-/// The stream to play from `player`: one URL carrying picture and sound
-/// together, no taller than `max_height` when one is (`None` takes the
-/// tallest).
+/// The stream to play among a player answer's `video_streams`: one URL
+/// carrying picture and sound together, no taller than `max_height` when one
+/// is (`None` takes the tallest).
 ///
 /// Only these progressive streams serve every byte range of the file
 /// without a `PoToken`; the adaptive audio-only and video-only streams are
@@ -187,10 +187,9 @@ pub fn next_comments<'a>(
 /// few seconds. Music plays the sound of the smallest one. DRM streams are
 /// never picked.
 #[must_use]
-pub fn whole_file_stream(player: &VideoPlayer, max_height: Option<u32>) -> Option<&VideoStream> {
+pub fn whole_file_stream(streams: &[VideoStream], max_height: Option<u32>) -> Option<&VideoStream> {
     let playable = || {
-        player
-            .video_streams
+        streams
             .iter()
             .filter(|stream| stream.drm_systems.is_empty())
     };
@@ -201,5 +200,46 @@ pub fn whole_file_stream(player: &VideoPlayer, max_height: Option<u32>) -> Optio
             .filter(|stream| stream.height <= cap)
             .max_by_key(size)
             .or_else(|| playable().min_by_key(size)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream(itag: u32, height: u32, bitrate: u32) -> VideoStream {
+        serde_json::from_value(serde_json::json!({
+            "url": format!("https://media.example/{itag}"), "itag": itag,
+            "bitrate": bitrate, "average_bitrate": bitrate, "size": null,
+            "index_range": null, "init_range": null, "duration_ms": null,
+            "width": 0, "height": height, "fps": 30,
+            "quality": format!("{height}p"), "hdr": false,
+            "mime": "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
+            "format": "mp4", "codec": "avc1", "drm_track_type": null, "drm_systems": [],
+        }))
+        .expect("a stream")
+    }
+
+    #[test]
+    fn a_chosen_quality_caps_the_whole_file_stream() {
+        let streams = [stream(18, 360, 500_000), stream(22, 720, 1_500_000)];
+        let itag = |cap| whole_file_stream(&streams, cap).map(|stream| stream.itag);
+        assert_eq!(itag(None), Some(22), "no cap takes the tallest");
+        assert_eq!(
+            itag(Some(480)),
+            Some(18),
+            "asking for 480p on a metered connection must not fetch 720p"
+        );
+        assert_eq!(
+            itag(Some(1080)),
+            Some(22),
+            "a size the source lacks gets its best"
+        );
+        assert_eq!(
+            itag(Some(0)),
+            Some(18),
+            "nothing under the cap: the smallest"
+        );
+        assert_eq!(whole_file_stream(&[], None).map(|s| s.itag), None);
     }
 }
