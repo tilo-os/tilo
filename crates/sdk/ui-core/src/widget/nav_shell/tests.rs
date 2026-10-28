@@ -2145,7 +2145,7 @@ fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
     let mut h = harness(mail_shell(), 560, 800, Theme::dark());
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    push(&mut *h.root_mut::<NavShell>());
+    push(&mut h.root_mut::<NavShell>());
     h.relayout_at((560, 800)).expect("the push lays out");
     let shell = h.root::<NavShell>();
     assert_eq!(shell.front_pane(), NavPane::Content);
