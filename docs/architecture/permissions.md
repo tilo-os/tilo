@@ -230,7 +230,7 @@ decision asks the same function: the room peer's record read check
 through it, and so does channel admission, below. A device whose person is
 denied any record is refused the room's whole legacy delivery rather than given
 a filtered one, because an automerge change graph cannot be served in part
-([rooms.md](rooms.md)).
+([workspace.md](workspace.md), "State").
 
 What carries a read decision to the bytes is the record's channel key, and
 channel stewards admit devices per channel, that is per record
@@ -282,8 +282,8 @@ key, which opens all of it, and splitting a record's channel per field would
 be key management that narrows nothing a separate record does not. Against a
 modified client the record is the boundary. To keep a part of a record from
 someone, keep it in a record of its own and deny that record, by name or by a
-pattern, or keep it in a room they are not in
-([rooms.md](rooms.md), "Rooms hold references, not copies").
+pattern, or keep it in a workspace they are not in
+([workspace.md](workspace.md), "State").
 
 The sandbox's capabilities ([security.md](security.md)) keep the opposite
 rule: there `Read` is the floor, and a restriction makes a path, device, host

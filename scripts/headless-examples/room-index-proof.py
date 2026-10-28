@@ -2,7 +2,7 @@
 """A workspace is shared: what one member puts in the room, the others have.
 
 A room *is* a workspace (`docs/architecture/collaboration.md` §4), and what a room
-holds is its **record index** (`docs/architecture/rooms.md`) — the references to the
+holds is its **record index** (`docs/architecture/workspace.md`) — the references to the
 documents in it. This checks that the index replicates between the room's
 members, in both directions, and that a person's own view of the room
 does not travel with it.

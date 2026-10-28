@@ -33,14 +33,11 @@ There is one resource / action / view model for every app, written one way
 
 ### Settings, files and secrets
 
-What follows a person or a device but is not shared with a room is not the
-document. A preference is a typed `Settings<T>` whose type declares its scope:
-`Personal` roams across the person's own devices, `DeviceLocal` never leaves
-this one, `Shared` reads a per-user section every app follows (locale,
-spelling). Views and surfaces get settings, the app's files and its secrets
-from their context; a secret of one document item is keyed by the item's id,
-so the document names it and the secret stays on the device. See
-`storage.md` §13.6.
+Settings are resources like any other state: CRDT-backed, in a workspace,
+synced to the devices that hold it ([workspace.md](workspace.md), "State").
+Views and surfaces get settings, the app's files and its secrets from their
+context; a secret of one document item is keyed by the item's id, so the
+document names it and the secret stays on the device.
 
 ### Views, versions and captures
 
@@ -75,20 +72,21 @@ palette and the control socket.
   forty. Per-author undo reverts through the inverse document action when the action
   recorded an outside consequence, otherwise through Automerge inverse patches, so one
   person's undo keeps everyone else's concurrent edits.
-- **Collaboration reduces to transport.** See `collaboration.md` and `rooms.md`.
+- **Collaboration reduces to transport.** One workspace model over iroh: members, their
+  devices, and each device's role per workspace. See `workspace.md`.
 - **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
   presentation defaults and the user overrides them; the app does not.
 
 ## Shape of the desktop
 
 Horizontally scrolling strips of non-overlapping windows, inside workspaces that carry
-their own collaborators, permissions and host. `Workspace → Strip → WindowGroup → Tab`.
+their own members and permissions. `Workspace → Strip → WindowGroup → Tab`.
 
 Strips are borrowed from Niri, not the identity. Do not reason from "spatial OS" — an
 early mockup's phrase that leads to Exposé-style surfaces. See `compositor.md`.
 
 A workspace is a unit of collaboration, not screen space. Rendering and state are
-decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
+decoupled, so one can be hosted elsewhere and render locally. See `workspace.md`.
 
 ## Files here
 
@@ -101,8 +99,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `surfaces.md` | everything painted over the desktop: kind, placement, modality, focus, dismissal, ownership, accessibility, stacking |
 | `collaboration.md` | CRDT sync, presence, peers |
-| `workspace.md` | one workspace: layout, people and state in one room, one engine for every host |
-| `rooms.md` | workspaces, hosts, membership |
+| `workspace.md` | the one unit of collaboration: members and devices, device roles and appetite, state, people, layout, history |
 | `hosting.md` | the target for hosting: one governor and many record hosts, many workspaces per host, devices and identity, the shared browser |
 | `hosting-capacity.md` | one zone's declared capacity and service level, the control-plane limits its hosts share, and the bounds on what a released room keeps |
 | `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |

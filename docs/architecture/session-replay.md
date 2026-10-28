@@ -23,7 +23,7 @@ Nothing else is in it. In particular it holds no change from before the
 window, no state of any other record, no presence, pointer or pixels.
 
 The original record cannot be handed out instead. An Automerge change graph
-cannot be served in part (`rooms.md`): sharing the record would share all of
+cannot be served in part (`workspace.md`): sharing the record would share all of
 its history and every later change. So the recording is a new document built
 from the stretch (`tilo_resource::recording`): its first change writes the
 start state, and every later change is the original change's effect, read as
