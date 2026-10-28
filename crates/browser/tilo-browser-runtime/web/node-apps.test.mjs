@@ -33,6 +33,7 @@ test('the node session lists its apps and opens the one the person picks', async
   const listed = [];
   const invoked = [];
   const queries = [];
+  let pendingAsks = 0;
   let requests = [];
   const nodeApps = createNodeApps({
     room: ROOM,
@@ -43,18 +44,27 @@ test('the node session lists its apps and opens the one the person picks', async
     }),
     setApps: apps => listed.push(apps),
     takeRequests: () => { const taken = requests; requests = []; return taken; },
+    pending: () => { pendingAsks++; return requests.length > 0; },
     setInterval: (callback, ms) => { timers.push({callback, ms}); return timers.length; },
     clearInterval: () => {},
   });
   await nodeApps.refresh();
+  // Only the catalogue refresh is on a timer: requests are pumped by the
+  // page's own frame, so a hidden tab opens nothing and asks nothing.
+  assert.deepEqual(timers.map(timer => timer.ms), [30_000]);
   assert.deepEqual(listed.at(-1), [
     {id: 'app.host:chromium-browser', title: 'Chromium'},
     {id: 'app.so.tilo.terminal', title: 'Terminal', app: 'so.tilo.terminal'},
   ]);
   assert.equal(queries[0].device, 'ab'.repeat(32));
   assert.equal(queries[0].query.provider, `workspace:${ROOM}`);
+  // Nothing asked for: the frame's pump asks one predicate and drains nothing.
+  nodeApps.pump();
+  assert.deepEqual(invoked, []);
+  assert.equal(pendingAsks, 1, 'one predicate, no drained list');
+  assert.deepEqual(queries.length, 1, 'and no catalogue fetch either');
   requests = ['app.host:chromium-browser', 'app.host:unknown', 'app.so.tilo.terminal'];
-  timers.find(timer => timer.ms === 250).callback();
+  nodeApps.pump();
   assert.deepEqual(invoked, [
     {device: 'ab'.repeat(32), target: {provider: `workspace:${ROOM}`, address: {resource: 'app.host:chromium-browser', action: 'open'}}},
     {device: 'ab'.repeat(32), target: {provider: `workspace:${ROOM}`, address: {resource: 'app.so.tilo.terminal', action: 'open'}}},

@@ -78,18 +78,31 @@ function decodeImage(bytes,maxDimension){
 }
 /** Fetch and compile the module of application `app` once the runtime's
  * own is in, before the page mounts it, so the app the page is about to
- * show does not wait for its first open. Not beside the runtime: on a link
- * the downloads saturate, the runtime then arrives late, and admission,
- * which needs it, runs only after both instead of while the app's code
- * downloads. A bundle that splits its apps (the desktop bundle) names each
- * app's module in `apps.json`; any other bundle, an unknown app or a failed
- * fetch leaves it to the app's first open, as without this. */
+ * show does not wait for its first open. App code is not fetched beside the
+ * runtime: on a link the downloads saturate, the runtime then arrives late,
+ * and admission, which needs it, runs only after both instead of while the
+ * app's code downloads. A bundle that splits its apps (the desktop bundle)
+ * names each app's module in `apps.json`; any other bundle, an unknown app
+ * or a failed fetch leaves it to the app's first open, as without this.
+ *
+ * `apps.json` is a few kilobytes and needs nothing from the runtime, so it
+ * is fetched beside it and remembered: the app's own module then starts as
+ * soon as the runtime is in, instead of after the runtime and a round trip
+ * for the listing one after the other. */
+let applicationModules;
+function applications(fetch){
+  return applicationModules??=fetch(new URL('apps.json',import.meta.url))
+    .then(listing=>listing.ok?listing.json():null)
+    .then(listed=>listed?.applications??[])
+    .catch(()=>[]);
+}
 export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready}={}){
+  const listing=applications(fetch);
+  // A failure is the app's first open to report, as if this were never here.
+  void listing.catch(()=>{});
   void (async()=>{
-    await after();
-    const listing=await fetch(new URL('apps.json',import.meta.url));
-    if(!listing.ok)return;
-    const module=(await listing.json()).applications?.find(entry=>entry.id===app)?.module;
+    const [modules]=await Promise.all([listing,after()]);
+    const module=modules.find(entry=>entry.id===app)?.module;
     if(typeof module==='string')(await load()).prefetch(module);
   })().catch(()=>{});
 }
@@ -274,6 +287,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
+    nodeApps?.pump();
     for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
@@ -308,7 +322,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],pending:()=>Boolean(active()&&runtime.desktop_node_app_requests_pending?.(id)),onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}

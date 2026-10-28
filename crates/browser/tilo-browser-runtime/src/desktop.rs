@@ -753,6 +753,12 @@ impl Shared {
         std::mem::take(&mut *self.node_app_requests.borrow_mut())
     }
 
+    /// Whether [`Self::take_node_app_requests`] has anything to hand out: the
+    /// page asks before it drains, so an idle desktop costs no call.
+    pub fn node_app_requests_pending(&self) -> bool {
+        !self.node_app_requests.borrow().is_empty()
+    }
+
     /// Have the desktop's session deliver `action` to its app as the
     /// person's, opening the app first, on the next frame.
     pub fn ask_app_action(&self, action: tilo_desktop::launchpad::LaunchpadAppAction) {

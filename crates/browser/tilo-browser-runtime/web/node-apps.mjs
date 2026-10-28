@@ -16,6 +16,10 @@
  * - `actions(device)`: `{catalogue(query), invoke(target)}` addressed to it
  *   (`agents.actions`).
  * - `setApps([{id, title, app?}])`, `takeRequests()` → ids the person opened.
+ * - `pending()`: whether the desktop has requests to take. `pump()` is the
+ *   page's own frame (`host.mjs` `update`), which asks `pending()` first: a
+ *   desktop that opened nothing costs one predicate, not a drained list on
+ *   a timer that ran whether the tab was shown or hidden.
  */
 
 const HOST_APP_KIND = 'applications.host-app';
@@ -24,7 +28,6 @@ const PACKAGE_PREFIX = 'app.';
 const OPEN = 'open';
 const MAX_PAGES = 8;
 const REFRESH_MS = 30_000;
-const REQUEST_POLL_MS = 250;
 
 /**
  * The applications in a catalogue page's rows: `[{id, title, app?, target}]`,
@@ -52,7 +55,7 @@ export function nodeApplications(rows) {
 const listed = ({id, title, app}) => (app ? {id, title, app} : {id, title});
 
 export function createNodeApps({
-  room, nodeSession, actions, setApps, takeRequests,
+  room, nodeSession, actions, setApps, takeRequests, pending = () => true,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
   clearInterval: stopEvery = handle => globalThis.clearInterval(handle),
   onError = () => {},
@@ -90,7 +93,14 @@ export function createNodeApps({
     return refreshing;
   }
 
-  function open() {
+  /** Open what the person asked for, if the desktop has anything to take:
+   * the page calls this from its own frame, so an idle desktop asks one
+   * predicate and drains nothing. */
+  function pump() {
+    if (closed) return;
+    let waiting;
+    try { waiting = pending(); } catch (error) { report(error); return; }
+    if (!waiting) return;
     let requested = [];
     try { requested = takeRequests() ?? []; } catch (error) { report(error); }
     for (const id of requested) {
@@ -101,17 +111,16 @@ export function createNodeApps({
   }
 
   const refreshTimer = every(() => { void refresh(); }, REFRESH_MS);
-  const requestTimer = every(open, REQUEST_POLL_MS);
   void refresh();
   return {
     refresh,
+    pump,
     /** The applications listed now. */
     apps: () => apps.map(listed),
     close() {
       if (closed) return;
       closed = true;
       stopEvery(refreshTimer);
-      stopEvery(requestTimer);
       try { setApps([]); } catch {}
     },
   };
