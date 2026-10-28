@@ -701,7 +701,7 @@ fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut S
                     .map(|(name, binding)| format!("{name}: {}", describe(binding, steps)))
                     .collect();
                 let resource = match resource {
-                    Selector::Fixed { resource } => format!(" on {resource}"),
+                    Selector::Fixed(id) => format!(" on {id}"),
                     other => format!(" on {other:?}"),
                 };
                 format!(
