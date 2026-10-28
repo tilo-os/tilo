@@ -8313,8 +8313,14 @@ fn attach_collab_broker_bridges(
             crate::shell::app_action_consent::SheetPrompter::session(),
         ));
         // Native openings asked for while the broker was binding run with it.
+        // The chrome's opening is the one slot the broker is attached to
+        // (`attach_app_action_broker`, below), shared with the launch session.
         crate::shell::launcher::attach_native_app_opening(
-            crate::shell::launcher::NativeAppOpening(action_broker.downgrade()),
+            frame_builder
+                .chrome_handle()
+                .borrow()
+                .native_app_opening
+                .clone(),
         );
         frame_builder
             .host_mut()
