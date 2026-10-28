@@ -439,12 +439,12 @@ mod tests {
             }))
             .unwrap();
         let state = person.state().unwrap();
-        let subtask = state
+        let (part, subtask) = state
             .issues
             .iter()
-            .map(|(_, issue)| issue)
-            .find(|issue| issue.parent.is_some())
+            .find(|(_, issue)| issue.parent.is_some())
             .unwrap();
+        let part = part.clone();
         assert!(
             subtask.run.is_none() && subtask.model.is_none(),
             "the part chose nothing of its own"
@@ -456,7 +456,6 @@ mod tests {
         );
         // The part's own choice answers for it, and its own run's capture
         // does too, before the task's is reached.
-        let part = subtask.id.clone();
         person
             .apply(Tracker::CHOOSE_MODEL.with(tracker::ChooseModel {
                 issue: part.clone(),
