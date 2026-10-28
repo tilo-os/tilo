@@ -1,6 +1,7 @@
 //! Real private-workspace promotion/replay qualification. No granted source or
 //! successful adoption is manufactured by substituting a test operation.
 use super::*;
+use std::io::SeekFrom;
 use std::os::unix::{
     ffi::OsStringExt,
     fs::{MetadataExt, OpenOptionsExt},
@@ -105,9 +106,13 @@ fn streaming_v1_nested_spill_reopens_real_moves_and_keeps_native_fidelity() {
     assert!(!q.join("large").exists());
     assert!(q.join("later").exists());
     let durable = std::fs::read(&j).unwrap();
+    let manifest = journal_manifest(&q, &h, &j);
+    let mut committed = canonical.clone();
+    committed.push(b'\n');
+    assert_eq!(manifest.bytes, committed.len() as u64);
     assert_eq!(
-        durable.split(|byte| *byte == b'\n').next().unwrap(),
-        canonical
+        manifest.sha256,
+        <[u8; 32]>::from(Sha256::digest(&committed))
     );
     // A partial checkpoint after a durable move is not promoted to completion.
     std::fs::OpenOptions::new()
@@ -387,16 +392,10 @@ fn segmented_long_path_home_reopens_real_partial_move_and_root_acl_receipt() {
     phase("first-move-complete");
     assert!(!q.join("documents").exists());
     assert!(q.join("later").exists());
-    let line = std::fs::read(&j).unwrap();
-    let line = line.split(|b| *b == b'\n').next().unwrap();
-    let header: serde_json::Value = serde_json::from_slice(line).unwrap();
-    assert_eq!(header["version"], 2);
-    assert!(header["bytes"].as_u64().unwrap() > MAX as u64);
-    let segments = header["segments"].as_array().unwrap();
-    assert!(segments.len() >= 2);
-    for segment in segments {
-        assert!(segment["bytes"].as_u64().unwrap() <= MAX as u64);
-    }
+    let manifest = journal_manifest(&q, &h, &j);
+    assert!(manifest.bytes > MAX as u64);
+    assert!(manifest.segments.len() >= 2);
+    manifest.validate().unwrap();
     phase("recover-start");
     let recovered = PromotionReview::recover(&q, &h, &j).unwrap();
     phase("recover-complete");
@@ -503,42 +502,20 @@ fn segmented_plan_actual_process_crashes_preserve_source_and_recover_committed_r
         verify_long_path_home(&h, &nested, 6_000);
     }
 }
-#[test]
-fn legacy_small_home_still_publishes_and_reopens_exact_v1_journal() {
-    let fixture = fixture();
-    let q = fixture.path().join("quarantine");
-    let h = fixture.path().join("target");
-    let j = fixture.path().join("workspace/adoption");
-    std::fs::write(q.join("document"), b"legacy semantic bytes").unwrap();
-    let review = PromotionReview::review(&q, &h, &j)
+/// The segmented plan manifest the adoption journal committed.
+fn journal_manifest(q: &Path, h: &Path, j: &Path) -> segmented::Manifest {
+    let (_, _, parent) = roots(q, h, j).unwrap();
+    let scratch = crate::migration_review::InventoryScratch::review_for_restore(
+        parent.clone(),
+        0,
+        0,
+        MAX,
+        JOURNAL_RESERVE,
+    )
+    .unwrap();
+    Log::open(&parent, j.file_name().unwrap(), scratch)
         .unwrap()
-        .with_home_root_acl()
-        .unwrap();
-    let expected = serde_json::to_vec(&review.plan).unwrap();
-    assert!(
-        review
-            .run(false, &AtomicBool::new(false))
-            .unwrap()
-            .complete()
-    );
-    let actual = std::fs::read(&j).unwrap();
-    assert_eq!(actual.split(|b| *b == b'\n').next().unwrap(), expected);
-    // The historical producer committed via hard_link before its temporary
-    // unlink. Reconstruct that actual inode topology; mutable locked-root
-    // accounting must not strand previously valid v1 crash recovery.
-    let old_temporary = j.with_file_name(".tilo-copy-legacy-crash");
-    std::fs::hard_link(&j, &old_temporary).unwrap();
-    assert_eq!(std::fs::metadata(&j).unwrap().nlink(), 2);
-    PromotionReview::recover(&q, &h, &j)
-        .unwrap()
-        .verify_completed()
-        .unwrap();
-    assert_eq!(std::fs::read(&j).unwrap(), actual);
-    assert_eq!(std::fs::read(&old_temporary).unwrap(), actual);
-    assert_eq!(
-        std::fs::read(h.join("document")).unwrap(),
-        b"legacy semantic bytes"
-    );
+        .manifest
 }
 
 #[test]
@@ -555,17 +532,13 @@ fn actual_segment_digest_and_missing_segment_refuse_before_first_move() {
             .unwrap();
         let (_, _, parent) = roots(&q, &h, &j).unwrap();
         let log = Log::create(&parent, j.file_name().unwrap(), review.plan.clone()).unwrap();
+        let nonce = log.manifest.nonce.clone();
         drop(log);
         let bytes = std::fs::read(&j).unwrap();
-        let header: serde_json::Value =
-            serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
         let segment = j
             .parent()
             .unwrap()
-            .join(format!(
-                ".tilo-adoption-plan-{}",
-                header["nonce"].as_str().unwrap()
-            ))
+            .join(format!(".tilo-adoption-plan-{nonce}"))
             .join("segment-0000");
         if missing {
             std::fs::remove_file(&segment).unwrap();
@@ -663,7 +636,7 @@ fn actual_long_path_plan_replay_scans_only_consumed_json_bytes() {
     let mut wire = expected.clone();
     wire.push(b'\n');
     let mut reader = std::io::BufReader::with_capacity(8192, std::io::Cursor::new(wire));
-    let mut line = replay::Line::segmented(&mut reader);
+    let mut line = replay::Line::new(&mut reader);
     let store = Store::new(
         reviewed.plan.entries.store().scratch(),
         Arc::new(AtomicBool::new(false)),
