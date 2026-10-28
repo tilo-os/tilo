@@ -2371,8 +2371,10 @@ fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
     generation
 }
 
-/// Drop the memoised enumeration. Used after an install/remove and by
-/// tests that repoint `TILO_APPS_DATA_DIR`.
+/// Drop the memoised enumeration and read the registry again, so what the
+/// compositor loop is served ([`installed_apps_without_waiting`]) already
+/// holds the change. Used on a worker after an install/remove and by tests
+/// that repoint `TILO_APPS_DATA_DIR`; never on the compositor loop.
 pub fn invalidate_app_cache() {
     // Bump the epoch under the lock so a read finishing right after cannot
     // memoise itself as fresh.
@@ -2382,6 +2384,16 @@ pub fn invalidate_app_cache() {
     *cache = None;
     drop(cache);
     *lock(&APP_CACHE_STAMP) = None;
+    load_installed_apps();
+}
+
+/// Read the installed apps into what the compositor loop is served. At
+/// startup, before the loop turns, so its first windows are named by their
+/// apps; never on the loop.
+pub(crate) fn load_installed_apps() {
+    if let Err(error) = installed_apps_snapshot() {
+        tracing::warn!(%error, "installed apps unreadable");
+    }
 }
 
 /// Cheap installed-store invalidation token for session-owned services.
@@ -2469,9 +2481,14 @@ fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>)
     let _watcher = watcher;
     while rx.try_recv().is_ok() {}
     let _ = ready.send(());
+    // A change is read here, on the watch's thread, so the list the
+    // compositor loop is served holds it without a read of its own.
     while rx.recv().is_ok() {
         while rx.try_recv().is_ok() {}
         expire_watched_app_cache();
+        if let Err(error) = installed_apps_snapshot() {
+            tracing::debug!(%error, "changed app registry unreadable; the last list stays stale");
+        }
     }
 }
 
@@ -6403,8 +6420,8 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
 
 /// [`display_name_for_app_id`] for the compositor loop: the installed
 /// packages as last enumerated ([`installed_apps_without_waiting`]), never
-/// a registry read. An app installed since may show its id until the
-/// refresh lands.
+/// a registry read. The registry watch and every install read changes into
+/// that list as they happen.
 pub(crate) fn display_name_for_app_id_without_waiting(app_id: &str) -> Option<String> {
     display_name_among(app_id, installed_apps_without_waiting)
 }
