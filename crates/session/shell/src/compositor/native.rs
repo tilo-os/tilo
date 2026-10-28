@@ -5029,6 +5029,7 @@ fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
         PasscodeKey::Char(c) => c.to_string(),
         PasscodeKey::Shift => "shift".into(),
         PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Letters => "letters".into(),
         PasscodeKey::Space => "space".into(),
         PasscodeKey::Backspace => "backspace".into(),
         PasscodeKey::Enter => "enter".into(),
