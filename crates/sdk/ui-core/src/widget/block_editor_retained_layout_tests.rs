@@ -574,24 +574,40 @@ fn retained_theme_and_viewport_changes_keep_full_paint_bounds() {
     }
 }
 
+/// A selection across blocks is painted by each block it covers: the rows
+/// it repaints match a full render.
 #[test]
-fn retained_document_selection_keeps_full_paint_bounds() {
+fn retained_document_selection_repaints_its_rows_as_a_full_render_paints_them() {
     let blocks = (0..8)
         .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
         .collect();
     let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
     let before = fixture.scene.clone();
-    let old_bounds = fixture.editor.get_rect();
     fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
     assert!(fixture.editor.document_selection.is_some());
-    assert!(
-        fixture
-            .damage
-            .iter()
-            .any(|rect| rect.contains_rect(old_bounds)),
-        "a document selection retains full paint bounds"
-    );
     assert_damage_pixels(&before, &fixture, false);
+}
+
+/// A selection grown to a line's end and past it, where it marks the
+/// break, repaints its row as a full render paints it.
+#[test]
+fn retained_selection_past_a_line_end_matches_a_full_render() {
+    let blocks = (0..8)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    for step in [NamedKey::End, NamedKey::ArrowRight, NamedKey::ArrowLeft] {
+        let before = fixture.scene.clone();
+        fixture.key(Key::Named(step), ModifiersState::SHIFT.into());
+        if fixture.damage.is_empty() {
+            assert!(
+                fixture.scene.encoding_eq(&before),
+                "Shift+{step:?} changed the editor's paint unseen"
+            );
+            continue;
+        }
+        assert_damage_pixels(&before, &fixture, true);
+    }
 }
 
 #[test]
