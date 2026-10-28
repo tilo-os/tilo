@@ -26,7 +26,9 @@ test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-iden
 # first gated. Disable in production builds to drop the test surface
 # (`--no-default-features --features ...`).
 default = ["hosted-test-control"]
-hosted-test-control = []
+# Also installs the sampling heap profiler as the global allocator
+# (`shell::heap_profile`), idle unless `PPROF_ALLOC_SAMPLE_RATE` is set.
+hosted-test-control = ["dep:pprof-alloc", "dep:prost", "dep:flate2"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
 # compositor from any other executable before logging into it. Non-default,
@@ -145,6 +147,12 @@ tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 
+# Live heap by allocating call site, for the idle-memory test and on demand
+# (`shell::heap_profile`): a sampling wrapper around glibc's allocator, its
+# gzipped pprof profile decoded here.
+pprof-alloc = { version = "0.6.0", optional = true }
+prost = { version = "0.14.4", optional = true }
+flate2 = { workspace = true, optional = true }
 serde.workspace = true
 # `raw_value`: the control socket splices a tree serialised once into its reply.
 serde_json = { workspace = true, features = ["raw_value"] }

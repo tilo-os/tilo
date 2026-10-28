@@ -4102,6 +4102,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoa"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10376,6 +10382,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10464,6 +10484,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
 dependencies = [
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
 ]
@@ -12337,6 +12358,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
+name = "pprof-alloc"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "369923102862bdc5493697885f78575fae27b20103f301e9390e21adfe48f0cd"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "backtrace",
+ "dashmap",
+ "errno",
+ "flate2",
+ "itertools 0.15.0",
+ "lazy_static",
+ "libc",
+ "num",
+ "once_cell",
+ "paste",
+ "prometheus-client",
+ "prost",
+ "quick-xml 0.41.0",
+ "regex",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12531,6 +12580,29 @@ checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
 dependencies = [
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "prometheus-client"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1784dc11a05f5a8f57c4a62915686be140f24f70301290b997e317241fa9ffc2"
+dependencies = [
+ "dtoa",
+ "itoa",
+ "parking_lot",
+ "prometheus-client-derive-encode",
+]
+
+[[package]]
+name = "prometheus-client-derive-encode"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01e34894696ff94f64a20c2c373a6440903e9c2789a303d68ec6e6f953f890e4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -15243,6 +15315,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
+ "flate2",
  "fnv",
  "fs-protocol",
  "futures-util",
@@ -15275,6 +15348,8 @@ dependencies = [
  "pipewire",
  "pollster",
  "postcard",
+ "pprof-alloc",
+ "prost",
  "qcms",
  "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
@@ -25748,6 +25823,7 @@ dependencies = [
  "drm-ffi",
  "drm-fourcc",
  "drm-sys",
+ "dtoa",
  "durable-store",
  "dyn-clone",
  "ebook",
@@ -26178,6 +26254,7 @@ dependencies = [
  "notify",
  "notify-types",
  "nu-ansi-term",
+ "num",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-bigint-dig",
@@ -26295,6 +26372,7 @@ dependencies = [
  "postgres-types",
  "potential_utf",
  "powerfmt",
+ "pprof-alloc",
  "ppv-lite86",
  "precomputed-hash",
  "prefix-trie",
@@ -26312,6 +26390,8 @@ dependencies = [
  "proc-macro2",
  "profiling",
  "profiling-procmacros",
+ "prometheus-client",
+ "prometheus-client-derive-encode",
  "proptest",
  "prost",
  "prost-derive",
