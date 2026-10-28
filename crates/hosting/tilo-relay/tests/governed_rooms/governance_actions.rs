@@ -10,9 +10,7 @@ use tilo_actions::remote::{
     room_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_relay::rooms::{
-    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS, RoomAdminError, RoomCommand,
-};
+use tilo_relay::rooms::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 
 use super::*;
@@ -384,63 +382,6 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
     };
     assert!(result.unwrap().rows.is_empty());
     assert_eq!(relay.rooms().unwrap().list().await.len(), 1);
-    relay.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_old_administration_door_only_removes_members() {
-    let alice = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
-    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
-    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Design review").await.unwrap();
-    rooms.enter(&room.room, &laptop.cert).await.unwrap();
-    super::members::admit(&relay, &host, &phone, &room.room).await;
-
-    // What the actions serve is refused there, naming the action.
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    for (command, action) in [
-        (RoomCommand::List, "`room.list` action of `tilo.host`"),
-        (
-            RoomCommand::Enter {
-                room: room.room.clone(),
-            },
-            "`room.enter` action of `tilo.host`",
-        ),
-    ] {
-        let refused = admin.send(relay.node_addr(), command).await.unwrap_err();
-        assert!(
-            matches!(&refused, RoomAdminError::Refused(reason) if reason.contains(action)),
-            "{refused}"
-        );
-    }
-
-    // Removing a member still works there too.
-    let generation = admin
-        .remove(
-            relay.node_addr(),
-            &room.room,
-            RemoveMemberRequest {
-                request_id: [9; 32],
-                user_public_key: bob.user_pk,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(generation > room.generation);
-    assert!(
-        rooms
-            .summary(&room.room)
-            .await
-            .unwrap()
-            .members
-            .iter()
-            .any(|member| member.user_public_key == bob.user_pk && member.removed)
-    );
     relay.shutdown().await;
 }
 

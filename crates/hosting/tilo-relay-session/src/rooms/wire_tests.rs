@@ -1,91 +1,16 @@
-//! Room-admin and workspace-join wire bytes, captured by encoding the same
+//! Workspace-join wire bytes, captured by encoding the same
 //! values with the types as they were in `tilo-relay` before this crate was
 //! split out. These are postcard formats between separately updated
 //! hosts and desktops: a changed byte here is a wire break, not a vector to
 //! recapture.
 
-use super::{
-    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
-    PendingInvitation, RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
-    SetMemberRoleRequest,
-};
+use super::IssuedInvitation;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-use tilo_workspace_join::GovernedMember;
 use tilo_workspace_join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest, JoinProof,
-    JoinTransportRequest, JoinTransportResponse, MemberRole, MembershipChallenge,
-    MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
-    MembershipProof,
+    JoinTransportRequest, JoinTransportResponse, MembershipChallenge, MembershipChallengeRequest,
+    MembershipChallengeResponse, MembershipCompleteRequest, MembershipProof,
 };
-
-const COMMANDS: &[(&str, &str)] = &[
-    ("Create", "0004526f6f6d"),
-    ("List", "01"),
-    (
-        "Enter",
-        "022430303030303030302d303030302d303030302d303030302d303030303030303030303031",
-    ),
-    (
-        "Invite",
-        "032430303030303030302d303030302d303030302d303030302d3030303030303030303030310101010101010101010101010101010101010101010101010101010101010101020102020202020202020202020202020202020202020202020202020202020202020102426fe8070103416461",
-    ),
-    (
-        "Cancel",
-        "042430303030303030302d303030302d303030302d303030302d30303030303030303030303103030303030303030303030303030303030303030303030303030303030303030404040404040404040404040404040404040404040404040404040404040404",
-    ),
-    (
-        "Pending",
-        "052430303030303030302d303030302d303030302d303030302d303030303030303030303031",
-    ),
-    (
-        "SetRole",
-        "062430303030303030302d303030302d303030302d303030302d3030303030303030303030310505050505050505050505050505050505050505050505050505050505050505060606060606060606060606060606060606060606060606060606060606060600",
-    ),
-    (
-        "Remove",
-        "072430303030303030302d303030302d303030302d303030302d30303030303030303030303107070707070707070707070707070707070707070707070707070707070707070808080808080808080808080808080808080808080808080808080808080808",
-    ),
-    (
-        "RecordEffectReceipt",
-        "082430303030303030302d303030302d303030302d303030302d3030303030303030303030311000112233445566778899aabbccddeeff03090807",
-    ),
-    (
-        "RetiredClaimTopologyNamespace",
-        "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
-    ),
-    (
-        "GrantAppAuthorship",
-        "0a2430303030303030302d303030302d303030302d303030302d3030303030303030303030310b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0d736f2e74696c6f2e6e6f746573",
-    ),
-];
-
-const REPLIES: &[(&str, &str)] = &[
-    (
-        "Room",
-        "002430303030303030302d303030302d303030302d303030302d303030303030303030303031888e98a8c0e080810104526f6f6dac020105050505050505050505050505050505050505050505050505050505050505050101034164610106060606060606060606060606060606060606060606060606060606060606060001",
-    ),
-    (
-        "Rooms",
-        "01022430303030303030302d303030302d303030302d303030302d303030303030303030303031888e98a8c0e080810104526f6f6dac0201050505050505050505050505050505050505050505050505050505050505050501010341646101060606060606060606060606060606060606060606060606060606060606060600012430303030303030302d303030302d303030302d303030302d303030303030303030303031888e98a8c0e080810104526f6f6dac020105050505050505050505050505050505050505050505050505050505050505050101034164610106060606060606060606060606060606060606060606060606060606060606060001",
-    ),
-    ("Entered", "0201"),
-    (
-        "Invitation",
-        "030a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a03010203",
-    ),
-    (
-        "Pending",
-        "04010b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b010001024379d00f",
-    ),
-    ("Governance", "054d"),
-    ("Done", "06"),
-    ("Refused", "07026e6f"),
-];
-
-const REQUESTS: &[(&str, &str)] = &[(
-    "List",
-    "fa4834147f6e690c3693eff61336046403cd8ae2a14f31b3c407358569239565197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d6104776972650000010107010940003b8467f0ecc7b3fe0f9dd333b350bb4860f9dd08ff19295dd94a3014614b7409e733873b7d78f0ca3b0472ae715517e391bdd444851e0441b493c61effe90001",
-)];
 
 const JOIN_REQUESTS: &[(&str, &str)] = &[
     ("Inspect", "0003030104"),
@@ -133,136 +58,6 @@ fn cert() -> DeviceCert {
     };
     sign_device_cert(&mut cert, &root).unwrap();
     cert
-}
-
-fn summary() -> RoomSummary {
-    RoomSummary {
-        room: "00000000-0000-0000-0000-000000000001".into(),
-        workspace_id: 0x0102_0304_0506_0708,
-        name: "Room".into(),
-        generation: 300,
-        members: vec![GovernedMember {
-            user_public_key: [5; 32],
-            role: MemberRole::Commenter,
-            display_name: Some("Ada".into()),
-            active_device_keys: vec![[6; 32]],
-            removed: false,
-            administrator: true,
-        }],
-    }
-}
-
-fn commands() -> Vec<(&'static str, RoomCommand)> {
-    let room = || "00000000-0000-0000-0000-000000000001".to_string();
-    vec![
-        (
-            "Create",
-            RoomCommand::Create {
-                name: "Room".into(),
-            },
-        ),
-        ("List", RoomCommand::List),
-        ("Enter", RoomCommand::Enter { room: room() }),
-        (
-            "Invite",
-            RoomCommand::Invite {
-                room: room(),
-                request: IssueInvitationRequest {
-                    request_id: [1; 32],
-                    role: MemberRole::Editor,
-                    recipient_user_public_key: Some([2; 32]),
-                    invitee_name: Some("Bo".into()),
-                    expires_at_ns: 1_000,
-                    inviter_name: Some("Ada".into()),
-                },
-            },
-        ),
-        (
-            "Cancel",
-            RoomCommand::Cancel {
-                room: room(),
-                request: CancelInvitationRequest {
-                    request_id: [3; 32],
-                    invite_id: [4; 32],
-                },
-            },
-        ),
-        ("Pending", RoomCommand::Pending { room: room() }),
-        (
-            "SetRole",
-            RoomCommand::SetRole {
-                room: room(),
-                request: SetMemberRoleRequest {
-                    request_id: [5; 32],
-                    user_public_key: [6; 32],
-                    role: MemberRole::Viewer,
-                },
-            },
-        ),
-        (
-            "Remove",
-            RoomCommand::Remove {
-                room: room(),
-                request: RemoveMemberRequest {
-                    request_id: [7; 32],
-                    user_public_key: [8; 32],
-                },
-            },
-        ),
-        (
-            "RecordEffectReceipt",
-            RoomCommand::RecordEffectReceipt {
-                room: room(),
-                invocation: uuid::Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
-                redacted: vec![9, 8, 7],
-            },
-        ),
-        (
-            "RetiredClaimTopologyNamespace",
-            RoomCommand::RetiredClaimTopologyNamespace {
-                room: room(),
-                salt: 42,
-            },
-        ),
-        (
-            "GrantAppAuthorship",
-            RoomCommand::GrantAppAuthorship {
-                room: room(),
-                request: GrantAppAuthorshipRequest {
-                    request_id: [11; 32],
-                    app: "so.tilo.notes".into(),
-                },
-            },
-        ),
-    ]
-}
-
-fn replies() -> Vec<(&'static str, RoomReply)> {
-    vec![
-        ("Room", RoomReply::Room(summary())),
-        ("Rooms", RoomReply::Rooms(vec![summary(), summary()])),
-        ("Entered", RoomReply::Entered { changed: true }),
-        (
-            "Invitation",
-            RoomReply::Invitation(IssuedInvitation {
-                invite_id: [10; 32],
-                signed_invitation: vec![1, 2, 3],
-            }),
-        ),
-        (
-            "Pending",
-            RoomReply::Pending(vec![PendingInvitation {
-                invite_id: [11; 32],
-                role: MemberRole::Commenter,
-                recipient_user_public_key: None,
-                invitee_name: Some("Cy".into()),
-                expires_at_ns: 2_000,
-            }]),
-        ),
-        ("Governance", RoomReply::Governance { generation: 77 }),
-        ("Done", RoomReply::Done),
-        ("Refused", RoomReply::Refused("no".into())),
-    ]
 }
 
 fn join_challenge() -> JoinChallenge {
@@ -387,89 +182,13 @@ where
 }
 
 #[test]
-fn room_admin_wire_bytes_are_stable() {
-    assert_stable("RoomCommand", commands(), COMMANDS);
-    assert_stable("RoomReply", replies(), REPLIES);
-    assert_stable(
-        "RoomAdminRequest",
-        vec![(
-            "List",
-            RoomAdminRequest {
-                device_cert: cert(),
-                command: RoomCommand::List,
-            },
-        )],
-        REQUESTS,
-    );
-}
-
-#[test]
 fn workspace_join_wire_bytes_are_stable() {
     assert_stable("JoinTransportRequest", join_requests(), JOIN_REQUESTS);
     assert_stable("JoinTransportResponse", join_responses(), JOIN_RESPONSES);
 }
 
-/// Every room variant has a captured case: a new variant stops this match
-/// compiling, and the counts fail until the variant has a case and a vector.
 #[test]
-fn room_admin_wire_cases_cover_every_variant() {
-    for (_, command) in commands() {
-        match command {
-            RoomCommand::Create { .. }
-            | RoomCommand::List
-            | RoomCommand::Enter { .. }
-            | RoomCommand::Invite { .. }
-            | RoomCommand::Cancel { .. }
-            | RoomCommand::Pending { .. }
-            | RoomCommand::SetRole { .. }
-            | RoomCommand::Remove { .. }
-            | RoomCommand::RecordEffectReceipt { .. }
-            | RoomCommand::RetiredClaimTopologyNamespace { .. }
-            | RoomCommand::GrantAppAuthorship { .. } => {}
-        }
-    }
-    for (_, reply) in replies() {
-        match reply {
-            RoomReply::Room(_)
-            | RoomReply::Rooms(_)
-            | RoomReply::Entered { .. }
-            | RoomReply::Invitation(_)
-            | RoomReply::Pending(_)
-            | RoomReply::Governance { .. }
-            | RoomReply::Done
-            | RoomReply::Refused(_) => {}
-        }
-    }
-    assert_eq!(commands().len(), 11);
-    assert_eq!(replies().len(), 8);
-}
-
-#[test]
-fn every_command_but_removal_names_the_action_that_replaced_it() {
-    for (name, command) in commands() {
-        let replaced = command.replaced_by();
-        assert_eq!(
-            replaced.is_none(),
-            ["Remove", "RetiredClaimTopologyNamespace"].contains(&name),
-            "{name}: {replaced:?}"
-        );
-        if let Some((provider, action)) = replaced {
-            assert!(
-                [
-                    "tilo.workspace",
-                    super::HOST_ACTIONS_PROVIDER,
-                    super::MEMBER_ACTIONS_PROVIDER
-                ]
-                .contains(&provider),
-                "{name}: {provider}"
-            );
-            assert!(!action.is_empty(), "{name}");
-        }
-    }
-    assert_eq!(
-        RoomCommand::List.replaced_by(),
-        Some(("tilo.host", "room.list"))
-    );
+fn the_member_resource_names_its_room() {
     assert_eq!(super::member_resource("r"), "workspace.member:r");
 }
 

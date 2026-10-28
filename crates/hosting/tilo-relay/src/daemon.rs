@@ -503,7 +503,6 @@ impl Relay {
         let governs_rooms = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
-                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
             });
         let owner = identity.user_public_key;
         let (sessions, governed) = crate::host::HostSessions::open(

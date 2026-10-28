@@ -1,7 +1,7 @@
 //! Who may administer a room this relay governs, decided in one place.
 //!
 //! Every administration door (the `tilo.workspace` and `tilo.host` actions,
-//! the `tilo-room-admin/1` ALPN, the `/rooms` pages, calls, the moderation
+//! the `/rooms` pages, calls, the moderation
 //! agent) asks [`Rooms::authorize`] with what it is about to do. The answer comes in three steps:
 //!
 //! 1. The device must be a person's current device: certified now, not
