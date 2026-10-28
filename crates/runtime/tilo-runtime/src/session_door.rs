@@ -668,9 +668,10 @@ mod tests {
         assert!(!host.0.lock().unwrap().is_empty());
     }
 
+    const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
+
     #[test]
     fn probes_alone_never_admit_and_cannot_keep_the_door_reading() {
-        const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
         // Few enough probes to fit in a socket unread, so writing them never
         // waits on a door that is answering them, and a client that answers
         // none of it is what the budget is for: the door reads them out,
