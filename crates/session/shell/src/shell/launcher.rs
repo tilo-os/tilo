@@ -35,7 +35,8 @@ pub use launch_records::{
     consume_trusted_service_launch_identity, register_in_process_launch,
 };
 pub(crate) use launch_records::{
-    authenticated_window_launch, register_in_process_window, withdraw_in_process_launch,
+    authenticated_window_launch, register_in_process_window, register_tilolang_instance,
+    withdraw_in_process_launch,
 };
 
 use crate::shell::action_authority;

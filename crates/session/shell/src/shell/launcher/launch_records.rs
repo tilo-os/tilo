@@ -141,6 +141,10 @@ struct InProcessLaunch {
     app_id: String,
     workspace_id: String,
     window_instance: Option<u64>,
+    /// For an instance a tilolang host runs: the creation record and ticket
+    /// of the launch whose instance it is ([`register_tilolang_instance`]).
+    creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
+    launch_ticket: Option<u64>,
 }
 static IN_PROCESS_LAUNCHES: Mutex<Vec<InProcessLaunch>> = Mutex::new(Vec::new());
 
@@ -152,6 +156,8 @@ pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
         app_id: app_id.to_owned(),
         workspace_id: workspace_id.to_owned(),
         window_instance: None,
+        creation: None,
+        launch_ticket: None,
     });
 }
 
@@ -165,7 +171,52 @@ pub(crate) fn register_in_process_window(app_id: &str, workspace_id: &str, insta
         app_id: app_id.to_owned(),
         workspace_id: workspace_id.to_owned(),
         window_instance: Some(instance),
+        creation: None,
+        launch_ticket: None,
     });
+}
+
+/// Record that the session is about to connect the instance `instance` of
+/// `app_id` in room `workspace_id` that a tilolang host runs, for the launch
+/// of the process `launched`: the instance's window, which the shell started
+/// as that app in that room. The record carries that launch's creation
+/// record and ticket, so the broker records the connection exactly as it
+/// records a launched app's, and it is spent by the connection, as a
+/// window's is. Whether `launched` is a live launch of that app in that
+/// room: when it is not, nothing is recorded and the instance is not
+/// connected. The host itself names nothing here.
+pub(crate) fn register_tilolang_instance(
+    launched: u32,
+    app_id: &str,
+    workspace_id: &str,
+    instance: u64,
+) -> bool {
+    let Some((_, start_time)) = proc_stat(launched) else {
+        return false;
+    };
+    let (creation, launch_ticket) = {
+        let launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+        let Some(launch) = launches
+            .get(&launched)
+            .filter(|launch| launch.attests(launched, start_time, app_id, workspace_id))
+        else {
+            return false;
+        };
+        (
+            launch.identity.application_creation.clone(),
+            launch.launch_ticket,
+        )
+    };
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|launch| launch.window_instance != Some(instance));
+    launches.push(InProcessLaunch {
+        app_id: app_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        window_instance: Some(instance),
+        creation,
+        launch_ticket,
+    });
+    true
 }
 
 /// The session gave up the connection it recorded for `app_id` in
@@ -244,9 +295,9 @@ fn take_in_process_window_launch(
     drop(launches);
     Some(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
-            creation: None,
+            creation: launch.creation,
             continuation_instance: launch.window_instance,
-            launch_ticket: None,
+            launch_ticket: launch.launch_ticket,
         },
     )
 }
