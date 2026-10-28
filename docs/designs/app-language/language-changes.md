@@ -8,9 +8,11 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 1. **Enum fields with payloads.** A record field can be an enum whose cases carry values; it
    merges as a register of the whole value. Chat's `Part` stops tagging itself with strings
    (`kind: "text" | "block"`).
-2. **Creation defaults from recorded inputs.** A field default may use `now` (or another
-   recorded input); it's evaluated when the resource is created and recorded with the action.
-   `at: Time = now` replaces placeholder values like `Time("1970-01-01T00:00:00Z")`.
+2. **Reflection.** The log already records every change with its author, time and action, so
+   views and code can read it: `created(r)` and `updated(r)` (when, and by whom) and
+   `history(r)` (versions, each with who, when and which action). Apps stop storing their own
+   timestamps; Chat's `at: Time = Time("1970-01-01T00:00:00Z")` placeholder goes, and detail
+   views show "edited when, by whom" from it.
 3. **Scenarios set recorded inputs.** `as mia at 2026-06-29T07:02Z { post(...) }` runs the
    block with that time as `now`. Seed data stops overwriting fields after the fact.
 4. **Typing is personal.** Text being composed is lens state in the view (`lens draft: Text`),
