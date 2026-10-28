@@ -102,6 +102,66 @@ fn session_command(
     command
 }
 
+/// Have the session script stopped as an interrupt stops it when this process ends in a way
+/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then, and its
+/// cleanup stops what it started.
+fn end_with_this_process(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    let parent = rustix::process::getpid();
+    // SAFETY: runs in the forked child before exec, and calls only async-signal-safe system
+    // calls (prctl, getppid), allocating nothing.
+    unsafe {
+        command.pre_exec(move || {
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
+            // This process may have ended before the request: then nobody is left to signal,
+            // and the session must not start.
+            if rustix::process::getppid() != Some(parent) {
+                return Err(rustix::io::Errno::SRCH.into());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// The session script this tool started, by a pidfd that names that process and no other.
+///
+/// Dropped, it stops the script as an interrupt does: the script's own cleanup stops every
+/// process group it started (the shell, the apps, the services) and removes its runtime
+/// directory, and this waits until it has. A session that already ended is left as it is.
+struct Started {
+    pidfd: std::os::fd::OwnedFd,
+}
+
+impl Started {
+    fn new(child: &std::process::Child) -> Result<Self, String> {
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .ok_or("the nested session has no process id")?;
+        let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+            .map_err(|error| format!("watching the nested session: {error}"))?;
+        Ok(Self { pidfd })
+    }
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        use rustix::event::{PollFd, PollFlags, poll};
+        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
+        // Readable once the process has exited.
+        if poll(&mut exited, Some(&rustix::event::Timespec::default())).is_ok_and(|ready| ready > 0)
+        {
+            return;
+        }
+        eprintln!("==> stopping the nested session");
+        if rustix::process::pidfd_send_signal(&self.pidfd, rustix::process::Signal::TERM).is_err() {
+            return;
+        }
+        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
+        while poll(&mut exited, None) == Err(rustix::io::Errno::INTR) {}
+    }
+}
+
 /// Wait until `path` exists, woken by inotify on its directory, or the session ends.
 fn wait_for_file(
     path: &std::path::Path,
@@ -172,9 +232,20 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
 
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
-    let mut child = session_command(&repo, options, &base, &ready, &apps)
+    let mut command = session_command(&repo, options, &base, &ready, &apps);
+    end_with_this_process(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("starting the nested session: {error}"))?;
+    // From here on, however this ends, the sessions end with it.
+    let _session = match Started::new(&child) {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     let (sender, wakes) = mpsc::channel();
     let file_sender = sender.clone();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -198,4 +269,33 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         dev.opened
     );
     dev.follow(&wakes, &mut watcher)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run that ends, however it ends, stops the session it started and waits until it has.
+    #[test]
+    fn dropping_a_started_session_stops_it() {
+        let mut child = Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("a process stands in for the session");
+        drop(Started::new(&child).expect("a pidfd"));
+        let status = child
+            .try_wait()
+            .expect("its status")
+            .expect("stopped before the drop returned");
+        assert!(!status.success(), "{status}");
+    }
+
+    /// A session that already ended is left as it is.
+    #[test]
+    fn a_session_that_ended_is_not_signalled() {
+        let mut child = Command::new("true").spawn().expect("a process");
+        let started = Started::new(&child).expect("a pidfd");
+        assert!(child.wait().expect("its status").success());
+        drop(started);
+    }
 }

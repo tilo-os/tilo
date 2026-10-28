@@ -72,6 +72,22 @@ const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// nested-session.sh hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
 const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
 
+/// How long a session may take to offer an app it installed: the most the shell holds one
+/// listing (30 s). It answers as soon as the app is offered, so this bounds a session that
+/// never offers it, not a wait.
+const OFFER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a listing answer has `app`'s `applications` row.
+fn offers(answer: &serde_json::Value, app: &str) -> bool {
+    answer
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["provider"] == "applications" && row["id"] == app)
+        })
+}
+
 /// One session the tool drives.
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
@@ -200,6 +216,66 @@ impl Peer {
         self.invoke(bin, "applications", app)
     }
 
+    /// Wait until the session's catalogue offers `app` (its `applications` action): a session
+    /// just started indexes the apps it installed as it comes up, and an app it has not indexed
+    /// yet cannot be opened.
+    ///
+    /// Nothing here pauses. Each listing request asks the shell to hold its answer until the
+    /// listing is complete and, once one was seen, until it differs from that one: the shell
+    /// answers when its catalogue moves, not on a clock.
+    pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let mut seen: Option<String> = None;
+        loop {
+            let left = OFFER_WAIT.saturating_sub(started.elapsed());
+            let mut request = serde_json::json!({
+                "op": "actions_enumerate",
+                "query": app,
+                "kinds": ["application"],
+                "detail": "compact",
+                "wait_ms": u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
+            });
+            if let (Some(revision), Some(fields)) = (&seen, request.as_object_mut()) {
+                fields.insert("after_revision".into(), revision.clone().into());
+            }
+            let text = output(
+                self.command(&bin.join("tilo-control"))
+                    .arg("raw")
+                    .arg(request.to_string()),
+                "listing the session's applications",
+            )?;
+            let response: serde_json::Value = serde_json::from_str(text.trim())
+                .map_err(|error| format!("listing the session's applications: {error}"))?;
+            let Some(answer) = response.get("answer") else {
+                return Err(format!(
+                    "listing the session's applications: {}",
+                    response.get("err").unwrap_or(&response)
+                ));
+            };
+            if offers(answer, app) {
+                return Ok(());
+            }
+            // Only a listing the shell held until it settled can be asked for the next one; a
+            // wait that ran out answers unsettled.
+            let revision = answer
+                .get("settled")
+                .and_then(serde_json::Value::as_bool)
+                .filter(|settled| *settled)
+                .and_then(|_| answer.get("revision")?.as_str());
+            match revision {
+                Some(revision) if started.elapsed() < OFFER_WAIT => {
+                    seen = Some(revision.to_owned());
+                }
+                _ => {
+                    return Err(format!(
+                        "the session does not offer {app}: no `applications {app}` in its \
+                         catalogue"
+                    ));
+                }
+            }
+        }
+    }
+
     fn invoke(&self, bin: &Path, provider: &str, action: &str) -> Result<(), String> {
         output(
             self.command(&bin.join("tilo-control"))
@@ -278,4 +354,22 @@ pub(crate) fn read_trimmed(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path)
         .map(|text| text.trim().to_owned())
         .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_app_is_offered_by_its_applications_row_alone() {
+        let answer = serde_json::json!({"actions": [
+            {"provider": "app-actions", "id": "so.tilo.lang.counter"},
+            {"provider": "applications", "id": "so.tilo.lang.counter.other"},
+        ]});
+        assert!(!offers(&answer, "so.tilo.lang.counter"));
+        let answer = serde_json::json!({"actions": [
+            {"provider": "applications", "id": "so.tilo.lang.counter"},
+        ]});
+        assert!(offers(&answer, "so.tilo.lang.counter"));
+    }
 }
