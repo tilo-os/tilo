@@ -462,7 +462,10 @@ fi
 # invitation with this session's own device custody, and the shell redeems it
 # at startup into the Home workspace (TILO_SHELL_JOIN_INVITATION_FILE, the
 # ordinary boot join). The device then governs that room itself, and every
-# later start restores it from the saved desktop.
+# later start restores it from the saved desktop. Its host is this device, so
+# it is dialled nowhere and its apps wait for no first sync: they show what
+# the room holds at once. For a workspace a separate host holds, pass
+# --community with a local site (nested-pair.sh --peers 1 runs one).
 native_marker=$state/native-workspace
 [[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
 join_file=
