@@ -496,14 +496,14 @@ fn leading_number(text: &str) -> Option<(f64, &str)> {
 
 /// One conversion: the quantity as typed and as answered.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Conversion {
+pub struct Conversion {
     pub from: String,
     pub to: String,
 }
 
 /// `typed` as a conversion, if it is a number with a unit, and optionally
 /// the unit to convert to.
-pub(crate) fn convert(typed: &str) -> Option<Conversion> {
+pub fn convert(typed: &str) -> Option<Conversion> {
     let text = typed.trim().to_lowercase();
     let (value, rest) = leading_number(&text)?;
     let rest = format!(" {} ", rest.trim());

@@ -10,7 +10,9 @@
 //! Choosing an application launches it, a window focuses it, and an
 //! application's action or content runs through the palette's control
 //! invocation, which the frame host resolves against the live resource
-//! tree like any bound control.
+//! tree like any bound control. Search over everything also answers what
+//! is not a name, as the native shell's does: a sum or a unit conversion is
+//! copied, an address or a web search opens in a new browser tab.
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
@@ -402,6 +404,7 @@ impl DesktopSurface {
             applications: self.tiles.search_applications(),
             windows,
             commands,
+            answers: true,
             ..SearchData::default()
         };
         let mut owners = std::collections::HashMap::new();
@@ -670,6 +673,27 @@ impl DesktopSurface {
                         .filter(|id| shared.tree.workspaces.iter().any(|w| w.id == *id))
                         .map(Admitted::Workspace)
                 }
+            }
+            Target::Copy { text } => {
+                ui::text_selection::clipboard_copy(&text);
+                shared
+                    .acknowledger
+                    .say(crate::i18n::t("desktop-search-copied"));
+                None
+            }
+            // Where the host opens addresses. In a web browser that is a
+            // new tab, which the browser allows only within the choosing
+            // click or key press, so it opens now and a blocked one is
+            // said; a native handler may take its time, so it opens off
+            // this thread.
+            Target::Open { uri } => {
+                #[cfg(target_arch = "wasm32")]
+                if let Err(error) = ui::widget::try_open_external_url(&uri) {
+                    shared.acknowledger.say(error.to_string());
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                ui::widget::open_external_url(&uri);
+                None
             }
             // Runs through the palette's control invocation instead.
             Target::Action(_) => None,
