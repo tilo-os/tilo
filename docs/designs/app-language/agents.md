@@ -1,404 +1,145 @@
-# Agents: a workspace an agent can use quickly
+# Agents writing tilolang
 
-An agent working in a Tilo workspace should feel the way a good engineer feels in a familiar
-shell:
-- it knows where it is;
-- it guesses names right;
-- it finds things in one step;
-- it sees what it may do;
-- it checks its work before a person sees it.
-
-This page is about that interface. The model underneath it (types as resources, actions,
-authority following authorship, agents as tasks) is in `README.md` and `authority.md`. Search is in `search.md`, and
-answers that embed views are in `components.md`.
-
-The interface is designed from the agent's side. Each rule below removes a step that an agent
-otherwise spends tokens, calls or guesses on.
+An agent in a Tilo workspace should work like a good engineer in a familiar shell: it knows where
+it is, guesses names right, finds things in one step, sees what it may do, and checks its work
+before a person sees it. Every rule below saves an agent a call, a guess or tokens.
 
 ## 1. One language, one tool
 
-**Everything an agent says is tilolang, and everything it is told can be pasted back.**
-
-- **Queries, actions, reads and answers** are tilolang expressions and statements. There is no
-  separate JSON schema per tool, query DSL or answer format.
-- **Types and actions describe themselves as source.** `describe` prints a type or an action as
-  its tilolang declaration with its doc comments, the way the author wrote it. Agents read code
-  faster and more reliably than they read schemas.
-- **Output is input.** Every ref, filter and literal in an answer is valid in the next
-  request.
-
-The door is one MCP tool, `tilo`, taking a **program**. This is code mode, not one action per call:
-- **Apps are mounted.** Every installed app's types, actions and views are available
-  inside the program.
-- **Programs chain.** They query, read, filter, loop and act without a round trip per step. Their
-  output is what they `print`.
-- **The session is a REPL.** `let` values survive between calls, so results pass from one
-  call to the next without being copied through the model.
-- **Sandboxed under the task's authority.** Programs run under the task's authority in the wasm
-  sandbox, so a program can do no more than its single calls could. Its effects are one task
-  step: one preview, one undo, and asks still ask.
+- Everything an agent sends and receives is tilolang: queries, reads, actions, answers. Output
+  can be pasted back as input.
+- The door (Tilo's MCP server, `docs/runtime-mcp.md`) gets one more tool, `tilo`, which takes a
+  **program**. Every installed app's types, actions and views are available in it.
+- Programs chain: query, read, loop and act in one call, like one big `grep`. A session keeps
+  its `let` values between calls.
+- A program runs sandboxed as the agent's task, in a tilolang host whose author is that task,
+  so it can do no more than the task may. All its changes are one task step: one preview, one
+  undo, and asks still ask.
+- The existing tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) stay as one-call forms.
 
 ```
 let hits = find("launch video")
-print(hits | group type | take 5)
 for n in hits.of(Note) { print(read(n, matching: "video", around: 1)) }
 for m in find("video in:#launch received:-14d") { print(m.author, m.said) }
-for v in hits.of(Video) { print(v, v.length, read(v.transcript, matching: "cursor|agent")) }
 ```
 
-That is one call, the way an agent uses one big `grep` in a shell. It works for mail, chat,
-transcripts and anything else in the workspace.
+## 2. Where am I
 
-- **`find` takes the palette's query string,** the same text a person types, as `grep` takes a
-  pattern. The typed form (`find(Thread, from: …)`) is for programs that build queries.
-- **The syntax is mainstream on purpose.** Named arguments, `x -> …` lambdas and string
-  templates read like TypeScript, Swift and Rust. That is checked by measurement (§12, the
-  fluency eval), not assumed.
-- **The same language is the `tilo` command in a terminal.** The existing path tools
-  (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) are kept as one-call spellings.
-
-## 1.1 What it takes from main's agent door
-
-Agents write tilolang programs and do complex work in one call; that is the interface. Under it
-sits what main already has, which this design keeps rather than rebuilds:
-
-- **The door** (`docs/runtime-mcp.md`):
-  - path addressing resolved against the live directory;
-  - reads that cost what they touch;
-  - actions that answer when they settle.
-
-  Program calls go through it, and its path tools stay as the one-call form.
-- **The agent participant** (`crates/agent/agent-participant`):
-  - its own identity under a delegation;
-  - presence and attributed edits;
-  - the gated catalogue, where a denied operation does not exist for the agent;
-  - ids that can't be invented;
-  - allow, ask first and deny with editable drafts;
-  - task obligations.
-
-  A program is one more kind of task step on it, checked the same way.
-- **New here:**
-  - programs over mounted apps, with a REPL session;
-  - typed search with paths and identifier patterns;
-  - composed native views as answers.
-
-## 2. Orientation
-
-**Context usually arrives with the message.** Right-clicking anything in Tilo offers a chat field
-right there. The person types, and the message carries what was under the pointer: the view, the
-resource, the selection and its anchor (`context: n12 §4 "Video", selected ¶2`). `look` is for
-when no such context came with the message.
+Context usually arrives with the message: pointing at something and typing (canvas.md) sends
+the view, resource and selection along. Otherwise:
 
 ```
 > look
 workspace  Acme · you: Xaver · 3 people · synced
-focus      Mail › Inbox › t91 "Incorporation & SAFE: next steps"        (this)
+focus      Mail › Inbox › t91 "Incorporation & SAFE: next steps"
 selection  m3 ¶2.2
-open       Mail, Todo, Notes › "Board meeting"
-apps       mail todo notes chat calendar files
 task       "check my mail" · may: read all, write drafts and todos · asks: send, delete
 ```
 
-`look` answers four questions in one call:
-- where am I;
-- what is the person looking at;
-- what is around;
-- what may I do.
+Words for the obvious things: `this` (what the person is looking at), `selection`, `here` (what
+`this` is inside), `me`, and times like `today`, `-7d`, `last week`.
 
-Without arguments it shows the workspace. `look t91` does the same for one resource: its
-parents, its children by kind with counts, its actions, and who else is on it.
+## 3. Refs and anchors
 
-**Words for the obvious things:**
-
-| Word | Means |
-|---|---|
-| `this` | what the person is looking at: their focused resource |
-| `selection` | what they selected, with its anchor |
-| `me` | the person the task acts for |
-| `here` | the resource `this` is inside: the thread, notebook or list |
-| `today`, `-7d`, `last week` | times relative to now, in the person's time zone |
-
-"What does this say?" becomes `read this` with no searching. "Add that to my list" becomes
-`do todo.add(here, selection)`.
-
-## 3. Refs
-
-- **Every resource has a short ref,** unique within the workspace, like a git short hash:
-  `t91`, `m3`, `f7`. The prefix comes from the type's initial and grows only when needed.
-- **A full path is also accepted:** `mail/Thread/t91`, and a path by title,
-  `notes/"Board meeting"`.
-- **Every line of output starts with the ref of what it shows,** so an agent never has to
-  look one up again.
-- **Anchors** point inside a resource: `m3 ¶2.2` is a paragraph, `f7 p.4` a page, `doc §3` a
-  heading, `t91 m3..m5` a range of messages. They are what `quote(...)` cites.
-- **Addresses are stable.** They don't change when a title does, and a moved resource keeps
-  its ref.
+- Every resource has a short ref, like a git short hash (`t91`, `m3`); a path also works
+  (`notes/"Board meeting"`). Refs don't change when titles do.
+- Every output line starts with the ref of what it shows.
+- Anchors point inside a resource: `m3 ¶2.2`, `f7 p.4`, `t91 m3..m5`. `quote(...)` cites them.
 
 ## 4. Finding
 
-`find` is the query from `search.md`, written with the same tokens people type in the palette:
+`find` is system search (search.md), with the same tokens people type:
 
 ```
-> find Thread from:@ycombinator.com sort:-last
+> find Thread from:*@ycombinator.com sort:-last
 3 threads
-  t91  Incorporation & SAFE: next steps  Jane Doe    Tue 14:02  unread  3 msgs  Legal
-  t40  Welcome to YC: legal checklist     YC Legal    Sep 2             5 msgs
-  t12  Batch kickoff                      YC          Aug 28            12 msgs
-
-> find Todo "83(b)"
-0 todos
-
-> find from:jane received:-30d
-12 results: 9 messages, 2 notes, 1 event
-  m3   Re: Incorporation & SAFE …
+  t91  Incorporation & SAFE: next steps  Jane Doe  Tue 14:02  unread  Legal
+  t40  Welcome to YC: legal checklist     YC Legal  Sep 2
+  t12  Batch kickoff                      YC        Aug 28
 ```
 
-- **Columns are the type's declared filter fields:** what the app said matters about the type.
-  The row's title comes first. Counts come before rows.
-- **Pages** default to 10 rows. `more` continues the last result, and `find … | count` answers
-  without rows.
-- **Tokens:**
-  - identifiers as URIs with `*` (`*@ycombinator.com`, `discord:janedoe`, `tel:+49*`), and
-    paths through references such as `from.contact.org:~"YC"` (`search.md` §2.2.1);
-  - `me`;
-  - `is:unread`;
-  - `-7d` and `today`;
-  - `~"fuzzy text"`;
-  - `in:t91` for scope;
-  - `sort:-received`.
-
-  The full expression form (`find(Thread, where: {…})`) is the same query, for when it's built
-  in code.
-- **Pipes over results:** `| count`, `| first`, `| fields subject from`, `| group from`. They
-  are tilolang collection functions, written after the query.
+- Columns are the type's declared filter fields. Counts come before rows; pages are 10 rows;
+  `more` continues; `| count`, `| first`, `| group from` work on results.
 
 ## 5. Reading
 
 ```
 > read t91 new
-m3  Jane Doe <jane@ycombinator.com>  Tue 14:02  unread
-  ¶1   Hi both, great progress this week.
-  ¶2   Next steps:
+m3  Jane Doe  Tue 14:02  unread
   ¶2.1 Sign the stock purchase agreement (sent via DocuSign).
   ¶2.2 File your 83(b) election within 30 days of the purchase date (Nov 14).
-  ¶2.3 Send us the cap table export from Carta.
-  ¶2.4 Open a bank account in the company's name.
-m4  you  Thu 09:13
-  ¶1   Signed the SPA, see attached.  [f7 SPA-signed.pdf]
 ```
 
-- **Text with anchors.** Every block carries its anchor, so citing is free. Rich content
-  (tables, headings, attachments) is marked up as compact markdown, as `tilo_read` does today.
-- **Ranges and the rest:** `read m3 ¶2..¶3`, `read f7 p.4`, and `read t91 new`, meaning what
-  the person hasn't seen.
-- **Big content is paged.** A read states its size first ("f7: 23 pages, 9k words; read f7 p.1
-  …"). It never dumps more than a page.
-- **Reading is not seeing.** A task's reads don't mark anything read for the person.
+- Every block has its anchor, so citing is free. Rich content is compact markdown.
+- Big content is paged and states its size first.
+- An agent reading something doesn't mark it read for the person.
 
-## 6. Learning what is possible
+## 6. Learning what's possible
 
 ```
 > describe Thread
-/// A conversation by mail: its messages, in the order they arrived.
-type Thread {
-    subject: Text (title)
-    messages: Collection<Message>
-    labels: Set<Label>
-    search { filter unread  filter participants  filter last  filter labels  sort last newest }
-}
+/// A conversation by mail.
+type Thread { subject: Text (title)  messages: Collection<Message>  labels: Set<Label> }
 actions on Thread                          this task
-  archive(thread)                          may     /// Moves the thread out of the inbox.
-  label(thread, label: Label)              may
+  archive(thread)                          may
   draft_reply(thread, body: Text) -> Draft may
-  send(draft: Draft)                       asks    /// Sends a draft. Leaves the workspace.
+  send(draft: Draft)                       asks
   delete(thread)                           no
-
-> describe mail
-app mail "Mail" · types: Mailbox Thread Message Draft Label · start: look mail
 ```
 
-- **`describe` works on anything:** an app, a type, an action, a field, or a ref, which
-  describes that resource's type with this resource's values.
-- **Permission is shown before acting,** per action, for this task.
-- **One format.** Declarations are printed as tilolang, with permission and undoability as
-  part of the declaration (`action mail.send(draft: Draft) asks`). Values are printed as literals
-  and results as rows of literals with refs. There is no JSON view. Every
-  `describe` includes an example value taken from the app's own scenarios, so it is realistic and
-  never invented.
-- **`types ~"ideas"`** lists every installed type whose doc comment matches, one line each. That
-  is how an agent finds where something can go without knowing the apps.
-- **Doc comments are the documentation.** The compiler requires one on every public type and
-  action, and they are written for the people and agents who will call it.
+- `describe` works on an app, type, action, field or ref, and shows what this task may do
+  before it acts. Declarations print as tilolang, with an example value from the app's
+  scenarios.
+- `types ~"ideas"` finds where something can go without knowing the apps.
+- Doc comments are the documentation; the compiler requires them on public types and actions.
 
 ## 7. Acting
 
 ```
 > do archive(find Thread label:Newsletters received:<-7d)
-preview: archives 41 threads (Newsletters, older than 7 days); undoable as one
-  t88 Weekly digest · t87 Product Hunt · t85 … (38 more)
+preview: archives 41 threads; undoable as one
 confirm with: do!
-
-> do!
-done: 41 threads archived · undo: undo task
 ```
 
-- **Actions take queries.** An action declared on one resource applies to each result of a
-  query, as one invocation with one undo, in one history entry.
-- **Preview first, wherever the effect is larger than one resource or is destructive.** It
-  says what changes, how many, whether it's undoable and whether the person will be asked.
-  `do!` runs the last preview. A single, undoable action on one resource runs at once.
-- **Defaults are filled in and shown.** An invocation-time default (`convergence.md` §1.1)
-  is recorded, and printed as part of the result.
-- **Asks** park the action. The person sees the pending action with its confirmation view. The
-  agent sees `pending: asks Xaver (send)` and can wait or continue.
-
-## 7.1 What the agent never carries
-
-The platform carries everything that isn't the task itself. An agent never has to think about:
-
-| Concern | Why not |
-|---|---|
-| Where it is and what it may do | `look` says it; whatever it is shown, it may do or request |
-| Permission | an action runs, previews, or becomes the person's request; the result says which |
-| Staleness and sync | reads are current; `look` says if the workspace is offline |
-| Other people editing | actions merge; a rejection comes back with its reason |
-| File formats | `read` gives text with anchors for notes, PDFs, documents and video transcripts alike |
-| Size | counts come first, then a page; `more` continues |
-| Waiting | results arrive when settled; there is no polling |
-| Being careful | everything is undoable or previewed first |
-| Presentation | apps' views and `ui.*` already look right; an answer picks and composes them |
-| Formatting | dates, money and names are formatted for the person by the platform |
-
-## 7.2 Blocks across apps
-
-A request may be a block. It runs as one task step, with one undo, one history entry and one
-preview when it is large:
-
-```
-do {
-    let b = board.new_board("Launch video ideas")
-    for i in ideas { board.add_card(b.columns[0], i.title, body: i.logline, links: i.from) }
-    todo.add(here, "Pick a launch video direction", links: [b])
-}
-```
+- Actions take queries: one invocation, one undo, one history entry.
+- Anything larger than one resource, or destructive, previews first; `do!` runs the preview.
+- Asks park the action: the person sees it with an editable draft, the agent sees
+  `pending: asks Xaver (send)`.
+- The agent never handles permissions, sync, formats, waiting (no polling) or presentation:
+  the system does.
 
 ## 8. Errors that teach
-
-Every failure has compiler quality: what was wrong, where, and the valid alternatives.
 
 ```
 > find Thread sender:@ycombinator.com
 error: Thread has no filter `sender`; did you mean `from`?
-  filters: from to participants last unread labels has_attachment
-
-> do archive(m3)
-error: archive takes a Thread; m3 is a Message in t91
-  did you mean: do archive(t91)
-
-> do send(d4)
-asks: send leaves the workspace; Xaver confirms it (pending i22)
 ```
 
-**Guessing must mostly work.** The compiler enforces conventions so an agent's first guess is
-usually right:
-- types are singular nouns;
-- actions are verbs;
-- booleans are adjectives or states (`unread`, `done`, `pinned`);
-- times are past participles (`received`, `created`, `due`);
-- collections are plurals.
-
-The conventions are in the style guide, and the compiler warns on violations.
+Errors say what's wrong and what's valid. Naming conventions (singular types, verb actions,
+adjective booleans, past-participle times) make first guesses mostly right; the compiler warns
+on violations.
 
 ## 9. Answering
 
-An answer is a tilolang block (see the example in `components.md` and the chat design). The
-door compiles it **on submit** and returns:
-- **diagnostics,** exactly as a compiler would;
-- **a text rendering of what the person will see,** the same compact form as `read`: rows,
-  their icons and their buttons;
-- **checks:**
-  - every `quote(...)` resolves to the cited text;
-  - every suggested action is one this task may offer;
-  - nothing exceeds the answer's size.
+An answer is a tilolang block that composes views (agent-ux.md). The door compiles it on submit
+and returns diagnostics, a text rendering of what the person will see, and checks: every quote
+resolves, every suggested action is allowed, the answer fits its size.
 
-An agent therefore checks its own work before the person sees it, the way it runs tests before
-reporting.
+## 10. Trail
 
-## 10. Its own trail
+`history task` lists what the task did; `undo task` undoes all of it, `undo i22` one action.
+`watch <query>` is a standing task, a saved search that notifies.
 
-- `history task` lists what this task did, with refs.
-- `undo task` undoes it all, and `undo i22` undoes one action.
-- `watch <query>` makes a standing task: "tell me when the school writes" is
-  `watch Thread from:@school.example`. It is a saved search that notifies, owned by the person
-  and visible in their settings.
+## 11. The primer
 
-## 11. Budgets
+The agent's system message is the whole manual; everything else is found with `look` and
+`describe`. It's tested: the acceptance transcripts start from it alone. Replies are judged by
+tokens and calls: one-line rows, refs instead of repeated titles, no echo.
 
-Things are only quick when replies are short and fast:
-- every reply states counts before content and fits a page by default;
-- `look`, `find` and `describe` answer within the palette's budget (8 ms locally,
-  `search.md` §4);
-- the door never makes an agent poll: pending actions answer when they settle, as `tilo_do`
-  does today.
+## 12. Evals
 
-## 11.1 The primer
-
-The system message every agent gets is the whole manual. Everything else is discovered with
-`look` and `describe`:
-
-```
-You are working in a Tilo workspace for <person>. Speak tilolang to the `tilo` tool.
-
-look                      where you are, what the person sees (this, selection, here), your task's limits
-find <query>              resources: text, `field:value`, identifiers as URIs with * (`*@acme.com`),
-                          paths through links (`from.contact.org:"Acme"`), `none`/`any`, -7d, sort:-field
-read <ref> [anchor]       content with anchors (¶2.1, p.4, @0:42) you can quote
-describe <app|type|ref>   declarations as tilolang: types, actions (with permission), views
-types ~"<words>"          which installed types fit a purpose
-do <action or block>      act; the result says done / preview (confirm with do!) / asks the person
-answer { … }              what the person sees: compose views; quote(…) your sources; suggest actions
-history task, undo task   your trail
-
-Refs (t91, m3) are stable; every output line starts with one. Errors list what is valid.
-You never need to ask permission: what you are shown, you may do or request.
-```
-
-**The primer is tested.** The acceptance transcripts in §12 start from this text and `look`
-only.
-
-## 11.2 Token efficiency
-
-The cost of a task is measured in tokens and calls, and every output format is judged by it:
-- one-line rows;
-- refs instead of repeated titles;
-- no echo of the request;
-- no boilerplate in errors beyond the valid alternatives.
-
-## 12. What changes
-
-1. **The door:**
-   - the `tilo` tool and CLI parse tilolang requests;
-   - the path tools are kept as spellings;
-   - `look`, `describe`, short refs and anchors are added.
-2. **Compiler:**
-   - doc comments required on public items;
-   - naming-convention warnings;
-   - requests and answers compiled against the workspace's installed apps;
-   - "did you mean" for names, filters, actions and argument types.
-3. **Search:** the query and tokens from `search.md`, shared with the palette.
-4. **Runtime:**
-   - query-wide action invocation, with one undo;
-   - previews computed by a dry run against a copy of the state the action reads;
-   - task history and undo.
-5. **Acceptance:** an agent given only `look` completes the YC-legal task in at most 6 requests
-   with no failed call. The same holds for "tidy my todo list" and "what changed in the board
-   meeting notes since Monday". The transcripts are kept as tests.
-6. **Fluency eval, first, because it needs only the compiler.**
-   - The same 30 tasks go to several models, written once in tilolang and once in TypeScript
-     against the same mounted API.
-   - It compares first-try error rate, tokens and calls.
-   - If tilolang loses, its syntax moves toward TypeScript until it doesn't.
-7. **Real-world evals,** once Notes, Todo, Chat, Board and Mail run in tilolang:
-   - real agents on real tasks in a seeded workspace, from the primer only;
-   - measured in tokens, calls, failed calls and whether the result was right;
-   - the format and primer change by what the evals show, not before.
+- **Fluency:** the same 30 tasks in tilolang and in TypeScript against the same API, across
+  models; compare first-try errors, tokens and calls. If tilolang loses, its syntax moves
+  toward TypeScript.
+- **Real tasks,** once Notes, Todo, Chat, Board and Mail run in tilolang: real agents in a
+  seeded workspace, from the primer only. The format changes by what these show.
