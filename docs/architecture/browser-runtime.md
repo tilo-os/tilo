@@ -34,9 +34,12 @@ under `web/`. It is reference material only; nothing is ported verbatim.
 | Peer transport | "One browser state owner with authenticated HTTPS delivery; no relay fallback": a long-poll HTTPS carrier (`tilo-delivery-protocol`) authenticated with the peer key. Live presence used a separate channel; media used MoQ over WebTransport. `iroh` was linked for wasm but not used as the state carrier. |
 | Session peer | `qos-peer-state` held admitted records, heads and outgoing queues; `PeerSnapshot` and `SessionHealth` v1 reported them. |
 
-What worked and is worth keeping: WebGPU-only Vello presentation, DOM IME and
+What worked and is worth keeping: Vello presentation on WebGPU, DOM IME and
 semantics projection, verified font catalog, strict-durability IndexedDB under
-Web Locks, and "saved means durable". What should not come back: the parallel
+Web Locks, and "saved means durable". WebGPU-only presentation did not: a
+browser without it (Firefox on Linux ships `dom.webgpu.enabled` off) now draws
+the same scene on the CPU (`crates/browser/tilo-browser-runtime/WEB_RUNTIME.md`,
+"Renderers"). What should not come back: the parallel
 HTTPS delivery protocol (Tilo `main` already has an authenticated relay), the
 bespoke qOS identity shapes (superseded by `tilo-user-identity`), and the size
 of the JS layer — most of that logic belongs in Rust behind a small JS shim.
@@ -1439,7 +1442,8 @@ the matching Cloud command.
 Status after integrating the parallel branches (`feat/browser-runtime`).
 
 1. **Portable toolkit compiles for wasm32.** *Done.*
-2. **Browser host.** *Done.* Component mount, WebGPU, IME, clipboard,
+2. **Browser host.** *Done.* Component mount, WebGPU (and the CPU raster
+   where a browser has none), IME, clipboard,
    semantics, fonts; the durable host (wasm `tilo_rt::app()`,
    `PageExecutor`, one IndexedDB writer lease per profile with write-hook
    commits, durable `flush`, retry of failed commits, custody-keeping
