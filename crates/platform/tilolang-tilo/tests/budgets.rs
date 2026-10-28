@@ -19,8 +19,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tilolang_runtime::Translation;
-use tilolang_tilo::bench::{BenchConfig, CountingAlloc, Env, Record, Work, run};
+use tilolang_tilo::bench::{BenchConfig, CountingAlloc, EngineWorkloads, Env, Record, Work, run};
 
 /// Counted, so the records hold the allocations each scenario made.
 #[global_allocator]
@@ -51,7 +50,9 @@ fn bench(app: &str) -> Vec<Record> {
         // The first change apart (see `Work::first_of_record`), two steady ones.
         samples: 3,
         idle: Duration::ZERO,
-        translation: Translation::default(),
+        // The engine the suite runs on (`TILOLANG_ENGINE`).
+        engine: tilolang_runtime::configured(),
+        workloads: EngineWorkloads::default(),
         profile: false,
         memory: None,
         open_only: false,

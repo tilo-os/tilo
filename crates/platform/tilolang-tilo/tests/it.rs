@@ -12,6 +12,7 @@
 
 mod collab;
 mod columns;
+mod engines;
 mod fixtures;
 mod incremental;
 mod index;

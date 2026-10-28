@@ -24,6 +24,10 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 
+[features]
+# Lets `tilolang bench --engine cranelift|winch` run on wasmtime (docs/tilolang-engines.md).
+wasmtime = ["tilolang-runtime/wasmtime"]
+
 [[test]]
 name = "it"
 path = "tests/it.rs"
