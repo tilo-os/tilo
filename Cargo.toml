@@ -238,6 +238,8 @@ members = [
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
     "crates/dev/ui-examples",
+    "crates/dev/click-test-client",
+    "crates/dev/ux-bench",
 
     # Doc
     "crates/doc/bounded-zip",

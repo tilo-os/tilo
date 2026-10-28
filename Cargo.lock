@@ -2304,6 +2304,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "click-test-client"
+version = "0.1.0"
+dependencies = [
+ "smithay-client-toolkit",
+ "wayland-client",
+ "workspace-hack",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23255,6 +23264,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e1d7ccff5e453092983b2a5ec27ebdd52745f40bef229e92051a054a37c662b"
 dependencies = [
  "getrandom 0.4.3",
+]
+
+[[package]]
+name = "ux-bench"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "shell",
+ "tilo-ui",
+ "tilo-winit",
+ "workspace-hack",
 ]
 
 [[package]]

@@ -1601,7 +1601,7 @@ file = "crates/session/shell/tests/headless_examples_smoke.rs"
 reason = "#[ignore]d: runs scripts/headless-examples/ against a built compositor on request"
 
 [[cargo-exempt]]
-file = "crates/session/shell/src/bin/ux_bench_support/tests.rs"
+file = "crates/dev/ux-bench/src/ux_bench_support/tests.rs"
 reason = "#[ignore]d: writes evidence under target/ from a prebuilt ux-bench"
 
 # Exercised by a suite that is already gated.

@@ -33,7 +33,7 @@ const SCREEN: (i32, i32) = (1280, 800);
 
 /// The Wayland client that reports pointer enter/leave and key presses.
 fn client() -> std::path::PathBuf {
-    tilo_test_env::package_binary!("click_test_client")
+    crate::support::click_client::path()
 }
 const CLIENT_APP_ID: &str = "click-test";
 

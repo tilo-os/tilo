@@ -50,12 +50,13 @@ fn bench_input_accepts_only_bounded_visible_commands() {
 // Removing the interactive branch, rebuilding each request, or retaining a chord
 // modifier must break this actual-shell persistence test.
 #[test]
-#[ignore = "requires cargo build -p shell --bin ux-bench first; renders native fixture"]
+#[ignore = "requires cargo build -p ux-bench first; renders native fixture"]
 fn native_persistent_click_key_rename_and_finish() {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .ancestors()
+        .nth(3)
         .unwrap();
     let out = root
         .join("target/ux-evidence")
@@ -187,7 +188,8 @@ fn dismissed_palette_semantics_match_observation_after_bounded_frames() {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .ancestors()
+        .nth(3)
         .unwrap();
     let out = root
         .join("target/ux-evidence")

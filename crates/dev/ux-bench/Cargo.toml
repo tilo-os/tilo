@@ -1,0 +1,30 @@
+[package]
+name = "ux-bench"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Runs declarative UX journeys against the native shell tree (macOS) and writes an evidence report"
+
+# Its own package, not a binary of the shell's: a binary target links its
+# package's library, so every shell edit relinked this tool on every
+# platform, while only its macOS adapter uses the shell.
+[[bin]]
+name = "ux-bench"
+path = "src/main.rs"
+bench = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The shell without its test-control default, as a release session runs.
+shell = { path = "../../session/shell", default-features = false }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["ux-bench"] }
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+winit.workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
