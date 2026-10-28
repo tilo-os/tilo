@@ -98,7 +98,8 @@ fn centre(rect: [f64; 4]) -> (f64, f64) {
 
 /// Every point of a serpentine lattice over the screen, so the pointer crosses
 /// every window, gap, edge and the top bar; then the four corners and the
-/// midpoints of the four edges, which a lattice does not land on.
+/// midpoints of the four edges, which a lattice does not land on. Each row is
+/// one stroke ([`Desktop::pointer_path`]), with frames drawn between rows.
 fn sweep(desktop: &Desktop) {
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
     let columns: Vec<f64> = (0..SCREEN.0).step_by(56).map(f64::from).collect();
@@ -107,11 +108,13 @@ fn sweep(desktop: &Desktop) {
         if row % 2 == 1 {
             xs.reverse();
         }
-        for x in xs {
-            desktop.pointer_move(x.clamp(0.0, w - 1.0), y.clamp(0.0, h - 1.0));
-        }
+        let stroke: Vec<(f64, f64)> = xs
+            .into_iter()
+            .map(|x| (x.clamp(0.0, w - 1.0), y.clamp(0.0, h - 1.0)))
+            .collect();
+        desktop.pointer_path(&stroke);
     }
-    for (x, y) in [
+    desktop.pointer_path(&[
         (0.0, 0.0),
         (w - 1.0, 0.0),
         (w - 1.0, h - 1.0),
@@ -124,9 +127,7 @@ fn sweep(desktop: &Desktop) {
         (12.0, 14.0),
         (w / 2.0, 14.0),
         (w - 12.0, 14.0),
-    ] {
-        desktop.pointer_move(x, y);
-    }
+    ]);
     close_overlays(desktop);
 }
 
@@ -136,13 +137,15 @@ fn cross(desktop: &Desktop, rect: [f64; 4]) {
     let [x, y, w, h] = rect;
     let (cx, cy) = centre(rect);
     for _ in 0..3 {
-        desktop.pointer_move(x + 6.0, cy);
-        desktop.pointer_move(cx, cy);
-        desktop.pointer_move(x + w - 6.0, cy);
-        desktop.pointer_move(x + w + 12.0, cy);
-        desktop.pointer_move(cx, y - 8.0);
-        desktop.pointer_move(cx, cy);
-        desktop.pointer_move(cx, y + h + 8.0);
+        desktop.pointer_path(&[
+            (x + 6.0, cy),
+            (cx, cy),
+            (x + w - 6.0, cy),
+            (x + w + 12.0, cy),
+            (cx, y - 8.0),
+            (cx, cy),
+            (cx, y + h + 8.0),
+        ]);
     }
 }
 
@@ -424,33 +427,47 @@ const IDLE_SHARE_BOUND: f64 = 0.10;
 /// How long the idle window lasts.
 const IDLE_WINDOW: Duration = Duration::from_secs(4);
 
-/// Left alone, the desktop is idle. A widget that reports a wake deadline
-/// nothing can satisfy makes the loop pump every app on every pass: the Files
-/// app did, while its nearby-transfer snapshot went unanswered. Measured
-/// after the backlog the scenario left has drained.
+/// Left alone, the desktop comes to rest. A widget that reports a wake
+/// deadline nothing can satisfy makes the loop pump every app on every pass:
+/// the Files app did, while its nearby-transfer snapshot went unanswered.
+///
+/// What the scenario started (a Terminal window opening, the typed notes
+/// saving) still runs for a while after it, and for longer the slower the
+/// machine: a fixed pause measured that backlog whenever a loaded runner
+/// had not finished it. So the desktop is read window after window until
+/// one is idle; a loop that keeps turning with nothing to do never gets
+/// there and fails at the hang bound with its last reading.
 fn assert_idle(desktop: &Desktop) {
-    desktop.pause(Duration::from_secs(2));
-    let idle = desktop.without_heartbeats(|| desktop.idle(IDLE_WINDOW));
-    // A loop that froze while the monitor held its pings fails at the first
-    // heartbeat after them.
-    desktop.pause(crate::support::desktop::HEARTBEAT_BUDGET.saturating_mul(2));
-    // Every run logs its reading by thread, so a failure names what woke the
-    // loop, and a drift toward the bound shows before a run crosses it.
-    eprintln!(
-        "[desktop-smoke] idle: {:.1}% of a core (bound {:.0}%)\n{}\n{}",
-        idle.share * 100.0,
-        IDLE_SHARE_BOUND * 100.0,
-        idle.threads,
-        idle_log(&idle)
-    );
-    assert!(
-        idle.share < IDLE_SHARE_BOUND,
-        "an untouched desktop used {:.1}% of a core (bound {:.0}%); something wakes its loop \
-         with nothing to do, or it is spinning on a wake deadline that never clears (the \
-         [desktop-smoke] idle reading above names the threads)",
-        idle.share * 100.0,
-        IDLE_SHARE_BOUND * 100.0,
-    );
+    let started = std::time::Instant::now();
+    loop {
+        let idle = desktop.without_heartbeats(|| desktop.idle(IDLE_WINDOW));
+        // A loop that froze while the monitor held its pings fails at the
+        // first heartbeat after them.
+        desktop.pause(crate::support::desktop::HEARTBEAT_BUDGET.saturating_mul(2));
+        // Every reading is logged by thread, so a failure names what woke
+        // the loop, and a drift toward the bound shows before a run crosses
+        // it.
+        eprintln!(
+            "[desktop-smoke] idle after {:.1?}: {:.1}% of a core (bound {:.0}%)\n{}\n{}",
+            started.elapsed(),
+            idle.share * 100.0,
+            IDLE_SHARE_BOUND * 100.0,
+            idle.threads,
+            idle_log(&idle)
+        );
+        if idle.share < IDLE_SHARE_BOUND {
+            return;
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "an untouched desktop never came to rest: it still used {:.1}% of a core (bound \
+             {:.0}%); something wakes its loop with nothing to do, or it is spinning on a wake \
+             deadline that never clears (the [desktop-smoke] idle readings above name the \
+             threads)",
+            idle.share * 100.0,
+            IDLE_SHARE_BOUND * 100.0,
+        );
+    }
 }
 
 /// What the compositor said in an idle window: what woke its loop and what
@@ -494,7 +511,7 @@ fn assert_descriptor_table_never_grew(desktop: &Desktop) {
 /// A shorter pointer pass: the corners, the edges and the top bar.
 fn sweep_edges(desktop: &Desktop) {
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
-    for (x, y) in [
+    desktop.pointer_path(&[
         (0.0, 0.0),
         (w / 2.0, 14.0),
         (w - 1.0, 0.0),
@@ -504,9 +521,7 @@ fn sweep_edges(desktop: &Desktop) {
         (0.0, h - 1.0),
         (0.0, h / 2.0),
         (w / 2.0, h / 2.0),
-    ] {
-        desktop.pointer_move(x, y);
-    }
+    ]);
     close_overlays(desktop);
 }
 
