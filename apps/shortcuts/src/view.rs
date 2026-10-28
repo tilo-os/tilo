@@ -1914,12 +1914,12 @@ fn step_card(
         Card::new(Box::new(
             Column::new().with_intrinsic_height().with_no_padding(),
         ))
-        .with_title_action(
-            title,
-            Box::new(fold_button(ui, draft_id, path, Opened::Shut)),
-        )
+        .with_title_action(title, Box::new(fold_button(ui, draft_id, path, false)))
     } else {
-        Card::new(Box::new(body)).with_title_action(title, Box::new(actions))
+        Card::new(Box::new(body)).with_title_action(
+            title,
+            Box::new(actions.with_first(fold_button(ui, draft_id, path, true))),
+        )
     };
     let mut items: Vec<Element> = vec![Box::new(card)];
     if !is_folded {
@@ -1928,45 +1928,35 @@ fn step_card(
     Box::new(Section::new(items))
 }
 
-/// The control that folds a step's contents away, and the one that opens
-/// them again: the step's header stays either way.
-fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shown: Opened) -> Button {
+/// The control that folds a step's contents away, or opens them again: the
+/// step's header stays either way.
+fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shutting: bool) -> Button {
     let folded = ui.folded.clone();
-    let step = Id::from_raw(path);
-    let (id, icon, name) = if shown == Opened::Shut {
-        (
-            "step-open",
-            Icon::ChevronRight,
-            ui::i18n!("shortcuts-open-step"),
-        )
-    } else {
+    let (id, icon, name) = if shutting {
         (
             "step-fold",
             Icon::ChevronDown,
             ui::i18n!("shortcuts-fold-step"),
         )
+    } else {
+        (
+            "step-open",
+            Icon::ChevronRight,
+            ui::i18n!("shortcuts-open-step"),
+        )
     };
     let draft = draft_id.clone();
-    let key = step.clone();
+    let key = Id::from_raw(path);
     Button::icon_only(&format!("{id}-{path}"), icon, &name)
         .control_size(ControlSize::Small)
         .on_view(move || {
             let mut steps = folded.get();
             steps.retain(|(folding, step)| !(folding == &draft && step == &key));
-            if shown == Opened::Shut {
+            if shutting {
                 steps.push((draft.clone(), key.clone()));
             }
             folded.set(steps);
         })
-}
-
-/// Whether a step's fields and blocks are drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Opened {
-    /// Drawn: the step shows what it does and the steps inside it.
-    Open,
-    /// Only its header: the person put it away for now.
-    Shut,
 }
 
 /// `path` of `draft` is folded: what it does is shown, the steps inside it
