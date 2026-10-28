@@ -198,39 +198,6 @@ enum Command {
         dest: PathBuf,
         file: PathBuf,
     },
-    /// Publish a signed .tapp to a registry directory: sign an index entry,
-    /// upload the blob to iroh-blobs, and re-sign the directory's index.
-    ///
-    /// `--registry` is a local directory or `file://` URL; publish to an HTTP
-    /// registry with `tilo-app publish`. `--dry-run` prints the signed entry +
-    /// content hash without uploading.
-    Publish {
-        /// Target registry: a local dir or `file://…` (self-hosted).
-        #[arg(long)]
-        registry: String,
-        /// Publisher identity JSON; required unless --dry-run, and must be the key that signed the package.
-        #[arg(long)]
-        identity: Option<PathBuf>,
-        /// Registry operator identity signing the served index (file:// only);
-        /// defaults to --identity for single-operator hosting.
-        #[arg(long = "registry-key")]
-        registry_key: Option<PathBuf>,
-        /// `registry_id` stamped into a freshly-created index.
-        #[arg(long = "registry-id", default_value = "local")]
-        registry_id: String,
-        /// Target arch when the manifest declares more than one (`x86_64` | aarch64); inferred otherwise.
-        #[arg(long)]
-        arch: Option<String>,
-        /// Build + sign the entry and print it (with content hash); upload nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// After publishing to a file:// registry, keep serving the uploaded
-        /// blobs so index tickets resolve (blocks until Ctrl-C).
-        #[arg(long)]
-        serve: bool,
-        /// The .tapp to publish.
-        file: PathBuf,
-    },
     /// Co-sign an existing complete package with an attestor and its original publisher.
     /// Payload bytes remain unchanged; the attested manifest gets a new signed root.
     Attest {
@@ -468,25 +435,6 @@ fn main() -> Result<()> {
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
         Command::Unpack { dest, file } => cmd_unpack(&dest, &file),
-        Command::Publish {
-            registry,
-            identity,
-            registry_key,
-            registry_id,
-            arch,
-            dry_run,
-            serve,
-            file,
-        } => cmd_publish(
-            &file,
-            &registry,
-            identity.as_deref(),
-            registry_key.as_deref(),
-            &registry_id,
-            arch.as_deref(),
-            dry_run,
-            serve,
-        ),
         Command::Attest {
             publisher_identity,
             attestor_identity,
@@ -1015,97 +963,6 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
     std::fs::write(dest.join("manifest.toml"), &tapp.meta.manifest_bytes)
         .context("write manifest.toml")?;
     eprintln!("unpacked {} -> {}", tapp.meta.id, dest.display());
-    Ok(())
-}
-
-fn cmd_publish(
-    file: &Path,
-    registry: &str,
-    identity: Option<&Path>,
-    registry_key: Option<&Path>,
-    registry_id: &str,
-    arch: Option<&str>,
-    dry_run: bool,
-    serve: bool,
-) -> Result<()> {
-    let tapp_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
-    let arch = match arch {
-        None => None,
-        Some("x86_64") => Some(tilo_app_package::manifest::Arch::X86_64),
-        Some("aarch64") => Some(tilo_app_package::manifest::Arch::AArch64),
-        Some(other) => bail!("unknown --arch {other:?} (expected x86_64 or aarch64)"),
-    };
-
-    // --dry-run: emit the signed entry + content hash, no network; a
-    // fresh key still yields an inspectable signature, but a real publish
-    // must pin --identity.
-    if dry_run {
-        let publisher = match identity {
-            Some(p) => load_identity(p)?,
-            None => SigningIdentity::generate(),
-        };
-        let (entry, package_id) = app_registry::build_entry(&tapp_bytes, &publisher, arch, None)
-            .map_err(|e| anyhow!("build entry: {e}"))?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&entry).context("encode entry")?
-        );
-        eprintln!("content-hash: blake3:{}", entry.tapp_hash);
-        eprintln!("package-id:   {package_id}");
-        return Ok(());
-    }
-
-    let identity_path = identity.ok_or_else(|| {
-        anyhow!("--identity is required to publish (only --dry-run may run keyless)")
-    })?;
-    let publisher = load_identity(identity_path)?;
-
-    if registry.starts_with("http://") || registry.starts_with("https://") {
-        bail!(
-            "an HTTP registry takes uploads and reviewed entries; publish to it with `tilo-app publish --registry {registry}`"
-        );
-    }
-
-    // file:// / local directory registry (self-hosted reference).
-    let dir = PathBuf::from(registry.strip_prefix("file://").unwrap_or(registry));
-    let reg_key = match registry_key {
-        Some(p) => load_identity(p)?,
-        None => load_identity(identity_path)?,
-    };
-
-    tilo_rt::block_on(async move {
-        let node =
-            app_registry::BlobNode::persistent(app_registry::registry_dir::blobs_dir(&dir)).await?;
-        let receipt = app_registry::publish_to_dir(
-            &dir,
-            &node,
-            &tapp_bytes,
-            &publisher,
-            &reg_key,
-            registry_id,
-            arch,
-        )
-        .await?;
-        eprintln!(
-            "published {}@{} ({}) to {}",
-            receipt.app_id,
-            receipt.version,
-            receipt.package_id,
-            dir.display()
-        );
-        eprintln!("content-hash: blake3:{}", receipt.tapp_hash);
-        if serve {
-            eprintln!("serving blobs — Ctrl-C to stop");
-            tokio::signal::ctrl_c().await.context("await Ctrl-C")?;
-        } else {
-            eprintln!(
-                "note: blob uploaded to {}/blobs; re-run with --serve (or run a persistent \
-                 registry node) so the index ticket resolves for clients",
-                dir.display()
-            );
-        }
-        anyhow::Ok(())
-    })??;
     Ok(())
 }
 

@@ -89,9 +89,8 @@ Forgejo packages; the authoritative main-branch publisher submits newly built
 tapps through its direct signed-registry path, without a second
 catalogue-submission job.
 
-These settings govern the signed snapshot catalogue and `app install`.
-The legacy `tilo-install update` registry resolver uses a separate configuration
-and protocol; it does not inherit this catalogue channel setting.
+These settings govern the signed snapshot catalogue that `app install`,
+`app update` and `tilo-install update` all resolve through.
 
 ## The on-disk layout
 
@@ -490,7 +489,8 @@ Discovery order the launcher uses:
 ## Updates
 
 `tilo-install update <id>` resolves a newer version through the
-configured registries (or `--from <new.tapp>`); `install --force
+store's `registries.toml` and catalogue, the same way `app update` does
+(or takes `--from <new.tapp>`); `install --force
 <new.tapp>` replaces an installed package too. Either way:
 
 - Registry entry retains the same `id`, and its pin.

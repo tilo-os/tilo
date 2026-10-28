@@ -241,7 +241,7 @@ pub fn install_argv(
 
 /// The base URL of the registry that offered `app`, which also serves the
 /// payload blobs of the packages it reviewed.
-fn payload_source(app: &CatalogueApp) -> Option<String> {
+pub fn payload_source(app: &CatalogueApp) -> Option<String> {
     crate::config::load_registries_no_seed()
         .registries
         .into_iter()
@@ -894,6 +894,14 @@ pub fn sweep_abandoned_downloads(staging: &Path) -> u64 {
 pub struct StagedPackage {
     file: StagingFile,
     bytes: u64,
+}
+
+impl StagedPackage {
+    /// Where the checked download is staged, until this is dropped.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.file.path()
+    }
 }
 
 /// Download `app`'s package into the staging directory and check it against

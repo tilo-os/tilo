@@ -212,11 +212,6 @@ pub const PACKAGE: &[Verb] = &[
         "Print the entry a publisher has waiting for review",
     ),
     packaging(
-        "publish",
-        &["publish"],
-        "Publish a .tapp to a repository directory",
-    ),
-    packaging(
         "seal-image",
         &["seal-image"],
         "Seal a directory into a signed environment image",
