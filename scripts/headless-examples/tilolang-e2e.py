@@ -54,8 +54,8 @@ app gets on a real system:
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep] [--host-only]
 
-Without --no-build it builds the nested session on t (nested-session.sh), and
-the tilolang tool and the probe with cargo (which forwards to t). Each run
+Without --no-build it builds the nested session remotely (nested-session.sh:
+on the rcargo builder, or on t), and the tilolang tool and the probe with cargo. Each run
 uses a fresh throwaway session state in OUT/state and removes its compositor,
 runtime directory and processes at the end; --keep leaves the session running
 (stop it with `kill $(cat OUT/state/session.pid)`). The verdict is OUT/summary.json; the
