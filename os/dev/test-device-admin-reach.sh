@@ -96,6 +96,12 @@ collect() {
   local label=$1 run=$2 each=$3
   [ ! -f "$run/serial.log" ] || cp -f "$run/serial.log" "$out/$label-serial.log"
   [ ! -f "$run/qemu.log" ] || cp -f "$run/qemu.log" "$out/$label-qemu.log"
+  # A guest that no longer answers SSH has nothing more to say over it: each of the
+  # reads below would wait out its own bound, minutes of teardown for no evidence.
+  TILO_SSH_BOUND=20 "$each" ssh true >/dev/null 2>&1 || {
+    echo "no SSH answer from $label at collection" > "$out/$label-collect.txt"
+    return 0
+  }
   as_root "$each" 'journalctl -b --no-pager -o short-monotonic -u tilo-device-admin -u tilo-reach-relay' \
     > "$out/$label-device-admin-journal.txt" 2>&1 || true
   "$each" ssh 'ip -br addr; ip route' > "$out/$label-network.txt" 2>&1 || true
@@ -126,13 +132,17 @@ done
 vm_c boot --2d --disk "$run_c/disk.qcow2"
 vm_a boot "--$display" --disk "$run_a/disk.qcow2"
 vm_b boot "--$display" --disk "$run_b/disk.qcow2"
+# Each probe is bounded: QEMU's port forward accepts the connection before the guest's
+# sshd does, and a guest that stalls in the key exchange would hold an unbounded probe
+# for as long as ssh's keepalives allow, attempt after attempt.
 wait_ssh() {
-  local each=$1
-  for attempt in $(seq 1 90); do
-    "$each" ssh true >/dev/null 2>&1 && return 0
+  local each=$1 deadline=$((SECONDS + 300))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    TILO_SSH_BOUND=20 "$each" ssh true >/dev/null 2>&1 && return 0
     sleep 2
   done
-  die "$each: no SSH after boot"
+  "$each" serial 2>/dev/null | tail -n 60 >&2 || true
+  die "$each: no SSH within 300 s of booting"
 }
 wait_ssh vm_c
 wait_ssh vm_a

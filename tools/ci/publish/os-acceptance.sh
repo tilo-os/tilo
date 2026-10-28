@@ -7,15 +7,21 @@
 #                                          output (the dev image installed); reports and logs into
 #                                          OUT
 #
-# Three tracks run side by side, each booting throwaway overlays of the installed disk or the OS
-# image's own UKI:
+# Its gates are t shards (t.toml `shards`), each a check of its own, os-acceptance-ARCH/<shard>,
+# cached on its own and run again alone when it fails; each boots throwaway overlays of the
+# installed disk or the OS image's own UKI:
 #
-#   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
-#            a third device through one without the identity key, sibling unlock and, on
-#            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a relay
-#            (os/dev/test-device-admin-reach.sh)
 #   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh)
+#   nearby   nearby pairing, a third device through one without the identity key, sibling
+#            unlock and, on x86_64, wake (os/dev/test-nearby-pairing.sh)
+#   reach    device-admin reach through a relay (os/dev/test-device-admin-reach.sh)
+#   joined   a joined device signs in (os/dev/test-joined-device-startup.sh)
 #   splash   the boot splash on a panel larger than the firmware's mode (os/dev/check-boot-splash.py)
+#
+# t gives a job its shards in T_SHARDS (all of them when it gives none): one each where there is
+# room, several in one VM where there isn't. Those run side by side as far as the VM's memory
+# holds their guests, the longest first, and each says how it ended with a `t-shard:` line.
+# Every gate's report and its guests' logs go to OUT/<shard>.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -59,45 +65,99 @@ done
 
 wake=()
 if [[ $arch == x86_64 ]]; then wake=(--wake); fi
-devices() {
-  local rc=0
-  bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined-device" || rc=1
-  bash os/dev/test-nearby-pairing.sh "$disk" --out "$out/nearby-pairing" --unlock "${wake[@]}" || rc=1
-  bash os/dev/test-device-admin-reach.sh "$disk" --out "$out/device-admin-reach" || rc=1
-  return "$rc"
+shard_desktop() {
+  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/desktop/installed-desktop" --base-digest "$(cat "$image/digest")"
 }
-desktop() {
-  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")"
+shard_nearby() {
+  bash os/dev/test-nearby-pairing.sh "$disk" --out "$out/nearby/nearby-pairing" --unlock "${wake[@]}"
 }
-splash() {
-  python3 os/dev/check-boot-splash.py --arch "$arch" --out "$out/boot-splash" "oci:$image/oci:tilo"
+shard_reach() {
+  bash os/dev/test-device-admin-reach.sh "$disk" --out "$out/reach/device-admin-reach"
 }
-tracks=(devices desktop splash)
-pids=()
-for track in "${tracks[@]}"; do
-  ( set -o pipefail; "$track" 2>&1 | tee "$out/$track.log" | sed -u "s/^/[$track] /" ) &
-  pids+=("$!")
+shard_joined() {
+  # Its own SSH port: nearby's third guest takes the gate's default, 2233, in the same VM.
+  TILO_JOINED_SSH_PORT=2234 bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined/joined-device"
+}
+shard_splash() {
+  python3 os/dev/check-boot-splash.py --arch "$arch" --out "$out/splash/boot-splash" "oci:$image/oci:tilo"
+}
+# GiB of the VM's memory each shard's guests take at most (os/dev/_common.sh TILO_MEM per guest,
+# with QEMU's own beside it): nearby runs three guests at its peak, reach two and a relay.
+declare -A gib=([desktop]=5 [nearby]=13 [reach]=11 [joined]=5 [splash]=4)
+read -r -a shards <<<"${T_SHARDS:-desktop nearby reach joined splash}"
+for shard in "${shards[@]}"; do
+  [[ -n ${gib[$shard]:-} ]] || die "unknown shard $shard"
 done
-for i in "${!tracks[@]}"; do
-  if wait "${pids[$i]}"; then
-    echo "ok    ${tracks[$i]}"
+budget=$(($(awk '/^MemTotal:/ { print int($2 / 1048576) }' /proc/meminfo) - 3))
+echo "os-acceptance: shards ${shards[*]} in ${budget} GiB at ${SECONDS}s"
+
+# A failed check keeps no outputs, so the guests' own account of a failed shard goes to the log
+# as it ends: the end of each session's journal and compositor log its gate collected, without
+# the periodic frame counters and SSH logins that would fill it.
+evidence() {
+  local dir=$1 file
+  while IFS= read -r -d '' file; do
+    printf '\n--- %s (last 80 lines of what it said)\n' "${file#"$out"/}"
+    grep -avE '^(paint-stats|frames)[:=]|sshd-session\[' "$file" | tail -n 80
+  done < <(find "$dir" -type f \( -name '*session-journal.txt' -o -name '*compositor-session.log' \) -print0 | sort -z)
+  # A frozen compositor's record opens with its main thread, the one that froze.
+  while IFS= read -r -d '' file; do
+    printf '\n--- %s (first 80 lines)\n' "${file#"$out"/}"
+    head -n 80 "$file"
+  done < <(find "$dir" -type f -name '*compositor-freeze.log' -size +0 -print0 | sort -z)
+}
+
+declare -A pid_shard=()
+used=0
+start_shard() {
+  local shard=$1
+  mkdir -p "$out/$shard"
+  # Each line carries the seconds since the shard started, so a slow phase shows in the log.
+  ( set -o pipefail; "shard_$shard" 2>&1 | tee "$out/$shard/$shard.log" \
+      | awk -v t="$shard" -v s="$(date +%s)" '{ printf "[%s +%ds] %s\n", t, systime() - s, $0; fflush() }' ) &
+  pid_shard[$!]=$shard
+  used=$((used + gib[$shard]))
+}
+pending=("${shards[@]}")
+failed=()
+# The desktop gate times its own boot and the sign-in screen's keystrokes against budgets made
+# for a quiet machine, so where it shares the VM it boots first, alone, and the others start once
+# it signs in (its log's "logging in" line from os/dev/vm.sh) or ends.
+if ((${#shards[@]} > 1)) && [[ ${shards[0]} == desktop ]]; then
+  start_shard desktop
+  pending=("${shards[@]:1}")
+  desktop_pid=$(for p in "${!pid_shard[@]}"; do echo "$p"; done)
+  while kill -0 "$desktop_pid" 2>/dev/null \
+    && ! grep -q "logging in with the installed user's passcode" "$out/desktop/desktop.log" 2>/dev/null; do
+    sleep 1
+  done
+  echo "os-acceptance: desktop signs in at ${SECONDS}s; the other shards start"
+fi
+while ((${#pending[@]} > 0 || ${#pid_shard[@]} > 0)); do
+  # Start what fits beside what runs; a shard alone runs whatever it takes.
+  rest=()
+  for shard in "${pending[@]}"; do
+    if ((${#pid_shard[@]} == 0 || used + gib[$shard] <= budget)); then
+      start_shard "$shard"
+    else
+      rest+=("$shard")
+    fi
+  done
+  pending=("${rest[@]}")
+  rc=0
+  wait -n -p done_pid "${!pid_shard[@]}" || rc=$?
+  shard=${pid_shard[$done_pid]}
+  unset "pid_shard[$done_pid]"
+  used=$((used - gib[$shard]))
+  if ((rc == 0)); then
+    echo "ok    $shard at ${SECONDS}s"
+    echo "t-shard: $shard passed"
   else
-    echo "FAIL  ${tracks[$i]} (its log: $out/${tracks[$i]}.log)"
-    status=1
+    echo "FAIL  $shard at ${SECONDS}s (its log: $out/$shard/$shard.log)"
+    failed+=("$shard")
+    evidence "$out/$shard"
+    echo "t-shard: $shard failed"
   fi
 done
-# A failed check keeps no outputs, so the guests' own account of a failure goes to the log:
-# the end of each session's journal and compositor log the gates collected,
-# without the periodic frame counters and SSH logins that would fill it.
-if ((status != 0)); then
-  while IFS= read -r -d '' evidence; do
-    printf '\n--- %s (last 80 lines of what it said)\n' "${evidence#"$out"/}"
-    grep -avE '^(paint-stats|frames)[:=]|sshd-session\[' "$evidence" | tail -n 80
-  done < <(find "$out" -type f \( -name '*session-journal.txt' -o -name '*compositor-session.log' \) -print0 | sort -z)
-  # A frozen compositor's record opens with its main thread, the one that froze.
-  while IFS= read -r -d '' evidence; do
-    printf '\n--- %s (first 80 lines)\n' "${evidence#"$out"/}"
-    head -n 80 "$evidence"
-  done < <(find "$out" -type f -name '*compositor-freeze.log' -size +0 -print0 | sort -z)
-fi
+((${#failed[@]} == 0)) || status=1
 exit "$status"

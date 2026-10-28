@@ -61,6 +61,12 @@ install -d -m 0700 "$TILO_RUN"
 collect() {
   [ ! -f "$TILO_RUN/serial.log" ] || cp -f "$TILO_RUN/serial.log" "$out/serial.log"
   [ ! -f "$TILO_RUN/qemu.log" ] || cp -f "$TILO_RUN/qemu.log" "$out/qemu.log"
+  # A guest that no longer answers SSH has nothing more to say over it: each of the
+  # reads below would wait out its own bound, minutes of teardown for no evidence.
+  TILO_SSH_BOUND=20 "$vm" ssh true >/dev/null 2>&1 || {
+    echo "no SSH answer at collection" > "$out/collect.txt"
+    return 0
+  }
   "$vm" ssh 'journalctl -b --no-pager -o short-monotonic -n 600 _UID=$(id -u)' \
     > "$out/session-journal.txt" 2>&1 || true
   "$vm" ssh 'systemctl --failed --no-pager; systemctl --user --failed --no-pager' \
@@ -94,7 +100,7 @@ trap cleanup EXIT
 "$vm" boot "--$display" --disk "$TILO_RUN/disk.qcow2"
 "$vm" wait
 for attempt in $(seq 1 60); do
-  "$vm" ssh true >/dev/null 2>&1 && break
+  TILO_SSH_BOUND=20 "$vm" ssh true >/dev/null 2>&1 && break
   [ "$attempt" -lt 60 ] || die "no SSH after boot"
   sleep 2
 done

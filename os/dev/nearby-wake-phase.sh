@@ -50,7 +50,7 @@ await_status() {
 }
 await_ssh_b() {
   for attempt in $(seq 1 90); do
-    vm_b ssh true >/dev/null 2>&1 && return 0
+    TILO_SSH_BOUND=20 vm_b ssh true >/dev/null 2>&1 && return 0
     sleep 2
   done
   die "B did not answer SSH after $1"

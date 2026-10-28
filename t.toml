@@ -7573,14 +7573,16 @@ default = false
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
 # The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
-# KVM on throwaway overlays of the disk os-dev-disk-{arch} installed (tools/ci/publish/os-acceptance.sh):
-# a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
-# through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
-# through a relay; the installed desktop from the sign-in screen through first use, the apps,
-# hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
-# panel. The stable channel's gate; on main it runs when t has room and tells the commit that
-# broke it, and publishes nothing. `t outputs os-acceptance-x86_64` gives every gate's
-# report and the guests' logs.
+# KVM on throwaway overlays of the disk os-dev-disk-{arch} installed (tools/ci/publish/os-acceptance.sh),
+# each gate a shard of its own, os-acceptance-{arch}/<shard>, run in parallel where there is
+# room and again alone when it fails: desktop, the installed desktop from the sign-in screen
+# through first use, the apps, hot-plugged input and the lock screen to tilo-vmd and app updates;
+# nearby, pairing from first-boot onboarding, a third device paired through one without the
+# identity key, sibling unlock and, on x86_64, wake; reach, device-admin reach through a relay;
+# joined, a joined device signs in; splash, the boot splash on a large panel. The stable
+# channel's gate; on main it runs when t has room and tells the commit that broke it, and
+# publishes nothing. `t outputs os-acceptance-x86_64/<shard>` gives that gate's report and the
+# guests' logs.
 [[check]]
 name = "os-acceptance-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
@@ -7588,7 +7590,8 @@ run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /ta
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}", "signing-tools"]
-outputs = ["/target/publish/os-acceptance/{arch}/**"]
+shards = ["desktop", "nearby", "reach", "joined", "splash"]
+outputs = ["/target/publish/os-acceptance/{arch}/{shard}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
 isolation = "vm"

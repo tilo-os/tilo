@@ -10,7 +10,7 @@
 # on UDP 23831 crosses between them exactly as it does on a home network. B's
 # UI is driven over AT-SPI like the release gate drives first use; A approves
 # as its signed-in user with tilo-enroll, the program Settings runs. A third
-# overlay, C, later joins the segment.
+# overlay, C, boots beside them and joins the segment in its own phase.
 #
 # The run proves, in order:
 #   1. B's enrollment state directories are part of the image layout and
@@ -151,6 +151,12 @@ collect() {
   local label=$1 run=$2 each=$3
   [ ! -f "$run/serial.log" ] || cp -f "$run/serial.log" "$out/$label-serial.log"
   [ ! -f "$run/qemu.log" ] || cp -f "$run/qemu.log" "$out/$label-qemu.log"
+  # A guest that no longer answers SSH has nothing more to say over it: each of the
+  # reads below would wait out its own bound, minutes of teardown for no evidence.
+  TILO_SSH_BOUND=20 "$each" ssh true >/dev/null 2>&1 || {
+    echo "no SSH answer from $label at collection" > "$out/$label-collect.txt"
+    return 0
+  }
   "$each" ssh 'journalctl -b --no-pager -o short-monotonic -n 400 _UID=$(id -u)' \
     > "$out/$label-session-journal.txt" 2>&1 || true
   "$each" ssh 'journalctl -b --no-pager -o short-monotonic -u polkit.service' \
@@ -200,7 +206,7 @@ cleanup() {
   collect b "$run_b" vm_b
   stop_owned_vm a vm_a || cleanup_rc=1
   stop_owned_vm b vm_b || cleanup_rc=1
-  # C boots for its phase only, which stops it when it passes.
+  # C is stopped by its phase once it passes.
   if [ -e "$out/c-boot-exit-status.txt" ] && [ ! -e "$out/c-cleanup-status.txt" ]; then
     collect c "$run_c" vm_c
     stop_owned_vm c vm_c || cleanup_rc=1
@@ -225,11 +231,15 @@ qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_b/disk.qcow2" >/dev/null
 # first boot grows the root partition over whatever disk it finds.
 boot_owned_vm a "$run_a" vm_a
 boot_owned_vm b "$run_b" vm_b
+# C boots now too, so its boot overlaps A's and B's work instead of following it. It waits
+# at the greeter, with no address on the segment, until its phase signs it in.
+qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_c/disk.qcow2" >/dev/null
+boot_owned_vm c "$run_c" vm_c
 vm_a wait
 vm_b wait
 for each in vm_a vm_b; do
   for attempt in $(seq 1 60); do
-    "$each" ssh true >/dev/null 2>&1 && break
+    TILO_SSH_BOUND=20 "$each" ssh true >/dev/null 2>&1 && break
     [ "$attempt" -lt 60 ] || die "$each: no SSH after boot"
     sleep 2
   done
@@ -573,11 +583,9 @@ no_privileged_pairing
 note "B joined A's identity from first-boot onboarding"
 
 # --- a device without the key pairs a third, approved on the key holder ------
-qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_c/disk.qcow2" >/dev/null
-boot_owned_vm c "$run_c" vm_c
 vm_c wait
 for attempt in $(seq 1 60); do
-  vm_c ssh true >/dev/null 2>&1 && break
+  TILO_SSH_BOUND=20 vm_c ssh true >/dev/null 2>&1 && break
   [ "$attempt" -lt 60 ] || die "vm_c: no SSH after boot"
   sleep 2
 done

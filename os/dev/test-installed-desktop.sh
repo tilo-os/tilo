@@ -61,7 +61,11 @@ cleanup() {
   local rc=$?
   trap - EXIT
   kill "$sampler" 2>/dev/null || true
-  if [ "$rc" -ne 0 ]; then
+  # A guest that no longer answers SSH has nothing more to say over it: each read
+  # below would wait out its own bound, minutes of teardown for no evidence.
+  if [ "$rc" -ne 0 ] && ! TILO_SSH_BOUND=20 "$vm" ssh true >/dev/null 2>&1; then
+    note "the guest no longer answers SSH; its serial log is the evidence"
+  elif [ "$rc" -ne 0 ]; then
     TILO_SSH_BOUND=60 "$vm" ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
     # The session's own account: the compositor logs to its state directory.
     TILO_SSH_BOUND=60 "$vm" ssh 'journalctl -b --no-pager -o short-monotonic -n 400 _UID=$(id -u)' \
@@ -102,7 +106,7 @@ sample_host_wait >/dev/null 2>&1 &
 sampler=$!
 "$vm" wait
 for attempt in $(seq 1 60); do
-  "$vm" ssh true >/dev/null 2>&1 && break
+  TILO_SSH_BOUND=20 "$vm" ssh true >/dev/null 2>&1 && break
   if [ "$attempt" = 60 ]; then
     "$vm" serial | tail -120
     die "no SSH after boot"

@@ -121,9 +121,13 @@ collect_tree() {
   ((${#node_names[@]} > 0))
 }
 
+# Waits end by the clock, not by a count of attempts: one walk of the tree costs a D-Bus call or
+# two per node, seconds on a loaded host, so 400 attempts could stretch a 20 s wait into a
+# quarter of an hour before a failure said what was missing.
 # One complete walk, retried while a tree transaction is in flight.
 collect_settled_tree() {
-  for _ in $(seq 1 400); do
+  local deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
     collect_tree && return 0
     sleep 0.05
   done
@@ -145,7 +149,8 @@ node_named() {
 
 wait_for_names() {
   local missing expected attempt
-  for attempt in $(seq 1 400); do
+  local deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
     if collect_tree; then
       missing=""
       for expected in "$@"; do
@@ -175,7 +180,8 @@ node_containing() {
 
 wait_for_fragments() {
   local missing fragment
-  for _ in $(seq 1 400); do
+  local deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
     if collect_tree; then
       missing=""
       for fragment in "$@"; do
@@ -309,7 +315,8 @@ set_text_named() {
 
 wait_for_text() {
   local path=$1 expected=$2 value=$3 text
-  for _ in $(seq 1 400); do
+  local deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
     text=$(gdbus call --address "$atspi_address" \
       --dest "$app_bus" \
       --object-path "$path" \
@@ -343,7 +350,8 @@ focused_node() {
 
 wait_for_absent() {
   local expected=$1
-  for _ in $(seq 1 400); do
+  local deadline=$((SECONDS + 120))
+  while ((SECONDS < deadline)); do
     if collect_tree && ! node_named "$expected" >/dev/null; then
       return 0
     fi
@@ -496,7 +504,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       click_named "Continue without backup"
       # The media codecs step appears only where the codec pack is offered. A new
       # identity ends on the welcome (a joined device's on "Your identity is ready").
-      for _ in $(seq 1 400); do
+      wait_until=$((SECONDS + 120))
+      while ((SECONDS < wait_until)); do
         collect_tree || { sleep 0.05; continue; }
         node_named "Welcome to Tilo" >/dev/null && break
         if node_named "Not now" >/dev/null; then
@@ -512,7 +521,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # Use my existing Tilo identity -> Connect a nearby device, as a person
     # does; choosing it starts pairing. A retry after a failed attempt is
     # already on the pairing screen and asks again with Try again.
-    for _ in $(seq 1 400); do
+    wait_until=$((SECONDS + 120))
+    while ((SECONDS < wait_until)); do
       collect_tree || { sleep 0.05; continue; }
       if node_named "Try again" >/dev/null; then
         click_named "Try again"
@@ -536,7 +546,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
   oobe-nearby-done)
     # Joining an identity ends first use on its ready screen. The media codecs
     # step appears first only where the codec pack is offered.
-    for _ in $(seq 1 1200); do
+    wait_until=$((SECONDS + 360))
+    while ((SECONDS < wait_until)); do
       collect_tree || { sleep 0.05; continue; }
       node_containing "identity is ready" >/dev/null && break
       if node_named "Not now" >/dev/null; then
@@ -557,7 +568,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # A session started after the identity exists shows the desktop, or the
     # first-use steps that follow the identity. It never asks for an identity
     # again and never lands on identity recovery.
-    for _ in $(seq 1 1200); do
+    wait_until=$((SECONDS + 360))
+    while ((SECONDS < wait_until)); do
       collect_tree || { sleep 0.05; continue; }
       node_named "Tilo workspace" >/dev/null && break
       node_containing "identity is ready" >/dev/null && break
@@ -582,7 +594,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # The ready screen takes keyboard focus once it is on screen: before
     # that, keys still go to the step it replaced.
     wait_for_names "Continue to desktop"
-    for _ in $(seq 1 400); do
+    wait_until=$((SECONDS + 120))
+    while ((SECONDS < wait_until)); do
       collect_tree && node_named "Continue to desktop" >/dev/null && focused_node >/dev/null && break
       sleep 0.05
     done
@@ -595,7 +608,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
   oobe-finish-focused)
     # Tab from where the ready screen put focus reaches its primary action.
     focused_name=""
-    for _ in $(seq 1 400); do
+    wait_until=$((SECONDS + 120))
+    while ((SECONDS < wait_until)); do
       if collect_tree && focused=$(focused_node); then
         focused_name=${node_names[$focused]}
         [[ $focused_name == *"'Continue to desktop'"* ]] && break

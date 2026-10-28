@@ -60,14 +60,14 @@ reboot_b() {
   sudo_b 'systemd-run --on-active=2 --unit=tilo-unlock-test-reboot systemctl reboot' >/dev/null \
     || die "B could not schedule its reboot"
   for _ in $(seq 1 60); do
-    vm_b ssh true >/dev/null 2>&1 || return 0
+    TILO_SSH_BOUND=20 vm_b ssh true >/dev/null 2>&1 || return 0
     sleep 1
   done
   die "B did not go down for its reboot"
 }
 await_ssh_b() {
   for _ in $(seq 1 "$2"); do
-    vm_b ssh true >/dev/null 2>&1 && return 0
+    TILO_SSH_BOUND=20 vm_b ssh true >/dev/null 2>&1 && return 0
     sleep 2
   done
   die "B did not answer SSH $1"
@@ -77,7 +77,7 @@ await_ssh_b() {
 at_prompt_then_type() {
   local label=$1
   for _ in $(seq 1 15); do
-    ! vm_b ssh true >/dev/null 2>&1 || die "B booted without a passphrase in the $label case"
+    ! TILO_SSH_BOUND=20 vm_b ssh true >/dev/null 2>&1 || die "B booted without a passphrase in the $label case"
     sleep 2
   done
   vm_b shot "unlock-$label-prompt" >/dev/null 2>&1 \
@@ -86,7 +86,7 @@ at_prompt_then_type() {
     vm_b type "$unlock_pass" >/dev/null 2>&1
     vm_b keys ret >/dev/null 2>&1
     for _ in $(seq 1 15); do
-      vm_b ssh true >/dev/null 2>&1 && break 2
+      TILO_SSH_BOUND=20 vm_b ssh true >/dev/null 2>&1 && break 2
       sleep 2
     done
     [ "$attempt" -lt 6 ] || die "B did not unlock with its passphrase after the $label case"
