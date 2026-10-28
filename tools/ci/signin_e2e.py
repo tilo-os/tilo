@@ -223,9 +223,13 @@ class Shell:
         while time.monotonic() < deadline:
             token = secrets.token_hex(6)
             try:
+                # A port nobody in the guest reads yet fills up: that is waiting, not closed.
+                self.sock.settimeout(max(deadline - time.monotonic(), 0.1))
                 self.sock.sendall(f"echo E2E-READY-{token}\n".encode())
                 if self._read_until(re.compile(rf"E2E-READY-{token}".encode()), 3):
                     return
+            except socket.timeout:
+                break
             except OSError as error:
                 raise Failed(f"the test shell port closed: {error}") from error
         raise Failed("no root shell answered on the test shell port (is the target's test unit running?)")
@@ -1454,7 +1458,12 @@ cryptsetup close e2e-target
             raise Failed(f"no boot sign-in screen to sign in at ({kind})")
         self.cycle.type(self.account)
         self.cycle.keys("ret")
-        self.connect(300)
+        try:
+            self.connect(300)
+        except Failed:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen("comforts-no-shell", path, text)
+            raise
         self.write_comforts()
         self.power_off(label)
 
