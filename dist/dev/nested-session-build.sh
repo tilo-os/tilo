@@ -97,7 +97,7 @@ profile_args() {
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
 host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control)
+           tilo-model-gateway tilo-ush tilo-control tilolang-host)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -109,7 +109,8 @@ build_host() {
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
-        -p tilo-control --bin tilo-control
+        -p tilo-control --bin tilo-control \
+        -p tilolang-host --bin tilolang-host
 }
 # The workspace host and the room service in front of it, as the room
 # service's image builds them (tilo-relay with its agents): the local site
