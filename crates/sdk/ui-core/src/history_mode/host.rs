@@ -2533,6 +2533,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn set_width(&mut self, width: f64);
     fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool;
     fn refresh_without_owners(&self, width: f64) -> Option<bool>;
+    #[cfg(debug_assertions)]
     fn heads_need_refresh(&self, doc: &AutoCommit) -> bool;
     fn owners_followed_by_frame_witness(&self) -> bool;
     fn review_is_open(&self) -> bool;
@@ -2875,6 +2876,7 @@ impl HistoryChromeApi for HistoryHost {
     fn refresh_without_owners(&self, width: f64) -> Option<bool> {
         HistoryHost::refresh_without_owners(self, width)
     }
+    #[cfg(debug_assertions)]
     fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
         HistoryHost::heads_need_refresh(self, doc)
     }
