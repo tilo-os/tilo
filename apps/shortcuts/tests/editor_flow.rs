@@ -1020,7 +1020,8 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
 
     // Going back to the blocks keeps the draft exactly as it was.
     press_bar(&mut app, "text-view");
-    let back = app.state().drafts.values().next().expect("the draft");
+    let state = app.state();
+    let back = state.drafts.values().next().expect("the draft");
     assert_eq!(back.program(), program, "the text view edits nothing");
     assert!(
         !app.harness().targets().contains_key("draft-text"),
