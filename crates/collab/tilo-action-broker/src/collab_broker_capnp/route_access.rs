@@ -112,6 +112,7 @@ mod tests {
             b"[[resources]]\nkind = \"tl.test.lang-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
         static BOARD: &[u8] = b"reads = [\"tl.test.lang-notes.Note\"]\n\n[[resources]]\nkind = \"tl.test.lang-board.Card\"\nlabel = \"Card\"\nversion = 1\n";
         static CHAT: &[u8] = b"[[resources]]\nkind = \"tl.test.lang-chat.Message\"\nlabel = \"Message\"\nversion = 1\n";
+        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
         ui::app_surface::register_package("test.lang-notes", NOTES);
         ui::app_surface::register_package("test.lang-board", BOARD);
         ui::app_surface::register_package("test.lang-chat", CHAT);
@@ -193,7 +194,6 @@ mod tests {
             "an app whose surface the broker does not hold reads nothing"
         );
         let accounts = collab_types::person_record_id("test-person.accounts");
-        static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
         ui::app_surface::register_package("test.person-reader", TERMINAL);
         assert_eq!(
             attested_route_access(
