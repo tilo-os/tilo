@@ -125,9 +125,12 @@ mod tests {
         let link = ns.create_file(ROOT_INO, "latest", None, 0, 1).unwrap();
         let link_record = ns.record_id_for(link).unwrap();
         assert!(ns.put_posix_attrs(link_record, &PosixAttrs::of_local(0, false, true)));
-        let saved = ns.save();
-
-        for mut ns in [ns, Namespace::from_bytes("reloaded", &saved).unwrap()] {
+        let check = |ns: &mut Namespace| {
+            let script = ns.lookup(ROOT_INO, b"run.sh").map(|attr| attr.ino.0);
+            let link = ns.lookup(ROOT_INO, b"latest").map(|attr| attr.ino.0);
+            let (Some(script), Some(link)) = (script, link) else {
+                panic!("the two entries are still there");
+            };
             assert_eq!(
                 ns.getattr(script).map(|attr| attr.perm),
                 Some(0o755),
@@ -160,6 +163,10 @@ mod tests {
                 Some(FileType::RegularFile),
                 "a version describes the record, not the kernel's link view",
             );
-        }
+        };
+
+        check(&mut ns);
+        let saved = ns.save();
+        check(&mut Namespace::from_bytes("reloaded", &saved).unwrap());
     }
 }
