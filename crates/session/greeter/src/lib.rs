@@ -23,11 +23,13 @@
 
 pub mod auth;
 pub mod boot_look;
+pub mod boot_screen;
 pub mod comforts;
 pub mod device_status;
 pub mod greeter_app;
 pub mod handoff;
 pub mod i18n;
+pub mod keyboards;
 pub mod local_users;
 pub mod output_scale;
 pub mod seat_input;
