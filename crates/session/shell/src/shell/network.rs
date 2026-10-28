@@ -13736,8 +13736,14 @@ mod tests {
                     "history",
                 )
             };
-            earlier.record_history(&route(person_room), &person_op);
-            earlier.record_history(&route(shared_room), &shared_op);
+            earlier
+                .record_history(&route(person_room), &person_op)
+                .sync()
+                .expect("history synced");
+            earlier
+                .record_history(&route(shared_room), &shared_op)
+                .sync()
+                .expect("history synced");
         }
 
         let (net, _commands) = personal_continuity_network_for_test(user);

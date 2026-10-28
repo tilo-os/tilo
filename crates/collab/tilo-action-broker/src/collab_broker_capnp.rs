@@ -12726,8 +12726,8 @@ fn handle_signed_op_send_for_artifact(
     };
     match validation {
         Ok(()) => {
-            if let Ok(mut ch) = state.broker_channels.lock() {
-                ch.record_history(route, &envelope);
+            let unsynced = state.broker_channels.lock().ok().map(|mut ch| {
+                let unsynced = ch.record_history(route, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.kind == collab_types::OpKind::Compaction
@@ -12735,6 +12735,12 @@ fn handle_signed_op_send_for_artifact(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
+                unsynced
+            });
+            // Synced outside the channels' lock, which the main loop takes
+            // too, and before the op is republished or fanned out.
+            if let Some(unsynced) = unsynced {
+                unsynced.finish();
             }
             if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
