@@ -71,10 +71,10 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
-use crate::shell::render::icc_lut::IccLut;
 pub use keyboard::KeyboardXkb;
 #[cfg(test)]
 use keyboard::{KeyOutcome, keyboard_input_event, keysym_to_winit_key, text_for};
+use tilo_output_passes::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -4508,7 +4508,7 @@ fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
 #[cfg(test)]
 mod color_calibration_tests {
     use super::color_calibration;
-    use crate::shell::render::icc_lut::tests::lut16;
+    use tilo_output_passes::icc_lut::tests::lut16;
 
     #[test]
     fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {

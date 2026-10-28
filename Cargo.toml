@@ -412,6 +412,7 @@ members = [
     "crates/session/installer",
     "crates/session/liveness",
     "crates/session/network-secret-agent",
+    "crates/session/output-passes",
     "crates/session/polkit-agent",
     "crates/session/quick-settings",
     "crates/session/session-record",

@@ -4,17 +4,28 @@
 //! curves, or a lut16 `B2A0` table built here), and the same model turns the panel's 8-bit
 //! signals back into light, so a difference between the GPU and qcms is measured as ΔE2000
 //! on that panel, not only in code values.
+//!
+//! The panels are also the shell's presenter tests' fixtures, built for them behind the
+//! crate's `test-support` feature: there, as in this crate's tests, a panic is the failing
+//! test it reports.
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test fixtures: a panic is the failing test it reports"
+)]
 
 use qcms::{CIE_xyY, CIE_xyYTRIPLE, DataType, Intent, Profile, Transform};
 use settings_store::hardware::OutputTransform;
 use vello::wgpu;
 
-use crate::shell::render::icc_lut::IccLut;
-use crate::shell::render::orientation::OrientedCopy;
+use crate::icc_lut::IccLut;
+use crate::orientation::OrientedCopy;
 
 /// A panel's tone curve: signal (0..1) to linear light (0..1).
 #[derive(Clone, Copy)]
-pub(crate) enum Curve {
+pub enum Curve {
     Srgb,
     /// As qcms takes it.
     Gamma(f32),
@@ -44,16 +55,16 @@ impl Curve {
 }
 
 /// A synthetic display: what qcms reads as its profile, and the model ΔE is measured on.
-pub(crate) struct Panel {
-    pub(crate) name: &'static str,
+pub struct Panel {
+    pub name: &'static str,
     white: (f64, f64),
     primaries: [(f64, f64); 3],
     curve: Curve,
     /// The largest per-channel difference from qcms, in 8-bit code values, this panel may
     /// show (`IccLut`'s stated tolerance).
-    pub(crate) max_code_delta: i32,
+    pub max_code_delta: i32,
     /// The share of colours that must land within one code value of qcms.
-    pub(crate) min_within_one: f64,
+    pub min_within_one: f64,
 }
 
 const D65: (f64, f64) = (0.3127, 0.3290);
@@ -62,7 +73,7 @@ const P3: [(f64, f64); 3] = [(0.680, 0.320), (0.265, 0.690), (0.150, 0.060)];
 
 /// Profiles a calibrated desktop meets: in-gamut matrix profiles, a table curve, a lut-based
 /// profile, and a panel narrower than sRGB that qcms clips into.
-pub(crate) fn representative_panels() -> [Panel; 7] {
+pub fn representative_panels() -> [Panel; 7] {
     [
         Panel {
             name: "sRGB",
@@ -111,7 +122,7 @@ pub(crate) fn representative_panels() -> [Panel; 7] {
 
 /// A lut-based profile, as calibration tools write them: qcms reads its `B2A0` table, which
 /// it interpolates on its own 33-point grid. [`Panel::lut16_profile`] is its ICC file.
-pub(crate) fn lut16() -> Panel {
+pub fn lut16() -> Panel {
     Panel {
         name: "lut16 B2A0",
         white: D50,
@@ -123,7 +134,7 @@ pub(crate) fn lut16() -> Panel {
 }
 
 /// Adobe RGB (1998) primaries at gamma 2.2: a wide-gamut matrix profile.
-pub(crate) fn adobe_rgb() -> Panel {
+pub fn adobe_rgb() -> Panel {
     Panel {
         name: "Adobe RGB, gamma 2.2",
         white: D65,
@@ -140,7 +151,7 @@ fn xy((x, y): (f64, f64)) -> CIE_xyY {
 
 impl Panel {
     /// The panel as qcms reads it.
-    pub(crate) fn profile(&self) -> Box<Profile> {
+    pub fn profile(&self) -> Box<Profile> {
         let primaries = CIE_xyYTRIPLE {
             red: xy(self.primaries[0]),
             green: xy(self.primaries[1]),
@@ -162,7 +173,7 @@ impl Panel {
     }
 
     /// sRGB to this panel, as the readback presenter builds it.
-    pub(crate) fn transform(&self) -> Transform {
+    pub fn transform(&self) -> Transform {
         Transform::new(
             &Profile::new_sRGB(),
             &self.profile(),
@@ -201,7 +212,7 @@ impl Panel {
 
     /// An ICC v2 display profile whose only device mapping is a 33-point lut16 `B2A0`: XYZ
     /// (D50 PCS) through the inverse matrix and curve, then a crosstalk no matrix can express.
-    pub(crate) fn lut16_profile(&self) -> Vec<u8> {
+    pub fn lut16_profile(&self) -> Vec<u8> {
         const GRID: usize = 33;
         let inverse = invert(self.rgb_to_xyz());
         let mut tag = Vec::new();
@@ -354,7 +365,7 @@ fn delta_e_2000(first: [f64; 3], second: [f64; 3]) -> f64 {
 }
 
 /// Every colour on a lattice of step 3 (0, 3, …, 255 in each channel) and every grey.
-pub(crate) fn sample_colours() -> Vec<[u8; 3]> {
+pub fn sample_colours() -> Vec<[u8; 3]> {
     let lattice: Vec<u8> = (0..=u8::MAX).step_by(3).collect();
     let mut colours = Vec::new();
     for &b in &lattice {
@@ -373,7 +384,7 @@ pub(crate) fn sample_colours() -> Vec<[u8; 3]> {
 const STRIP_WIDTH: u32 = 1024;
 
 /// `colours` through the production SDR final pass with `lut` bound, on `device`.
-pub(crate) fn calibrate_on_gpu(
+pub fn calibrate_on_gpu(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     lut: &IccLut,
@@ -469,18 +480,18 @@ pub(crate) fn calibrate_on_gpu(
 
 /// How far a calibration lands from qcms.
 #[derive(Debug)]
-pub(crate) struct Agreement {
+pub struct Agreement {
     /// The largest per-channel difference, in 8-bit code values, and the input colour.
-    pub(crate) max_code_delta: (i32, [u8; 3]),
+    pub max_code_delta: (i32, [u8; 3]),
     /// Share of colours within one code value in every channel.
-    pub(crate) within_one: f64,
-    pub(crate) mean_delta_e: f64,
+    pub within_one: f64,
+    pub mean_delta_e: f64,
     /// The largest ΔE2000 on the panel, and the input colour.
-    pub(crate) max_delta_e: (f64, [u8; 3]),
+    pub max_delta_e: (f64, [u8; 3]),
 }
 
 /// `got[i]` (the panel signal for `colours[i]`) against qcms's.
-pub(crate) fn agreement(
+pub fn agreement(
     panel: &Panel,
     transform: &Transform,
     colours: &[[u8; 3]],
@@ -523,10 +534,10 @@ pub(crate) fn agreement(
 }
 
 /// Mean ΔE2000 every panel stays within: well under one just-noticeable difference.
-pub(crate) const MAX_MEAN_DELTA_E: f64 = 0.15;
+pub const MAX_MEAN_DELTA_E: f64 = 0.15;
 /// The largest ΔE2000 any colour may show: a one-code step in a near-black, near-neutral
 /// colour, the panel's own quantisation.
-pub(crate) const MAX_DELTA_E: f64 = 3.5;
+pub const MAX_DELTA_E: f64 = 3.5;
 
 #[test]
 fn gpu_lut_matches_qcms_across_representative_profiles() {

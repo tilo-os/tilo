@@ -59,7 +59,6 @@ grandfathered = [
     "accesskit_unix",
     "accounts",
     "agent-provider-config",
-    "ash",
     "base64",
     "blake3",
     "bounded-command",
@@ -126,7 +125,6 @@ grandfathered = [
     "signal-hook-registry",
     "smithay",
     "smithay-client-toolkit",
-    "sysinfo",
     "taffy",
     "tar",
     "tempfile",
@@ -253,3 +251,4 @@ grandfathered = [
 "tilo-frame-metrics" = "The frame loop's instrumentation (phase timings, pacing, CPU traces, on-demand profiles), carved out of the compositor so a compositor change does not rebuild it; it brings libc, serde, serde_json, tilo-lock and tilo-paths, which the shell already depends on"
 "tilo-liveness" = "The liveness socket's heartbeats, thread dumps and main-thread file audit, carved out of the compositor so a compositor change does not rebuild them; it brings backtrace, calloop, durable-store, libc, parking_lot and serde, which the shell already depends on"
 "tilo-color-pipeline" = "The compositor's colour maths (HDR output encode, tone mapping, the HDR surface composite and its shaders, display capabilities, software dimming), carved out of the shell so a compositor change does not rebuild it; it brings neighbour-wire, settings-store, tilo-wayland-ext and vello, which the shell already depends on"
+"tilo-output-passes" = "The GPU passes that put a frame on an output (orientation, ICC calibration, HDR encode and composite, XRGB damage history, shader warm-up, software GPU memory return), carved out of the shell so a compositor change does not rebuild them; it brings qcms, ash, sysinfo, settings-store, tilo-advisory-lock, tilo-color-pipeline and vello, which the shell already depends on"

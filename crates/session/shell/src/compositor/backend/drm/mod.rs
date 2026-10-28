@@ -686,8 +686,8 @@ pub(super) struct DirectEligibility<'a> {
 /// Why one output cannot render straight into its own scanout target, or `None` when it
 /// can. Each output is judged alone: other outputs, and how they present, play no part.
 /// A rotated output is eligible: its final pass turns the frame on the GPU
-/// (`shell::render::orientation`). So is an ICC-profiled one: the same pass maps it through
-/// the profile (`shell::render::icc_lut`).
+/// (`tilo_output_passes::orientation`). So is an ICC-profiled one: the same pass maps it through
+/// the profile (`tilo_output_passes::icc_lut`).
 pub(super) fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
     if !input.hardware_cursor {
         return Some("hardware cursor plane is unavailable");
@@ -1565,7 +1565,7 @@ fn view_of(
     outputs: &[Output],
 ) -> paint::OutputView {
     let size = outputs.iter().find(|output| output.id == id).map_or_else(
-        || crate::shell::render::orientation::turned(mode, transform),
+        || tilo_output_passes::orientation::turned(mode, transform),
         |output| output.size,
     );
     paint::OutputView::at(id, position, size).oriented(transform)
@@ -1827,7 +1827,7 @@ fn present_direct(
     let calibration = entry
         .color_lut
         .as_ref()
-        .map(crate::shell::render::icc_lut::IccLut::id);
+        .map(tilo_output_passes::icc_lut::IccLut::id);
     if entry.direct_calibration != calibration {
         entry.direct_calibration = calibration;
         bridge.invalidate_output_view(view);

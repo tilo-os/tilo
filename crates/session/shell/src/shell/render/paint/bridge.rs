@@ -21,11 +21,11 @@ use super::{
     RECOVERY_BACKOFF_INITIAL, RECOVERY_BACKOFF_MAX, RetainedGpuTarget, SceneDamage, VelloDrmBridge,
     WARNED_CPU_FALLBACK, XrgbHistoryIdentity,
 };
-use crate::shell::render::hdr_composite::HdrCompositor;
-use crate::shell::render::hdr_encode::HdrEncodePipeline;
-use crate::shell::render::icc_lut::IccLut;
-use crate::shell::render::orientation::OrientedCopy;
 use tilo_color_pipeline::hdr_surface::HdrLayer;
+use tilo_output_passes::hdr_composite::HdrCompositor;
+use tilo_output_passes::hdr_encode::HdrEncodePipeline;
+use tilo_output_passes::icc_lut::IccLut;
+use tilo_output_passes::orientation::OrientedCopy;
 
 /// The presenting renderer's wgpu context and the index of its device.
 ///

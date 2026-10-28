@@ -8,7 +8,7 @@
 //! and recovery budget, and the device are shared by every output.
 //!
 //! A rotated output's surface still holds its part of the scene upright; the final pass turns
-//! it into the scanout's physical orientation on the GPU ([`super::super::orientation`]), so
+//! it into the scanout's physical orientation on the GPU ([`tilo_output_passes::orientation`]), so
 //! damage maps onto the surface by translation alone and the pixels are the readback's.
 
 use std::sync::Arc;
@@ -19,11 +19,11 @@ use vello::{FineDamageRect, Scene, wgpu};
 
 use settings_store::hardware::OutputTransform;
 
-use super::super::icc_lut::IccLut;
-use super::super::orientation::turned;
 use super::{BridgeError, GpuFrameStats, RetainedGpuTarget, SceneDamage, VelloDrmBridge};
 use crate::shell::render::OutputId;
 use tilo_color_pipeline::hdr_surface::HdrLayer;
+use tilo_output_passes::icc_lut::IccLut;
+use tilo_output_passes::orientation::turned;
 
 /// Which part of the scene one output shows, and at what size.
 #[derive(Clone, Copy, Debug, PartialEq)]
