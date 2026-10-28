@@ -23,7 +23,7 @@ class RunnerTests(unittest.TestCase):
         self.env.pop("CARGO_TARGET_DIR", None)
         self.env["PATH"] = str(self.root / "bin") + os.pathsep + self.env["PATH"]
         self.env["TEST_INVOCATIONS"] = str(self.root / "calls.jsonl")
-        for name in ["typing-rcargo-runner.sh", "typing-iai.sh"]:
+        for name in ["typing-cargo-runner.sh", "typing-iai.sh"]:
             destination = self.root / "tools/perf" / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / "tools/perf" / name, destination)
@@ -77,7 +77,7 @@ print('{}')
 
     def run_fixture(self, directory=None):
         return subprocess.run(
-            ["bash", str(self.root / "tools/perf/typing-rcargo-runner.sh"),
+            ["bash", str(self.root / "tools/perf/typing-cargo-runner.sh"),
              str(self.binary), "--bench"],
             cwd=directory or self.root, env=self.env, text=True,
             capture_output=True, check=False,
