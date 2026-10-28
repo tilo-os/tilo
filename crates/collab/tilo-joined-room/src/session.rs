@@ -98,6 +98,8 @@ impl Connect {
                 })
                 .collect())
         })
+    }
+
     /// Whether this device is the room's host itself: it governs the room
     /// here, or the host its enrollment pins is this very device. Such a room
     /// is never dialled. This device holds the host's copy, so there is
