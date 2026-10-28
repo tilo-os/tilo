@@ -11,7 +11,7 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
-/// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
+/// rest of the frame (remote presence, debug outlines, HUD)
 /// draws with, the draw-pass duration for the perf log line, and what was
 /// painted outside the widgets' layout boxes (an overlay, history chrome, a
 /// dialog, the palette; the tooltip's bounds), which their damage does not
@@ -425,10 +425,10 @@ fn draw_visible_tooltip(
     Some(transform.transform_rect_bbox(bounds))
 }
 
-/// Paint the presence a window shows over its widgets (legacy cursors, peer
-/// pointers with their names and edge mist, semantic action activity) into
-/// `layer`, each draw site one [`crate::scene_parts`] part bounded by what it
-/// painted, so the frame damages only the marks that changed.
+/// Paint the presence a window shows over its widgets (peer pointers with
+/// their names and edge mist, semantic action activity) into `layer`, each
+/// draw site one [`crate::scene_parts`] part bounded by what it painted, so
+/// the frame damages only the marks that changed.
 ///
 /// Returns the frame's presence damage in scene (physical) coordinates
 /// against the last [`crate::presence::PresenceLayer::presented`] frame, or

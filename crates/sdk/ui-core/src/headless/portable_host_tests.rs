@@ -3,6 +3,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Column, Container, Widget};
 use std::{cell::Cell, rc::Rc};
+use winit::event::MouseButton;
 
 fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<usize> {
     let expected = vello_encoding::DrawColor::from(color).rgba;

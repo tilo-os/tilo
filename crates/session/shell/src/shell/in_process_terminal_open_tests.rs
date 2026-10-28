@@ -75,9 +75,8 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
     };
     assert_eq!(inspect(&mut host)["lifecycle"], "opening");
     assert_eq!(inspect(&mut host)["input_available"], false);
-    host.open_global_search_all("").unwrap();
+    host.open_caller_search("").unwrap();
     host.type_text("unrelated keyboard input");
-    assert_eq!(host.global_search_query(), Some("unrelated keyboard input"));
     assert_eq!(
         inspect(&mut host)["lifecycle"],
         "opening",

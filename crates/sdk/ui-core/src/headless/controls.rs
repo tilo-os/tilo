@@ -280,8 +280,7 @@ impl FrameHarness {
 
     fn action_geometry_visible(&self) -> bool {
         // A system surface hiding the app cannot expose its background locus.
-        !(self.system_search_presentation().is_some()
-            || self.caller_palette.palette.is_some()
+        !(self.caller_palette.palette.is_some()
             || self
                 .history
                 .as_ref()

@@ -366,7 +366,6 @@ fn every_mutable_entry_point_invalidates_local_state() {
             include_str!("invocation_results.rs"),
         ),
         ("search_open.rs", include_str!("search_open.rs")),
-        ("system_search.rs", include_str!("system_search.rs")),
     ];
     let mut checked = 0;
     let mut missing = Vec::new();

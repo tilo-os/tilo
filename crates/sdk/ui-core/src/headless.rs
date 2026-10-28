@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::AccessNode;
@@ -305,7 +305,6 @@ mod sidebar_button;
 mod slot_row;
 pub use slot_row::WINDOW_SLOTS;
 mod cursor;
-pub mod system_search;
 pub mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use self::app::{HeadlessApp, MOUNT_VIEWPORT, fixture_runner_inputs};
@@ -339,7 +338,6 @@ pub struct FrameHarness {
     /// Pen samples on their way to the pointer events they describe.
     pen: crate::pen::PenInput,
     caller_palette: caller_palette::CallerPalette,
-    system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
@@ -501,7 +499,6 @@ pub struct FrameHarness {
     viewport: (u32, u32),
     last_layout_viewport: Option<(u32, u32)>,
     input_scale: f64,
-    host_pointer_position: Option<winit::dpi::PhysicalPosition<f64>>,
     /// As the live host: where the pointer last moved, replayed before a
     /// press or release that follows a rebuild under a still pointer.
     pointer_replay: crate::pointer_replay::PointerReplay,
@@ -1263,22 +1260,6 @@ impl FrameHarness {
         }
     }
 
-    /// Replace the whole root control of this harness. `node_map` holds raw
-    /// pointers into the current tree and `focused` names a node of the
-    /// current Taffy tree, so both are discarded before the old tree is
-    /// dropped; assigning `root` directly would leave the next frame reading
-    /// freed widgets.
-    #[cfg(test)]
-    fn replace_root(&mut self, root: Box<dyn Widget>) {
-        self.pending_app_activation = None;
-        self.discard_layout_tree();
-        self.focused = None;
-        self.focus_before_trap = None;
-        self.ordinary_palette_return_focus = None;
-        self.root_type = None;
-        self.root = root;
-    }
-
     /// Force the next frame to recompose from scratch. Inputs that shape
     /// every widget's style at build time (theme, platform conventions,
     /// interaction environment, an installed history host) go through here
@@ -1750,7 +1731,6 @@ impl FrameHarness {
             bound_publication: Default::default(),
             pen: crate::pen::PenInput::default(),
             caller_palette: Default::default(),
-            system_search: Default::default(),
             component_wake,
             root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
@@ -1830,7 +1810,6 @@ impl FrameHarness {
             viewport,
             last_layout_viewport: None,
             input_scale: 1.0,
-            host_pointer_position: None,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_trap_active: false,
@@ -2392,7 +2371,6 @@ impl FrameHarness {
                 .as_deref()
                 .is_none_or(|palette| !palette.is_presented())
             && !self.search_pending
-            && self.global_search_query().is_none()
             && self.caller_palette.palette.is_none()
             && !self.has_pending_owner_models()
             && !self.bindings.has_legacy()
@@ -2929,7 +2907,7 @@ impl FrameHarness {
 
     /// The roots [`Self::frame_schedule`] reads demand from.
     fn with_schedule_roots<R>(&self, visit: impl FnOnce(Vec<&dyn Widget>) -> R) -> R {
-        if self.history_layout.is_some() && self.system_search_presentation().is_none() {
+        if self.history_layout.is_some() {
             return self.presentation(|history, _| {
                 let mut roots: Vec<&dyn Widget> = vec![history];
                 if let Some(palette) = self
@@ -3079,7 +3057,7 @@ impl FrameHarness {
         }
         self.drain_component_wakes();
         let mut result = Vec::new();
-        if self.history_layout.is_some() && self.system_search_presentation().is_none() {
+        if self.history_layout.is_some() {
             self.presentation(|history, _| {
                 visit(history, "", &mut result);
                 if let Some(palette) = self
@@ -3142,12 +3120,10 @@ impl FrameHarness {
     /// The IME window of the current keyboard owner: the `ime` of
     /// [`Self::frame_output`] without building the whole inspection tree.
     pub fn ime_window(&self) -> Option<crate::ime::ImeWindowState> {
-        self.system_search_ime()
-            .or_else(|| {
-                self.caller_palette.palette.as_ref().and_then(|p| {
-                    crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)
-                })
-            })
+        self.caller_palette
+            .palette
+            .as_ref()
+            .and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0))
             .or_else(|| {
                 self.focused.and_then(|id| {
                     self.inspect_node(id, crate::ime::ImeWindowState::from_widget)
@@ -4397,8 +4373,6 @@ impl FrameHarness {
         // active-instance filter a second unfiltered pass would undo.
         self.search_pending = self.advance_search();
         self.draw_caller_palette();
-        self.refresh_system_search();
-        self.draw_system_search();
         if let Some(recording) = parts_recording {
             self.scene_parts = recording.finish().of(&self.scene);
         }
@@ -4857,7 +4831,6 @@ impl FrameHarness {
             || self.focus_trap_active
             || self.caller_palette.palette.is_some()
             || self.caller_palette.pending.is_some()
-            || self.global_search_query().is_some()
             || self
                 .history
                 .as_ref()
@@ -5344,9 +5317,6 @@ impl FrameHarness {
     /// current frame — the exact `(NodeId, Node)` list that reaches AT-SPI2 /
     /// Orca and the built-in screen reader, with the driver's focus marked.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
-        if let Some(update) = self.system_search_a11y() {
-            return update.nodes;
-        }
         self.drain_component_wakes();
         if self.history_layout.is_some() {
             return self.presentation(|root, _| {
@@ -5427,9 +5397,6 @@ impl FrameHarness {
     /// element inside it, not the widget, so a test can assert where the user
     /// actually is.
     pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {
-        if let Some(update) = self.system_search_a11y() {
-            return update.nodes.into_iter().find(|(id, _)| *id == update.focus);
-        }
         self.drain_component_wakes();
         let update = if self.history_layout.is_some() {
             self.presentation(|root, _| {
@@ -5495,16 +5462,6 @@ impl FrameHarness {
         // replaced since they were built first.
         if self.composition_changed() {
             self.readmit_replaced_composition();
-        }
-        if self.global_search_query().is_some() {
-            let handled = self.perform_system_search_a11y(target, action);
-            self.finish_system_search();
-            self.relayout();
-            return if handled {
-                Ok(())
-            } else {
-                Err("system search owns input".into())
-            };
         }
         if let Some(result) = self.history_a11y_resource(target, action) {
             return result;
@@ -5708,10 +5665,6 @@ impl FrameHarness {
     /// rect it currently occupies.
     fn presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
-        if let Some(search) = self.system_search_presentation() {
-            roots.push(search);
-            return roots;
-        }
         if let Some(history) = &self.history {
             roots.push(history.as_ref() as &dyn Widget);
         }
@@ -5733,10 +5686,6 @@ impl FrameHarness {
         self.drain_component_wakes();
         let mut out = HashMap::new();
         let mut counts = HashMap::new();
-        if let Some(search) = self.system_search_presentation() {
-            collect_targets(search, "", &mut counts, &mut out);
-            return out;
-        }
         if self.history_layout.is_some() {
             self.presentation(|root, _| {
                 collect_targets(root, "", &mut counts, &mut out);
@@ -5818,16 +5767,6 @@ impl FrameHarness {
             return self.perform_window_search_semantic(name, action);
         }
 
-        if self.global_search_query().is_some() {
-            let handled = self.perform_system_search_semantic(name, semantic_target, action);
-            self.finish_system_search();
-            self.relayout();
-            return if handled {
-                Ok(())
-            } else {
-                Err("system search owns input".into())
-            };
-        }
         if self.caller_palette.palette.is_some() {
             let handled = self.perform_caller_palette_semantic(name, semantic_target, action);
             self.finish_caller_palette();
@@ -6272,9 +6211,7 @@ impl FrameHarness {
     pub fn inspection(&self) -> InspectionSnapshot {
         self.drain_component_wakes();
         let mut sibling_counts = HashMap::new();
-        let mut root = if let Some(search) = self.system_search_inspection() {
-            search
-        } else if let Some(palette) = self.caller_palette_inspection() {
+        let mut root = if let Some(palette) = self.caller_palette_inspection() {
             palette
         } else if let Some(history) = &self.history {
             let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
@@ -6297,7 +6234,7 @@ impl FrameHarness {
         };
         // The window's row of slots, first in reading order, under nothing
         // that covers the whole window.
-        if self.global_search_query().is_none() && self.caller_palette.palette.is_none() {
+        if self.caller_palette.palette.is_none() {
             root.children.splice(0..0, self.slot_row_inspection());
         }
         root.children.extend(self.tooltip_inspection());
@@ -6315,9 +6252,7 @@ impl FrameHarness {
         }
         // Use the same admitted retained-owner resolution as semantic dispatch,
         // never a DOM ordering heuristic or a pointer from another component.
-        let keyboard_focus_owner = if self.global_search_query().is_some() {
-            Some("system-search".into())
-        } else if self.caller_palette.palette.is_some() {
+        let keyboard_focus_owner = if self.caller_palette.palette.is_some() {
             // The caller palette routes keyboard events to its private search
             // field, outside the document's retained focus tree. Use the field
             // from this exact palette inspection, not the background owner.
@@ -6572,12 +6507,6 @@ impl FrameHarness {
         // Latin key before any handler matches it.
         let renamed = crate::latin_chord::renamed(event, self.modifiers.state());
         let event = renamed.as_ref().unwrap_or(event);
-        // An open search is modal above both live History chrome and the
-        // document. Update modifiers first, then capture before History can
-        // observe or claim the event.
-        if self.system_search_event(event) {
-            return;
-        }
         // The window's row of slots takes what is its before the app, as a
         // window of its own routes it.
         if self.slot_row_event(event) {
@@ -6741,11 +6670,6 @@ impl FrameHarness {
     ) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
-        }
-        // Search owns the frame while presented; underlying History and app
-        // surfaces must not observe its pointer or keyboard input.
-        if self.system_search_event(event) {
-            return;
         }
         if self
             .action_palette

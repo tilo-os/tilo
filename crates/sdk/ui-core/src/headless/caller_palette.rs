@@ -45,7 +45,6 @@ impl FrameHarness {
         if let Some(palette) = &mut self.caller_palette.palette {
             palette.refresh_visible_resources(&resources);
         }
-        self.refresh_system_search();
         self.relayout();
     }
 
@@ -54,9 +53,7 @@ impl FrameHarness {
     /// Browser-owned command search opens the same authoritative palette.
     pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
         self.invalidate_local();
-        if self.global_search_query().is_some()
-            || self.global_search_pending()
-            || self.root.modal_capture().is_some()
+        if self.root.modal_capture().is_some()
             || self.focus_trap_active
             || self.caller_palette.pending.is_some()
         {
@@ -99,7 +96,6 @@ impl FrameHarness {
                 && self.root.modal_capture().is_none()
                 && !self.focus_trap_active
                 && self.caller_palette.pending.is_none()
-                && !self.global_search_pending()
             {
                 let Some(mut palette) = self.new_action_palette() else {
                     return false;
