@@ -107,7 +107,7 @@ and three rules cover everything:
   capability their place offers, invoked by the system and merged into one ranking. What was
   fetched is cached and indexed like the rest.
 - **The list index** (each list's order and filter columns, so a list opens by reading one
-  page) is still kept next to the record, because most rooms' records aren't yet held by the
+  page) is still kept next to the record, because most workspaces' records aren't yet held by the
   system's storage service. It moves there when they are.
 - Published entries gain typed facets, so the system can filter, sort and count across
   everything without anything running.

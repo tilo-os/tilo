@@ -121,7 +121,7 @@ payment shows finality.
   what it did (its writes), and what it read (field versions).
 - **The author's device runs the action;** the place checks that what it read hasn't changed
   since and that the writes are allowed, then orders it. Checking needs versions, not values,
-  so it works in encrypted rooms.
+  so it works in encrypted workspaces.
 - **Everyone else applies the writes** without running app code.
 - If something read has changed, the author's device re-runs the action with the same
   arguments and resubmits. People only see a rejection if an invariant now fails.
@@ -137,7 +137,7 @@ payment shows finality.
   subtree. Large workspaces spread subtrees across hosts, cut along containment so invariants
   stay in one place, and replicate each part to standbys.
 - The host fans each change out once. Presence is sampled and not stored.
-- In encrypted rooms the host can't index, so search covers what the device holds.
+- In encrypted workspaces the host can't index, so search covers what the device holds.
 - Never: one host ordering a whole large workspace, every device holding everything, or
   invariants spanning a workspace.
 
