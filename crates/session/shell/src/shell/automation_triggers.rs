@@ -2584,7 +2584,7 @@ mod tests {
     /// The ids of what arms in a workspace of the personal room holding
     /// `shortcuts`, for this test's person, against `revocations`.
     fn arming(
-        shortcuts: Vec<Shortcut>,
+        shortcuts: &[Shortcut],
         revocations: &tilo_user_identity::RevocationList,
     ) -> Vec<String> {
         let mut workspace = crate::shell::state::Workspace::in_room(
@@ -2604,7 +2604,7 @@ mod tests {
             unix_ns(Utc::now()),
         )
         .into_iter()
-        .map(|armed| armed.shortcut.id.clone())
+        .map(|armed| armed.shortcut.id)
         .collect()
     }
 
@@ -2618,13 +2618,13 @@ mod tests {
     #[test]
     fn a_shortcut_arms_only_with_its_savers_proof() {
         let none = tilo_user_identity::RevocationList::new();
-        assert_eq!(arming(vec![shortcut(&hourly())], &none), ["tidy"]);
+        assert_eq!(arming(&[shortcut(&hourly())], &none), ["tidy"]);
 
         // The field alone, as a shortcut saved before proofs carries it, or
         // as anyone writing the room could set it.
         let mut unproven = shortcut(&hourly());
         unproven.saved_proof = None;
-        assert!(arming(vec![unproven], &none).is_empty());
+        assert!(arming(&[unproven], &none).is_empty());
 
         // Another person's device proving a shortcut that names this one.
         let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
@@ -2643,12 +2643,12 @@ mod tests {
         tilo_peer_state::room::sign_saved_shortcut(PERSONAL, &mut foreign, &other, &key)
             .expect("signed shortcut");
         assert!(
-            arming(vec![foreign.clone()], &none).is_empty(),
+            arming(std::slice::from_ref(&foreign), &none).is_empty(),
             "another person's shortcut never arms here"
         );
         foreign.saved_by = Some(me());
         assert!(
-            arming(vec![foreign], &none).is_empty(),
+            arming(std::slice::from_ref(&foreign), &none).is_empty(),
             "nor does one naming this person under another's proof"
         );
     }
@@ -2662,7 +2662,7 @@ mod tests {
             }))
             .expect("shortcut JSON"),
         );
-        assert!(arming(vec![copied], &tilo_user_identity::RevocationList::new()).is_empty());
+        assert!(arming(&[copied], &tilo_user_identity::RevocationList::new()).is_empty());
     }
 
     #[test]
@@ -2679,6 +2679,6 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut entry, &root).expect("signed revocation");
         let mut revocations = tilo_user_identity::RevocationList::new();
         revocations.insert(entry).expect("verified revocation");
-        assert!(arming(vec![shortcut(&hourly())], &revocations).is_empty());
+        assert!(arming(&[shortcut(&hourly())], &revocations).is_empty());
     }
 }

@@ -12837,7 +12837,7 @@ pub fn run() {
                 let used = state.take_used_surfaces();
                 if chrome.tree().shared_window_work(&used) {
                     let ended = chrome.tree_mut().note_used_and_take_ended(&used);
-                    ended.into_iter().for_each(|surface| chrome.request_surface_close(surface));
+                    chrome.request_surface_closes(ended);
                 }
                 close_requests = chrome.take_surface_close_requests();
             });

@@ -820,31 +820,22 @@ impl room_host::PersonsHostSessions for DeviceSessions {
         // The network dials each host it knows with each topic it joined,
         // the person's own among them; neither is done twice. The request
         // waits for that session to be subscribed.
-        let queued = self
-            .cmd_tx
-            .try_send(NetCmd::ConnectHost {
-                addr,
-                expectation: Some(crate::network::actor::HomePeerExpectation {
-                    user_public_key: self.user,
-                    device_public_key: device,
-                }),
-            })
-            .and_then(|()| {
-                self.cmd_tx.try_send(NetCmd::JoinPersonalTopic {
-                    ws,
-                    on_event: self.event_tx.clone(),
-                })
-            })
-            .and_then(|()| {
-                self.cmd_tx
-                    .try_send(NetCmd::RoomGovernance(Box::new(room_governance::Request {
-                        ws,
-                        to: room_governance::Addressee::Host(host),
-                        invoke,
-                        reply,
-                    })))
-            })
-            .is_ok();
+        let send = |command| self.cmd_tx.try_send(command).is_ok();
+        let queued = send(NetCmd::ConnectHost {
+            addr,
+            expectation: Some(crate::network::actor::HomePeerExpectation {
+                user_public_key: self.user,
+                device_public_key: device,
+            }),
+        }) && send(NetCmd::JoinPersonalTopic {
+            ws,
+            on_event: self.event_tx.clone(),
+        }) && send(NetCmd::RoomGovernance(Box::new(room_governance::Request {
+            ws,
+            to: room_governance::Addressee::Host(host),
+            invoke,
+            reply,
+        })));
         Box::pin(async move {
             if !queued {
                 return Err("the network queue is unavailable".into());
