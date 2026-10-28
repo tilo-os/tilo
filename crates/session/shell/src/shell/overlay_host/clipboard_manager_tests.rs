@@ -45,10 +45,10 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
 
         chrome
             .borrow_mut()
-            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+            .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
         assert_eq!(
             chrome.borrow().quick_settings.section,
-            Some(crate::shell::quick_settings::QsSection::Clipboard)
+            Some(tilo_quick_settings::QsSection::Clipboard)
         );
         let history = host.clipboard_manager_call(ClipboardManagerAction::Snapshot);
         assert_eq!(history.len(), 2);
@@ -86,7 +86,7 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
         host.set_clipboard_manager_bridge(bridge(store.clone()));
         chrome
             .borrow_mut()
-            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+            .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -123,7 +123,7 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
         host.set_clipboard_manager_bridge(bridge(store.clone()));
         chrome
             .borrow_mut()
-            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+            .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
         let matches = host.filtered_clipboard_history();
@@ -163,7 +163,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     // Browsed from Quick Settings: under the tray, top right.
     chrome
         .borrow_mut()
-        .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+        .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
     let tray = host.quick_settings_rect_for_tests();
     assert!(tray.x1 > 1400.0 && tray.y0 < 100.0, "{tray:?}");
     assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -178,7 +178,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     assert!(host.run_shortcut_action(settings_store::hardware::ShortcutAction::ClipboardHistory));
     assert_eq!(
         chrome.borrow().quick_settings.section,
-        Some(crate::shell::quick_settings::QsSection::Clipboard)
+        Some(tilo_quick_settings::QsSection::Clipboard)
     );
     let at = host.quick_settings_rect_for_tests();
     assert!(
@@ -230,7 +230,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     chrome
         .borrow_mut()
         .quick_settings
-        .open_section(crate::shell::quick_settings::QsSection::Clipboard);
+        .open_section(tilo_quick_settings::QsSection::Clipboard);
     assert_eq!(chrome.borrow().quick_settings.paste_origin, None);
     assert!(host.quick_settings_rect_for_tests().x1 > 1400.0);
 }
@@ -246,7 +246,7 @@ fn super_v_without_a_caret_opens_over_the_focused_window() {
     let window = Rect::new(40.0, 60.0, 640.0, 860.0);
     chrome
         .borrow_mut()
-        .open_clipboard_history_to_paste(crate::shell::chrome_state::PasteOrigin {
+        .open_clipboard_history_to_paste(tilo_quick_settings::PasteOrigin {
             caret: None,
             window: Some(window),
         });
@@ -307,7 +307,7 @@ fn the_clipboard_row_counts_the_copies_its_section_lists() {
     host.set_clipboard_manager_bridge(bridge(store.clone()));
     chrome
         .borrow_mut()
-        .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+        .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
     host.refresh_quick_settings_summaries();
     host.refresh_qs_hosted_rows();
     let view = chrome.borrow().quick_settings.clipboard.clone();

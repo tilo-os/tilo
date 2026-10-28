@@ -1018,7 +1018,7 @@ struct BrightnessRecorder {
     calls: std::cell::RefCell<Vec<String>>,
 }
 
-impl crate::shell::quick_settings::actions::QsActions for BrightnessRecorder {
+impl tilo_quick_settings::actions::QsActions for BrightnessRecorder {
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
         self.calls.borrow_mut().push(format!("brightness={pct:.0}"));
         Ok(())
@@ -1046,14 +1046,14 @@ impl crate::shell::quick_settings::actions::QsActions for BrightnessRecorder {
     }
 }
 
-fn dimmable() -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+fn dimmable() -> Vec<tilo_quick_settings::DisplayBrightness> {
     vec![
-        crate::shell::chrome_state::DisplayBrightness {
+        tilo_quick_settings::DisplayBrightness {
             connector: PANEL.0.into(),
             name: "Built-in display".into(),
             level: 0.5,
         },
-        crate::shell::chrome_state::DisplayBrightness {
+        tilo_quick_settings::DisplayBrightness {
             connector: MONITOR.0.into(),
             name: "Test Monitor".into(),
             level: 0.3,
@@ -1119,7 +1119,7 @@ fn brightness_keys_adjust_the_focused_display() {
 
 #[test]
 fn quick_settings_lists_the_focused_display_first() {
-    use crate::shell::quick_settings::refresh::FieldReading;
+    use crate::shell::quick_settings_refresh::FieldReading;
     let mut desk = Desk::new("laptop-beside-1080p");
     for (index, first) in [(1, MONITOR.0), (0, PANEL.0)] {
         desk.work_on(index);

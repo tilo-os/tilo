@@ -21,9 +21,9 @@ use ui::theme::Theme;
 use super::qs_motion::CardSide;
 use super::{DeviceFabricUiAction, ShellOverlayHost};
 use crate::shell::now_playing::{NowPlayingView, output_targets, resolve_output, tr};
-use crate::shell::quick_settings::QsLevel;
-use crate::shell::quick_settings::now_playing::CardAction;
+use crate::shell::now_playing_panel::CardAction;
 use tilo_desktop::drill_in::{PANEL_PAD, SIBLING_GAP};
+use tilo_quick_settings::QsLevel;
 
 /// How often an open card re-reads players and advances its playhead.
 const REFRESH: Duration = Duration::from_secs(1);
@@ -278,7 +278,7 @@ impl ShellOverlayHost {
     /// Whether a finger landing at `point` (as drawn) is on the card's seek
     /// bar.
     pub(super) fn now_playing_seek_at(&self, point: Point) -> bool {
-        use crate::shell::quick_settings::now_playing::CardTarget;
+        use crate::shell::now_playing_panel::CardTarget;
         let Some(view) = self.now_playing_view() else {
             return false;
         };
@@ -402,7 +402,7 @@ impl ShellOverlayHost {
 
     /// Named geometry for `tilo-control list-targets`.
     pub(super) fn now_playing_semantic_rects(&self) -> Vec<(String, Rect)> {
-        use crate::shell::quick_settings::now_playing::{CardTarget, Transport};
+        use crate::shell::now_playing_panel::{CardTarget, Transport};
         let Some(view) = self.now_playing_view() else {
             return Vec::new();
         };

@@ -100,12 +100,12 @@ glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
 glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/shell/src/shell/in_process/messaging/sms_first.rs
+glyph-join 1 crates/session/shell/src/shell/now_playing_panel.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/keyboard.rs
 glyph-join 2 crates/session/shell/src/shell/overlay_host/paint_top.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/qs_device_rows.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
-glyph-join 1 crates/session/shell/src/shell/quick_settings/now_playing.rs
 glyph-join 1 crates/session/shell/src/shell/render/strip_layers.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
 glyph-join 2 crates/session/shell/src/shell/search/providers/actions.rs

@@ -22,8 +22,8 @@ use winit::keyboard::{Key, NamedKey, NativeKey};
 use xkeysym::key as keysyms;
 
 use crate::shell::osd::{Osd, Transport};
-use crate::shell::quick_settings::actions::QsActions;
 use crate::shell::status::StatusBridge;
+use tilo_quick_settings::actions::QsActions;
 
 /// `XF86XK_RFKill`, which the `xkbcommon` bindings predate. Laptops send it
 /// for the airplane-mode key; `XF86WLAN` is the older Wi-Fi-key spelling.
@@ -169,7 +169,7 @@ pub struct Context<'a> {
 pub struct BrightnessKeys<'a> {
     /// Every display whose brightness can be set (by its backlight, over
     /// DDC/CI, or dimmed by the compositor), with its name and cached level.
-    pub displays: &'a [crate::shell::chrome_state::DisplayBrightness],
+    pub displays: &'a [tilo_quick_settings::DisplayBrightness],
     /// Connector of the display the person works on, when the desktop spans
     /// several.
     pub focused: Option<&'a str>,
@@ -790,12 +790,8 @@ mod tests {
         );
     }
 
-    fn display(
-        connector: &str,
-        name: &str,
-        level: f32,
-    ) -> crate::shell::chrome_state::DisplayBrightness {
-        crate::shell::chrome_state::DisplayBrightness {
+    fn display(connector: &str, name: &str, level: f32) -> tilo_quick_settings::DisplayBrightness {
+        tilo_quick_settings::DisplayBrightness {
             connector: connector.into(),
             name: name.into(),
             level,

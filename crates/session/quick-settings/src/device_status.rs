@@ -1,6 +1,6 @@
 //! Quick Settings' reading of the shell's one device status.
 
-use crate::shell::chrome_state::QuickSettingsState;
+use crate::QuickSettingsState;
 
 impl QuickSettingsState {
     /// The output's level, `0.0..=1.0`; `0` until it has been read.

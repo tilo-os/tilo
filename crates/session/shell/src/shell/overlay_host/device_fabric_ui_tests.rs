@@ -290,10 +290,10 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         }));
         chrome
             .borrow_mut()
-            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
+            .open_quick_settings_section(tilo_quick_settings::QsSection::Devices);
         assert_eq!(
             chrome.borrow().quick_settings.section,
-            Some(crate::shell::quick_settings::QsSection::Devices)
+            Some(tilo_quick_settings::QsSection::Devices)
         );
         host.open_devices_for_tests();
 
@@ -547,15 +547,17 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         let chrome = ChromeState::new(tree);
         {
             let mut state = chrome.borrow_mut();
-            state.quick_settings.bt_devices = vec![crate::shell::quick_settings::BtDevice {
+            state.quick_settings.bt_devices = vec![tilo_quick_settings::BtDevice {
                 name: "Headphones".into(),
                 address: "AA:BB:CC:DD:EE:FF".into(),
                 battery: 80,
                 connected: true,
             }];
-            state.quick_settings.push_level(
-                crate::shell::quick_settings::QsLevel::BluetoothDetails("AA:BB:CC:DD:EE:FF".into()),
-            );
+            state
+                .quick_settings
+                .push_level(tilo_quick_settings::QsLevel::BluetoothDetails(
+                    "AA:BB:CC:DD:EE:FF".into(),
+                ));
         }
         let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
             .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()))
@@ -909,7 +911,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         assert!(
             rows.iter().all(|row| !matches!(
                 row.actions,
-                crate::shell::quick_settings::hosted::HostedActions::Pair { .. }
+                tilo_quick_settings::hosted::HostedActions::Pair { .. }
             )),
             "no allow and decline buttons in Quick Settings: {rows:?}"
         );
@@ -999,7 +1001,7 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
         .clone();
     assert_eq!(
         rows[0].actions,
-        crate::shell::quick_settings::hosted::HostedActions::None,
+        tilo_quick_settings::hosted::HostedActions::None,
         "the microphone in use has no arrow buttons"
     );
     host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
@@ -1116,7 +1118,7 @@ fn a_device_row_has_no_placement_arrows_and_opens_its_settings_pane() {
     assert!(
         matches!(
             rows[0].actions,
-            crate::shell::quick_settings::hosted::HostedActions::Control { .. }
+            tilo_quick_settings::hosted::HostedActions::Control { .. }
         ),
         "only the control button, no arrows: {:?}",
         rows[0].actions

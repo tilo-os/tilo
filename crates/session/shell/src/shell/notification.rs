@@ -622,7 +622,7 @@ impl NotificationHost for ChromeNotifications<'_> {
     fn open_center(&self) {
         self.chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
+            .open_quick_settings_level(tilo_quick_settings::QsLevel::Notifications);
     }
 
     fn session_locked(&self) -> bool {

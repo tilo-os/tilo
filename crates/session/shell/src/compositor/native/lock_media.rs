@@ -55,7 +55,7 @@ pub(super) fn lock_media_changed(
 /// card shows. Transport is all a locked session may do to media.
 pub(super) fn send_lock_transport(
     player: Option<&crate::shell::now_playing::PlayerSnapshot>,
-    transport: crate::shell::quick_settings::now_playing::Transport,
+    transport: crate::shell::now_playing_panel::Transport,
 ) -> bool {
     use crate::shell::now_playing::{MprisSource, NowPlayingSource};
     let Some(player) = player.filter(|player| transport.enabled(player)) else {

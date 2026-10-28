@@ -99,8 +99,8 @@ impl ShellOverlayHost {
         chrome: &Chrome,
         action: settings_store::hardware::ShortcutAction,
     ) {
-        use crate::shell::quick_settings::QsLevel;
         use settings_store::hardware::ShortcutAction as A;
+        use tilo_quick_settings::QsLevel;
         match action {
             A::OpenFiles => (self.app_launcher)(chrome, FILES_PACKAGE.0, FILES_PACKAGE.1),
             A::OpenTerminal => {
@@ -110,7 +110,7 @@ impl ShellOverlayHost {
                 );
             }
             A::ClipboardHistory => {
-                let origin = crate::shell::chrome_state::PasteOrigin {
+                let origin = tilo_quick_settings::PasteOrigin {
                     caret: self.text_caret,
                     window: self.focused_window_rect(),
                 };
@@ -391,7 +391,7 @@ impl ShellOverlayHost {
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Notifications
+                tilo_quick_settings::QsLevel::Notifications
             )
             && self.notification_center.close_reader()
         {
@@ -514,7 +514,7 @@ impl ShellOverlayHost {
                 st.bump();
             } else if !matches!(
                 st.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
+                tilo_quick_settings::QsLevel::Root
             ) || st.quick_settings.pasting()
             {
                 // Clipboard history opened to paste has no page behind it.

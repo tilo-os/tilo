@@ -24,8 +24,8 @@ use vello::kurbo::Point;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
-use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::StripId;
+use tilo_quick_settings::QsLevel;
 use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
@@ -683,7 +683,7 @@ pub enum MotionCue {
     CloseQuickSettings,
     /// A Quick Settings section opens in place (or, with `None`, the open
     /// one closes), as a press on a tile's chevron does.
-    QuickSettingsSection(Option<shell::shell::quick_settings::QsSection>),
+    QuickSettingsSection(Option<tilo_quick_settings::QsSection>),
     /// Click at this point.
     ClickAt(Point),
     /// The overview opens (`true`) or closes, as `source` asks: Super+Tab is
@@ -1972,9 +1972,7 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
         Action::SeedWifiPrompt(preset) => {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
-                use shell::shell::quick_settings::{
-                    QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt,
-                };
+                use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt};
                 st.overlays.quick_settings = true;
                 st.quick_settings.nav_stack = vec![QsLevel::Root];
                 st.quick_settings.section = Some(QsSection::Wifi);
@@ -2335,10 +2333,10 @@ const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 /// "nothing known yet", the same as a machine whose first poll has not
 /// landed. A typo therefore shows up as a visibly empty tray in the
 /// capture rather than as a silently wrong one.
-fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
+fn status_preset(name: &str) -> tilo_quick_settings::SystemStatus {
     use os_actions::{LinkKind, LinkStatus, VolumeState};
-    use shell::shell::status::SystemStatus;
     use tilo_power_mgmt::{BatterySnapshot, BatteryState};
+    use tilo_quick_settings::SystemStatus;
 
     let wifi = |signal: u8| LinkStatus {
         kind: LinkKind::Wifi,
@@ -2530,9 +2528,7 @@ fn motion_quick_settings_scenario() -> Scenario {
             },
             Action::MotionFrames {
                 prefix: "qs-expand",
-                cue: MotionCue::QuickSettingsSection(Some(
-                    shell::shell::quick_settings::QsSection::Wifi,
-                )),
+                cue: MotionCue::QuickSettingsSection(Some(tilo_quick_settings::QsSection::Wifi)),
                 frames: 30,
                 every_ms: 11,
             },

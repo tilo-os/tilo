@@ -50,8 +50,8 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::shell::quick_settings::actions::QsActions as _;
-use crate::shell::quick_settings::refresh::QsField;
+use crate::shell::quick_settings_refresh::QsField;
+use tilo_quick_settings::actions::QsActions as _;
 use ui::TextRole;
 
 mod controller;
@@ -165,9 +165,6 @@ use crate::shell::power_menu::PowerMenu;
 #[cfg(test)]
 use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings::root::{
-    BluetoothIntent, QuickSettingsRoot, RootAction, SliderCommit, WifiIntent,
-};
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::window_menu::WindowMenuAction;
@@ -185,6 +182,9 @@ pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     AgentAccessKey, EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey,
     WorkspaceSettingsOverlay,
+};
+use tilo_quick_settings::root::{
+    BluetoothIntent, QuickSettingsRoot, RootAction, SliderCommit, WifiIntent,
 };
 use ui::widget::ButtonRole;
 
@@ -384,8 +384,8 @@ struct OverlayInputs {
     shortcut_triggers: crate::shell::automation_triggers::TriggerHost,
     desktop_controls: DesktopControlsSource,
     qs_root: QuickSettingsRoot,
-    qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
-    qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions>,
+    qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
+    qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
     room_activity: crate::shell::room_activity::RoomActivityPane,
     projection_overlay: ProjectionOverlay,
@@ -780,8 +780,8 @@ pub struct ShellOverlayHost {
     /// under the fingers is the feedback there.
     strip_pan_active: bool,
     /// Off-thread reader for the OS state quick settings displays.
-    /// See [`crate::shell::quick_settings::refresh`] for why the reads left the frame.
-    qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
+    /// See [`crate::shell::quick_settings_refresh`] for why the reads left the frame.
+    qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
@@ -954,7 +954,7 @@ pub struct ShellOverlayHost {
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
     /// The now-playing card's focus, pickers and artwork cache.
-    now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard,
+    now_playing_card: crate::shell::now_playing_panel::NowPlayingCard,
     /// The player the person picked on the card, while it is still running.
     now_playing_preferred: Option<String>,
     /// When the visible card next repaints to advance its playhead.
@@ -962,9 +962,9 @@ pub struct ShellOverlayHost {
     /// The desk widgets and the Super surface.
     desk: desk::DeskState,
     /// Side-effect dispatcher for quick-settings actions. Production
-    /// uses [`crate::shell::quick_settings::actions::RealQsActions`]; tests swap in a
+    /// uses [`tilo_quick_settings::actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
-    qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions>,
+    qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     /// Mutable provider handle shared with the shell action catalogue. Replacing
     /// a test dispatcher updates the existing provider rather than registering
     /// a duplicate action source.
@@ -976,7 +976,7 @@ pub struct ShellOverlayHost {
     qs_wifi_scanned_at: Option<Instant>,
     /// The section whose host-described rows were last read, so opening the
     /// Clipboard afresh starts at the newest copy with no search.
-    qs_hosted_section: Option<crate::shell::quick_settings::QsSection>,
+    qs_hosted_section: Option<tilo_quick_settings::QsSection>,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -985,7 +985,7 @@ pub struct ShellOverlayHost {
     /// The bridge's status as last copied into the chrome, so a frame copies
     /// only what the bridge changed and a slider being dragged keeps the
     /// level it shows until it commits.
-    status_copied: std::cell::RefCell<crate::shell::status::SystemStatus>,
+    status_copied: std::cell::RefCell<tilo_quick_settings::SystemStatus>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
     session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,

@@ -2604,7 +2604,7 @@ impl ShellDriver {
     /// power daemon's three modes. Shots only: a live session reads all of
     /// this from the machine.
     pub(crate) fn seed_laptop_quick_settings(st: &mut ChromeState) {
-        use shell::shell::quick_settings::{BtDevice, PowerProfile, WifiNetwork};
+        use tilo_quick_settings::{BtDevice, PowerProfile, WifiNetwork};
         st.overlays.quick_settings = true;
         let qs = &mut st.quick_settings;
         qs.brightness_available = true;
@@ -2666,12 +2666,12 @@ impl ShellDriver {
         qs.notification_count = 3;
         qs.clipboard.total = 6;
         qs.sound_outputs = vec![
-            shell::shell::quick_settings::SoundOutput {
+            tilo_quick_settings::SoundOutput {
                 node: 41,
                 name: "Speakers".into(),
                 current: true,
             },
-            shell::shell::quick_settings::SoundOutput {
+            tilo_quick_settings::SoundOutput {
                 node: 57,
                 name: "Headphones".into(),
                 current: false,
@@ -2700,7 +2700,7 @@ impl ShellDriver {
     /// The laptop's Quick Settings with `section` open in place.
     fn scene_qs_section(
         &mut self,
-        section: shell::shell::quick_settings::QsSection,
+        section: tilo_quick_settings::QsSection,
         adjust: impl FnOnce(&mut ChromeState),
     ) {
         self.with_chrome(|st| {
@@ -2723,7 +2723,7 @@ impl ShellDriver {
             st.overlays.quick_settings = true;
             st.quick_settings.radios.wifi_available = false;
             st.quick_settings.bluetooth_available = false;
-            st.quick_settings.wired = Some(shell::shell::quick_settings::actions::WiredInfo {
+            st.quick_settings.wired = Some(tilo_quick_settings::actions::WiredInfo {
                 connected: true,
                 device: Some("enp0s31f6".into()),
                 ..Default::default()
@@ -2736,7 +2736,7 @@ impl ShellDriver {
     /// end with the wheel: the tiles keep their size and the lower controls
     /// come into view (compare `quick-settings` at the same size).
     fn scene_qs_scrolled(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |_| {});
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |_| {});
         // The first paint sizes the page's scroll region, as the first
         // frame does before any pointer event reaches it.
         let _ = self.paint();
@@ -2756,21 +2756,20 @@ impl ShellDriver {
     }
 
     fn scene_qs_wifi(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |_| {});
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |_| {});
     }
 
     /// The network list open on a laptop with one monitor plugged in: one
     /// brightness slider per display, each named, and the panel as wide as
     /// with the list closed.
     fn scene_qs_wifi_two_displays(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
-            let display = |connector: &str, name: &str, level: f32| {
-                shell::shell::chrome_state::DisplayBrightness {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
+            let display =
+                |connector: &str, name: &str, level: f32| tilo_quick_settings::DisplayBrightness {
                     connector: connector.into(),
                     name: name.into(),
                     level,
-                }
-            };
+                };
             st.quick_settings.displays = vec![
                 display("eDP-1", "Built-in display", 0.62),
                 display("DP-2", "Dell U2720Q", 0.4),
@@ -2779,7 +2778,7 @@ impl ShellDriver {
     }
 
     fn scene_qs_wifi_off(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi = false;
             st.quick_settings.radios.wifi_enabled = false;
             st.quick_settings.wifi_networks.clear();
@@ -2787,7 +2786,7 @@ impl ShellDriver {
     }
 
     fn scene_qs_wifi_hardware_switch(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi = false;
             st.quick_settings.radios.wifi_enabled = false;
             st.quick_settings.radios.wifi_hardware_blocked = true;
@@ -2796,7 +2795,7 @@ impl ShellDriver {
     }
 
     fn scene_qs_wifi_turning_on(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi = false;
             st.quick_settings.radios.wifi_enabled = false;
             st.quick_settings.wifi_networks.clear();
@@ -2806,16 +2805,15 @@ impl ShellDriver {
     }
 
     fn scene_qs_wifi_scanning(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi_networks.clear();
             st.quick_settings.wifi_scanning = true;
         });
     }
 
     fn scene_qs_wifi_password(&mut self, rejected: bool) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
-            let mut prompt =
-                shell::shell::quick_settings::WifiPasswordPrompt::new("Café Lindenhof");
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
+            let mut prompt = tilo_quick_settings::WifiPasswordPrompt::new("Café Lindenhof");
             if rejected {
                 prompt.error = Some("Couldn't join. Check the password.".into());
             }
@@ -2830,9 +2828,9 @@ impl ShellDriver {
     /// keep this deterministic scene so their text cannot regress across the
     /// trailing status.
     fn scene_qs_wifi_long_labels(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi_networks = vec![
-                shell::shell::quick_settings::WifiNetwork {
+                tilo_quick_settings::WifiNetwork {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
                     signal: 4,
                     secure: true,
@@ -2840,7 +2838,7 @@ impl ShellDriver {
                     connected: true,
                     known: true,
                 },
-                shell::shell::quick_settings::WifiNetwork {
+                tilo_quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
                     signal: 2,
                     secure: false,
@@ -2853,7 +2851,7 @@ impl ShellDriver {
     }
 
     fn scene_qs_bt(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Bluetooth, |_| {});
+        self.scene_qs_section(tilo_quick_settings::QsSection::Bluetooth, |_| {});
     }
 
     /// Device names from `BlueZ` are user-controlled. Keep a deterministic
@@ -2861,15 +2859,15 @@ impl ShellDriver {
     /// reserved trailing region instead of becoming an accidental text
     /// overlay at a compact panel width.
     fn scene_qs_bt_long_labels(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Bluetooth, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Bluetooth, |st| {
             st.quick_settings.bt_devices = vec![
-                shell::shell::quick_settings::BtDevice {
+                tilo_quick_settings::BtDevice {
                     name: "Studio-headphones-with-a-very-long-pairing-name".into(),
                     address: "02:00:00:00:00:01".into(),
                     battery: 73,
                     connected: true,
                 },
-                shell::shell::quick_settings::BtDevice {
+                tilo_quick_settings::BtDevice {
                     name: "Wohnzimmer-Lautsprecher außerordentlich lang".into(),
                     address: "02:00:00:00:00:02".into(),
                     battery: 18,
@@ -2884,7 +2882,7 @@ impl ShellDriver {
     /// the trailing switch in the same render contract as Wi-Fi and
     /// Bluetooth.
     fn scene_qs_vpn_long_labels(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Vpn, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Vpn, |st| {
             st.quick_settings.vpns = vec![
                 os_actions::VpnConnectionInfo {
                     name: "Engineering production WireGuard tunnel Frankfurt".into(),
@@ -2903,22 +2901,22 @@ impl ShellDriver {
     }
 
     fn scene_qs_sound(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Sound, |_| {});
+        self.scene_qs_section(tilo_quick_settings::QsSection::Sound, |_| {});
     }
 
     fn scene_qs_battery(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Battery, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Battery, |st| {
             st.quick_settings.awake_holders = vec!["Videos".into()];
         });
     }
 
     fn scene_qs_power_mode(&mut self) {
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::PowerMode, |_| {});
+        self.scene_qs_section(tilo_quick_settings::QsSection::PowerMode, |_| {});
     }
 
     fn scene_qs_devices(&mut self) {
-        use shell::shell::quick_settings::hosted::{HostedActions, HostedRow};
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Devices, |st| {
+        use tilo_quick_settings::hosted::{HostedActions, HostedRow};
+        self.scene_qs_section(tilo_quick_settings::QsSection::Devices, |st| {
             st.quick_settings.personal_devices = Some(2);
             st.quick_settings.device_rows = vec![
                 HostedRow {
@@ -2958,7 +2956,7 @@ impl ShellDriver {
     }
 
     fn scene_qs_clipboard(&mut self, paste: bool) {
-        use shell::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        use tilo_quick_settings::hosted::{HostedActions, HostedRow};
         let copy = |title: &str, detail: &str, pinned: bool, selected: bool| HostedRow {
             title: title.into(),
             detail: detail.into(),
@@ -2971,7 +2969,7 @@ impl ShellDriver {
                 remove: "Remove".into(),
             },
         };
-        self.scene_qs_section(shell::shell::quick_settings::QsSection::Clipboard, |st| {
+        self.scene_qs_section(tilo_quick_settings::QsSection::Clipboard, |st| {
             let rows = vec![
                 copy(
                     "Meet at the station at 6",
@@ -2998,13 +2996,13 @@ impl ShellDriver {
                     false,
                 ),
             ];
-            st.quick_settings.clipboard = shell::shell::quick_settings::ClipboardView {
+            st.quick_settings.clipboard = tilo_quick_settings::ClipboardView {
                 total: rows.len(),
                 caption: "4 copies".into(),
                 rows,
             };
             if paste {
-                st.quick_settings.paste_origin = Some(shell::shell::chrome_state::PasteOrigin {
+                st.quick_settings.paste_origin = Some(tilo_quick_settings::PasteOrigin {
                     caret: Some(Rect::new(420.0, 300.0, 421.0, 318.0)),
                     window: None,
                 });

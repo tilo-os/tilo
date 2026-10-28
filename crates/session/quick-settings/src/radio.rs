@@ -8,10 +8,14 @@ use std::sync::Arc;
 
 use os_actions::{RadioChange, RadioState, RadioWork};
 
-use crate::shell::chrome_state::Chrome;
-use crate::shell::i18n::t;
+use crate::QuickSettingsState;
+use crate::i18n::t;
 
-type RadioResult = Result<Option<RadioState>, String>;
+pub type RadioResult = Result<Option<RadioState>, String>;
+
+/// What wakes the session's own event loop when a radio change finishes,
+/// beside the toolkit's wake of the window.
+pub type HostWake = Arc<dyn Fn() + Send + Sync>;
 
 struct Completion {
     result: Option<RadioResult>,
@@ -20,16 +24,16 @@ struct Completion {
 }
 
 #[derive(Clone)]
-pub(crate) struct RadioTicket {
-    pub(crate) change: RadioChange,
+pub struct RadioTicket {
+    pub change: RadioChange,
     completion: Arc<Mutex<Completion>>,
 }
 
 impl RadioTicket {
-    pub(crate) fn start(
+    pub fn start(
         change: RadioChange,
         work: RadioWork,
-        host_wake: Option<crate::session_runtime::Wake>,
+        host_wake: Option<HostWake>,
     ) -> Result<Self, String> {
         let ticket = Self {
             change,
@@ -65,34 +69,34 @@ impl RadioTicket {
 
     /// Whether the change happened, once the worker is done: its refusal,
     /// or — when it read the radios back — whether they ended up as asked.
-    pub(crate) fn result(&self) -> Option<Result<(), String>> {
+    pub fn result(&self) -> Option<Result<(), String>> {
         let result = self.completion.lock().result.clone()?;
         Some(result.and_then(|radios| radios.map_or(Ok(()), |radios| self.change.outcome(&radios))))
     }
 
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.completion.lock().finished
     }
 
-    pub(crate) fn retire(&self) {
+    pub fn retire(&self) {
         self.completion.lock().result = Some(Err("Quick Settings dispatcher was replaced".into()));
     }
 
     /// Either the ordinary host update or the public pending invocation may
     /// observe completion first. Apply its visible state/error exactly once.
-    pub(crate) fn apply(&self, chrome: &Chrome) {
+    /// Land the finished change in `qs`, once; `None` while it runs or
+    /// after it landed.
+    pub fn apply(&self, qs: &mut QuickSettingsState) -> Option<Landed> {
         let result = {
             let mut completion = self.completion.lock();
             if completion.applied || !completion.finished {
-                return;
+                return None;
             }
-            let Some(result) = completion.result.clone() else {
-                return;
-            };
+            let result = completion.result.clone()?;
             completion.applied = true;
             result
         };
-        apply(self.change, result, chrome);
+        Some(apply(self.change, result, qs))
     }
 }
 
@@ -117,11 +121,17 @@ impl WifiProblem {
     }
 }
 
+/// A radio change landed in the panel. The shell redraws for it, and tells
+/// the person about a change that did not happen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    /// The notification's title and body when the change failed.
+    pub failure: Option<(String, String)>,
+}
+
 /// Land a finished radio change in the panel: the radios as they were read
 /// back, never the request. A change that did not happen says why.
-pub(crate) fn apply(change: RadioChange, result: RadioResult, chrome: &Chrome) {
-    let mut state = chrome.borrow_mut();
-    let qs = &mut state.quick_settings;
+pub fn apply(change: RadioChange, result: RadioResult, qs: &mut QuickSettingsState) -> Landed {
     qs.radio_change_pending = false;
     qs.radio_change = None;
     let failed = match result {
@@ -171,38 +181,45 @@ pub(crate) fn apply(change: RadioChange, result: RadioResult, chrome: &Chrome) {
         qs.wifi_password = None;
         qs.wifi_networks.clear();
     }
-    if let Some(error) = failed {
+    let failure = failed.map(|error| {
         tracing::warn!(target: "tilo::os_actions", op = ?change, %error, "radio change failed");
-        state.push_notification(
+        (
             t(match change {
                 RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
                 RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
             }),
             t("host-qs-change-failed-state-restored"),
-        );
-    }
-    state.bump();
+        )
+    });
+    Landed { failure }
 }
 
-#[cfg(test)]
-pub(crate) mod fixture {
-    use super::*;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture {
+    use super::{Arc, Mutex, RadioChange, RadioWork};
     use std::sync::mpsc::{Receiver, Sender, channel};
 
     #[derive(Clone)]
-    pub(crate) struct Dispatcher {
+    pub struct Dispatcher {
         entered: Sender<RadioChange>,
         release: Arc<Mutex<Receiver<Result<(), String>>>>,
     }
 
-    pub(crate) struct Fixture {
-        pub(crate) dispatcher: Dispatcher,
-        pub(crate) entered: Receiver<RadioChange>,
-        pub(crate) release: Sender<Result<(), String>>,
+    pub struct Fixture {
+        pub dispatcher: Dispatcher,
+        pub entered: Receiver<RadioChange>,
+        pub release: Sender<Result<(), String>>,
+    }
+
+    impl Default for Fixture {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl Fixture {
-        pub(crate) fn new() -> Self {
+        #[must_use]
+        pub fn new() -> Self {
             let (entered_tx, entered) = channel();
             let (release, release_rx) = channel();
             Self {

@@ -837,7 +837,7 @@ impl Widget for ShellOverlayHost {
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Notifications
+                tilo_quick_settings::QsLevel::Notifications
             )
         {
             self.notification_center.reading_scroll()
@@ -1669,7 +1669,7 @@ impl ShellOverlayHost {
                 st.overlays.quick_settings
                     && matches!(
                         st.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Notifications
+                        tilo_quick_settings::QsLevel::Notifications
                     )
                     && self.notification_center.is_reading()
             };

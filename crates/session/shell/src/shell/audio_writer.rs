@@ -369,7 +369,7 @@ mod tests {
             crate::shell::media_keys::apply(
                 key,
                 &crate::shell::media_keys::Context {
-                    actions: &crate::shell::quick_settings::actions::UnavailableQsActions,
+                    actions: &tilo_quick_settings::actions::UnavailableQsActions,
                     audio: &writer,
                     status: Some(&bridge),
                     transport_osd: &readout,
