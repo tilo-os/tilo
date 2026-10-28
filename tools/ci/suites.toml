@@ -1174,6 +1174,12 @@ inputs = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
 readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs", "crates/dev/tilo-vm-protocol/src/profile.rs"]
 
 [[cargo]]
+package = "onboarding-walk"
+# Every control the walk presses must be one the onboarding view names.
+inputs = ["crates/session/shell/src/onboarding_view.rs"]
+readers = ["crates/session/onboarding-walk/tests/names.rs"]
+
+[[cargo]]
 package = "tilo-vmd"
 # The device session's names are checked against the board layer that installs it.
 inputs = [

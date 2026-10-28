@@ -1,0 +1,22 @@
+[package]
+autotests = false
+name = "onboarding-walk"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Onboarding's first-login controls in a person's order, and the walk that presses them by name"
+
+[lib]
+name = "onboarding_walk"
+
+# Standard library only: tools that drive a session (tilo-vmd, the legacy
+# stream's headless shell) depend on it without taking on a dependency graph.
+[dependencies]
+
+[[test]]
+name = "names"
+path = "tests/names.rs"
+
+[lints]
+workspace = true

@@ -171,7 +171,7 @@ pub fn ensure_headless_shell(
         control.send(json!({"op": "foreign_frames"}), None).ok()
     })
     .ok_or("the headless shell did not answer on its agent-control socket")?;
-    complete_onboarding(&control);
+    complete_onboarding(&control)?;
     wait_for(Duration::from_secs(60), || display.exists().then_some(()))
         .ok_or("the headless shell published no Wayland display")?;
     Ok(control)
@@ -187,49 +187,36 @@ fn real_config_home(config: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     Path::new(config?).canonicalize().ok()
 }
 
-/// A fresh profile opens on the first-run screens; walk through them the
-/// way a person would, so windows land on a desktop.
-fn complete_onboarding(control: &AgentControl) {
-    let names = || {
-        control
-            .target_names()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>()
-    };
-    let Some(first) = wait_for(Duration::from_secs(60), || {
-        let names = names();
-        (!names.is_empty()).then_some(names)
-    }) else {
-        return;
-    };
-    if !first.iter().any(|name| name == "onboarding.begin.button") {
-        return;
+/// Onboarding, should the shell show it (a first login left half done),
+/// walked the way a person would, so windows land on a desktop. A shell
+/// driven over agent control otherwise opens on the desktop, and the walk
+/// ends at its first look without a press.
+fn complete_onboarding(control: &AgentControl) -> Result<(), String> {
+    struct Shell<'a>(&'a AgentControl);
+    impl onboarding_walk::Screen for Shell<'_> {
+        type Error = std::convert::Infallible;
+        fn controls(&mut self) -> Result<Vec<String>, Self::Error> {
+            Ok(self
+                .0
+                .target_names()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect())
+        }
+        // A control gone between the look and the press is looked for
+        // again on the walk's next look.
+        fn press(&mut self, name: &'static str) -> Result<(), Self::Error> {
+            self.0.click_target(name);
+            Ok(())
+        }
     }
-    control.click_target("onboarding.begin.button");
-    wait_for(Duration::from_secs(30), || {
-        names()
-            .iter()
-            .any(|name| name == "onboarding.create.button")
-            .then_some(())
-    });
-    // The consent checkbox has no target of its own; its place on the fixed
-    // headless screen is known.
-    let _ = control.send(json!({"op": "click_at", "x": 480, "y": 618}), None);
-    control.click_target("onboarding.create.button");
-    wait_for(Duration::from_secs(30), || {
-        names()
-            .iter()
-            .any(|name| name == "onboarding.finish.button")
-            .then_some(())
-    });
-    control.click_target("onboarding.finish.button");
-    wait_for(Duration::from_secs(30), || {
-        (!names()
-            .iter()
-            .any(|name| name == "onboarding.finish.button"))
-        .then_some(())
-    });
+    let pace = onboarding_walk::Pace {
+        timeout: Duration::from_secs(120),
+        ..onboarding_walk::Pace::default()
+    };
+    onboarding_walk::walk(&mut Shell(control), pace)
+        .map(drop)
+        .map_err(|error| format!("the headless shell's {error}"))
 }
 
 /// The legacy window currently on screen: (surface, app id, frame seq).

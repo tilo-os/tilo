@@ -1396,28 +1396,9 @@ fn dev_base() -> BaseInfo {
     }
 }
 
-/// Onboarding's controls are pressed in a person's order, a checkbox once.
+/// A `list_targets` answer's onboarding names, bare or wrapped in `answer`.
 #[test]
-fn onboarding_is_pressed_through_in_a_persons_order() {
-    let shown = |names: &[&str]| {
-        names
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect::<Vec<_>>()
-    };
-    let page = shown(&["onboarding.understood.row", "onboarding.create.button"]);
-    assert_eq!(
-        next_onboarding_press(&page, &[]),
-        Some("onboarding.understood.row")
-    );
-    assert_eq!(
-        next_onboarding_press(&page, &shown(&["onboarding.understood.row"])),
-        Some("onboarding.create.button")
-    );
-    assert_eq!(
-        next_onboarding_press(&shown(&["onboarding.import.button"]), &[]),
-        None
-    );
+fn onboarding_targets_are_read_from_a_list_targets_answer() {
     assert_eq!(
         onboarding_target_names(
             r#"{"targets":[{"name":"onboarding.begin.card"},{"name":"shell.search"}]}"#
@@ -1428,27 +1409,6 @@ fn onboarding_is_pressed_through_in_a_persons_order() {
         onboarding_target_names(r#"{"answer":{"targets":[{"name":"onboarding.finish.button"}]}}"#),
         ["onboarding.finish.button"]
     );
-}
-
-/// Every control tilo-vmd presses is one the session's onboarding names:
-/// a name it never registers is never listed, and the press waits out its
-/// timeout. A checkbox is named by its row (`with_id`); the first argument
-/// of `Checkbox::new` names nothing.
-#[test]
-fn onboarding_presses_name_the_sessions_own_controls() {
-    let view = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../session/shell/src/onboarding_view.rs"),
-    )
-    .unwrap();
-    for (name, checkbox) in ONBOARDING_PRESSES {
-        let named = if checkbox {
-            view.contains(&format!(".with_id(\"{name}\")"))
-        } else {
-            view.contains(&format!("\"{name}\""))
-        };
-        assert!(named, "the onboarding view names no control {name}");
-    }
 }
 
 /// A session whose onboarding shows its pages one after another as its
