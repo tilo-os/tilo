@@ -47,6 +47,7 @@
     clippy::unnecessary_get_then_check,
     reason = "portal implementation methods mirror fixed freedesktop D-Bus signatures and decode bounded wire/state formats; protocol and adversarial behavior is covered by focused tests"
 )]
+#![deny(clippy::too_many_arguments)]
 
 #[cfg(any(test, target_os = "linux"))]
 pub mod account;

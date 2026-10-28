@@ -80,7 +80,7 @@ SUITE_PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/
 
 # What each policy step must be able to pass with, measured over its runs (t.toml's rule: the
 # peak memory with half again as much room, rounded up): one core, and at most 600 MiB, which
-# the heaviest step peaks at; most scans of the tree stay under 300.
+# policy/too-many-arguments peaks at (`cargo metadata`); most scans of the tree stay under 300.
 POLICY_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
 # The suite's tests that read the whole tree, their files side by side: 1.3 GiB at most.
 POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "2GiB" }'

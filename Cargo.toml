@@ -561,9 +561,8 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 
-# More than eight parameters; clippy.toml sets the threshold. `forbid`, so no
-# `allow`/`expect` can excuse a function: it is redesigned instead.
-too_many_arguments = "forbid"
+# More than eight parameters; clippy.toml sets the threshold.
+too_many_arguments = "deny"
 
 # Selected nursery lints.
 redundant_clone = "deny"                    # allocations that are never needed

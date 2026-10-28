@@ -382,6 +382,13 @@ inputs = ["vendor/**"]
 pre_push = true
 
 [[step]]
+name = "too-many-arguments"
+label = "At most eight parameters, no escape hatch"
+run = "python3 tools/policy/check_too_many_arguments.py"
+git = true
+inputs = ["**/*.rs", "**/Cargo.toml", "**/clippy.toml", "clippy.toml"]
+
+[[step]]
 name = "source-file-size"
 label = "Rust files stay under their size ceiling"
 run = "python3 tools/policy/check_source_file_size.py"
