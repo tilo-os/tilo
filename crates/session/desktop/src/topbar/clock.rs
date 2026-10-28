@@ -5,7 +5,7 @@
 
 use super::{
     Affine, BAR_CONTROL_PX, ButtonRole, CENTER_INSET_PX, CacheFingerprint, ChromeIntent,
-    ClockActivity, ClockSnapshot, Duration, Fill, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
+    ClockActivity, ClockSnapshot, Duration, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
     RoundedRect, Scene, Stroke, TextRenderer, TextRole, TextStyle, TextWeight, Theme, TopBarChrome,
     TopBarPresence, Widget, WindowEvent, at, paint_bar_selector, t,
 };
