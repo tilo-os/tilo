@@ -1488,7 +1488,7 @@ fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
     // What mail's own action publishes when a message arrives, read the way
     // the session reads any change committed in the room.
     let mut arrived = RecordEvent {
-        room: ROOM.into(),
+        room: door.room.to_string(),
         record: "rec-1".into(),
         kind: "so.tilo.mail.mail.message.event".into(),
         change: "a".repeat(64),
@@ -1520,7 +1520,12 @@ fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
     let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
     let fired = {
         let tree = door.membership.read();
-        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let armed = armed(
+            &tree.desktop.workspaces,
+            |_| owner.clone(),
+            |ws| tree.room_revocations(ws.room()),
+            tilo_clock::unix_now_ns(),
+        );
         let fired = triggers.observe(
             TriggerEvent::Records(std::slice::from_ref(&arrived)),
             &armed,
@@ -1551,8 +1556,9 @@ fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
     arrived.kind = "so.tilo.mail.message".into();
     let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
     let armed = [crate::shell::automation_triggers::Armed {
-        room: ROOM.to_string(),
+        room: arrived.room.clone(),
         shortcut: &on_message,
+        saver: owner.clone(),
         claims: &[],
     }];
     assert!(

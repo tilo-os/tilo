@@ -889,7 +889,7 @@ mod tests {
         );
     }
 
-    /// A room this device governs itself is dialled nowhere and its apps'
+    /// A room this device hosts itself is dialled nowhere and its apps'
     /// empty states are their own; a room whose host cannot be reached says
     /// so once the try failed, rather than connecting forever.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -914,11 +914,15 @@ mod tests {
             "the enrollment pins another device as the room's host"
         );
 
+        // A room placed on this device's own host: the host its enrollment
+        // pins is this very device.
         let governed_directory = tempfile::tempdir().unwrap();
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         tree.persist_path = Some(governed_directory.path().join("state.json"));
         let workspace = tree.desktop.active;
-        let governed = tree.room_of(workspace).unwrap();
+        const HOSTED_HERE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let governed = crate::shell::state::RoomId::parse(HOSTED_HERE).expect("room");
+        assert!(tree.stand_in_room(workspace, governed));
         let tree = tree.shared();
         let governed_owner = crate::shell::native_workspace_owner::open(tree).unwrap();
         let governor = tilo_joined_room::testing::certificate(
@@ -926,25 +930,15 @@ mod tests {
             &key,
             "Desktop",
         );
-        let seed = tilo_peer_state::workspace_seed(
-            &governed.to_string(),
+        tilo_joined_room::testing::enroll_interactive_governor_in(
+            &governed_owner,
+            &key,
             &governor,
-            std::slice::from_ref(&governor),
-            "Garden",
+            HOSTED_HERE,
         )
         .unwrap();
-        governed_owner
-            .create_governed(
-                governed,
-                workspace.raw(),
-                &governor,
-                &key,
-                seed,
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
         let here = Connect::new(governed_owner, governed).unwrap();
-        assert!(here.hosted_here(&identity), "this device governs it");
+        assert!(here.hosted_here(&identity), "this device hosts it");
 
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))

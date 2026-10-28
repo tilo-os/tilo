@@ -2007,6 +2007,7 @@ mod tests {
         let armed = [Armed {
             room: "room".into(),
             shortcut: &saved,
+            saver: me(),
             claims: &[],
         }];
         let deadline = tilo_test_env::hang_deadline();
