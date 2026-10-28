@@ -1728,6 +1728,7 @@ dependencies = [
  "hex",
  "mail",
  "pim-lines",
+ "rrule",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -13779,6 +13780,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fed0097b0b4fbb2a87f6dd3b995a7c64ca56de30007eb7e867dfdfc78324ba5"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "rrule"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "720acfb4980b9d8a6a430f6d7a11933e701ebbeba5eee39cc9d8c5f932aaff74"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "log",
+ "regex",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

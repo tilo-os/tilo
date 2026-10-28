@@ -1,7 +1,8 @@
 //! Minimal iCalendar (RFC 5545) import/export.
 //!
-//! We hand-roll a focused subset rather than pulling the `icalendar`
-//! crate's dependency tree into the frozen workspace lock. Covered:
+//! Import is best-effort line by line: a byte-order mark, one malformed
+//! content line or a missing `END` skips only what it spoils, where the
+//! `icalendar` crate's parser refuses the whole file. Covered:
 //!
 //! - `VEVENT`  → identity, local/UTC/TZID dates, location, organizers,
 //!   attendees/RSVPs, bounded recurrence rules, exclusions and overrides.
@@ -1525,6 +1526,51 @@ mod tests {
             tasks.iter().map(|task| task.due).collect::<Vec<_>>(),
             vec![Some(date(15)), Some(date(16))]
         );
+    }
+
+    /// A zoned series imports to the days and wall times RFC 5545 gives it,
+    /// as the `rrule` crate expands it: weekdays every other week across the
+    /// end of summer time, bounded by COUNT or by a UTC UNTIL, less a zoned
+    /// exclusion.
+    #[test]
+    fn a_zoned_series_imports_to_the_days_rfc_5545_gives_it() {
+        let series = [
+            "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+             RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;COUNT=12\n\
+             EXDATE;TZID=Europe/Berlin:20261016T090000",
+            "DTSTART;TZID=Europe/Berlin:20261014T090000\n\
+             RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;INTERVAL=2;UNTIL=20261110T080000Z\n\
+             EXDATE:20261027T080000Z",
+            "DTSTART;TZID=America/New_York:20260131T183000\n\
+             RRULE:FREQ=MONTHLY;COUNT=6",
+            "DTSTART;TZID=America/New_York:20240229T070000\n\
+             RRULE:FREQ=YEARLY;INTERVAL=1;UNTIL=20320301T000000Z",
+        ];
+        let (from, to) = (
+            NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
+            NaiveDate::from_ymd_opt(2033, 1, 1).expect("valid date"),
+        );
+        for lines in series {
+            let set: rrule::RRuleSet = lines.parse().expect("valid series");
+            let expected: Vec<NaiveDateTime> = set
+                .all(u16::MAX)
+                .dates
+                .into_iter()
+                .map(|at| at.naive_local())
+                .collect();
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:series@example.com\r\nSUMMARY:Series\r\n{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+                lines.replace('\n', "\r\n")
+            );
+            let (events, _) = parse(&payload);
+            let event = &events[0];
+            let imported: Vec<NaiveDateTime> = event
+                .occurrences_in(from, to)
+                .into_iter()
+                .map(|date| date.and_time(event.start.time()))
+                .collect();
+            assert_eq!(imported, expected, "{lines}");
+        }
     }
 
     #[test]

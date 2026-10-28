@@ -694,6 +694,10 @@ impl Event {
         };
         let last_original = moved_originals().max().unwrap_or(to).max(to);
         let window_start = moved_originals().min().unwrap_or(from).min(from).max(seed);
+        // RFC 5545 counts weekly periods from the week (WKST=MO) the seed
+        // falls in, so an every-other-week series repeats in the same
+        // calendar weeks every client shows it in.
+        let seed_week = seed - Duration::days(i64::from(seed.weekday().num_days_from_monday()));
         let mut day = window_start;
         let mut generated = if self.recurrence_count.is_some() {
             u32::try_from(self.occurrences_before(window_start)).unwrap_or(u32::MAX)
@@ -712,7 +716,7 @@ impl Event {
                 Recurrence::Daily => days % i64::from(interval) == 0,
                 Recurrence::Weekdays => {
                     day.weekday().num_days_from_monday() < 5
-                        && (days / 7) % i64::from(interval) == 0
+                        && ((day - seed_week).num_days() / 7) % i64::from(interval) == 0
                 }
                 Recurrence::Weekly => {
                     day.weekday() == seed.weekday() && (days / 7) % i64::from(interval) == 0
@@ -779,21 +783,20 @@ impl Event {
             Recurrence::Daily => multiples_below(days, interval),
             Recurrence::Weekly => multiples_below(days, 7 * interval),
             Recurrence::Weekdays => {
-                // Each week counted from the seed holds five weekdays; only
-                // every `interval`th week repeats.
-                let weeks = days / 7;
-                let mut count = multiples_below(weeks, interval) * 5;
+                // Five weekdays in every `interval`th week counted from the
+                // Monday of the seed's week, less those before the seed, plus
+                // the weekdays of `day`'s own week before it.
+                let weekdays_before =
+                    |date: NaiveDate| i64::from(date.weekday().num_days_from_monday().min(5));
+                let seed_week =
+                    seed - Duration::days(i64::from(seed.weekday().num_days_from_monday()));
+                let weeks = (day - seed_week).num_days() / 7;
+                let mut count = i64::try_from(multiples_below(weeks, interval)).unwrap_or(0) * 5
+                    - weekdays_before(seed);
                 if weeks % interval == 0 {
-                    count += (weeks * 7..days)
-                        .filter(|offset| {
-                            (seed + Duration::days(*offset))
-                                .weekday()
-                                .num_days_from_monday()
-                                < 5
-                        })
-                        .count() as u64;
+                    count += weekdays_before(day);
                 }
-                count
+                u64::try_from(count).unwrap_or(0)
             }
             Recurrence::Monthly => {
                 let months = i64::from(day.year() - seed.year()) * 12 + i64::from(day.month())
@@ -1646,6 +1649,87 @@ mod tests {
             start: start_date.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
             end: start_date.and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
             ..Event::default()
+        }
+    }
+
+    /// Every rule the editor offers, at every interval, bounded or not and
+    /// with an exclusion, expands to the dates RFC 5545 gives the RRULE it
+    /// exports, as the `rrule` crate expands it.
+    #[test]
+    fn expansion_matches_the_exported_rrule() {
+        let seeds = [
+            date(2024, 1, 31),
+            date(2024, 2, 29),
+            date(2026, 6, 15),
+            date(2026, 6, 17),
+            date(2026, 6, 20),
+        ];
+        let rules = [
+            Recurrence::Daily,
+            Recurrence::Weekdays,
+            Recurrence::Weekly,
+            Recurrence::Monthly,
+            Recurrence::Yearly,
+        ];
+        let (from, to) = (date(2023, 12, 1), date(2028, 6, 30));
+        for seed in seeds {
+            for recurrence in rules {
+                for interval in 1..=3 {
+                    for (count, until) in [
+                        (None, None),
+                        (Some(7), None),
+                        (None, Some(seed + Duration::days(400))),
+                    ] {
+                        let mut event = sample_event(seed);
+                        event.recurrence = recurrence;
+                        event.recurrence_interval = interval;
+                        event.recurrence_count = count;
+                        event.recurrence_until = until;
+                        let mut rule = format!("{};INTERVAL={interval}", recurrence.to_rrule());
+                        if let Some(count) = count {
+                            rule.push_str(&format!(";COUNT={count}"));
+                        }
+                        if let Some(until) = until {
+                            rule.push_str(&format!(";UNTIL={}T235959Z", until.format("%Y%m%d")));
+                        }
+                        let rfc = |exdate: Option<NaiveDate>| -> Vec<NaiveDate> {
+                            let mut text =
+                                format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.format("%Y%m%d"));
+                            if let Some(exdate) = exdate {
+                                text.push_str(&format!(
+                                    "\nEXDATE:{}T000000Z",
+                                    exdate.format("%Y%m%d")
+                                ));
+                            }
+                            let set: rrule::RRuleSet = text.parse().expect("valid rule");
+                            let end = to
+                                .and_hms_opt(23, 59, 59)
+                                .unwrap()
+                                .and_utc()
+                                .with_timezone(&rrule::Tz::UTC);
+                            set.before(end)
+                                .all(u16::MAX)
+                                .dates
+                                .into_iter()
+                                .map(|at| at.date_naive())
+                                .filter(|day| *day >= from)
+                                .collect()
+                        };
+                        let expected = rfc(None);
+                        let label = format!("{rule} from {seed}");
+                        assert_eq!(event.occurrences_in(from, to), expected, "{label}");
+                        let Some(excluded) = expected.get(2).copied() else {
+                            continue;
+                        };
+                        event.recurrence_exdates.insert(excluded);
+                        assert_eq!(
+                            event.occurrences_in(from, to),
+                            rfc(Some(excluded)),
+                            "{label} without {excluded}"
+                        );
+                    }
+                }
+            }
         }
     }
 

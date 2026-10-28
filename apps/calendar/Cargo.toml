@@ -82,6 +82,8 @@ default = ["live"]
 live = ["tilo-dav/oauth"]
 
 [dev-dependencies]
+# The RFC 5545 reference recurrence expansion is checked against.
+rrule = "0.14"
 account-custody = { path = "../../crates/system/account-custody" }
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, features = ["test-support"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
