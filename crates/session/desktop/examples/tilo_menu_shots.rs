@@ -131,6 +131,10 @@ fn main() {
         harness.render_png(&path);
         println!("{}", path.display());
 
+        // A person reaches both by clicking the bar's Tilo mark, so the
+        // frame is drawn in the pointer's modality: no focus ring on the
+        // control that happens to receive focus (`ui::focus_visible`).
+        ui::focus_visible::note(&ui::synthetic_input::mouse_press());
         let mut stage = harness.root_mut::<Stage>();
         let (anchor, area) = (stage.bar.tilo_mark_rect(), stage.rect);
         stage.menu.toggle(anchor, area);
