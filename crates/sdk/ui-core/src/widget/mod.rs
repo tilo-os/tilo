@@ -3074,6 +3074,8 @@ pub use layout::{
     insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
+mod cached_paint;
+pub use cached_paint::CachedPaint;
 mod button;
 pub use button::{
     Button, ButtonFace, ButtonInteract, ButtonProps, ButtonRole, face_colors, focus_ring_reach,

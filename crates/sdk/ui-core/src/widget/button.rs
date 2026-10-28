@@ -14,7 +14,7 @@ use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 #[allow(
@@ -99,9 +99,8 @@ pub struct Button {
     /// The page's encouraged action: a focus reset lands here, so Enter
     /// activates it.
     default_focus: bool,
-    /// Holds the last emitted body/border/label primitives at *logical*
-    /// coordinates; the App's transform is reapplied on `Scene::append`.
-    cached: vello::Scene,
+    /// The last painted body, border and label; a move only translates it.
+    face: crate::widget::CachedPaint,
     dirty: bool,
     layout_dirty: bool,
     /// Whether the layout solver has ever placed it. A button only its host
@@ -109,10 +108,6 @@ pub struct Button {
     solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
-    /// Compared *by size* to the current rect — pure translation is
-    /// absorbed by the per-frame append transform without invalidating
-    /// the cache.
-    cache_rect: Rect,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
     /// The theme roles the cached face was painted from, so a theme change
@@ -194,13 +189,12 @@ impl Button {
             permission_scope: None,
             enabled: true,
             enabled_binding: None,
-            cached: vello::Scene::new(),
+            face: crate::widget::CachedPaint::default(),
             dirty: true,
             layout_dirty: false,
             solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
-            cache_rect: Rect::ZERO,
             last_state: (false, false, false, true),
             last_theme: None,
         }
@@ -1519,13 +1513,6 @@ impl Button {
         .paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
     }
 
-    /// Appends the cached face scene. The disabled group alpha is encoded
-    /// *inside* the cache by `draw`, so the append itself applies none — a
-    /// second layer here would dim a disabled face twice.
-    fn append_cached(&self, out_scene: &mut Scene, inner: Affine) {
-        out_scene.append(&self.cached, Some(inner));
-    }
-
     fn content(&self) -> (String, Option<String>) {
         (
             localized_label(&self.label),
@@ -1737,11 +1724,7 @@ impl Widget for Button {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.solver_placed = true;
-        // Bitwise: this asks whether the cached size is stale at all, not
-        // whether it drifted by more than some tolerance.
-        let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
-            || self.rect.height().to_bits() != self.cache_rect.height().to_bits();
-        if size_changed {
+        if self.face.resized(self.rect) {
             self.dirty = true;
         }
     }
@@ -1770,12 +1753,10 @@ impl Widget for Button {
             self.dirty = true;
             self.last_theme = Some(key);
         }
-        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
-        if !needs_emit {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            let inner = out_transform.pre_translate(Vec2::new(dx, dy));
-            self.append_cached(out_scene, inner);
+        // The disabled group alpha is painted into the face, so appending
+        // it applies none: a second layer would dim a disabled face twice.
+        if !self.dirty && !self.face.is_empty() {
+            self.face.append(out_scene, out_transform, self.rect);
             crate::widget::draw_gate_and_peer_focus(
                 self,
                 out_scene,
@@ -1785,9 +1766,6 @@ impl Widget for Button {
             );
             return;
         }
-        // cache_rect tracks *where* the cache was emitted so subsequent
-        // frames can translate without re-encoding.
-        self.cached.reset();
         let enabled = self.effectively_enabled();
         // The geometry is read from the theme handed in, so a host that
         // positions the button without a `build_layout` pass still gets the
@@ -1800,9 +1778,13 @@ impl Widget for Button {
                 .pressed(self.press.is_held())
                 .focused(self.focus_visible())
                 .disabled(!enabled);
-            crate::widget::TransportFace::paint(&mut self.cached, Affine::IDENTITY, theme, &face);
-            self.cache_rect = self.rect;
-            self.append_cached(out_scene, out_transform);
+            crate::widget::TransportFace::paint(
+                self.face.repaint(self.rect),
+                Affine::IDENTITY,
+                theme,
+                &face,
+            );
+            self.face.append(out_scene, out_transform, self.rect);
             crate::widget::draw_gate_and_peer_focus(
                 self,
                 out_scene,
@@ -1840,13 +1822,12 @@ impl Widget for Button {
             metrics: &metrics,
         }
         .paint(&mut PaintCtx::new(
-            &mut self.cached,
+            self.face.repaint(self.rect),
             Affine::IDENTITY,
             text_renderer,
             theme,
         ));
-        self.cache_rect = self.rect;
-        self.append_cached(out_scene, out_transform);
+        self.face.append(out_scene, out_transform, self.rect);
         crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
     }
 

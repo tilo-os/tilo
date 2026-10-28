@@ -350,9 +350,8 @@ pub struct ToggleGroup {
     last_cursor: Cell<Point>,
     /// The segment under the pointer, for its hover lift.
     hovered: Option<usize>,
-    cached: Scene,
+    painted: crate::widget::CachedPaint,
     cache_dirty: bool,
-    cache_rect: Rect,
     last_selected: usize,
     /// Drives the focus ring drawn round the track.
     is_focused: bool,
@@ -361,7 +360,7 @@ pub struct ToggleGroup {
     last_focused: bool,
     /// `hovered` at the last cache emit.
     last_hovered: Option<usize>,
-    /// The theme colours `cached` was painted in, so a theme change
+    /// The theme colours `painted` was painted in, so a theme change
     /// repaints it.
     drawn_palette: Option<[Color; 4]>,
     /// Stretch to the parent's width instead of fitting the labels.
@@ -457,9 +456,8 @@ impl ToggleGroup {
             enabled: true,
             last_cursor: Cell::new(Point::ZERO),
             hovered: None,
-            cached: Scene::new(),
+            painted: crate::widget::CachedPaint::default(),
             cache_dirty: true,
-            cache_rect: Rect::ZERO,
             last_selected: usize::MAX - 1,
             is_focused: false,
             last_focused: false,
@@ -876,15 +874,7 @@ impl ToggleGroup {
         self.segment_rects = rects;
         self.use_short = use_short;
         self.refold(measured);
-        #[allow(
-            clippy::float_cmp,
-            reason = "exact equality is intentional: both rects come from the same taffy \
-                      layout pass, so a bit-identical width/height means the cached scene is \
-                      still valid, not merely close enough"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
+        if self.painted.resized(self.rect) {
             self.cache_dirty = true;
         }
     }
@@ -2318,17 +2308,8 @@ impl Widget for ToggleGroup {
             self.drawn_palette = Some(palette);
             self.cache_dirty = true;
         }
-        let needs_emit = self.cache_dirty || self.cache_rect == Rect::ZERO;
-        if !needs_emit {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix multiplication; it cannot \
-                          overflow or panic"
-            )]
-            let cached_transform = out_transform * Affine::translate((dx, dy));
-            out_scene.append(&self.cached, Some(cached_transform));
+        if !self.cache_dirty && !self.painted.is_empty() {
+            self.painted.append(out_scene, out_transform, self.rect);
             return;
         }
         // The partition follows the measured labels; a strip laid out before
@@ -2337,7 +2318,9 @@ impl Widget for ToggleGroup {
         if self.measure_naturals(text_renderer) {
             self.place(self.outer);
         }
-        self.cached.reset();
+        // Taken out while painting: the face reads all of `self`.
+        let mut painted = std::mem::take(&mut self.painted);
+        let cached = painted.repaint(self.rect);
         if let Some(caption) = &self.caption {
             let style = theme.text(TextRole::Caption);
             let shown = text_renderer.elide_to_width_style(
@@ -2346,12 +2329,12 @@ impl Widget for ToggleGroup {
                 &style,
             );
             let at = Affine::translate((self.outer.x0, self.outer.y0));
-            text_renderer.draw_style(&mut self.cached, &shown, theme.text_dim, at, None, &style);
+            text_renderer.draw_style(cached, &shown, theme.text_dim, at, None, &style);
         }
         let shown = self.shown_segments();
         let clip = self.overflows();
         if clip {
-            self.cached.push_layer(
+            cached.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 1.0,
@@ -2372,22 +2355,16 @@ impl Widget for ToggleGroup {
         if self.folded {
             face = face.folded(self.hovered.is_some(), self.menu.is_open());
         }
-        Self::paint(
-            &mut self.cached,
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-            &face,
-        );
+        Self::paint(cached, Affine::IDENTITY, text_renderer, theme, &face);
         if clip {
-            self.cached.pop_layer();
+            cached.pop_layer();
         }
         // A multi-select strip rings the toggle the keyboard is on.
         if self.chosen.is_some()
             && self.is_focused
             && let Some(seg) = self.segment_rects.get(self.cursor)
         {
-            self.cached.stroke(
+            cached.stroke(
                 &Stroke::new(2.0),
                 Affine::IDENTITY,
                 theme.tokens.colors.intent.accent_ink,
@@ -2395,8 +2372,8 @@ impl Widget for ToggleGroup {
                 &crate::surface::edge_outline(*seg, self.metrics.track_radius),
             );
         }
-        self.cache_rect = self.rect;
-        out_scene.append(&self.cached, Some(out_transform));
+        painted.append(out_scene, out_transform, self.rect);
+        self.painted = painted;
     }
 
     fn needs_animation_frame(&self) -> bool {

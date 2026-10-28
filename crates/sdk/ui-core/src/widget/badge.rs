@@ -283,12 +283,11 @@ pub struct Badge {
     content: BadgeContent,
     style: ChipStyle,
     rect: Rect,
-    cached: vello::Scene,
+    face: crate::widget::CachedPaint,
     dirty: bool,
-    cache_rect: Rect,
     /// The geometry seen in `build_layout`, for the measured width.
     metrics: Option<BadgeMetrics>,
-    /// The theme inputs `cached` was painted from.
+    /// The theme inputs `face` was painted from.
     cache_theme: Option<ThemeKey>,
     /// The label shown, cross-fading from the one before when the count
     /// changes while the badge is on screen (`None`: a dot).
@@ -337,9 +336,8 @@ impl Badge {
             content,
             style,
             rect: Rect::ZERO,
-            cached: vello::Scene::new(),
+            face: crate::widget::CachedPaint::default(),
             dirty: true,
-            cache_rect: Rect::ZERO,
             metrics: None,
             cache_theme: None,
             leaving: None,
@@ -660,15 +658,7 @@ impl Widget for Badge {
         if let Some(kept) = left {
             self.take_up(kept);
         }
-        // Exact equality is the point — this is change detection for the
-        // paint cache, not a numerical comparison that needs a tolerance.
-        #[allow(
-            clippy::float_cmp,
-            reason = "exact-change detection for the paint cache, not numerical comparison"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
+        if self.face.resized(self.rect) {
             self.dirty = true;
         }
     }
@@ -699,36 +689,24 @@ impl Widget for Badge {
         let key = theme_key(self.style, theme);
         let needs_emit = self.dirty
             || std::mem::take(&mut self.moved_drawn)
-            || self.cache_rect == Rect::ZERO
+            || self.face.is_empty()
             || self.cache_theme != Some(key);
         if !needs_emit {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(
-                &self.cached,
-                Some(out_transform.pre_translate((dx, dy).into())),
-            );
+            self.face.append(out_scene, out_transform, self.rect);
             return;
         }
-        // mem::take dance — `display_text` borrows &self while `cached` needs &mut self.
-        let mut cached = std::mem::take(&mut self.cached);
-        cached.reset();
+        // Taken out while painting: `drawn_content` borrows all of `self`.
+        let mut face = std::mem::take(&mut self.face);
+        let cached = face.repaint(self.rect);
         let transform = Affine::IDENTITY;
         match label_of(self.drawn_content()) {
             None => {
                 let modified = matches!(self.drawn_content(), BadgeContent::Modified);
-                paint_dot(
-                    &mut cached,
-                    transform,
-                    self.rect,
-                    self.style,
-                    modified,
-                    theme,
-                );
+                paint_dot(cached, transform, self.rect, self.style, modified, theme);
             }
             Some(label) => {
                 paint_badge_pill(
-                    &mut cached,
+                    cached,
                     transform,
                     self.rect,
                     &label,
@@ -738,9 +716,8 @@ impl Widget for Badge {
                 );
             }
         }
-        out_scene.append(&cached, Some(out_transform));
-        self.cached = cached;
-        self.cache_rect = self.rect;
+        face.append(out_scene, out_transform, self.rect);
+        self.face = face;
         self.cache_theme = Some(key);
     }
 

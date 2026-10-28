@@ -171,24 +171,17 @@ pub struct Text {
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// Cached `Scene` for this widget's last `draw` output. Reused
-    /// across frames via `Scene::append` so an unchanged Text
-    /// widget contributes ~zero shape / emit work per frame.
-    cached: Scene,
-    /// The ink `cached` was drawn in, so a theme change redraws it.
+    /// The last drawn label, appended again while it holds, so an
+    /// unchanged Text contributes almost no shaping or encoding per frame.
+    face: crate::widget::CachedPaint,
+    /// The ink `face` was drawn in, so a theme change redraws it.
     drawn_color: Option<vello::peniko::Color>,
-    /// Whether the cache content needs to be re-emitted, flipped on when
-    /// the *size* of `self.rect` changes — pure translation (e.g.
-    /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
-    /// the `Scene::append` transform in `draw`.
+    /// Whether the label needs drawing again, flipped on when the *size*
+    /// of `self.rect` changes: a move (`Scrollable` offsetting its
+    /// children) keeps the face.
     dirty: bool,
     /// A content change can alter intrinsic size as well as paint output.
     layout_dirty: bool,
-    /// Rect the cache was emitted at: size is compared against the
-    /// current rect to decide whether to re-emit, and origin gives the
-    /// per-frame translate so the cache follows its widget without
-    /// re-encoding.
-    cache_rect: vello::kurbo::Rect,
     /// Whether the label is a message of the app's catalogue, as of the
     /// catalogue revision it was looked up at.
     interface: std::cell::Cell<Option<(u64, bool)>>,
@@ -239,11 +232,10 @@ impl Text {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
-            cached: Scene::new(),
+            face: crate::widget::CachedPaint::default(),
             drawn_color: None,
             dirty: true,
             layout_dirty: false,
-            cache_rect: vello::kurbo::Rect::ZERO,
             interface: std::cell::Cell::new(None),
         }
     }
@@ -800,14 +792,7 @@ impl Text {
     /// the taffy tree. Mirrors
     /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
-        // Exact equality is the point — this is change detection for the
-        // paint cache, not a numerical comparison that needs a tolerance.
-        #[allow(
-            clippy::float_cmp,
-            reason = "exact-change detection for the paint cache, not numerical comparison"
-        )]
-        let size_changed =
-            rect.width() != self.cache_rect.width() || rect.height() != self.cache_rect.height();
+        let size_changed = self.face.resized(rect);
         self.rect = rect;
         if size_changed {
             self.dirty = true;
@@ -1018,15 +1003,7 @@ impl Widget for Text {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
-        // Exact equality is the point — this is change detection for the
-        // paint cache, not a numerical comparison that needs a tolerance.
-        #[allow(
-            clippy::float_cmp,
-            reason = "exact-change detection for the paint cache, not numerical comparison"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
+        if self.face.resized(self.rect) {
             self.dirty = true;
         }
     }
@@ -1064,9 +1041,9 @@ impl Widget for Text {
             self.drawn_color = Some(color);
             self.dirty = true;
         }
-        if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
-            self.cached.reset();
+        if self.dirty || self.face.is_empty() {
             let input = self.renderer_input();
+            let cached = self.face.repaint(self.rect);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
@@ -1083,7 +1060,7 @@ impl Widget for Text {
             };
             match input {
                 RendererInput::Prepared(input) => text_renderer.draw_prepared(
-                    &mut self.cached,
+                    cached,
                     &input,
                     color,
                     origin,
@@ -1093,7 +1070,7 @@ impl Widget for Text {
                     if let Some(engine) = self.layout_engine.as_deref_mut() {
                         engine.draw(
                             text_renderer,
-                            &mut self.cached,
+                            cached,
                             &label,
                             constraints,
                             &style,
@@ -1102,7 +1079,7 @@ impl Widget for Text {
                         );
                     } else {
                         text_renderer.draw_style(
-                            &mut self.cached,
+                            cached,
                             &label,
                             color,
                             origin,
@@ -1112,14 +1089,8 @@ impl Widget for Text {
                     }
                 }
             }
-            self.cache_rect = self.rect;
         }
-        let dx = self.rect.x0 - self.cache_rect.x0;
-        let dy = self.rect.y0 - self.cache_rect.y0;
-        scene.append(
-            &self.cached,
-            Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
-        );
+        self.face.append(scene, transform, self.rect);
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
