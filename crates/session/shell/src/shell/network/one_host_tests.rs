@@ -1055,12 +1055,13 @@ impl Device {
 
     /// Write `text` into the note in `room`, as the notes app does: a
     /// change to its document sealed under the record's channel keys,
-    /// signed by this device and published to the room's host.
+    /// signed by this device and published to the room's host. Answers the
+    /// signed write.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the note's document is edited and its change taken in one hold"
     )]
-    pub(crate) fn write_note(&self, room: RoomId, text: &str) {
+    pub(crate) fn write_note(&self, room: RoomId, text: &str) -> collab_types::SignedOp {
         self.assert_sealed(room);
         let keys = self
             .note_keys(room)
@@ -1113,7 +1114,8 @@ impl Device {
             .or_default()
             .push(op.clone());
         self.net()
-            .publish_document(NOTES.into(), room_id, NOTE_RECORD, op);
+            .publish_document(NOTES.into(), room_id, NOTE_RECORD, op.clone());
+        op
     }
 
     /// Open every sealed write to the note in `room` that reached this

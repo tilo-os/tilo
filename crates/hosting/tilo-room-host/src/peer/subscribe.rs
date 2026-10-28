@@ -151,8 +151,17 @@ pub(super) async fn handle_subscribe(
     let waited = crate::timing::start();
     let mut ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
-    // A peer relay keeps all of the room; a device opens on-demand records.
-    if peer.role == crate::auth::PeerRole::PeerRelay {
+    // A host keeps all of the room; a device opens on-demand records. The
+    // device governing a room this host serves is one of those hosts: its
+    // session here answers this host's own, and its certificate need not
+    // be host-capable to govern.
+    if peer.role == crate::auth::PeerRole::PeerRelay
+        || ws
+            .lock()
+            .await
+            .known_peer_relays
+            .contains(&peer.device_public_key)
+    {
         ticket = ticket.with_every_record();
     }
     crate::timing::event("join.ticket_wait", waited, 0);
