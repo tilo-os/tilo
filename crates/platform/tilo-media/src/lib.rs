@@ -132,6 +132,10 @@ mod web_edit;
 #[cfg(gst_decode)]
 pub mod gst_backend;
 
+/// A source's sound decoded to samples, for a host that may wait.
+#[cfg(gst_decode)]
+pub mod pcm;
+
 /// Sample-to-[`Frame`] conversion shared by playback and the real-time
 /// decoder.
 #[cfg(any(gst_decode, gst_realtime))]

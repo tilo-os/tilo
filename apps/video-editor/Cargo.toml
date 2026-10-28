@@ -74,7 +74,7 @@ default = ["decode", "gst"]
 decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
-gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
+gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode", "media/decode"]
 
 [lints]
 workspace = true

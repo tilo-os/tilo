@@ -157,9 +157,7 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
         let (w, h) = ui::framework::content::image_size(data).map_or((0, 0), |(_, w, h)| (w, h));
         return Ok(image_probe(w, h, codec));
     }
-    if is_wav(data)
-        && let Some(p) = parse_wav(data)
-    {
+    if let Some(p) = parse_wav(data) {
         return Ok(p);
     }
     if is_isobmff(data)
@@ -418,29 +416,57 @@ fn le_u32(d: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(at..end)?.try_into().ok()?))
 }
 
-fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
+/// A WAV file's layout: its `fmt ` fields and where its samples are.
+pub(crate) struct WavLayout {
+    /// `1` integer PCM, `3` float, `0xFFFE` extensible.
+    pub format: u16,
+    pub channels: u16,
+    pub bits: u16,
+    pub byte_rate: u32,
+    /// Where the `data` chunk's samples start, and the size it declares
+    /// (which may run past a prefix read of the file).
+    pub data: Option<(usize, usize)>,
+}
+
+/// Walk a RIFF/WAVE file's chunks. `None` when `d` is not a WAV.
+pub(crate) fn wav_layout(d: &[u8]) -> Option<WavLayout> {
+    if !is_wav(d) {
+        return None;
+    }
+    let mut layout = WavLayout {
+        format: 0,
+        channels: 1,
+        bits: 16,
+        byte_rate: 0,
+        data: None,
+    };
     let mut i = 12usize; // past "RIFF" size "WAVE"
-    let mut byte_rate = 0u32;
-    let mut audio_format = 0u16;
-    let mut data_len = 0u32;
-    while i + 8 <= d.len() {
-        // The loop condition keeps the four id bytes in range.
-        let id = d.get(i..i + 4)?;
-        let size = le_u32(d, i + 4)? as usize;
+    while let Some(id) = d.get(i..i + 4) {
+        let Some(size) = le_u32(d, i + 4) else {
+            break;
+        };
+        let size = size as usize;
         let body = i + 8;
         match id {
             b"fmt " if body + 16 <= d.len() => {
-                audio_format = le_u16(d, body)?;
-                byte_rate = le_u32(d, body + 8)?;
+                layout.format = le_u16(d, body)?;
+                layout.channels = le_u16(d, body + 2)?.max(1);
+                layout.byte_rate = le_u32(d, body + 8)?;
+                layout.bits = le_u16(d, body + 14)?;
             }
-            b"data" => {
-                data_len = size as u32;
-            }
+            b"data" => layout.data = Some((body, size)),
             _ => {}
         }
         // Chunks are word-aligned (pad byte when the size is odd).
         i = body + size + (size & 1);
     }
+    Some(layout)
+}
+
+fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
+    let layout = wav_layout(d)?;
+    let (byte_rate, audio_format) = (layout.byte_rate, layout.format);
+    let data_len = layout.data.map_or(0, |(_, size)| size as u32);
     if byte_rate == 0 {
         return None;
     }
