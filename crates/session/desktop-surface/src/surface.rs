@@ -1865,9 +1865,14 @@ impl DesktopSurface {
     /// empty canvas, where nothing scrolls, its vertical travel too, so a
     /// plain mouse wheel moves the strip there (down toward later windows).
     fn strip_travel(&self, delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
+        // Sideways is the strip's everywhere. A plain wheel belongs to the app
+        // under it, so a mouse that has only that one pans the strip where no
+        // app can scroll: over the strip's own canvas and window bars. The
+        // bar is the shell's, as on the native desktop, where the wheel over
+        // the tab strip is not a client's.
         sideways(delta, scale_factor).or_else(|| {
             self.shown_row_ref()
-                .is_some_and(GroupRow::pointer_over_background)
+                .is_some_and(GroupRow::pointer_over_chrome)
                 .then(|| vertical(delta, scale_factor))
                 .filter(|travel| *travel != 0.0)
         })
