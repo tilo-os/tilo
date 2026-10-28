@@ -58,7 +58,7 @@ pub(super) fn enable() {
     START.get_or_init(Instant::now);
 }
 
-pub(crate) fn record(event: &'static str, detail: u64) {
+pub fn record(event: &'static str, detail: u64) {
     let Some(start) = START.get() else { return };
     // Diagnostics must never make the loop wait for the reporter.
     let Some(mut trace) = TRACE.try_lock() else {

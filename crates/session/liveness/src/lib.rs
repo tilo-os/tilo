@@ -27,10 +27,10 @@
 //! A heartbeat costs the loop one wake when somebody asks. Nothing runs, and
 //! the idle loop is not woken, while no client is connected.
 //!
-//! Like the control socket this exists only where
-//! [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`] holds, and is bound only
-//! when the control socket is. Every build, release included, also runs
-//! [`super::watchdog`], which needs no client: it notices a hung loop on its
+//! Like the control socket this exists only where the compositor honours its
+//! developer overrides, and is bound only when the control socket is. Every
+//! build, release included, also runs the compositor's watchdog, which needs
+//! no client: it notices a hung loop on its
 //! own, records the same thread dump and ends the process so the session
 //! recovers.
 //!
@@ -56,6 +56,12 @@
 //! entered. Development heartbeat failures also snapshot a fixed-size wake
 //! trace before any capture signal can disturb the sequence being diagnosed.
 
+//!
+//! It is its own crate, below the compositor, so a compositor change does
+//! not rebuild it and its tests run on their own. Linux only: it reads
+//! `/proc` and signals threads.
+#![cfg(target_os = "linux")]
+
 use std::backtrace::Backtrace;
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -67,7 +73,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
-use smithay::reexports::calloop::{self, LoopHandle};
+use calloop::LoopHandle;
 
 mod capture;
 mod main_thread_files;
@@ -75,15 +81,23 @@ mod wake_trace;
 
 pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
-pub(super) use wake_trace::record as trace_wake;
+pub use wake_trace::record as trace_wake;
 
-use super::native::UnlinkOnDrop;
-use super::state::State;
+
+/// Removes the socket it names once the server that bound it is gone.
+struct UnlinkOnDrop(PathBuf);
+
+impl Drop for UnlinkOnDrop {
+    fn drop(&mut self) {
+        // Errors are not actionable here — already gone, or no permission — so ignore.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Record every storage wait the main loop is still asked for (see
 /// [`durable_store::waiting`]) in the main-thread audit, beside the paths it
 /// walks: each is the loop asleep until another thread's fsync finishes.
-pub(super) fn audit_storage_waits() {
+pub fn audit_storage_waits() {
     let _ = durable_store::waiting::observe(main_thread_files::record_storage_wait);
 }
 
@@ -347,10 +361,15 @@ pub struct Server {
     _unlink: UnlinkOnDrop,
 }
 
-/// Bind the liveness socket for the control socket at `control` and start
+/// Bind the liveness socket for the control socket at `control` with `bind`
+/// (which binds it private to this user, as the control socket is) and start
 /// answering on it. `None`, with the reason on stderr, when it cannot be
 /// bound: a harness without liveness still drives the desktop.
-pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Server> {
+pub fn serve<D: 'static>(
+    control: &Path,
+    handle: &LoopHandle<'static, D>,
+    bind: impl FnOnce(&Path) -> std::io::Result<std::os::unix::net::UnixListener>,
+) -> Option<Server> {
     let path = socket_path(control);
     let (ping, source) = match calloop::ping::make_ping() {
         Ok(pair) => pair,
@@ -371,7 +390,7 @@ pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Serv
         eprintln!("tilo compositor: liveness source: {error}");
         return None;
     }
-    let listener = match crate::shell::test_control_socket::bind_private(&path) {
+    let listener = match bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("tilo compositor: liveness bind {}: {error}", path.display());
@@ -618,12 +637,12 @@ fn capture_signal() -> libc::c_int {
 /// One dump at a time: a thread answers the dump that asks it now.
 static ONE_DUMP_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-pub(super) fn gettid() -> i32 {
+pub fn gettid() -> i32 {
     // SAFETY: `gettid` takes no arguments and cannot fail.
     i32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap_or(-1)
 }
 
-pub(super) fn install_capture_handler() {
+pub fn install_capture_handler() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         capture::warm_up();
@@ -837,7 +856,7 @@ fn report(tid: i32, backtrace: String) -> ThreadReport {
 /// Every thread of this process: its scheduler state, what it waits in and,
 /// for each one blocked where interrupting it is safe ([`not_interruptible`]),
 /// its backtrace.
-pub(super) fn dump_threads() -> Vec<ThreadReport> {
+pub fn dump_threads() -> Vec<ThreadReport> {
     let _one = ONE_DUMP_AT_A_TIME.lock();
 
     // SAFETY: `getpid` takes no arguments and cannot fail.

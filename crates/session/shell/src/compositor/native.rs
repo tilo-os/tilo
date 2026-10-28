@@ -10076,7 +10076,13 @@ pub fn run() {
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
             std::env::var_os(TEST_CONTROL_ENV),
         )
-        .and_then(|path| crate::compositor::liveness::serve(&path, &event_loop.handle()))
+        .and_then(|path| {
+            tilo_liveness::serve(
+                &path,
+                &event_loop.handle(),
+                crate::shell::test_control_socket::bind_private,
+            )
+        })
     });
     let agent_control_listener_wake = agent_control_listener
         .as_ref()
@@ -10854,7 +10860,7 @@ pub fn run() {
     // Nor does a turn wait on storage: apps running in-process ask their
     // stores to commit, and the stores' own threads do the waiting. A store
     // still asked to wait here is reported to the main-thread audit.
-    super::liveness::audit_storage_waits();
+    tilo_liveness::audit_storage_waits();
     let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
     crate::shell::heap_trim::log_milestone("services-started");
     while !close_requested {
@@ -15350,14 +15356,14 @@ pub fn run() {
         if let Some(watchdog) = &watchdog {
             watchdog.parking();
         }
-        super::liveness::trace_wake(
+        tilo_liveness::trace_wake(
             "dispatch-enter-ms",
             park.map_or(u64::MAX, |duration| {
                 u64::try_from(duration.as_millis()).unwrap_or(u64::MAX - 1)
             }),
         );
         let dispatched = event_loop.dispatch(park, &mut state);
-        super::liveness::trace_wake("dispatch-return", u64::from(dispatched.is_ok()));
+        tilo_liveness::trace_wake("dispatch-return", u64::from(dispatched.is_ok()));
         if let Some(watchdog) = &watchdog {
             watchdog.unparked();
         }
