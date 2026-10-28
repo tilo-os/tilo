@@ -31,6 +31,16 @@ impl BrowserWidget {
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
+        // A find answers an element, not a reading of the page: its ref is
+        // what a later step binds to, so it is the answer's own field rather
+        // than only a finding inside it.
+        if let (PageRequest::Find { .. }, Some(data)) = (request, &reply.data) {
+            for key in ["element", "role", "name", "line", "nth", "matches"] {
+                if let Some(field) = data.get(key) {
+                    value.insert(key.into(), field.clone());
+                }
+            }
+        }
         // The site's own question is part of the page it waits on: it goes in
         // the outline beside the elements, and as the request the page's
         // answer actions name, so an agent answers it as the person does.
