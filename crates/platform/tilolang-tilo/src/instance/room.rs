@@ -56,6 +56,21 @@ pub enum RoomError {
     Open(String),
 }
 
+/// Where the broker's committed read of a record being opened comes from.
+enum Read {
+    /// Read on this thread, as the record opens.
+    Here,
+    /// Read off this thread already; `None` when the route needs none.
+    Taken(
+        Option<
+            Box<(
+                collaboration::native_initial::PrimaryRead,
+                collaboration::CommittedDocument,
+            )>,
+        >,
+    ),
+}
+
 /// The room record an instance commits to, the route it travels on, and its undo, history and
 /// save state.
 pub struct RoomRecord {
@@ -115,6 +130,34 @@ impl RoomRecord {
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
     ) -> Result<Self, RoomError> {
+        Self::open_with(manager, Read::Here, documents, person)
+    }
+
+    /// [`Self::open`], with the broker's committed read taken off this thread: `read` is what
+    /// [`PrimaryRead::of`](collaboration::native_initial::PrimaryRead::of) said the manager's
+    /// route needs, and what it read. An owner that runs other instances meanwhile waits for
+    /// the read on another thread and opens the record with it here.
+    ///
+    /// # Errors
+    /// As [`Self::open`]; and a read that is not of the manager's route.
+    pub fn open_read(
+        manager: CollaborationManager,
+        read: Option<(
+            collaboration::native_initial::PrimaryRead,
+            collaboration::CommittedDocument,
+        )>,
+        documents: &Rc<dyn DurableStore>,
+        person: impl Into<String>,
+    ) -> Result<Self, RoomError> {
+        Self::open_with(manager, Read::Taken(read.map(Box::new)), documents, person)
+    }
+
+    fn open_with(
+        manager: CollaborationManager,
+        read: Read,
+        documents: &Rc<dyn DurableStore>,
+        person: impl Into<String>,
+    ) -> Result<Self, RoomError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{open_stored, open_with_committed_read, room_document};
         let route = manager
@@ -126,7 +169,11 @@ impl RoomRecord {
             .map_err(|error| RoomError::Open(error.to_string()))?;
         // Construction custody reads the committed history before the record is built, as a
         // native launch's does: only a route whose reads are committed has one.
-        let construction = NativeConstruction::enter(manager).map_err(RoomError::Open)?;
+        let construction = match read {
+            Read::Taken(read) => NativeConstruction::enter_read(manager, read.map(|read| *read)),
+            Read::Here => NativeConstruction::enter(manager),
+        }
+        .map_err(RoomError::Open)?;
         let opened = match native_initial::primary(&route.app_id, Some(&room)) {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
             None => Ok(open_stored(store)),

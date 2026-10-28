@@ -22,11 +22,15 @@
 pub mod hosted;
 pub mod phrases;
 
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use std::sync::mpsc::{Receiver, TryRecvError};
+
+use collaboration::CommittedDocument;
+use collaboration::native_initial::PrimaryRead;
 use runtime_portal::tilolang_host::{InstanceFds, InstanceRequest, Module};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -35,6 +39,7 @@ use tilolang_tilo::bundle::Bundle;
 
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
+use tilolang_tilo::instance::room::RoomRecord;
 
 /// The record kind of an app's room record: every tilolang package keeps its resources in it.
 pub const RECORD_KIND: &str = "tilolang.room";
@@ -65,6 +70,48 @@ struct Running {
     window: Option<OwnedFd>,
 }
 
+/// An instance being opened: its module read, its connection joining its workspace's route and
+/// the broker's committed read of its record, each waited for off the host's loop, so the
+/// instances running meanwhile keep producing frames.
+struct Opening {
+    app: String,
+    stage: Stage,
+    /// The window's connection, until the instance runs.
+    window: Option<Channel>,
+    identity: Option<OwnedFd>,
+}
+
+enum Stage {
+    /// The module, decoded on a thread of its own.
+    Module {
+        request: InstanceRequest,
+        broker: OwnedFd,
+        decoded: Receiver<Result<Bundle, AdmitError>>,
+    },
+    /// The connection joining the route, in the background of its manager.
+    Joining {
+        spec: Spec,
+        bundle: Arc<Bundle>,
+        manager: collaboration::CollaborationManager,
+    },
+    /// The committed read of the record, taken on a thread of its own.
+    Reading {
+        spec: Spec,
+        bundle: Arc<Bundle>,
+        manager: collaboration::CollaborationManager,
+        read: Receiver<Result<(PrimaryRead, CommittedDocument), String>>,
+    },
+    /// Taken out for a step.
+    Moved,
+}
+
+/// What became of an opening after a step.
+enum Step {
+    Waiting,
+    /// It runs, its window's connection watched by the second.
+    Open(Box<Hosted>, OwnedFd),
+}
+
 /// The host: its storage, what wakes it, and its instances.
 pub struct TilolangHost {
     storage: Option<PathBuf>,
@@ -72,6 +119,7 @@ pub struct TilolangHost {
     wake: Waker,
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
+    opening: Vec<Opening>,
 }
 
 impl TilolangHost {
@@ -90,6 +138,7 @@ impl TilolangHost {
             wake,
             scope,
             running: Vec::new(),
+            opening: Vec::new(),
         }
     }
 
@@ -121,6 +170,12 @@ impl TilolangHost {
         self.running.iter().map(|running| &running.hosted)
     }
 
+    /// How many instances are being opened.
+    #[must_use]
+    pub fn opening(&self) -> usize {
+        self.opening.len()
+    }
+
     /// Run `hosted`, until its window closes (`window` hangs up) or the host ends.
     pub fn add(&mut self, hosted: Hosted, window: Option<OwnedFd>) {
         tracing::info!(
@@ -131,13 +186,165 @@ impl TilolangHost {
         self.running.push(Running { hosted, window });
     }
 
-    /// Run the instance the session handed over on the door.
+    /// Open the instance the session handed over on the door: its module is read, its
+    /// connection joins and its record is read off the host's loop, and it runs once all three
+    /// are done ([`Self::turn`]).
     ///
     /// # Errors
-    /// Its module is unreadable or declares another app, its room is no room, its connection
-    /// cannot join, or its window's connection is unusable.
+    /// Its window's connection is unusable.
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
-        let bundle = module_bundle(&fds.module, request.module_len)?;
+        let window = Channel::from_socket(fds.window).map_err(AdmitError::Window)?;
+        let (sender, decoded) = std::sync::mpsc::channel();
+        let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
+        let app = request.app.clone();
+        std::thread::Builder::new()
+            .name("tilolang-module".into())
+            .spawn(move || {
+                let _ = sender.send(module_bundle(&module, len));
+                wake();
+            })
+            .map_err(AdmitError::Window)?;
+        self.opening.push(Opening {
+            app,
+            stage: Stage::Module {
+                request,
+                broker: fds.broker,
+                decoded,
+            },
+            window: Some(window),
+            identity: Some(fds.identity),
+        });
+        Ok(())
+    }
+
+    /// Open the instance `spec` of `bundle` on `manager`, whose route it joins (or joined), with
+    /// its window at the far end of `window`: it runs once the route is joined and its record
+    /// read, both waited for off the host's loop.
+    pub fn open(
+        &mut self,
+        spec: Spec,
+        bundle: Arc<Bundle>,
+        manager: collaboration::CollaborationManager,
+        window: Channel,
+    ) {
+        self.opening.push(Opening {
+            app: spec.app.clone(),
+            stage: Stage::Joining {
+                spec,
+                bundle,
+                manager,
+            },
+            window: Some(window),
+            identity: None,
+        });
+    }
+
+    /// The next step of `opening`, without waiting for anything.
+    fn step(&self, opening: &mut Opening) -> Result<Step, AdmitError> {
+        loop {
+            match std::mem::replace(&mut opening.stage, Stage::Moved) {
+                Stage::Module {
+                    request,
+                    broker,
+                    decoded,
+                } => {
+                    let bundle = match decoded.try_recv() {
+                        Ok(bundle) => bundle?,
+                        Err(TryRecvError::Empty) => {
+                            opening.stage = Stage::Module {
+                                request,
+                                broker,
+                                decoded,
+                            };
+                            return Ok(Step::Waiting);
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            return Err(AdmitError::Module("its reader ended".to_owned()));
+                        }
+                    };
+                    opening.stage =
+                        self.join(request, broker, opening.identity.as_ref(), bundle)?;
+                }
+                Stage::Joining {
+                    spec,
+                    bundle,
+                    mut manager,
+                } => {
+                    // Nothing is delivered on a route before it is joined.
+                    let _ = manager.poll();
+                    if let Some(refused) = manager.join_refusal() {
+                        return Err(AdmitError::Join(refused.to_owned()));
+                    }
+                    if manager.primary_route().is_none() {
+                        if let collaboration::CollaborationState::Offline(reason) = manager.state()
+                        {
+                            return Err(AdmitError::Join(reason));
+                        }
+                        opening.stage = Stage::Joining {
+                            spec,
+                            bundle,
+                            manager,
+                        };
+                        return Ok(Step::Waiting);
+                    }
+                    let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
+                        return self.run(opening, spec, bundle, manager, None);
+                    };
+                    let (sender, read) = std::sync::mpsc::channel();
+                    let wake = Arc::clone(&self.wake);
+                    std::thread::Builder::new()
+                        .name("tilolang-read".into())
+                        .spawn(move || {
+                            let _ = sender.send(reader.read().map(|read| (reader, read)));
+                            wake();
+                        })
+                        .map_err(AdmitError::Window)?;
+                    opening.stage = Stage::Reading {
+                        spec,
+                        bundle,
+                        manager,
+                        read,
+                    };
+                }
+                Stage::Reading {
+                    spec,
+                    bundle,
+                    manager,
+                    read,
+                } => {
+                    return match read.try_recv() {
+                        Ok(read) => {
+                            let read = read.map_err(AdmitError::Join)?;
+                            self.run(opening, spec, bundle, manager, Some(read))
+                        }
+                        Err(TryRecvError::Empty) => {
+                            opening.stage = Stage::Reading {
+                                spec,
+                                bundle,
+                                manager,
+                                read,
+                            };
+                            Ok(Step::Waiting)
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            Err(AdmitError::Join("the record's read ended".to_owned()))
+                        }
+                    };
+                }
+                Stage::Moved => return Ok(Step::Waiting),
+            }
+        }
+    }
+
+    /// Join the route of the instance `request` on its connection `broker`: the manager joins in
+    /// its background, and the host is woken as it does.
+    fn join(
+        &self,
+        request: InstanceRequest,
+        broker: OwnedFd,
+        identity: Option<&OwnedFd>,
+        bundle: Bundle,
+    ) -> Result<Stage, AdmitError> {
         if bundle.meta.app != request.app {
             return Err(AdmitError::IdMismatch {
                 launched: request.app,
@@ -146,47 +353,112 @@ impl TilolangHost {
         }
         let room = uuid::Uuid::parse_str(&request.room)
             .map_err(|_| AdmitError::Room(request.room.clone()))?;
+        let identity =
+            identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
+        let _scope = self.scope.enter();
+        let manager = collaboration::CollaborationManager::join_instance(
+            &collaboration::record::RecordKind::new(RECORD_KIND),
+            broker,
+            identity.as_fd(),
+            collaboration::RouteSpec::app(request.app.clone(), room),
+            Some(request.person.clone()),
+        )
+        .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
+        Ok(Stage::Joining {
+            spec: Spec {
+                app: request.app,
+                room: request.room,
+                instance: request.instance,
+                person: request.person,
+            },
+            bundle: Arc::new(bundle),
+            manager,
+        })
+    }
+
+    /// The instance, its route joined and its record read: open the record and run it.
+    fn run(
+        &self,
+        opening: &mut Opening,
+        spec: Spec,
+        bundle: Arc<Bundle>,
+        manager: collaboration::CollaborationManager,
+        read: Option<(PrimaryRead, CommittedDocument)>,
+    ) -> Result<Step, AdmitError> {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
         collaboration::app_surface::register_package(&bundle.meta.app, &bundle.surface());
-        let window = Channel::from_socket(fds.window).map_err(AdmitError::Window)?;
+        let kept = self
+            .kept(&spec.app)
+            .map_err(|error| AdmitError::Join(error.to_string()))?;
+        let _scope = self.scope.enter();
+        let record = RoomRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
+        let window = opening
+            .window
+            .take()
+            .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
         let watched = window
             .as_fd()
             .try_clone_to_owned()
             .map_err(AdmitError::Window)?;
-        let window = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-        let kept = self
-            .kept(&request.app)
-            .map_err(|error| AdmitError::Join(error.to_string()))?;
-        let _scope = self.scope.enter();
-        let manager = collaboration::CollaborationManager::join_instance(
-            &collaboration::record::RecordKind::new(RECORD_KIND),
-            fds.broker,
-            fds.identity.as_fd(),
-            collaboration::RouteSpec::app(request.app.clone(), room),
-            Some(request.person.clone()),
-        )
-        .map_err(|error| AdmitError::Join(format!("{error:?}")))?
-        .finish_join()
-        .map_err(|error| AdmitError::Join(error.to_string()))?;
-        let spec = Spec {
-            app: request.app,
-            room: request.room,
-            instance: request.instance,
-            person: request.person,
-        };
-        let hosted = Hosted::open(
+        let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
+        let hosted = Hosted::with_record(
             spec,
-            manager,
-            Arc::new(bundle),
+            record,
+            bundle,
             &kept,
-            Box::new(window),
+            Box::new(transport),
             Rc::clone(&self.phrases),
             Arc::clone(&self.wake),
-        )?
-        .holding_identity(fds.identity);
-        self.add(hosted, Some(watched));
-        Ok(())
+        );
+        let hosted = match opening.identity.take() {
+            Some(identity) => hosted.holding_identity(identity),
+            None => hosted,
+        };
+        Ok(Step::Open(Box::new(hosted), watched))
+    }
+
+    /// Take the openings a step further: those done run, those that failed end, and those whose
+    /// window closed meanwhile end too.
+    fn advance(&mut self) -> bool {
+        if self.opening.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        let mut opening = std::mem::take(&mut self.opening);
+        let mut started = Vec::new();
+        opening.retain_mut(|open| {
+            if open
+                .window
+                .as_ref()
+                .is_some_and(|window| hung_up(window.as_fd()))
+            {
+                tracing::info!(
+                    app = open.app,
+                    "an instance's window closed before it opened"
+                );
+                changed = true;
+                return false;
+            }
+            match self.step(open) {
+                Ok(Step::Waiting) => true,
+                Ok(Step::Open(hosted, watched)) => {
+                    started.push((*hosted, watched));
+                    false
+                }
+                Err(error) => {
+                    tracing::error!(app = open.app, %error, "an instance did not start");
+                    changed = true;
+                    false
+                }
+            }
+        });
+        self.opening = opening;
+        for (hosted, watched) in started {
+            changed = true;
+            self.add(hosted, Some(watched));
+        }
+        changed
     }
 
     /// The window connections to watch: one closing ends its instance.
@@ -194,19 +466,28 @@ impl TilolangHost {
         self.running
             .iter()
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
+            .chain(
+                self.opening
+                    .iter()
+                    .filter_map(|open| open.window.as_ref().map(AsFd::as_fd)),
+            )
     }
 
     /// One frame of every instance; an instance whose window closed ends, its record written
-    /// first. Whether anything changed.
+    /// first; an instance being opened goes as far as it can without waiting. Whether anything
+    /// changed.
     pub fn turn(&mut self) -> bool {
+        let mut changed = self.advance();
         let _scope = self.scope.enter();
-        let mut changed = false;
         for running in &mut self.running {
             changed |= running.hosted.turn();
         }
         let before = self.running.len();
         self.running.retain_mut(|running| {
-            let open = running.window.as_ref().is_none_or(|fd| !hung_up(fd));
+            let open = running
+                .window
+                .as_ref()
+                .is_none_or(|fd| !hung_up(fd.as_fd()));
             if !open {
                 running.hosted.flush();
                 tracing::info!(
@@ -220,10 +501,10 @@ impl TilolangHost {
         changed || self.running.len() != before
     }
 
-    /// Whether the host runs no instance.
+    /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty()
+        self.running.is_empty() && self.opening.is_empty()
     }
 }
 
@@ -242,7 +523,7 @@ fn module_bundle(fd: &OwnedFd, len: u64) -> Result<Bundle, AdmitError> {
 }
 
 /// Whether the peer of the socket `fd` hung up.
-fn hung_up(fd: &OwnedFd) -> bool {
+fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     use std::os::fd::AsRawFd as _;
     let mut poll = libc::pollfd {
         fd: fd.as_raw_fd(),
