@@ -113,11 +113,17 @@ jobs:
               command -v "$tool"
             done
             bwrap --version
+            # Each expectation names itself before it runs: a bare failing test
+            # exits 1 with no output, which is all the job log would show.
+            printf "expect python pillow\n"
             python3 -c "import PIL"
+            printf "expect Noto Sans is installed\n"
             fc-match -f "%{family}" "Noto Sans" | grep -Fq "Noto Sans"
             # The workspace pins wasm32; a job that has to download the target
             # mid-run stalls against rust-toolchain.toml's offline shims.
+            printf "expect the wasm32 target in the image\n"
             rustup target list --installed | grep -qx wasm32-unknown-unknown
+            printf "expect the Fedora primary RPM key\n"
             test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
           docker run --rm --network=none "$control" bash -euo pipefail -c '
             docker --version
