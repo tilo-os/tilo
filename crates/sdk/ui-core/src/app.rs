@@ -1930,7 +1930,7 @@ impl App {
             self.continuation.search_index.reset();
             self.continuation.search_index_route = Some(witness.clone());
         }
-        let route = witness.route;
+        let route = witness.route();
         if !self.continuation.search_index.wants(state) {
             return;
         }
