@@ -169,13 +169,9 @@ impl PublicContent {
     /// Record the pointers whole: a reader of the file after a crash finds
     /// the old pointers or the new ones.
     fn save(&self, copies: &BTreeMap<String, Copy>) {
-        let Ok(bytes) = serde_json::to_vec(copies) else {
-            return;
-        };
-        let staging = self.pointers.with_extension("json.new");
-        let written = std::fs::write(&staging, bytes)
-            .and_then(|()| std::fs::File::open(&staging)?.sync_all())
-            .and_then(|()| std::fs::rename(&staging, &self.pointers));
+        let written = serde_json::to_vec(copies)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| tilo_files::native::atomic::write(&self.pointers, &bytes));
         if let Err(error) = written {
             tracing::warn!(%error, "public content pointers not recorded");
         }

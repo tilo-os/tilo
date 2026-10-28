@@ -53,6 +53,7 @@ use runtime_fs::cloud::{
     CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, CloudSocket,
     MountHealth,
 };
+use tilo_files::native::{ChangeWatch, watch_changes};
 
 use super::credential::{
     CAPABILITIES_PREFIX, EXPIRED_LINE, HEALTH_PREFIX, MountReply, PipeCredential, READY_LINE,
@@ -214,12 +215,9 @@ impl CloudService {
 
     fn save_paused(&self) {
         let path = self.config.state_root.join(PAUSED_FILE);
-        let saved = fs::create_dir_all(&self.config.state_root).and_then(|()| {
-            let bytes = serde_json::to_vec(&self.paused).map_err(io::Error::other)?;
-            let staged = path.with_extension("json.tmp");
-            fs::write(&staged, bytes)?;
-            fs::rename(&staged, &path)
-        });
+        let saved = serde_json::to_vec(&self.paused)
+            .map_err(io::Error::other)
+            .and_then(|bytes| tilo_files::native::atomic::write_creating_parent(&path, &bytes));
         if let Err(error) = saved {
             tracing::warn!(%error, "cannot record the paused cloud accounts");
         }
@@ -918,48 +916,18 @@ pub fn dispatch(
 }
 
 /// Subscribe to mutations of the account store on the normal service channel.
-fn watch_accounts(
-    directory: &Path,
-    signals: Sender<Signal>,
-) -> io::Result<notify::RecommendedWatcher> {
-    use notify::Watcher as _;
+/// The watch reports writes, creation, removal and renames only, so the
+/// service reading the store does not feed itself.
+fn watch_accounts(directory: &Path, signals: Sender<Signal>) -> io::Result<ChangeWatch> {
     fs::create_dir_all(directory)?;
     let store = directory.join("store.json");
-    let mut watcher = notify::recommended_watcher(move |event| {
-        if account_store_changed(event, &store) {
+    watch_changes(
+        directory,
+        move |entry| entry == store,
+        move || {
             let _ = signals.send(Signal::Accounts);
-        }
-    })
-    .map_err(io::Error::other)?;
-    watcher
-        .watch(directory, notify::RecursiveMode::NonRecursive)
-        .map_err(io::Error::other)?;
-    Ok(watcher)
-}
-
-fn account_store_changed(event: notify::Result<notify::Event>, store: &Path) -> bool {
-    let Ok(event) = event else {
-        // Queue failure can hide a mutation, so reload conservatively.
-        return true;
-    };
-    if event.need_rescan() {
-        return true;
-    }
-    if matches!(event.kind, notify::EventKind::Access(_)) {
-        // Loading this file is not a configuration change. Inotify reports
-        // the service's own open/read/close and would otherwise feed itself.
-        return false;
-    }
-    if matches!(
-        event.kind,
-        notify::EventKind::Any | notify::EventKind::Other
-    ) {
-        return true;
-    }
-    event
-        .paths
-        .iter()
-        .any(|path| path == store || Some(path.as_path()) == store.parent())
+        },
+    )
 }
 
 #[cfg(test)]
@@ -968,8 +936,8 @@ mod watcher_tests {
 
     /// The accounts watch on `directory`, and its event thread.
     #[cfg(target_os = "linux")]
-    fn watching(directory: &Path, signals: Sender<Signal>) -> (notify::RecommendedWatcher, String) {
-        tilo_test_env::idle::spawned_thread("notify-rs inoti", || {
+    fn watching(directory: &Path, signals: Sender<Signal>) -> (ChangeWatch, String) {
+        tilo_test_env::idle::spawned_thread(tilo_files::native::CHANGE_WATCH_THREAD, || {
             watch_accounts(directory, signals).unwrap()
         })
     }
@@ -1042,18 +1010,6 @@ mod watcher_tests {
             inbox.recv_timeout(tilo_test_env::hang_bound()),
             Ok(Signal::Accounts)
         ));
-    }
-
-    #[test]
-    fn watcher_errors_and_rescan_still_invalidate_accounts() {
-        use notify::{Event, EventKind, event::Flag};
-        let store = Path::new("fixture/accounts/store.json");
-        assert!(account_store_changed(
-            Err(notify::Error::generic("fixture")),
-            store
-        ));
-        let rescan = Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        assert!(account_store_changed(Ok(rescan), store));
     }
 }
 

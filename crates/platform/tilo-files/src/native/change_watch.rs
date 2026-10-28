@@ -168,7 +168,11 @@ mod inotify_watch {
                         let mut changed = false;
                         for event in events {
                             if event.mask.contains(EventMask::IGNORED) {
-                                // Dropped, or the directory itself went away.
+                                // Dropped, or the directory itself went away, and its
+                                // entries with it: a reader must look again.
+                                if !stop.load(Ordering::Acquire) {
+                                    on_change();
+                                }
                                 return;
                             }
                             // An overflowed queue may have hidden a change; re-reading is

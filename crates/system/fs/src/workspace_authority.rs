@@ -439,23 +439,23 @@ impl WorkspaceAuthority {
 
 /// Keep `authority` in step with the host-local capability list at `path`:
 /// whenever the file's bytes change, sign them as the next revision with
-/// `governor` and apply it. Waits on the file's change events with
-/// `cadence`'s backstop, or polls every `cadence.poll` when the file cannot
-/// be watched (#4224; it used to poll once a second). Bytes present when
+/// `governor` and apply it, on the file's change events. Bytes present when
 /// the task starts are taken as already applied; an unreadable or malformed
 /// file changes nothing, so a half-written list is never signed.
-#[must_use]
+///
+/// # Errors
+///
+/// The file's directory cannot be watched.
 pub fn spawn_capability_file_reload(
     path: PathBuf,
     authority: std::sync::Arc<WorkspaceAuthority>,
     governor: ed25519_dalek::SigningKey,
-    cadence: crate::file_watch::ReloadCadence,
-) -> tokio::task::JoinHandle<()> {
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
     let mut previous = std::fs::read(&path).ok();
-    let mut trigger = crate::file_watch::ReloadTrigger::for_file(&path, cadence);
-    tokio::spawn(async move {
+    let mut changes = crate::file_watch::FileChanges::for_file(&path)?;
+    Ok(tokio::spawn(async move {
         loop {
-            trigger.next().await;
+            changes.next().await;
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
@@ -482,7 +482,7 @@ pub fn spawn_capability_file_reload(
                 previous = Some(bytes);
             }
         }
-    })
+    }))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -945,12 +945,10 @@ mod tests {
     use std::sync::Arc;
 
     /// #4224. The workspace authority follows the host-local capability
-    /// list through the file watch alone (poll fallback and backstop an
-    /// hour away): a revocation written to the list is signed, applied and
+    /// list through its file watch: a revocation written to the list is signed, applied and
     /// enforced, and a half-written list is never signed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revoked_capability_leaves_the_workspace_authority_through_the_watch() {
-        let hour = std::time::Duration::from_secs(3600);
         let temp = tempfile::tempdir().unwrap();
         let governor = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let workspace = uuid::Uuid::new_v4();
@@ -996,23 +994,16 @@ mod tests {
             )
             .unwrap();
         let handle = authority.handle();
-        let reload = spawn_capability_file_reload(
-            list.clone(),
-            Arc::clone(&authority),
-            governor.clone(),
-            crate::file_watch::ReloadCadence {
-                poll: hour,
-                backstop: hour,
-            },
-        );
+        let reload =
+            spawn_capability_file_reload(list.clone(), Arc::clone(&authority), governor.clone())
+                .unwrap();
         assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
 
         // What a reader sees if it catches an in-place rewrite midway. Were
         // it signed, the complete list below would be revision 3, not 2.
         std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
 
-        // The poll and backstop are an hour away: only the watch can carry
-        // the revocation.
+        // Nothing but the watch can carry the revocation.
         std::fs::write(
             &list,
             serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),

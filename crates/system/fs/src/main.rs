@@ -405,11 +405,9 @@ struct AclArgs {
     /// A principal this mount can prove beyond its own person id (`room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
-    /// `0` reads `--acl` once, at mount time. Otherwise it is re-read on
-    /// every change, and every this many seconds only when the file cannot
-    /// be watched (default 1).
-    #[arg(long, value_name = "SECONDS", default_value_t = 1)]
-    acl_reload_secs: u64,
+    /// Read `--acl` once, at mount time, instead of on every change.
+    #[arg(long)]
+    acl_once: bool,
 }
 
 /// Which local data plane serves the workspace.
@@ -1162,37 +1160,24 @@ fn resolve_acl(
     Ok(Some(Arc::new(file)))
 }
 
-/// Keep the live mount's capability list current (`every == 0` disables
-/// reload): re-read on every change of the file, and poll every `every`
-/// seconds only when it cannot be watched.
-fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
-    if every == 0 {
+/// Keep the live mount's capability list current: re-read on every change
+/// of the file, unless `once`.
+fn spawn_acl_reload(
+    file: Arc<CapabilityFile>,
+    once: bool,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    if once {
         println!(
             "Capability list {} will NOT be re-read; a later grant needs a remount",
             file.path().display()
         );
-        return None;
+        return Ok(None);
     }
-    Some(
-        file.spawn_reload(fs::file_watch::ReloadCadence::new(Duration::from_secs(
-            every,
-        ))),
-    )
-}
-
-/// Sign each new version of the capability list into the workspace
-/// authority; polls once a second only when the file cannot be watched.
-fn spawn_workspace_authority_reload(
-    path: PathBuf,
-    authority: Arc<WorkspaceAuthority>,
-    governor: ed25519_dalek::SigningKey,
-) -> tokio::task::JoinHandle<()> {
-    fs::workspace_authority::spawn_capability_file_reload(
-        path,
-        authority,
-        governor,
-        fs::file_watch::ReloadCadence::new(Duration::from_secs(1)),
-    )
+    let path = file.path().to_path_buf();
+    let reload = file
+        .spawn_reload()
+        .with_context(|| format!("watching the capability list {}", path.display()))?;
+    Ok(Some(reload))
 }
 
 /// Serve document media from the content store (best-effort, like the other
@@ -1884,7 +1869,9 @@ async fn serve(
         reachability::wake(&reachability, "the mount enforces no capability list");
         None
     };
-    let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
+    let _reload = caps
+        .map(|c| spawn_acl_reload(c, acl_args.acl_once))
+        .transpose()?;
     let named_outbox = cache_dir
         .as_ref()
         .map(|cache| {
@@ -2099,13 +2086,15 @@ async fn serve(
             .zip(share_issuer.as_ref())
             .zip(acl_args.acl.as_ref())
             .map(|((authority, governor), path)| {
-                spawn_workspace_authority_reload(
+                fs::workspace_authority::spawn_capability_file_reload(
                     path.clone(),
                     Arc::clone(authority),
                     governor.clone(),
                 )
+                .with_context(|| format!("watching the capability list {}", path.display()))
             })
     });
+    let authority_reload = authority_reload.transpose()?;
     // The desktop publishes signed ACL revisions through this group-restricted
     // local socket. It never receives write access to the daemon cache and the
     // daemon remains the single serialising authority writer.
@@ -2477,7 +2466,9 @@ async fn mount(
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
-    let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
+    let _reload = caps
+        .map(|c| spawn_acl_reload(c, acl_args.acl_once))
+        .transpose()?;
     let store = Arc::new(
         open_workspace_store(cache_dir.clone(), &data_plane, ticket.workspace_id()).await?,
     );
@@ -4430,7 +4421,7 @@ mod tests {
                 "fs.service must pass --acl or the shipped mount enforces nothing"
             );
             assert!(
-                acl.acl_reload_secs > 0,
+                !acl.acl_once,
                 "the shipped mount must re-read its capability list; /var/workspace is mounted once \
                  at boot, so a list read only at mount time can never carry a later grant"
             );

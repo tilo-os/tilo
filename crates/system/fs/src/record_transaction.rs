@@ -330,7 +330,7 @@ impl RecordTransactionJournal {
         }
         let path = entry_path(&self.root, id);
         fs::remove_file(path)?;
-        sync_dir(&self.root);
+        tilo_files::native::atomic::sync_directory(&self.root)?;
         self.entries.remove(&id);
         Ok(())
     }
@@ -395,12 +395,6 @@ fn persist_entry(
 
 fn entry_path(root: &Path, id: Uuid) -> PathBuf {
     root.join(format!("{id}.json"))
-}
-
-fn sync_dir(path: &Path) {
-    if let Ok(directory) = fs::File::open(path) {
-        let _ = directory.sync_all();
-    }
 }
 
 #[derive(Debug, Error)]

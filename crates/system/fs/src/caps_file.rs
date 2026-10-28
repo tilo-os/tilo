@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use collab_types::{CapOverride, Principal};
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
-use crate::file_watch::{ReloadCadence, ReloadTrigger};
+use crate::file_watch::FileChanges;
 use tilo_lock::MutexRecover as _;
 
 /// Identifies a version of the file (so an unchanged file costs one `stat`), including the inode since a rename-over-target producer can collide on length + mtime.
@@ -160,19 +160,20 @@ impl CapabilityFile {
 
 impl CapabilityFile {
     /// Keep the live mount's list current: re-read on every change of the
-    /// file, from the host's file events, and on `cadence.backstop`; poll
-    /// every `cadence.poll` instead if the file cannot be watched
-    /// ([`ReloadTrigger`]). The first read happens at once, so a change
-    /// made between [`Self::load`] and this call is not missed.
-    #[must_use]
-    pub fn spawn_reload(self: Arc<Self>, cadence: ReloadCadence) -> tokio::task::JoinHandle<()> {
-        let mut trigger = ReloadTrigger::for_file(&self.path, cadence);
-        tokio::spawn(async move {
+    /// file, from the host's file events. The first read happens at once, so
+    /// a change made between [`Self::load`] and this call is not missed.
+    ///
+    /// # Errors
+    ///
+    /// The file's directory cannot be watched.
+    pub fn spawn_reload(self: Arc<Self>) -> std::io::Result<tokio::task::JoinHandle<()>> {
+        let mut changes = FileChanges::for_file(&self.path)?;
+        Ok(tokio::spawn(async move {
             loop {
-                trigger.next().await;
+                changes.next().await;
                 self.report(&self.refresh());
             }
-        })
+        }))
     }
 
     fn report(&self, outcome: &Refresh) {
@@ -340,8 +341,7 @@ mod tests {
         }
     }
 
-    /// Waits until `holds` is true. The poll and backstop are an hour away,
-    /// so only the file watch can make it so.
+    /// Waits until `holds` is true, which only the file watch can make so.
     async fn through_the_watch(what: &str, holds: impl Fn() -> bool + Sync) {
         tilo_test_env::within(what, async {
             while !holds() {
@@ -351,27 +351,19 @@ mod tests {
         .await;
     }
 
-    /// #4224. The reloader the daemon runs, with its poll fallback and its
-    /// backstop both an hour away, so only the file watch can deliver a
-    /// change. A revocation and a removal each reach the live mount, and a
+    /// #4224. The reloader the daemon runs delivers each change through the
+    /// file watch. A revocation and a removal each reach the live mount, and a
     /// half-written file still keeps the previous list.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revocation_reaches_the_live_mount_through_the_file_watch_alone() {
-        let hour = std::time::Duration::from_secs(3600);
-        let cadence = ReloadCadence {
-            poll: hour,
-            backstop: hour,
-        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("caps.json");
         write_caps(&path, &[read_grant("/w/docs"), read_grant("/w/plans")]);
         let file = Arc::new(CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads"));
         let handle = file.handle();
-        assert!(
-            ReloadTrigger::for_file(&path, cadence).is_watching(),
-            "the capability list must be watchable here, or this proves nothing"
-        );
-        let reload = Arc::clone(&file).spawn_reload(cadence);
+        let reload = Arc::clone(&file)
+            .spawn_reload()
+            .expect("the capability list is watchable");
         assert!(handle.permits(&ALICE, "/w/plans/b.md", Access::Read));
 
         write_caps(&path, &[read_grant("/w/docs")]);
