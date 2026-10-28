@@ -210,10 +210,12 @@ fn shown(broker: &Broker, provider: &LiveAppActionsProvider) -> Vec<(String, Sho
         doc_root: &automerge::ROOT,
     };
     let app = broker.handle.app_action_broker().expect("live broker");
-    *provider.surface_snapshot.borrow_mut() = Some(LiveAppActionsProvider::build_local_snapshot(
-        &app,
-        &LiveAppActionsProvider::build_scope(&ctx),
-        &provider.build_probe,
+    *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+        LiveAppActionsProvider::build_local_snapshot(
+            &app,
+            &LiveAppActionsProvider::build_scope(&ctx),
+            &provider.build_probe,
+        ),
     ));
     let mut shown: Vec<_> = provider
         .query_page(ctx, None, SearchBudget::PALETTE)
