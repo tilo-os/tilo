@@ -31,9 +31,8 @@ pub(super) fn hosts_on(device: &Device, room: RoomId) -> usize {
         .unwrap_or(0)
 }
 
-/// The dials of its rooms' governors and of their other hosts `device`
-/// made so far.
-fn dials_of(device: &Device) -> (u64, u64) {
+/// How many of `kind` `device`'s network tallied so far.
+fn tallied(device: &Device, kind: &str) -> u64 {
     let (reply, answer) = tokio::sync::oneshot::channel();
     device
         .net()
@@ -41,8 +40,16 @@ fn dials_of(device: &Device) -> (u64, u64) {
         .try_send(NetCmd::WireTally(reply))
         .unwrap();
     let counts = answer.blocking_recv().unwrap().snapshot();
-    let count = |kind| counts.get(kind).copied().unwrap_or(0);
-    (count("NativeGovernorDial"), count("NativeHostDial"))
+    counts.get(kind).copied().unwrap_or(0)
+}
+
+/// The dials of its rooms' governors and of their other hosts `device`
+/// made so far.
+fn dials_of(device: &Device) -> (u64, u64) {
+    (
+        tallied(device, "NativeGovernorDial"),
+        tallied(device, "NativeHostDial"),
+    )
 }
 
 /// Ada's desktop and laptop holding the desktop's workspace "Personal",
@@ -306,4 +313,73 @@ fn with_every_host_out_of_reach_a_member_tries_each_once_a_heartbeat() {
     );
     assert!(governor > 0, "the laptop keeps dialling the governor");
     drop((first, second));
+}
+
+/// The sealed writes `device` holds for `room`'s hosts on disk.
+fn held_on(device: &Device, room: RoomId) -> usize {
+    tilo_network_actor::held_log::HeldLog::new(
+        device.dir.join("peer-sync").join("held-sealed-writes"),
+    )
+    .read(room)
+    .map_or(0, |held| held.len())
+}
+
+/// How many writes to `room` the apps in it are told are not yet synced.
+fn unsynced(room: RoomId) -> u32 {
+    tilo_network_actor::room_sync::unsynced_writes(crate::shell::network::room_topic_id(room))
+}
+
+#[test]
+#[serial_test::serial]
+fn a_write_held_when_the_member_shuts_down_is_sent_and_kept_once_a_host_is_back() {
+    let Ada {
+        relay,
+        mut first,
+        mut second,
+        room,
+        _env,
+        _home,
+        _dir,
+    } = ada(73);
+    first.write_note(room, "before the desktop went off");
+    until(&[&first, &second], "the note on the laptop", || {
+        (second.note(room).as_deref() == Some("before the desktop went off")).then_some(())
+    });
+
+    // The desktop, the room's only host, goes off: the laptop's write is
+    // held in the room's record, and not yet synced.
+    first.go_offline();
+    second.write_note(room, "written while no host was up");
+    until(
+        &[&second],
+        "the laptop to hold its write, not yet synced",
+        || (held_on(&second, room) == 1 && unsynced(room) > 0).then_some(()),
+    );
+
+    // The laptop shuts down and starts again: the write is still held.
+    second.go_offline();
+    second.come_back();
+    assert_eq!(held_on(&second, room), 1, "the write survived the shutdown");
+    until(
+        &[&second],
+        "the laptop to say the write is not yet synced",
+        || (unsynced(room) > 0).then_some(()),
+    );
+
+    // The desktop comes back: the laptop sends the write, the desktop keeps
+    // it, and it is synced.
+    first.come_back();
+    second.reach(&first);
+    until_caught_up(
+        &[&first, &second],
+        "the desktop to keep the laptop's write",
+        room,
+        || {
+            (first.note(room).as_deref() == Some("written while no host was up")
+                && held_on(&second, room) == 0
+                && unsynced(room) == 0)
+                .then_some(())
+        },
+    );
+    drop((first, second, relay));
 }

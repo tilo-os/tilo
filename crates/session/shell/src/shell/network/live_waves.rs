@@ -9,6 +9,11 @@ impl ShellNetwork {
     /// workspace host's live plane, or the room's own topic where no host
     /// reaches it. Only where its people may see that this person is here;
     /// returns whether it went out.
+    ///
+    /// A live frame is carried to the devices on the host's live plane now,
+    /// and kept for nobody: a wave at a device no host of the room has on
+    /// its live plane would reach no one. It does not go, the caller is
+    /// told so, and waving at them again is not held back.
     pub fn publish_wave(&self, cluster_id: &str, target: &str) -> bool {
         let Some(room) = RoomId::parse(cluster_id).filter(|room| {
             !room.is_nil()
@@ -22,6 +27,19 @@ impl ShellNetwork {
             .iter()
             .map(|d| *d.as_bytes())
             .collect();
+        let ws = room_topic_id(room);
+        let hosted = self.has_live_plane(cluster_id);
+        let Some(device) = self
+            .live_waves
+            .lock()
+            .ok()
+            .and_then(|waves| waves.device_of(target, &others))
+        else {
+            return false;
+        };
+        if hosted && !self.on_live_plane(ws, &device) {
+            return false;
+        }
         let Some(wave) = self
             .live_waves
             .lock()
@@ -30,7 +48,6 @@ impl ShellNetwork {
         else {
             return false;
         };
-        let ws = room_topic_id(room);
         let desktop = tilo_relay_protocol::live::LiveRecord {
             app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
@@ -43,7 +60,6 @@ impl ShellNetwork {
             },
         );
         // Every frame goes, in order: the wave rides the last.
-        let hosted = self.has_live_plane(cluster_id);
         let mut sent = false;
         for frame in frames
             .iter()
@@ -100,6 +116,19 @@ impl ShellNetwork {
             sent = self.send_live(ws, hosted, frame);
         }
         sent
+    }
+
+    /// Whether a host of the room on topic `ws` this session reaches says
+    /// `device` is on its live plane: where a live frame reaches it.
+    fn on_live_plane(&self, ws: u64, device: &[u8; 32]) -> bool {
+        let Ok(device) = iroh::EndpointId::from_bytes(device) else {
+            return false;
+        };
+        self.host_room_members.lock().is_ok_and(|members| {
+            members
+                .iter()
+                .any(|(topic, _, member)| *topic == ws && *member == device)
+        })
     }
 
     /// Send sealed live `frame` of the room on topic `ws`: on the workspace

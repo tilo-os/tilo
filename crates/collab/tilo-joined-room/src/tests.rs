@@ -149,6 +149,7 @@ fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
 #[test]
 fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     let joined = enrolled();
+    assert_eq!(joined.owner.unadmitted_writes(joined.room).unwrap(), 0);
     let request = edit(&joined.owner, joined.room, joined.now);
     let receipt = joined
         .owner
@@ -170,6 +171,11 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
             .unwrap()
     };
     assert_eq!(outgoing(&joined.owner), 1);
+    assert_eq!(
+        joined.owner.unadmitted_writes(joined.room).unwrap(),
+        1,
+        "the write waits for the governor's admission"
+    );
     drop(joined.owner);
     assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
 }
