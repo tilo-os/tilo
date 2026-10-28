@@ -203,7 +203,19 @@ fn an_edit_answers_with_the_blocks_it_changed() {
 /// expects without the generated ids: the `^id` an edit answers with, and
 /// the `{#id}` a document answers with.
 fn without_ids(text: &str) -> String {
-    let marked = without_marked_ids(text);
+    // An edit's answer ends each changed line with the block's id; a page's
+    // line is the block's text as it is, so its trailing `^` is no anchor.
+    let marked: String = text
+        .lines()
+        .map(|line| {
+            if line.ends_with(" ^") {
+                line.trim_end_matches(" ^")
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut out = String::new();
     let mut rest = marked.as_str();
     while let Some((before, tag)) = rest.split_once("{#") {
@@ -211,7 +223,7 @@ fn without_ids(text: &str) -> String {
         let (_, after) = tag.split_once('}').expect("a closed tag");
         rest = after;
     }
-    out.push_str(rest);
+    out.push_str(rest.replace("  |", " |").as_str());
     out.lines()
         .map(str::trim_end)
         .collect::<Vec<_>>()
@@ -235,7 +247,7 @@ fn without_marked_ids(text: &str) -> String {
                 );
                 rest = after;
             }
-            out.push_str(rest);
+            out.push_str(rest.trim_end_matches('^'));
             out.trim_end().to_owned()
         })
         .collect::<Vec<_>>()
@@ -324,7 +336,9 @@ fn page_of(blocks: &[(String, String)]) -> String {
         }
         let mut run: Vec<&str> = vec![text];
         while let Some((next_kind, next)) = blocks.get(index) {
-            if next_kind != "cell" {
+            // The block after a table's cells is the empty one the page shows
+            // under its last row.
+            if next_kind != "cell" || next.trim().is_empty() {
                 break;
             }
             run.push(next);
