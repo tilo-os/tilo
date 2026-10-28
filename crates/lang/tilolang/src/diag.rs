@@ -102,6 +102,60 @@ impl Diagnostic {
     }
 }
 
+/// The candidate a mistyped `name` most likely meant: the closest by edit distance, when it is
+/// close enough to be a slip (at most a third of the name, and at least one edit allowed).
+#[must_use]
+pub fn did_you_mean<'a>(
+    name: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let limit = (name.chars().count() / 3).max(1);
+    candidates
+        .into_iter()
+        .filter(|c| *c != name)
+        .map(|c| (edit_distance(&name.to_lowercase(), &c.to_lowercase()), c))
+        .filter(|(d, _)| *d <= limit)
+        .min_by_key(|(d, c)| (*d, *c))
+        .map(|(_, c)| c)
+}
+
+/// `"; did you mean `x`?"` for a mistyped `name`, or nothing when no candidate is close.
+#[must_use]
+pub fn suggestion<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
+    did_you_mean(name, candidates).map_or_else(String::new, |c| format!("; did you mean `{c}`?"))
+}
+
+/// Edits between `a` and `b`: insertions, deletions, substitutions and swaps of two neighbours
+/// (`titel` is one edit from `title`).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let at = |row: &[usize], k: usize| row.get(k).copied().unwrap_or(usize::MAX / 2);
+    // Two rows back, one row back, as the distance table fills row by row.
+    let mut before: Vec<usize> = Vec::new();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = Vec::with_capacity(b.len().saturating_add(1));
+        row.push(i.saturating_add(1));
+        for (j, cb) in b.iter().enumerate() {
+            let mut best = at(&prev, j.saturating_add(1))
+                .saturating_add(1)
+                .min(at(&row, j).saturating_add(1))
+                .min(at(&prev, j).saturating_add(usize::from(ca != cb)));
+            let swapped = i > 0
+                && j > 0
+                && a.get(i.saturating_sub(1)) == Some(cb)
+                && b.get(j.saturating_sub(1)) == Some(ca);
+            if swapped {
+                best = best.min(at(&before, j.saturating_sub(1)).saturating_add(1));
+            }
+            row.push(best);
+        }
+        before = std::mem::replace(&mut prev, row);
+    }
+    prev.last().copied().unwrap_or(0)
+}
+
 /// Locates every diagnostic and orders them by position.
 pub(crate) fn finish(mut diags: Vec<Diagnostic>, src: &str) -> Vec<Diagnostic> {
     for d in &mut diags {
