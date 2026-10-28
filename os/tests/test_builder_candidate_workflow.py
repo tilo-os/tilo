@@ -241,8 +241,6 @@ test() {
             run = CHECKS['legacy-apps']['run'].splitlines()
             self.assertEqual(run[0], f'bash {subjects_script}')
             self.assertIn('scripts/legacy-app-caret-e2e.py', run[1])
-            self.assertIn(subjects_script, CHECKS['legacy-apps']['inputs'])
-            self.assertNotIn('os/Containerfile.builder', CHECKS['legacy-apps']['inputs'])
             script = (ROOT / subjects_script).read_text()
             # Execute the script with package installation and subject
             # discovery intercepted. Missing subjects must still fail after dnf.

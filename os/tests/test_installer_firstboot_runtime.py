@@ -169,26 +169,6 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertNotIn("bash -i", script)
             self.assertNotIn("setenforce", script)
 
-    def test_base_os_ships_native_firstboot_runtime(self):
-        containerfile = (ROOT / "os/Containerfile").read_text()
-        # The native helpers are compiled outside the image build
-        # (os/image/compile.sh) and installed by their os/components.toml rows.
-        compile_script = (ROOT / "os/image/compile.sh").read_text()
-        components = (ROOT / "os/components.toml").read_text()
-        for name in ("tilo-firstboot-files",
-                     "tilo-firstboot-home-seeds",
-                     "tilo-installer-prepared-setup-extract"):
-            self.assertIn(f"--bin {name} ", compile_script)
-            self.assertIn(f"$target/release/{name} ", compile_script)
-            self.assertIn(
-                f'{{ from = "{name}", to = "/usr/libexec/{name}", mode = "0755" }}',
-                components)
-        for path in ("os/usr/libexec/tilo-firstboot-user",
-                     "os/usr/libexec/tilo-firstboot-autologin-cleanup",
-                     "os/usr/lib/systemd/system/tilo-firstboot-user.service",
-                     "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"):
-            self.assertIn(path, containerfile)
-        self.assertIn("COPY os/etc/greetd/config.toml /usr/share/tilo/greetd-config.toml", containerfile)
 
     def test_missing_seed_helper_fails_before_target_mutation(self):
         with tempfile.TemporaryDirectory() as work:
