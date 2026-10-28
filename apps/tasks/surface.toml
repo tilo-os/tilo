@@ -15,6 +15,7 @@ fields = [
   { path = "issues.*.model.profile", type = "String" },
   { path = "issues.*.model.model", type = "String" },
   { path = "issues.*.subject", type = "Option<serde_json::Value>", readonly = true },
+  { path = "issues.*.quick", type = "bool", readonly = true },
   { path = "issues.*.labels", type = "Set<String>" },
   { path = "issues.*.parent", type = "Option<Id>", readonly = true },
   { path = "issues.*.links", type = "Collection<Link>", stored = "collection" },
@@ -72,6 +73,13 @@ fields = [
   { path = "issues.*.run.confirmation.edits", type = "serde_json::Value" },
   { path = "issues.*.run.confirmation.reason", type = "String" },
   { path = "issues.*.run.confirmation.answered_by", type = "String" },
+  { path = "areas", type = "Collection<TrackerArea>", stored = "collection", unit = true },
+  { path = "areas.*.id", type = "Id", readonly = true },
+  { path = "areas.*.name", type = "String", label = true },
+  { path = "areas.*.kind", type = "Kind", readonly = true },
+  { path = "areas.*.people", type = "Collection<Person>", stored = "collection" },
+  { path = "areas.*.people.*.name", type = "String", label = true, readonly = true },
+  { path = "areas.*.people.*.role", type = "String", readonly = true },
   { path = "numbers", type = "Counter", readonly = true },
   { path = "imported", type = "Set<String>", readonly = true },
 ]
@@ -86,6 +94,52 @@ params = [
   { name = "body", required = false, schema = { type = ["string", "null"] } },
   { name = "status", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
   { name = "assignee", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "create-area"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] }] } },
+]
+
+[[resources.verbs]]
+id = "rename-area"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-kind"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] } },
+]
+
+[[resources.verbs]]
+id = "involve"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "role", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-person"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -126,6 +180,7 @@ params = [
   { name = "agent", required = true, schema = { type = "string" } },
   { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
   { name = "subject", required = false, schema = {} },
+  { name = "quick", required = false, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
