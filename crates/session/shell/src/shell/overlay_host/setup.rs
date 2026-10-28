@@ -97,28 +97,6 @@ impl ShellOverlayHost {
         !self.search_registry.indexes_settling(args)
     }
 
-    /// Move the focused workspace's old tasks into its tracker, once.
-    pub(super) fn import_room_tasks(&mut self) {
-        let (Some(tracker), Some(chrome)) = (&self.tracker, &self.chrome) else {
-            return;
-        };
-        let Some((room, person)) = ({
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop
-                .active_workspace()
-                .map(|workspace| (workspace.room(), state.active_local_user_in(&tree)))
-        }) else {
-            return;
-        };
-        let triggers = &self.shortcut_triggers;
-        self.task_imports.pump(room, &person, tracker, || {
-            triggers
-                .broker()
-                .map(crate::shell::certified_action_session::ActionSessionSource::new)
-        });
-    }
-
     /// The rooms' trackers, for the composer to follow the runs it asks for.
     pub(crate) fn attach_tracker(
         &mut self,
@@ -646,7 +624,6 @@ impl ShellOverlayHost {
             app_sheet_changed: false,
             agent_actions: HashMap::new(),
             tracker: None,
-            task_imports: task_import::TaskImports::default(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,
             bar_popovers: bar_popovers::BarPopovers::default(),
