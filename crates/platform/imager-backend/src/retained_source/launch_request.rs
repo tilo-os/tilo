@@ -34,7 +34,7 @@ impl LaunchRequest {
         }
         let value: WireRequest = serde_json::from_slice(bytes).map_err(io::Error::other)?;
         if value.schema != 1
-            || !uuid(&value.operation_id)
+            || !crate::is_operation_id(&value.operation_id)
             || !uuid(&value.room)
             || !label(&value.app_id)
             || !label(&value.resource_record)

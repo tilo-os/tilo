@@ -88,11 +88,7 @@ impl RestartStorage {
     }
     pub fn create_operation(&self, operation: &str) -> io::Result<()> {
         // Restart operations have exactly one canonical UUID component.
-        if uuid::Uuid::parse_str(operation)
-            .map_err(|_| invalid())?
-            .to_string()
-            != operation
-        {
+        if !crate::is_operation_id(operation) {
             return Err(invalid());
         }
         let child = self.pin.create_child(OsStr::new(operation))?;

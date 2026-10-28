@@ -93,8 +93,7 @@ impl AuthenticatedCopyReceive {
         let declaration = channel.declaration();
         let payload: CopyPayload =
             serde_json::from_slice(&declaration.payload).map_err(io::Error::other)?;
-        let attempt = uuid::Uuid::parse_str(&payload.attempt).map_err(io::Error::other)?;
-        if attempt.is_nil() || attempt.to_string() != payload.attempt {
+        if !crate::is_operation_id(&payload.attempt) {
             return Err(refused());
         }
         let operation = declaration.operation.clone();

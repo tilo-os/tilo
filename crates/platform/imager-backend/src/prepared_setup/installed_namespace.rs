@@ -22,10 +22,7 @@ fn root() -> io::Result<()> {
     Ok(())
 }
 pub fn operation(value: &str) -> io::Result<()> {
-    if uuid::Uuid::parse_str(value)
-        .ok()
-        .is_none_or(|id| id.to_string() != value)
-    {
+    if !crate::is_operation_id(value) {
         return Err(invalid());
     }
     Ok(())

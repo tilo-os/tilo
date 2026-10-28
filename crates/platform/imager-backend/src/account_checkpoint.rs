@@ -25,11 +25,7 @@ impl Receipt {
     pub fn validate(&self) -> io::Result<()> {
         let name = self.filename.strip_suffix(".sealed").ok_or_else(invalid)?;
         if self.schema != 1
-            || uuid::Uuid::parse_str(name).is_err()
-            || format!(
-                "{}.sealed",
-                uuid::Uuid::parse_str(name).map_err(|_| invalid())?
-            ) != self.filename
+            || !crate::is_operation_id(name)
             || self.sealed_bytes == 0
             || self.sealed_bytes > SEALED_LIMIT
             || self.accounts > 64
@@ -345,11 +341,7 @@ struct Pointer {
 }
 impl Pointer {
     fn validate(&self) -> io::Result<()> {
-        if uuid::Uuid::parse_str(&self.operation)
-            .map_err(|_| invalid())?
-            .to_string()
-            != self.operation
-        {
+        if !crate::is_operation_id(&self.operation) {
             return Err(invalid());
         }
         if self.current_device.is_some()

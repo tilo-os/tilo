@@ -82,11 +82,7 @@ fn failure(message: &'static str) -> io::Error {
 }
 
 fn operation(value: &str) -> io::Result<()> {
-    if uuid::Uuid::parse_str(value)
-        .map_err(io::Error::other)?
-        .to_string()
-        != value
-    {
+    if !crate::is_operation_id(value) {
         return Err(failure("capture operation must be a canonical UUID"));
     }
     Ok(())

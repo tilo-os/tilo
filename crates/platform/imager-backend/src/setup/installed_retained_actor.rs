@@ -240,9 +240,7 @@ impl ReviewedInstalledRetainedLaunch {
         if !request
             .resource_record()
             .strip_prefix("selected-open-v2:edit-in-parent:")
-            .is_some_and(|value| {
-                uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
-            })
+            .is_some_and(crate::is_operation_id)
         {
             return Err(refused());
         }
@@ -607,9 +605,7 @@ impl InstalledRetainedLaunchInput {
             .resource_record
             .strip_prefix("selected-open-v2:edit-in-parent:")
             .ok_or_else(refused)?;
-        let parsed = uuid::Uuid::parse_str(id).map_err(io::Error::other)?;
-        if parsed.is_nil()
-            || parsed.to_string() != id
+        if !crate::is_operation_id(id)
             || binding.room
                 != runtime_collab::retained_person::personal_room(&self.person_public_key())
         {

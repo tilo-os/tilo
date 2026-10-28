@@ -350,8 +350,7 @@ pub(super) fn review_declared_source(
         || !selected.completed_setup.valid()
         || selected.payload_inode()? == 0
         || selected.completed_inode == 0
-        || !uuid::Uuid::parse_str(&selected.attempt)
-            .is_ok_and(|id| !id.is_nil() && id.to_string() == selected.attempt)
+        || !crate::is_operation_id(&selected.attempt)
         || selected
             .home
             .as_ref()

@@ -207,10 +207,10 @@ fn output_admission(
     uid: u32,
 ) -> io::Result<[u8; 64]> {
     use std::os::unix::fs::MetadataExt;
-    let operation_id = uuid::Uuid::parse_str(operation).map_err(io::Error::other)?;
-    if operation_id.to_string() != operation {
+    if !crate::is_operation_id(operation) {
         return Err(failure("capture operation must be a canonical UUID"));
     }
+    let operation_id = uuid::Uuid::parse_str(operation).map_err(io::Error::other)?;
     if contains(source, output)? || contains(output, source)? {
         return Err(failure("capture output overlaps immutable home"));
     }

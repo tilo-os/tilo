@@ -147,11 +147,7 @@ struct Pointer {
 }
 impl Pointer {
     fn validate(&self) -> io::Result<()> {
-        if uuid::Uuid::parse_str(&self.operation)
-            .map_err(|_| invalid())?
-            .to_string()
-            != self.operation
-        {
+        if !imager_backend::is_operation_id(&self.operation) {
             return Err(invalid());
         }
         if self.current_device.is_some()

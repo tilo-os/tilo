@@ -50,8 +50,7 @@ struct Request {
 impl Request {
     fn validate(&self) -> io::Result<()> {
         if self.schema != 1
-            || !uuid::Uuid::parse_str(&self.operation)
-                .is_ok_and(|id| !id.is_nil() && id.to_string() == self.operation)
+            || !crate::is_operation_id(&self.operation)
             || !target_eligible(&self.target, self.purpose)
             || self.target.name.len() > 256
             || self.target.model.len() > 256

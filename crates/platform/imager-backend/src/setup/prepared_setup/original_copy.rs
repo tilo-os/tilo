@@ -44,8 +44,7 @@ impl OriginalCopyDeclaration {
     }
     pub fn validate(&self) -> io::Result<()> {
         self.source.validate()?;
-        let operation = uuid::Uuid::parse_str(&self.source.operation_id).map_err(|_| invalid())?;
-        if operation.is_nil() || operation.to_string() != self.source.operation_id {
+        if !crate::is_operation_id(&self.source.operation_id) {
             return Err(invalid());
         }
         if self.source.categories.flatpak

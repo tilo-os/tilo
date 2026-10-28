@@ -58,8 +58,7 @@ impl InstalledCopyScratch {
         let store = journal.store();
         let source = journal.source();
         let attempt = journal.attempt();
-        if !uuid::Uuid::parse_str(attempt).is_ok_and(|id| !id.is_nil() && id.to_string() == attempt)
-        {
+        if !crate::is_operation_id(attempt) {
             return Err(refused("Installed scratch attempt is not canonical"));
         }
         let scope = source.output_scratch_scope(cancel)?;
