@@ -36,7 +36,7 @@
 # move the pin to the newest `dev-<commit>` whose commit has today's builder inputs
 # (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-builder:dev-<commit> | sha256sum`).
 # The test family expects what the builder provides, such as the Chromium RPM at $CHROME.
-image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:a660798f8d18ef28ca738292c5a5520bbc8ad3c64ca45de2ced317dd9c2476ae"
 inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
 
 # A check that needs a particular node names it in `requires`: `arch=x86_64`, `os=macos`, a
