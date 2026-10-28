@@ -13,13 +13,13 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/richtext.tl");
 
-    struct Board {
+    struct Room {
         rt: Runtime,
         app: App,
         board: ResourceRef,
     }
 
-    impl Board {
+    impl Room {
         fn on(store: &AmStore, board: Option<&ResourceRef>) -> Self {
             // Every replica runs the same compiled package, as every device does.
             thread_local! {
@@ -77,7 +77,7 @@ mod cases {
 
     #[test]
     fn plain_text_is_paragraphs_and_the_excerpt_is_its_first_line_with_text() {
-        let b = Board::on(&AmStore::new(), None);
+        let b = Room::on(&AmStore::new(), None);
         let post = b.say("\nHello there\nsecond line");
         assert_eq!(b.body(&post).plain_text(), "\nHello there\nsecond line");
         assert_eq!(
@@ -89,7 +89,7 @@ mod cases {
 
     #[test]
     fn an_empty_message_is_not_posted() {
-        let b = Board::on(&AmStore::new(), None);
+        let b = Room::on(&AmStore::new(), None);
         let count = || match b.done("post_count", vec![Value::resource(&b.board)]) {
             Value::Int(i) => i,
             Value::Opt(Some(v)) => v.as_int().unwrap(),
@@ -112,7 +112,7 @@ mod cases {
 
     #[test]
     fn references_to_a_person_and_a_resource_are_marked_runs() {
-        let b = Board::on(&AmStore::new(), None);
+        let b = Room::on(&AmStore::new(), None);
         let task = b.task("Fix the build");
         let post = returned_ref(b.call(
             "take",
@@ -144,7 +144,7 @@ mod cases {
                     .char_indices()
                     .nth(m.end)
                     .map_or(block.text.len(), |(i, _)| i);
-                &block.text[start..end]
+                block.text.get(start..end).unwrap_or_default()
             })
             .collect();
         assert_eq!(runs, ["@me", "Fix the build"]);
@@ -155,11 +155,11 @@ mod cases {
     #[test]
     fn two_writers_edits_with_references_merge_as_splices_and_marks() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
-        let a = Board::on(&sa, None);
+        let a = Room::on(&sa, None);
         let task = a.task("Ship it");
         let post = a.say("Plan for today");
         sa.sync_with(&mut sb).unwrap();
-        let b = Board::on(&sb, Some(&a.board));
+        let b = Room::on(&sb, Some(&a.board));
         let first_id = a.body(&post).blocks[0].id.clone();
         assert!(!first_id.is_empty());
         assert_eq!(b.body(&post).plain_text(), "Plan for today");
@@ -189,11 +189,11 @@ mod cases {
     #[test]
     fn concurrent_typing_in_one_paragraph_keeps_both() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
-        let a = Board::on(&sa, None);
+        let a = Room::on(&sa, None);
         let post = a.say("Hello");
         sa.sync_with(&mut sb).unwrap();
-        let b = Board::on(&sb, Some(&a.board));
-        let edit = |w: &Board, text: &str| {
+        let b = Room::on(&sb, Some(&a.board));
+        let edit = |w: &Room, text: &str| {
             w.call(
                 "edit",
                 vec![
@@ -211,7 +211,7 @@ mod cases {
 
     #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
-        let b = Board::on(&AmStore::new(), None);
+        let b = Room::on(&AmStore::new(), None);
         let post = b.say("Intro\nDetails\nOutro");
         let body = b.body(&post);
         assert_eq!(
