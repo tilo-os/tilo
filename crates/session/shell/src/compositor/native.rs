@@ -9530,7 +9530,7 @@ pub fn run() {
     // A valid identity does not acknowledge or consume an installed setup.
     // Keep trusted first-use until its actual prepared/import/migration owner
     // has observed the necessary completions.
-    let prepared_pending = crate::onboarding_prepared::session_home()
+    let prepared_pending = crate::onboarding::session_home()
         .is_some_and(|home| crate::onboarding_prepared::session_pending(&home));
     // `main` probes the existing schema-2 record before entering the
     // compositor. If Secret Service is locked, that probe must not terminate
@@ -10144,7 +10144,7 @@ pub fn run() {
     if let Some(bridge) = frame_builder.host().status_bridge() {
         bridge.wake_on_changes(Arc::clone(&session_wake));
     }
-    let mut retained_files = crate::onboarding_prepared::session_home()
+    let mut retained_files = crate::onboarding::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
     state.set_share_encode_wake(Arc::clone(&session_wake));

@@ -23,10 +23,14 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use smithay::utils::SERIAL_COUNTER;
+#[cfg(target_os = "linux")]
 use smithay::wayland::shell::PingError;
+#[cfg(target_os = "linux")]
 use smithay::wayland::shell::xdg::ShellClient;
 
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::backend::ClientId;
 
 /// How long a ping may stay unanswered before the app counts as not
@@ -109,15 +113,18 @@ impl Watch {
 }
 
 /// The compositor's pings in flight, one entry per client it pinged.
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct Watches(Vec<ClientWatch>);
 
+#[cfg(target_os = "linux")]
 struct ClientWatch {
     client: ClientId,
     watch: Option<Watch>,
     last_sent: Instant,
 }
 
+#[cfg(target_os = "linux")]
 impl Watches {
     /// Input reached `client` (whose connection is `id`), at `pongs`
     /// answers: ping it, unless a ping is already out or the last went out
