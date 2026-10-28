@@ -424,9 +424,7 @@ impl DesktopSurface {
             }
         }
         self.search.open(data);
-        self.search
-            .palette_mut()
-            .set_platform_conventions(self.platform);
+        self.search.set_platform_conventions(self.platform);
         self.new_tab_into = None;
         self.search_window = None;
         self.search_owners = owners;
@@ -452,9 +450,7 @@ impl DesktopSurface {
             ..SearchData::default()
         };
         self.search.open(data);
-        self.search
-            .palette_mut()
-            .set_platform_conventions(self.platform);
+        self.search.set_platform_conventions(self.platform);
         self.search.set_query("");
         self.new_tab_into = into;
         self.search_window = None;
@@ -503,9 +499,7 @@ impl DesktopSurface {
             ..SearchData::default()
         };
         self.search.open(data);
-        self.search
-            .palette_mut()
-            .set_platform_conventions(self.platform);
+        self.search.set_platform_conventions(self.platform);
         self.search
             .set_query(request.query.as_deref().unwrap_or_default());
         self.new_tab_into = None;
@@ -543,8 +537,10 @@ impl DesktopSurface {
             self.structure_dirty |= closed || refreshed;
         }
         if (self.search_window.is_some() || !self.search_owners.is_empty())
-            && let Some(invocation) =
-                ui::widget::controls::take_control_invocation(self.search.palette_mut())
+            && let Some(invocation) = self
+                .search
+                .palette_mut()
+                .and_then(ui::widget::controls::take_control_invocation)
         {
             match self.search_window {
                 Some((strip, group)) => self.run_in_window(strip, group, invocation),
@@ -713,8 +709,7 @@ impl DesktopSurface {
         ) && !self
             .search
             .palette()
-            .get_rect()
-            .contains(self.search_pointer);
+            .is_some_and(|palette| palette.get_rect().contains(self.search_pointer));
         if outside_press || is_search_chord(event, modifiers, self.platform) {
             self.close_search();
         } else {
@@ -723,9 +718,9 @@ impl DesktopSurface {
             }
             let path = ctx.path.clone();
             let node_id = ctx.node_id;
-            self.search
-                .palette_mut()
-                .handle_event(event, &mut ctx.reborrow(&path, node_id));
+            if let Some(palette) = self.search.palette_mut() {
+                palette.handle_event(event, &mut ctx.reborrow(&path, node_id));
+            }
         }
         self.follow_search();
         true
@@ -746,15 +741,15 @@ impl DesktopSurface {
         // The desktop's own scrim, never a literal fill: the same dim the
         // shell lays behind its palette, in the theme's hue and strength.
         ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
-        self.search
-            .palette_mut()
-            .draw(scene, transform, text, theme, presence);
+        if let Some(palette) = self.search.palette_mut() {
+            palette.draw(scene, transform, text, theme, presence);
+        }
     }
 
     /// Where the open palette's card stands.
     #[cfg(test)]
     pub(super) fn search_palette_rect(&self) -> Rect {
-        self.search.palette().get_rect()
+        self.search.palette().map_or(Rect::ZERO, Widget::get_rect)
     }
 
     /// The window a search over one window (`search_window`) stands over,
@@ -789,15 +784,21 @@ impl DesktopSurface {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> Option<NodeId> {
+        // Search's code is asked for as the desktop first lays out, so it
+        // is in by the time someone searches; search asked for before
+        // then opens now.
+        self.structure_dirty |= self.search.adopt();
         if !self.search.is_open() {
             return None;
         }
         let surface = self.rect;
-        let palette = self.search.palette_mut();
-        palette
+        self.search
             .set_max_width((surface.width() > 0.0).then(|| surface.width() - 2.0 * PALETTE_EDGE));
-        let node = palette.build_layout(taffy, theme, node_map);
-        let (width, _) = palette.desired_size();
+        let node = self
+            .search
+            .palette_mut()?
+            .build_layout(taffy, theme, node_map);
+        let (width, _) = self.search.desired_size();
         let mut style = taffy.style(node).cloned().unwrap_or_default();
         style.position = ui::taffy::Position::Absolute;
         if let Some(window) = self.searched_window_rect() {
