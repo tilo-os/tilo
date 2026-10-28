@@ -11,13 +11,10 @@
 //! every attribution that still refers to content a room holds, asked through
 //! [`ContentHolds`], and drops the ones whose content no room holds any more.
 //!
-//! A put is answered only once its line is durable, and a line staged before
-//! a failed barrier may or may not be on disk. An appended line therefore
-//! names [`UNCONFIRMED_AT`] rather than the time its put was decided at: a
-//! store opened after a crash reads such a line as one it cannot confirm and
-//! drops its attribution, and the next compaction writes the puts it keeps
-//! with their own times. Keeping the one snapshot line's worth of such puts
-//! is bounded by the same rule that bounds the file.
+//! A put is answered only once its line is durable, so an appended line is an
+//! attribution whose put was answered. A line a failed write left half-made
+//! has no newline: a store opened after it reads only up to the last complete
+//! line and writes that file whole with its next put.
 
 use std::fs::File;
 use std::io::{Read, Seek as _, SeekFrom};
@@ -50,12 +47,6 @@ pub(crate) trait ContentHolds {
     fn holds(&mut self, room: &str, hash: &str) -> bool;
 }
 
-/// The time an appended line carries. Appended lines are the puts written
-/// since the last compaction, each of which was answered only once durable,
-/// and the one line possibly on disk without having been is dropped by
-/// [`ContentPutsStore::read`].
-const UNCONFIRMED_AT: u64 = u64::MAX;
-
 /// The file's first line: the attributions that still mattered when the file
 /// was last compacted.
 #[derive(Serialize, Deserialize)]
@@ -80,6 +71,9 @@ const VERSION: u32 = 1;
 pub(super) struct ContentPutsStore {
     /// The snapshot line, as last compacted.
     snapshot: Vec<u8>,
+    /// The puts appended after it, which a compaction folds into the snapshot
+    /// so that it keeps the ones a room still holds.
+    appended: Vec<ContentPutRecord>,
     /// Length of the snapshot plus every line appended after it, as staged.
     len: u64,
 }
@@ -95,11 +89,7 @@ impl ContentPutsStore {
             Ok(file) => file,
             // Nothing put yet: the first put finds nothing to compact.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Self {
-                    snapshot: Vec::new(),
-                    len: 0,
-                }
-                .empty();
+                return Self::empty();
             }
             Err(_) => return Err("content put attribution unreadable".into()),
         };
@@ -130,7 +120,7 @@ impl ContentPutsStore {
         let bytes = &bytes[..complete];
         // The first line is the snapshot once the file was compacted; a file
         // whose writes all predate that holds one bare put per line.
-        let (snapshot_len, mut puts) = match bytes.starts_with(b"{\"version\"") {
+        let (snapshot_len, snapshot_puts) = match bytes.starts_with(b"{\"version\"") {
             true => {
                 let line = bytes
                     .split_inclusive(|byte| *byte == b'\n')
@@ -146,6 +136,7 @@ impl ContentPutsStore {
             false => (0, Vec::new()),
         };
         let compacted = snapshot_len != 0;
+        let mut appended = Vec::new();
         for line in bytes[snapshot_len..].split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
@@ -162,19 +153,15 @@ impl ContentPutsStore {
                 false => serde_json::from_slice(line)
                     .map_err(|_| "content put attribution is corrupt or unsupported")?,
             };
-            // A line written under a barrier that may have failed: whether its
-            // put was answered cannot be told, so it is not kept.
-            if put.at != UNCONFIRMED_AT {
-                puts.push(put);
-            }
+            appended.push(put);
         }
         if !compacted {
-            return Self::of(&puts);
+            return Self::of(&appended);
         }
-        let snapshot = bytes[..snapshot_len].to_vec();
         Ok(Self {
+            snapshot: bytes[..snapshot_len].to_vec(),
+            appended,
             len: complete as u64,
-            snapshot,
         })
     }
 
@@ -184,13 +171,13 @@ impl ContentPutsStore {
         Ok(Self {
             len: snapshot.len() as u64,
             snapshot,
+            appended: Vec::new(),
         })
     }
 
     /// The store with the empty snapshot, as the first put finds it.
-    fn empty(mut self) -> Result<Self, String> {
-        self.snapshot = snapshot_of(&[])?;
-        Ok(self)
+    fn empty() -> Result<Self, String> {
+        Self::of(&[])
     }
 
     /// Whether a line of `bytes` is appended rather than compacted: the
@@ -204,7 +191,8 @@ impl ContentPutsStore {
         appended <= self.snapshot.len() as u64
             && self.len.saturating_add(bytes) <= InvocationJournal::MAX_BYTES
     }
-    /// The attributions the snapshot holds.
+    /// Every attribution the file holds: the snapshot's, then those appended
+    /// after it.
     fn held(&self) -> Result<Vec<ContentPutRecord>, String> {
         let mut kept = Vec::new();
         for line in self.snapshot.split(|byte| *byte == b'\n') {
@@ -215,33 +203,38 @@ impl ContentPutsStore {
                 .map_err(|_| "content put attribution is corrupt or unsupported")?;
             kept.extend(snapshot.puts);
         }
+        for put in &self.appended {
+            match kept
+                .iter_mut()
+                .find(|kept| kept.room == put.room && kept.hash == put.hash)
+            {
+                Some(kept) => kept.clone_from(put),
+                None => kept.push(put.clone()),
+            }
+        }
         Ok(kept)
     }
 
     /// The write `record` needs: one appended line, or a compaction of every
-    /// attribution a room still holds, this one included. Answers what the
-    /// file holds once that write is durable.
+    /// attribution a room still holds, this one included.
     fn put(
         &mut self,
         record: &ContentPutRecord,
         holds: &mut dyn ContentHolds,
-    ) -> Result<(Staged, Vec<ContentPutRecord>), String> {
+    ) -> Result<Staged, String> {
         let mut line = serde_json::to_vec(&Appended {
             version: VERSION,
-            put: ContentPutRecord {
-                at: UNCONFIRMED_AT,
-                ..record.clone()
-            },
+            put: record.clone(),
         })
         .map_err(|_| "content put attribution encoding failed")?;
         line.push(b'\n');
         if self.takes(line.len() as u64) {
             self.len = self.len.saturating_add(line.len() as u64);
-            let write = Staged::Beside {
+            self.appended.push(record.clone());
+            return Ok(Staged::Beside {
                 name: CONTENT_PUTS_FILE,
                 line,
-            };
-            return Ok((write, Vec::new()));
+            });
         }
         let mut kept: Vec<ContentPutRecord> = self
             .held()?
@@ -266,15 +259,12 @@ impl ContentPutsStore {
             return Err("content put attribution storage limit reached".into());
         }
         self.len = snapshot.len() as u64;
-        self.snapshot.clone_from(&snapshot);
-        let held = kept.clone();
-        Ok((
-            Staged::Replace {
-                name: CONTENT_PUTS_FILE,
-                bytes: snapshot,
-            },
-            held,
-        ))
+        self.snapshot = snapshot.clone();
+        self.appended.clear();
+        Ok(Staged::Replace {
+            name: CONTENT_PUTS_FILE,
+            bytes: snapshot,
+        })
     }
 }
 
@@ -311,6 +301,6 @@ impl InvocationJournal {
         // not this write is made: a compaction it makes is the file it
         // describes, and a line that failed is one the next put bumps.
         self.content_puts = Some(store);
-        self.stage(staged?.0, Injected::default())
+        self.stage(staged?, Injected::default())
     }
 }
