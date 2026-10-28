@@ -250,6 +250,10 @@ pub(super) enum Write {
     /// on first use. Its failure is reported, but leaves the store's own
     /// records untouched, so it fails no later write.
     Beside { name: &'static str, line: Vec<u8> },
+    /// The side file `name` beside the store rewritten whole through an
+    /// atomic rename, as `Beside` writes are compacted. Its failure leaves
+    /// the file as it was, and like `Beside` it fails no later write.
+    Replace { name: &'static str, bytes: Vec<u8> },
 }
 
 /// Test injections that travel with a write to the thread making it.
@@ -330,7 +334,7 @@ impl Writer {
                 let _lock = lock;
                 let mut tail = tail;
                 for job in received {
-                    let beside = matches!(job.write, Write::Beside { .. });
+                    let beside = matches!(job.write, Write::Beside { .. } | Write::Replace { .. });
                     let recovery = matches!(job.write, Write::Recovery(_));
                     let snapshot_written =
                         matches!(job.write, Write::Snapshot(_) | Write::Recovery(_));
@@ -494,7 +498,34 @@ fn make_durable(
             appended
         }
         Write::Beside { name, line } => append_beside(root, name, &line),
+        Write::Replace { name, bytes } => replace_beside(root, name, &bytes),
     }
+}
+
+/// `bytes` as the whole of `root`'s side file `name`, through an atomic
+/// rename, then the file's data barrier: a reader sees the old file or the
+/// new one, never a half-written one.
+fn replace_beside(root: &Path, name: &str, bytes: &[u8]) -> Result<(), &'static str> {
+    let temporary = root.join(format!(".{name}-{}", uuid::Uuid::new_v4()));
+    let result: Result<(), &'static str> = (|| {
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)
+            .map_err(|_| "side file unavailable")?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|_| "side file write not durable")?;
+        std::fs::rename(&temporary, root.join(name)).map_err(|_| "side file rename failed")?;
+        File::open(root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "side file write not durable")?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    result
 }
 
 /// `line` appended to `root`'s side file `name` and its data barrier; the

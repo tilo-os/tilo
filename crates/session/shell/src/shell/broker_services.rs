@@ -667,6 +667,18 @@ impl tilo_action_broker::services::ContentStoreServices for SessionContentPuts {
         .map(|upload| Box::new(SessionContentSink(upload)) as Box<_>)
         .map_err(|error| error.to_string())
     }
+
+    /// Whether the room still references `hash` as content it holds. The
+    /// daemon answers for every app of the room at once (`has` through the
+    /// room's neutral scope), and a store that cannot be reached keeps the
+    /// attribution rather than dropping a put it cannot check.
+    fn holds(&self, room: &str, hash: &str) -> bool {
+        with_session_blobs(|client| {
+            let scope = client.scope(room, tilo_action_broker::services::CONTENT_PUT_SCOPE)?;
+            scope.has(hash)
+        })
+        .unwrap_or(true)
+    }
 }
 
 /// One upload into the daemon's store; dropped unfinished, it is aborted.

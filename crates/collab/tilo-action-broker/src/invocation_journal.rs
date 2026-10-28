@@ -32,6 +32,7 @@ mod effect;
 mod guarded;
 #[cfg(test)]
 pub(crate) use content_puts::CONTENT_PUTS_FILE;
+pub(crate) use content_puts::ContentHolds;
 pub(crate) use content_puts::ContentPutRecord;
 #[path = "invocation_journal/writer.rs"]
 mod writer;
@@ -616,6 +617,9 @@ pub(super) struct InvocationJournal {
     writer: Option<Writer>,
     /// The store opened and its lock, until the writer takes them over.
     opening: Option<(Option<File>, advisory_lock::FileLock)>,
+    /// The content put attributions beside the store, as staged; `None` only
+    /// while the journal opens, before its file is read.
+    content_puts: Option<content_puts::ContentPutsStore>,
     counted: Counted,
     /// What a reader may see of each invocation with a write in flight: as
     /// it was before the first, until each write is durable.
@@ -781,6 +785,7 @@ impl InvocationJournal {
             tail: None,
             writer: None,
             opening: Some((None, lock)),
+            content_puts: None,
             counted: Counted::default(),
             undurable: HashMap::new(),
             before: None,
@@ -794,6 +799,10 @@ impl InvocationJournal {
             #[cfg(test)]
             hold_writes: None,
         };
+        // The attributions are read before anything appends: a line its last
+        // writer could not confirm is dropped here, and the store as read is
+        // what the next put compacts from.
+        journal.content_puts = Some(content_puts::ContentPutsStore::read(root)?);
         let mut recovered = false;
         for record in &mut journal.snapshot.records {
             if !record.update.is_terminal() {
@@ -1238,6 +1247,7 @@ impl InvocationJournal {
         self.tail = None;
         self.undurable.clear();
         self.before = None;
+        self.content_puts = Some(content_puts::ContentPutsStore::read(&self.root)?);
         for record in &mut self.snapshot.records {
             if !record.update.is_terminal() {
                 record.update = if record.prepared_effect.is_some() {

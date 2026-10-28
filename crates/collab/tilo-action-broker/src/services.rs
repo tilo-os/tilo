@@ -1096,6 +1096,16 @@ pub trait ContentStoreServices: Send + Sync {
     ///
     /// Returns why the store cannot take an upload.
     fn begin(&self, room: &str) -> Result<Box<dyn ContentSink>, String>;
+
+    /// Whether `room` still holds `hash`: content it put there that no one
+    /// has dropped since. A compaction of the content put attributions keeps
+    /// the ones this answers `true` for and drops the rest, so the log stays
+    /// as long as the content it describes is worth attributing. A store that
+    /// cannot tell keeps the attribution.
+    fn holds(&self, room: &str, hash: &str) -> bool {
+        let _ = (room, hash);
+        true
+    }
 }
 
 /// One upload into the content store. Dropped unfinished, it stores

@@ -78,6 +78,7 @@ impl CapnpBrokerState {
     ) -> Result<(), ActionHostError> {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
         let actor = self.caller_actor(caller, room).id;
+        let store = self.services.content_store.clone();
         let durable = {
             let mut journal = self
                 .journal
@@ -87,15 +88,21 @@ impl CapnpBrokerState {
                 Err(error) => return Err(unavailable(error.clone())),
                 // A broker keeping no durable records keeps none of this either.
                 Ok(None) => return Ok(()),
-                Ok(Some(journal)) => journal
-                    .record_content_put(&ContentPutRecord {
-                        at,
-                        actor,
-                        room: room.to_owned(),
-                        hash: hash.to_owned(),
-                        len,
-                    })
-                    .map_err(unavailable)?,
+                Ok(Some(journal)) => {
+                    let mut holds = StoredContent(store.as_deref());
+                    journal
+                        .record_content_put(
+                            &ContentPutRecord {
+                                at,
+                                actor,
+                                room: room.to_owned(),
+                                hash: hash.to_owned(),
+                                len,
+                            },
+                            &mut holds,
+                        )
+                        .map_err(unavailable)?
+                }
             }
         };
         // The journal is free for others while the line reaches the disk;
@@ -103,6 +110,16 @@ impl CapnpBrokerState {
         durable
             .wait_blocking()
             .map_err(|error| unavailable(format!("content put attribution not durable: {error}")))
+    }
+}
+
+/// The device content store, asked whether a room still holds what a put
+/// left there when the attributions are compacted.
+struct StoredContent<'a>(Option<&'a dyn ContentStoreServices>);
+
+impl super::invocation_journal::ContentHolds for StoredContent<'_> {
+    fn holds(&mut self, room: &str, hash: &str) -> bool {
+        self.0.is_none_or(|store| store.holds(room, hash))
     }
 }
 
