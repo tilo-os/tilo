@@ -355,7 +355,7 @@ impl NewProject {
         };
         let dialog = ui::widget::ModalDialog::new(tr("tasks-new-project"), content)
             .with_test_id("tasks-new-project")
-            .primary_action(tr("tasks-create"), create)
+            .primary_action(tr("tasks-create-button"), create)
             .secondary_action(tr("tasks-cancel"), cancel)
             .on_dismiss(dismiss);
         Self {
