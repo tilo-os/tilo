@@ -1,5 +1,5 @@
 //! Versioned private receipts. A receipt is a hint to revalidate, never overwrite authority.
-use super::migration::{self, CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory, changed};
+use super::migration::{self, CopyProgress, CopyReport, PinnedDirectory, changed};
 use super::{
     destination_security,
     migration_durability::{self as durability, Identity},
@@ -13,7 +13,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
     time::SystemTime,
@@ -1180,7 +1180,7 @@ pub fn resume_folder(
 mod tests {
     use super::*;
     use crate::test_support::isolated;
-    use std::{fs, path::PathBuf, sync::atomic::Ordering};
+    use std::{fs, io::Write, path::PathBuf, sync::atomic::Ordering};
 
     fn decoded_document<T: serde::de::DeserializeOwned>(path: &Path) -> T {
         let journal = MigrationJournal::open(path).unwrap();
