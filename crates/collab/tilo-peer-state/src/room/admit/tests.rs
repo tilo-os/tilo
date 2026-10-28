@@ -156,7 +156,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     );
     let authority = key(0xA0);
     let writer = key(0x02);
-    let edit = changes_after(&based, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&based, |doc| hold_record(doc, "file:/plan.md"));
     assert!(
         admit(
             Some(&based),
@@ -172,9 +172,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     ungranted.commit();
     let policy = tilo_desktop_model::projection::room_policy_of(&ungranted, ROOM);
     assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
-    let edit = changes_after(&ungranted, |doc| {
-        strip_name(doc, EDITORS_STRIP, "Edited");
-    });
+    let edit = changes_after(&ungranted, |doc| hold_record(doc, "file:/plan.md"));
     assert_eq!(
         admit(
             Some(&ungranted),
@@ -609,7 +607,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     )
     .unwrap();
     held.commit();
-    let edit = changes_after(&held, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&held, |doc| hold_record(doc, "file:/plan.md"));
     assert!(
         admit(Some(&held), as_editor(), governor, &edit).is_ok(),
         "a shortcut held unchanged is not a write"
