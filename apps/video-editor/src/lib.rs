@@ -59,7 +59,6 @@ pub mod app;
 pub mod audio;
 pub mod curve;
 pub mod export;
-pub mod facts;
 mod files;
 pub mod gpu;
 pub(crate) mod layout;

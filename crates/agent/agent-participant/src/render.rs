@@ -133,7 +133,7 @@ pub(crate) fn route(
 struct Job {
     id: String,
     settings: AgentExportSettings,
-    /// What the timeline rendered holds ([`video_editor::facts`]) and the
+    /// What the timeline rendered holds ([`video_editor::agent_timeline::facts_json`]) and the
     /// version of the record it was rendered from: an export's answer
     /// carries both, so a later check compares the cut with what this render
     /// made, and a `facts` read at that version states an export's again.
@@ -294,7 +294,7 @@ impl RenderService {
         let job = Arc::new(Job {
             id,
             settings,
-            facts: video_editor::facts::of(&snapshot.project),
+            facts: video_editor::agent_timeline::facts_json(&snapshot.project),
             version: snapshot.heads.join("+"),
             progress: Mutex::new((0, 0)),
             cancelled: std::sync::atomic::AtomicBool::new(false),
