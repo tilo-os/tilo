@@ -31,11 +31,6 @@ enum Entry {
     Deferred {
         app_id: &'static str,
         title: &'static str,
-        /// What the app's window shows while its code is on its way. The app
-        /// declares it in its manifest (`[appearance] arrival-skeleton`),
-        /// through the toolkit's [`SkeletonShape`](crate::widget::SkeletonShape):
-        /// the placeholder is the app's own shape, never the host's guess.
-        arrival_shape: crate::widget::SkeletonShape,
         load: Load,
     },
 }
@@ -51,8 +46,10 @@ impl Entry {
 
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
-/// The shape each app declared for its window while its code is on its way,
-/// kept apart from the registry so it outlives the app's code: a window
+/// The shape each app declared for its window while its code is on its way
+/// (its manifest's `[appearance] arrival-skeleton`, through the toolkit's
+/// [`SkeletonShape`](crate::widget::SkeletonShape): the placeholder is the
+/// app's own shape, never the host's guess), kept apart from the registry so it outlives the app's code: a window
 /// stands in for an app that is built but has not drawn its first frame yet,
 /// and that is when the declaration is needed most.
 static DECLARED_SHAPES: Mutex<Vec<(&'static str, crate::widget::SkeletonShape)>> =
@@ -104,7 +101,6 @@ pub fn defer_arriving(
     registry.push(Entry::Deferred {
         app_id: app_id.into(),
         title,
-        arrival_shape,
         load,
     });
     drop(registry);
