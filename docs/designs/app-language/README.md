@@ -89,3 +89,4 @@ which people, agents and automations can find, read and pin.
 | Workspace, windows, views | workspace-model.md |
 | Layout | layout.md |
 | The first new experience | first-experience.md |
+| Language changes found by writing the apps | language-changes.md |
