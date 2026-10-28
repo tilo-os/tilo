@@ -62,6 +62,10 @@ arrival-stalled = Das dauert länger, als es sollte. Warte weiter oder versuch e
 # { $workspace } ist der Name des Arbeitsbereichs; eine Nachricht auf
 # -unnamed steht, wo die Seite ihn nicht kennt.
 arrival-retry = Noch einmal versuchen
+arrival-failed-offline = Du bist offline. Änderungen bleiben auf diesem Gerät und gehen raus, sobald die Verbindung wieder da ist.
+arrival-failed-admission = Der Arbeitsbereich kann die Änderungen dieses Browsers gerade nicht annehmen. Die Änderungen bleiben auf diesem Gerät.
+arrival-failed-saving = Deine Änderungen sind noch nicht auf diesem Gerät gespeichert. Lass diesen Tab offen und versuch es noch einmal.
+arrival-failed-renderer = Der Desktop zeichnet nicht mehr. Versuch es noch einmal, um ihn neu zu starten, oder lade die Seite neu.
 arrival-failed-stopped-drawing = Der Desktop funktioniert nicht mehr. Versuch es noch einmal, um ihn neu zu starten.
 arrival-failed-unreachable = { $workspace } ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.
 arrival-failed-unreachable-unnamed = Der Arbeitsbereich ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.

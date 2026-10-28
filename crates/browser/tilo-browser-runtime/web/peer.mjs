@@ -783,6 +783,9 @@ async function connect({
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
+  /** Called after each published status, so a surface follows the session
+   * (the transport, the admission, the store) and not only its mount. */
+  const statusListeners = new Set();
   const pendingRecordWaits = new Set();
   let peer;
   let live;
@@ -837,6 +840,9 @@ async function connect({
     remoteEvents = '[]';
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
+    for (const listener of [...statusListeners]) {
+      try { listener(snapshot); } catch {}
+    }
   };
   const untilSnapshot = (settled, timeoutMs, timeoutMessage) => new Promise((resolve, reject) => {
     const check = () => {
@@ -1108,6 +1114,7 @@ async function connect({
       stopLive();
       peer?.dispose();
       listeners.clear();
+      statusListeners.clear();
       await storage?.release();
     })().then(resolve, reject);
     return disposal;
@@ -1152,6 +1159,9 @@ async function connect({
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    /** Read the session's own status after every change to it (`onStatus`),
+     * so a page can follow it rather than only its first snapshot. */
+    onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     /** The live layer of the joined room, or `undefined` without a room. */
     get live() { return live; },
     /** The room's agents (`agents.mjs`), or `undefined` without a room. */
