@@ -47,8 +47,10 @@ const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
 const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
 /// Document lookups to reopen a persisted namespace and list a directory of
 /// it, per entry, and to list it again once open: each listing reads every
-/// child's name and kind, never the whole document.
-const COLD_LISTING_LOOKUPS_PER_ENTRY: u64 = 7;
+/// child's name and kind, never the whole document. Reopening pays the
+/// record-id backfill and the index rebuild, which read each node once (4000
+/// for this fixture's 1000 entries); the listing half is two reads an entry.
+const COLD_LISTING_LOOKUPS_PER_ENTRY: u64 = 4;
 const WARM_LISTING_LOOKUPS_PER_ENTRY: u64 = 2;
 
 fn deterministic_bytes(len: usize) -> Vec<u8> {
