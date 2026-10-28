@@ -31,8 +31,7 @@ const NOW_NS: u64 = 1_000_000_000_000;
 /// The changes one message of the room's sync carries.
 pub(super) fn changes_in(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut scratch = AutoCommit::new();
-    scratch
-        .load_incremental(bytes)
+    tilo_automerge::ApplyIncoming::load_incoming(&mut scratch, bytes)
         .expect("the room's sync carries changes");
     let mut changes: Vec<Vec<u8>> = scratch
         .get_changes(&[])
@@ -61,7 +60,7 @@ impl Member {
     pub(super) fn take_in(&mut self, net: &mut FakeDocumentNet, host_key: &str) {
         let mut arrived = Vec::new();
         net.net().deliver_to(self.peer.name(), |_, bytes| {
-            arrived.extend(changes_in(bytes))
+            arrived.extend(changes_in(bytes));
         });
         if arrived.is_empty() {
             return;
