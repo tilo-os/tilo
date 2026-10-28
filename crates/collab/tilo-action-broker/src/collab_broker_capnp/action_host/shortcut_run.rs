@@ -305,7 +305,7 @@ impl CapnpBrokerState {
         };
         // What this run's steps say they are part of: the work unit that asked
         // for it, or its own group. Read before the steps run, so it names the
-        // shortcuts already running above it.
+        // shortcut that asked for it among the ones above it.
         let group = start
             .parent
             .as_ref()
