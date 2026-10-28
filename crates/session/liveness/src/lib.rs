@@ -71,9 +71,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use calloop::LoopHandle;
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
-use calloop::LoopHandle;
 
 mod capture;
 mod main_thread_files;
@@ -82,7 +82,6 @@ mod wake_trace;
 pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
 pub use wake_trace::record as trace_wake;
-
 
 /// Removes the socket it names once the server that bound it is gone.
 struct UnlinkOnDrop(PathBuf);
