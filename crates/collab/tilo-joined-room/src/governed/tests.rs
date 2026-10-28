@@ -1,5 +1,5 @@
 use crate::testing::{self, ROOM};
-use crate::{ApplicationRecord, DocumentRead, RoomId, open_file};
+use crate::{DocumentRead, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
@@ -50,15 +50,20 @@ fn a_room_this_device_creates_is_governed_here_takes_its_writes_and_reopens() {
         })
         .unwrap();
 
-    // Its governor creates an app's record and admits its writes, and no
-    // host has to take them into custody.
-    let route =
-        ApplicationRecord::declared(APP, "", "chat.workspace", &["chat.workspace".into()]).unwrap();
-    assert!(
-        owner
-            .prepare_application_record(room, &device, &key, &route, now)
-            .unwrap()
-    );
+    // Its governor admits an app's writes to the record it holds, and no host
+    // has to take them into custody.
+    let empty = AutoCommit::new().save();
+    let genesis = owner
+        .with_current(room, |view| {
+            view.peer()
+                .clone()
+                .publication_mut()
+                .publish_document(APP, "", empty, &key, now)
+        })
+        .unwrap();
+    owner
+        .commit_document(crate::publication::request(&genesis).unwrap(), now)
+        .unwrap();
     let request = owner
         .with_current(room, |view| {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();

@@ -1,5 +1,5 @@
 use super::ApplicationRecord;
-use crate::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_file, testing};
+use crate::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, testing};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
@@ -95,33 +95,6 @@ pub(crate) fn fixture() -> Fixture {
     }
 }
 
-fn route() -> ApplicationRecord {
-    ApplicationRecord::declared(
-        "so.tilo.chat",
-        "",
-        "chat.workspace",
-        &["chat.workspace".into()],
-    )
-    .unwrap()
-}
-
-fn created_capture(fixture: &Fixture) -> crate::CommittedDocument {
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                &route(),
-                fixture.now
-            )
-            .unwrap()
-    );
-    current_capture(fixture)
-}
-
 fn current_capture(fixture: &Fixture) -> crate::CommittedDocument {
     let room = crate::RoomId::parse(testing::ROOM).unwrap();
     fixture
@@ -143,11 +116,34 @@ fn current_capture(fixture: &Fixture) -> crate::CommittedDocument {
         .unwrap()
 }
 
+/// A record a room's governor publishes into it: empty, as a host creates
+/// an app's first record for a member whose channel it does not steward.
+fn governor_creates_empty_record(fixture: &Fixture) -> crate::CommittedDocument {
+    let room = crate::RoomId::parse(testing::ROOM).unwrap();
+    let message = fixture
+        .owner
+        .with_current(room, |view| {
+            view.peer().clone().publication_mut().publish_document(
+                "so.tilo.chat",
+                "",
+                automerge::AutoCommit::new().save(),
+                &fixture.key,
+                fixture.now,
+            )
+        })
+        .unwrap();
+    fixture
+        .owner
+        .commit_document(crate::publication::request(&message).unwrap(), fixture.now)
+        .unwrap();
+    current_capture(fixture)
+}
+
 #[test]
 fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
     use automerge::ReadDoc as _;
     let fixture = fixture();
-    let captured = created_capture(&fixture);
+    let captured = governor_creates_empty_record(&fixture);
     assert!(
         !captured.bytes.is_empty(),
         "the actual first-created record must satisfy the broker's nonempty capture contract"
@@ -185,413 +181,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
 }
 
 #[test]
-fn creator_initialization_is_durable_and_compare_and_swaps_original_revision() {
-    use automerge::{ReadDoc as _, transaction::Transactable as _};
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    let initial = created_capture(&fixture);
-    let mut doc = automerge::AutoCommit::load(&initial.bytes).unwrap();
-    doc.put(automerge::ROOT, "structural_workspace", testing::ROOM)
-        .unwrap();
-    doc.commit_edit("fixture", "structural_workspace");
-    let bytes = doc.save();
-    let declared = route();
-    let initialized = fixture
-        .owner
-        .initialize_application_record(
-            room,
-            &fixture.certificate,
-            &fixture.key,
-            super::ApplicationInitialization {
-                route: &declared,
-                revision: initial.revision,
-                document: &bytes,
-            },
-            fixture.now,
-        )
-        .unwrap();
-    assert_ne!(initialized, initial.revision);
-    assert!(
-        fixture
-            .owner
-            .initialize_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                super::ApplicationInitialization {
-                    route: &declared,
-                    revision: initial.revision,
-                    document: &bytes
-                },
-                fixture.now
-            )
-            .is_err()
-    );
-    let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
-    reopened
-        .with_current(room, |view| {
-            let crate::DocumentRead::Captured(document) = view.read_document(
-                fixture.certificate.device_public_key,
-                "so.tilo.chat",
-                "",
-                None,
-                64 * 1024,
-                fixture.now,
-            )?
-            else {
-                panic!("durable initialized capture missing");
-            };
-            assert_eq!(document.revision, initialized);
-            let doc = automerge::AutoCommit::load(&document.bytes).unwrap();
-            assert_eq!(
-                doc.get(automerge::ROOT, "structural_workspace")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_scalar()
-                    .and_then(automerge::ScalarValue::as_str),
-                Some(testing::ROOM)
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
-fn initialization_failure_does_not_publish_ready_or_change_original_record() {
-    use automerge::transaction::Transactable as _;
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    let initial = created_capture(&fixture);
-    let mut doc = automerge::AutoCommit::load(&initial.bytes).unwrap();
-    doc.put(automerge::ROOT, "should_not_publish", true)
-        .unwrap();
-    doc.commit_edit("fixture", "should_not_publish");
-    let bytes = doc.save();
-    let declared = route();
-    let path = fixture.directory.path().join("owner.json");
-    std::fs::rename(&path, fixture.directory.path().join("retained-owner.json")).unwrap();
-    std::fs::create_dir(&path).unwrap();
-    assert!(
-        fixture
-            .owner
-            .initialize_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                super::ApplicationInitialization {
-                    route: &declared,
-                    revision: initial.revision,
-                    document: &bytes
-                },
-                fixture.now
-            )
-            .is_err()
-    );
-    fixture
-        .owner
-        .with_current(room, |view| {
-            assert!(matches!(
-                view.read_document(
-                    fixture.certificate.device_public_key,
-                    "so.tilo.chat",
-                    "",
-                    Some(initial.revision),
-                    64 * 1024,
-                    fixture.now
-                )?,
-                crate::DocumentRead::Unchanged(_)
-            ));
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
-fn initialization_preserves_unknown_objects_and_refuses_wrong_creator_key() {
-    use automerge::{ReadDoc as _, transaction::Transactable as _};
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    let initial = created_capture(&fixture);
-    let mut original = automerge::AutoCommit::load(&initial.bytes).unwrap();
-    let extension = original
-        .put_object(
-            automerge::ROOT,
-            "unknown_extension",
-            automerge::ObjType::Map,
-        )
-        .unwrap();
-    original
-        .put(&extension, "retained", "opaque future schema")
-        .unwrap();
-    original.commit_edit("fixture", "unknown_extension");
-    let message = fixture
-        .owner
-        .with_current(room, |view| {
-            view.peer().clone().publication_mut().publish_document(
-                "so.tilo.chat",
-                "",
-                original.save(),
-                &fixture.key,
-                fixture.now,
-            )
-        })
-        .unwrap();
-    fixture
-        .owner
-        .commit_document(crate::publication::request(&message).unwrap(), fixture.now)
-        .unwrap();
-    let revision = current_capture(&fixture).revision;
-    let mut supplied = automerge::AutoCommit::new();
-    supplied
-        .put(automerge::ROOT, "workspace", testing::ROOM)
-        .unwrap();
-    supplied.commit_edit("fixture", "workspace");
-    let bytes = supplied.save();
-    let declared = route();
-    let initialization = || super::ApplicationInitialization {
-        route: &declared,
-        revision,
-        document: &bytes,
-    };
-    assert!(
-        fixture
-            .owner
-            .initialize_application_record(
-                room,
-                &fixture.certificate,
-                &SigningKey::from_bytes(&[8; 32]),
-                initialization(),
-                fixture.now
-            )
-            .is_err()
-    );
-    fixture
-        .owner
-        .initialize_application_record(
-            room,
-            &fixture.certificate,
-            &fixture.key,
-            initialization(),
-            fixture.now,
-        )
-        .unwrap();
-    fixture
-        .owner
-        .with_current(room, |view| {
-            let crate::DocumentRead::Captured(document) = view.read_document(
-                fixture.certificate.device_public_key,
-                "so.tilo.chat",
-                "",
-                None,
-                64 * 1024,
-                fixture.now,
-            )?
-            else {
-                panic!("initialized capture missing");
-            };
-            let doc = automerge::AutoCommit::load(&document.bytes).unwrap();
-            let (_, object) = doc
-                .get(automerge::ROOT, "unknown_extension")
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                doc.get(&object, "retained")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_scalar()
-                    .and_then(automerge::ScalarValue::as_str),
-                Some("opaque future schema")
-            );
-            assert!(doc.get(automerge::ROOT, "workspace").unwrap().is_some());
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
-fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody() {
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    let path = fixture.directory.path().join("owner.json");
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                &route(),
-                fixture.now
-            )
-            .unwrap()
-    );
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(
-        !fixture
-            .owner
-            .prepare_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                &route(),
-                fixture.now
-            )
-            .unwrap()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    let reopened = open_file(&path).unwrap();
-    reopened
-        .with_current(room, |view| {
-            let crate::DocumentRead::Captured(document) = view.read_document(
-                fixture.certificate.device_public_key,
-                "so.tilo.chat",
-                "",
-                None,
-                64 * 1024,
-                fixture.now,
-            )?
-            else {
-                panic!("fresh read must capture")
-            };
-            assert!(
-                automerge::AutoCommit::load(&document.bytes)
-                    .unwrap()
-                    .get_heads()
-                    .is_empty()
-            );
-            Ok(())
-        })
-        .unwrap();
-    // The original signed snapshot is durably retained, but the native relay
-    // only sends admitted incremental projections, never raw snapshots.
-    let custody = reopened.outgoing_status(room, fixture.now).unwrap();
-    assert_eq!(custody.pending, 1);
-    assert_eq!(custody.blocked, 1);
-    assert!(
-        reopened
-            .reconcile_outgoing(room, &fixture.key, fixture.now)
-            .unwrap_err()
-            .contains("fresh genuine governor checkpoint")
-    );
-    reopened
-        .with_outgoing(room, fixture.now, |_, outgoing| {
-            assert_eq!(
-                outgoing.entries().count(),
-                0,
-                "the relay must never downgrade a retained governor snapshot to a delta"
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
-fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
-    use automerge::ReadDoc as _;
-    use automerge::transaction::Transactable as _;
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    fixture
-        .owner
-        .prepare_application_record(
-            room,
-            &fixture.certificate,
-            &fixture.key,
-            &route(),
-            fixture.now,
-        )
-        .unwrap();
-    let message = fixture
-        .owner
-        .with_current(room, |view| {
-            let mut document = automerge::AutoCommit::new();
-            document
-                .put(automerge::ROOT, "authored", "keep this user content")
-                .unwrap();
-            document.commit_edit("fixture", "authored");
-            view.peer().clone().publication_mut().publish_document(
-                "so.tilo.chat",
-                "",
-                document.save(),
-                &fixture.key,
-                fixture.now,
-            )
-        })
-        .unwrap();
-    let request = crate::publication::request(&message).unwrap();
-    fixture.owner.commit_document(request, fixture.now).unwrap();
-    let path = fixture.directory.path().join("owner.json");
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(
-        !fixture
-            .owner
-            .prepare_application_record(
-                room,
-                &fixture.certificate,
-                &fixture.key,
-                &route(),
-                fixture.now
-            )
-            .unwrap()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    let reopened = open_file(&path).unwrap();
-    reopened
-        .with_current(room, |view| {
-            let document =
-                automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
-                    .unwrap();
-            assert_eq!(
-                document
-                    .get(automerge::ROOT, "authored")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str(),
-                Some("keep this user content")
-            );
-            assert_eq!(
-                view.peer().document("so.tilo.chat", ""),
-                fixture.owner.with_current(room, |current| Ok(current
-                    .peer()
-                    .document("so.tilo.chat", "")))?
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
-fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_mutation() {
-    let fixture = fixture();
-    let room = crate::RoomId::parse(testing::ROOM).unwrap();
-    let path = fixture.directory.path().join("owner.json");
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(
-                room,
-                &fixture.certificate,
-                &SigningKey::from_bytes(&[94; 32]),
-                &route(),
-                fixture.now
-            )
-            .is_err()
-    );
-    let other = testing::certificate(
-        &SigningKey::from_bytes(&[96; 32]),
-        &fixture.key,
-        "Other identity",
-    );
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(room, &other, &fixture.key, &route(), fixture.now)
-            .is_err()
-    );
+fn a_record_route_must_be_declared_by_the_installed_package() {
     assert!(
         ApplicationRecord::declared(
             "so.tilo.chat",
@@ -599,7 +189,9 @@ fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_muta
             "another.kind",
             &["chat.workspace".into()]
         )
-        .is_err()
+        .is_err(),
+        "a kind the package does not declare is never a record"
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(ApplicationRecord::host("", "").is_err());
+    assert!(ApplicationRecord::host("so.tilo.chat\n", "").is_err());
 }

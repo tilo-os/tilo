@@ -1,6 +1,6 @@
 use super::{CheckpointCapture, CheckpointRoute};
 use crate::application_record::tests::{Fixture, fixture};
-use crate::{ApplicationRecord, DocumentRead, NativeWorkspaceOwner, RoomId, open_file, testing};
+use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file, testing};
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
 
@@ -23,25 +23,23 @@ fn routes() -> Vec<CheckpointRoute> {
 
 fn prepare(fixture: &Fixture) {
     for route in routes() {
-        let declared = ApplicationRecord::declared(
-            &route.app,
-            &route.record,
-            "chat.workspace",
-            &["chat.workspace".into()],
-        )
-        .unwrap();
-        assert!(
-            fixture
-                .owner
-                .prepare_application_record(
-                    room(),
-                    &fixture.certificate,
+        let empty = automerge::AutoCommit::new().save();
+        let genesis = fixture
+            .owner
+            .with_current(room(), |view| {
+                view.peer().clone().publication_mut().publish_document(
+                    &route.app,
+                    &route.record,
+                    empty,
                     &fixture.key,
-                    &declared,
                     fixture.now,
                 )
-                .unwrap()
-        );
+            })
+            .unwrap();
+        fixture
+            .owner
+            .commit_document(crate::publication::request(&genesis).unwrap(), fixture.now)
+            .unwrap();
         mutate(fixture, &route, &route.record);
     }
 }
@@ -460,25 +458,23 @@ fn checkpoint_reader_fixture() -> (
     let mut fixture = fixture();
     let member = checkpoint_member(&mut fixture);
     prepare(&fixture);
-    let declared = ApplicationRecord::declared(
-        "so.tilo.chat",
-        "first",
-        "chat.workspace",
-        &["chat.workspace".into()],
-    )
-    .unwrap();
-    assert!(
-        fixture
-            .owner
-            .prepare_application_record(
-                room(),
-                &fixture.certificate,
+    let empty = automerge::AutoCommit::new().save();
+    let genesis = fixture
+        .owner
+        .with_current(room(), |view| {
+            view.peer().clone().publication_mut().publish_document(
+                "so.tilo.chat",
+                "first",
+                empty,
                 &fixture.key,
-                &declared,
                 fixture.now,
             )
-            .unwrap()
-    );
+        })
+        .unwrap();
+    fixture
+        .owner
+        .commit_document(crate::publication::request(&genesis).unwrap(), fixture.now)
+        .unwrap();
     mutate(&fixture, &member_routes()[0], "first captured route");
     let subject = Subject::person(
         blake3::Hash::from_bytes(member.user_public_key)
