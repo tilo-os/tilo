@@ -1143,6 +1143,12 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_reuse_prior_app_collection.py"
 
 [[check]]
+name = "policy/tests/unit/room-service-run-entry"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_room_service_run_entry.py"
+
+[[check]]
 name = "policy/tests/unit/rpm-broker"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
