@@ -4692,11 +4692,15 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
         bail!("app preflight failed\n\n{}", report.summary());
     }
     let manifest = app_dir.join("Cargo.toml");
+    let samples = task == AppTask::Run && declares_samples_feature(&manifest);
     let mut args = vec![
         OsString::from(task.cargo_subcommand()),
         OsString::from("--manifest-path"),
         manifest.into_os_string(),
     ];
+    if samples {
+        args.extend(samples_feature_args());
+    }
     if !forwarded.is_empty() {
         args.push(OsString::from("--"));
         args.extend_from_slice(forwarded);
@@ -4997,6 +5001,9 @@ pub fn plan_scenario_suite(request: &ScenarioRunRequest) -> Result<ScenarioSuite
         app_dir.join("Cargo.toml").into_os_string(),
         OsString::from("--message-format=json-render-diagnostics"),
     ];
+    if declares_samples_feature(&app_dir.join("Cargo.toml")) {
+        build_args.extend(samples_feature_args());
+    }
     match &bin {
         Some(bin) => build_args.extend([OsString::from("--bin"), OsString::from(bin)]),
         None => build_args.push(OsString::from("--bins")),
@@ -6580,6 +6587,26 @@ fn dev_binary_name(manifest: &Path) -> Result<String> {
         .and_then(toml::Value::as_str)
         .map(str::to_owned)
         .with_context(|| format!("{} has no package name", manifest.display()))
+}
+
+/// Whether the app keeps its sample data and screenshot scenarios behind a
+/// `samples` feature. Release builds leave it off; the runs and scenario
+/// suites this tool starts are development runs, so they turn it on.
+fn declares_samples_feature(manifest: &Path) -> bool {
+    std::fs::read_to_string(manifest)
+        .ok()
+        .and_then(|source| source.parse::<toml::Table>().ok())
+        .and_then(|value| {
+            value
+                .get("features")
+                .and_then(|features| features.get("samples"))
+                .map(|_| ())
+        })
+        .is_some()
+}
+
+fn samples_feature_args() -> [OsString; 2] {
+    [OsString::from("--features"), OsString::from("samples")]
 }
 
 fn cargo_package_name(manifest: &Path) -> Result<String> {

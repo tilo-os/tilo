@@ -756,6 +756,13 @@ capture is the production view at the requested viewport and active shot
 theme; a scenario stages it through the resource's actions and its views'
 stage hooks.
 
+Keep a scenario's sample data, its `scenarios()` and `fixture()`, and the
+stage hooks that only serve it behind a `samples` cargo feature
+(`samples = []`), so release builds do not ship them. `run`, `shot`,
+`inspect` and `scenario run` turn it on; for the tests, list the app as its
+own dev-dependency with the feature (`my-app = { path = ".", features =
+["samples"] }`).
+
 Build an installable package from the same app root with:
 
 ```bash

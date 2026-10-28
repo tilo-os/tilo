@@ -3897,6 +3897,20 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         let test = plan_app_task(&destination, AppTask::Test, &[]).expect("test plan");
         assert_eq!(test.args[0], "test");
         assert!(!test.args.iter().any(|arg| arg == "--"));
+
+        // An app with sample data behind `samples` runs with it on.
+        let manifest = destination.join("Cargo.toml");
+        let source = std::fs::read_to_string(&manifest)
+            .expect("manifest")
+            .replacen("[features]\n", "[features]\nsamples = []\n", 1);
+        std::fs::write(&manifest, source).expect("manifest with samples");
+        let plan = plan_app_task(&destination, AppTask::Run, &forwarded).expect("run plan");
+        assert_eq!(
+            plan.args[3..5],
+            [OsString::from("--features"), OsString::from("samples")]
+        );
+        let test = plan_app_task(&destination, AppTask::Test, &[]).expect("test plan");
+        assert!(!test.args.iter().any(|arg| arg == "samples"));
     }
 
     // Phase: app_quality_plan_scopes_format_and_clippy_to_the_app_package.
