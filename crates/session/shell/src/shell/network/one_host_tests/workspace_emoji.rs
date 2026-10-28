@@ -68,8 +68,7 @@ impl CodeWindow {
                 );
                 // The records every app of the room opens, where the window
                 // opens them: beside its own, in the same owners.
-                let workspace =
-                    WorkspaceRecords::in_room(owners.clone(), room.to_string(), UserId(person));
+                let workspace = WorkspaceRecords::in_room(owners, room.to_string(), UserId(person));
                 let mut record = None;
                 let mut waiting = Vec::new();
                 while !done.load(Ordering::Acquire) {
@@ -85,7 +84,7 @@ impl CodeWindow {
                     }
                     waiting.extend(told.try_iter());
                     if let Some(record) = &record {
-                        for name in waiting.drain(..) {
+                        for name in std::mem::take(&mut waiting) {
                             add(record, &name);
                         }
                     }

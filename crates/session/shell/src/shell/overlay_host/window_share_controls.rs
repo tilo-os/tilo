@@ -209,11 +209,7 @@ impl ShellOverlayHost {
     /// What a window-share request answered: the room's record says the
     /// share itself as its change reaches this device, so only a refusal is
     /// said here.
-    pub(super) fn window_share_answered(
-        &mut self,
-        request: &PeerSyncRequest,
-        refused: Option<&str>,
-    ) {
+    pub(super) fn window_share_answered(&self, request: &PeerSyncRequest, refused: Option<&str>) {
         let PeerSyncRequest::ShareWindow { share, .. } = request else {
             return;
         };
@@ -359,7 +355,7 @@ impl ShellOverlayHost {
     /// on the host's next event (its session coming up, the room changing)
     /// when it refused or could not be reached. A refusal is said once.
     fn end_outlived_window_shares(
-        &mut self,
+        &self,
         outlived: Vec<(
             crate::shell::state::RoomId,
             tilo_desktop_model::window_share::WindowShare,

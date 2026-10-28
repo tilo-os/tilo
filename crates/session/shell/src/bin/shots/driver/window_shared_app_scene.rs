@@ -117,7 +117,10 @@ impl ShellDriver {
             found = Some((room, tab));
         });
         let (room, tab) = found?;
+        #[cfg(feature = "test-support")]
         self.run_shared_notes(room, tab);
+        #[cfg(not(feature = "test-support"))]
+        Self::notes_need_test_support();
         // The tab wears Ana's face, as the frame marks shared windows.
         let _ = self.fb.pump_peer_presence();
         let _ = self.paint_settled();
@@ -157,7 +160,7 @@ impl ShellDriver {
     /// Without `test-support` no app runs behind its own connection: the
     /// window shows a plain frame.
     #[cfg(not(feature = "test-support"))]
-    fn run_shared_notes(&mut self, _room: RoomId, _tab: u64) {
+    fn notes_need_test_support() {
         eprintln!(
             "window-shared-app scene: a window of its own needs `--features test-support`; it shows a plain frame"
         );
