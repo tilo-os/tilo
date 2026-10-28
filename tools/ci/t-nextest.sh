@@ -40,6 +40,10 @@ if [[ $(uname -s) == Linux ]]; then
     export CHROME="${CHROME:-/usr/lib64/chromium-browser/chromium-browser}"
 fi
 
+# A crashing test leaves no core file: it lands in the package's directory, where rcargo copies it
+# back into the worktree (hundreds of MB each); nextest's report already names the signal.
+ulimit -c 0
+
 tested=" "
 explicit=0
 nextest=0
