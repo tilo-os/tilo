@@ -42,6 +42,7 @@ tasks-issue-description = Description
 tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.
 tasks-sub-issues = Sub-issues
+tasks-about = What this is about
 tasks-links = Links
 
 ## Projects and areas: the resource above the tasks
@@ -119,6 +120,7 @@ tasks-thread-send-to-agent = Send to the agent
 tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
+tasks-message-lookup = Looked up
 
 ## History
 
@@ -136,6 +138,7 @@ tasks-resume-run = Let the agent go on with { $item }
 tasks-set-execution-budget = Changed how long the agent may work on { $item }
 tasks-send-message = Sent the agent a message on { $item }
 tasks-report-run = Reported progress on { $item }
+tasks-record-read = Read { $label } for { $item }
 tasks-incorporate = Read the messages on { $item }
 tasks-ask-confirmation = Asked before an action on { $item }
 tasks-answer-confirmation = Answered the agent on { $item }

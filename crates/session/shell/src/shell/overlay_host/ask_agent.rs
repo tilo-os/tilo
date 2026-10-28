@@ -91,20 +91,17 @@ impl ShellOverlayHost {
     }
 
     /// "Tell an agent…" on a window of `app_id`, chosen at `at` on the
-    /// desktop: the composer opens there about that app. Whether it opened.
-    /// It attaches the resource the app said its window shows, else names
-    /// the app alone.
+    /// desktop: the composer opens there about that app. It attaches the
+    /// resource the app said its window shows, else names the app alone.
     pub(super) fn tell_agent_about_app(&mut self, app_id: &str, at: Point) -> bool {
         let label = self.app_label(app_id);
-        let window = self.selection_requests.window_of(app_id).map(|resource| {
-            SharedSelection::of_text(&resource.label)
-                .at(tilo_actions::SelectionPlace::item(resource.id.as_str()))
-                .in_resource(resource.clone())
-        });
-        self.open_ask_agent(
-            SelectionSeed::new(app_id, label, window)
-                .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))),
-        )
+        let seed = SelectionSeed::new(app_id, label, None)
+            .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))));
+        let seed = match self.selection_requests.window_of(app_id) {
+            Some(resource) => seed.showing(resource.clone()),
+            None => seed,
+        };
+        self.open_ask_agent(seed)
     }
 
     /// The focused window offers no selection of its own: ask about the

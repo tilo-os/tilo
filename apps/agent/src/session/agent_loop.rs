@@ -363,6 +363,9 @@ pub(super) struct LoopState {
     /// Content addresses of pictures this turn's invokes answered with, to
     /// show a model that sees once the turn's results are in.
     pictures: Vec<String>,
+    /// The resources this run listed on its issue as read, so each is
+    /// listed once however many steps read it.
+    looked_up: Vec<String>,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -549,6 +552,7 @@ impl LoopState {
             told_step: None,
             steps_told: 0,
             pictures: Vec::new(),
+            looked_up: Vec::new(),
         }
     }
 
@@ -1581,6 +1585,53 @@ impl Session {
         )
     }
 
+    /// List on the run's issue the resource this step reads, when the step
+    /// reads a resource other than the one the request is about.
+    ///
+    /// The subject is where the request pointed; everything else the run
+    /// pulls in it found — by system search, by following a reference, by
+    /// listing what an application holds — and each is a lookup the person
+    /// who asked should see, not a silent widening of the run's context. The
+    /// resource is named the way a link is (`ResourceAt`: its app, kind, id
+    /// and label), so the issue's list opens where the run went.
+    fn record_lookup(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &mut LoopState,
+        call: &StreamedCall,
+    ) -> Result<()> {
+        let Some(alias) = call.input.get("operation").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let id = state
+            .revealed
+            .resolve(alias)
+            .unwrap_or_else(|_| alias.to_owned());
+        let catalogue = self.task_catalogue();
+        let Some(offer) = surface::find(&catalogue.offers, &id) else {
+            return Ok(());
+        };
+        let descriptor = &offer.descriptor;
+        let reads = descriptor.kind == tilo_actions::OperationKind::View
+            || descriptor.contract.kind == tilo_actions::ActionKind::Read;
+        if !looked_up(run, descriptor, reads, &state.looked_up) {
+            return Ok(());
+        }
+        state.looked_up.push(descriptor.address.resource.clone());
+        self.record_read(
+            run,
+            &ui::tilo_reference::ResourceAt {
+                app: offer.app.clone(),
+                record: None,
+                reference: ui::tilo_reference::ResourceRef::whole(
+                    descriptor.resource_kind.clone(),
+                    descriptor.address.resource.clone(),
+                    descriptor.resource_label.clone(),
+                ),
+            },
+        )
+    }
+
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1588,7 +1639,11 @@ impl Session {
         call: &StreamedCall,
         failed: &mut bool,
     ) -> Result<Handled> {
+        // Both are about the step and neither depends on the other: the note
+        // is shown once per distinct step, while every resource the step
+        // reads is listed, however many steps share a note.
         self.tell_step(run, state, call)?;
+        self.record_lookup(run, state, call)?;
         match call.name.as_str() {
             tools::PLAN => {
                 let mut input = call.input.clone();
@@ -2273,6 +2328,26 @@ fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
         .filter(|record| !record.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Whether an operation that `reads` a resource lists it on the run's issue
+/// as a lookup: it reads, its resource is not one the request already named,
+/// and the run has not listed it before. The rest — changing something,
+/// reading again what it already listed — are not new context, and the
+/// subject is what the person gave the run rather than something it found.
+fn looked_up(
+    run: &runtime_collab::TaskRunEnvelope,
+    descriptor: &tilo_actions::ActionDescriptor,
+    reads: bool,
+    seen: &[String],
+) -> bool {
+    let resource = &descriptor.address.resource;
+    reads
+        && !run
+            .subject
+            .as_ref()
+            .is_some_and(|subject| subject.is_in(resource))
+        && !seen.iter().any(|listed| listed == resource)
 }
 
 /// Which operations are published and available, by id.
