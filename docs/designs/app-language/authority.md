@@ -18,7 +18,7 @@ tilolang adds one input: **who wrote the code.**
    other resources, reaching outside) needs a grant.
 4. A stranger's code has no grants, so everything foreign it does asks first. An agent's code
    can do at most what the agent may do.
-5. Keeping code (pinning a view an agent made, adopting a stranger's view) trusts that exact
+5. Keeping code (pinning a view your agent made) trusts that exact
    version, by hash. A new version asks again for anything it adds.
 6. Asks are shown by the system, never by the code: the prompt shows the action itself, not the
    label the view gave it. History records the whole chain ("you, via Alex's view").
@@ -34,3 +34,9 @@ are decided against that list, shown in plain words, so nobody has to read code 
   kept answers, other apps) and lists what broke.
 - Schema changes migrate. A migration never deletes data or changes an id; what can't be read
   is set aside, never dropped.
+
+## Not yet
+
+Sharing views (code) between people: embedding, showing or adopting another person's view. It
+needs its own design (presentation of untrusted code, adoption, updates) and isn't supported
+until then. People share resources; each person sees them through their own views.
