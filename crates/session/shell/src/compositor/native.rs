@@ -4370,6 +4370,12 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "trims": crate::shell::heap_trim::trims_completed(),
                 }),
             );
+            // Frames drawn so far: a waiter counts repaints with it, so a
+            // slow frame cannot pass for a settled layout.
+            fields.insert(
+                "frames_drawn".into(),
+                serde_json::json!(self.fb.frames_drawn()),
+            );
         }
         dump
     }
