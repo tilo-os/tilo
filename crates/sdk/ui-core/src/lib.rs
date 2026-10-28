@@ -103,6 +103,7 @@
 )]
 
 pub mod a11y;
+pub(crate) mod a11y_child_route;
 pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;

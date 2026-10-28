@@ -5721,7 +5721,8 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),
@@ -6040,7 +6041,7 @@ impl FrameHarness {
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
                         let mut edits = crate::widget::Edits::lend(doc);
-                        widget.perform_semantic_action(target, action, &mut edits, root)
+                        crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
                             || (own_target && widget.perform_action(action, &[], &mut edits, root))
                     } else {
                         widget.perform_action(
@@ -6078,7 +6079,7 @@ impl FrameHarness {
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
                     let mut edits = crate::widget::Edits::lend(doc);
-                    widget.perform_semantic_action(target, action, &mut edits, root)
+                    crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
                         || (own_target && widget.perform_action(action, &[], &mut edits, root))
                 } else {
                     widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)

@@ -134,93 +134,33 @@ impl<W: Widget + 'static> Placed<W> {
 /// A part of the painted page: retained widgets the page lays out and
 /// paints where it puts them. The painting app lists the part among its
 /// children ([`Self::child`], [`Self::child_mut`]), so the window reaches its
-/// controls as any retained child's: the actions they are bound to and what
-/// they publish. Laid out by the page rather than the window, the part has
-/// no node of the window's own: the page represents it in its accessibility
-/// tree ([`Self::access_nodes`], [`Self::perform`]).
+/// controls as any retained child's: the actions they are bound to, what
+/// they publish, and their accessibility, which the window's walk exports
+/// where they are drawn and routes through the painting app's node.
 pub struct PagePart<A> {
     pub host: Placed<Column>,
     key: String,
     asked: Asked<A>,
-    /// What the part's controls are addressed by in the page's
-    /// accessibility tree: this, then the control's test id.
-    target: &'static str,
+}
+
+impl<A> Default for PagePart<A> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<A> PagePart<A> {
-    /// Reuse the retained controls' semantics inside the painted page's
-    /// synthetic accessibility subtree, retaining their actual action handlers.
-    pub fn access_nodes(&self) -> Vec<ui_core::a11y::AccessNode> {
-        fn collect(
-            widget: &dyn Widget,
-            path: &str,
-            target: &str,
-        ) -> Vec<ui_core::a11y::AccessNode> {
-            let children = widget
-                .children()
-                .into_iter()
-                .enumerate()
-                .flat_map(|(index, child)| collect(child, &format!("{path}/{index}"), target))
-                .collect::<Vec<_>>();
-            if let Some(mut node) = widget.accessibility() {
-                node = node.with_hashed_key(path).with_bounds(widget.get_rect());
-                if let Some(id) = widget.test_id() {
-                    node = node
-                        .with_hashed_key(id)
-                        .with_action_target(format!("{target}{id}"));
-                }
-                node.children.extend(children);
-                vec![node]
-            } else {
-                children
-            }
-        }
-        self.host
-            .visible()
-            .map_or_else(Vec::new, |column| collect(column, &self.key, self.target))
-    }
-
-    /// Operate the control whose test id is `id`, as assistive technology
-    /// asked through [`Self::access_nodes`].
-    pub fn perform(
-        &mut self,
-        id: &str,
-        action: &ui_core::a11y::Action,
-        state: &mut ui_core::widget::Edits<'_>,
-    ) -> bool {
-        fn invoke(
-            widget: &mut dyn ui_core::widget::Widget,
-            id: &str,
-            action: &ui_core::a11y::Action,
-            state: &mut ui_core::widget::Edits<'_>,
-        ) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(action, &[], state, &ui_core::automerge::ROOT);
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| invoke(child, id, action, state))
-        }
-        self.host
-            .visible_mut()
-            .is_some_and(|column| invoke(column, id, action, state))
-    }
-
-    /// A part whose controls the page's accessibility tree addresses as
-    /// `target` and their test id (`music.page-widget.`).
     #[must_use]
-    pub fn new(target: &'static str) -> Self {
+    pub fn new() -> Self {
         Self {
             host: Placed::new(Column::new().with_no_padding()),
             key: String::new(),
             asked: Rc::default(),
-            target,
         }
     }
 
     /// The part's widgets while they are placed in view: one of the
-    /// painting app's children, which its accessibility tree represents.
+    /// painting app's children.
     pub fn child(&self) -> Option<&dyn Widget> {
         self.host.visible().map(|column| column as &dyn Widget)
     }

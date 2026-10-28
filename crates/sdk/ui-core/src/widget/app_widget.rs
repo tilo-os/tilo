@@ -1207,6 +1207,10 @@ mod component_adapter {
             self.in_root(|root| root.accessibility_represents_child(child_index))
                 .unwrap_or_default()
         }
+        fn lays_out_child(&self, child_index: usize) -> bool {
+            self.in_root(|root| root.lays_out_child(child_index))
+                .unwrap_or_default()
+        }
         fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
             self.in_root(|root| root.accessibility_child_description(child_index))
                 .flatten()
