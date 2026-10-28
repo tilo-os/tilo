@@ -7,18 +7,11 @@
 //! own devices, which puts it on the same "… wants to act for you" sheet.
 //! The answer names that one invocation; nothing about a grant changes.
 
-use std::time::Duration;
-
 use tilo_actions::remote::{
     ActionHostError, ConfirmationQuestion, ConfirmationReply, Pending, RemoteActionMessage,
 };
 
 use crate::shell::network::ShellNetwork;
-
-/// How long the person is given to answer on their own device. The governor
-/// holds the invocation open meanwhile, so this bounds one question, not a
-/// session.
-pub const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 impl ShellNetwork {
     /// Put `question` to the person on one of their own devices, `room`
