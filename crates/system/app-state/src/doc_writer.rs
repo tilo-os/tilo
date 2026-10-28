@@ -922,6 +922,23 @@ impl DocWriter {
     /// # Errors
     /// The outstanding failure, or writes the store could not yet commit.
     pub fn try_flush(&self) -> Result<(), String> {
+        self.flush_before_commit(false)
+    }
+
+    /// [`Self::try_flush`] for a writer that must know whether the bytes are
+    /// *written*, not whether the store has committed them: a store that
+    /// commits on a thread of its own — the page's, whose host writes to
+    /// `IndexedDB` — answers every flush with "not yet", and the write is the
+    /// store's from then on. Only a refusal or a commit that failed is an
+    /// error; [`Self::durability_snapshot`] reports the outcome of the rest.
+    ///
+    /// # Errors
+    /// The outstanding failure, or a write the store refused.
+    pub fn try_flush_written(&self) -> Result<(), String> {
+        self.flush_before_commit(true)
+    }
+
+    fn flush_before_commit(&self, accepted_is_written: bool) -> Result<(), String> {
         let Some(owner) = &self.owner else {
             return Err(self
                 .progress
@@ -945,12 +962,16 @@ impl DocWriter {
             return Err(error.clone());
         }
         let started_only = durable_store::waiting::forbidden();
+        // The store took the writes and commits them itself: nothing a
+        // caller does makes it wait, so this is "written", not "failed".
+        let mut on_its_way = false;
         match flushed {
             Ok(()) => {}
+            Err(SeamError::Pending(_)) if accepted_is_written => on_its_way = true,
             Err(SeamError::Pending(_)) if started_only => {}
             Err(error) => return Err(error.to_string()),
         }
-        if progress.inflight.is_empty() || started_only {
+        if progress.inflight.is_empty() || started_only || on_its_way {
             if let Ok(history) = &self.private_history {
                 history.flush()?;
             }
@@ -1077,6 +1098,58 @@ mod tests {
             let loaded = owner.load().unwrap().expect("stored document");
             owner.accept(loaded).unwrap()
         }
+    }
+
+    /// A store whose host commits in its own time (the page's worker)
+    /// answers every flush with "not yet". That is a write on its way, not a
+    /// record that could not be stored — and a host that reports a failed
+    /// commit is still a failure.
+    #[test]
+    fn a_flush_its_store_commits_on_its_own_thread_is_written_not_failed() {
+        let queued = Rc::new(MemoryStore::queued());
+        let store: Rc<dyn DurableStore> = queued.clone();
+        let owner = Rc::new(
+            DocOwner::acquire(
+                store,
+                StorageKey::record("so.tilo.test", "room", "on-its-way"),
+            )
+            .unwrap(),
+        );
+        let mut doc = owner.new_document().unwrap();
+        let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.splice_text(&body, 0, 0, "draft").unwrap();
+        writer.request(&mut doc);
+        assert!(
+            writer.try_flush().is_err(),
+            "a flush that must prove durability still says nothing is committed yet"
+        );
+        assert_eq!(
+            writer.try_flush_written(),
+            Ok(()),
+            "but the bytes are written: the host commits them"
+        );
+        for write in queued.drain() {
+            queued.acknowledge(write.revision, Ok(())).unwrap();
+        }
+        assert_eq!(writer.try_flush(), Ok(()), "and once it has");
+        assert_eq!(writer.try_flush_written(), Ok(()));
+
+        // What the host could not commit is said.
+        doc.splice_text(&body, 5, 0, "!").unwrap();
+        writer.request(&mut doc);
+        for write in queued.drain() {
+            queued
+                .acknowledge(write.revision, Err("the disk is full".into()))
+                .unwrap();
+        }
+        let failed = writer.try_flush_written();
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|error| error.contains("disk is full")),
+            "a failed commit is reported: {failed:?}"
+        );
     }
 
     /// Opening a record that is already stored must never wait on the disk:
