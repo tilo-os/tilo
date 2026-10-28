@@ -454,12 +454,22 @@ impl CapnpBrokerState {
                         .as_ref()
                         .is_some_and(|descriptor| &descriptor.address == address)
             });
-        let (app_id, labels, risk) = if let Some(row) = offered {
+        let (app_id, labels, risk, draft) = if let Some(row) = offered {
             let descriptor = row.action?;
+            // The invocation as the person reviews it, field by field: the
+            // draft a run's question shows them, rendered the same way.
+            let draft = match &request.argument {
+                tilo_actions::remote::InvokeArgument::Json(arguments) => {
+                    Some(tilo_actions::Draft::render(&descriptor, arguments))
+                }
+                _ => None,
+            }
+            .filter(|draft| !draft.fields.is_empty());
             (
                 row.app_id,
                 (descriptor.resource_label, descriptor.action_label),
                 descriptor.contract.risk,
+                draft,
             )
         } else {
             let directory = self.witness_directory(provider, room, request.revision.as_deref())?;
@@ -467,6 +477,7 @@ impl CapnpBrokerState {
                 directory.app_id,
                 (address.resource.clone(), address.action.clone()),
                 tilo_actions::RiskLevel::Low,
+                None,
             )
         };
         let shown = self
@@ -524,7 +535,7 @@ impl CapnpBrokerState {
                 moderation,
                 preview: None,
                 scope: None,
-                draft: None,
+                draft,
             },
             binding,
             actor,
