@@ -120,7 +120,7 @@ impl ContentPutsStore {
         let bytes = &bytes[..complete];
         // The first line is the snapshot once the file was compacted; a file
         // whose writes all predate that holds one bare put per line.
-        let (snapshot_len, snapshot_puts) = match bytes.starts_with(b"{\"version\"") {
+        let snapshot_len = match bytes.starts_with(b"{\"version\"") {
             true => {
                 let line = bytes
                     .split_inclusive(|byte| *byte == b'\n')
@@ -131,9 +131,9 @@ impl ContentPutsStore {
                 if !matches!(snapshot.version, 1..=VERSION) {
                     return Err("content put attribution version unsupported".into());
                 }
-                (line.len(), snapshot.puts)
+                line.len()
             }
-            false => (0, Vec::new()),
+            false => 0,
         };
         let compacted = snapshot_len != 0;
         let mut appended = Vec::new();
