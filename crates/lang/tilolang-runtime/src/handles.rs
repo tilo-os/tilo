@@ -40,9 +40,15 @@ pub struct ActionState {
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
     pub scenario: bool,
-    /// The people a scenario acts as (`as who { ... }`), innermost last; `invoker` reads the
-    /// last one, or `invoker` above when there is none.
-    pub acting_as: Vec<Principal>,
+    /// The people a scenario acts as (`as who at time { ... }`), innermost last, each with the
+    /// time it acts at when it names one; `invoker` and `now` read the last one, or `invoker`
+    /// and the invocation's time when there is none.
+    pub acting_as: Vec<(Principal, Option<String>)>,
+    /// What the change records about its cause; a scenario commits each `as` block under it,
+    /// as the person and at the time the block names.
+    pub note: Box<crate::store::ChangeNote>,
+    /// The resources the transaction changed, as [`ResourceRef::id_string`] writes them.
+    pub touched: std::collections::BTreeSet<String>,
 }
 
 /// A block an action asked the host to run after it commits.

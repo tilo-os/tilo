@@ -308,3 +308,18 @@ search.md, "What a type declares" and "Types, references and paths".
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
   the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
   parameters are gone.
+- **Reflection reads the log, and may not have it.** `created(r)` and `updated(r)` are
+  `Option<host.Version>` (`who`, `at`, `what`): a resource whose changes the device has not
+  read yet has no versions to show, and code says what it shows then. A version is a change
+  that wrote the resource itself (a field, or its insertion), not one of its items. The runtime
+  records each change's resources and time with it (`ChangeNote::touched`, `::at`; on Tilo,
+  `DynAction::changed` and `Authorship::at`, read back from the record's changes).
+- **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
+  before, then the block, as `who` at `time`; history names the scenario as the action, since
+  seed data is the scenario's doing. Rolling back on a failure undoes the last block only.
+- **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
+  one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
+  `send(c, draft).then(set(draft, ""))`; a button presents the first action.
+- **`if let`, `?.`, `??` and key paths add no context rules.** A match stays exhaustive in a
+  view as anywhere; absent renders nothing through `if let` and `Option<View>` parameters,
+  which are type rules. `a?.b.c` is not a chain: write `a?.b?.c`.

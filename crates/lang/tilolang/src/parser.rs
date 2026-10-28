@@ -5,10 +5,11 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl,
-    EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, MatchArm, MergeSpec,
-    Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl, SearchBlock,
-    SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart, TypeDecl,
-    TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
+    EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, LetBind, MatchArm,
+    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
+    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart,
+    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl,
+    ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
@@ -1267,8 +1268,14 @@ impl<'a> Parser<'a> {
             Tok::Kw("as") => {
                 self.bump();
                 let who = self.expr()?;
+                let at = if matches!(self.peek(), Tok::Ident(w) if w == "at") {
+                    self.bump();
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
                 let body = self.block()?;
-                StmtKind::As { who, body }
+                StmtKind::As { who, at, body }
             }
             Tok::Kw("return") => {
                 self.bump();
@@ -1386,12 +1393,18 @@ impl<'a> Parser<'a> {
 
     fn or_expr(&mut self) -> PResult<Expr> {
         let mut lhs = self.and_expr()?;
-        while self.eat_kw("or") {
+        loop {
+            let op = if self.eat_kw("or") {
+                BinOp::Or
+            } else if self.eat(&Tok::QQ) {
+                BinOp::Coalesce
+            } else {
+                return Ok(lhs);
+            };
             self.skip_nl();
             let rhs = self.and_expr()?;
-            lhs = bin(BinOp::Or, lhs, rhs);
+            lhs = bin(op, lhs, rhs);
         }
-        Ok(lhs)
     }
 
     fn and_expr(&mut self) -> PResult<Expr> {
@@ -1507,6 +1520,27 @@ impl<'a> Parser<'a> {
                     },
                     span,
                 };
+            } else if self.is(&Tok::QDot) {
+                self.bump();
+                let name = self.ident("a field or method name after `?.`")?;
+                let mut end = name.span;
+                let args = if self.is(&Tok::LParen) {
+                    self.bump();
+                    let args = self.args()?;
+                    end = self.expect(&Tok::RParen)?;
+                    Some(args)
+                } else {
+                    None
+                };
+                let span = e.span.to(end);
+                e = Expr {
+                    kind: ExprKind::OptChain {
+                        base: Box::new(e),
+                        name,
+                        args,
+                    },
+                    span,
+                };
             } else if self.is(&Tok::LParen) {
                 self.bump();
                 let args = self.args()?;
@@ -1577,6 +1611,10 @@ impl<'a> Parser<'a> {
             Tok::Duration(v, u) => {
                 self.bump();
                 ExprKind::Duration(v, u)
+            }
+            Tok::Calendar(text) => {
+                self.bump();
+                ExprKind::Calendar(text)
             }
             Tok::Kw("true") => {
                 self.bump();
@@ -1683,6 +1721,15 @@ impl<'a> Parser<'a> {
     /// `if cond { ... } [else (if ... | { ... })]`.
     fn if_expr(&mut self) -> PResult<Expr> {
         let start = self.expect_kw("if")?;
+        if self.is_kw("let") {
+            let binds = self.let_binds()?;
+            let then = self.block()?;
+            let els = self.else_expr()?;
+            return Ok(Expr {
+                kind: ExprKind::IfLet { binds, then, els },
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            });
+        }
         let cond = self.expr()?;
         if matches!(self.peek(), Tok::Ident(n) if n == "then") {
             let span = self.span();
@@ -1711,6 +1758,46 @@ impl<'a> Parser<'a> {
             },
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    /// `let a = x, b = y` after `if`.
+    fn let_binds(&mut self) -> PResult<Vec<LetBind>> {
+        self.expect_kw("let")?;
+        let mut binds = Vec::new();
+        loop {
+            let name = self.ident("a name for the Option's value")?;
+            if !self.is(&Tok::Assign) {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "`if let` binds a name to an Option's value: `if let m = c.messages.last() { ... }`",
+                );
+            }
+            self.bump();
+            let value = self.expr()?;
+            binds.push(LetBind { name, value });
+            if !self.eat(&Tok::Comma) {
+                return Ok(binds);
+            }
+            // `if let a = x, let b = y` reads as well; the second `let` is optional.
+            self.eat_kw("let");
+        }
+    }
+
+    /// An `else` branch: another `if`, or a block.
+    fn else_expr(&mut self) -> PResult<Option<Box<Expr>>> {
+        if !self.eat_kw("else") {
+            return Ok(None);
+        }
+        if self.is_kw("if") {
+            return Ok(Some(Box::new(self.if_expr()?)));
+        }
+        let b = self.block()?;
+        let span = b.span;
+        Ok(Some(Box::new(Expr {
+            kind: ExprKind::Block(b),
+            span,
+        })))
     }
 
     /// `.name` or `.name(a, b)` before the `=>` of a match arm.
@@ -1976,6 +2063,15 @@ impl<'a> Parser<'a> {
     /// `if cond { ui } [else (if ... | { ui })]` in a view body.
     fn ui_if(&mut self) -> PResult<UiStmt> {
         let start = self.expect_kw("if")?;
+        if self.is_kw("let") {
+            let binds = self.let_binds()?;
+            let then = self.ui_block()?;
+            let els = self.ui_else()?;
+            return Ok(UiStmt {
+                kind: UiKind::IfLet { binds, then, els },
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            });
+        }
         let cond = self.expr()?;
         let then = self.ui_block()?;
         let els = if self.eat_kw("else") {
@@ -1991,6 +2087,16 @@ impl<'a> Parser<'a> {
             kind: UiKind::If { cond, then, els },
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    fn ui_else(&mut self) -> PResult<Option<Vec<UiStmt>>> {
+        if !self.eat_kw("else") {
+            return Ok(None);
+        }
+        if self.is_kw("if") {
+            return Ok(Some(vec![self.ui_if()?]));
+        }
+        Ok(Some(self.ui_block()?))
     }
 
     fn ui_call(&mut self) -> PResult<UiCall> {

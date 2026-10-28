@@ -148,6 +148,36 @@ impl Core {
                 self.note_state_read(key, generation, &value)?;
                 self.ret_h(value)
             }
+            Imp::Versions => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let id = target.target.id_string();
+                let versions = self
+                    .store
+                    .borrow()
+                    .versions(&target.target)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                // The view runs again when any field of the resource changes: a new version.
+                let fields: Vec<String> = self
+                    .type_of_ref(&target.target.ty)
+                    .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
+                    .unwrap_or_default();
+                if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+                    for field in fields {
+                        vs.reads.push((id.clone(), field));
+                    }
+                }
+                let list = versions
+                    .into_iter()
+                    .map(|v| {
+                        Value::Tuple(vec![
+                            Value::Principal(Principal(v.who)),
+                            Value::Text(v.at),
+                            Value::Text(self.action_label(&v.action)),
+                        ])
+                    })
+                    .collect();
+                self.ret_h(Value::List(list))
+            }
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -187,6 +217,19 @@ impl Core {
             }
             _ => trap("not a platform import"),
         }
+    }
+
+    /// What an action is called where history names it: its label, or what the host did.
+    fn action_label(&self, id: &str) -> String {
+        if let Some(found) = self
+            .registry
+            .borrow()
+            .action_package(id)
+            .and_then(|pkg| pkg.action(id).map(label_of))
+        {
+            return found;
+        }
+        sentence(id.trim_start_matches('$'))
     }
 
     /// Take a view state slot read into the running view's reads, when a view runs.

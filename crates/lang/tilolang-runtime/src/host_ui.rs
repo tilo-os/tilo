@@ -19,6 +19,9 @@ pub const SET_ACTION: &str = "$set";
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
 
+/// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
+pub const THEN_ACTION: &str = "$then";
+
 impl Core {
     fn with_view<R>(&self, f: impl FnOnce(&mut ViewState) -> Result<R, String>) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();
@@ -116,6 +119,23 @@ impl Core {
                 Value::Text(key.state),
                 value,
             ],
+            author,
+        }))
+    }
+
+    /// `a.then(b)`: `a`, and once it is done, `b` (a composer's send, then its entry cleared).
+    fn act_then(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let first = self.val(a.h(0)?)?;
+        let next = self.val(a.h(1)?)?;
+        for v in [&first, &next] {
+            if !matches!(v, Value::Action(_)) {
+                return trap(format!("`then` joins actions, not {}", v.kind_name()));
+            }
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: THEN_ACTION.to_owned(),
+            args: vec![first, next],
             author,
         }))
     }
@@ -256,6 +276,7 @@ impl Core {
             Imp::StateGet => self.state_get(a),
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
+            Imp::ActThen => self.act_then(a),
             Imp::ActOpen => self.act_open(a),
             _ => trap("not a ui import"),
         }

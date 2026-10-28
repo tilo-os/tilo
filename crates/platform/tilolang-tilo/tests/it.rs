@@ -21,6 +21,7 @@ mod outcomes;
 mod policy;
 mod publication;
 mod records;
+mod reflection;
 #[cfg(feature = "room")]
 mod room;
 mod scenarios;

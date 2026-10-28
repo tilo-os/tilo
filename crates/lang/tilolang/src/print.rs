@@ -171,6 +171,23 @@ fn prec_of(e: &Expr) -> u8 {
     }
 }
 
+/// `let a = x, b = y` of an `if let`.
+fn binds_text(binds: &[crate::ast::LetBind], level: usize) -> String {
+    let parts: Vec<String> = binds
+        .iter()
+        .map(|b| format!("{} = {}", b.name.name, expr_text(&b.value, 0, level)))
+        .collect();
+    format!("let {}", parts.join(", "))
+}
+
+/// A calendar literal as written: an instant without its seconds when they are zero.
+fn calendar_text(text: &str) -> String {
+    match text.strip_suffix(":00Z") {
+        Some(minutes) if text.len() == 20 => format!("{minutes}Z"),
+        _ => text.to_owned(),
+    }
+}
+
 /// An expression in its canonical text, on one line where it fits: how a description quotes
 /// what the source wrote (an action parameter's default).
 pub(crate) fn expr_source(e: &Expr) -> String {
@@ -183,6 +200,7 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         ExprKind::Float(v) => float_text(*v),
         ExprKind::Length(v, u) => format!("{v}{}", u.text()),
         ExprKind::Duration(v, u) => format!("{v}{u}"),
+        ExprKind::Calendar(text) => calendar_text(text),
         ExprKind::Range { lo, hi } => {
             let end = |x: &Option<Box<Expr>>| {
                 x.as_deref()
@@ -245,6 +263,22 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
             }
             out
         }
+        ExprKind::IfLet { binds, then, els } => {
+            let mut out = format!(
+                "if {} {}",
+                binds_text(binds, level),
+                block_text(then, level)
+            );
+            match els.as_deref() {
+                None => {}
+                Some(Expr {
+                    kind: ExprKind::Block(b),
+                    ..
+                }) => out.push_str(&format!(" else {}", block_text(b, level))),
+                Some(other) => out.push_str(&format!(" else {}", expr_text(other, 0, level))),
+            }
+            out
+        }
         ExprKind::Block(b) => block_text(b, level),
         ExprKind::Match { scrutinee, arms } => {
             let mut out = format!("match {} {{\n", expr_text(scrutinee, 0, level));
@@ -292,6 +326,13 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
             )
         }
         ExprKind::Field { base, name } => format!("{}.{}", expr_text(base, 8, level), name.name),
+        ExprKind::OptChain { base, name, args } => {
+            let call = args
+                .as_ref()
+                .map(|a| format!("({})", args_text(a, level)))
+                .unwrap_or_default();
+            format!("{}?.{}{call}", expr_text(base, 8, level), name.name)
+        }
         ExprKind::Call { callee, args } => {
             format!(
                 "{}({})",
@@ -567,9 +608,13 @@ impl Printer {
                 self.block_body(body);
                 self.line("}");
             }
-            StmtKind::As { who, body } => {
+            StmtKind::As { who, at, body } => {
                 let w = self.ex(who);
-                self.line(&format!("as {w} {{"));
+                let at = at
+                    .as_ref()
+                    .map(|t| format!(" at {}", self.ex(t)))
+                    .unwrap_or_default();
+                self.line(&format!("as {w}{at} {{"));
                 self.block_body(body);
                 self.line("}");
             }
@@ -618,7 +663,7 @@ impl Printer {
                 self.ui_body(body);
                 self.line("}");
             }
-            UiKind::If { .. } => self.ui_if(s, "if"),
+            UiKind::If { .. } | UiKind::IfLet { .. } => self.ui_if(s, "if"),
             UiKind::Match { scrutinee, arms } => {
                 let m = self.ex(scrutinee);
                 self.line(&format!("match {m} {{"));
@@ -683,10 +728,11 @@ impl Printer {
 
     /// `if`, `else if` and `else` of a view body; `lead` is the text before the condition.
     fn ui_if(&mut self, s: &UiStmt, lead: &str) {
-        let UiKind::If { cond, then, els } = &s.kind else {
-            return;
+        let (c, then, els) = match &s.kind {
+            UiKind::If { cond, then, els } => (self.ex(cond), then, els),
+            UiKind::IfLet { binds, then, els } => (binds_text(binds, self.level), then, els),
+            _ => return,
         };
-        let c = self.ex(cond);
         self.line(&format!("{lead} {c} {{"));
         self.ui_body(then);
         match els.as_deref() {
@@ -694,7 +740,7 @@ impl Printer {
             Some(
                 [
                     next @ UiStmt {
-                        kind: UiKind::If { .. },
+                        kind: UiKind::If { .. } | UiKind::IfLet { .. },
                         ..
                     },
                 ],

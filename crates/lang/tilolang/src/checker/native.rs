@@ -836,7 +836,15 @@ impl Checker<'_> {
         let first = args
             .iter()
             .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))?;
-        let ExprKind::Call { callee, .. } = &first.value.kind else {
+        // `send(c, draft).then(set(draft, ""))` presents as `send`.
+        let mut applied = &first.value;
+        while let ExprKind::Call { callee, .. } = &applied.kind
+            && let ExprKind::Field { base, name } = &callee.kind
+            && name.name == "then"
+        {
+            applied = base;
+        }
+        let ExprKind::Call { callee, .. } = &applied.kind else {
             return None;
         };
         let found = match &callee.kind {
@@ -1045,6 +1053,16 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
     match &e.kind {
         ExprKind::Ident(n) => names.iter().find(|x| **x == n).copied(),
         ExprKind::Field { base, .. } => mentions(base, names),
+        ExprKind::OptChain { base, args, .. } => mentions(base, names).or_else(|| {
+            args.iter()
+                .flatten()
+                .find_map(|a| mentions(&a.value, names))
+        }),
+        ExprKind::IfLet { binds, then, els } => binds
+            .iter()
+            .find_map(|b| mentions(&b.value, names))
+            .or_else(|| block(then))
+            .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
         ExprKind::Unary { operand, .. } | ExprKind::Try(operand) => mentions(operand, names),
         ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
         ExprKind::Call { callee, args } => {
@@ -1074,6 +1092,7 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         | ExprKind::Float(_)
         | ExprKind::Length(..)
         | ExprKind::Duration(..)
+        | ExprKind::Calendar(_)
         | ExprKind::Bool(_)
         | ExprKind::Ref(_)
         | ExprKind::Lambda { .. }

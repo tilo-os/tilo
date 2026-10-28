@@ -43,7 +43,7 @@ use tilolang_runtime::ids::{AppId, DocId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
-    SubId, Txn,
+    SubId, Txn, Version,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -86,6 +86,44 @@ struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
+}
+
+/// Add the versions each of `changes` made to `index`, by the resources it changed: who made
+/// it, when (the time its action recorded, else the change's), and by which action.
+fn note_versions<'c>(
+    index: &mut HashMap<String, Vec<Version>>,
+    changes: impl IntoIterator<Item = &'c automerge::Change>,
+) {
+    for change in changes {
+        let Some(context) = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+        else {
+            continue;
+        };
+        let Some(encoded) = context.action.as_ref() else {
+            continue;
+        };
+        if encoded.type_id != crate::action::ACTION_TYPE {
+            continue;
+        }
+        let Ok(action) = serde_json::from_slice::<DynAction>(&encoded.payload) else {
+            continue;
+        };
+        let at = action
+            .authorship
+            .at
+            .clone()
+            .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
+        let version = Version {
+            who: action.authorship.invoker.clone(),
+            at,
+            action: action.action_id.clone(),
+        };
+        for resource in action.changed() {
+            index.entry(resource).or_default().push(version.clone());
+        }
+    }
 }
 
 /// Items of collections a change touched: per collection, the ids of the items added, removed
@@ -288,6 +326,9 @@ struct Inner {
     next_ticket: u64,
     journals: BTreeMap<RunId, Journal>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
+    /// The versions of each resource the record's changes made (reflection), built from the
+    /// record the first time one is asked for and kept up as it moves.
+    versions: Option<HashMap<String, Vec<Version>>>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
     /// the record, and this device alone settles them.
@@ -611,6 +652,7 @@ impl TiloStore {
                 next_ticket: 1,
                 journals: BTreeMap::new(),
                 notes: BTreeMap::new(),
+                versions: None,
                 device: instance.clone(),
                 instance,
                 counter: 0,
@@ -837,6 +879,9 @@ impl TiloStore {
             .is_some_and(|mirror| mirror.committed_document().get_heads() == inner.seen);
         let changed = if caught_up {
             let changes = record.committed_document().get_changes(&inner.seen);
+            if let Some(versions) = inner.versions.as_mut() {
+                note_versions(versions, &changes);
+            }
             let applied = inner.mirror_mut().map(|mirror| {
                 let applied = mirror.apply_incoming(changes.iter().cloned());
                 write_as_a_known_actor(mirror);
@@ -852,6 +897,7 @@ impl TiloStore {
         inner.seen = heads;
         let Some(mut changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
+            inner.versions = None;
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.mirror = Some(Arc::new(mirror_of(record)));
             inner.index = scan_of(inner.mirror.as_deref());
@@ -1387,6 +1433,7 @@ impl Inner {
 
     /// Take the room record: the mirror is a copy of it, and each index catches up with it.
     fn attach(&mut self, record: &Doc) {
+        self.versions = None;
         let mirror = mirror_of(record);
         self.seen = record.committed_document().get_heads();
         self.index = scan(&mirror);
@@ -2207,6 +2254,7 @@ impl Store for TiloStore {
                 invoker: note.invoker.clone(),
                 chain: note.chain.clone(),
                 module: note.module.clone(),
+                at: note.at.clone(),
             },
             edits: state.edits,
         };
@@ -2342,6 +2390,23 @@ impl Store for TiloStore {
             .collect())
     }
 
+    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        let mut inner = self.inner.borrow_mut();
+        if inner.versions.is_none() {
+            let mut built = HashMap::new();
+            if let Some(mirror) = inner.mirror.as_deref() {
+                note_versions(&mut built, &mirror.committed_document().get_changes(&[]));
+            }
+            inner.versions = Some(built);
+        }
+        Ok(inner
+            .versions
+            .as_ref()
+            .and_then(|versions| versions.get(&at.id_string()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {
         let inner = self.inner.borrow();
         if !inner.index.contains_key(doc) {
@@ -2415,6 +2480,7 @@ impl Store for TiloStore {
                 invoker: note.invoker.clone(),
                 chain: note.chain.clone(),
                 module: note.module.clone(),
+                at: note.at.clone(),
             },
             edits: vec![edit],
         });

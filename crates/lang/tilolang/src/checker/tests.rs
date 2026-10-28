@@ -459,7 +459,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "the shell is the root"
     );
     let (m, _) = lower(
-        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: c.draft)\n        }\n    }\n}",
+        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    lens draft: Text\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: draft)\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "chat"));
     let at = |s: &str| calls.iter().position(|c| c == s).expect(s);

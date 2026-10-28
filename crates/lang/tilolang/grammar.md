@@ -52,7 +52,7 @@ block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr
            | place ( "=" | "+=" | "-=" ) expr
            | "for" ident "in" expr block
-           | "as" expr block                                       (* in a scenario: act as a person *)
+           | "as" expr [ "at" expr ] block                          (* in a scenario: act as a person, at a time *)
            | "return" [ expr ]
            | expr ;
 place      = ident { "." ident } ;
@@ -60,21 +60,23 @@ place      = ident { "." ident } ;
 expr       = ident "->" expr                                       (* lambda: only as a method argument *)
            | [ or ] ".." [ or ]                                    (* range: a..b, a.., ..b *)
            | or ;
-or         = and { "or" and } ;
+or         = and { ( "or" | "??" ) and } ;                        (* `??`: an Option's value or a fallback *)
 and        = not { "and" not } ;
 not        = "not" not | cmp ;
 cmp        = add [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add ] ;
 add        = mul { ( "+" | "-" ) mul } ;
 mul        = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "try" ) unary | postfix ;
-postfix    = primary { "." ident | "(" [ arg { "," arg } ] ")" } ;
+postfix    = primary { "." ident | "?." ident [ "(" [ arg { "," arg } ] ")" ]
+                     | "(" [ arg { "," arg } ] ")" } ;
 arg        = [ ident ":" ] expr ;
-primary    = int | float | length | duration | string | "true" | "false" | reference
+primary    = int | float | length | duration | calendar | string | "true" | "false" | reference
            | ident | "root" type
            | "." ident [ "(" [ arg { "," arg } ] ")" ]             (* enum value: .some(x), .primary *)
            | "(" expr { "," expr } ")" | "[" [ expr { "," expr } ] "]"
            | block | if | match ;
-if         = "if" expr block [ "else" ( if | block ) ] ;
+if         = "if" ( expr | let_binds ) block [ "else" ( if | block ) ] ;
+let_binds  = "let" ident "=" expr { "," [ "let" ] ident "=" expr } ;   (* each an Option *)
 match      = "match" expr "{" { pattern "=>" expr ( "," | NL ) } "}" ;
 pattern    = "." ident [ "(" ident { "," ident } ")" ] ;           (* "_" skips a payload field *)
 
@@ -82,7 +84,7 @@ ui_block   = "{" { ui_stmt NL } "}" ;
 ui_stmt    = ( "window" | "lens" ) ident ":" type [ "=" expr ]     (* view state, at the top *)
            | "let" ident "=" expr
            | "for" ident "in" expr ui_block
-           | "if" expr ui_block [ "else" ( ui_if | ui_block ) ]
+           | "if" ( expr | let_binds ) ui_block [ "else" ( ui_if | ui_block ) ]
            | "match" expr "{" { pattern "=>" ( ui_block | ui_stmt ) ( "," | NL ) } "}"
            | "on" ident [ "(" ident [ ":" type ] ")" ] ":" expr    (* an event and its action *)
            | ident ":" ui_block                                    (* a named slot *)
@@ -99,8 +101,12 @@ Tokens:
   `primary` and `destructive` are keywords only where the grammar above uses them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
+- `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or
+  `2026-06-29T07:02:30Z` (a Time, in UTC), or a month `2026-08` (only as a filter's value), as
+  search writes them.
 - `string` is `"..."`; `{expr}` inside it interpolates.
 - `reference` is `@app.Type:id`, with `/field:item` steps for a nested resource and an optional
   `@version` (`@so.tilo.todo.Todo:01J8/items:3K`).
+- `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
 - `//` starts a comment to the end of the line. `///` is a doc comment: it belongs to the
   declaration that follows, is kept in the metadata, and is what agents read.

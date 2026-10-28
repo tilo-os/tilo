@@ -90,6 +90,16 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Version",
+        id: "host-version",
+        doc: "A version of a resource, as history keeps it: who made it, when, and by which action.",
+        fields: &[
+            ("who", "Principal", "Who made it: a person, or an agent."),
+            ("at", "Time", "When it was made."),
+            ("what", "Text", "The action that made it, by its label."),
+        ],
+    },
+    ValueType {
         name: "Lens",
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",

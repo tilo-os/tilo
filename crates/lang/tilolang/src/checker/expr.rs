@@ -84,6 +84,20 @@ impl Checker<'_> {
                 self.err("E105", e.span, format!("{what} is the value of a filter, resolved when the query is answered: `query(T, received: -7d)`, `query(T, due: today..today + 7d)`"));
                 Ex::error()
             }
+            ExprKind::Calendar(text) => match text.len() {
+                10 => Ex::str(text).typed(Ty::Date),
+                20 => Ex::str(text).typed(Ty::Time),
+                _ => {
+                    self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
+                    Ex::error()
+                }
+            },
+            ExprKind::IfLet { binds, then, els } => {
+                self.if_let_value(binds, then, els.as_deref(), exp, e.span)
+            }
+            ExprKind::OptChain { base, name, args } => {
+                self.opt_chain(base, name, args.as_deref(), e.span)
+            }
             ExprKind::Bool(b) => Ex::new(Ek::Bool(*b), Ty::Bool),
             ExprKind::Str(parts) => self.string(parts),
             ExprKind::Ref(r) => self.ref_lit(r, e.span),
@@ -97,10 +111,15 @@ impl Checker<'_> {
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {
-                self.err("E050", e.span, "a lambda `x -> ...` can only be a direct argument of map, filter, any, all, find, count or sort_by; it cannot be stored or passed around");
+                self.err("E050", e.span, "a lambda `x -> ...` can only be a direct argument of map, filter, any, all, find, count, sort_by or remove_where; it cannot be stored or passed around");
                 Ex::error()
             }
             ExprKind::Unary { op, operand } => self.unary(*op, operand, e.span),
+            ExprKind::Binary {
+                op: BinOp::Coalesce,
+                lhs,
+                rhs,
+            } => self.coalesce(lhs, rhs, exp, e.span),
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Field { base, name } => {
                 if matches!(&base.kind, ExprKind::Ident(n) if n == "space")
@@ -358,9 +377,11 @@ impl Checker<'_> {
         }
     }
 
-    /// `root T` in a scenario: the workspace's resource of the root type `T`, which the host
-    /// creates with the id `root-<type id>`.
-    fn root_of(&mut self, t: &ast::TypeExpr, span: Span) -> Ex {
+    /// `root T`: the workspace's resource of the root type `T`, of this package or of one it
+    /// uses (`root notes.Notebook`), which the host creates with the id `root-<type id>` and
+    /// which reads as it starts until then. What code may do with it is what it may do with any
+    /// resource of that type.
+    fn root_of(&mut self, t: &ast::TypeExpr, _span: Span) -> Ex {
         let env = self.env;
         let roots: Vec<&str> = env.roots.iter().map(|k| k.name.as_str()).collect();
         let roots = if roots.is_empty() {
@@ -368,10 +389,6 @@ impl Checker<'_> {
         } else {
             format!("its roots: {}", roots.join(", "))
         };
-        if !self.st.scenario {
-            self.err("E094", span, "`root T` names the workspace's root resource, which only a scenario reaches; elsewhere take the resource as a parameter");
-            return Ex::error();
-        }
         let info = match &t.kind {
             ast::TypeExprKind::Named(path) => match path.as_slice() {
                 [name] => env

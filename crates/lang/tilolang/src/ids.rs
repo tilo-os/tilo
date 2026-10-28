@@ -337,7 +337,7 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
             UiKind::For { body, .. } | UiKind::Slot { body, .. } => {
                 collect_anchors(view, body, out);
             }
-            UiKind::If { then, els, .. } => {
+            UiKind::If { then, els, .. } | UiKind::IfLet { then, els, .. } => {
                 collect_anchors(view, then, out);
                 if let Some(e) = els {
                     collect_anchors(view, e, out);

@@ -179,7 +179,7 @@ fn inner_ty(ty: &Ty) -> Option<&Ty> {
 
 impl Core {
     /// The type of `ty`'s package, and of the type itself.
-    fn type_of_ref(
+    pub(crate) fn type_of_ref(
         &self,
         ty: &str,
     ) -> Result<(Rc<crate::registry::Package>, Rc<TypeInfo>), String> {
@@ -308,11 +308,21 @@ impl Core {
         field: &FieldInfo,
         author: Option<&ModuleHash>,
     ) -> Result<Value, String> {
-        let fv = self
-            .store
-            .borrow()
-            .read(target, &spec(field))
-            .map_err(|e| e.to_string())?;
+        let fv = match self.store.borrow().read(target, &spec(field)) {
+            Ok(fv) => fv,
+            // A root nobody opened yet reads as it would start (`root T` names it anywhere).
+            Err(crate::store::StoreError::NotFound(_)) if target.is_unmade_root() => {
+                match field.kind {
+                    FieldKind::Collection => FieldValue::Items(Vec::new()),
+                    FieldKind::Set => FieldValue::Keys(Vec::new()),
+                    FieldKind::Map => FieldValue::Entries(Vec::new()),
+                    FieldKind::Counter => FieldValue::Counter(0),
+                    FieldKind::Text => FieldValue::Text(String::new()),
+                    FieldKind::Register => FieldValue::Absent,
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
@@ -470,10 +480,22 @@ impl Core {
     }
 
     fn apply_mut(&self, ctx: &MutCtx, m: &Mutation) -> HResult<Applied> {
-        self.store
+        let applied = self
+            .store
             .borrow_mut()
             .apply(ctx.txn, &ctx.target, m)
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        self.touched(ctx.target.id_string());
+        Ok(applied)
+    }
+
+    /// Note that the running action changed the resource `id`: a version of it (reflection).
+    fn touched(&self, id: String) {
+        if let Ok(frame) = self.frames.borrow_mut().top_mut()
+            && let FrameKind::Action(state) = &mut frame.kind
+        {
+            state.touched.insert(id);
+        }
     }
 
     fn res_set(&self, rh: i32, fh: i32, v: &Value) -> HResult<Option<Wasm>> {
@@ -574,6 +596,7 @@ impl Core {
             return trap("the store did not return the new item");
         };
         let target = ctx.target.item(&ctx.field.id, &id, item_ty.id.clone());
+        self.touched(target.id_string());
         self.init_item(&ctx, &item_ty, &target, &rec)?;
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Ref(RefValue {

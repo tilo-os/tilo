@@ -474,10 +474,16 @@ fn e094_scenarios_and_root() {
             "{base}scenario \"one\" {{\n    let r = root T\n}}\nscenario \"one\" {{\n    let r = root T\n}}"
         ),
     );
-    expect(
-        "E094",
-        &format!("{base}action a(x: T) {{\n    let r = root T\n}}"),
-    );
+    // A root is an expression anywhere: an action, a fn and a view reach it too.
+    ok(&format!(
+        "{base}action a(x: T) {{\n    let r = root T\n    r.n = 2\n}}"
+    ));
+    ok(&format!(
+        "{base}fn f() -> Int {{\n    let r = root T\n    r.n\n}}"
+    ));
+    ok(&format!(
+        "{base}view w() {{\n    let r = root T\n    text(r.t)\n}}"
+    ));
     expect(
         "E094",
         &format!("{base}type U {{\n    n: Int\n}}\nscenario \"s\" {{\n    let r = root U\n}}"),

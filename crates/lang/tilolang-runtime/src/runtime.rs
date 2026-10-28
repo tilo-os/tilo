@@ -561,6 +561,7 @@ impl Runtime {
                         chain: Vec::new(),
                         module: String::new(),
                         approved_by: None,
+                        ..ChangeNote::default()
                     };
                     self.core.store.borrow_mut().outbox_settle(&entry, &note)?;
                     report.delivered = report.delivered.saturating_add(1);

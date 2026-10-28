@@ -50,6 +50,10 @@ pub struct Authorship {
     pub chain: Vec<String>,
     /// The module hash that declares the action.
     pub module: String,
+    /// When the action was invoked, recorded like an argument: what reflection reads as the
+    /// time of the versions it made (a scenario's `as who at time` sets it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 impl Authorship {
@@ -168,6 +172,56 @@ impl DynAction {
     /// The action does not serialize.
     pub fn encode(&self) -> Result<EncodedAction, ActionError> {
         EncodedAction::encode(ACTION_TYPE, self)
+    }
+
+    /// The resources this action changed, as the runtime writes them
+    /// (`doc/field:item/...`): each one it edited, and each item it inserted. What reflection
+    /// reads a resource's versions from.
+    #[must_use]
+    pub fn changed(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |id: String| {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        };
+        for edit in &self.edits {
+            let mut edit = edit;
+            while let DynEdit::In { edit: inner, .. } = edit {
+                edit = inner;
+            }
+            match edit {
+                DynEdit::Create { id, .. } => add(id.clone()),
+                DynEdit::Edit { id, edit } => {
+                    // The resource is the path's field and item pairs; the field after them is
+                    // the one edited.
+                    let mut resource = id.clone();
+                    let mut field: Option<&str> = None;
+                    for segment in edit.path() {
+                        match segment {
+                            Segment::Field(name) => field = Some(name),
+                            Segment::Item(item) => {
+                                if let Some(name) = field.take() {
+                                    resource = format!("{resource}/{name}:{item}");
+                                }
+                            }
+                            Segment::Key(_) | Segment::Cell { .. } => {}
+                        }
+                    }
+                    add(resource.clone());
+                    if let (Some(name), tilo_resource::EditOp::InsertItem { id: Some(item), .. }) =
+                        (field, edit.op())
+                    {
+                        add(format!("{resource}/{name}:{item}"));
+                    }
+                }
+                DynEdit::Remove { .. }
+                | DynEdit::OutboxPush { .. }
+                | DynEdit::OutboxSettle { .. }
+                | DynEdit::In { .. } => {}
+            }
+        }
+        out
     }
 
     /// The resource ids this action writes, in order of first mention.

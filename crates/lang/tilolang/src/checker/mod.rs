@@ -23,6 +23,7 @@ mod component;
 mod enums;
 mod expr;
 mod native;
+mod optional;
 mod outcomes;
 mod platform;
 mod pred;
@@ -533,13 +534,15 @@ impl Checker<'_> {
                 self.emit(Stmt::ForList(Box::new(fl)));
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
-            StmtKind::As { who, body } => self.act_as(who, body, s.span),
+            StmtKind::As { who, at, body } => self.act_as(who, at.as_ref(), body, s.span),
             StmtKind::Expr(e) => self.expr_stmt(e),
         }
     }
 
     /// `as who { ... }` in a scenario: the block's action calls run with `invoker` = `who`.
-    fn act_as(&mut self, who: &ast::Expr, body: &ast::Block, span: Span) {
+    /// `as who at time { ... }` also records the block's changes at `time`, which `now` reads.
+    /// Each block is a change of its own, so history and reflection show it as `who` made it.
+    fn act_as(&mut self, who: &ast::Expr, at: Option<&ast::Expr>, body: &ast::Block, span: Span) {
         if !self.st.scenario {
             self.err("E094", span, "`as who { ... }` runs actions as a named person, which only a scenario does; elsewhere an action runs as whoever invokes it");
             let _ = self.expr(who, None);
@@ -547,7 +550,19 @@ impl Checker<'_> {
             return;
         }
         let who = self.expr_as(who, &Ty::Principal);
-        self.emit(Stmt::Eval(Ex::host(Imp::InvokerPush, vec![who], Ty::Unit)));
+        let opt = Ty::Option(Box::new(Ty::Time));
+        let at = match at {
+            Some(t) => {
+                let v = self.expr_as(t, &Ty::Time);
+                Self::some(v, &opt)
+            }
+            None => Ex::host(Imp::NoneV, Vec::new(), opt),
+        };
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::InvokerPush,
+            vec![who, at],
+            Ty::Unit,
+        )));
         for s in self.block_stmts(body) {
             self.emit(s);
         }
@@ -572,6 +587,9 @@ impl Checker<'_> {
                 self.emit(Stmt::If(cond, then, els));
             }
             ast::ExprKind::Match { scrutinee, arms } => self.match_stmt(scrutinee, arms, e.span),
+            ast::ExprKind::IfLet { binds, then, els } => {
+                self.if_let_stmt(binds, then, els.as_deref());
+            }
             ast::ExprKind::Block(b) => {
                 let stmts = self.block_stmts(b);
                 for s in stmts {

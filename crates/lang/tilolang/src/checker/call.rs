@@ -96,6 +96,9 @@ impl Checker<'_> {
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "created" | "updated" | "history" => {
+                return self.builtin_versions(name, args, span);
+            }
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
@@ -814,8 +817,10 @@ impl Checker<'_> {
         }
         let valid = matches!(
             (&f.ty, m),
-            (Ty::Collection(_), "insert" | "remove" | "move")
-                | (Ty::Set(_), "add" | "remove")
+            (
+                Ty::Collection(_),
+                "insert" | "remove" | "move" | "remove_where"
+            ) | (Ty::Set(_), "add" | "remove")
                 | (Ty::Map(_), "put" | "remove")
         );
         if !valid
@@ -837,7 +842,9 @@ impl Checker<'_> {
         {
             let t = self.show(&f.ty);
             let ops = match &f.ty {
-                Ty::Collection(_) => "insert, remove, move, len, matching and the list methods",
+                Ty::Collection(_) => {
+                    "insert, remove, remove_where, move, len, matching and the list methods"
+                }
                 Ty::Set(_) => "add, remove, len and the list methods",
                 _ => "put, remove, get (an Option of the value) and keys",
             };
@@ -901,6 +908,7 @@ impl Checker<'_> {
                 let idx = self.expr_as(&i.value, &Ty::Int);
                 Ex::host(Imp::CollMove, vec![b, fid, item, idx], Ty::Unit)
             }
+            (Ty::Collection(t), "remove_where") => self.remove_where(b, f, t, name, args, span),
             (Ty::Set(t), "add" | "remove") => {
                 if !self.arity(name, args, 1, span) {
                     return Ex::error();
@@ -941,6 +949,59 @@ impl Checker<'_> {
         }
     }
 
+    /// `items.remove_where(x -> x.done)`: removes every item the predicate holds of and gives how
+    /// many went.
+    fn remove_where(
+        &mut self,
+        b: Ex,
+        f: &FieldInfo,
+        t: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let owner = self.fresh(b.ty.clone());
+        let read = self.field_read(
+            Ex::local(owner, b.ty.clone()),
+            &ast::Ident {
+                name: f.name.clone(),
+                span: name.span,
+            },
+        );
+        let filter = ast::Ident {
+            name: "filter".into(),
+            span: name.span,
+        };
+        let gone = self.higher_order(read, t, &filter, args, span);
+        if gone.ty.is_error() {
+            return Ex::error();
+        }
+        let list_ty = gone.ty.clone();
+        let list = self.fresh(list_ty.clone());
+        let mut fl = self.new_for(Ex::local(list, list_ty.clone()), t);
+        fl.body.push(Stmt::Eval(Ex::host(
+            Imp::CollRemove,
+            vec![
+                Ex::local(owner, b.ty.clone()),
+                Ex::str(&f.id),
+                Ex::local(fl.item_local, t.clone()),
+            ],
+            Ty::Unit,
+        )));
+        let count = Ex::host(Imp::ListLen, vec![Ex::local(list, list_ty)], Ty::Int);
+        Ex::new(
+            Ek::Seq(
+                vec![
+                    Stmt::Set(owner, b),
+                    Stmt::Set(list, gone),
+                    Stmt::ForList(Box::new(fl)),
+                ],
+                Box::new(count),
+            ),
+            Ty::Int,
+        )
+    }
+
     /// `m.get(key)` and `m.keys()` of a `Map` field: reads, allowed wherever fields can be read.
     fn map_read(
         &mut self,
@@ -970,7 +1031,13 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
-    fn value_method(&mut self, r: Ex, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+    pub(super) fn value_method(
+        &mut self,
+        r: Ex,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
         let m = name.name.as_str();
         match (&r.ty.clone(), m) {
             (Ty::Error, _) => {
@@ -993,6 +1060,15 @@ impl Checker<'_> {
             }
             (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
+            // `a.then(b)`: an action that applies `a`, then `b` once `a` is done.
+            (Ty::Action, "then") => {
+                let [next] = args else {
+                    self.err("E022", span, "`.then` takes the action to apply next: `send(c, draft).then(set(draft, \"\"))`");
+                    return Ex::error();
+                };
+                let next = self.expr_as(&next.value, &Ty::Action);
+                Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
+            }
             (Ty::Enum(key), "label" | "icon" | "name") if args.is_empty() => {
                 let key = key.clone();
                 self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
@@ -1076,17 +1152,14 @@ impl Checker<'_> {
             return Ex::host(Imp::ListLen, vec![list], Ty::Int);
         }
         let lambda = match args {
-            [a] if a.name.is_none() => match &a.value.kind {
-                ExprKind::Lambda { param, body } => Some((param, body)),
-                _ => None,
-            },
+            [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
             _ => None,
         };
         let Some((param, body)) = lambda else {
             self.err(
                 "E051",
                 span,
-                format!("`.{m}` takes one lambda such as `.{m}(x -> x.done)`"),
+                format!("`.{m}` takes one lambda such as `.{m}(x -> x.done)`, or a key path such as `.{m}(.done)`"),
             );
             for a in args {
                 if !matches!(a.value.kind, ExprKind::Lambda { .. }) {
@@ -1098,7 +1171,7 @@ impl Checker<'_> {
         // Over a collection, a lambda the store can answer is asked of it first; the collection
         // is held in a local for that, which the loop reads too.
         let pred = match (&list.ty, m) {
-            (Ty::Collection(_), "filter" | "count") => self.native_pred(elem, &param.name, body),
+            (Ty::Collection(_), "filter" | "count") => self.native_pred(elem, &param.name, &body),
             _ => None,
         };
         let (list, native) = match pred {
@@ -1114,7 +1187,7 @@ impl Checker<'_> {
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
         let (result, result_ty) = if m == "map" {
-            let v = self.expr(body, None);
+            let v = self.expr(&body, None);
             let out_ty = Ty::List(Box::new(v.ty.clone()));
             let out = self.fresh(out_ty.clone());
             self.emit(Stmt::Eval(Self::push_item(
@@ -1123,7 +1196,7 @@ impl Checker<'_> {
             )));
             (out, out_ty)
         } else {
-            self.filter_like(m, body, &item, elem)
+            self.filter_like(m, &body, &item, elem)
         };
         let mut inner = self.pop_sink();
         // Hoisted `Set` of the accumulator is emitted before the loop by the caller below.
@@ -1169,24 +1242,21 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let lambda = match args {
-            [a] if a.name.is_none() => match &a.value.kind {
-                ExprKind::Lambda { param, body } => Some((param, body)),
-                _ => None,
-            },
+            [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
             _ => None,
         };
         let Some((param, body)) = lambda else {
             self.err(
                 "E051",
                 span,
-                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`",
+                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`",
             );
             return Ex::error();
         };
         let mut fl = self.new_for(list, elem);
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
-        let key = self.expr(body, None);
+        let key = self.expr(&body, None);
         if !matches!(
             key.ty,
             Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Error

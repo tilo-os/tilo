@@ -13,7 +13,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, SET_ACTION};
+use crate::host_ui::{OPEN_ACTION, SET_ACTION, THEN_ACTION};
 use crate::ids::{DocId, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -306,17 +306,28 @@ impl ViewInstance {
                 "the action of event `{event}` on `{key}`"
             )));
         };
-        for arg in &mut aref.args {
-            if matches!(arg, Value::Event) {
-                *arg = value.cloned().ok_or_else(|| {
-                    RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
-                })?;
-            }
-        }
+        fill_event(&mut aref, value).map_err(|()| {
+            RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
+        })?;
+        self.run(&aref)
+    }
+
+    /// Run an action reference a control applies: a platform action, an action of a package,
+    /// or `a.then(b)`, which runs `b` once `a` is done.
+    fn run(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
         match aref.action.as_str() {
-            SET_ACTION => self.platform_set(&aref),
-            OPEN_ACTION => self.platform_open(&aref),
-            _ => self.core.invoke_direct(&self.live.viewer, &aref),
+            SET_ACTION => self.platform_set(aref),
+            OPEN_ACTION => self.platform_open(aref),
+            THEN_ACTION => {
+                let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed `then`".into()));
+                };
+                match self.run(first)? {
+                    InvokeOutcome::Done(_) => self.run(next),
+                    other => Ok(other),
+                }
+            }
+            _ => self.core.invoke_direct(&self.live.viewer, aref),
         }
     }
 
@@ -498,6 +509,8 @@ impl ViewInstance {
             chain: vec![view_module.0.clone()],
             module: view_module.0,
             approved_by: None,
+            at: Some(self.core.clock_now()),
+            touched: vec![target.id_string()],
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;
@@ -508,6 +521,18 @@ impl ViewInstance {
         store.commit(txn, &change)?;
         Ok(EditOutcome::Applied)
     }
+}
+
+/// Put the value an event carries where the action reference holds it, through `then`.
+fn fill_event(aref: &mut ActionRef, value: Option<&Value>) -> Result<(), ()> {
+    for arg in &mut aref.args {
+        match arg {
+            Value::Event => *arg = value.cloned().ok_or(())?,
+            Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 impl Drop for ViewInstance {

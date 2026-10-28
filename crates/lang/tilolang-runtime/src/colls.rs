@@ -143,12 +143,18 @@ pub(crate) fn listing_of(store: &dyn Store, coll: &CollRef) -> Result<Rc<Listing
         id: coll.field.clone(),
         kind: FieldKind::Collection,
     };
-    match (coll.filter.as_deref(), &coll.order) {
+    let listed = match (coll.filter.as_deref(), &coll.order) {
         (None, None) => store.listing(&coll.target, &spec),
         (Some(pred), None) => store.listing_where(&coll.target, &spec, &coll.item, pred),
         (pred, Some(order)) => {
             store.listing_query(&coll.target, &spec, &coll.item, pred, Some(order))
         }
+    };
+    match listed {
+        Err(StoreError::NotFound(_)) if coll.target.is_unmade_root() => {
+            Ok(Rc::new(Listing::from_ids(Vec::new())))
+        }
+        other => other,
     }
 }
 

@@ -12,6 +12,7 @@ mod common;
 mod components;
 mod errors;
 mod ids_lock;
+mod language;
 mod layout;
 mod multifile;
 mod native;

@@ -354,9 +354,11 @@ pub enum StmtKind {
         body: Block,
     },
     Return(Option<Expr>),
-    /// `as who { ... }`: in a scenario, the actions the block calls run with `invoker` = `who`.
+    /// `as who { ... }`: in a scenario, the actions the block calls run with `invoker` = `who`;
+    /// `as who at time { ... }` also with `now` = `time`.
     As {
         who: Expr,
+        at: Option<Expr>,
         body: Block,
     },
     Expr(Expr),
@@ -383,6 +385,8 @@ pub enum BinOp {
     Mul,
     Div,
     Rem,
+    /// `??`: the Option's value, or the fallback.
+    Coalesce,
 }
 
 impl BinOp {
@@ -401,13 +405,14 @@ impl BinOp {
             Self::Mul => "*",
             Self::Div => "/",
             Self::Rem => "%",
+            Self::Coalesce => "??",
         }
     }
 
     /// Binding strength, higher binds tighter.
     pub const fn prec(self) -> u8 {
         match self {
-            Self::Or => 1,
+            Self::Or | Self::Coalesce => 1,
             Self::And => 2,
             Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => 4,
             Self::Add | Self::Sub => 5,
@@ -451,6 +456,9 @@ pub enum ExprKind {
     Length(f64, crate::types::LengthUnit),
     /// `7d`, `5m`: a length of time, the value of a filter (`received: -7d`).
     Duration(i64, &'static str),
+    /// `2026-06-29` (a Date), `2026-06-29T07:02:00Z` (a Time) or `2026-08` (a month, the value
+    /// of a filter), in canonical ISO text.
+    Calendar(String),
     /// `a..b`, `a..`, `..b`: a range, the value of a filter (`due: today()..today() + 7d`).
     Range {
         lo: Option<Box<Expr>>,
@@ -465,6 +473,13 @@ pub enum ExprKind {
     /// `if cond { ... } else { ... }`: the value of the branch taken, or a statement.
     If {
         cond: Box<Expr>,
+        then: Block,
+        els: Option<Box<Expr>>,
+    },
+    /// `if let a = x, b = y { ... } else { ... }`: the first block with each Option's value
+    /// bound, when every one has one; else the `else` branch.
+    IfLet {
+        binds: Vec<LetBind>,
         then: Block,
         els: Option<Box<Expr>>,
     },
@@ -497,6 +512,13 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Ident,
     },
+    /// `x?.name` or `x?.name(args)`: the field or method of the Option `x`'s value, as an
+    /// Option; `.none` when `x` is.
+    OptChain {
+        base: Box<Expr>,
+        name: Ident,
+        args: Option<Vec<Arg>>,
+    },
     Call {
         callee: Box<Expr>,
         args: Vec<Arg>,
@@ -504,8 +526,15 @@ pub enum ExprKind {
     /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
-    /// `root T`: in a scenario, the workspace's resource of the root type `T`.
+    /// `root T`: the workspace's resource of the root type `T`.
     Root(TypeExpr),
+}
+
+/// `name = value` of an `if let`: `value` is an Option, `name` its value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LetBind {
+    pub name: Ident,
+    pub value: Expr,
 }
 
 /// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
@@ -549,6 +578,12 @@ pub enum UiKind {
     Let {
         name: Ident,
         value: Expr,
+    },
+    /// `if let a = x, b = y { ... } else { ... }` in a view body.
+    IfLet {
+        binds: Vec<LetBind>,
+        then: Vec<UiStmt>,
+        els: Option<Vec<UiStmt>>,
     },
     /// `window name: T = default` or `lens name: T = default`.
     State(StateDecl),
