@@ -346,6 +346,14 @@ impl Dev {
                 .arg(&bundle)
                 .arg("--include-bin")
                 .arg(&runtime.binary)
+                // The tilolang host the session's bundle carries beside it.
+                .args(
+                    Some(self.bin.join("tilolang-host"))
+                        .filter(|host| host.is_file())
+                        .map(|host| [std::ffi::OsString::from("--include-bin"), host.into()])
+                        .into_iter()
+                        .flatten(),
+                )
                 .arg("--identity")
                 .arg(&runtime.identity_file)
                 .stdout(std::process::Stdio::null()),
