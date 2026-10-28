@@ -375,20 +375,6 @@ inputs = ["Cargo.lock", "**/Cargo.toml", "**/Containerfile", "**/Containerfile.*
 pre_push = true
 
 [[step]]
-name = "tls-stack"
-label = "rustls is the only TLS stack"
-run = "python3 tools/policy/check_tls_stack.py"
-inputs = ["Cargo.lock"]
-pre_push = true
-
-[[step]]
-name = "no-telemetry"
-label = "No telemetry, analytics or crash-upload client"
-run = "python3 tools/policy/check_no_telemetry.py"
-inputs = ["Cargo.lock"]
-pre_push = true
-
-[[step]]
 name = "iroh-presets"
 label = "No durable endpoint signs itself in to number 0's directory"
 run = "python3 tools/policy/check_iroh_presets.py"

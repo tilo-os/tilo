@@ -104,6 +104,30 @@ deny = [
     { crate = "quick-xml@0.39.4", wrappers = ["zbus_xml"], reason = "AccessKit's current zbus_xml release has not adopted fixed quick-xml 0.41" },
     { crate = "crypto-bigint@0.5.5", wrappers = ["elliptic-curve"], reason = "RUSTSEC-2026-0387 has no patched 0.5 release; only elliptic-curve 0.13's unused NIST curves may keep it" },
     { crate = "crypto-bigint:>=0.6, <0.7.6", reason = "RUSTSEC-2026-0387: constant-time fixes need crypto-bigint 0.7.6" },
+    # TLS is rustls on ring, reached through tilo_net::http. OpenSSL would be a
+    # second certificate-verification path to review, a C library to patch in
+    # every image, and a runtime dependency an app could not assume on macOS,
+    # Windows or the web. A dependency that pulls one in by default usually has
+    # a `rustls` feature: select it and turn its default features off.
+    { crate = "openssl", reason = "rustls is the only TLS stack" },
+    { crate = "openssl-sys", reason = "rustls is the only TLS stack" },
+    { crate = "native-tls", reason = "rustls is the only TLS stack (native-tls is OpenSSL on Linux)" },
+    # Tilo's own components carry no telemetry, analytics or crash-upload client
+    # (docs/architecture/security.md, "What leaves the device by default"):
+    # panics stay in ~/.cache/tilo/crashes and feedback leaves only as a report
+    # the person approved. Local tracing never leaves the device by itself, so
+    # `tracing` and an exporter-less `opentelemetry` are fine.
+    { crate = "sentry", reason = "crash reporting service" },
+    { crate = "sentry-core", reason = "crash reporting service" },
+    { crate = "bugsnag", reason = "crash reporting service" },
+    { crate = "crash-handler", reason = "minidump capture exists to upload a crash elsewhere" },
+    { crate = "minidumper", reason = "minidump capture exists to upload a crash elsewhere" },
+    { crate = "posthog-rs", reason = "product analytics" },
+    { crate = "segment", reason = "product analytics" },
+    { crate = "opentelemetry-otlp", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-http", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-datadog", reason = "exports spans and metrics off the device" },
+    { crate = "opentelemetry-zipkin", reason = "exports spans and metrics off the device" },
 ]
 
 [sources]

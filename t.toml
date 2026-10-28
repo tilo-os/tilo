@@ -554,18 +554,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/findings.py python3 tools/policy/check_media_stack.py"
 
 [[check]]
-name = "policy/tls-stack"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/findings.py python3 tools/policy/check_tls_stack.py"
-
-[[check]]
-name = "policy/no-telemetry"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/findings.py python3 tools/policy/check_no_telemetry.py"
-
-[[check]]
 name = "policy/iroh-presets"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -795,12 +783,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_crypto_generation.py"
 
 [[check]]
-name = "policy/tests/unit/check-no-telemetry"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_no_telemetry.py"
-
-[[check]]
 name = "policy/tests/unit/check-runtime-dylib-surface"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -811,12 +793,6 @@ name = "policy/tests/unit/check-shell-layers"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_shell_layers.py"
-
-[[check]]
-name = "policy/tests/unit/check-tls-stack"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_tls_stack.py"
 
 [[check]]
 name = "policy/tests/unit/check-vendor-provenance"
