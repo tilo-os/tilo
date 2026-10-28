@@ -9,11 +9,22 @@
 //! brings, checked against the route they came on, and brings the instance up to date with the
 //! record.
 
+use std::rc::Rc;
+
+use app_state::DocWriter;
 use automerge::ChangeHash;
+use collab_types::presence::UserId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
+use collaboration::history_source::authors::{
+    HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, short_id, stable_hue,
+};
+use collaboration::history_source::words::HistoryWords;
+use collaboration::record::RecordSaveStatus;
+use collaboration::state::UndoLog;
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
 };
+use durable_store::DurableStore;
 
 use serde_json::Value as Json;
 use tilo_actions::{ActionContext, ActionInvoker};
@@ -38,9 +49,14 @@ pub enum RoomError {
     /// The collab client did not take the change.
     #[error("the room did not take the change")]
     Unsent,
+    /// The record could not be opened: no route, an unreadable copy, or a committed read that
+    /// failed.
+    #[error("the room record could not be opened: {0}")]
+    Open(String),
 }
 
-/// The room record an instance commits to, and the route it travels on.
+/// The room record an instance commits to, the route it travels on, and its undo, history and
+/// save state.
 pub struct RoomRecord {
     doc: Doc,
     manager: CollaborationManager,
@@ -48,6 +64,10 @@ pub struct RoomRecord {
     person: String,
     /// The heads of what the room was handed: a commit sends what follows them.
     sent: Vec<ChangeHash>,
+    /// The record's undo log: each commit is a step of the person at the window.
+    undo: UndoLog,
+    /// The writer of the record's on-disk copy; `None` keeps it in memory only.
+    writer: Option<DocWriter>,
 }
 
 impl RoomRecord {
@@ -59,15 +79,70 @@ impl RoomRecord {
         route: RouteSpec,
         person: impl Into<String>,
     ) -> Self {
-        let mut doc = doc;
+        Self::holding(doc, None, manager, route, person.into())
+    }
+
+    fn holding(
+        mut doc: Doc,
+        writer: Option<DocWriter>,
+        manager: CollaborationManager,
+        route: RouteSpec,
+        person: String,
+    ) -> Self {
         let sent = doc.get_heads();
+        let undo = UndoLog::new(&mut doc);
         Self {
             doc,
             manager,
             route,
-            person: person.into(),
+            person,
             sent,
+            undo,
+            writer,
         }
+    }
+
+    /// Open the room record of the route `manager` joined, changed by `person`, kept in
+    /// `documents`: as a native launch opens its room's document. In a room this device governs,
+    /// the record is its on-disk copy. In a room another host governs, the broker's committed
+    /// read of the room comes first and is merged into that copy, which keeps it from then on.
+    ///
+    /// # Errors
+    /// The manager joined no route, the copy cannot be opened, or the committed read failed.
+    pub fn open(
+        manager: CollaborationManager,
+        documents: &Rc<dyn DurableStore>,
+        person: impl Into<String>,
+    ) -> Result<Self, RoomError> {
+        use collaboration::native_initial::{self, NativeConstruction};
+        use collaboration::record::save::{open_stored, open_with_committed_read, room_document};
+        let route = manager
+            .primary_route()
+            .map(|joined| joined.route.clone())
+            .ok_or_else(|| RoomError::Open("the connection joined no route".to_owned()))?;
+        let room = route.cluster_id.to_string();
+        let store = room_document(documents, &route.app_id, &room)
+            .map_err(|error| RoomError::Open(error.to_string()))?;
+        // Construction custody reads the committed history before the record is built, as a
+        // native launch's does: only a route whose reads are committed has one.
+        let construction = NativeConstruction::enter(manager).map_err(RoomError::Open)?;
+        let opened = match native_initial::primary(&route.app_id, Some(&room)) {
+            Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
+            None => Ok(open_stored(store)),
+        };
+        let (doc, writer) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                native_initial::fail(&error);
+                return Err(RoomError::Open(error));
+            }
+        };
+        let manager = native_initial::transfer_to_app(native_initial::take_manager)
+            .map_err(RoomError::Open)?
+            .ok_or_else(|| RoomError::Open("the connection was not handed back".to_owned()))?;
+        drop(construction);
+        let person = person.into();
+        Ok(Self::holding(doc, Some(writer), manager, route, person))
     }
 
     /// The record as this replica holds it.
@@ -80,6 +155,106 @@ impl RoomRecord {
     #[must_use]
     pub fn manager(&self) -> &CollaborationManager {
         &self.manager
+    }
+
+    /// The collab client the record travels through, to send what else the instance says on
+    /// its connection (actions, presence).
+    pub fn manager_mut(&mut self) -> &mut CollaborationManager {
+        &mut self.manager
+    }
+
+    /// The route the record travels on.
+    #[must_use]
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+
+    /// Whether the record's changes are stored: in memory only without an on-disk copy.
+    #[must_use]
+    pub fn save_status(&self) -> RecordSaveStatus {
+        self.writer
+            .as_ref()
+            .map_or(RecordSaveStatus::MemoryOnly, |writer| {
+                RecordSaveStatus::of_writer(&self.doc, writer)
+            })
+    }
+
+    /// Write what the record holds to its on-disk copy now, as a window does before it closes.
+    pub fn flush(&mut self) {
+        if let Some(writer) = &mut self.writer {
+            writer.request(&mut self.doc);
+            writer.flush();
+        }
+    }
+
+    /// Whether the person at the window has a step to undo, or an undo to redo.
+    #[must_use]
+    pub fn can_undo(&self) -> (bool, bool) {
+        let me = self.me();
+        (
+            self.undo.can_undo_as(&self.doc, Some(&me)),
+            self.undo.can_redo_as(&self.doc, Some(&me)),
+        )
+    }
+
+    /// Take back the person's last step, as a change of its own that the room is handed like
+    /// any other; the instance is brought up to date. Whether there was one.
+    ///
+    /// # Errors
+    /// The room did not take the change.
+    pub fn undo(&mut self, instance: &mut Instance) -> Result<bool, RoomError> {
+        let me = self.me();
+        let undone = self
+            .undo
+            .undo_as(&mut self.doc, Some(&me), None, None, None);
+        self.after_history_step(instance, undone.is_some())
+    }
+
+    /// Bring back the person's last undo. Whether there was one.
+    ///
+    /// # Errors
+    /// The room did not take the change.
+    pub fn redo(&mut self, instance: &mut Instance) -> Result<bool, RoomError> {
+        let me = self.me();
+        let redone = self
+            .undo
+            .redo_as(&mut self.doc, Some(&me), None, None, None);
+        self.after_history_step(instance, redone.is_some())
+    }
+
+    fn after_history_step(
+        &mut self,
+        instance: &mut Instance,
+        took: bool,
+    ) -> Result<bool, RoomError> {
+        if !took {
+            return Ok(false);
+        }
+        self.doc.commit();
+        self.send_since_sent()?;
+        instance.sync(Some(&self.doc));
+        Ok(true)
+    }
+
+    fn me(&self) -> UserId {
+        UserId(self.person.clone())
+    }
+
+    /// Hand the room what the record holds past what it was handed, and keep it on disk.
+    fn send_since_sent(&mut self) -> Result<(), RoomError> {
+        let change = self.doc.save_after(&self.sent);
+        if !change.is_empty()
+            && !self
+                .manager
+                .send(CollabRequest::document_incremental(change))
+        {
+            return Err(RoomError::Unsent);
+        }
+        self.sent = self.doc.get_heads();
+        if let Some(writer) = &mut self.writer {
+            writer.request(&mut self.doc);
+        }
+        Ok(())
     }
 
     /// Commit every change `instance` queued for the room, in order, and send each on the
@@ -131,6 +306,7 @@ impl RoomRecord {
         let encoded = action
             .encode()
             .map_err(|error| RoomError::Refused(error.to_string()))?;
+        let before = self.doc.get_heads();
         let context = ActionContext::for_resource(
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
@@ -146,15 +322,11 @@ impl RoomRecord {
         )
         .map_err(|error| RoomError::Refused(error.to_string()))?;
         self.doc.commit();
-        let change = self.doc.save_after(&self.sent);
-        if !self
-            .manager
-            .send(CollabRequest::document_incremental(change))
-        {
-            return Err(RoomError::Unsent);
-        }
-        self.sent = self.doc.get_heads();
-        Ok(())
+        // The commit is a step of the person at the window: their Undo takes it back.
+        let me = self.me();
+        self.undo
+            .record_committed_action_authored(&mut self.doc, before, None, None, Some(me));
+        self.send_since_sent()
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the
@@ -194,8 +366,43 @@ impl RoomRecord {
         if changed {
             // What arrived is the room's already: nothing of it is sent back.
             self.sent = self.doc.get_heads();
+            // What arrived is its authors' steps; the next step here brackets against it.
+            self.undo.rebase(&mut self.doc);
+            if let Some(writer) = &mut self.writer {
+                writer.request(&mut self.doc);
+            }
             instance.sync(Some(&self.doc));
         }
         changed
+    }
+}
+
+/// What a tilolang host's history verbs say, without the toolkit: a step as the platform's
+/// history sentence in `locale`, a person by the handle their changes carry. The UI half renders
+/// History in the reader's own words.
+pub struct HostWords {
+    locale: String,
+}
+
+impl HostWords {
+    /// The words of `locale` (`en-US`, `de-DE`).
+    #[must_use]
+    pub fn new(locale: impl Into<String>) -> Self {
+        Self {
+            locale: locale.into(),
+        }
+    }
+}
+
+impl ResolveAuthor for HostWords {
+    fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
+        let name = actor_handle(actor_hex).unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned());
+        HistoryAuthor::new(name, stable_hue(actor_hex), short_id(actor_hex))
+    }
+}
+
+impl HistoryWords for HostWords {
+    fn sentence(&self, entry: &ActionContext) -> String {
+        tilo_history::Reader::new(&self.locale).sentence(entry)
     }
 }
