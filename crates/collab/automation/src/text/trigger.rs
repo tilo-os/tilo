@@ -228,9 +228,6 @@ pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
     if let Some(rest) = text.strip_prefix("when a message arrives") {
         return message_of(rest, None);
     }
-    if let Some(rest) = text.strip_prefix("when a ") {
-        return quoted_change(rest);
-    }
     if let Some(rest) = text.strip_prefix("when \"") {
         return quoted_event(rest);
     }
@@ -259,6 +256,9 @@ pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
         return Ok(TriggerSpec::NearbyDevice {
             device: Some(device),
         });
+    }
+    if let Some(rest) = text.strip_prefix("when a ") {
+        return quoted_change(rest);
     }
     Err(format!("`{text}` is not a trigger"))
 }
