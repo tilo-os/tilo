@@ -1552,7 +1552,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
 pub struct NativeKeyboardShortcuts;
 impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardShortcuts {
     fn app_id(&self) -> &str {
-        super::keyboard_shortcuts::APP_ID
+        settings_sections::APP_ID
     }
     fn is_resource(&self, resource: &str) -> bool {
         super::keyboard_shortcuts::is_resource(resource)

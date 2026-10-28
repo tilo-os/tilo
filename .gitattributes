@@ -42,4 +42,4 @@ vendor/git/** -text
 /crates/browser/tilo-web-desktop/src/apps.rs merge=generated
 /crates/agent/agent-participant/Cargo.toml merge=generated-blocks
 /crates/agent/agent-participant/src/web_apps.rs merge=generated
-/crates/session/desktop-search/src/catalog.rs merge=generated
+/crates/packaging/app-fleet/src/generated.rs merge=generated

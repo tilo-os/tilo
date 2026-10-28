@@ -236,7 +236,7 @@ fn a_rebind_in_the_section_moves_what_the_chord_triggers() {
     );
 
     let shortcuts = ui::storage::Settings::<settings_sections::shortcuts::ShortcutPrefs>::for_app(
-        crate::shell::keyboard_shortcuts::APP_ID,
+        settings_sections::APP_ID,
     );
     let mut section = shortcuts.get();
     section

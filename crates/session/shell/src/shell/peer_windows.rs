@@ -1974,10 +1974,10 @@ mod tests {
     /// open returns to; a peer's window of it is not this machine's.
     #[test]
     fn this_machines_own_window_of_an_app_is_found_in_any_workspace() {
-        const SETTINGS: &str = "so.tilo.settings";
-        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("ada"), SETTINGS);
+        let (mut tree, _) =
+            tree_with_peer_window_for(room_owned_by("ada"), settings_sections::APP_ID);
         assert!(
-            opened_here(&tree, SETTINGS).is_none(),
+            opened_here(&tree, settings_sections::APP_ID).is_none(),
             "a peer's window is not ours"
         );
 
@@ -1986,7 +1986,7 @@ mod tests {
             id: next_id(),
             title: "Personal Settings".into(),
             tile: TileContent::Foreign {
-                app_id: SETTINGS.into(),
+                app_id: settings_sections::APP_ID.into(),
                 surface_id: 7,
             },
             app_title: None,
@@ -2010,17 +2010,25 @@ mod tests {
         tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
 
         assert_eq!(
-            opened_here(&tree, SETTINGS),
+            opened_here(&tree, settings_sections::APP_ID),
             Some((other_id, strip_id, group_id, tab_id))
         );
         assert!(opened_here(&tree, "so.tilo.notes").is_none());
         assert_eq!(
-            opened_locally_in_workspace(&tree.desktop.workspaces[1], SETTINGS, tree.local_salt()),
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[1],
+                settings_sections::APP_ID,
+                tree.local_salt()
+            ),
             Some((strip_id, group_id, tab_id)),
         );
         assert!(
-            opened_locally_in_workspace(&tree.desktop.workspaces[0], SETTINGS, tree.local_salt())
-                .is_none(),
+            opened_locally_in_workspace(
+                &tree.desktop.workspaces[0],
+                settings_sections::APP_ID,
+                tree.local_salt()
+            )
+            .is_none(),
             "an ordinary Open must stay in its workspace"
         );
         assert!(
@@ -2034,7 +2042,7 @@ mod tests {
         assert!(
             opened_locally_in_workspace(
                 &tree.desktop.workspaces[1],
-                SETTINGS,
+                settings_sections::APP_ID,
                 tree.local_salt().wrapping_add(1)
             )
             .is_none(),

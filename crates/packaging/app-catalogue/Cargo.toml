@@ -15,6 +15,8 @@ path = "src/lib.rs"
 # already happen (`app list`, the hourly `tilo-app-update` run, Flatpak's
 # own AppStream update); this crate only reads what they leave on disk.
 [dependencies]
+# What each Tilo app's manifest says, for apps not on this device.
+app-fleet = { path = "../app-fleet" }
 # `CatalogueApp`, the `app list --json` row a Tilo entry is made from.
 registry-types = { path = "../registry-types" }
 tilo-paths.workspace = true

@@ -17,6 +17,8 @@ homepage.workspace = true
 lazy-search = []
 
 [dependencies]
+# Every Tilo app's manifest metadata: where it runs, its names and keywords.
+app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 

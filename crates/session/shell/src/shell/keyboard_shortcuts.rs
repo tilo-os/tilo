@@ -12,7 +12,7 @@
 //!
 //! They are this device's settings, so only callers on this machine are
 //! offered them, never a remote device, under the Settings application
-//! ([`APP_ID`]). A shortcut is changed through the person's `shortcuts`
+//! ([`settings_sections::APP_ID`]). A shortcut is changed through the person's `shortcuts`
 //! settings section (`settings.shortcuts`: `rebind`, `reset`, `reset-all`),
 //! kept by the session like every other section, so Settings, the shortcut
 //! guide, the palette, an agent and a script change it the same way.
@@ -29,8 +29,6 @@ use tilo_actions::{ExecutionLocus, OperationKind};
 
 use crate::shell::i18n::t;
 
-/// The application these actions belong to, for capability checks.
-pub const APP_ID: &str = "so.tilo.settings";
 /// The resource carrying the catalogue-wide actions.
 pub const RESOURCE: &str = "keyboard-shortcuts";
 pub const RESOURCE_KIND: &str = "settings.keyboard-shortcuts";
@@ -152,7 +150,7 @@ pub fn catalogue_rows(provider: &str) -> Vec<CatalogueRow> {
     let descriptor = descriptor();
     vec![CatalogueRow {
         provider: provider.to_string(),
-        app_id: APP_ID.to_string(),
+        app_id: settings_sections::APP_ID.to_string(),
         parent_resource: String::new(),
         resource: CatalogueResource {
             id: descriptor.address.resource.clone(),

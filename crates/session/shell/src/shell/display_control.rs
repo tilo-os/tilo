@@ -9,9 +9,6 @@ use settings_store::{
 use std::sync::Arc;
 use tilo_action_broker::services::{DisplayControlContext, DisplayControlServices};
 
-/// The app whose outside effects display changes are.
-pub(crate) const SETTINGS_APP_ID: &str = "so.tilo.settings";
-
 pub(crate) struct NativeDisplayControl {
     pub tree: WeakWorkspaceTreeHandle,
     pub source: Arc<dyn SettingsSource>,
@@ -44,7 +41,7 @@ fn authorize(
         .permissions(device, std::time::SystemTime::now())?;
     if member.policy.room != room
         || !member.allows(
-            &member.policy.node().app(SETTINGS_APP_ID),
+            &member.policy.node().app(settings_sections::APP_ID),
             tilo_action_policy::ActionKind::Outside,
             std::time::SystemTime::now(),
         )

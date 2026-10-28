@@ -535,6 +535,7 @@ dependencies = [
 name = "app-catalogue"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "flate2",
  "quick-xml 0.41.0",
  "registry-types",
@@ -575,6 +576,13 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "app-fleet"
+version = "0.1.0"
+dependencies = [
  "workspace-hack",
 ]
 
@@ -15283,6 +15291,7 @@ dependencies = [
  "agent-provider-config",
  "app-catalogue",
  "app-cli",
+ "app-fleet",
  "base64 0.22.1",
  "blake3",
  "bounded-command",
@@ -18199,6 +18208,7 @@ dependencies = [
 name = "tilo-desktop-search"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "tilo-actions",
  "tilo-ui",
  "workspace-hack",
@@ -25786,6 +25796,7 @@ dependencies = [
  "api-tester",
  "app-catalogue",
  "app-cli",
+ "app-fleet",
  "app-host",
  "app-registry",
  "appendlist",

@@ -2167,7 +2167,6 @@ type = "gui"
     /// The PDF Viewer, Settings, Backups and Logs: apps the room granted
     /// nothing.
     const VIEWER: &str = "so.tilo.pdf-viewer";
-    const SETTINGS: &str = "so.tilo.settings";
     const BACKUPS: &str = "so.tilo.backups";
     const LOGS: &str = "so.tilo.logs";
     const CODE: &str = "so.tilo.code-editor";
@@ -2317,7 +2316,7 @@ type = "gui"
             );
         }
         assert_eq!(
-            giving.read(SETTINGS, given),
+            giving.read(settings_sections::APP_ID, given),
             None,
             "another app in the room was given nothing"
         );
@@ -2374,7 +2373,7 @@ type = "gui"
         open.reply.send(Ok(())).unwrap();
         assert_eq!(viewer.reply(), Some(Reply::Opened { id: 1 }));
 
-        let mut settings = App::launch(session, SETTINGS, &session.room);
+        let mut settings = App::launch(session, settings_sections::APP_ID, &session.room);
         settings.send(&Request::Open {
             id: 2,
             path: given.clone(),
@@ -2403,15 +2402,15 @@ type = "gui"
     fn settings_sets_a_wallpaper_from_an_image_it_was_granted_nothing_for() {
         let giving = giving();
         let given = giving.choose(
-            SETTINGS,
+            settings_sections::APP_ID,
             tilo_dialogs::portal::PickRequest::open("Choose a wallpaper", "Choose"),
             &giving.session.elsewhere.join("dunes.png"),
         );
         assert_eq!(
-            giving.read(SETTINGS, &given).as_deref(),
+            giving.read(settings_sections::APP_ID, &given).as_deref(),
             Some(&b"\x89PNG"[..])
         );
-        if let Some(path) = giving.in_view(SETTINGS, &given) {
+        if let Some(path) = giving.in_view(settings_sections::APP_ID, &given) {
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(
                 &mut tilo_dialogs::portal::open_regular_file(&path).unwrap(),

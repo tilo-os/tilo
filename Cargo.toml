@@ -264,6 +264,7 @@ members = [
 
     # Packaging
     "crates/packaging/app-catalogue",
+    "crates/packaging/app-fleet",
     "crates/packaging/app-cli",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",

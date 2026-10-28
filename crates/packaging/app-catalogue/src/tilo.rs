@@ -5,7 +5,6 @@ use registry_types::RegistryImageKind;
 use registry_types::catalogue::CatalogueApp;
 
 use crate::entry::{CatalogueAction, CatalogueEntry, ResourceType, Source};
-use crate::fleet;
 
 /// The catalogue entry for the registry row `app`.
 ///
@@ -15,7 +14,7 @@ use crate::fleet;
 /// line the registry left empty.
 #[must_use]
 pub fn entry(app: &CatalogueApp) -> CatalogueEntry {
-    let manifest = fleet::metadata(&app.package_id);
+    let manifest = app_fleet::metadata(&app.package_id);
     let tagline = if app.tagline.trim().is_empty() {
         manifest.map_or("", |meta| meta.tagline).to_owned()
     } else {

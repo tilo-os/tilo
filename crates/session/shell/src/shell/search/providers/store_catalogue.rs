@@ -303,7 +303,7 @@ impl StoreCatalogueProvider {
             let (shared_generation, shared) = catalogue::shared_snapshot();
             let here: Vec<CatalogueApp> = installed_apps
                 .iter()
-                .filter(|app| app_catalogue::fleet::metadata(&app.package_id).is_some())
+                .filter(|app| app_fleet::metadata(&app.package_id).is_some())
                 .map(|app| CatalogueApp {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),

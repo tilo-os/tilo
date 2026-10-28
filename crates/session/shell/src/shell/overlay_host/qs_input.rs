@@ -581,7 +581,7 @@ impl ShellOverlayHost {
                 }
             }
         }
-        (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
+        (self.app_launcher)(chrome, settings_sections::APP_ID, "Settings");
     }
 
     /// A section opened in place on the root page: what it lists is read as

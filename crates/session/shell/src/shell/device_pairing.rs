@@ -669,10 +669,6 @@ pub(crate) fn run_bounded(command: &HostCommand, stop: &AtomicBool) -> Result<Fi
     }
 }
 
-/// The application whose Devices & Sync controls pair devices through the
-/// broker's door.
-const SETTINGS_APP_ID: &str = "so.tilo.settings";
-
 /// The broker's door to pairing: how Settings pairs a device, as the person
 /// using it, without starting any process itself.
 pub(crate) struct BrokerDoor {
@@ -767,7 +763,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     }
 
     fn app_id(&self) -> &str {
-        SETTINGS_APP_ID
+        settings_sections::APP_ID
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {

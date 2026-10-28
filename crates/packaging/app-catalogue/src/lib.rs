@@ -5,7 +5,7 @@
 //!
 //! - **Tilo packages** from the configured registries ([`tilo`]): the
 //!   `app list --json` rows, joined with the signed manifest metadata of the
-//!   Tilo fleet ([`fleet`]) so an app that is not on this device is still
+//!   Tilo fleet ([`app_fleet`]) so an app that is not on this device is still
 //!   known by its tag line, other names, keywords, the documents it creates
 //!   and the actions it offers. A Tilo app has no install step: opening one
 //!   downloads it if it is absent.
@@ -55,7 +55,6 @@ pub use registry_types::block;
 pub mod catalogue;
 pub mod entry;
 pub mod flathub;
-pub mod fleet;
 pub mod tilo;
 
 pub use block::{Block, BlockList, Blocker, UnblockError};

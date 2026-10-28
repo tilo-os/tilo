@@ -439,6 +439,8 @@ registry-types = { path = "../../packaging/registry-types" }
 # The catalogue of installable apps search shares with the Store: Flathub
 # from Flatpak's cached metadata, the fleet's manifest metadata, the block list.
 app-catalogue = { path = "../../packaging/app-catalogue" }
+# Every Tilo app's manifest metadata, for its tag line.
+app-fleet = { path = "../../packaging/app-fleet" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

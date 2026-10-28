@@ -19,9 +19,6 @@ use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use super::network::ShellNetwork;
 use super::state::{RoomId, WeakWorkspaceTreeHandle};
 
-/// The application whose Devices & Sync controls reach the steps.
-const SETTINGS_APP_ID: &str = "so.tilo.settings";
-
 const SET_PARAMS: &[ActionParam] = &[
     ActionParam::required("room", ParamType::Text, "The workspace's room id."),
     ActionParam::required(
@@ -180,7 +177,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     }
 
     fn app_id(&self) -> &str {
-        SETTINGS_APP_ID
+        settings_sections::APP_ID
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {

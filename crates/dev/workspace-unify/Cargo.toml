@@ -56,6 +56,7 @@ doc = false
 "api-tester" = { path = "../../../apps/api-tester", default-features = false, features = [] }
 "app-catalogue" = { path = "../../../crates/packaging/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../../crates/packaging/app-cli", default-features = false, features = [] }
+"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
 "app-host" = { path = "../../../crates/packaging/app-host", default-features = false, features = ["default", "service", "test-support"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "appendlist-1_4_0" = { package = "appendlist", version = "^1.4.0", default-features = false, features = [] }
@@ -2444,6 +2445,7 @@ doc = false
 "api-tester" = { path = "../../../apps/api-tester", default-features = false, features = [] }
 "app-catalogue" = { path = "../../../crates/packaging/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../../crates/packaging/app-cli", default-features = false, features = [] }
+"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
 "app-host" = { path = "../../../crates/packaging/app-host", default-features = false, features = ["default", "service", "test-support"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "appendlist-1_4_0" = { package = "appendlist", version = "^1.4.0", default-features = false, features = [] }

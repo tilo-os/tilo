@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Generate the shared app catalogue's manifest metadata for the Tilo fleet.
+"""Generate the manifest metadata of every Tilo app, compiled into app-fleet.
 
-Every Tilo app in `apps/` contributes what search and the Store show for it
-whether or not a device has it: its tag line, the names and words people know
-it by, the kinds of resource it creates ("New workbook") and the actions it
-offers while closed (`[[offers]]`). The sources are the ones the packer signs
-into each app's manifest:
+Every Tilo app in `apps/` contributes what search, the Store and the browser
+desktop show for it whether or not a device has it: where it runs, its
+category and tag line, the names and words people know it by, the kinds of
+resource it creates ("New workbook") and the actions it offers while closed
+(`[[offers]]`). The sources are the ones the packer signs into each app's
+manifest:
 
-* `apps/<app>/tilo-app.toml`: id, name, `[package.names]`, `[resources]`,
-  `[[offers]]`;
+* `apps/<app>/tilo-app.toml`: id, name, category, `platforms`,
+  `[package.names]`, `[resources]`, `[[offers]]`;
 * `apps/<app>/surface.toml`: each resource kind's label;
 * `apps/<app>/search/*.ftl`: `search-keywords`, and `app-tagline` (English
   here), the tag line the packer signs into `[package.taglines]`.
 
-Writes `crates/packaging/app-catalogue/src/fleet_generated.rs`. With `--check`
+Writes `crates/packaging/app-fleet/src/generated.rs`. With `--check`
 it fails when that file is out of date instead.
 """
 
@@ -27,7 +28,9 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / "crates/packaging/app-catalogue/src/fleet_generated.rs"
+OUTPUT = ROOT / "crates/packaging/app-fleet/src/generated.rs"
+# Where an app runs when its manifest names no `platforms`.
+DEFAULT_PLATFORMS = ("linux", "macos", "web")
 
 
 def search_keywords(app_dir: pathlib.Path) -> list[str]:
@@ -38,7 +41,7 @@ def search_keywords(app_dir: pathlib.Path) -> list[str]:
     for source in files:
         found = message.search(source.read_text(encoding="utf-8"))
         if not found:
-            continue
+            raise ValueError(f"{source}: no `search-keywords` message")
         for word in (w.strip() for w in found.group(1).split(",")):
             if word and word.lower() not in {w.lower() for w in words}:
                 words.append(word)
@@ -123,6 +126,9 @@ def fleet(root: pathlib.Path) -> list[dict]:
         apps.append(
             dict(
                 id=package["id"],
+                name=package.get("name", package["id"]),
+                category=package.get("category", ""),
+                platforms=list(package.get("platforms", DEFAULT_PLATFORMS)),
                 tagline=tagline(app_dir),
                 names=other_names(package),
                 keywords=search_keywords(app_dir),
@@ -154,6 +160,9 @@ def render(apps: list[dict]) -> str:
     for app in apps:
         lines.append("    FleetApp {")
         lines.append(f"        id: {text(app['id'])},")
+        lines.append(f"        name: {text(app['name'])},")
+        lines.append(f"        category: {text(app['category'])},")
+        lines.append(f"        platforms: {strings(app['platforms'])},")
         lines.append(f"        tagline: {text(app['tagline'])},")
         lines.append(f"        names: {strings(app['names'])},")
         lines.append(f"        keywords: {strings(app['keywords'])},")

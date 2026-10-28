@@ -388,7 +388,7 @@ impl ShellOverlayHost {
         app_id: &str,
         request: settings_store::device_displays::DeviceDisplayMove,
     ) -> Result<(), String> {
-        let admitted = app_id == "so.tilo.settings"
+        let admitted = app_id == settings_sections::APP_ID
             && self.chrome.as_ref().is_some_and(|chrome| {
                 let state = chrome.borrow();
                 !state.session_locked() && is_active_workspace_owner(&state)

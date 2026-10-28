@@ -2350,10 +2350,11 @@ run = """
 python3 tools/policy/check_app_portability.py
 python3 tools/policy/check_app_capabilities.py
 python3 tools/web/generate_web_desktop.py --check
+python3 tools/apps/generate_catalogue_fleet.py --check
 python3 tools/sdk/publish_check.py --report-only
 """
-# Of what it checks, tools/web/generate_web_desktop.py writes what it finds stale.
-fix = "python3 tools/web/generate_web_desktop.py"
+# Of what it checks, the two generators write what they find stale.
+fix = "python3 tools/web/generate_web_desktop.py && python3 tools/apps/generate_catalogue_fleet.py"
 
 # The SDK's Linux path: the target commands, a generated app outside the
 # repository, and Calculator built and packaged as a .tapp.

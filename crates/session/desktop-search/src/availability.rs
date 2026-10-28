@@ -1,44 +1,23 @@
 //! What the manifest registry knows about each Tilo application: where it
-//! runs, its category, and the other names and words people know it by. The
-//! catalog is generated from every app's `tilo-app.toml`.
+//! runs, its category, and the other names and words people know it by,
+//! from the fleet's compiled manifest metadata (`app-fleet`).
 //!
 //! A desktop offers only the apps it can run. An app that cannot run here is
 //! not listed with a reason: offering Terminal in a browser tab, where
 //! choosing it can only fail, is noise at best and a broken promise at worst.
 
-/// One application of the manifest registry and the platforms it declares
-/// (`linux`, `macos`, `web`, `tilo-os`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CatalogApp {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub category: &'static str,
-    pub platforms: &'static [&'static str],
-    /// Its name in the other languages its manifest gives one
-    /// (`[package.names]`): "Dateien" for Files. Searched as the name.
-    pub names: &'static [&'static str],
-    /// The other words people know it by, every language's together
-    /// (`[package.keywords]`): "youtube" for a video app.
-    pub keywords: &'static [&'static str],
-}
-
-#[path = "catalog.rs"]
-mod catalog;
+use app_fleet::FleetApp;
 
 /// Every application in the manifest registry.
 #[must_use]
-pub fn catalog() -> &'static [CatalogApp] {
-    catalog::APPS
+pub fn catalog() -> &'static [FleetApp] {
+    app_fleet::apps()
 }
 
 /// The registry's entry for the app `package_id`, if it lists it.
-fn entry_for(package_id: &str) -> Option<&'static CatalogApp> {
+fn entry_for(package_id: &str) -> Option<&'static FleetApp> {
     // A local build publishes the same apps under `dev.tilo.`.
-    let canonical = package_id.strip_prefix("dev.tilo.");
-    catalog().iter().find(|app| {
-        app.id == package_id
-            || canonical.is_some_and(|name| app.id.strip_prefix("so.tilo.") == Some(name))
-    })
+    app_fleet::metadata(package_id)
 }
 
 /// The keywords the registry knows for the app `package_id` — empty for an
@@ -99,7 +78,7 @@ pub fn runs_elsewhere(package_id: &str, here: &str) -> String {
 mod tests {
     use super::*;
 
-    fn app(id: &str) -> &'static CatalogApp {
+    fn app(id: &str) -> &'static FleetApp {
         entry_for(id).unwrap_or_else(|| panic!("the registry lists {id}"))
     }
 

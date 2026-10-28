@@ -153,7 +153,7 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
 /// how a developer tells builds apart, not how a person recognises an app;
 /// the id stays searchable, never shown.
 fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
-    app_catalogue::fleet::metadata(package_id)
+    app_fleet::metadata(package_id)
         .map(|app| app.tagline.trim())
         .filter(|tagline| !tagline.is_empty())
         .or_else(|| {
@@ -641,10 +641,6 @@ pub(crate) fn launch_installed_app(
     }
 }
 
-/// The device's control panel: one window per machine, so opening it again,
-/// from Quick Settings, the palette or anywhere else, focuses that window.
-const SETTINGS_PACKAGE_ID: &str = "so.tilo.settings";
-
 /// Surface a launch that failed before spawn: settle its pending launch, post
 /// the failure notification, and describe it for callers that cannot see
 /// the screen.
@@ -767,7 +763,7 @@ fn launch_resolved_installed_app(
                     .map(|(strip, group, tab)| (ws.id, strip, group, tab))
             })
             .or_else(|| {
-                (package_id == SETTINGS_PACKAGE_ID)
+                (package_id == settings_sections::APP_ID)
                     .then(|| crate::shell::peer_windows::opened_here(&tree, package_id))
                     .flatten()
             })
@@ -1684,7 +1680,7 @@ mod tests {
                 "sheets",
                 vec![app_in("so.tilo.sheets", "Sheets", Some("Office"))],
             );
-            let tagline = app_catalogue::fleet::metadata("so.tilo.sheets")
+            let tagline = app_fleet::metadata("so.tilo.sheets")
                 .map(|app| app.tagline)
                 .expect("Sheets is in the fleet");
             assert_eq!(

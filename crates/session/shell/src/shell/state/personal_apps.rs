@@ -13,7 +13,7 @@
 use super::{RoomId, Workspace, WorkspaceId, WorkspaceTree};
 
 /// The apps whose windows live only in the personal workspace.
-const PERSONAL_APPS: &[&str] = &[crate::shell::display_control::SETTINGS_APP_ID];
+const PERSONAL_APPS: &[&str] = &[settings_sections::APP_ID];
 
 /// Whether `app_id`'s windows belong to the person, not to a workspace.
 #[must_use]
@@ -142,8 +142,6 @@ impl WorkspaceTree {
 mod tests {
     use super::*;
 
-    const SETTINGS: &str = "so.tilo.settings";
-
     /// A personal workspace and a shared one, the shared one shown.
     fn tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let mut tree = WorkspaceTree::default();
@@ -180,11 +178,20 @@ mod tests {
         let (mut tree, personal, shared) = tree();
         let personal_room = tree.room_of(personal).expect("a room");
         let shared_room = tree.room_of(shared).expect("a room");
-        assert_eq!(tree.workspace_for_app(SETTINGS, shared), Some(personal));
-        assert_eq!(tree.room_for_app(SETTINGS, shared_room), personal_room);
-        assert_eq!(tree.room_for_app(SETTINGS, personal_room), personal_room);
-        assert!(!tree.may_hold_app(shared, SETTINGS));
-        assert!(tree.may_hold_app(personal, SETTINGS));
+        assert_eq!(
+            tree.workspace_for_app(settings_sections::APP_ID, shared),
+            Some(personal)
+        );
+        assert_eq!(
+            tree.room_for_app(settings_sections::APP_ID, shared_room),
+            personal_room
+        );
+        assert_eq!(
+            tree.room_for_app(settings_sections::APP_ID, personal_room),
+            personal_room
+        );
+        assert!(!tree.may_hold_app(shared, settings_sections::APP_ID));
+        assert!(tree.may_hold_app(personal, settings_sections::APP_ID));
 
         // Every other app opens where it was asked.
         assert_eq!(
@@ -202,9 +209,18 @@ mod tests {
         let (other, _) = tree.create_hosted_workspace("Also mine");
         tree.own_workspaces_for_test(super::super::local_user_id_for_room);
         tree.set_active(other);
-        assert_eq!(tree.workspace_for_app(SETTINGS, other), Some(other));
-        assert_eq!(tree.workspace_for_app(SETTINGS, shared), Some(other));
+        assert_eq!(
+            tree.workspace_for_app(settings_sections::APP_ID, other),
+            Some(other)
+        );
+        assert_eq!(
+            tree.workspace_for_app(settings_sections::APP_ID, shared),
+            Some(other)
+        );
         tree.set_active(shared);
-        assert_eq!(tree.workspace_for_app(SETTINGS, shared), Some(personal));
+        assert_eq!(
+            tree.workspace_for_app(settings_sections::APP_ID, shared),
+            Some(personal)
+        );
     }
 }

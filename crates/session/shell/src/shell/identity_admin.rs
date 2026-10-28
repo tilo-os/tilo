@@ -460,10 +460,6 @@ pub(crate) fn authorize(
         .ok_or_else(|| "no identity selected".into())
 }
 
-/// The application whose Users and Devices controls administer identities
-/// through the broker's door.
-const SETTINGS_APP_ID: &str = "so.tilo.settings";
-
 /// The broker's door to identity administration: how Settings lists and
 /// changes the person's identities and devices, as the person using it,
 /// without the identity store entering its sandbox.
@@ -592,7 +588,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     }
 
     fn app_id(&self) -> &str {
-        SETTINGS_APP_ID
+        settings_sections::APP_ID
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
