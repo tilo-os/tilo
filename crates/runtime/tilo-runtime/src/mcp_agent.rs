@@ -189,6 +189,8 @@ struct AgentStatusArgs {
 pub(super) struct Reply {
     text: String,
     failed: bool,
+    /// The typed answer, for a caller that asked for it (a structured read).
+    structured: Option<Value>,
 }
 
 impl Reply {
@@ -196,19 +198,37 @@ impl Reply {
         Self {
             text,
             failed: false,
+            structured: None,
+        }
+    }
+
+    fn failed(text: String) -> Self {
+        Self {
+            text,
+            failed: true,
+            structured: None,
         }
     }
 }
 
 /// The MCP result of an agent tool: its text alone. There is no structured
-/// copy beside it; the text is the answer and a second rendering of it would
-/// be read twice.
+/// copy beside it unless the caller asked for one (a program's structured
+/// read, [`ResourceRead`]), and then the text is that copy as JSON: a second
+/// rendering would be read twice.
 pub(super) fn text_result(result: Result<Reply, String>) -> Value {
-    let (text, failed) = match result {
-        Ok(reply) => (reply.text, reply.failed),
-        Err(message) => (message, true),
-    };
-    json!({"content":[{"type":"text","text":text}],"isError":failed})
+    match result {
+        Ok(Reply {
+            structured: Some(structured),
+            failed,
+            ..
+        }) => json!({
+            "content":[{"type":"text","text":structured.to_string()}],
+            "structuredContent":structured,
+            "isError":failed
+        }),
+        Ok(reply) => json!({"content":[{"type":"text","text":reply.text}],"isError":reply.failed}),
+        Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
+    }
 }
 
 /// A path, taken apart: `app/segment/segment#action`.
@@ -552,6 +572,55 @@ fn cut_at_line(text: &mut String, chars: usize) -> Option<usize> {
     Some(total.saturating_sub(text.chars().count()))
 }
 
+/// The arguments `reader`, offered by `owner`, reads `resolved` with: the
+/// target as its `item` when an ancestor reads it, the app's cursor, and as
+/// large a page as a paged read allows.
+fn read_arguments(
+    resolved: &Resolved,
+    owner: &str,
+    reader: &ActionDescriptor,
+    app_cursor: Option<&str>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let mut arguments = serde_json::Map::new();
+    let has = |name: &str| {
+        reader
+            .params
+            .iter()
+            .any(|param| param.name.as_ref() == name)
+    };
+    if let Some(node) = resolved.node.as_ref().filter(|node| node.id != owner)
+        && has("item")
+    {
+        arguments.insert("item".into(), node.key.clone().into());
+    }
+    if let Some(cursor) = app_cursor {
+        if has("cursor") {
+            arguments.insert("cursor".into(), cursor.to_owned().into());
+        } else {
+            return Err(format!(
+                "{} reads in one piece; it takes no cursor",
+                resolved.path
+            ));
+        }
+    }
+    // A paged read asks for as much as it allows.
+    for param in &reader.params {
+        if param.name.as_ref() == "pageSize"
+            && param.required
+            && !arguments.contains_key("pageSize")
+        {
+            let bound = param
+                .schema
+                .as_deref()
+                .and_then(|schema| schema.get("maximum"))
+                .and_then(Value::as_u64)
+                .unwrap_or(64);
+            arguments.insert("pageSize".into(), bound.into());
+        }
+    }
+    Ok(arguments)
+}
+
 /// The cursor for the rest of a read cut after `answered` characters of the
 /// page `app_cursor` asked for (the first page when `None`).
 fn read_cursor(answered: usize, app_cursor: Option<&str>) -> String {
@@ -600,12 +669,12 @@ fn skip_answered(text: &mut String, answered: usize) -> usize {
 /// cursor for its next page when it gave one. `app_cursor` is the app's
 /// cursor that asked for `output`.
 fn read_answer(
-    output: &Value,
+    read: &ResourceRead,
     already: usize,
     app_cursor: Option<&str>,
     max_chars: Option<usize>,
 ) -> String {
-    let mut text = render_value(output);
+    let mut text = read.render();
     let skipped = skip_answered(&mut text, already);
     let limit = max_chars.unwrap_or(READ_CHARS).clamp(200, 200_000);
     let cut = cut_at_line(&mut text, limit);
@@ -613,7 +682,7 @@ fn read_answer(
         let cursor = read_cursor(skipped.saturating_add(text.chars().count()), app_cursor);
         let _ = write!(text, "\n… {left} more characters: cursor \"{cursor}\"");
     }
-    if let Some(cursor) = next_cursor(output).filter(|_| cut.is_none()) {
+    if let Some(cursor) = read.cursor.as_ref().filter(|_| cut.is_none()) {
         let _ = write!(text, "\n… more: cursor \"{cursor}\"");
     }
     if text.is_empty() {
@@ -793,77 +862,165 @@ fn block_line(block: &Value) -> Option<String> {
 }
 
 /// What an app's read or an action's output is, as the least text that says
-/// it: markdown stays markdown, a document's blocks become markdown with
-/// their ids, a collection becomes a list, anything else compact JSON.
+/// it ([`ResourceRead::render`]).
 fn render_value(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Object(fields) => {
-            let markdown = fields
-                .get("markdown")
-                .or_else(|| {
-                    fields
-                        .get("content")
-                        .and_then(|content| content.get("markdown"))
-                })
-                .and_then(Value::as_str);
-            if let Some(markdown) = markdown {
-                // A note's read keeps its title beside its body.
-                return match fields.get("title").and_then(Value::as_str) {
-                    Some(title) if fields.contains_key("markdown") => {
-                        format!("# {title}\n{markdown}")
-                    }
-                    _ => markdown.to_owned(),
-                };
-            }
-            if let Some(Value::Array(blocks)) = fields.get("blocks") {
-                let lines: Vec<String> = blocks.iter().filter_map(block_line).collect();
-                if !lines.is_empty() || blocks.is_empty() {
-                    let mut text = String::new();
-                    if let Some(title) = fields.get("title").and_then(Value::as_str) {
-                        let _ = writeln!(text, "# {title}");
-                    }
-                    text.push_str(&lines.join("\n"));
-                    return text;
-                }
-            }
-            if let Some(list) = collection(fields) {
-                return list;
-            }
-            strip_blank(value).to_string()
-        }
-        Value::Null => String::new(),
-        other => strip_blank(other).to_string(),
-    }
+    ResourceRead::of(value).render()
 }
 
-/// A read that lists things (a notebook's pages): one line each, the title
-/// and the item to read it by.
-fn collection(fields: &serde_json::Map<String, Value>) -> Option<String> {
-    let mut text = String::new();
-    for (name, list) in fields {
-        let Value::Array(items) = list else {
-            continue;
-        };
-        let lines: Vec<String> = items
-            .iter()
-            .filter_map(|item| {
-                let item_id = item.get("item").and_then(Value::as_str)?;
-                let title = ["title", "name", "label"]
+/// A resource as a read answers it, typed: what a program takes from
+/// `tilo_read` (its structured form), and what the markdown read is a
+/// rendering of. One reader answers both, at the same cost.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(super) struct ResourceRead {
+    /// The resource read, as a path the other tools take.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(super) path: String,
+    /// Its kind, as the app names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) kind: Option<String>,
+    /// What the app answered, each field typed as the app typed it, but for
+    /// the lists of what the resource holds, which are its children.
+    pub(super) fields: Value,
+    /// What it holds, each by the name a person reads and the reference a
+    /// read or an action takes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) children: Vec<ChildRef>,
+    /// The app's cursor for the next page, passed back as `cursor`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cursor: Option<String>,
+}
+
+/// One thing a resource holds, as its read lists it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(super) struct ChildRef {
+    /// The list of the read it is in (`pages`).
+    pub(super) list: String,
+    /// Its title, name or label.
+    pub(super) name: String,
+    /// The app's own key for it: what a read takes as its `item`.
+    pub(super) item: String,
+    /// The path that reads it or acts on it, once the read is of a path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(super) path: String,
+}
+
+impl ResourceRead {
+    /// `value`, an app's read or an action's output, taken apart: a list
+    /// whose every entry names an item and a title is children, the rest is
+    /// fields.
+    fn of(value: &Value) -> Self {
+        let mut fields = value.clone();
+        let mut children = Vec::new();
+        if let Value::Object(map) = &mut fields {
+            let mut whole = Vec::new();
+            for (list, entries) in map.iter() {
+                let Value::Array(entries) = entries else {
+                    continue;
+                };
+                let named: Vec<ChildRef> = entries
                     .iter()
-                    .find_map(|key| item.get(*key).and_then(Value::as_str))?;
-                Some(format!("{title}  ({item_id})"))
-            })
-            .collect();
-        if lines.is_empty() {
-            continue;
+                    .filter_map(|entry| {
+                        let item = entry.get("item").and_then(Value::as_str)?;
+                        let name = ["title", "name", "label"]
+                            .iter()
+                            .find_map(|key| entry.get(*key).and_then(Value::as_str))?;
+                        Some(ChildRef {
+                            list: list.clone(),
+                            name: name.to_owned(),
+                            item: item.to_owned(),
+                            path: String::new(),
+                        })
+                    })
+                    .collect();
+                if !named.is_empty() && named.len() == entries.len() {
+                    whole.push(list.clone());
+                }
+                children.extend(named);
+            }
+            for list in whole {
+                map.remove(&list);
+            }
         }
-        let _ = writeln!(text, "{name}:");
-        for line in lines {
-            let _ = writeln!(text, "  {line}");
+        Self {
+            path: String::new(),
+            kind: value.get("kind").and_then(Value::as_str).map(str::to_owned),
+            cursor: next_cursor(value),
+            fields,
+            children,
         }
     }
-    (!text.is_empty()).then(|| text.trim_end().to_owned())
+
+    /// The read of the resource at `path`, its children addressed under it.
+    fn at(mut self, path: &str, kind: Option<&str>) -> Self {
+        for child in &mut self.children {
+            child.path = format!("{path}/{}", path_name(&child.item));
+        }
+        path.clone_into(&mut self.path);
+        if self.kind.is_none() {
+            self.kind = kind.map(str::to_owned);
+        }
+        self
+    }
+
+    /// The least text that says it: markdown stays markdown, a document's
+    /// blocks become markdown with their ids, children become a list, and
+    /// anything else compact JSON.
+    fn render(&self) -> String {
+        match &self.fields {
+            Value::String(text) => text.clone(),
+            Value::Object(fields) => {
+                let markdown = fields
+                    .get("markdown")
+                    .or_else(|| {
+                        fields
+                            .get("content")
+                            .and_then(|content| content.get("markdown"))
+                    })
+                    .and_then(Value::as_str);
+                if let Some(markdown) = markdown {
+                    // A note's read keeps its title beside its body.
+                    return match fields.get("title").and_then(Value::as_str) {
+                        Some(title) if fields.contains_key("markdown") => {
+                            format!("# {title}\n{markdown}")
+                        }
+                        _ => markdown.to_owned(),
+                    };
+                }
+                if let Some(Value::Array(blocks)) = fields.get("blocks") {
+                    let lines: Vec<String> = blocks.iter().filter_map(block_line).collect();
+                    if !lines.is_empty() || blocks.is_empty() {
+                        let mut text = String::new();
+                        if let Some(title) = fields.get("title").and_then(Value::as_str) {
+                            let _ = writeln!(text, "# {title}");
+                        }
+                        text.push_str(&lines.join("\n"));
+                        return text;
+                    }
+                }
+                if let Some(list) = self.children_list() {
+                    return list;
+                }
+                strip_blank(&self.fields).to_string()
+            }
+            Value::Null => String::new(),
+            other => strip_blank(other).to_string(),
+        }
+    }
+
+    /// The children, one line each under the list they are in: the name and
+    /// the item to read it by.
+    fn children_list(&self) -> Option<String> {
+        let mut text = String::new();
+        let mut list = None;
+        for child in &self.children {
+            if list != Some(&child.list) {
+                let _ = writeln!(text, "{}:", child.list);
+                list = Some(&child.list);
+            }
+            let _ = writeln!(text, "  {}  ({})", child.name, child.item);
+        }
+        (!text.is_empty()).then(|| text.trim_end().to_owned())
+    }
 }
 
 /// What an invocation's final update says, as an agent reads it.
@@ -924,6 +1081,7 @@ fn outcome(value: &Value) -> Reply {
     Reply {
         failed: state != "succeeded",
         text,
+        structured: None,
     }
 }
 
@@ -1631,14 +1789,17 @@ fn app_names(ids: &[String]) -> Vec<String> {
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Answer one agent tool call.
-    pub(super) async fn agent_call(&self, name: &str, args: Value) -> Value {
+    /// `structured` when the caller asked for typed answers
+    /// (`_meta["so.tilo.mcp"].structured`): a read answers its
+    /// [`ResourceRead`].
+    pub(super) async fn agent_call(&self, name: &str, args: Value, structured: bool) -> Value {
         let result = match name {
             "tilo_ls" => match parse(args) {
                 Ok(args) => self.agent_ls(args).await,
                 Err(error) => Err(error),
             },
             "tilo_read" => match parse(args) {
-                Ok(args) => self.agent_read(args).await,
+                Ok(args) => self.agent_read(args, structured).await,
                 Err(error) => Err(error),
             },
             "tilo_do" => match parse(args) {
@@ -1798,7 +1959,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Reply::ok(text))
     }
 
-    async fn agent_read(&self, args: ReadArgs) -> Result<Reply, String> {
+    async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, String> {
         let parsed = parse_path(&args.path)?;
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
@@ -1824,20 +1985,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             if !resolved.children.is_empty() {
                 text.push_str("; tilo_ls lists what is inside");
             }
-            return Ok(Reply { text, failed: true });
+            return Ok(Reply::failed(text));
         };
-        let mut arguments = serde_json::Map::new();
-        let has = |name: &str| {
-            reader
-                .params
-                .iter()
-                .any(|param| param.name.as_ref() == name)
-        };
-        if let Some(node) = resolved.node.as_ref().filter(|node| node.id != owner)
-            && has("item")
-        {
-            arguments.insert("item".into(), node.key.clone().into());
-        }
         // A cursor this tool issued for the rest of a cut answer reads the
         // same page again and answers from where the cut was; any other is
         // the app's own.
@@ -1845,31 +1994,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             None => (0, None),
             Some(cursor) => parse_read_cursor(&cursor).unwrap_or((0, Some(cursor))),
         };
-        if let Some(cursor) = app_cursor.clone() {
-            if has("cursor") {
-                arguments.insert("cursor".into(), cursor.into());
-            } else {
-                return Err(format!(
-                    "{} reads in one piece; it takes no cursor",
-                    resolved.path
-                ));
-            }
-        }
-        // A paged read asks for as much as it allows.
-        for param in &reader.params {
-            if param.name.as_ref() == "pageSize"
-                && param.required
-                && !arguments.contains_key("pageSize")
-            {
-                let bound = param
-                    .schema
-                    .as_deref()
-                    .and_then(|schema| schema.get("maximum"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(64);
-                arguments.insert("pageSize".into(), bound.into());
-            }
-        }
+        let arguments = read_arguments(&resolved, &owner, &reader, app_cursor.as_deref())?;
         let value = Box::pin(self.run(
             RemoteActionTarget {
                 provider,
@@ -1890,8 +2015,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .pointer("/update/output/value")
             .cloned()
             .unwrap_or_default();
+        let read = ResourceRead::of(&output).at(
+            &resolved.path,
+            resolved.node.as_ref().map(|node| node.kind.as_str()),
+        );
+        if structured {
+            // Typed, and paged by the app alone: the characters a text read
+            // is cut at mean nothing to a program.
+            let mut reply = Reply::ok(String::new());
+            reply.structured =
+                Some(serde_json::to_value(&read).map_err(|error| error.to_string())?);
+            return Ok(reply);
+        }
         Ok(Reply::ok(read_answer(
-            &output,
+            &read,
             already,
             app_cursor.as_deref(),
             args.max_chars,
@@ -1965,10 +2102,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     let invocation = batch_invocation(args.invocation_id.as_deref(), index)?;
                     let reply = Box::pin(self.do_one(&step.path, step.args, invocation, wait_ms))
                         .await
-                        .unwrap_or_else(|error| Reply {
-                            text: format!("failed: {error}"),
-                            failed: true,
-                        });
+                        .unwrap_or_else(|error| Reply::failed(format!("failed: {error}")));
                     let _ = write!(
                         text,
                         "{}[{}] {}: {}",
@@ -1983,7 +2117,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             "\nstopped at {} of {total}; earlier steps stay applied",
                             index.saturating_add(1)
                         );
-                        return Ok(Reply { text, failed: true });
+                        return Ok(Reply::failed(text));
                     }
                 }
                 Ok(Reply::ok(text))
@@ -2215,13 +2349,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // Nothing found because no app was searched is not "nothing
         // matches": an agent would take the resource for absent.
         if hits.is_empty() && !silent.is_empty() && silent.len() == asked {
-            return Ok(Reply {
-                text: format!(
-                    "not searched, the app did not answer: {}; try again",
-                    list_names(&silent)
-                ),
-                failed: true,
-            });
+            return Ok(Reply::failed(format!(
+                "not searched, the app did not answer: {}; try again",
+                list_names(&silent)
+            )));
         }
         hits.sort_by_key(|hit| hit.tier);
         let total = hits.len();

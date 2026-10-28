@@ -99,6 +99,26 @@ pub struct ActionContext {
 
 read_through_json_value!(ActionContext);
 
+/// The gesture a change records for the undo step `gesture` its caller
+/// named, under the caller's `group`: one id for every change of that step,
+/// and never one the caller chose.
+fn ambient_gesture(gesture: crate::ActionId, group: Option<&ActionGroup>) -> crate::ActionId {
+    let mut hasher = blake3::Hasher::new_derive_key("tilo ambient gesture v1");
+    hasher.update(gesture.0.as_bytes());
+    if let Some(group) = group {
+        for part in [&group.kind, &group.id] {
+            hasher.update(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+            hasher.update(part.as_bytes());
+        }
+    }
+    let id = *hasher
+        .finalize()
+        .as_bytes()
+        .first_chunk::<16>()
+        .unwrap_or(&[0; 16]);
+    crate::ActionId(uuid::Builder::from_custom_bytes(id).into_uuid())
+}
+
 // Written out rather than derived: a derived clone is inlined into every
 // crate that clones a context.
 impl Clone for ActionContext {
@@ -191,6 +211,16 @@ impl ActionContext {
         }
         if self.caused_by.is_none() {
             self.caused_by.clone_from(&ambient.caused_by);
+        }
+        // The caller's undo step: what a door joins its calls under (one
+        // task step), so they are taken back as one. Rebound under the
+        // caller's group, never recorded as the caller wrote it: a caller
+        // cannot name a gesture of someone else's and have its change
+        // continue theirs.
+        if self.gesture.is_none() {
+            self.gesture = ambient
+                .gesture
+                .map(|gesture| ambient_gesture(gesture, ambient.group.as_ref()));
         }
         for facet in &ambient.facets {
             if !self.facets.contains(facet) {
