@@ -259,6 +259,13 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Print the public key an identity JSON signs as (hex), the
+    /// `publisher_pubkey_hex` its registry entries carry.
+    PublisherKey {
+        /// The identity JSON.
+        #[arg(long)]
+        identity: PathBuf,
+    },
     /// Print a signed registry entry for a .tapp — the JSON shape a
     /// registry's `/entries` serves. For a static-directory self-hosted
     /// registry, collect printed entries into an `entries` file and serve
@@ -496,6 +503,11 @@ fn main() -> Result<()> {
             &output,
         ),
         Command::Keygen { out } => cmd_keygen(&out),
+        Command::PublisherKey { identity } => {
+            let key = load_signing_key(&identity)?;
+            println!("{}", hex::encode(key.verifying_key().to_bytes()));
+            Ok(())
+        }
         Command::Entry(args) => cmd_entry(&args),
         Command::BotEntry(args) => cmd_bot_entry(&args),
         Command::Pending(args) => cmd_pending(&args),
