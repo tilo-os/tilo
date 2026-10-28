@@ -22,6 +22,11 @@ pub(super) const HELD_LISTINGS: usize = 16;
 /// its first page to its last.
 pub(super) struct HeldListing {
     pub(super) revision: String,
+    /// Who read it, and how ([`LiveAppActionsProvider::listing_reader`]):
+    /// a snapshot holds the data, not its reader, so a continuation read
+    /// by another Person, with programmatic rows otherwise, or in another
+    /// language is stale.
+    pub(super) reader: String,
     pub(super) surface: Option<Rc<SurfaceSnapshot>>,
     pub(super) projections: Vec<Rc<AuxiliarySnapshot>>,
 }
@@ -93,7 +98,12 @@ impl LiveAppActionsProvider {
     /// its cursors carry. A first page starts afresh: projections an earlier
     /// listing of the same revision built may predate a page that has
     /// landed since, so they are not kept.
-    pub(super) fn hold_listing(&self, revision: &str, surface: Option<Rc<SurfaceSnapshot>>) {
+    pub(super) fn hold_listing(
+        &self,
+        revision: &str,
+        reader: String,
+        surface: Option<Rc<SurfaceSnapshot>>,
+    ) {
         let mut held = self.held.borrow_mut();
         held.retain(|listing| listing.revision != revision);
         if held.len() >= HELD_LISTINGS {
@@ -101,6 +111,7 @@ impl LiveAppActionsProvider {
         }
         held.push_back(HeldListing {
             revision: revision.to_owned(),
+            reader,
             surface,
             projections: Vec::new(),
         });
@@ -162,12 +173,21 @@ impl LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
             self.directory_revision(ctx.chrome),
             self.broker.statuses_generation(),
+            Self::listing_reader(ctx),
+        )
+    }
+
+    /// Who reads a listing, and how: the Person, whether programmatic rows
+    /// are listed, and the desktop's language the rows are written in.
+    pub(super) fn listing_reader(ctx: &SearchContext<'_>) -> String {
+        format!(
+            "{}:{}:{}",
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
             crate::shell::i18n::current_locale(),

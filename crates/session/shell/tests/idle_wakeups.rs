@@ -21,6 +21,12 @@ const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 /// How many desktops this process started, so each has its own runtime dir.
 static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// What the compositor logs. Every round of channel-key questions, so the
+/// gate counts the rounds the shovel starts, not how often contention woke
+/// it; and what moves the action surface every listing reads, so a desktop
+/// that republishes while idle says what did.
+const LOG_FILTER: &str = "warn,tilo::collab::key_rounds=debug,tilo::publications=debug";
+
 /// A line the compositor printed, with when the test read it.
 pub(crate) type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
@@ -136,14 +142,7 @@ impl Desktop {
             .env("TILO_IDLE_BLANK_SECS", "0")
             // A `paint-tick:` line per loop iteration (see `LoopStats`).
             .env("TILO_PAINT_STATS", "ticks")
-            // Every round of channel-key questions is logged, so the gate counts
-            // the rounds the shovel starts, not how often contention woke it.
-            // What moves the action surface every listing reads is traced
-            // too, so a desktop that republishes while idle says what did.
-            .env(
-                "RUST_LOG",
-                "warn,tilo::collab::key_rounds=debug,tilo::publications=debug",
-            )
+            .env("RUST_LOG", LOG_FILTER)
             // As the session starts the compositor (os/usr/libexec/tilo-session):
             // glibc reads its tunables when a process starts.
             .env(

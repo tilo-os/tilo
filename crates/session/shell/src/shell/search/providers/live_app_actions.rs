@@ -3260,7 +3260,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     .set(Some(self.broker.surfaces_generation()));
                 let revision = self.cursor_revision(&ctx);
                 let surface = self.surface_snapshot.borrow().clone();
-                self.hold_listing(&revision, surface.clone());
+                self.hold_listing(&revision, Self::listing_reader(&ctx), surface.clone());
                 (revision, surface)
             }
             Some(cursor) => {
@@ -3271,7 +3271,10 @@ impl SearchProvider for LiveAppActionsProvider {
                     .held
                     .borrow()
                     .iter()
-                    .find(|listing| listing.revision == cursor.revision)
+                    .find(|listing| {
+                        listing.revision == cursor.revision
+                            && listing.reader == Self::listing_reader(&ctx)
+                    })
                     .map(|listing| listing.surface.clone());
                 match held {
                     Some(surface) => (cursor.revision.clone(), surface),
