@@ -263,12 +263,17 @@ pub fn consume_trusted_service_launch_identity(
     workspace_id: &str,
 ) -> Option<ServiceLaunchIdentity> {
     let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-    let launch = launches.get_mut(&pid)?;
-    if launch.compat_handoff_taken || !launch.attests(pid, start_time, app_id, workspace_id) {
-        return None;
-    }
-    launch.compat_handoff_taken = true;
-    Some(launch.identity.clone())
+    let identity = launches
+        .get_mut(&pid)
+        .filter(|launch| {
+            !launch.compat_handoff_taken && launch.attests(pid, start_time, app_id, workspace_id)
+        })
+        .map(|launch| {
+            launch.compat_handoff_taken = true;
+            launch.identity.clone()
+        });
+    drop(launches);
+    identity
 }
 
 /// Compatibility service view of [`consume_trusted_service_launch_identity`].
