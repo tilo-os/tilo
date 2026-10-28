@@ -1593,44 +1593,6 @@ impl VideoEditorApp {
         (src, frame)
     }
 
-    /// The colour of the decoded picture the preview shows for the clip
-    /// under the playhead, at normalised source coordinates `(u, v)`, or
-    /// `None` when the canvas is not showing a decoded picture of it.
-    ///
-    /// `None` is the honest answer on a build with no decoder, on an
-    /// un-hydrated reference, and before the pipeline has prerolled — in
-    /// every one of those cases the canvas is showing the representative
-    /// fill, and handing back *its* colour as "the colour of your footage"
-    /// would be a fabrication. The caller shows the control as unavailable
-    /// instead.
-    pub fn preview_pixel(&self, normalized_x: f64, normalized_y: f64) -> Option<[f64; 3]> {
-        #[cfg(feature = "decode")]
-        {
-            let media = self.project.top_video_clip_at(self.playhead)?.media;
-            self.frame_source
-                .as_ref()?
-                .pixel(media, normalized_x, normalized_y)
-        }
-        #[cfg(not(feature = "decode"))]
-        {
-            let _ = (normalized_x, normalized_y);
-            None
-        }
-    }
-
-    /// Whether [`Self::preview_pixel`] has a decoded picture to sample.
-    pub fn has_preview_pixel(&self) -> bool {
-        #[cfg(feature = "decode")]
-        {
-            self.project
-                .top_video_clip_at(self.playhead)
-                .zip(self.frame_source.as_ref())
-                .is_some_and(|(clip, source)| source.has_picture(clip.media))
-        }
-        #[cfg(not(feature = "decode"))]
-        false
-    }
-
     /// Resolve the bin's docked-vs-overlay layout purely from the allocated
     /// width against the breakpoint. The shared `SplitLayout` is the single
     /// source of truth so the kernel's reconcile/animation agree with our
