@@ -773,3 +773,137 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
     });
     assert!(app.presence_ctx.self_id().is_none());
 }
+
+/// A counter whose view, once the count moved, asks a worker for something
+/// and owes the window its reply, taking the reply up in a later sync: as
+/// a viewer reads what a file it just opened carries.
+struct OwingCounter {
+    card: CounterCard,
+    seen: i64,
+    /// Lets the worker reply; the test holds the other end.
+    gate: Option<std::sync::mpsc::Receiver<()>>,
+    replies: Option<std::sync::mpsc::Receiver<i64>>,
+    worker: Rc<RefCell<Option<std::thread::JoinHandle<()>>>>,
+    taken: Rc<Cell<Option<i64>>>,
+}
+
+impl Widget for OwingCounter {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        self.card.sync(s, p);
+        if let Some(reply) = self
+            .replies
+            .as_ref()
+            .and_then(|replies| replies.try_recv().ok())
+        {
+            self.taken.set(Some(reply));
+        }
+        let (doc, _) = crate::doc::document_ref(s, p);
+        let count = counter_in_doc(doc);
+        if count == self.seen {
+            return;
+        }
+        self.seen = count;
+        if let Some(gate) = self.gate.take() {
+            let owed = crate::wake::WakeHandle::new().owe();
+            let (reply, replies) = std::sync::mpsc::channel();
+            *self.worker.borrow_mut() = Some(std::thread::spawn(move || {
+                let _ = gate.recv();
+                let _ = reply.send(count);
+                drop(owed);
+            }));
+            self.replies = Some(replies);
+        }
+    }
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        self.card.settle(edits, p);
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let kid = self.card.build_layout(taffy, theme, node_map);
+        taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.card]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.card]
+    }
+    fn name(&self) -> &'static str {
+        "OwingCounter"
+    }
+}
+
+/// A person's window answers an action the broker delivered once what the
+/// action caused in the app has landed: the reply its view owed is taken
+/// up before the caller learns the action succeeded, and meanwhile the
+/// window's own frames go on.
+#[test]
+fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
+    let (go, gate) = std::sync::mpsc::channel();
+    let taken = Rc::new(Cell::new(None));
+    let worker = Rc::new(RefCell::new(None));
+    let scope = crate::wake::WakeScope::new();
+    let widget = {
+        let _entry = scope.enter();
+        Box::new(OwingCounter {
+            card: CounterCard::new(),
+            seen: 0,
+            gate: Some(gate),
+            replies: None,
+            worker: Rc::clone(&worker),
+            taken: Rc::clone(&taken),
+        })
+    };
+    let mut app = App::from_scoped_parts_with_controlled_inputs(scope, State::new(), widget);
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let sent = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    let answered = |sent: &Rc<RefCell<Vec<CollabRequest>>>| {
+        sent.borrow().iter().any(|request| {
+            matches!(
+                request,
+                CollabRequest::UpdateInvocation {
+                    update: tilo_actions::InvocationUpdate::Succeeded { .. },
+                    ..
+                }
+            )
+        })
+    };
+    let _entry = app.enter_wake_scope();
+    app.invoke_published_action(
+        872,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "bump".into(),
+        None,
+        "original-caller",
+        None,
+    );
+    assert_eq!(counter(&app), 1);
+    assert!(!answered(&sent), "the reply the bump caused is still owed");
+    // The window's frames go on while it is owed; none answers.
+    app.sync_model(true);
+    assert!(!answered(&sent));
+
+    go.send(()).unwrap();
+    // The reply has landed once its worker ended.
+    worker.borrow_mut().take().unwrap().join().unwrap();
+    let mut frames = 0;
+    while !answered(&sent) {
+        assert!(frames < 2, "the landed reply answers within two frames");
+        app.sync_model(true);
+        frames += 1;
+    }
+    assert_eq!(
+        taken.get(),
+        Some(1),
+        "the reply was taken up before the answer"
+    );
+}

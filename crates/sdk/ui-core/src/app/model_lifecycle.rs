@@ -405,6 +405,7 @@ impl super::App {
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();
+        self.answer_held_invocations();
         true
     }
 
