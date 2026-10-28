@@ -410,7 +410,10 @@ mod tests {
             .find(|item| item.action.name == "Cancel sending")
             .expect("the verb is in the bar");
         assert_eq!(cancel.command, Command::CancelSend("queued".into()));
-        assert!(cancel.action.destructive, "it ends something");
+        assert!(
+            !cancel.action.destructive,
+            "Undo puts the message back in the outbox, so it is no deletion"
+        );
         assert!(
             items.iter().all(|item| item.action.icon != "x"),
             "nothing the outbox offers wears the window's own close"
