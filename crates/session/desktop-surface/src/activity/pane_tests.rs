@@ -2038,7 +2038,7 @@ mod tests {
             "a name someone else wrote must say so: {sub:?}"
         );
         assert!(
-            !sub.contains("named by test-owner") && !sub.contains("named by ada"),
+            !sub.contains(&format!("named by {}", pane.local_user())),
             "and it must not be attributed to the reader: {sub:?}"
         );
     }
@@ -2574,7 +2574,7 @@ mod resume_card_tests {
 
     #[test]
     fn resume_uses_the_local_users_latest_targeted_action() {
-        let local = "ada";
+        let local = "kai";
         let now = SystemTime::now();
         let older = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
         let entries = vec![resume_entry(1, local, older), resume_entry(2, "Ada", now)];
@@ -3274,13 +3274,13 @@ mod reader_tests {
     fn the_readers_own_changes_never_reach_the_passive_activity() {
         let own = ui::widget::history::HistoryAuthor::new("Workspace setup", 10.0, "a1b2")
             .with_relation(ui::widget::history::AuthorRelation::Reader);
-        assert!(author_is_local(&own, "ada"));
+        assert!(author_is_local(&own, "kai"));
         assert!(
             author_is_local(&own, ""),
             "known as the reader without a name"
         );
         let other = ui::widget::history::HistoryAuthor::new("Ada", 10.0, "c3d4");
-        assert!(!author_is_local(&other, "ada"));
+        assert!(!author_is_local(&other, "kai"));
     }
 }
 

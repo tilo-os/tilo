@@ -64,6 +64,10 @@ repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]
 dispatch = true
 release = ["sha-{commit}"]
+# Production (tilo.coffee, eu1) is released by its own session, by hand and independently of
+# stable, so a push to stable neither carries, signs nor publishes the web entry's release: the
+# site session dispatches it (`t dispatch publish-web-entry --ref stable`).
+release_on = ["dispatch"]
 
 [product.context]
 run = "bash tools/ci/publish/web-entry-context.sh {dir}/context /target/publish/web-desktop/bundle"

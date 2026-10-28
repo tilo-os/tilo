@@ -2001,7 +2001,7 @@ impl FrameBuilder {
     /// Lay the desktop out for the frame about to be painted, when anything
     /// it lays out changed since it was last laid out: its structure, the
     /// tree (a window opened or closed, a strip or tab change, a display
-    /// added: [`TreeRevisions`]), what an input or the session changed
+    /// added: `TreeRevisions`), what an input or the session changed
     /// ([`Self::owe_layout`]), or what a widget's animation moved
     /// ([`ui::widget::note_layout_moved`], in its update or as it was laid
     /// out). A frame nothing of that changed for (a client's new buffer,

@@ -163,3 +163,62 @@ fn one_read_only_layer_is_refused() {
     let err = Launch::new(&spec).spawn().err();
     assert!(matches!(err, Some(SpawnError::Invalid(_))), "{err:?}");
 }
+
+/// An image's layers as a job's root: the top layer's file hides the lower's, the mount points
+/// the job needs go into its own upper, and the root itself can't be written.
+#[test]
+fn a_root_of_layers_shows_the_top_layer_and_cant_be_written() {
+    needs_sandbox!();
+    let dir = tempfile::tempdir().unwrap();
+    if !overlays_work(dir.path()) {
+        return;
+    }
+    // The host's /usr is bound in for a shell; the base layer links into it as a merged-/usr
+    // image does.
+    let base = layer(
+        dir.path(),
+        "base",
+        &[("etc/hello", "base\n"), ("etc/only-base", "x\n")],
+    );
+    for (link, to) in [
+        ("bin", "usr/bin"),
+        ("lib", "usr/lib"),
+        ("lib64", "usr/lib64"),
+        ("sbin", "usr/sbin"),
+    ] {
+        std::os::unix::fs::symlink(to, base.join(link)).unwrap();
+    }
+    let top = layer(dir.path(), "top", &[("etc/hello", "top\n")]);
+    let (upper, work) = writes(dir.path(), "root");
+    let mut spec = JobSpec::new(
+        Root::Layers {
+            lowers: vec![top.clone(), base.clone()],
+            upper: upper.clone(),
+            work,
+        },
+        ["/bin/sh"],
+    );
+    spec.mount(Mount::read_only("/usr", "/usr"));
+    shell(
+        &mut spec,
+        "cat /etc/hello /etc/only-base; if echo x > /new 2>/dev/null; then echo wrote; fi",
+    );
+    let (mut out_r, out_w) = crate::support::pipe();
+    let err_w = out_w.try_clone().unwrap();
+    let mut job = Launch::new(&spec)
+        .stdout(out_w)
+        .stderr(err_w)
+        .spawn()
+        .expect("start the job");
+    let status = job.wait().unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut out_r, &mut out).unwrap();
+    assert!(status.success(), "{out}");
+    assert_eq!(out, "top\nx\n");
+    assert!(
+        upper.join("usr").is_dir(),
+        "the mount point is the job's own"
+    );
+    assert!(!top.join("usr").exists() && !base.join("usr").exists());
+    assert!(!upper.join("new").exists());
+}

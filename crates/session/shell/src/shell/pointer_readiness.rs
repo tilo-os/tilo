@@ -11,7 +11,7 @@
 //! is enough to hold every unrelated target back for as long as it does.
 //!
 //! Readiness is therefore read along one path — the widgets from the root down
-//! to the one target named. Each of them must have [`Widget::presented`], the
+//! to the one target named. Each of them must have `Widget::presented`, the
 //! single latch the toolkit defines for "this stands in for something that has
 //! drawn", and the desktop as a whole must not be between two arrangements of
 //! its own, where a rectangle read now is a rectangle the caller never saw.

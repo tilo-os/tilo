@@ -94,6 +94,35 @@ changed one, the merge driver takes `main`'s side (`.gitattributes`, `.githooks/
 and the gate's `t fix` puts back what your commit needs. `Cargo.lock` is only relocked: what the
 merged manifests require is added, and no locked version moves.
 
+## Cutting stable
+
+Stable is cut from a green head of `main`, twice a day, by one command:
+
+```
+python3 tools/ci/stable_cut.py cut       # select, verify, and print the push
+python3 tools/ci/stable_cut.py select    # only the candidate, and why recent heads are not
+python3 tools/ci/stable_cut.py checks    # what a candidate is verified by
+```
+
+1. **Select.** The candidate is `main`'s newest commit none of whose default checks fails
+   (`t main --coverage`; checks `t stable` excludes aside). t runs `main`'s default checks as it
+   has room, so the candidate may have no result yet for some: those run with its verification.
+2. **Verify.** `t stable verify <commit> <checks>` runs the gating set: every `heavy` check
+   (images, the OS and VM acceptance suites, FUSE, sizes, goldens), mostly from the cache, since
+   `main` ran most of them on the same inputs. Any failure holds the cut. A second run reports
+   the performance checks (`perf-*`, `vm-acceptance-perf`, `weekly-latency`: on `stable` but
+   not `heavy`), and `vm-acceptance` reports its budget scenarios as `over-budget` (`--budgets
+   report`): t's shared, GPU-less workers measure the worker as much as the commit, so budgets
+   gate again once they run on dedicated or GPU runners.
+3. **Push.** For a candidate that passed, the command prints `git push origin
+   <commit>:refs/heads/stable`; the stabilizer runs it. The push runs the publishing checks
+   (`on = ["stable"]`: sign-\*, publish-\*, release-\*, submit-\*, seal-\*), which sign with
+   the release keys in KMS and publish the OS, the apps, the RPMs and the kernel and its
+   buildroot. Production (tilo.coffee) is not among them: its own session releases it.
+
+A failure is fixed on `main` and the next head is cut, or the check is excluded with a reason
+(`t stable exclude <check> --reason ...`) when the work is unfinished.
+
 ## Testing a change
 
 ```

@@ -118,6 +118,18 @@ pub enum Root {
     /// directories for `/bin`, `/sbin` and `/lib*`, and `extra` read-only
     /// paths at the same place, on an otherwise empty root.
     Host { extra: Vec<PathBuf> },
+    /// An image's read-only layers stacked (the first on top), as
+    /// overlayfs's `lowerdir` lists them, with no image directory to unpack:
+    /// layers made once are shared by every job using them. The mount points
+    /// the job needs are made in `upper` (with `work`, overlayfs's scratch on
+    /// the same filesystem; both fresh for the job), and the root is
+    /// read-only once it is built, so the job writes none of it. The layers'
+    /// files keep their owners ([`IdBlock`]: like the host's system files).
+    Layers {
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        work: PathBuf,
+    },
 }
 
 /// What is mounted at a destination.

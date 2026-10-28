@@ -912,17 +912,27 @@ pub fn check_app(
         return Ok(None);
     }
     let report = report_of(&app_dir, executable)?;
+    check_report(&app_dir, &report, level).map(Some)
+}
+
+/// What [`check_app`] finds in the framework app at `app_dir` once its
+/// surface `report` is in hand, however it was obtained.
+pub fn check_report(
+    app_dir: &Path,
+    report: &SurfaceReport,
+    level: Level,
+) -> Result<ContractReport> {
     let catalog = match level {
-        Level::Error => crate::contract::source_catalog(&app_dir)?,
+        Level::Error => crate::contract::source_catalog(app_dir)?,
         Level::Warning => None,
     };
-    Ok(Some(findings(
-        &app_id(&app_dir)?,
-        &report,
-        committed(&app_dir)?.as_deref(),
+    Ok(findings(
+        &app_id(app_dir)?,
+        report,
+        committed(app_dir)?.as_deref(),
         catalog.as_ref(),
         level,
-    )))
+    ))
 }
 
 #[cfg(test)]
@@ -1150,13 +1160,18 @@ mod tests {
 
     /// Messages publishes verbs and field edits, so every one of them has to
     /// read in the app's own words: the live report and the catalogue it is
-    /// checked against are the app's, not a fixture standing in for it.
+    /// checked against are the app's, not a fixture standing in for it. The
+    /// report is the one `messages --surface` prints, taken in this process
+    /// from the app linked into the test rather than by building and running
+    /// its binary here, which made the test as slow as a cold build of the app.
     #[test]
     fn messages_history_reads_in_its_own_words() {
         let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");
-        let report = check_app(&app_dir, None, Level::Error)
-            .expect("Messages reports its surface")
-            .expect("Messages is a framework app");
+        assert!(is_framework_app(&app_dir), "Messages is a framework app");
+        let printed =
+            ui::framework::headless::surface_report::<messages::MessagesShell>().to_string();
+        let surface = parse_report(&printed).expect("Messages reports its surface");
+        let report = check_report(&app_dir, &surface, Level::Error).expect("the check runs");
         let missing: Vec<&str> = report
             .findings
             .iter()
