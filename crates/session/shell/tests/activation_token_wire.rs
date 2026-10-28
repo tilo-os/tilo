@@ -150,6 +150,28 @@ fn accepted(state: &State, token: &str) -> bool {
         .is_some()
 }
 
+/// One line the native client printed: a token it was handed, judged as the
+/// compositor holds it, and after the first one the person's key press.
+fn read_line(
+    state: &mut State,
+    line: &str,
+    transcript: &mut Vec<String>,
+    before: &mut Option<bool>,
+    after: &mut Option<bool>,
+) {
+    if transcript.len() < 32 {
+        transcript.push(line.to_owned());
+    }
+    if let Some(token) = line.strip_prefix("TOKEN before ") {
+        *before = Some(accepted(state, token));
+        // The person presses a key in the window.
+        assert!(state.deliver_client_key(30, true, true));
+        assert!(state.deliver_client_key(30, false, true));
+    } else if let Some(token) = line.strip_prefix("TOKEN after ") {
+        *after = Some(accepted(state, token));
+    }
+}
+
 #[test]
 fn a_token_carries_the_press_it_was_asked_for_after() {
     if std::env::var(CHILD).as_deref() == Ok("1") {
@@ -191,19 +213,18 @@ fn a_token_carries_the_press_it_was_asked_for_after() {
             focused = true;
         }
         for line in child.messages.try_iter() {
-            if transcript.len() < 32 {
-                transcript.push(line.clone());
-            }
-            if let Some(token) = line.strip_prefix("TOKEN before ") {
-                before = Some(accepted(&state, token));
-                // The person presses a key in the window.
-                assert!(state.deliver_client_key(30, true, true));
-                assert!(state.deliver_client_key(30, false, true));
-            } else if let Some(token) = line.strip_prefix("TOKEN after ") {
-                after = Some(accepted(&state, token));
-            }
+            read_line(&mut state, &line, &mut transcript, &mut before, &mut after);
         }
         if let Some(status) = child.process.try_wait().unwrap() {
+            // The client exits as soon as it has printed its last token, so
+            // that line can still be on its way through the reader thread:
+            // read on until its stdout closes.
+            while let Ok(line) = child
+                .messages
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                read_line(&mut state, &line, &mut transcript, &mut before, &mut after);
+            }
             break Some(status);
         }
         if Instant::now() >= deadline {
