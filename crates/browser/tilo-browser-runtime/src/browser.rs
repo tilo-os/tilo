@@ -2317,6 +2317,13 @@ impl Mount {
         let passes_resized = self.frame.relayout_frames();
         let stage = self.metric_start();
         let tooltip_before = self.frame.drawn_tooltip().map(|(text, _)| text.to_owned());
+        // A page drawing the frame on the CPU draws a strip's windows where
+        // they rest and moves their layers itself, so a pan draws nothing:
+        // its windows' commands do not change while the pan does. Every
+        // other frame draws them where they are.
+        let _retained = ui::retained_present::RetainedScene::begin(
+            self.cpu.as_ref().is_some_and(cpu::Cpu::layered),
+        );
         let polled = match self.frame.poll_frame() {
             Ok(polled) => polled,
             Err(error) => {
@@ -2413,15 +2420,42 @@ impl Mount {
             generation: self.retained.generation,
         };
         let parts = self.frame.scene_parts();
+        // A page drawing on the CPU draws the frame as layers where its
+        // presenter composites them: the ground and the chrome, each window
+        // of a strip, the overlays above them, each in a target of its own.
+        // A strip that only panned moves them. Any other host, and a page
+        // whose canvas has no WebGL2, draws one target.
+        let to_device = ui::scale::composite_transform(viewport.dpr);
+        let layered = match self.cpu.as_mut() {
+            Some(cpu) => cpu.present_layers(
+                frame.scene,
+                parts,
+                to_device,
+                (viewport.width, viewport.height),
+                frame.background,
+            ),
+            None => None,
+        };
+        let layered = match layered {
+            Some(Ok(drawn)) => Some(drawn),
+            Some(Err(error)) => {
+                self.forget_frame();
+                return Err(error);
+            }
+            None => None,
+        };
         // Compared with the frame the target shows, command by command: a
         // change no part proves is bounded (an unknown one) repaints it all.
         // A CPU mount keeps its pixels between frames, so a strip that only
         // panned shows its windows by moving them (`ui::scroll_copy`) instead
         // of drawing them again; a device mount draws them where they are.
-        let repaint =
+        let repaint = if layered.is_some() {
+            ui::retained_raster::Repaint::Regions(Vec::new())
+        } else {
             self.retained
                 .frames
-                .repaint_with_copies(frame.scene, parts, key, self.cpu.is_some());
+                .repaint_with_copies(frame.scene, parts, key, self.cpu.is_some())
+        };
         let (damage, copies, full_redraw) = match &repaint {
             ui::retained_raster::Repaint::Full(_) => (&[][..], &[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), &[][..], false),
@@ -2442,19 +2476,24 @@ impl Mount {
             backdrop: &ui::backdrop::BackdropFrame::default(),
         };
         // The same scene either way: drawn by vello's compute pipeline on the
-        // shared device, or replayed on the CPU and presented by the page.
-        let rasterized = if let Some(cpu) = self.cpu.as_mut() {
-            cpu.present(content)
+        // shared device, or replayed on the CPU and presented by the page —
+        // as layers, where the page's presenter composites them.
+        let rasterized = if let Some(drawn) = &layered {
+            drawn.rasterized
         } else {
-            let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-            rasterize_on_gpu(gpu, content)
-        };
-        let rasterized = match rasterized {
-            Ok(pixels) => pixels,
-            Err(error) => {
-                // What the target holds after a failed raster is unknown.
-                self.forget_frame();
-                return Err(error);
+            let one = if let Some(cpu) = self.cpu.as_mut() {
+                cpu.present(content)
+            } else {
+                let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+                rasterize_on_gpu(gpu, content)
+            };
+            match one {
+                Ok(pixels) => pixels,
+                Err(error) => {
+                    // What the target holds after a failed raster is unknown.
+                    self.forget_frame();
+                    return Err(error);
+                }
             }
         };
         // How much of the frame was repainted, for the frame metrics.
@@ -2465,6 +2504,13 @@ impl Mount {
             .checked_div(window)
             .unwrap_or(100);
         let render_stage = match (&repaint, percent) {
+            _ if layered.is_some() => match (&layered, percent) {
+                (Some(drawn), 0) if drawn.moved => "render:layers:moved",
+                (_, 0) => "render:unchanged",
+                (_, 0..=9) => "render:layer<10%",
+                (_, 10..=49) => "render:layer<50%",
+                _ => "render:layer:large-damage",
+            },
             (ui::retained_raster::Repaint::Copies(presented), _) => {
                 if presented.copies.is_empty() {
                     "render:unchanged"
@@ -2493,13 +2539,19 @@ impl Mount {
             _ => "render:full:large-damage",
         };
         if self.metrics.borrow().enabled() {
-            self.metrics
-                .borrow_mut()
-                .damaged(describe_repaint(&repaint, window));
+            let described = match &layered {
+                Some(drawn) => format!("layer:{}", drawn.kinds),
+                None => describe_repaint(&repaint, window),
+            };
+            self.metrics.borrow_mut().damaged(described);
         }
         self.retained.frames.presented(frame.scene, parts, key);
+        // The retained target the WebGPU path draws into says nothing about
+        // the layers a page draws on the CPU.
         #[cfg(debug_assertions)]
-        self.check_retained_frame(&physical, key, full_redraw);
+        if layered.is_none() {
+            self.check_retained_frame(&physical, key, full_redraw);
+        }
         // A CPU frame is already on the page's canvas, presented region by
         // region by `Cpu::present`.
         if let FrameTarget::Gpu(output) = target {

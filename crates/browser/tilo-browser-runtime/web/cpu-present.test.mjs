@@ -117,6 +117,28 @@ test('the page can ask for the 2D path with the URL', () => {
   assert.equal(call(canvas, 'getContext')[0][1], '2d');
 });
 
+test('each layer is uploaded to a texture of its own and drawn where it goes', () => {
+  const canvas = fakeCanvas();
+  const presenter = createCpuPresenter(canvas, {search: ''});
+  assert.equal(presenter.layered, true, 'the WebGL2 presenter composites layers');
+  presenter.resize(800, 600);
+  presenter.beginFrame(0.1, 0.1, 0.1, 1);
+  presenter.layer(0, 200, 100);
+  presenter.upload(0, 0, 0, 2, 2, region(2, 2, [255, 0, 0, 255]));
+  presenter.layer(1, 50, 50);
+  // Two layers: 200x100 at (10, 20), 50x50 at (-5, 590) — the second hangs
+  // off the canvas and is drawn for the part that shows.
+  presenter.composite([0, 1], new Float32Array([10, 20, 200, 100, 0, 0, 1, 1, -5, 590, 50, 50, 0, 0, 1, 1]), [1, 1]);
+  const [[, target, , x, y, width, height]] = call(canvas, 'texSubImage2D');
+  assert.deepEqual([x, y, width, height], [0, 0, 2, 2], 'a region goes where it was drawn');
+  const quads = call(canvas, 'drawArrays');
+  assert.equal(quads.length, 2, 'one quad a layer');
+  const scissors = call(canvas, 'scissor');
+  assert.deepEqual(scissors[0].slice(1), [10, 480, 200, 100], 'the first layer shows whole');
+  assert.deepEqual(scissors[1].slice(1), [0, 0, 45, 10], 'the second only the part on the canvas');
+  assert.deepEqual(call(canvas, 'clearColor').map(([, ...rest]) => rest)[0], [0.1, 0.1, 0.1, 1]);
+});
+
 test('premultiplied pixels become straight ones, and opaque ones are left alone', () => {
   const pixels = new Uint8ClampedArray([128, 0, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0]);
   unpremultiply(pixels);
