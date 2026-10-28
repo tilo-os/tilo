@@ -223,7 +223,7 @@ fn without_ids(text: &str) -> String {
         let (_, after) = tag.split_once('}').expect("a closed tag");
         rest = after;
     }
-    out.push_str(rest.replace("  |", " |").as_str());
+    out.push_str(rest);
     out.lines()
         .map(str::trim_end)
         .collect::<Vec<_>>()
@@ -247,7 +247,7 @@ fn without_marked_ids(text: &str) -> String {
                 );
                 rest = after;
             }
-            out.push_str(rest.trim_end_matches('^'));
+            out.push_str(rest.trim_end_matches('^').replace("  |", " |").as_str());
             out.trim_end().to_owned()
         })
         .collect::<Vec<_>>()
@@ -334,11 +334,14 @@ fn page_of(blocks: &[(String, String)]) -> String {
             out.push('\n');
             continue;
         }
+        // A row's cells are the ones whose text is not the block after them:
+        // that block is the empty one the page shows under the last row.
         let mut run: Vec<&str> = vec![text];
         while let Some((next_kind, next)) = blocks.get(index) {
-            // The block after a table's cells is the empty one the page shows
-            // under its last row.
-            if next_kind != "cell" || next.trim().is_empty() {
+            let starts_a_row = blocks
+                .get(index + 1)
+                .is_some_and(|(_, after)| after != next);
+            if next_kind != "cell" || !starts_a_row {
                 break;
             }
             run.push(next);
