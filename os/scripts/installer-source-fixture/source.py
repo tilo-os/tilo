@@ -282,7 +282,7 @@ class Main:
                        'XDG_RUNTIME_DIR': str(runtime), 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=' + str(runtime / 'bus')}
         try:
             self.logs = [(runtime / name).open('xb') for name in ('main.stdout', 'main.stderr')]
-            self.child = subprocess.Popen([str(executable), '--installer', '--headless-drive',
+            self.child = subprocess.Popen([str(executable), '--setup', '--headless-drive',
                 json.dumps({'viewport': [1180, 820], 'serve': str(self.socket)})], env=environment,
                 stdout=self.logs[0], stderr=self.logs[1], start_new_session=True)
             while not self.socket.exists():

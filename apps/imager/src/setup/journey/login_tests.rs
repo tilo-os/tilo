@@ -59,8 +59,7 @@ fn current_website_signins_brand_pixels() {
     ] {
         let home = tempfile::tempdir().unwrap();
         let selection = fixture(home.path());
-        let mut app =
-            TestApp::<crate::resource::GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<crate::resource::ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.restart = restart_controller::Restart::default();
@@ -233,8 +232,7 @@ fn current_website_signins_raster_matrix() {
                     .clone();
                 let tag = format!("{tag}-{}x{}-text{text_scale}", viewport.0, viewport.1);
                 let mut app =
-                    TestApp::<crate::resource::GuidedInstallerShell>::launched(&["--installer"])
-                        .unwrap();
+                    TestApp::<crate::resource::ImagerShell>::launched(&["--setup"]).unwrap();
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     preview.live = true;
                     preview.restart = restart_controller::Restart::default();
@@ -372,7 +370,7 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
         .unwrap()
         .id
         .clone();
-    let mut app = TestApp::<crate::ImagerShell>::launched(&["--installer-preview"]).unwrap();
+    let mut app = TestApp::<crate::ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;
         preview.restart = restart_controller::Restart::default();
@@ -581,7 +579,7 @@ fn source_group_actions_reject_disabled_unknown_and_replaced_sources() {
         .unwrap()
         .id
         .clone();
-    let mut app = TestApp::<crate::ImagerShell>::launched(&["--installer-preview"]).unwrap();
+    let mut app = TestApp::<crate::ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;
         preview.restart = restart_controller::Restart::default();

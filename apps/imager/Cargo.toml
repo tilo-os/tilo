@@ -31,10 +31,10 @@ test = false
 [features]
 thin = ["dep:runtime-dylib"]
 # The guided installation of Tilo from another operating system and the
-# migration of that system's data: the installer journey (`--installer`), the
-# guided setup (`--setup`), the later folder imports (`--import-folders`), the
-# capture and transfer of the old system's homes, accounts, browsers and
-# applications, the prepared installer medium, and the helpers those start.
+# migration of that system's data: the guided setup (`--setup`), the later
+# folder imports (`--import-folders`), the capture and transfer of the old
+# system's homes, accounts, browsers and applications, the prepared installer
+# medium, and the helpers those start.
 # The host downloads, the capture worker and the installed setup consumer
 # (tilo-prepared-setup) build it. The Tilo app (`.tapp`, the release
 # collection) does not: on Tilo it is the image writer, and the default build

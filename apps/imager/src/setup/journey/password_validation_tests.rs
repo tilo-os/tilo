@@ -1,10 +1,10 @@
 use super::visual_tests::control;
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
-fn fixture() -> TestApp<GuidedInstallerShell> {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+fn fixture() -> TestApp<ImagerShell> {
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.restart = restart_controller::Restart::default();
@@ -24,19 +24,14 @@ fn fixture() -> TestApp<GuidedInstallerShell> {
     app
 }
 
-fn focus(app: &mut TestApp<GuidedInstallerShell>, id: &str) {
+fn focus(app: &mut TestApp<ImagerShell>, id: &str) {
     app.harness()
         .perform_named(id, &ui::a11y::Action::Focus)
         .unwrap();
     app.settle();
 }
 
-fn check(
-    app: &mut TestApp<GuidedInstallerShell>,
-    password: bool,
-    confirmation: bool,
-    enabled: bool,
-) {
+fn check(app: &mut TestApp<ImagerShell>, password: bool, confirmation: bool, enabled: bool) {
     app.with_widget::<InstallerPreview, _>(|preview| {
         for (id, invalid) in [
             ("installer.password", password),

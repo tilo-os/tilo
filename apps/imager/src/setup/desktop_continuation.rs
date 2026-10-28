@@ -423,25 +423,56 @@ impl Continuation {
     }
 }
 
-/// Save the reviewed setup choices before native installation starts. Repeating
-/// an identical review must not discard resolved endpoints or durable IDs.
-pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
-    if choices.is_empty() {
+/// The Desktop route asks nothing about data before it installs: the person's
+/// files stay where they are. Its familiar folders are offered instead at the
+/// first Tilo login, where Add folders opens with them chosen for copying and
+/// every choice still open. Looking the folders up starts helper processes,
+/// so it runs off the caller's thread.
+pub(super) fn offer_familiar_folders() {
+    std::thread::spawn(|| {
+        let sources: Vec<PathBuf> = super::known_folders::discover()
+            .into_iter()
+            .filter_map(|folder| folder.path)
+            .collect();
+        // A folder that cannot be offered stays reachable from Add folders.
+        let _ = MigrationStore::open_default().and_then(|store| offer(&store, &sources));
+    });
+}
+
+fn offer(store: &MigrationStore, sources: &[PathBuf]) -> Result<(), String> {
+    if sources.is_empty() {
         return Ok(());
     }
-    let captured = Continuation::capture(choices)?;
-    let store = MigrationStore::open_default()?;
-    if let Some(previous) = Continuation::load(&store)? {
-        if previous.same_review(&captured) {
-            return Ok(());
-        }
-        // Replacing an outstanding review would strand the previously selected
-        // folders. Finish/resolve that review through Add folders first.
-        if previous.show_on_login && !previous.folders.is_empty() {
-            return Err("An earlier Desktop folder review is saved. Open Add folders to finish it before replacing the selection.".into());
-        }
+    let mut folders = Vec::new();
+    for source in sources.iter().take(128) {
+        let Ok(source_identity) = path_identity(source) else {
+            continue;
+        };
+        folders.push(ContinuedFolder {
+            source: NativePath::encode(source),
+            source_identity,
+            intent: DestinationIntent::Managed,
+            mode: ChoiceMode::Copy,
+            mode_overridden: false,
+            resolved: None,
+        });
     }
-    captured.save(&store)
+    let revision = hex::encode(Sha256::digest(
+        serde_json::to_vec(&folders).map_err(|e| e.to_string())?,
+    ));
+    let offered = Continuation {
+        version: 1,
+        revision,
+        show_on_login: !folders.is_empty(),
+        folders,
+    };
+    if let Some(previous) = Continuation::load(store)?
+        && (previous.same_review(&offered) || previous.show_on_login)
+    {
+        // An outstanding review keeps its choices; Add folders finishes it.
+        return Ok(());
+    }
+    offered.save(store)
 }
 
 /// Read-only confirmation from the live trusted compositor. The UI runs this
@@ -665,6 +696,37 @@ mod tests {
         }];
         let store = MigrationStore::open_at(&base.join("state")).unwrap();
         (temp, store, choices)
+    }
+
+    /// The Desktop route offers the familiar folders for copying at the first
+    /// login, and never replaces a review still waiting there.
+    #[test]
+    fn desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review() {
+        let (_temp, store, choices) = fixture();
+        let documents = choices[0].scan.source.clone();
+        let missing = documents.with_file_name("Missing");
+        offer(&store, &[documents.clone(), missing]).unwrap();
+        let offered = Continuation::load(&store).unwrap().unwrap();
+        assert!(offered.show_on_login);
+        assert_eq!(
+            offered.folders.len(),
+            1,
+            "an unreadable folder is not offered"
+        );
+        assert_eq!(offered.folders[0].source().unwrap(), documents);
+        assert_eq!(offered.folders[0].mode, ChoiceMode::Copy);
+        assert!(offered.folders[0].destination().unwrap().is_none());
+
+        let mut decided = offered;
+        decided.set_mode(0, ChoiceMode::Later).unwrap();
+        decided.save(&store).unwrap();
+        offer(&store, &[documents]).unwrap();
+        let kept = Continuation::load(&store).unwrap().unwrap();
+        assert_eq!(
+            kept.folders[0].mode,
+            ChoiceMode::Later,
+            "the open review is kept"
+        );
     }
 
     /// Readiness connection refusals on Linux.
@@ -1060,61 +1122,5 @@ mod tests {
             );
             assert!(MigrationStore::open_at(store.root()).is_err());
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore = "controller-only disposable native current-user fixture; requires TILO_CONTINUATION_FIXTURE_SOURCE"]
-    fn seed_native_first_login_fixture() {
-        use std::os::unix::fs::MetadataExt;
-        // wrong account and must never prepare another user's continuation.
-        let uid = tilo_process::uid();
-        assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
-        let home = tilo_paths::home().unwrap().canonicalize().unwrap();
-        let requested = PathBuf::from(
-            std::env::var_os("TILO_CONTINUATION_FIXTURE_SOURCE")
-                .expect("set the dedicated fixture root"),
-        );
-        assert_eq!(requested, home.join("tilo-native-migration-fixture"));
-        assert_eq!(requested.canonicalize().unwrap(), requested);
-        assert_eq!(fs::symlink_metadata(&requested).unwrap().uid(), uid);
-        let mut controller =
-            super::super::controller::SetupController::new(super::super::model::Capabilities {
-                host: super::super::model::HostOs::Linux,
-                desktop_session: true,
-                internal_dual_boot: false,
-            });
-        assert!(controller.choose_experience(super::super::model::Experience::Desktop));
-        controller.next().unwrap();
-        for name in ["Documents", "Pictures"] {
-            let path = requested.join(name);
-            assert_eq!(fs::symlink_metadata(&path).unwrap().uid(), uid);
-            controller.add_folder_unresolved(super::super::folders::scan_folder(&path).unwrap());
-        }
-        assert!(controller.set_folder_mode(1, FolderMode::Later));
-        controller.next().unwrap();
-        let expected = Continuation::capture(controller.folders()).unwrap();
-        {
-            let store = MigrationStore::open_default().unwrap();
-            if let Some(existing) = Continuation::load(&store).unwrap() {
-                assert!(
-                    existing.same_review(&expected),
-                    "refusing to overwrite unrelated prior continuation"
-                );
-            }
-        }
-        persist_review(controller.folders()).unwrap();
-        let store = MigrationStore::open_default().unwrap();
-        let actual = Continuation::load(&store).unwrap().unwrap();
-        assert!(actual.same_review(&expected));
-        assert!(actual.folders.iter().all(|f| f.resolved.is_none()));
-        assert!(
-            store.load().unwrap().is_empty(),
-            "fixture must not contain previous copy operations"
-        );
-        println!(
-            "Seeded reviewed Copy Documents + Later Pictures at {}",
-            store.root().display()
-        );
     }
 }

@@ -71,7 +71,7 @@ How the data reaches the destination.
 | Prepared medium | Sealed units captured onto the installer medium | Installation or first boot on the destination |
 | Portable | One password-sealed archive file | Whenever it is opened on a Tilo device |
 | Other device | A paired Tilo device delivers the package (`tilo_handoff`) | After approval on the destination |
-| Desktop | Same OS, same disk | Immediately, without a reboot |
+| Desktop | Same OS, same disk; nothing is asked about data before installing | At the first Tilo login, which offers the familiar folders for copying |
 | Later imports | Folders chosen after install | Immediately |
 
 ### One pipeline

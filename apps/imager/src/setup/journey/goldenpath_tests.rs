@@ -3,13 +3,13 @@
 //! the production planner fixture; no page, live flag or prepared identity is
 //! assigned to stand in for the route.
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use crate::setup::view::FullOsCheck;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use ui::framework::testing::TestApp;
 
-type App = TestApp<GuidedInstallerShell>;
+type App = TestApp<ImagerShell>;
 
 fn state(app: &mut App) -> serde_json::Value {
     app.effect(&InstallerPreviewEffect::ReadPreview)
@@ -89,7 +89,7 @@ fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
 
 fn launch(root: &Path) -> (App, tilo_test_env::ScopedEnv) {
     let environment = private_environment(root);
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     wait(&mut app, |value| value["restart"]["state"] == "missing");
     (app, environment)
 }

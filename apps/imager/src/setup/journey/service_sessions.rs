@@ -1022,7 +1022,7 @@ mod tests {
         let inventory = inventory(home.path(), &["included"]);
         let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
         let id = selection.included[0].0.clone();
-        let mut app = TestApp::<crate::ImagerShell>::launched(&["--installer-preview"]).unwrap();
+        let mut app = TestApp::<crate::ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<super::super::InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.restart = super::super::restart_controller::Restart::default();
@@ -1219,8 +1219,7 @@ mod tests {
                 )],
             );
             assert_eq!(selection.overview(true), expected);
-            let mut app =
-                TestApp::<crate::ImagerShell>::launched(&["--installer-preview"]).unwrap();
+            let mut app = TestApp::<crate::ImagerShell>::launched(&["--setup"]).unwrap();
             app.with_widget::<super::super::InstallerPreview, _>(|preview| {
                 preview.live = true;
                 preview.restart = super::super::restart_controller::Restart::default();
@@ -1402,7 +1401,7 @@ mod tests {
 
     fn consent_app(selection: Selection) -> ui::framework::testing::TestApp<crate::ImagerShell> {
         use ui::framework::testing::TestApp;
-        let mut app = TestApp::<crate::ImagerShell>::launched(&["--installer-preview"]).unwrap();
+        let mut app = TestApp::<crate::ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<super::super::InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.restart = super::super::restart_controller::Restart::default();

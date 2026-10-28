@@ -58,10 +58,7 @@ fn journey_install(
 }
 fn journey_fixture() -> SetupApp {
     let mut setup = supported_fixture();
-    setup.review_saver = |folders| {
-        assert!(folders.is_empty());
-        Ok(())
-    };
+    setup.desktop_offer = || {};
     setup.desktop_flow = DesktopFlow::with_runtime_and_state(
         super::super::desktop_flow::DesktopRuntime {
             launch_probe: journey_probe,
@@ -79,21 +76,14 @@ fn journey_phase(app: &mut TestApp<SetupFlow>) -> serde_json::Value {
         .unwrap()
 }
 fn journey_review(app: &mut TestApp<SetupFlow>) {
-    app.effect(&SetupEffect::ChooseExperience {
-        experience: "desktop".into(),
-    })
-    .unwrap();
-    app.effect(&SetupEffect::ContinueSetup).unwrap();
-    app.effect(&SetupEffect::SetCommonMode {
-        mode: "later".into(),
-    })
-    .unwrap();
-    app.effect(&SetupEffect::ContinueSetup).unwrap();
+    app.with_widget::<SetupApp, _>(|setup| review(setup, Experience::Desktop))
+        .unwrap();
+    app.settle();
 }
 #[test]
 fn desktop_journey_ui_cancel_recheck_and_verified_completion() {
     use super::super::desktop_install::DesktopInstallEvent as E;
-    let mut app = launch(journey_fixture(), ImportApp::new);
+    let mut app = launch(journey_fixture());
     assert!(
         !journey_phase(&mut app)["actions"]["install"]
             .as_bool()
@@ -163,115 +153,4 @@ fn desktop_journey_ui_cancel_recheck_and_verified_completion() {
                 .name_contains("choose Tilo on the login screen"),
         )
         .unwrap();
-}
-#[test]
-fn desktop_journey_usb_opens_existing_writer_without_alongside_authority() {
-    let unsupported = SetupApp::with_capabilities(SetupCapabilities {
-        platform: Capabilities {
-            host: HostOs::Other,
-            desktop_session: false,
-            internal_dual_boot: false,
-        },
-        connected_folders: false,
-    });
-    let mut unsupported = launch(unsupported, ImportApp::new);
-    let status = unsupported
-        .effect(&SetupEffect::ReadSetupStatus)
-        .unwrap()
-        .value
-        .unwrap();
-    assert_eq!(status["methods"]["usb"], false);
-    assert!(unsupported.effect(&SetupEffect::OpenUsbWizard).is_err());
-    drop(unsupported);
-    let setup = SetupApp::with_capabilities(SetupCapabilities {
-        platform: Capabilities {
-            host: HostOs::Linux,
-            desktop_session: false,
-            internal_dual_boot: false,
-        },
-        connected_folders: false,
-    });
-    let mut app = launch(setup, ImportApp::new);
-    let status = app
-        .effect(&SetupEffect::ReadSetupStatus)
-        .unwrap()
-        .value
-        .unwrap();
-    assert_eq!(status["methods"]["alongside"], false);
-    assert_eq!(status["methods"]["usb"], true);
-    assert!(
-        app.effect(&SetupEffect::InstallInternal {
-            reviewed: "not-authority".into()
-        })
-        .is_err()
-    );
-    app.harness()
-        .perform_named("setup.method.usb", &Action::Activate)
-        .unwrap();
-    app.settle();
-    let resources = app.harness().resources();
-    assert!(find_row(&resources, "imager.setup").is_none());
-    assert!(
-        resources
-            .iter()
-            .any(|r| r.actions.iter().any(|a| a.id == "choose-drive")),
-        "the existing writer owns review and write"
-    );
-}
-#[test]
-fn desktop_journey_rejects_stale_pending_folder_review() {
-    for pending in [PendingFolderSelection::Scan, PendingFolderSelection::Picker] {
-        let (mut setup, _picker) = stale_ready_desktop_review(pending);
-        let phase = setup.answer(SetupEffect::ReadDesktopStatus).unwrap();
-        assert_eq!(phase["actions"]["install"], false);
-        assert!(setup.answer(SetupEffect::InstallDesktop).is_err());
-        assert!(!setup.desktop_flow.has_pending_operation());
-    }
-}
-
-fn journey_shot_root() -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/onboarding-native-shots");
-    std::fs::create_dir_all(&root).unwrap();
-    root
-}
-#[test]
-fn desktop_journey_screenshots_preserve_live_fixture_availability_across_themes() {
-    for (name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high-contrast", Theme::high_contrast()),
-    ] {
-        let mut unavailable = launch(SetupApp::for_shot("setup-experience"), ImportApp::new);
-        unavailable.harness().set_theme(theme.clone());
-        unavailable
-            .harness()
-            .expect(&SemanticExpectation::named("setup.method.usb").enabled(true))
-            .unwrap();
-        assert_eq!(
-            unavailable
-                .effect(&SetupEffect::ReadDesktopStatus)
-                .unwrap()
-                .value
-                .unwrap()["phase"],
-            "unavailable"
-        );
-        let image = journey_shot_root().join(format!("setup-{name}.png"));
-        unavailable.harness().render_png(&image);
-        assert!(std::fs::metadata(&image).unwrap().len() > 0);
-        let mut installed = launch(
-            SetupApp::for_shot("setup-desktop-installed"),
-            ImportApp::new,
-        );
-        installed.harness().set_theme(theme);
-        installed
-            .harness()
-            .expect(
-                &SemanticExpectation::named("setup.desktop.status")
-                    .name_contains("choose Tilo on the login screen"),
-            )
-            .unwrap();
-        let image = journey_shot_root().join(format!("installed-{name}.png"));
-        installed.harness().render_png(&image);
-        assert!(std::fs::metadata(&image).unwrap().len() > 0);
-    }
 }

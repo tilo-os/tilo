@@ -1,6 +1,6 @@
 //! The visible stop action must reach the held preparation worker, not reset choices.
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 use ui::framework::testing::TestApp;
@@ -11,14 +11,14 @@ pub(super) struct WorkerControl {
     pub finish: Sender<()>,
 }
 
-fn status(app: &mut TestApp<GuidedInstallerShell>) -> serde_json::Value {
+fn status(app: &mut TestApp<ImagerShell>) -> serde_json::Value {
     app.effect(&InstallerPreviewEffect::ReadPreview)
         .unwrap()
         .value
         .unwrap()
 }
 
-fn wait_for_cancelled(app: &mut TestApp<GuidedInstallerShell>) {
+fn wait_for_cancelled(app: &mut TestApp<ImagerShell>) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
@@ -44,7 +44,7 @@ fn cancel_on_each_preparation_page_waits_for_worker_cleanup_and_keeps_choices() 
         let private = tempfile::tempdir().unwrap();
         let scratch = private.path().join("preparation-partial");
         std::fs::write(&scratch, b"private unfinished preparation").unwrap();
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         let worker = app
             .with_widget::<InstallerPreview, _>(|view| {
                 view.live = true;
@@ -167,7 +167,7 @@ fn busy_preparation_does_not_admit_cancel_in_privileged_or_finished_views() {
     let private = tempfile::tempdir().unwrap();
     let scratch = private.path().join("preparation-partial");
     std::fs::write(&scratch, b"unfinished").unwrap();
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     let worker = app
         .with_widget::<InstallerPreview, _>(|view| {
             view.live = true;
@@ -223,7 +223,7 @@ fn busy_preparation_does_not_admit_cancel_in_privileged_or_finished_views() {
 
 #[test]
 fn cancel_is_not_admitted_without_preparation() {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|view| {
         view.live = true;
         view.restart = restart_controller::Restart::default();

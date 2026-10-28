@@ -208,13 +208,12 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
         use crate::setup::journey::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
         use ui::framework::testing::TestApp;
         // Capture mode intentionally publishes no mutable effect runner.
-        // Use the same live entry as --installer, on private scratch state.
+        // Use the same live entry as --setup, on private scratch state.
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("HOME", &home);
         environment.set("XDG_CONFIG_HOME", temp.path().join("config"));
         environment.set("XDG_STATE_HOME", temp.path().join("state"));
-        let mut app =
-            TestApp::<crate::resource::GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<crate::resource::ImagerShell>::launched(&["--setup"]).unwrap();
         let deadline = tilo_test_env::hang_deadline();
         loop {
             app.settle();

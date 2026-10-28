@@ -1,9 +1,9 @@
 //! Reopen the real guided resource; no host persona, pairing or installation starts.
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
-type App = TestApp<GuidedInstallerShell>;
+type App = TestApp<ImagerShell>;
 fn read(app: &mut App) -> serde_json::Value {
     app.effect(&InstallerPreviewEffect::ReadPreview)
         .unwrap()
@@ -134,7 +134,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     env.set("XDG_CONFIG_HOME", root.join("config"));
     let picture = root.join("picture.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
-    let mut original = App::launched(&["--installer"]).unwrap();
+    let mut original = App::launched(&["--setup"]).unwrap();
     let identity = prepare(&mut original, &picture);
     let metadata = identity.metadata().unwrap();
     let identity_directory = identity.custody_directory().to_owned();
@@ -143,7 +143,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     let signature = signer.sign(b"restart verification").unwrap();
     drop(original);
     drop(identity);
-    let mut resumed = App::launched(&["--installer"]).unwrap();
+    let mut resumed = App::launched(&["--setup"]).unwrap();
     let offered = wait(&mut resumed, |state| {
         state["restart"]["state"] == "available"
     });
@@ -202,7 +202,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     assert!(!draft.contains("secret_bytes"));
     assert!(!root.join("config/tilo/persona-active").exists());
     drop(resumed);
-    let mut fresh = App::launched(&["--installer"]).unwrap();
+    let mut fresh = App::launched(&["--setup"]).unwrap();
     wait(&mut fresh, |state| state["restart"]["state"] == "available");
     fresh
         .effect(&InstallerPreviewEffect::StartNewInstallerPreparation)
@@ -297,7 +297,7 @@ fn assert_restored_grants(app: &mut App, ids: &[String]) {
     assert!(!read(app).to_string().contains("private-checkpoint-access"));
 }
 fn open_at_saved_password() -> App {
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     wait(&mut app, |state| state["restart"]["state"] == "available");
     app.effect(&InstallerPreviewEffect::ResumeInstallerPreparation)
         .unwrap();
@@ -330,7 +330,7 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     env.set("XDG_CONFIG_HOME", &config);
     let picture = root.join("picture.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
-    let mut original = App::launched(&["--installer"]).unwrap();
+    let mut original = App::launched(&["--setup"]).unwrap();
     let identity = prepare_with_migration(&mut original, &picture, true);
     assert_eq!(read(&mut original)["page"], "devices");
     let draft: serde_json::Value = serde_json::from_slice(
@@ -504,7 +504,7 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     env.set("HOME", &home);
     let picture = root.join("picture.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
-    let mut original = App::launched(&["--installer"]).unwrap();
+    let mut original = App::launched(&["--setup"]).unwrap();
     let identity = prepare_with_migration(&mut original, &picture, true);
     let expected_key = identity.public_key();
     drop(identity);

@@ -1322,12 +1322,6 @@ impl InternalInstall {
     pub(super) fn take_reprobe(&mut self) -> bool {
         std::mem::take(&mut self.reprobe_due)
     }
-
-    /// Fixture state for screenshots and tests.
-    pub(super) fn set_fixture_state(&mut self, state: RunState) {
-        self.link.set_state(state);
-        self.poll();
-    }
 }
 
 /// Fluent key naming a blocker.
@@ -1434,8 +1428,8 @@ fn live_host_command(command: HostCommand) -> Result<(), String> {
     imager_backend::setup::native_host::run(command)
 }
 
-/// Deterministic host facts and a spec-shaped planner for `--shots` and
-/// tests. Never reached from the live path.
+/// Deterministic host facts and a spec-shaped planner for tests.
+#[cfg(test)]
 pub(super) mod fixture {
     use super::{GIB, HostFacts, Plan, PlanError, Requirements, TargetBounds};
     use crate::setup::staging::plan::{
@@ -1444,22 +1438,6 @@ pub(super) mod fixture {
     use crate::setup::staging::platform::{Disk, SystemVolume};
     use crate::setup::staging::probe::Blocker;
     use crate::setup::staging::{BOOT_ENTRY_DESCRIPTION, MIN_TARGET_BYTES};
-
-    /// Screenshot runtime: fixed facts with `blockers`, the fixture planner,
-    /// and no helper, records or host commands.
-    pub(in crate::setup) fn shot_runtime(blockers: Vec<Blocker>) -> super::StagingRuntime {
-        let facts = facts(blockers);
-        super::StagingRuntime {
-            probe: std::sync::Arc::new(move || facts.clone()),
-            compute: std::sync::Arc::new(fake_plan),
-            target_bounds: std::sync::Arc::new(fake_bounds),
-            launch: std::sync::Arc::new(|_| Err("screenshot fixture".into())),
-            pending_records: std::sync::Arc::new(Vec::new),
-            component_paths: std::sync::Arc::new(|_| Err("screenshot fixture".into())),
-            host_command: std::sync::Arc::new(|_| Err("screenshot fixture".into())),
-            poll_interval: std::time::Duration::from_millis(200),
-        }
-    }
 
     pub(in crate::setup) fn basis() -> Basis {
         Basis {

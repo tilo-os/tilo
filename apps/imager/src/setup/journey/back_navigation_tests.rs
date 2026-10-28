@@ -27,7 +27,7 @@ fn state(app: &mut App) -> serde_json::Value {
 }
 
 fn preview() -> App {
-    let mut app = App::launched(&["--installer-preview"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     // Keep discovery and identity preparation out of navigation tests. Every
     // screen is still reached through the production action route, not a page fixture.
     app.with_widget::<InstallerPreview, _>(|view| {

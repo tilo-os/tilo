@@ -18,7 +18,6 @@ impl SetupApp {
         app.controller.borrow_mut().review_desktop();
         app.desktop_only = true;
         app.chosen_experience = Some(Experience::Desktop);
-        app.guided_mode = true;
         app.desktop_flow
             .require_account_protocol(prepared.account_custody_protocol());
         app.desktop_flow
@@ -130,6 +129,7 @@ impl SetupApp {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     #[test]
     fn desktop_only_records_intent_without_inventing_support_or_preparation() {
         let app = SetupApp::for_desktop();
@@ -139,7 +139,6 @@ mod tests {
             Some(Experience::Desktop)
         );
         assert!(!app.capabilities.platform.desktop_session);
-        assert!(!app.known_folder_lookup_pending);
         assert!(!app.internal_install.is_probing());
         assert!(app.guided_desktop.is_none());
         assert!(!app.setup_projection().desktop.actions.install);
@@ -168,11 +167,9 @@ mod tests {
             DesktopFlowState::Checking
         ));
         assert!(!app.guided_navigation.get());
-        assert!(app.answer(SetupEffect::GoBackInSetup).is_err());
         assert!(app.answer(SetupEffect::InstallDesktop).is_err());
         assert!(app.guided_desktop.is_none());
         assert!(app.controller().folders().is_empty());
-        assert!(!app.known_folder_lookup_pending);
         assert!(!app.internal_install.is_probing());
     }
 
@@ -286,7 +283,6 @@ mod tests {
         ));
         assert!(!app.guided_navigation.get());
         assert!(app.answer(SetupEffect::InstallDesktop).is_err());
-        assert!(app.answer(SetupEffect::GoBackInSetup).is_err());
         assert!(!root.path().join("home/.local").exists());
     }
 }

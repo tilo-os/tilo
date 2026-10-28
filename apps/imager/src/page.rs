@@ -96,16 +96,6 @@ impl Frame {
         }
     }
 
-    /// Where a wizard is.
-    #[cfg(feature = "installation")]
-    #[must_use]
-    pub(crate) fn stepper(mut self, steps: &[&str], current: usize) -> Self {
-        self.stepper = Some(
-            Stepper::new(steps.iter().map(|step| (*step).to_string()).collect()).current(current),
-        );
-        self
-    }
-
     /// Where a wizard is, with a stepper the caller configured (one that can
     /// go back to a done step).
     #[must_use]

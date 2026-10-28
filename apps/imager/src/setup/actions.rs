@@ -10,9 +10,6 @@ use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 
-use super::controller::SetupPage;
-use super::model::{Experience, FolderMode};
-
 /// The live row of the setup in progress, beneath the imager resource.
 pub const SETUP_ROW_ID: &str = "imager.setup";
 
@@ -39,64 +36,9 @@ pub enum SetupEffect {
     /// Recheck Desktop availability without installing anything.
     #[effect(returns, kind = "read")]
     RecheckDesktop,
-    /// Open the existing USB image writer; writing remains a separate review.
-    #[effect(view, returns, kind = "read")]
-    OpenUsbWizard,
-    /// Choose setup experience.
-    #[effect(returns, kind = "read")]
-    ChooseExperience {
-        #[param("Available setup experience: desktop or full_os")]
-        experience: String,
-    },
-    /// Set common folder mode.
-    #[effect(returns, kind = "read")]
-    SetCommonMode {
-        #[param(
-            "Folder behavior applied to folders without an override: copy, connected or later"
-        )]
-        mode: String,
-    },
-    /// Set folder mode.
-    #[effect(returns, kind = "read")]
-    SetFolderMode {
-        #[param("Identity of a selected folder")]
-        folder: String,
-        #[param("Folder behavior: copy, connected or later")]
-        mode: String,
-    },
-    /// Use the common folder mode.
-    #[effect(returns, kind = "read")]
-    UseCommonMode {
-        #[param("Identity of a selected folder")]
-        folder: String,
-    },
-    /// Remove folder from setup.
-    #[effect(returns, kind = "read")]
-    RemoveFolder {
-        #[param("Identity of a selected folder")]
-        folder: String,
-    },
-    /// Add suggested folder.
-    #[effect(returns, kind = "read")]
-    AddSuggestedFolder {
-        #[param("Identity of a suggested folder, e.g. documents")]
-        suggestion: String,
-    },
-    /// Choose a folder.
-    #[effect(attended, returns, kind = "read")]
-    ChooseFolder,
-    /// Show or hide folder help.
-    #[effect(returns, kind = "read")]
-    ToggleHelp,
     /// Continue setup.
     #[effect(returns, kind = "read")]
     ContinueSetup,
-    /// Go back in setup.
-    #[effect(returns, kind = "read")]
-    GoBackInSetup,
-    /// Open folder imports.
-    #[effect(returns, kind = "read")]
-    OpenImports,
     /// Download Tilo.
     #[effect(returns)]
     StartInternalDownload,
@@ -165,53 +107,6 @@ pub enum SetupEffect {
     /// Check this computer again.
     #[effect(returns, kind = "read")]
     RecheckInternal,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct FolderProjection {
-    pub identity: String,
-    pub index: usize,
-    pub mode: &'static str,
-    pub overridden: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct SuggestionProjection {
-    pub identity: String,
-    pub name: String,
-    pub available: bool,
-    pub unavailable_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct SelectionProjection {
-    pub experience: Option<&'static str>,
-    pub common_mode: &'static str,
-    pub folder_count: usize,
-    pub active_folder_count: usize,
-    pub folders: Vec<FolderProjection>,
-    pub suggestions: Vec<SuggestionProjection>,
-    pub help_open: bool,
-    pub imports_open: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct ReviewProjection {
-    pub ready: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct AvailabilityProjection {
-    pub desktop: bool,
-    pub full_os: bool,
-    pub connected: bool,
-    pub next: bool,
-    pub back: bool,
-    pub folder_policies: bool,
-    pub folder_edits: bool,
-    pub help: bool,
-    pub open_imports: bool,
-    pub choose_folder: bool,
 }
 
 /// Which Full Tilo installation commands may run now.
@@ -352,63 +247,19 @@ impl HardwareProjection {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SetupProjection {
-    pub page: &'static str,
-    pub selection: SelectionProjection,
-    pub review: ReviewProjection,
-    pub availability: AvailabilityProjection,
+    /// The reviewed experience: `desktop` or `full_os`.
+    pub experience: &'static str,
+    /// Whether the read-only computer check may continue.
+    pub next: bool,
     pub internal: InternalProjection,
     pub hardware: Option<HardwareProjection>,
     pub desktop: super::desktop_journey::DesktopProjection,
-    pub methods: super::desktop_journey::MethodProjection,
 }
 
 impl SetupProjection {
     #[must_use]
     pub fn value(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}))
-    }
-}
-
-#[must_use]
-pub const fn page_key(page: SetupPage) -> &'static str {
-    match page {
-        SetupPage::Experience => "experience",
-        SetupPage::Folders => "folders",
-        SetupPage::Review => "review",
-    }
-}
-
-#[must_use]
-pub const fn experience_key(experience: Experience) -> &'static str {
-    match experience {
-        Experience::Desktop => "desktop",
-        Experience::FullOs => "full_os",
-    }
-}
-
-#[must_use]
-pub const fn mode_key(mode: FolderMode) -> &'static str {
-    match mode {
-        FolderMode::Copy => "copy",
-        FolderMode::Connected => "connected",
-        FolderMode::Later => "later",
-    }
-}
-
-pub fn parse_experience(value: &str) -> Result<Experience, String> {
-    match value {
-        "desktop" => Ok(Experience::Desktop),
-        "full_os" => Ok(Experience::FullOs),
-        _ => Err(format!("unknown setup experience `{value}`")),
-    }
-}
-
-pub fn parse_mode(value: &str) -> Result<FolderMode, String> {
-    match value {
-        "copy" => Ok(FolderMode::Copy),
-        "connected" => Ok(FolderMode::Connected),
-        "later" => Ok(FolderMode::Later),
-        _ => Err(format!("unknown folder mode `{value}`")),
     }
 }
 
@@ -577,79 +428,15 @@ fn internal_commands(
 /// The setup effects that cannot run in `state`, with why.
 #[must_use]
 pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
-    let a = state.availability;
-    let folders_closed = || "Folder choices are not open on the current setup page".to_owned();
     let mut blocked = Vec::new();
     block(
         &mut blocked,
-        a.desktop || a.full_os,
-        SetupEffect::CHOOSE_EXPERIENCE.id,
-        "no_setup_experience",
-        "No setup experience is available on this computer".into(),
-    );
-    block(
-        &mut blocked,
-        a.folder_policies,
-        SetupEffect::SET_COMMON_MODE.id,
-        "folder_choices_not_open",
-        folders_closed(),
-    );
-    for id in [
-        SetupEffect::SET_FOLDER_MODE.id,
-        SetupEffect::USE_COMMON_MODE.id,
-        SetupEffect::REMOVE_FOLDER.id,
-    ] {
-        block(
-            &mut blocked,
-            a.folder_edits,
-            id,
-            "folder_choices_not_open",
-            folders_closed(),
-        );
-    }
-    block(
-        &mut blocked,
-        a.choose_folder,
-        SetupEffect::ADD_SUGGESTED_FOLDER.id,
-        "folder_choices_not_open",
-        folders_closed(),
-    );
-    block(
-        &mut blocked,
-        a.choose_folder,
-        SetupEffect::CHOOSE_FOLDER.id,
-        "folder_picker_unavailable",
-        "The folder picker is not available on this setup page".into(),
-    );
-    block(
-        &mut blocked,
-        a.help,
-        SetupEffect::TOGGLE_HELP.id,
-        "help_not_on_page",
-        "Folder help is available on the folder page".into(),
-    );
-    block(
-        &mut blocked,
-        a.next,
+        state.next,
         SetupEffect::CONTINUE_SETUP.id,
         "setup_cannot_continue",
         "Complete the current setup choice before continuing".into(),
     );
-    block(
-        &mut blocked,
-        a.back,
-        SetupEffect::GO_BACK_IN_SETUP.id,
-        "setup_at_start",
-        "Setup is already on its first page".into(),
-    );
-    block(
-        &mut blocked,
-        a.open_imports,
-        SetupEffect::OPEN_IMPORTS.id,
-        "imports_not_on_page",
-        "Folder imports are available on the experience and review pages".into(),
-    );
-    for (id, _, open) in super::desktop_journey::commands(&state.desktop, &state.methods) {
+    for (id, _, open) in super::desktop_journey::commands(&state.desktop) {
         block(
             &mut blocked,
             open,
@@ -680,7 +467,7 @@ pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
                 }),
         )
         .chain(
-            super::desktop_journey::commands(&state.desktop, &state.methods)
+            super::desktop_journey::commands(&state.desktop)
                 .into_iter()
                 .map(|(id, label, _)| EffectStatus::labelled(effect(id), super::strings::t(label))),
         )
@@ -710,116 +497,6 @@ fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) ->
     spec
 }
 
-fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: bool) -> LiveRow {
-    let closed = "Folder choices are not open on the current setup page";
-    let identity = folder.identity.clone();
-    let set_mode = asking(
-        &SetupEffect::SetFolderMode {
-            folder: identity,
-            mode: String::new(),
-        },
-        "Set folder mode",
-        ActionParam::required_owned("mode", ParamType::Text, "Folder behavior")
-            .with_choices(mode_choices.iter().copied()),
-    );
-    let (inherit_code, inherit_reason) = if edits {
-        (
-            "folder_mode_inherited",
-            "This folder already follows the common choice",
-        )
-    } else {
-        ("folder_choices_not_open", closed)
-    };
-    LiveRow::new(
-        format!("{SETUP_ROW_ID}.folder.{}", folder.identity),
-        "imager.setup.folder",
-        format!("Selected folder {}", folder.index + 1),
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(format!(
-            "{}, {}",
-            mode_phrase(folder.mode),
-            if folder.overridden {
-                "chosen for this folder"
-            } else {
-                "the common choice"
-            }
-        )),
-        badge: Some(format!("Folder {}", folder.index + 1)),
-        preview: None,
-    })
-    .operation(gated(set_mode, edits, "folder_choices_not_open", closed))
-    .operation(gated(
-        bound(
-            &SetupEffect::UseCommonMode {
-                folder: folder.identity.clone(),
-            },
-            "Use the common folder mode",
-        ),
-        edits && folder.overridden,
-        inherit_code,
-        inherit_reason,
-    ))
-    .operation(gated(
-        bound(
-            &SetupEffect::RemoveFolder {
-                folder: folder.identity.clone(),
-            },
-            "Remove folder from setup",
-        ),
-        edits,
-        "folder_choices_not_open",
-        closed,
-    ))
-}
-
-fn suggestion_row(suggestion: &SuggestionProjection, choices_open: bool) -> LiveRow {
-    let (code, reason) = if choices_open {
-        (
-            "suggestion_unavailable",
-            suggestion
-                .unavailable_reason
-                .as_deref()
-                .unwrap_or("This suggested folder is unavailable"),
-        )
-    } else {
-        (
-            "folder_choices_not_open",
-            "Folder choices are not open on the current setup page",
-        )
-    };
-    LiveRow::new(
-        format!("{SETUP_ROW_ID}.suggestion.{}", suggestion.identity),
-        "imager.setup.suggestion",
-        format!("Suggested {} folder", suggestion.name),
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(
-            if suggestion.available {
-                "Available"
-            } else {
-                "Unavailable"
-            }
-            .into(),
-        ),
-        badge: Some("Suggestion".into()),
-        preview: None,
-    })
-    .operation(gated(
-        bound(
-            &SetupEffect::AddSuggestedFolder {
-                suggestion: suggestion.identity.clone(),
-            },
-            "Add suggested folder",
-        ),
-        choices_open && suggestion.available,
-        code,
-        reason,
-    ))
-}
-
-/// The Full Tilo installation on this computer: one operation per visible
-/// command, bound to the plan and the unfinished operation shown.
 fn internal_row(state: &InternalProjection) -> LiveRow {
     let operation = state.pending_operation.clone().unwrap_or_default();
     let mut row = LiveRow::new(
@@ -939,159 +616,22 @@ fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
 /// run now, and the Full Tilo installation.
 #[must_use]
 pub fn row(state: &SetupProjection) -> LiveRow {
-    let mode_choices = [
-        Some("copy"),
-        state.availability.connected.then_some("connected"),
-        Some("later"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let mut selection = LiveRow::new(
-        format!("{SETUP_ROW_ID}.selection"),
-        "imager.setup.selection",
-        "Current setup selection",
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(format!(
-            "{}, {} by default, {}{}. With help {} and imports {}.",
-            experience_phrase(state.selection.experience),
-            mode_phrase(state.selection.common_mode).to_lowercase(),
-            folders_phrase(state.selection.folder_count),
-            if state.selection.folder_count == 0 {
-                String::new()
-            } else {
-                format!(", {} to bring over", state.selection.active_folder_count)
-            },
-            if state.selection.help_open {
-                "open"
-            } else {
-                "closed"
-            },
-            if state.selection.imports_open {
-                "open"
-            } else {
-                "closed"
-            },
-        )),
-        badge: Some("Selection".into()),
-        preview: None,
-    });
-    for folder in &state.selection.folders {
-        selection = selection.row(folder_row(
-            folder,
-            &mode_choices,
-            state.availability.folder_edits,
-        ));
-    }
-    let mut suggestions = LiveRow::new(
-        format!("{SETUP_ROW_ID}.suggestions"),
-        "imager.setup.suggestions",
-        "Suggested folders",
-    );
-    for suggestion in &state.selection.suggestions {
-        suggestions = suggestions.row(suggestion_row(suggestion, state.availability.choose_folder));
-    }
-    let review = LiveRow::new(
-        format!("{SETUP_ROW_ID}.review"),
-        "imager.setup.review",
-        "Setup review state",
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(format!(
-            "Review ready: {}. Current page: {}.",
-            yes_no(state.review.ready),
-            state.page
-        )),
-        badge: Some("Review".into()),
-        preview: None,
-    });
-    let availability = LiveRow::new(
-        format!("{SETUP_ROW_ID}.availability"),
-        "imager.setup.availability",
-        "Current setup availability",
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(format!(
-            "Available experiences: desktop {0}, full OS {1}. Connected: {2}. Navigation: next {3}, back {4}. Folder permissions: policies {5}, edits {6}. Help: {7}. Imports: {8}.",
-            yes_no(state.availability.desktop),
-            yes_no(state.availability.full_os),
-            yes_no(state.availability.connected),
-            yes_no(state.availability.next),
-            yes_no(state.availability.back),
-            yes_no(state.availability.folder_policies),
-            yes_no(state.availability.folder_edits),
-            yes_no(state.availability.help),
-            yes_no(state.availability.open_imports),
-        )),
-        badge: Some("Availability".into()),
-        preview: None,
-    });
+    let experience = match state.experience {
+        "desktop" => "Tilo Desktop",
+        _ => "Full Tilo",
+    };
     let mut root = LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
         .presentation(ResourcePresentation {
-            detail: Some(format!(
-                "{} page, {}, {}",
-                match state.page {
-                    "experience" => "Experience",
-                    "folders" => "Folders",
-                    "review" => "Review",
-                    _ => "Setup",
-                },
-                experience_phrase(state.selection.experience),
-                folders_phrase(state.selection.folder_count),
-            )),
-            badge: Some(
-                match state.page {
-                    "experience" => "Experience",
-                    "folders" => "Folders",
-                    "review" => "Review",
-                    _ => "Setup",
-                }
-                .into(),
-            ),
+            detail: Some(format!("Review, {experience}")),
+            badge: Some("Review".into()),
             preview: None,
         })
-        .row(selection)
-        .row(suggestions)
-        .row(review)
-        .row(availability)
         .row(internal_row(&state.internal))
-        .row(super::desktop_journey::row(&state.desktop, &state.methods));
+        .row(super::desktop_journey::row(&state.desktop));
     if let Some(hardware) = &state.hardware {
         root = root.row(hardware_row(hardware));
     }
     root
-}
-
-/// A folder mode as people read it.
-fn mode_phrase(mode: &str) -> &'static str {
-    match mode {
-        "connected" => "Connected",
-        "later" => "Decide later",
-        _ => "Copy",
-    }
-}
-
-/// The chosen experience as people read it.
-fn experience_phrase(experience: Option<&str>) -> &'static str {
-    match experience {
-        Some("desktop") => "Tilo Desktop",
-        Some(_) => "Full Tilo",
-        None => "no experience chosen yet",
-    }
-}
-
-/// "1 folder", "3 folders", "no folders".
-fn folders_phrase(count: usize) -> String {
-    match count {
-        0 => "no folders".into(),
-        1 => "1 folder".into(),
-        count => format!("{count} folders"),
-    }
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "Yes" } else { "No" }
 }
 
 /// A delivery retry writes the prepared account capsule, so it is distinct
@@ -1186,34 +726,11 @@ mod tests {
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {
-            page: "review",
-            selection: SelectionProjection {
-                experience: Some("full_os"),
-                common_mode: "copy",
-                folder_count: 0,
-                active_folder_count: 0,
-                folders: Vec::new(),
-                suggestions: Vec::new(),
-                help_open: false,
-                imports_open: false,
-            },
-            review: ReviewProjection { ready: true },
-            availability: AvailabilityProjection {
-                desktop: false,
-                full_os: false,
-                connected: false,
-                next: false,
-                back: true,
-                folder_policies: false,
-                folder_edits: false,
-                help: false,
-                open_imports: true,
-                choose_folder: false,
-            },
+            experience: "full_os",
+            next: false,
             internal,
             hardware: None,
             desktop: crate::setup::desktop_journey::DesktopProjection::default(),
-            methods: crate::setup::desktop_journey::MethodProjection::default(),
         }
     }
 
@@ -1329,57 +846,5 @@ mod tests {
         );
         args.insert("gib".into(), serde_json::json!("eighty"));
         assert!(size.build_json(&args).is_err());
-    }
-
-    #[test]
-    fn folder_rows_bind_their_identity_and_take_the_mode() {
-        let mut state = projection(InternalProjection::default());
-        state.availability.folder_edits = true;
-        state.availability.connected = false;
-        state.selection.folders = vec![FolderProjection {
-            identity: "f-1".into(),
-            index: 0,
-            mode: "copy",
-            overridden: false,
-        }];
-        let selection = row(&state)
-            .into_resource()
-            .children
-            .into_iter()
-            .find(|child| child.kind == "imager.setup.selection")
-            .unwrap();
-        let folder = &selection.children[0];
-        assert_eq!(folder.id.as_str(), "imager.setup.folder.f-1");
-        let set_mode = folder
-            .actions
-            .iter()
-            .find(|action| action.id == "set-folder-mode")
-            .unwrap();
-        let mut args = serde_json::Map::new();
-        args.insert("mode".into(), serde_json::json!("later"));
-        assert_eq!(
-            decoded(set_mode, &args),
-            SetupEffect::SetFolderMode {
-                folder: "f-1".into(),
-                mode: "later".into()
-            }
-        );
-        args.insert("mode".into(), serde_json::json!("connected"));
-        assert!(
-            set_mode.build_json(&args).is_err(),
-            "connected folders are offered only when available"
-        );
-        let inherit = folder
-            .actions
-            .iter()
-            .find(|action| action.id == "use-common-mode")
-            .unwrap();
-        assert_eq!(code(inherit), Some("folder_mode_inherited"));
-        assert!(
-            folder
-                .actions
-                .iter()
-                .all(|action| action.kind == OperationKind::Effect)
-        );
     }
 }

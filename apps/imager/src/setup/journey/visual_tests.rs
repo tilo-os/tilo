@@ -1,5 +1,5 @@
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use std::path::PathBuf;
 use ui::framework::testing::TestApp;
 
@@ -45,7 +45,7 @@ fn inspect_controls(preview: &InstallerPreview, ids: &[&str], viewport: (u32, u3
 }
 
 fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme, tag: &str) {
-    let mut app = TestApp::<GuidedInstallerShell>::capture_at(Some(scenario), viewport).unwrap();
+    let mut app = TestApp::<ImagerShell>::capture_at(Some(scenario), viewport).unwrap();
     app.harness().set_theme(theme.with_reduce_motion(true));
     paint_app(&mut app, scenario, ids, viewport, tag);
 }
@@ -129,8 +129,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 _ => (2360, 1640),
             };
             let mut app =
-                TestApp::<GuidedInstallerShell>::capture_at(Some("installer-profile"), initial)
-                    .unwrap();
+                TestApp::<ImagerShell>::capture_at(Some("installer-profile"), initial).unwrap();
             app.harness().set_theme(
                 theme
                     .clone()
@@ -236,7 +235,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
 #[cfg(unix)]
 fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_actions() {
     for (viewport, theme) in [((480, 800), Theme::dark()), ((1180, 820), Theme::light())] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Keep the launched resource's real action registration. Only
             // stage the reviewed choices, rather than using a static capture.
@@ -312,8 +311,7 @@ fn review_summary_scrolls_without_moving_navigation_at_large_text_sizes() {
     for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let viewport = (2560, 1440);
         let mut app =
-            TestApp::<GuidedInstallerShell>::capture_at(Some("installer-review"), viewport)
-                .unwrap();
+            TestApp::<ImagerShell>::capture_at(Some("installer-review"), viewport).unwrap();
         app.harness()
             .set_theme(theme.with_ui_scale(2.0).with_reduce_motion(true));
         app.settle();
@@ -444,10 +442,7 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
 
 #[cfg(unix)]
 #[track_caller]
-fn wait_for_preview(
-    app: &mut TestApp<GuidedInstallerShell>,
-    predicate: impl Fn(&InstallerPreview) -> bool,
-) {
+fn wait_for_preview(app: &mut TestApp<ImagerShell>, predicate: impl Fn(&InstallerPreview) -> bool) {
     fn ready(root: &dyn Widget, predicate: &impl Fn(&InstallerPreview) -> bool) -> bool {
         if let Some(preview) = root
             .as_any()
@@ -471,7 +466,7 @@ fn wait_for_preview(
 }
 
 #[cfg(unix)]
-fn wait_for_fresh_preparation(app: &mut TestApp<GuidedInstallerShell>) {
+fn wait_for_fresh_preparation(app: &mut TestApp<ImagerShell>) {
     wait_for_preview(app, |preview| {
         preview.restart.projection()["state"] == "missing"
             && !preview.restart.busy()
@@ -488,7 +483,7 @@ fn wait_for_fresh_preparation(app: &mut TestApp<GuidedInstallerShell>) {
 }
 
 #[cfg(unix)]
-fn identify_other_computer(app: &mut TestApp<GuidedInstallerShell>) {
+fn identify_other_computer(app: &mut TestApp<ImagerShell>) {
     for (field, value) in [
         ("manufacturer", "Test Vendor"),
         ("model", "Other Test Laptop"),
@@ -503,7 +498,7 @@ fn identify_other_computer(app: &mut TestApp<GuidedInstallerShell>) {
 }
 
 #[cfg(unix)]
-fn choose(app: &mut TestApp<GuidedInstallerShell>, choice: &str) {
+fn choose(app: &mut TestApp<ImagerShell>, choice: &str) {
     app.effect(&InstallerPreviewEffect::ChoosePreview {
         choice: choice.into(),
     })
@@ -524,10 +519,10 @@ fn choose(app: &mut TestApp<GuidedInstallerShell>, choice: &str) {
 }
 
 #[cfg(target_os = "linux")]
-fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstallerShell> {
+fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
     // Live semantic actions hosted offscreen on a fresh test profile; capture mode
     // intentionally omits this mutable action registry.
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.harness().set_theme(theme.with_reduce_motion(true));
     app.harness().resize(viewport).unwrap();
     wait_for_fresh_preparation(&mut app);
@@ -612,7 +607,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
     for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
             env.set("XDG_STATE_HOME", root.join(format!("{tag}-{}", viewport.0)));
-            let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
             wait_for_fresh_preparation(&mut app);
             // Identity/account rendering does not require a writable host disk.
             for choice in ["another", "fresh", "new"] {
@@ -676,7 +671,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
     }
 }
 
-fn paint_spotify_choices(app: &mut TestApp<GuidedInstallerShell>, viewport: (u32, u32), tag: &str) {
+fn paint_spotify_choices(app: &mut TestApp<ImagerShell>, viewport: (u32, u32), tag: &str) {
     let providers = app.harness().inspection_json().unwrap();
     assert!(providers.contains("installer.account.provider.spotify"));
     assert!(!providers.contains("installer.account.provider.spotify-streaming"));
@@ -743,8 +738,8 @@ fn paint_spotify_choices(app: &mut TestApp<GuidedInstallerShell>, viewport: (u32
 
 #[cfg(target_os = "linux")]
 #[cfg(unix)]
-fn account_motion_fixture() -> TestApp<GuidedInstallerShell> {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+fn account_motion_fixture() -> TestApp<ImagerShell> {
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;
         preview.capture = false;
@@ -763,11 +758,7 @@ fn account_motion_fixture() -> TestApp<GuidedInstallerShell> {
 }
 
 #[cfg(target_os = "linux")]
-fn account_motion_step(
-    app: &mut TestApp<GuidedInstallerShell>,
-    step: &str,
-    selection: Option<&str>,
-) {
+fn account_motion_step(app: &mut TestApp<ImagerShell>, step: &str, selection: Option<&str>) {
     app.effect(&InstallerPreviewEffect::AccountStep {
         step: step.into(),
         selection: selection.map(str::to_owned),
@@ -776,7 +767,7 @@ fn account_motion_step(
 }
 
 #[cfg(target_os = "linux")]
-fn motion_frames(app: &mut TestApp<GuidedInstallerShell>, name: &str, direction: f64) {
+fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.slide.as_ref().unwrap().0, direction);
         assert!(preview.outgoing.is_some());
@@ -827,7 +818,7 @@ fn motion_frames(app: &mut TestApp<GuidedInstallerShell>, name: &str, direction:
 /// Stretch only the test's clock so rasterization speed cannot finish the
 /// animation before assertions; neither page is replaced by a fixture widget.
 fn personal_motion_frames(
-    app: &mut TestApp<GuidedInstallerShell>,
+    app: &mut TestApp<ImagerShell>,
     name: &str,
     direction: f64,
     viewport: (u32, u32),
@@ -950,7 +941,7 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     for (viewport, host_scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.capture = false;
@@ -1108,7 +1099,7 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     for (viewport, host_scale) in [((1180, 820), 1.0), ((2560, 1440), 1.0), ((2560, 1440), 2.0)] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Synthetic public profile only; keep the launched app's real
             // effect registry, journey navigation, shared widgets and painter.
@@ -1196,7 +1187,7 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     // Captures publish inert descriptions, not executable action bindings.
     // Exercise transitions on the launched root's real effect runner.
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.restart = restart_controller::Restart::default();
@@ -1370,7 +1361,7 @@ pub(super) fn paint_native_flatpak_inventory(
         for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
             for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
                 // Actions need a live headless host; captures only publish metadata.
-                let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+                let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
                 app.harness().resize(viewport).unwrap();
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     preview.live = true;
@@ -1473,7 +1464,7 @@ fn destination_discloses_usb_route_before_personal_setup() {
             super::super::internal_install_flow::RUNTIME_GATE_VAR,
             runtime_gate,
         );
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
@@ -1511,7 +1502,7 @@ fn destination_discloses_usb_route_before_personal_setup() {
 #[test]
 #[cfg(unix)]
 fn live_migration_choice_does_not_inspect_sources_before_profile() {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.stage(Some("installer-migration"));
         preview.restart = restart_controller::Restart::default();
@@ -1574,7 +1565,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", &config);
     for edit in [false, true] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.stage(Some("installer-belongings"));
@@ -1648,7 +1639,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
 #[test]
 #[cfg(unix)]
 fn profile_keeps_picture_action_and_name_without_redundant_explanation() {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.stage(Some("installer-profile"));
         preview.restart = restart_controller::Restart::default();
@@ -1718,8 +1709,7 @@ fn migration_route_consequences_are_present_in_the_semantic_choice() {
             "installer-preview-migrate-portable-body",
         ),
     ] {
-        let mut app =
-            TestApp::<GuidedInstallerShell>::capture(Some("installer-migration")).unwrap();
+        let mut app = TestApp::<ImagerShell>::capture(Some("installer-migration")).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.journey.destination = Some(destination);
             preview.dirty = true;
@@ -1761,7 +1751,7 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Explicit unavailable-host fixture through the production capability
@@ -1821,7 +1811,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Intentionally missing custody/host plan; no preparation success is
             // injected. The real live admission must reject this review state.
@@ -1867,7 +1857,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     let viewport = (1180, 820);
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         // Public profile fixture only. Exercise the launched resource's real
         // effects, validation, shared controls and visible error composition.
@@ -1972,7 +1962,7 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
@@ -2041,7 +2031,7 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     let viewport = (1180, 820);
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
@@ -2173,7 +2163,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
     for semantic in [false, true] {
         for mismatch in [false, true] {
-            let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = false;
@@ -2438,7 +2428,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
 #[test]
 #[cfg(unix)]
 fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.restart = restart_controller::Restart::default();
@@ -2574,7 +2564,7 @@ fn account_one_field_enter_advances_without_starting_a_connection() {
 #[test]
 #[cfg(unix)]
 fn profile_keyboard_name_updates_retained_avatar_and_preserves_mid_string_caret() {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.restart = restart_controller::Restart::default();
@@ -2684,7 +2674,7 @@ fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
     }
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         for (viewport, scale) in [((320, 720), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-            let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = true;
@@ -2762,7 +2752,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
         ((480, 800), Theme::light(), "compact-light"),
         ((1180, 820), Theme::dark(), "dark"),
     ] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Suppress native work, not navigation: reach Password through
             // the production effects so Back has the real route history.
@@ -2892,10 +2882,14 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
 #[test]
 fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
     use ui::framework::ResourceApp as _;
-    assert_eq!(GuidedInstallerShell::scenarios(), SCENARIOS);
-    for scenario in GuidedInstallerShell::scenarios() {
-        let mut app =
-            TestApp::<GuidedInstallerShell>::capture_at(Some(scenario), (1180, 820)).unwrap();
+    let scenarios = ImagerShell::scenarios();
+    assert!(
+        SCENARIOS
+            .iter()
+            .all(|scenario| scenarios.contains(scenario))
+    );
+    for scenario in SCENARIOS {
+        let mut app = TestApp::<ImagerShell>::capture_at(Some(scenario), (1180, 820)).unwrap();
         app.harness()
             .set_theme(Theme::dark().with_reduce_motion(true));
         app.settle();

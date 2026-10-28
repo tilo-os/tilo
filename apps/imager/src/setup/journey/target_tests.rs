@@ -664,10 +664,10 @@ fn a_declared_model_keeps_the_selected_architecture_across_a_restart() {
 #[cfg(unix)]
 #[test]
 fn production_surface_paints_the_target_page_and_routes_its_semantic_effects() {
-    use crate::resource::GuidedInstallerShell;
+    use crate::resource::ImagerShell;
     use ui::framework::testing::TestApp;
 
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;

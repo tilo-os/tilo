@@ -1,7 +1,7 @@
 //! Exercise the retained production computer-name form, not a sample device fleet.
 use super::super::visual_tests::control;
 use super::super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
 fn assert_no_fleet(root: &dyn Widget) {
@@ -38,7 +38,7 @@ fn retained_form(root: &dyn Widget) -> Vec<(Rect, usize)> {
 fn names_retain_form_anchors_and_mid_string_caret() {
     let mut intro_heights = Vec::new();
     for viewport in [(960, 820), (360, 640)] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.restart = restart_controller::Restart::default();
@@ -118,7 +118,7 @@ fn approved_name_explains_why_it_cannot_be_edited() {
     assert!(pairing.ready());
     let approved = pairing.prepared().unwrap();
     let label = approved.enrolled_device_label().unwrap().to_owned();
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.journey.page = Page::Devices;
@@ -180,7 +180,7 @@ fn approved_name_explains_why_it_cannot_be_edited() {
 #[cfg(unix)]
 fn live_and_preview_naming_forms_have_no_invented_fleet() {
     for live in [false, true] {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = live;
             preview.journey.page = Page::Devices;

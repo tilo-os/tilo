@@ -233,21 +233,17 @@ impl Target {
             self.error = Some(t("installer-preview-target-report-invalid"));
             return Err("installer-preview-target-report-invalid");
         }
-        match report.architecture.as_deref() {
-            Some(architecture) => match crate::release::unqualified_architecture(architecture) {
-                // A report from a computer Tilo can never run on says why,
-                // rather than only that no build exists for it.
-                Some(boundary) => {
-                    self.error = Some(t(boundary));
-                    return Err("installer-preview-target-report-unsupported-architecture");
-                }
-                None => self.architecture = architecture.to_string(),
-            },
-            None => {
-                self.error = Some(t("installer-preview-target-report-missing-architecture"));
-                return Err("installer-preview-target-report-missing-architecture");
-            }
+        let Some(architecture) = report.architecture.as_deref() else {
+            self.error = Some(t("installer-preview-target-report-missing-architecture"));
+            return Err("installer-preview-target-report-missing-architecture");
+        };
+        // A report from a computer Tilo can never run on says why, rather
+        // than only that no build exists for it.
+        if let Some(boundary) = crate::release::unqualified_architecture(architecture) {
+            self.error = Some(t(boundary));
+            return Err("installer-preview-target-report-unsupported-architecture");
         }
+        self.architecture = architecture.to_string();
         self.report = Some(report);
         Ok(())
     }

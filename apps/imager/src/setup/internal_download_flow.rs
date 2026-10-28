@@ -329,25 +329,6 @@ impl InternalDownloadFlow {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Show a verified (or already consumed) download for `--shots`; no
-    /// worker or data exists.
-    pub(super) fn pose_for_shot(&mut self, consumed: bool) {
-        self.presentation = presentation_from_facts(
-            if consumed {
-                WorkerPhase::Consumed
-            } else {
-                WorkerPhase::Ready
-            },
-            [0, 0],
-            None,
-            [true, true],
-            false,
-            false,
-            None,
-        );
-        self.revision = self.revision.wrapping_add(1);
-    }
-
     /// A verified download is held and can be handed to the staging helper.
     pub(super) fn is_ready(&self) -> bool {
         self.pending.is_none() && self.presentation.phase == Some(WorkerPhase::Ready)

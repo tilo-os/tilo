@@ -1,11 +1,11 @@
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use ui::framework::testing::TestApp;
-type App = TestApp<GuidedInstallerShell>;
+type App = TestApp<ImagerShell>;
 fn state(app: &mut App) -> serde_json::Value {
     app.effect(&InstallerPreviewEffect::ReadPreview)
         .unwrap()
@@ -192,7 +192,7 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     env.set("XDG_CONFIG_HOME", home.join(".config"));
     env.set("XDG_STATE_HOME", custody.path().join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     open_preparation(&mut app, &home);
     let accounts = accounts::checkpoint_fixture_for_journey(&root.join("account-fixture"));
     let ids = accounts.prepared_handle().unwrap().selected_ids();

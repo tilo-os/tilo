@@ -103,8 +103,7 @@ fn page_rebuild_also_drains_nested_replacement_reports() {
 #[test]
 fn native_handoff_report_is_independent_of_page_composition() {
     use ui::framework::testing::TestApp;
-    let mut app =
-        TestApp::<crate::resource::GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    let mut app = TestApp::<crate::resource::ImagerShell>::launched(&["--setup"]).unwrap();
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview

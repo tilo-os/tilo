@@ -36,17 +36,17 @@ pub(super) fn admits_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::GuidedInstallerShell;
+    use crate::resource::ImagerShell;
     use ui::framework::testing::TestApp;
 
-    fn state(app: &mut TestApp<GuidedInstallerShell>) -> serde_json::Value {
+    fn state(app: &mut TestApp<ImagerShell>) -> serde_json::Value {
         app.effect(&InstallerPreviewEffect::ReadPreview)
             .unwrap()
             .value
             .unwrap()
     }
 
-    fn assert_demo_notice(app: &mut TestApp<GuidedInstallerShell>) {
+    fn assert_demo_notice(app: &mut TestApp<ImagerShell>) {
         app.settle();
         app.with_widget::<super::super::InstallerPreview, _>(|preview| {
             let notice = super::super::visual_tests::control(preview, "installer.demo-notice")
@@ -62,7 +62,7 @@ mod tests {
         .unwrap();
     }
 
-    fn advance(app: &mut TestApp<GuidedInstallerShell>) {
+    fn advance(app: &mut TestApp<ImagerShell>) {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_demo_notice(app);
@@ -71,8 +71,7 @@ mod tests {
     #[test]
     fn ordinary_capture_has_no_demo_notice() {
         let mut app =
-            TestApp::<GuidedInstallerShell>::capture_at(Some("installer-destination"), (1280, 720))
-                .unwrap();
+            TestApp::<ImagerShell>::capture_at(Some("installer-destination"), (1280, 720)).unwrap();
         app.settle();
         app.with_widget::<super::super::InstallerPreview, _>(|preview| {
             assert!(!preview.demo);
@@ -87,7 +86,7 @@ mod tests {
     /// person's press and an agent's invocation take the same step.
     #[test]
     fn a_choice_card_chooses_and_continues_in_one_action() {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
         assert_eq!(state(&mut app)["page"], "destination");
         app.harness()
             .perform_named("installer.choice.computer", &ui::a11y::Action::Activate)
@@ -106,7 +105,7 @@ mod tests {
 
     #[test]
     fn launched_demo_finishes_through_production_actions_without_native_controllers() {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
         assert_eq!(state(&mut app)["page"], "destination");
         assert_demo_notice(&mut app);
         for choice in ["computer", "migrate", "new"] {
@@ -167,7 +166,7 @@ mod tests {
     fn every_destination_and_identity_route_remains_navigable() {
         for destination in ["computer", "another", "desktop"] {
             for identity in ["new", "existing"] {
-                let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+                let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
                 if destination == "desktop" {
                     app.effect(&InstallerPreviewEffect::ChoosePreview {
                         choice: destination.into(),
@@ -214,7 +213,7 @@ mod tests {
 
     #[test]
     fn demo_refuses_external_effects_at_the_semantic_door() {
-        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
         for effect in [
             InstallerPreviewEffect::PrepareUsb,
             InstallerPreviewEffect::PrepareDirectInstallation,

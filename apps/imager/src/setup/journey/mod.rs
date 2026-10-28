@@ -1,8 +1,9 @@
-//! Host-side installer journey with explicitly granted, device-local data transfers.
-//!
-//! Kept behind --installer-preview until identity handoff and
-//! installation qualification can fulfill this journey. Samples never enter the
-//! live setup or its privileged workers. Every interaction is also an effect.
+//! The guided setup (`--setup`): destination, this or the other computer,
+//! account, your data, space, review and install, with explicitly granted,
+//! device-local data transfers. Routes the host, the build or the release
+//! catalog cannot fulfil are shown unavailable with their reason. The
+//! example data of `--demo` never enters the live setup or its privileged
+//! workers. Every interaction is also an effect.
 
 mod accounts;
 #[cfg(test)]
@@ -5997,8 +5998,7 @@ mod tests {
             .unwrap()
             .value
             .unwrap();
-        assert_eq!(native["page"], "review");
-        assert_eq!(native["selection"]["experience"], "full_os");
+        assert_eq!(native["experience"], "full_os");
         let deadline = tilo_test_env::hang_deadline();
         while !app
             .with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.get())
@@ -6029,7 +6029,7 @@ mod tests {
     }
 
     fn fixture() -> TestApp<ImagerShell> {
-        let mut app = TestApp::<ImagerShell>::launched(&["--installer-preview"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.restart = restart_controller::Restart::default();
@@ -6049,7 +6049,7 @@ mod tests {
         let home = source.path().join("private-source-folder");
         std::fs::create_dir(&home).unwrap();
         let path = home.display().to_string();
-        let mut app = TestApp::<ImagerShell>::launched(&["--installer-preview"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let completed = app
@@ -10019,7 +10019,7 @@ mod tests {
         env.set("XDG_CONFIG_HOME", root.path().join("config"));
         env.set("XDG_DATA_HOME", root.path().join("data"));
         env.set("XDG_CACHE_HOME", root.path().join("cache"));
-        let mut app = TestApp::<ImagerShell>::launched(&["--installer"]).unwrap();
+        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         let startup_deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         loop {
             let observed = status(&mut app);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
 fn inventory() -> super::super::flatpak_transfer::Inventory {
@@ -217,7 +217,7 @@ fn exercise_inventory(inventory: super::super::flatpak_transfer::Inventory) {
     .unwrap();
     capture(&mut app, "bottom");
     drop(app);
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer-preview"]).unwrap();
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| prepare(preview, action_inventory))
         .unwrap();
     app.settle();

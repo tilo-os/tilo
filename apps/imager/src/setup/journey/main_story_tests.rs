@@ -1,10 +1,10 @@
 //! One guided story through real actions; only host discovery is an isolated fixture.
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use std::{path::Path, sync::Arc};
 use ui::framework::testing::TestApp;
 
-type App = TestApp<GuidedInstallerShell>;
+type App = TestApp<ImagerShell>;
 use imager_backend::setup::discovery_fixture::PlatformFixture;
 pub(in crate::setup) use imager_backend::setup::discovery_fixture::{
     fixture_mount_root, source_fixture,
@@ -588,7 +588,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
     let picture = root.join("avatar.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     wait(&mut app, |v| v["restart"]["state"] == "missing");
     for choice in ["computer", "migrate", "new"] {
         choose(&mut app, choice);
@@ -731,7 +731,7 @@ fn prepare_native_portable_story_source(
             (path, bytes)
         })
         .collect();
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     wait(&mut app, |v| v["restart"]["state"] == "missing");
     let reviewed = prepare_portable_story(&mut app, home, password);
     assert_eq!(reviewed.capture_status(), "awaiting-original-boot");
@@ -903,7 +903,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     let original_backup = std::fs::read(&backup).unwrap();
     let original_donor = std::fs::read(root.join("donor/primary.json")).unwrap();
     let expected_key = donor.public_key();
-    let mut app = App::launched(&["--installer"]).unwrap();
+    let mut app = App::launched(&["--setup"]).unwrap();
     wait(&mut app, |v| v["restart"]["state"] == "missing");
     for choice in ["computer", "migrate", "existing"] {
         choose(&mut app, choice);

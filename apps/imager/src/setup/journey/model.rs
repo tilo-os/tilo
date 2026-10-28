@@ -1,4 +1,4 @@
-//! The preview's local decisions. No identity, filesystem or installation authority.
+//! The guided setup's local decisions. No identity, filesystem or installation authority.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {

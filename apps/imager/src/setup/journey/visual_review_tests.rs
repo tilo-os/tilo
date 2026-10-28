@@ -1,6 +1,6 @@
 //! Development-only raster evidence from the production renderer and action path.
 use super::*;
-use crate::resource::GuidedInstallerShell;
+use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
 pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
@@ -56,8 +56,8 @@ pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
     eprintln!("current raster evidence: {name}");
 }
 
-fn fixture(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstallerShell> {
-    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+fn fixture(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
+    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;

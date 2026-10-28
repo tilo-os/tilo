@@ -1,4 +1,4 @@
-//! Device-local Desktop and installation-method projections. No paths or secrets.
+//! Device-local Desktop projection. No paths or secrets.
 use super::actions::SetupEffect;
 use super::desktop_flow::{DesktopFlow, DesktopFlowState};
 use tilo_actions::ResourcePresentation;
@@ -19,14 +19,6 @@ pub struct DesktopActions {
     pub cancel: bool,
     pub recheck: bool,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct MethodProjection {
-    pub selected: Option<&'static str>,
-    pub alongside: bool,
-    /// Opens a reviewed image-writing flow, never authorizes a disk write.
-    pub usb: bool,
-}
-
 pub fn project(flow: &DesktopFlow, reviewed: bool) -> DesktopProjection {
     use DesktopFlowState as S;
     let phase = match flow.state() {
@@ -62,10 +54,7 @@ pub fn project(flow: &DesktopFlow, reviewed: bool) -> DesktopProjection {
     }
 }
 
-pub fn commands(
-    d: &DesktopProjection,
-    m: &MethodProjection,
-) -> [(&'static str, &'static str, bool); 4] {
+pub fn commands(d: &DesktopProjection) -> [(&'static str, &'static str, bool); 3] {
     [
         (
             SetupEffect::INSTALL_DESKTOP.id,
@@ -82,14 +71,9 @@ pub fn commands(
             "imager-setup-desktop-recheck",
             d.actions.recheck,
         ),
-        (
-            SetupEffect::OPEN_USB_WIZARD.id,
-            "imager-setup-usb-open",
-            m.usb,
-        ),
     ]
 }
-pub fn row(d: &DesktopProjection, m: &MethodProjection) -> LiveRow {
+pub fn row(d: &DesktopProjection) -> LiveRow {
     let mut row = LiveRow::new(
         "imager.setup.desktop",
         "imager.setup.desktop",
@@ -100,7 +84,7 @@ pub fn row(d: &DesktopProjection, m: &MethodProjection) -> LiveRow {
         badge: None,
         preview: None,
     });
-    for (id, label, enabled) in commands(d, m) {
+    for (id, label, enabled) in commands(d) {
         let effect = SetupEffect::decode(id, &serde_json::Map::new())
             .expect("declared parameter-free effect");
         let mut spec = effect.bound();
