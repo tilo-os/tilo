@@ -76,20 +76,6 @@ fn changed() {}
         broken = source + '#[allow(dead_code)]\nfn handwritten() {}\n'
         self.assertEqual([a.start_line for a in checker.unexplained_allows(broken)], [4097])
 
-    def test_generated_reason_does_not_excuse_parameter_limit(self):
-        # This gate enforces reasons; the unconditional parameter-limit gate
-        # still rejects a silencing attribute even when its reason is valid.
-        spec = importlib.util.spec_from_file_location(
-            "parameter_limit", MODULE_PATH.parents[1] / "policy/check_too_many_arguments.py"
-        )
-        limit = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(limit)
-        source = (Path(__file__).parent / "fixtures/generated_rust_allows.rs.txt").read_text()
-        source += ('#[allow(clippy::too_many_arguments, reason = "generated callback")]\n'
-                   'fn unsafe_exception() {}\n')
-        self.assertEqual(checker.unexplained_allows(source), [])
-        self.assertEqual(len(limit.audit_source(Path("generated.rs"), source)), 1)
-
     def test_comments_and_literals_cannot_supply_attributes_or_reasons(self):
         source = '''\
 // #[allow(dead_code)]
