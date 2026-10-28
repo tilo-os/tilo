@@ -160,7 +160,7 @@ impl Host {
             |caller| Principal::new(caller.actor.clone()),
         );
         if let Some(caller) = caller.filter(|caller| caller.agent) {
-            self.inner.admit_agent(&caller.actor);
+            self.inner.admit_agent(caller);
         }
         match effect {
             HostEffect::RunBlock { source } => {

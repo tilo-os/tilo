@@ -63,7 +63,7 @@ use tilolang::{Compiled, SeededEntropy};
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{
-    Decision, EngineConfig, EngineKind, EngineProfile, Principal, Translation, UiNode, ViewInstance,
+    EngineConfig, EngineKind, EngineProfile, Principal, Translation, UiNode, ViewInstance,
 };
 
 use crate::action::{Authorship, DynAction, DynEdit};
@@ -527,7 +527,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
                 device: None,
             },
             Principal::new("bench"),
-            |_, _| Decision::Allow,
+            || None,
         )
         .map_err(|e| e.to_string())?;
         for compiled in packages {
@@ -633,7 +633,7 @@ impl Room {
                 device: None,
             },
             Principal::new("bench"),
-            |_, _| Decision::Allow,
+            || None,
         )
         .map_err(|e| e.to_string())?;
         host.runtime().engine().profile(profile);
@@ -1475,7 +1475,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
                 device: None,
             },
             Principal::new("bench"),
-            |_, _| Decision::Allow,
+            || None,
         )
         .map_err(|e| e.to_string())?;
         let held = Rc::clone(&loading);

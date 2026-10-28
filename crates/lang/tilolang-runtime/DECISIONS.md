@@ -82,8 +82,9 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   a field it wrote; no guest import builds one from text, and a `Text` handle does not fit a
   `Principal` field or parameter. A principal's authorship identity is
   `ModuleHash::principal(id)` (`principal:<id>`); only the host resolves one (an embed's
-  `author` prop, an invocation's author). `SimpleAuthority::trust_principal` grants every block
-  the principal wrote; `deny_invoker` removes a principal's authority altogether.
+  `author` prop, an invocation's author). `SimpleAuthority::trust_principal` trusts every block
+  the principal wrote. Denials, grants and agents' answers are not the runtime's: a platform
+  decides them in its one policy (`tilolang_tilo::authority`).
 - **`embed` nodes** are resolved while the tree is built, like foreign views. The host
   compiles the source with `tilolang::compile_block` against the newest loaded package of
   every app (block modules are never visible), caches the result by the blake3 of the source

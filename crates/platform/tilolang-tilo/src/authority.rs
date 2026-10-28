@@ -1,96 +1,386 @@
 //! [`TiloAuthority`]: who may invoke what on the platform (implementation design 7.5).
 //!
-//! Two questions, and the minimum wins:
+//! The runtime asks before every invocation it makes on its own (a flow's step, an agent's block,
+//! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the
+//! person's authority in the room ([`Standing`]), bounded by whoever acts for them (an agent, by
+//! its delegation and the answers the person gave it) and by every author of the code that led to
+//! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
+//! its application ([`Subject::App`]); code a person or an agent wrote (an embedded block) is
+//! that person or agent. Built-in and installed packages are trusted, an agent's code as far as
+//! its person admitted the agent; a stranger's code asks.
 //!
-//! 1. **The invoker, inside Tilo.** What the person (or the agent task acting for them) may do
-//!    comes from the host's permissions; the host supplies it as a verdict function.
-//! 2. **The authorship, inside tilolang.** The runtime's own rules (spec 4.3): own actions are
-//!    allowed, foreign ones depend on whether every code author in the chain is trusted. Built-in
-//!    packages are trusted; an agent's task code takes its task's grants; a stranger's code asks.
+//! Where the host has no standing for the person (a window outside a host, a test), the person's
+//! own part is not decided here, as a native window's detached dispatcher does not decide it: the
+//! door decides what they commit. The agent and code bounds still are.
 //!
 //! An Ask is rendered by the host as trusted chrome, never by wasm.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, SimpleAuthority};
+use tilo_action_policy::{
+    Answer, Authority as Policy, Context, Grant, Party, Standing, Subject, TreePath, authorship,
+    roles,
+};
+use tilolang_runtime::meta::Meta;
+use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal};
 
-/// What the platform says of an invoker's own permission for an action.
-pub type InvokerVerdict = dyn Fn(&Principal, &ActionInfo) -> Decision;
+use crate::meta::{MetaExt as _, action_kind};
 
-/// The platform's authority. Clones share their grants.
+/// Where the host reads the person's standing in the room, each time it decides.
+pub type StandingSource = dyn Fn() -> Option<Standing>;
+
+/// The standing of `person` holding nothing: for a host that only reads, so that nothing its
+/// runtime might invoke runs.
+pub fn holding_nothing(person: &str) -> impl Fn() -> Option<Standing> + 'static {
+    let standing = Standing::person(
+        tilo_action_policy::RoomPolicy::new(NO_ROOM, format!("{person}'s owner")),
+        person,
+    );
+    move || Some(standing.clone())
+}
+
+/// The room a host without a standing decides in.
+const NO_ROOM: &str = "local";
+
+#[derive(Default)]
+struct State {
+    /// The code trusted to act as far as its invoker may: module versions, and the principals
+    /// whose blocks are trusted (`principal:<id>`).
+    trusted: HashSet<ModuleHash>,
+    /// The application each loaded module version is the code of.
+    apps: HashMap<ModuleHash, String>,
+    /// The resource kind each action and flow is published under, by its id.
+    kinds: HashMap<String, String>,
+    /// The principals the door admitted as software acting for a person, with that person.
+    agents: HashMap<String, Option<String>>,
+}
+
+/// The platform's authority. Clones share their state.
 #[derive(Clone)]
 pub struct TiloAuthority {
-    authorship: SimpleAuthority,
-    invoker: Rc<InvokerVerdict>,
-}
-
-const fn rank(decision: Decision) -> u8 {
-    match decision {
-        Decision::Deny => 0,
-        Decision::Ask => 1,
-        Decision::Allow => 2,
-    }
-}
-
-/// The stricter of two decisions.
-#[must_use]
-pub const fn stricter(a: Decision, b: Decision) -> Decision {
-    if rank(a) <= rank(b) { a } else { b }
+    viewer: Principal,
+    standing: Rc<StandingSource>,
+    state: Rc<RefCell<State>>,
 }
 
 impl TiloAuthority {
-    /// An authority that asks `invoker` for the person's own verdict.
-    pub fn new(invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static) -> Self {
+    /// The authority of a host for `viewer`, the person at the window, whose standing in the room
+    /// `standing` reads.
+    pub fn new(viewer: Principal, standing: impl Fn() -> Option<Standing> + 'static) -> Self {
         Self {
-            authorship: SimpleAuthority::new(),
-            invoker: Rc::new(invoker),
+            viewer,
+            standing: Rc::new(standing),
+            state: Rc::default(),
         }
     }
 
-    /// An authority whose invoker is allowed everything the code authorship allows: for tests
-    /// and for hosts that decide permissions elsewhere.
-    #[must_use]
-    pub fn authorship_only() -> Self {
-        Self::new(|_, _| Decision::Allow)
+    /// The code of `module` is `meta`'s package, trusted: a built-in or installed package.
+    pub fn load(&self, module: &ModuleHash, meta: &Meta) {
+        let mut state = self.state.borrow_mut();
+        state.trusted.insert(module.clone());
+        state.apps.insert(module.clone(), meta.app.clone());
+        for action in &meta.actions {
+            let kind = meta
+                .subject_of(&action.params)
+                .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
+            state.kinds.insert(action.id.clone(), kind);
+        }
+        for flow in &meta.flows {
+            state.kinds.insert(flow.id.clone(), meta.package_kind());
+        }
     }
 
-    /// Trust the code of this exact module version (a built-in package).
+    /// Trust the code of this exact module version.
     pub fn trust(&self, module: &ModuleHash) {
-        self.authorship.trust(module);
+        self.state.borrow_mut().trusted.insert(module.clone());
     }
 
     /// Withdraw trust. Takes effect at the next invocation.
     pub fn revoke(&self, module: &ModuleHash) {
-        self.authorship.revoke(module);
+        self.state.borrow_mut().trusted.remove(module);
     }
 
-    /// The grants the runtime's own rules read, to change them (an agent task's grants, an
-    /// explicit grant of an outside action).
+    /// Admit `actor` as software acting for `person` (an agent's task): it acts with that
+    /// person's authority bounded by its delegation and the answers the person gave it, and the
+    /// code it writes is trusted as far as that goes.
+    pub fn admit_agent(&self, actor: &str, person: Option<&str>) {
+        let mut state = self.state.borrow_mut();
+        state
+            .agents
+            .insert(actor.to_owned(), person.map(str::to_owned));
+        state.trusted.insert(ModuleHash::principal(actor));
+    }
+
+    /// Whether `actor` was admitted as software acting for a person.
     #[must_use]
-    pub const fn grants(&self) -> &SimpleAuthority {
-        &self.authorship
+    pub fn is_agent(&self, actor: &str) -> bool {
+        self.state.borrow().agents.contains_key(actor)
+    }
+}
+
+/// The subject a principal is in the room's policy: an agent by its id, a person by theirs.
+fn principal_subject(id: &str) -> Subject {
+    match id.strip_prefix("agent:") {
+        Some(agent) => Subject::agent(agent),
+        None => Subject::person(id),
+    }
+}
+
+/// The grant subject an agent acting as `actor` is, as the broker names an agent principal.
+fn agent_id(actor: &str) -> &str {
+    actor.strip_prefix("agent:").unwrap_or(actor)
+}
+
+const fn decision(answer: Answer) -> Decision {
+    match answer {
+        Answer::Allow => Decision::Allow,
+        Answer::Ask => Decision::Ask,
+        Answer::Deny => Decision::Deny,
     }
 }
 
 impl Authority for TiloAuthority {
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        stricter(
-            (self.invoker)(invoker, action),
-            self.authorship.decide(invoker, chain, action),
-        )
+        let standing = (self.standing)();
+        let state = self.state.borrow();
+        let room = standing.as_ref().map_or(NO_ROOM, Standing::room);
+        let room_grants: &[Grant] = standing
+            .as_ref()
+            .map_or(&[], |standing| &standing.policy.grants);
+        let kind = state
+            .kinds
+            .get(&action.action)
+            .cloned()
+            .unwrap_or_else(|| format!("tl.{}", action.app));
+        let node = TreePath::room(room)
+            .app(&action.app)
+            .kind(kind)
+            .action(&action.action);
+        let agent = state.agents.get(&invoker.0);
+        // Who the person is: the one an agent acts for, or the invoker; the person at the window
+        // is the standing's person.
+        let person = match agent {
+            Some(person) => person.as_deref(),
+            None => Some(invoker.0.as_str()),
+        };
+        let person = person.map(|person| match &standing {
+            Some(standing) if person == self.viewer.0 => standing.person.as_str(),
+            _ => person,
+        });
+        let person_party = match (&standing, person, agent) {
+            (Some(standing), Some(person), _) => standing.policy.party(person),
+            // An agent nobody delegated: only what the room grants it.
+            (Some(standing), None, _) => standing
+                .policy
+                .party_of(Subject::agent(agent_id(&invoker.0))),
+            // No standing here: the door decides the person's own part.
+            (None, _, _) => Party::default().owning(TreePath::root()),
+        };
+        let delegation = match (agent, person) {
+            (Some(_), Some(person)) => {
+                Some(roles::agent_delegation(room, agent_id(&invoker.0), person))
+            }
+            _ => None,
+        };
+        // Each author of the code that led here, once, with what it holds of its own.
+        let mut authors: Vec<(Subject, Vec<Grant>, bool)> = Vec::new();
+        for module in chain {
+            let (subject, of_app) = if let Some(id) = module.0.strip_prefix("principal:") {
+                (principal_subject(id), None)
+            } else {
+                let app = state
+                    .apps
+                    .get(module)
+                    .cloned()
+                    .unwrap_or_else(|| format!("tl-module:{}", module.0));
+                (Subject::app(app.clone()), Some(app))
+            };
+            let trusted = state.trusted.contains(module);
+            let mut own = authorship::code_grants(room, &subject, trusted);
+            if let Some(app) = &of_app
+                && action.own
+                && *module == action.module
+            {
+                own.push(roles::app_authorship(room, app, subject.clone()));
+            }
+            match authors.iter_mut().find(|(known, _, _)| *known == subject) {
+                Some((_, held, _)) if trusted => held.extend(own),
+                // An untrusted version of the same author asks for all of them.
+                Some((_, held, _)) => *held = own,
+                None => authors.push((subject, own, of_app.is_some())),
+            }
+        }
+        let mut policy = Policy::person(person_party);
+        if let Some(delegation) = &delegation {
+            policy = policy.bounded_by(delegation.party(room_grants));
+        }
+        for (subject, own, of_app) in &authors {
+            // The room's grants bound an application's code; a block's author holds only what
+            // its code may.
+            let room = if *of_app { room_grants } else { &[] };
+            policy = policy.bounded_by(authorship::code_party(subject, own, room));
+        }
+        let cx = Context::at_time(std::time::SystemTime::now());
+        decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    use tilo_action_policy::{ActionKind, RoomPolicy};
+    use tilolang_runtime::meta::EffectClass;
+
+    const ROOM: &str = "room";
+    const PERSON: &str = "ada";
+    const APP: &str = "so.tilo.lang.todo";
+
+    fn module() -> ModuleHash {
+        ModuleHash("todo-v1".to_owned())
+    }
+
+    fn info(class: EffectClass, own: bool) -> ActionInfo {
+        ActionInfo {
+            action: "remove".to_owned(),
+            app: APP.to_owned(),
+            class,
+            own,
+            module: module(),
+        }
+    }
+
+    fn authority(grants: Vec<Grant>) -> TiloAuthority {
+        let mut policy = RoomPolicy::new(ROOM, PERSON);
+        policy.grants.extend(grants);
+        let standing = Standing::person(policy, PERSON);
+        let authority = TiloAuthority::new(Principal::new(PERSON), move || Some(standing.clone()));
+        let mut state = authority.state.borrow_mut();
+        state.trusted.insert(module());
+        state.apps.insert(module(), APP.to_owned());
+        drop(state);
+        authority
+    }
 
     #[test]
-    fn the_stricter_decision_wins() {
-        use Decision::{Allow, Ask, Deny};
-        assert_eq!(stricter(Allow, Ask), Ask);
-        assert_eq!(stricter(Deny, Allow), Deny);
-        assert_eq!(stricter(Ask, Deny), Deny);
-        assert_eq!(stricter(Allow, Allow), Allow);
+    fn the_persons_agent_answer_denies_the_agent() {
+        let answer = agent_answers::grant(
+            ROOM,
+            "helper",
+            (&AnswerScope::app(APP), ActionKind::Undoable),
+            Answer::Deny,
+            Subject::person(PERSON),
+        );
+        let authority = authority(vec![answer]);
+        authority.admit_agent("agent:helper", Some(PERSON));
+        let agent = Principal::new("agent:helper");
+        let own = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&agent, &[], &own), Decision::Deny);
+        assert_eq!(authority.decide(&agent, &[module()], &own), Decision::Deny);
+        // The person at the window is not their agent.
+        let me = Principal::new(PERSON);
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+    }
+
+    #[test]
+    fn an_agent_asks_before_reaching_outside_until_its_person_answers() {
+        let authority = authority(Vec::new());
+        authority.admit_agent("agent:helper", Some(PERSON));
+        let agent = Principal::new("agent:helper");
+        let outside = info(EffectClass::Outside, true);
+        assert_eq!(authority.decide(&agent, &[], &outside), Decision::Ask);
+        let undoable = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&agent, &[], &undoable), Decision::Allow);
+    }
+
+    #[test]
+    fn code_of_an_untrusted_author_asks() {
+        let authority = authority(Vec::new());
+        let me = Principal::new(PERSON);
+        let stranger = ModuleHash::principal("person:stranger");
+        let foreign = info(EffectClass::Undoable, false);
+        assert_eq!(
+            authority.decide(&me, std::slice::from_ref(&stranger), &foreign),
+            Decision::Ask
+        );
+        let unknown = ModuleHash("someone-elses".to_owned());
+        assert_eq!(authority.decide(&me, &[unknown], &foreign), Decision::Ask);
+        authority.trust(&stranger);
+        assert_eq!(
+            authority.decide(&me, &[stranger], &foreign),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn a_trusted_modules_own_action_is_allowed() {
+        let authority = authority(Vec::new());
+        let me = Principal::new(PERSON);
+        let own = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+        // Untrusted, it is still an author of its own records.
+        authority.revoke(&module());
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+        let foreign = info(EffectClass::Undoable, false);
+        assert_eq!(authority.decide(&me, &[module()], &foreign), Decision::Ask);
+    }
+
+    #[test]
+    fn outside_from_a_strangers_code_asks() {
+        let authority = authority(Vec::new());
+        let me = Principal::new(PERSON);
+        let stranger = ModuleHash::principal("person:stranger");
+        let outside = info(EffectClass::Outside, false);
+        assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
+        // Trusted code reaching outside asks too, unless the room grants its app that.
+        assert_eq!(
+            authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
+            Decision::Ask
+        );
+    }
+
+    #[test]
+    fn the_rooms_denials_reach_the_runtime() {
+        let me = Principal::new("bob");
+        // Bob is no member: nothing he invokes runs.
+        let authority = authority(Vec::new());
+        let own = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Deny);
+        // A denial of the app's code holds for the owner too.
+        let denied = Grant::new(
+            "deny-todo",
+            Subject::app(APP),
+            TreePath::room(ROOM),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Deny,
+            Subject::person(PERSON),
+        );
+        let authority = self::authority(vec![denied]);
+        let me = Principal::new(PERSON);
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Deny);
+        assert_eq!(authority.decide(&me, &[], &own), Decision::Allow);
+    }
+
+    #[test]
+    fn without_a_standing_the_bounds_still_decide() {
+        let authority = TiloAuthority::new(Principal::new(PERSON), || None);
+        authority.admit_agent("agent:helper", Some(PERSON));
+        let agent = Principal::new("agent:helper");
+        assert_eq!(
+            authority.decide(&agent, &[], &info(EffectClass::Outside, true)),
+            Decision::Ask
+        );
+        let me = Principal::new(PERSON);
+        let stranger = ModuleHash::principal("person:stranger");
+        assert_eq!(
+            authority.decide(&me, &[stranger], &info(EffectClass::Undoable, false)),
+            Decision::Ask
+        );
+        assert_eq!(
+            authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
+            Decision::Allow
+        );
     }
 }

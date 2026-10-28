@@ -290,6 +290,17 @@ impl Window {
         self
     }
 
+    /// This window deciding what its runtime invokes by the person's standing in the room as
+    /// `source` reads it, the room's policy the door decides by.
+    #[must_use]
+    pub fn with_standing(
+        self,
+        source: impl Fn() -> Option<ui::permissions::Standing> + 'static,
+    ) -> Self {
+        self.instance.set_standing(Rc::new(source));
+        self
+    }
+
     /// This window sending the outside effects it settles to `sink` rather than the development
     /// log.
     #[must_use]

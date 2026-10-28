@@ -23,8 +23,8 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    ActionInfo, Decision, InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError,
-    StoreError, ViewInstance,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
+    ViewInstance,
 };
 
 use crate::action::{Authorship, DynAction};
@@ -33,6 +33,7 @@ use crate::meta::MetaExt as _;
 use crate::publish::{Caller, Committer, PlanRequest, Planner};
 use crate::schema::lookup;
 use crate::store::{Committed, TiloStore};
+use tilo_action_policy::Standing;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -66,9 +67,6 @@ impl Package {
     }
 }
 
-/// The answers a person gave agents, per app and kind of action.
-type AgentRights = Rc<RefCell<HashMap<(String, tilolang_runtime::meta::EffectClass), Decision>>>;
-
 pub(crate) struct HostInner {
     handle: u64,
     runtime: Runtime,
@@ -78,10 +76,6 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Package>>,
     /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
-    /// The principals the door admitted as software acting for a person.
-    pub(crate) agents: Rc<RefCell<std::collections::HashSet<String>>>,
-    /// What the person narrowed an agent's rights to, per app and kind of action.
-    rights: AgentRights,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
@@ -296,9 +290,9 @@ fn json_of(value: &Value) -> Json {
 }
 
 impl HostInner {
-    pub(crate) fn admit_agent(&self, actor: &str) {
-        self.agents.borrow_mut().insert(actor.to_owned());
-        self.authority.grants().trust_principal(actor);
+    pub(crate) fn admit_agent(&self, caller: &Caller) {
+        self.authority
+            .admit_agent(&caller.actor, caller.on_behalf_of.as_deref());
     }
 
     pub(crate) fn package_of(&self, app: &str) -> Result<Package, String> {
@@ -373,7 +367,7 @@ impl HostInner {
             |caller| Principal::new(caller.actor.clone()),
         );
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
-            self.admit_agent(&caller.actor);
+            self.admit_agent(caller);
         }
         let first = self.store.next_ticket();
         let outcome = self
@@ -429,17 +423,17 @@ impl HostInner {
 }
 
 impl Host {
-    /// A host over the room record `record`, for `viewer`. `invoker` is the platform's verdict on
-    /// what the viewer may do; code authorship is decided by the runtime's own rules.
+    /// A host over the room record `record`, for `viewer`, whose standing in the room `standing`
+    /// reads: what the runtime invokes is decided by the room's policy ([`TiloAuthority`]).
     ///
     /// # Errors
     /// The runtime cannot be set up, which is a bug.
     pub fn new(
         record: &tilo_resource::Doc,
         viewer: Principal,
-        invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
+        standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
-        Self::on_device(record, viewer, None, invoker)
+        Self::on_device(record, viewer, None, standing)
     }
 
     /// As [`Self::new`], on the device `device`: the device that carries out the outside effects
@@ -451,7 +445,7 @@ impl Host {
         record: &tilo_resource::Doc,
         viewer: Principal,
         device: Option<&str>,
-        invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
+        standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
         Self::open(
             Opening {
@@ -460,7 +454,7 @@ impl Host {
                 device,
             },
             viewer,
-            invoker,
+            standing,
         )
     }
 
@@ -473,7 +467,7 @@ impl Host {
     pub fn open(
         opening: Opening<'_>,
         viewer: Principal,
-        invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
+        standing: impl Fn() -> Option<Standing> + 'static,
     ) -> Result<Self, HostError> {
         let store = match (opening.record, opening.index_dir) {
             (Some(record), dir) => {
@@ -493,31 +487,9 @@ impl Host {
         let host_meta = tilolang::host_meta();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
-        // An agent is a task of a person under that person's narrowed rights. Before anyone
-        // chooses, reading and undoable changes are allowed to it and outside effects ask first;
-        // the person narrows that per app and kind of action (`set_agent_answer`), and trusting
-        // an agent ("always allow") lifts what asks.
-        let agents: Rc<RefCell<std::collections::HashSet<String>>> = Rc::default();
-        let rights: AgentRights = Rc::default();
-        let (known, narrowed) = (Rc::clone(&agents), Rc::clone(&rights));
-        let authority = TiloAuthority::new(move |who: &Principal, info: &ActionInfo| {
-            let platform = invoker(who, info);
-            if !known.borrow().contains(&who.0) {
-                return platform;
-            }
-            let answer = narrowed
-                .borrow()
-                .get(&(info.app.clone(), info.class))
-                .copied()
-                .unwrap_or(
-                    if info.class == tilolang_runtime::meta::EffectClass::Outside {
-                        Decision::Ask
-                    } else {
-                        Decision::Allow
-                    },
-                );
-            crate::authority::stricter(platform, answer)
-        });
+        // What the runtime invokes is decided by the room's one policy: the person's standing,
+        // an agent's delegation and the answers the person gave it, and the code's authors.
+        let authority = TiloAuthority::new(viewer.clone(), standing);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -530,8 +502,6 @@ impl Host {
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
             produced: RefCell::default(),
-            agents,
-            rights,
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -585,41 +555,11 @@ impl Host {
         }
     }
 
-    /// Admit `actor` as software acting for a person: a task. Its code is trusted as far as its
-    /// rights go ([`Self::set_agent_answer`]): what it may do, it does; what asks, asks a person.
-    pub fn admit_agent(&self, actor: &str) {
-        self.inner.admit_agent(actor);
-    }
-
-    /// Answer "always allow" for what `action` is: every action of its app and kind is allowed
-    /// to agents from now on.
-    pub fn always_allow_agents(&self, action: &str) {
-        let found = self.inner.packages.borrow().iter().find_map(|package| {
-            package
-                .meta
-                .actions
-                .iter()
-                .find(|declared| declared.id == action)
-                .map(|declared| (package.meta.app.clone(), declared.class))
-        });
-        if let Some((app, class)) = found {
-            self.set_agent_answer(&app, class, Decision::Allow);
-        }
-    }
-
-    /// Narrow (or widen) what agents may do: `answer` for each action of `class` of the app
-    /// `app`. Before anyone chooses, reading and undoable changes are allowed and outside
-    /// effects ask first.
-    pub fn set_agent_answer(
-        &self,
-        app: &str,
-        class: tilolang_runtime::meta::EffectClass,
-        answer: Decision,
-    ) {
-        self.inner
-            .rights
-            .borrow_mut()
-            .insert((app.to_owned(), class), answer);
+    /// Admit `caller` as software acting for a person: a task. It acts with that person's
+    /// authority bounded by its delegation and the answers the person gave it in the room; its
+    /// code is trusted as far as that goes.
+    pub fn admit_agent(&self, caller: &Caller) {
+        self.inner.admit_agent(caller);
     }
 
     /// The next suggestion an agent's flow raised, for the window to ask a person about.
@@ -751,7 +691,7 @@ impl Host {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         meta.register_schemas();
         self.inner.store.open_index(&meta.app, &meta.schema_text());
-        self.inner.authority.trust(&id);
+        self.inner.authority.load(&id, &meta);
         let package = Package { meta, id, ids };
         let mut packages = self.inner.packages.borrow_mut();
         match packages
@@ -949,7 +889,7 @@ impl Host {
 #[must_use]
 pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
     let doc = tilo_resource::Doc::new();
-    let Ok(host) = Host::new(&doc, Principal::new("surface"), |_, _| Decision::Allow) else {
+    let Ok(host) = Host::new(&doc, Principal::new("surface"), || None) else {
         return Vec::new();
     };
     for (source, ids) in packages {

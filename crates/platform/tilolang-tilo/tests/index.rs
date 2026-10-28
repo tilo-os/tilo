@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilo_resource::{Edit, EditOp, Id, Segment};
+use tilolang_runtime::Principal;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Decision, Principal};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::publish::PlanRequest;
@@ -338,7 +338,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
             device: None,
         },
         Principal::new("ada"),
-        |_, _| Decision::Allow,
+        || None,
     )
     .unwrap();
     host.load_builtin(TODO, lock).unwrap();
@@ -424,7 +424,7 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
             device: None,
         },
         Principal::new("ada"),
-        |_, _| Decision::Allow,
+        || None,
     )
     .unwrap();
     host.load_builtin(TODO, &lock).unwrap();

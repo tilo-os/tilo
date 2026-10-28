@@ -235,6 +235,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.permission_state(need)
     }
 
+    /// This participant's standing in the room as the host keeps it when
+    /// called (who they are, the room's policy, what bounds them), for a
+    /// runtime that decides its own invocations by the policy the door
+    /// decides by. `None` outside a host.
+    pub fn standing(&self) -> impl Fn() -> Option<ui_core::permissions::Standing> + 'static {
+        self.dispatch.standing_source()
+    }
+
     /// Whether this participant may govern the room, observed: for an
     /// owner-only pane with [`Self::switch`].
     pub fn govern_state(&self) -> LocalState<bool> {

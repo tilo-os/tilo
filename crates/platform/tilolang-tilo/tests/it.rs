@@ -18,6 +18,7 @@ mod incremental;
 mod index;
 mod outbox;
 mod outcomes;
+mod policy;
 mod publication;
 mod records;
 #[cfg(feature = "room")]

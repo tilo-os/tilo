@@ -32,26 +32,24 @@ pub trait Authority {
 }
 
 #[derive(Default)]
-struct Grants {
+struct Trust {
     trusted: HashSet<ModuleHash>,
-    denied_modules: HashSet<ModuleHash>,
-    denied_actions: HashSet<ActionId>,
-    granted_outside: HashSet<ActionId>,
-    denied_invokers: HashSet<Principal>,
 }
 
-/// The reference authority (spec 4.3):
+/// The authorship rule of the spec (4.3), for a runtime without a platform (its own tests, a
+/// benchmark): an outside action asks; otherwise the action is allowed when every author in the
+/// chain is trusted, the action's own module counting as trusted for its own actions, and asks
+/// when not.
 ///
-/// * deny wins over everything, including a denied invoker;
-/// * an outside action asks, unless an explicit grant covers it and every author is trusted;
-/// * otherwise the action is allowed when every author in the chain is trusted, the action's
-///   own module counting as trusted for its own actions, and asks when not.
+/// What a person may do, the denials and grants of a room and the answers a person gave their
+/// agents are not the runtime's: a platform decides them in its one policy, with the code's
+/// authorship as one more input (`tilolang_tilo::authority::TiloAuthority`).
 ///
-/// Clones share their grants, so a test or a settings page can keep a handle and change them
-/// while the runtime holds another.
+/// Clones share their trust, so a test can keep a handle and change it while the runtime holds
+/// another.
 #[derive(Clone, Default)]
 pub struct SimpleAuthority {
-    grants: Arc<Mutex<Grants>>,
+    trust: Arc<Mutex<Trust>>,
 }
 
 impl SimpleAuthority {
@@ -59,8 +57,8 @@ impl SimpleAuthority {
         Self::default()
     }
 
-    fn lock(&self) -> MutexGuard<'_, Grants> {
-        self.grants.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, Trust> {
+        self.trust.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Trust the code of this exact module version.
@@ -86,50 +84,12 @@ impl SimpleAuthority {
     pub fn revoke(&self, module: &ModuleHash) {
         self.lock().trusted.remove(module);
     }
-
-    pub fn deny_module(&self, module: &ModuleHash) {
-        self.lock().denied_modules.insert(module.clone());
-    }
-
-    /// A principal with no authority: nothing it invokes, directly or through code it wrote,
-    /// runs, and it cannot confirm a suggestion.
-    pub fn deny_invoker(&self, who: &Principal) {
-        self.lock().denied_invokers.insert(who.clone());
-    }
-
-    pub fn allow_invoker(&self, who: &Principal) {
-        self.lock().denied_invokers.remove(who);
-    }
-
-    pub fn deny_action(&self, action: &str) {
-        self.lock().denied_actions.insert(action.to_owned());
-    }
-
-    /// An explicit grant for an outside action.
-    pub fn grant_outside(&self, action: &str) {
-        self.lock().granted_outside.insert(action.to_owned());
-    }
-
-    pub fn revoke_outside(&self, action: &str) {
-        self.lock().granted_outside.remove(action);
-    }
 }
 
-impl Grants {
-    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        if self.denied_actions.contains(&action.action)
-            || self.denied_invokers.contains(invoker)
-            || chain.iter().any(|m| self.denied_modules.contains(m))
-        {
-            return Decision::Deny;
-        }
-        let all_trusted = chain.iter().all(|m| self.trusted.contains(m));
+impl Trust {
+    fn decide(&self, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         if action.class == EffectClass::Outside {
-            return if self.granted_outside.contains(&action.action) && all_trusted {
-                Decision::Allow
-            } else {
-                Decision::Ask
-            };
+            return Decision::Ask;
         }
         // An own invocation is free for the declaring module; every other author in the
         // chain still needs trust (the minimum along the whole chain, spec 4.3).
@@ -144,7 +104,7 @@ impl Grants {
 }
 
 impl Authority for SimpleAuthority {
-    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        self.lock().decide(invoker, chain, action)
+    fn decide(&self, _invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        self.lock().decide(chain, action)
     }
 }
