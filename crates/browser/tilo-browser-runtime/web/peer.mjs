@@ -54,6 +54,9 @@ const CERTIFICATE = 'certificate';
  * frame reads and drops them, so this only bounds a page that stopped
  * drawing while a peer kept typing. */
 const MAX_PENDING_PREVIEWS = 256;
+/** How many records a layer remembers the ops track of: a page shows a
+ * handful, and the digest of one it has left is cheap to ask for again. */
+const MAX_REMEMBERED_TRACKS = 256;
 /** What this page's WebCodecs decodes, probed once. */
 let probed;
 const probedCodecs = () => (probed ??= decodableCodecs());
@@ -293,6 +296,20 @@ export function createLiveLayer(peer, runtime, room, {
   let retry = 0;
   let renewTimer;
   const previewSeq = new Map();
+  // A record's ops track is its digest, so the same record always names the
+  // same track. Previews ask per keystroke; remembering it keeps validation
+  // and the wasm call off that path.
+  const tracks = new Map();
+  const trackOf = record => {
+    const key = recordKey(record);
+    let track = tracks.get(key);
+    if (track === undefined) {
+      track = runtime.liveRecordTrack(JSON.stringify(record));
+      if (tracks.size >= MAX_REMEMBERED_TRACKS) tracks.delete(tracks.keys().next().value);
+      tracks.set(key, track);
+    }
+    return track;
+  };
 
   const setState = next => { if (state !== next) { state = next; emit('state', {state}); } };
   // A live frame leaves only sealed with the channel keys of the record it
@@ -386,7 +403,7 @@ export function createLiveLayer(peer, runtime, room, {
     subscriptions.set(key, cleanup);
   }
   function subscribeRecord(publisherId, record) {
-    const track = runtime.liveRecordTrack(JSON.stringify(record));
+    const track = trackOf(record);
     const epoch = memberEpochs.get(publisherId);
     keepSubscribed(publisherId, `${publisherId}\u0000${track}`,
       (current, ended) => current.subscribeOps(publisherId, track, payload => {
@@ -542,13 +559,13 @@ export function createLiveLayer(peer, runtime, room, {
       const key = recordKey(record);
       const seq = (previewSeq.get(key) ?? 0) + 1;
       previewSeq.set(key, seq);
-      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const track = trackOf(record);
       return publishSealed(runtime.encodeLivePreview(JSON.stringify(record), BigInt(seq), JSON.stringify(ops)),
         (current, frame) => current.publishOps(track, frame));
     },
     endPreview(record) {
       if (!session || watching) return;
-      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const track = trackOf(record);
       const current = session;
       void sealed(runtime.encodeLivePreviewEnd(JSON.stringify(record))).then(frame => {
         if (session !== current) return;
@@ -567,7 +584,7 @@ export function createLiveLayer(peer, runtime, room, {
      * `onFrame(publisher, bytes)`. For the host's own record tracks (legacy
      * windows), which are not live codec frames. Returns a stop function. */
     watchRecordFrames(record, onFrame) {
-      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const track = trackOf(record);
       const handlers = rawWatched.get(track) ?? new Set();
       rawWatched.set(track, handlers);
       handlers.add(onFrame);
@@ -581,7 +598,7 @@ export function createLiveLayer(peer, runtime, room, {
     /** Raw frames of `record` from the member `publisher` only, while it is
      * present: `onFrame(bytes)`. Returns a stop function. */
     subscribeMemberRecord(publisher, record, onFrame) {
-      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const track = trackOf(record);
       const key = `${publisher}\u0000${track}`;
       const handlers = memberFrames.get(key) ?? new Set();
       memberFrames.set(key, handlers);

@@ -356,6 +356,28 @@ test('the live layer joins over the carrier with the session grant and interpola
   assert.equal(peer.live.state, 'closed');
 });
 
+test("a record's ops track is asked for once, however much it is typed in", async () => {
+  const runtime = fakeRuntime();
+  let asked = 0;
+  const ask = runtime.liveRecordTrack;
+  runtime.liveRecordTrack = record => { asked++; return ask(record); };
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  const record = {app: 'so.tilo.notes', record: 'note-1'};
+  peer.live.watchRecord(record);
+  await settle();
+  const before = asked;
+  // What a person typing produces: one preview per keystroke, each naming
+  // the same record and so the same track.
+  for (let i = 0; i < 20; i++) peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]);
+  await settle();
+  assert.equal(asked - before, 1, 'twenty keystrokes ask for the same track once');
+  assert.ok(session.ops.length, 'the previews still left');
+  await peer.dispose();
+});
+
 test('a lost live session reconnects with a fresh grant', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();

@@ -144,6 +144,8 @@ function normalizeField(key, value) {
     default: throw new TypeError(`unknown presence field ${key}`);
   }
 }
+// Two frames' fields are decoded apart, so equal ones are not the same
+// reference: this compares what they say.
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
@@ -263,13 +265,21 @@ export function createPresencePublisher({
     /** Merge fields; `undefined` keeps a field, `null` clears it. */
     update(partial) {
       if (stopped) return false;
+      // Only what the caller names can differ, so only that is normalized
+      // and compared. Input events call this at display rate with one field
+      // (a pointer move), and encoding the whole state to notice they were
+      // unchanged was the hot part of publishing.
       const next = {...state};
+      let changed = false;
       for (const key of Object.keys(partial ?? {})) {
         if (!FIELDS.includes(key)) throw new TypeError(`unknown presence field ${key}`);
         if (partial[key] === undefined) continue;
-        next[key] = normalizeField(key, partial[key]);
+        const value = normalizeField(key, partial[key]);
+        if (same(value, state[key])) continue;
+        next[key] = value;
+        changed = true;
       }
-      if (same(next, state)) return false;
+      if (!changed) return false;
       if (dirty) stats.coalesced++;
       state = next;
       dirty = true;
