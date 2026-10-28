@@ -34,6 +34,9 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+# The UI host's half of the window, and the patch protocol between it and the instance.
+tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
+tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
 tilo-automerge.workspace = true
 serde_json.workspace = true
 chrono = { workspace = true, features = ["std"] }

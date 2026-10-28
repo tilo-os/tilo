@@ -21,15 +21,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use tilolang_tilo::runtime::{ResourceRef, UiNode, Value};
+use crate::{ResourceRef, UiNode, Value};
 use ui::component::{
     Accepts, Bound, BoundValue, Catalogue, Description, Event, Fired, Intent, Source, Type,
     Value as Prop,
 };
 use ui::widget::Element;
 
+use crate::pane::Pane;
 use crate::reconcile::{Reconciler, UiEvent, presence_path};
-use crate::window::pane::Pane;
 
 /// What a node of a described component is called: `ui.` and the component's name.
 pub const KIND_PREFIX: &str = "ui.";
@@ -119,10 +119,11 @@ impl Adapter {
             Prop::Int(number) => Value::Int(*number),
             Prop::Float(number) => Value::Float(*number),
             Prop::Bool(flag) => Value::Bool(*flag),
-            Prop::Resource(id) => Value::resource(self.resources.borrow().get(id)?),
-            Prop::Principal { identity, .. } => {
-                Value::Principal(tilolang_tilo::runtime::Principal::new(identity.clone()))
-            }
+            Prop::Resource(id) => Value::Ref(self.resources.borrow().get(id)?.clone()),
+            Prop::Principal { identity, name } => Value::Principal(crate::Principal {
+                id: identity.clone(),
+                name: name.clone(),
+            }),
             Prop::None | Prop::List(_) => return None,
         })
     }
@@ -152,7 +153,7 @@ impl Adapter {
 fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     let prop = description.semantics.presents.as_ref()?;
     match node.props.get(prop) {
-        Some(Value::Ref(reference)) => Some(ResourceRef::clone(&reference.target)),
+        Some(Value::Ref(reference)) => Some(reference.clone()),
         _ => None,
     }
 }
@@ -264,12 +265,12 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         (Type::Bool, Value::Bool(flag)) => Prop::Bool(*flag),
         (Type::Bool, Value::Int(number)) => Prop::Bool(*number != 0),
         (Type::Principal, Value::Principal(who)) => Prop::Principal {
-            identity: who.0.clone(),
-            name: reconciler.person(&who.0),
+            identity: who.id.clone(),
+            name: who.name.clone(),
         },
         (Type::Resource, Value::Ref(reference)) => {
-            reconciler.adapter().given(&reference.target);
-            Prop::Resource(reference.target.id_string())
+            reconciler.adapter().given(reference);
+            Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
@@ -321,7 +322,7 @@ impl Source for NodeSource<'_> {
             &self.node.key,
             name,
         ));
-        let called = self.reconciler.field_name(binding);
+        let called = binding.name.clone();
         let path = presence_path(self.node);
         Some(match ty {
             Type::Text => BoundValue::Text(Bound {
@@ -371,7 +372,7 @@ impl Source for NodeSource<'_> {
             .description
             .slot(slot)
             .is_some_and(|s| s.default && s.many);
-        if !is_rows || !tilolang_tilo::runtime::view::is_virtual(&self.node.kind) {
+        if !is_rows || !crate::is_virtual(&self.node.kind) {
             return None;
         }
         self.reconciler.rows_of(&self.node.key)
@@ -411,7 +412,7 @@ impl Source for NodeSource<'_> {
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
     // The rows of a virtual list change through the host's rows, never through the node.
-    let virtual_rows = tilolang_tilo::runtime::view::is_virtual(&b.kind);
+    let virtual_rows = crate::is_virtual(&b.kind);
     a.props == b.props
         && a.binding == b.binding
         && a.events.keys().eq(b.events.keys())
@@ -454,8 +455,7 @@ pub fn views_of<'a>(node: &'a UiNode, description: &'a Description) -> Vec<(&'a 
 mod tests {
     use std::collections::BTreeMap;
 
-    use tilolang_tilo::runtime::handles::Retained;
-    use tilolang_tilo::runtime::{BindTarget, Binding, ModuleHash, ResourceRef, UiNode, Value};
+    use crate::{Binding, Event, ResourceRef, UiNode, Value};
     use ui::widget::{Element, StructureChange, Widget};
 
     use super::*;
@@ -474,7 +474,7 @@ mod tests {
     }
 
     fn reconciler() -> Reconciler {
-        Reconciler::new(Rc::default(), Rc::new(|_| "Title".to_owned()))
+        Reconciler::new(Rc::default())
     }
 
     /// The identity of a widget, to tell the same one from one built again.
@@ -615,7 +615,7 @@ mod tests {
     fn events_are_the_views_action_references_and_a_presented_resource_opens() {
         let mut reconciler = reconciler();
         let mut button = node("Button", "b", &[("label", Value::text("Send"))]);
-        button.events.insert("press".to_owned(), Retained(1));
+        button.events.insert("press".to_owned(), Event::default());
         let description = description_of(&button).expect("described");
         let event = NodeSource::new(&button, description, &mut reconciler).event("press");
         event.fire(None);
@@ -625,13 +625,16 @@ mod tests {
             "the window fires the action reference the view attached"
         );
 
-        let note = ResourceRef::root("doc", "note");
+        let note = ResourceRef {
+            id: "doc".to_owned(),
+            ty: "note".to_owned(),
+        };
         let row = node(
             "ListRow",
             "r",
             &[
                 ("title", Value::text("Q3")),
-                ("item", Value::resource(&note)),
+                ("item", Value::Ref(note.clone())),
             ],
         );
         let description = description_of(&row).expect("described");
@@ -656,11 +659,8 @@ mod tests {
         let mut reconciler = reconciler();
         let mut input = node("TextInput", "i", &[("bind", Value::text("value"))]);
         input.binding = Some(Binding {
-            target: BindTarget::Field {
-                target: ResourceRef::root("doc", "note"),
-                field: "title".into(),
-            },
-            author: ModuleHash(String::new()),
+            field: Some(("doc".to_owned(), "title".to_owned())),
+            name: "Title".to_owned(),
         });
         let description = description_of(&input).expect("described");
         let bound = {
@@ -689,13 +689,10 @@ mod tests {
     fn same_data_compares_events_by_name_and_component_slots_by_value() {
         let description = catalogue().get("ListRow").expect("described");
         let mut a = node("ListRow", "r", &[("title", Value::text("x"))]);
-        a.events.insert("activate".to_owned(), Retained(1));
-        let mut b = a.clone();
-        b.events.insert("activate".to_owned(), Retained(2));
-        assert!(
-            same_data(&a, &b, description),
-            "an action reference made anew is the same"
-        );
+        a.events.insert("activate".to_owned(), Event::default());
+        let b = a.clone();
+        assert!(same_data(&a, &b, description), "the same events by name");
+        let mut b = b;
         b.props.insert("title".to_owned(), Value::text("y"));
         assert!(!same_data(&a, &b, description));
         let _ = BTreeMap::<String, Value>::new();
