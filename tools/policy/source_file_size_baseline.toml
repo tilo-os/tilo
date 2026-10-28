@@ -90,7 +90,7 @@
 "crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 4000
 "crates/sdk/ui-core/src/presence/render.rs" = 3500
-"crates/sdk/ui-core/src/record.rs" = 6000
+"crates/sdk/ui-core/src/record.rs" = 5500
 "crates/sdk/ui-core/src/text_render.rs" = 5500
 "crates/sdk/ui-core/src/ui_graph.rs" = 5000
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500

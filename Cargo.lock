@@ -2611,6 +2611,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "collaboration"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "collab-types",
+ "fnv",
+ "fs-protocol",
+ "hex",
+ "runtime-collab",
+ "runtime-identity",
+ "runtime-portal",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-files",
+ "tilo-identity-client",
+ "tilo-lock",
+ "tilo-process",
+ "tilo-test-env",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18669,7 +18694,6 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "ashpd",
- "hex",
  "image",
  "jni 0.21.1",
  "ndk-context",
@@ -18683,13 +18707,13 @@ dependencies = [
  "tilo-model-client",
  "tilo-net",
  "tilo-notify",
+ "tilo-process",
  "tilo-rt",
  "tilo-secrets",
  "tilo-tts",
  "tilo-winit",
  "tokio",
  "tracing",
- "unic-langid",
  "workspace-hack",
  "zbus",
 ]
@@ -19697,6 +19721,7 @@ name = "tilo-process"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "hex",
  "libc",
  "runtime-portal",
  "rustix 1.1.4",
@@ -19705,6 +19730,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "unic-langid",
  "workspace-hack",
 ]
 
@@ -20763,6 +20789,7 @@ dependencies = [
  "channel-crypto",
  "chrono",
  "collab-types",
+ "collaboration",
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
