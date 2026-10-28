@@ -61,7 +61,9 @@ impl SlotViews for Scrollable {
     }
 
     fn remove(&mut self, _index: usize) {
-        let _ = self.replace_child(Box::new(crate::widget::Spacer::fixed(0.0)));
+        let _ = self.replace_child(Box::new(crate::widget::Spacer::token(
+            crate::tokens::SpacingStep::S0,
+        )));
     }
 
     fn move_view(&mut self, _from: usize, _to: usize) {}

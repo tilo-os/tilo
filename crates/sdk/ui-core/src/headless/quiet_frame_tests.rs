@@ -285,6 +285,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "embedded_targets",
+            "reads the embedded app's widget rects; borrows it mutably only to reach its tree",
+        ),
+        (
             "take_skip_report",
             "hands over a log line; nothing a frame reads",
         ),
