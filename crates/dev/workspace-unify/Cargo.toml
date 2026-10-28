@@ -957,8 +957,6 @@ doc = false
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
-"settings-core" = { path = "../../../apps/settings-core", default-features = false, features = [] }
-"settings-rare" = { path = "../../../apps/settings-rare", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
 "settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "test-support", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
@@ -1196,7 +1194,7 @@ doc = false
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../../crates/system/net-answers", default-features = false, features = ["default", "fetch"] }
 "tilo-net-p2p" = { path = "../../../crates/platform/tilo-net-p2p", default-features = false, features = [] }
-"tilo-network-actor" = { path = "../../../crates/session/network-actor", default-features = false, features = [] }
+"tilo-network-actor" = { path = "../../../crates/session/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../../crates/session/network-secret-agent", default-features = false, features = ["test-support"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
 "tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }
@@ -1295,8 +1293,9 @@ doc = false
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
 "tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
+"tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = [] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = [] }
-"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = ["room"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "tinker" = { path = "../../../crates/system/tinker", default-features = false, features = [] }
@@ -3344,8 +3343,6 @@ doc = false
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
-"settings-core" = { path = "../../../apps/settings-core", default-features = false, features = [] }
-"settings-rare" = { path = "../../../apps/settings-rare", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
 "settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }

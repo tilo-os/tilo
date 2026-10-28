@@ -695,7 +695,7 @@ def is_compute_package(app_dir: Path) -> bool:
 def owning_app(root: Path, crate_dir: Path) -> str | None:
     """The app a part crate belongs to, or None.
 
-    A part crate (`apps/browser-parts`, `apps/settings-rare`) is a library
+    A part crate (`apps/browser-parts`) is a library
     split out of one app so the app's engine library can load it: it has no
     `tilo-app.toml` of its own and is never launched. It publishes through
     the app that links it, so that app's contract covers it. The owner is

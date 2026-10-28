@@ -1131,15 +1131,11 @@ mode = "off"
         assert!(validate_language_pack(&pack).is_ok());
         assert_eq!(crate::language_pack_locale(&pack.package.id), Some("de-de"));
         let catalogues = [
-            std::path::PathBuf::from("de-DE/settings-core.ftl"),
+            std::path::PathBuf::from("de-DE/settings.ftl"),
             std::path::PathBuf::from("de-DE/tilo-ui.ftl"),
         ];
         assert!(validate_language_pack_payload(&pack, &catalogues).is_ok());
-        for wrong in [
-            "fr-FR/settings-core.ftl",
-            "de-DE/bin/tool",
-            "settings-core.ftl",
-        ] {
+        for wrong in ["fr-FR/settings.ftl", "de-DE/bin/tool", "settings.ftl"] {
             assert!(
                 validate_language_pack_payload(&pack, &[std::path::PathBuf::from(wrong)]).is_err(),
                 "{wrong}"

@@ -1,16 +1,39 @@
-//! The Tilo native Personal Settings app: the window and its core
-//! (`settings-core`), the panes people open often (here) and the panes
-//! people rarely open (`settings-rare`, loaded from the Settings engine
-//! library). Everything `settings-core` names is re-exported here, so the
-//! app reads as one crate; [`SettingsShell`] brings the parts together
-//! before the window opens.
+//! The Tilo native Personal Settings app — the device and account settings
+//! hub: the window, its effect vocabulary, its resource, the panes and
+//! everything they share. Workspace-owned policy stays in the shell's
+//! contextual Workspace Settings surface; cross-cutting domains share a
+//! resolver instead of letting either UI write the other's state.
+//!
+//! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
+//! sidebar plus a content pane per category, responsive between a two-pane
+//! desktop layout and a single-pane narrow layout. The binary in `main.rs`
+//! runs [`SettingsShell`] on the app framework: the live window, or one of
+//! the screenshot [`scenarios`].
+//!
+//! ## Module map
+//!
+//! - [`categories`] — the sidebar's [`categories::Section`]s and
+//!   [`categories::Category`]s.
+//! - [`sidebar`] — the sidebar's navigation list of categories.
+//! - [`panes`] — one module per category's content pane, and the part
+//!   ([`area::Part`]) they bring to the window.
+//! - [`widgets`] — small composition helpers (section, setting row, item row,
+//!   caption) shared across panels.
+//! - [`accounts`] — the **shared external-accounts store** Settings owns
+//!   and Mail / Calendar / file apps consume.
+//! - the **shared region & formats store** (global user locale) is the
+//!   `tilo-locale` crate: Settings owns it and Sheets / Weather consume it.
+//! - [`prefs`] — the **shared system-preferences store** (device sounds,
+//!   display comfort, pointer/keyboard behaviour, update policy) Settings
+//!   owns and the compositor / update service consume.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
 // produce a *crash* stay denied — indexing_slicing, string_slice,
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it.
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -19,56 +42,79 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
-pub use settings_core::*;
-// Settings' panes are tested in settings-core's own tests, which compile
-// them in with the test helpers of the window they need; this crate's own
-// test build leaves them out, and its integration suites test the app.
-// The modules of the panes people rarely open, named here as Settings' own.
-#[cfg(not(test))]
-pub use settings_rare::{account_probe, device_fleet, speaker_setup};
-
-#[cfg(not(test))]
-pub mod dispatcher;
-#[cfg(not(test))]
-pub(crate) mod input_sources;
-#[cfg(not(test))]
-pub mod keyboard_preview;
-#[cfg(not(test))]
-pub mod panes;
-
-#[cfg(not(test))]
-mod shell;
-#[cfg(not(test))]
-pub use shell::SettingsShell;
-
-/// The resource Settings presents, and the app over it.
-#[cfg(not(test))]
-pub mod resource {
-    pub use crate::shell::SettingsShell;
-    pub use settings_core::resource::*;
-}
-
-/// Bring the parts of Settings together: its own, the panes people open
-/// often and the panes people rarely open. Every entry point does this
-/// before the window opens; calling it again keeps the first.
-#[cfg(not(test))]
-pub fn install() {
-    settings_core::area::install(panes::PARTS);
+thread_local! {
+    static LAUNCHER_PROVIDER_ADMIN: std::cell::RefCell<ui::models::ProviderAdministration> =
+        std::cell::RefCell::default();
 }
 
 /// Capture the launcher's explicit administration grant, independently of model selection.
-#[cfg(not(test))]
 pub fn enable_provider_administration() {
-    install();
-    settings_core::enable_provider_administration();
+    LAUNCHER_PROVIDER_ADMIN.with(|slot| {
+        *slot.borrow_mut() =
+            ui::models::ProviderAdministration::from_launcher().unwrap_or_default();
+    });
 }
 
-/// The app as every host mounts it: Settings' shell, which the core crate
-/// defines over the resource it declares. A host calls [`install`] first:
-/// without it the core shell knows only Settings' own part, and its window
-/// holds no area.
-#[cfg(not(test))]
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    settings_core::definition()
+pub fn take_launcher_provider_admin() -> ui::models::ProviderAdministration {
+    LAUNCHER_PROVIDER_ADMIN.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
 }
+
+pub use settings_sections::accessibility as accessibility_settings;
+pub use settings_sections::shortcuts as shortcut_settings;
+pub mod accounts;
+pub mod area;
+pub mod categories;
+pub mod channel;
+pub mod resource;
+pub mod row;
+pub mod scenarios;
+pub use os_actions::codec_pack;
+pub use os_actions::windows_compat;
+pub mod continuity;
+pub mod device_read;
+pub mod effects;
+pub mod host;
+pub mod i18n;
+pub mod pages;
+pub mod pane_model;
+pub mod prefs;
+pub mod radios;
+pub mod search;
+pub mod secrets;
+pub mod setting;
+pub mod settings_app;
+#[cfg(test)]
+mod settings_write_tests;
+pub mod sidebar;
+#[cfg(test)]
+pub(crate) mod stall;
+pub mod watch;
+pub mod widgets;
+
+pub mod account_probe;
+pub mod device_fleet;
+pub mod dispatcher;
+pub(crate) mod input_sources;
+pub mod keyboard_preview;
+pub mod panes;
+pub mod speaker_setup;
+
+pub use settings_app::SettingsApp;
+
+pub use resource::{Settings, SettingsShell, parse_settings_uri};
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(SettingsShell)
+}
+
+#[cfg(test)]
+mod cpu_profile;
+#[cfg(test)]
+mod relayout_tests;
+#[cfg(test)]
+mod reveal_tests;
+#[cfg(test)]
+mod scroll_tests;
+#[cfg(test)]
+mod ui_thread_tests;

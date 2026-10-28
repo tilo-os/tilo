@@ -30,7 +30,7 @@ fn repo_root() -> PathBuf {
 /// Every apps/ directory that's a Cargo crate the workspace builds a binary
 /// for, i.e. every app. A crate there with no binary is a library of an app
 /// (an `apps/<name>-model` crate of its data, the parts an app loads from
-/// its engine library such as `settings-core`), not an app of its own; nor
+/// its engine library such as `browser-parts`), not an app of its own; nor
 /// is a runtime bundle's.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");

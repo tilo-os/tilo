@@ -5,9 +5,8 @@
 //! ([`SettingsApp`]) holds every area in [`Areas`] and reaches each through
 //! [`PaneArea`] alone: it polls them, starts their reads, offers their live
 //! rows and builds the pane that shows one. Which areas and panes there are
-//! is the panes' business (their [`Part`]s, brought together by [`install`]),
-//! so the window's code names none of them, and a pane that lives in a
-//! library of its own is just one more entry.
+//! is the panes' business (their [`Part`]s, brought together in
+//! [`registry`]), so the window's code names none of them.
 
 use std::any::{Any, TypeId};
 
@@ -241,25 +240,9 @@ impl Registry {
     }
 }
 
-static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
-
-/// Bring `parts` together as what Settings is made of, once per process: a
-/// second call keeps the first.
-pub fn install(parts: &[&'static Part]) {
-    let _ = REGISTRY.get_or_init(|| Registry::of(parts));
-}
-
-/// What Settings is made of: the parts [`install`]ed. Before any were, only
-/// Settings' own part (in this crate's tests, every part); asking before
-/// installing never keeps an [`install`] from taking effect.
+/// What Settings is made of: every part ([`crate::panes::PARTS`]).
 #[must_use]
 pub fn registry() -> &'static Registry {
-    static UNINSTALLED: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
-    #[cfg(test)]
-    let parts = crate::panes::PARTS;
-    #[cfg(not(test))]
-    let parts: &[&'static Part] = &[&crate::effects::PART];
-    REGISTRY
-        .get()
-        .unwrap_or_else(|| UNINSTALLED.get_or_init(|| Registry::of(parts)))
+    static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Registry::of(crate::panes::PARTS))
 }

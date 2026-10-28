@@ -45,6 +45,10 @@ pub mod test_env {
         _dir: tempfile::TempDir,
     }
 
+    #[expect(
+        clippy::new_without_default,
+        reason = "making one redirects the environment, which a default must not"
+    )]
     impl ConfigGuard {
         pub fn new() -> Self {
             let dir = tempfile::Builder::new()
@@ -68,6 +72,10 @@ pub mod test_env {
         dir: tempfile::TempDir,
     }
 
+    #[expect(
+        clippy::new_without_default,
+        reason = "making one creates a directory, which a default must not"
+    )]
     impl ScratchConfig {
         pub fn new() -> Self {
             Self {

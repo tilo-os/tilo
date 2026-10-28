@@ -16,12 +16,20 @@
 //!   populated, realistic sample so the surface reads as designed. Each
 //!   pane's docstring states which parts are live vs. sample.
 
+pub mod about;
 pub mod accessibility;
+pub mod accounts;
+pub mod agent_models;
+pub mod agent_sign_in;
+pub mod agent_vertex;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;
+pub mod device_mesh;
+pub mod disk_unlock;
 pub mod display;
 pub mod display_arrangement;
+pub mod drives;
 pub mod keyboard_shortcuts;
 pub mod mouse_keyboard;
 pub mod network;
@@ -29,13 +37,13 @@ pub mod notifications;
 pub mod permissions;
 pub mod personal_apps;
 pub mod power;
-
-// The panes people rarely open are `settings-rare`'s, loaded from the
-// Settings engine library; they are named here as panes of Settings too.
-pub use settings_rare::panes::{
-    about, accounts, agent_models, agent_vertex, device_mesh, disk_unlock, drives, printers,
-    region, speakers, storage, time_date, updates, users,
-};
+pub mod printers;
+pub mod region;
+pub mod speakers;
+pub mod storage;
+pub mod time_date;
+pub mod updates;
+pub mod users;
 
 pub use crate::pane_model as model;
 pub(crate) use crate::pane_model::{composed_pane, installed_programs_unreadable, pane_node};
@@ -43,7 +51,5 @@ pub(crate) use crate::pane_model::{composed_pane, installed_programs_unreadable,
 mod part;
 pub use part::PART;
 
-/// Every part of Settings: its own, the panes people open often, and the
-/// panes people rarely open.
-pub const PARTS: &[&crate::area::Part] =
-    &[&crate::effects::PART, &PART, &settings_rare::panes::PART];
+/// Every part of Settings: its own and the panes'.
+pub const PARTS: &[&crate::area::Part] = &[&crate::effects::PART, &PART];

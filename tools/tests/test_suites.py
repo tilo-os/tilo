@@ -368,7 +368,7 @@ class CargoReaderTests(unittest.TestCase):
             with self.subTest(fixture=fixture):
                 self.assertEqual(
                     suites.select_packages(manifest, [prefix + fixture]),
-                    ["settings", "settings-core", "settings-rare", "tilo-fs"],
+                    ["settings", "tilo-fs"],
                 )
         self.assertEqual(
             suites.select_packages(manifest, [prefix + "empty.svg"]), ["tilo-fs"])
