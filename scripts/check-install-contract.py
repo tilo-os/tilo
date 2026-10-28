@@ -52,9 +52,10 @@ assert any(
 )
 
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
+# The native lanes the fleet serves: the release and large ARM classes.
 for runner, architecture in (
-    ("imager-linux-x86_64", "x86_64"),
-    ("imager-linux-aarch64", "aarch64"),
+    ("runner-release", "x86_64"),
+    ("runner-large-arm64", "aarch64"),
 ):
     assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
     medium = f"tilo-installer-linux-{architecture}.img.zst"
@@ -168,7 +169,13 @@ for host in contract["imager"]["hosts"]:
             release_file = download["asset"].replace("{arch}", architecture)
             assert release_file in required_assets, f"{release_file} is not a release prerequisite"
             runner = "windows" if host["os"].startswith("Windows") else host["os"].lower()
-            assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
+            if runner == "linux":
+                # The Linux lanes come from the plan's native runner matrix,
+                # not a per-host label.
+                lane = {"x86_64": "runner-release", "aarch64": "runner-large-arm64"}[architecture]
+                assert f'"arch":"{architecture}","runner":"{lane}"' in imager_workflow, release_file
+            else:
+                assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
             arch_key = "X64" if architecture == "x86_64" else "Arm64"
             entry = download["pageKey"].replace("{archKey}", arch_key)
             assert entry not in declared_entries, f"{entry} is declared twice"
