@@ -1774,6 +1774,13 @@ impl WasmPeer {
         )
         .map_err(js_error)
     }
+    /// Send the reports of desktops mounted with this peer through the
+    /// page's peer `carrier` (its `id`), which is in the destination's room:
+    /// reports reach that room's channel from whichever room the page is in.
+    #[wasm_bindgen(js_name = sendFeedbackThrough)]
+    pub fn send_feedback_through(&self, carrier: u32) {
+        crate::feedback_code::send_through(self.id, carrier);
+    }
     #[wasm_bindgen(js_name = feedbackStatus)]
     pub fn feedback_status(&self) -> String {
         crate::feedback_code::status(self.id)
