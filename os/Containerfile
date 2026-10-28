@@ -3055,8 +3055,8 @@ FROM binaries AS rootfs
 ARG SOURCE_DATE_EPOCH=0
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
-# A greeter linked without LTO (local builds' default, os/dev/build-image.sh) is about a
-# quarter larger than a release's, so its initramfs budget is reported there, as each app's
+# A greeter linked without LTO (local builds' default, os/dev/build-image.sh) is over a
+# third larger than a release's, so its initramfs budget is reported there, as each app's
 # size budget is, and enforced only where the binaries are linked as releases are.
 ARG TILO_RUST_LTO=thin
 

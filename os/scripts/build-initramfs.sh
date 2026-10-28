@@ -81,9 +81,12 @@ grep -qx tilo-boot-face /usr/lib/tilo/initramfs-modules.txt || {
 # The greeter is the initramfs's largest part: its build, faces, keymaps,
 # voices and sound stack, measured by its module as it installs them. They
 # grow only on purpose: raise the budget with the change that needs it.
-# Measured at 64,188,287 bytes on x86_64 (aarch64's build is smaller), linked with thin
-# LTO. A greeter linked without it (TILO_GREETER_BUDGET=report, os/Containerfile) measures
-# about 80.8 MB: its size is reported, not held to the release's budget.
+# Measured at 64,188,287 bytes on x86_64 (aarch64's build is smaller) with the greeter
+# linked with fat LTO and one codegen unit; aborting on a panic (profile `initrd`,
+# Cargo.toml) took 6 MB more off its binary since. A greeter linked with the release
+# build's thin LTO and parallel codegen adds 76.7 MB, so os/image/compile.sh links it
+# as its profile says. One linked without LTO (TILO_GREETER_BUDGET=report,
+# os/Containerfile) adds about 80.8 MB: its size is reported, not held to the budget.
 greeter_budget=65000000
 greeter_bytes="$(sed -n 's/.*tilo-greeter: the greeter adds \([0-9]*\) bytes.*/\1/p' "$log")"
 [ -n "$greeter_bytes" ] || {
