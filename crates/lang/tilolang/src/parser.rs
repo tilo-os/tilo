@@ -1105,7 +1105,7 @@ impl<'a> Parser<'a> {
             None
         };
         let opts = self.action_opts()?;
-        let body = self.block()?;
+        let (requires, body) = self.action_body()?;
         Ok(ActionDecl {
             node,
             doc,
@@ -1115,6 +1115,7 @@ impl<'a> Parser<'a> {
             result,
             proposal,
             opts,
+            requires,
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
@@ -1212,8 +1213,45 @@ impl<'a> Parser<'a> {
 
     // ---- statements -----------------------------------------------------------------------
 
+    /// An action's body: the `require` lines heading it, then its statements.
+    fn action_body(&mut self) -> PResult<(Vec<crate::ast::Require>, Block)> {
+        let start = self.expect(&Tok::LBrace)?;
+        let mut requires = Vec::new();
+        loop {
+            self.skip_nl();
+            // `require` is a word of its own only where it heads a line of an action's body
+            // and a condition follows; elsewhere it is an ordinary name.
+            let heads = matches!(self.peek(), Tok::Ident(word) if word == "require")
+                && !matches!(
+                    self.peek_at(1),
+                    Tok::Assign | Tok::Dot | Tok::LParen | Tok::Newline | Tok::RBrace
+                );
+            if !heads {
+                break;
+            }
+            let at = self.span();
+            self.bump();
+            let cond = self.expr()?;
+            let reason = self.expr()?;
+            requires.push(crate::ast::Require {
+                cond,
+                span: at.to(reason.span),
+                reason,
+            });
+            if !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
+                return self.unexpected("a new line after the requirement's reason");
+            }
+        }
+        Ok((requires, self.block_after(start)?))
+    }
+
     fn block(&mut self) -> PResult<Block> {
         let start = self.expect(&Tok::LBrace)?;
+        self.block_after(start)
+    }
+
+    /// The rest of a block whose `{` is at `start`.
+    fn block_after(&mut self, start: Span) -> PResult<Block> {
         let mut stmts = Vec::new();
         loop {
             self.skip_nl();

@@ -261,6 +261,12 @@ chips show them (`host.Filter`).
 - An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
   the subject. The `else` branch is the static fallback:
   `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`.
+- `require <condition> "<reason>"` lines head an action's body: when the action is available
+  on its subject. Where it would be offered on the subject (`actions(r)`: `std`'s headers and
+  menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
+  refused with the reason before anything changes. A condition reads only the subject and is
+  pure, as the presentation is (it is checked in the action's presentation view):
+  `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
 - `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
   with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
   `Time(...)` read the same from text. `date(bind: t.due)` edits one. In an action, `now` is the

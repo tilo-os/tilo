@@ -1314,6 +1314,43 @@ mod cases {
     }
 
     #[test]
+    fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let list = w.create("TodoList");
+        let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
+        let labels = |v: &ViewInstance| -> Vec<String> {
+            of_kind(v.tree(), "ui.Button")
+                .iter()
+                .map(|button| text_prop(button, "label"))
+                .collect()
+        };
+        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "nothing is done, so the header offers no Clear done: {:?}",
+            labels(&v)
+        );
+        let refused =
+            w.rt.invoke_action(
+                &me(),
+                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+            )
+            .expect_err("clear_done is refused while nothing is done");
+        assert!(
+            refused.to_string().contains("Nothing is done yet"),
+            "{refused}"
+        );
+        w.call(&apps.todo, "check", vec![res(&item)]);
+        v.poll_patches().unwrap();
+        assert!(
+            labels(&v).contains(&"Clear done".to_owned()),
+            "once an item is done, Clear done is offered: {:?}",
+            labels(&v)
+        );
+    }
+
+    #[test]
     fn clearing_done_removes_only_the_finished_items() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
