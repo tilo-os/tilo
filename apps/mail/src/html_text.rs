@@ -7,6 +7,10 @@
 //! content to block and no way for a message to tell the sender it was read.
 //! Images show their alt text. Only web and mail addresses become links.
 
+use html5ever::tendril::TendrilSink as _;
+use html5ever::{Attribute, LocalName, ns};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
+
 /// A cap on the markup read; the rest of a larger message is not shown.
 const MAX_INPUT: usize = 2 * 1024 * 1024;
 /// How deep nested block quotes are marked.
@@ -36,11 +40,10 @@ impl Run {
     }
 }
 
-/// Elements whose content is text, not markup, and is never shown.
-const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title"];
-/// Other elements whose content is never shown.
+/// Elements whose content is never shown.
 const SKIPPED: &[&str] = &[
-    "head", "template", "noscript", "object", "iframe", "svg", "math", "select",
+    "head", "script", "style", "textarea", "title", "template", "noscript", "object", "iframe",
+    "svg", "math", "select",
 ];
 /// Elements that end the line they sit in, and begin a new one.
 const LINE: &[&str] = &[
@@ -84,12 +87,6 @@ const PARAGRAPH: &[&str] = &[
     "pre",
     "hr",
 ];
-/// Elements with no closing tag.
-const VOID: &[&str] = &[
-    "br", "hr", "img", "meta", "link", "input", "area", "base", "col", "embed", "source", "track",
-    "wbr",
-];
-
 struct Writer {
     runs: Vec<Run>,
     /// Newlines owed before the next text: 1 for a line, 2 for a paragraph.
@@ -257,81 +254,92 @@ impl Writer {
     }
 }
 
-/// `s` from byte `n`; empty past the end.
-fn after(s: &str, n: usize) -> &str {
-    s.get(n..).unwrap_or("")
+/// One step of the walk over the parsed document.
+enum Step {
+    Enter(Handle),
+    Close(LocalName),
 }
 
+/// The value of the attribute `name`, as the parser decoded it.
+fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.name.ns == ns!() && &*attribute.name.local == name)
+        .map(|attribute| &*attribute.value)
+}
+
+/// Whether the element is hidden: the `hidden` attribute, or a style that
+/// says `display: none` or `visibility: hidden`.
+fn hidden(attributes: &[Attribute]) -> bool {
+    attribute(attributes, "hidden").is_some()
+        || attribute(attributes, "style").is_some_and(|style| {
+            let style: String = style
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            style.contains("display:none") || style.contains("visibility:hidden")
+        })
+}
+
+/// `html` as styled text. The markup is parsed as an engine parses it
+/// (html5ever, the WHATWG algorithm), and the walk keeps its own stack, so
+/// no nesting depth can exhaust ours.
 #[must_use]
 pub fn render(html: &str) -> Vec<Run> {
     let mut end = html.len().min(MAX_INPUT);
     while !html.is_char_boundary(end) {
         end -= 1;
     }
-    let mut rest = html.get(..end).unwrap_or("");
+    let dom = html5ever::parse_document(RcDom::default(), html5ever::ParseOpts::default())
+        .one(html.get(..end).unwrap_or(""));
     let mut w = Writer::new();
-    // The element being skipped, and how deeply it is nested in itself.
-    let mut skipping: Option<(String, usize)> = None;
-    while !rest.is_empty() {
-        let Some(open) = rest.find('<') else {
-            if skipping.is_none() {
-                w.text(&decode(rest));
+    // The walk starts at the document's children and `dom` keeps the
+    // document: dropping a node's last handle empties its whole subtree.
+    let mut stack: Vec<Step> = dom
+        .document
+        .children
+        .borrow()
+        .iter()
+        .rev()
+        .cloned()
+        .map(Step::Enter)
+        .collect();
+    while let Some(step) = stack.pop() {
+        let node = match step {
+            Step::Enter(node) => node,
+            Step::Close(name) => {
+                close_tag(&mut w, &name);
+                continue;
             }
-            break;
         };
-        let (text, tail) = rest.split_at(open);
-        if !text.is_empty() && skipping.is_none() {
-            w.text(&decode(text));
-        }
-        rest = tail;
-        if let Some(comment) = rest.strip_prefix("<!--") {
-            rest = comment
-                .find("-->")
-                .map_or("", |end| after(comment, end + 3));
-            continue;
-        }
-        // `<` starts a tag only before a name, a slash or a declaration.
-        let tag_follows = rest
-            .chars()
-            .nth(1)
-            .is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
-        let close = if tag_follows { tag_end(rest) } else { None };
-        let Some(close) = close else {
-            if skipping.is_none() {
-                w.text("<");
+        match &node.data {
+            NodeData::Document => {}
+            NodeData::Text { contents } => {
+                w.text(&contents.borrow());
+                continue;
             }
-            rest = after(rest, 1);
-            continue;
-        };
-        let inner = rest.get(1..close).unwrap_or("");
-        rest = after(rest, close + 1);
-        let Some(tag) = Tag::parse(inner) else {
-            continue;
-        };
-        if let Some((name, depth)) = skipping.as_mut() {
-            if tag.name == *name && !VOID.contains(&tag.name.as_str()) {
-                if tag.closing {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        skipping = None;
-                    }
-                } else {
-                    *depth += 1;
+            NodeData::Element { name, attrs, .. } => {
+                let attrs = attrs.borrow();
+                // SVG and MathML are never shown, and go with their roots.
+                if name.ns != ns!(html) || SKIPPED.contains(&&*name.local) || hidden(&attrs) {
+                    continue;
                 }
+                open_tag(&mut w, &name.local, &attrs);
+                stack.push(Step::Close(name.local.clone()));
             }
-            continue;
+            NodeData::Doctype { .. }
+            | NodeData::Comment { .. }
+            | NodeData::ProcessingInstruction { .. } => continue,
         }
-        if tag.closing {
-            close_tag(&mut w, &tag.name);
-        } else if RAW_TEXT.contains(&tag.name.as_str()) {
-            rest = after_raw_text(rest, &tag.name);
-        } else if SKIPPED.contains(&tag.name.as_str()) || tag.hidden {
-            if !VOID.contains(&tag.name.as_str()) {
-                skipping = Some((tag.name, 1));
-            }
-        } else {
-            open_tag(&mut w, &tag);
-        }
+        stack.extend(
+            node.children
+                .borrow()
+                .iter()
+                .rev()
+                .cloned()
+                .map(Step::Enter),
+        );
     }
     // No trailing space or lines.
     while let Some(last) = w.runs.last_mut() {
@@ -346,129 +354,7 @@ pub fn render(html: &str) -> Vec<Run> {
     w.runs
 }
 
-/// Where the tag that opens `s` (which starts with `<`) ends, past any `>`
-/// inside a quoted attribute.
-fn tag_end(s: &str) -> Option<usize> {
-    let mut quote = None;
-    for (i, c) in s.char_indices().skip(1) {
-        match (quote, c) {
-            (None, '"' | '\'') => quote = Some(c),
-            (Some(q), c) if c == q => quote = None,
-            (None, '>') => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// `rest` past the end tag of the raw-text element `name` (a script or a
-/// style, whose content is not markup), whatever its case.
-fn after_raw_text<'a>(rest: &'a str, name: &str) -> &'a str {
-    let needle = format!("</{name}");
-    let bytes = rest.as_bytes();
-    let found = bytes
-        .windows(needle.len())
-        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
-    match found {
-        Some(at) => {
-            let tail = after(rest, at);
-            tail.find('>').map_or("", |end| after(tail, end + 1))
-        }
-        None => "",
-    }
-}
-
-struct Tag {
-    name: String,
-    closing: bool,
-    attrs: Vec<(String, String)>,
-    hidden: bool,
-}
-
-impl Tag {
-    fn parse(inner: &str) -> Option<Self> {
-        let inner = inner.trim();
-        let (closing, inner) = inner
-            .strip_prefix('/')
-            .map_or((false, inner), |rest| (true, rest));
-        let inner = inner.trim_end_matches('/');
-        let name_end = inner
-            .find(|c: char| c.is_whitespace() || c == '/')
-            .unwrap_or(inner.len());
-        let (name, attributes) = inner.split_at(name_end);
-        let name = name.to_ascii_lowercase();
-        if !name.chars().next()?.is_ascii_alphabetic() {
-            return None;
-        }
-        let attrs = if closing {
-            Vec::new()
-        } else {
-            attributes_of(attributes)
-        };
-        let hidden = attrs.iter().any(|(key, value)| {
-            key == "hidden"
-                || (key == "style" && {
-                    let style: String = value
-                        .chars()
-                        .filter(|c| !c.is_whitespace())
-                        .collect::<String>()
-                        .to_ascii_lowercase();
-                    style.contains("display:none") || style.contains("visibility:hidden")
-                })
-        });
-        Some(Self {
-            name,
-            closing,
-            attrs,
-            hidden,
-        })
-    }
-
-    fn attr(&self, key: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
-    }
-}
-
-fn attributes_of(mut s: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    loop {
-        s = s.trim_start();
-        let Some(key_end) = s.find(|c: char| c == '=' || c.is_whitespace()) else {
-            if !s.is_empty() {
-                out.push((s.to_ascii_lowercase(), String::new()));
-            }
-            return out;
-        };
-        let (key, tail) = s.split_at(key_end);
-        let key = key.to_ascii_lowercase();
-        s = tail.trim_start();
-        let Some(value_start) = s.strip_prefix('=') else {
-            out.push((key, String::new()));
-            continue;
-        };
-        s = value_start.trim_start();
-        let value;
-        if let Some(quote) = s.chars().next().filter(|c| matches!(c, '"' | '\'')) {
-            let body = after(s, 1);
-            let end = body.find(quote).unwrap_or(body.len());
-            let (text, tail) = body.split_at(end);
-            value = text.to_owned();
-            s = after(tail, 1);
-        } else {
-            let end = s.find(char::is_whitespace).unwrap_or(s.len());
-            let (text, tail) = s.split_at(end);
-            value = text.to_owned();
-            s = tail;
-        }
-        out.push((key, decode(&value)));
-    }
-}
-
-fn open_tag(w: &mut Writer, tag: &Tag) {
-    let name = tag.name.as_str();
+fn open_tag(w: &mut Writer, name: &str, attributes: &[Attribute]) {
     if PARAGRAPH.contains(&name) {
         w.owe(2);
     } else if LINE.contains(&name) {
@@ -502,9 +388,14 @@ fn open_tag(w: &mut Writer, tag: &Tag) {
                 w.at_space = true;
             }
         }
-        "a" => w.link.push(tag.attr("href").and_then(safe_link)),
+        "a" => w
+            .link
+            .push(attribute(attributes, "href").and_then(safe_link)),
         "img" => {
-            if let Some(alt) = tag.attr("alt").map(str::trim).filter(|alt| !alt.is_empty()) {
+            if let Some(alt) = attribute(attributes, "alt")
+                .map(str::trim)
+                .filter(|alt| !alt.is_empty())
+            {
                 w.text(alt);
             }
         }
@@ -545,69 +436,6 @@ fn safe_link(href: &str) -> Option<String> {
         .iter()
         .any(|scheme| lower.starts_with(scheme))
         .then(|| href.to_owned())
-}
-
-/// `text` with its character references replaced.
-fn decode(text: &str) -> String {
-    if !text.contains('&') {
-        return text.to_owned();
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(amp) = rest.find('&') {
-        let (before, tail) = rest.split_at(amp);
-        out.push_str(before);
-        let reference = after(tail, 1)
-            .split_once(';')
-            .map(|(name, _)| name)
-            .filter(|name| name.len() <= 10);
-        if let Some((name, c)) = reference.and_then(|name| entity(name).map(|c| (name, c))) {
-            out.push(c);
-            rest = after(tail, name.len() + 2);
-        } else {
-            out.push('&');
-            rest = after(tail, 1);
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn entity(name: &str) -> Option<char> {
-    if let Some(number) = name.strip_prefix('#') {
-        let code = match number.strip_prefix(['x', 'X']) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-            None => number.parse().ok()?,
-        };
-        return char::from_u32(code).filter(|c| *c != '\0');
-    }
-    Some(match name {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => '\u{a0}',
-        "copy" => '©',
-        "reg" => '®',
-        "trade" => '™',
-        "hellip" => '…',
-        "ndash" => '–',
-        "mdash" => '—',
-        "lsquo" => '‘',
-        "rsquo" => '’',
-        "ldquo" => '“',
-        "rdquo" => '”',
-        "bull" => '•',
-        "middot" => '·',
-        "euro" => '€',
-        "pound" => '£',
-        "laquo" => '«',
-        "raquo" => '»',
-        "times" => '×',
-        "deg" => '°',
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
@@ -697,7 +525,55 @@ mod tests {
     fn hostile_markup_ends() {
         let nested = "<div>".repeat(50_000) + "x";
         assert_eq!(text(&nested), "x");
-        assert_eq!(text("<a href=\"x"), "<a href=\"x");
+        // A tag the input ends inside is dropped, as an engine drops it.
+        assert_eq!(text("before<a href=\"x"), "before");
         assert_eq!(text("<div style=\"display:none\">never closed"), "");
+        assert_eq!(text("a<!-- never closed <b>b</b>"), "a");
+        assert_eq!(text("a<script>never closed</p>b"), "a");
+    }
+
+    #[test]
+    fn markup_is_read_as_an_engine_reads_it() {
+        // Comments, CDATA outside foreign content, and processing
+        // instructions are never text.
+        assert_eq!(
+            text("a<!-- <p>hidden</p> -->b<!--><p>c</p>-->"),
+            "ab\n\nc\n\n-->"
+        );
+        assert_eq!(text("a<![CDATA[<b>x</b>]]>b"), "ax]]>b");
+        assert_eq!(text("a<?php echo 1 ?>b"), "ab");
+        // Script content ends at its end tag only, never inside a string.
+        assert_eq!(
+            text("<script>var s = \"<p>no</p>\";</script><p>yes</p>"),
+            "yes"
+        );
+        // A tag name with a `<` in it is an unknown element, its text kept.
+        assert_eq!(
+            text("<scr<script>ipt>alert(1)</script>ok"),
+            "ipt>alert(1)ok"
+        );
+        // Handlers and other attributes never show.
+        assert_eq!(text("<p onclick=\"alert(1)\" title=\"t\">x</p>"), "x");
+        // Misnested styles end where the engine ends them.
+        let runs = render("<b>bold <i>both</b> slanted</i> plain");
+        assert!(runs.iter().any(|r| r.text == "both" && r.bold && r.italic));
+        assert!(
+            runs.iter()
+                .any(|r| r.text == " slanted" && !r.bold && r.italic)
+        );
+        assert!(
+            runs.iter()
+                .any(|r| r.text == " plain" && !r.bold && !r.italic)
+        );
+        // SVG and MathML show nothing, whatever they hold.
+        assert_eq!(
+            text("<svg><text>s</text></svg><math><mi>m</mi></math>x"),
+            "x"
+        );
+        // Character references are the engine's whole table.
+        assert_eq!(
+            text("&hearts;&notin;&#x1F600;"),
+            "\u{2665}\u{2209}\u{1F600}"
+        );
     }
 }

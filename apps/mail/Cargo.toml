@@ -60,6 +60,11 @@ taffy.workspace = true
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
+# HTML mail is parsed as an engine parses it (the WHATWG algorithm), for the
+# sealed document the reader's web engine shows and for the styled text it
+# shows without one.
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
 # The base64 encodings XOAUTH2 and the sandboxed HTML data: URL use.
 base64.workspace = true
 # Tilo's one OAuth client registration per provider (with Gmail's and
