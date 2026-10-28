@@ -51,6 +51,16 @@ class ExpectedFailure(CheckFailed):
     that merely went wrong: that stays a failure."""
 
 
+class BudgetExceeded(CheckFailed):
+    """The subject worked, and a measurement of it went over its budget: time, CPU, frames,
+    memory. A run that gates on budgets (`--budgets gate`, the default) fails it like any
+    other failure; one that reports them (`--budgets report`) records it as `over-budget`,
+    which does not fail the run. Release candidates are verified on t's shared, GPU-less
+    workers, whose timings say more about the worker than about the commit: there the
+    budgets are reported until they run on dedicated or GPU runners. Raise it through
+    `judge`, never for a subject that did not work."""
+
+
 @dataclass
 class Result:
     id: str
@@ -162,6 +172,9 @@ def run_check(ctx, chk: Check) -> Result:
         res.status, res.detail = "skip", _join(res.detail, f"skipped: {exc}")
     except Unobservable as exc:
         res.status, res.unobservable, res.detail = "fail", True, _join(res.detail, str(exc))
+    except BudgetExceeded as exc:
+        reported = ctx.config.get("budget_mode") == "report"
+        res.status, res.detail = ("over-budget" if reported else "fail"), _join(res.detail, str(exc))
     except CheckFailed as exc:
         res.status, res.detail = "fail", _join(res.detail, str(exc))
     except Exception as exc:  # noqa: BLE001 - any error is a failed check, with its trace
@@ -495,6 +508,15 @@ def _join(a: str, b: str) -> str:
 def expect(cond, message: str):
     if not cond:
         raise CheckFailed(message)
+
+
+def judge(problems: list[str], over: list[str], suffix: str = "") -> None:
+    """End a check that measures against budgets: `problems` (what did not work) fail it,
+    naming what went `over` budget beside them; budgets alone raise `BudgetExceeded`."""
+    if problems:
+        raise CheckFailed("; ".join(problems + over) + suffix)
+    if over:
+        raise BudgetExceeded("; ".join(over) + suffix)
 
 
 # -- facts off a state dump ----------------------------------------------------
