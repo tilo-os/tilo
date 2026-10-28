@@ -14,105 +14,11 @@ use collab_types::ArtifactKind;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::HistoryEntryId;
-
-/// Not crypto material — just enough metadata to render a per-author
-/// colour dot, display name, and a short identity hash for
-/// disambiguation when two authors share a name.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HistoryAuthor {
-    pub name: String,
-    /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
-    /// reads hue; paint uses [`HistoryAuthor::rgb`].
-    pub avatar_hue: f32,
-    /// Short hex fragment of the identity pubkey; the producer decides
-    /// the length, the widget treats it as an opaque label.
-    pub identity_short: String,
-    /// The colour presence paints this identity in. Defaults to
-    /// [`hue_to_rgb`] of [`Self::avatar_hue`] so existing constructors
-    /// keep their look; [`Self::with_rgb`] and identity resolution set
-    /// the person's colour or the shared [`crate::presence::PEER_PALETTE`]
-    /// slot.
-    avatar_rgb: (u8, u8, u8),
-    /// Who the author is to whoever reads the history: themselves, another
-    /// person, or software acting for someone.
-    pub relation: AuthorRelation,
-    /// Who acted and for whom, when the author is an agent, a Shortcut or an
-    /// app acting for a person: the same facts [`Self::name`] reads as a
-    /// sentence, kept as data for the action surface and assistive tech.
-    pub attribution: Option<HistoryAttribution>,
-}
-
-/// An author that acted for someone: an agent's change is the agent's, on
-/// behalf of its person, in every history (an app's, the Files history, and
-/// what the history actions return).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryAttribution {
-    /// The acting principal as it was authenticated (`agent:scribe`).
-    pub actor: String,
-    /// What the actor is.
-    pub kind: tilo_actions::ActorKind,
-    /// The actor's display name, without the person it acted for.
-    pub actor_name: String,
-    /// The principal of the person it acted for, when it acted for one.
-    pub on_behalf_of: Option<String>,
-    /// That person's display name.
-    pub on_behalf_of_name: Option<String>,
-}
-
-/// Who an author is to the person reading the history. Rows draw the
-/// reader's own changes, a collaborator's and an agent's differently.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AuthorRelation {
-    /// The reader's own change.
-    Reader,
-    /// Another person's.
-    #[default]
-    Person,
-    /// An agent's, a Shortcut's or an app's, acting for someone.
-    Software,
-}
-
-impl HistoryAuthor {
-    pub fn new(
-        name: impl Into<String>,
-        avatar_hue: f32,
-        identity_short: impl Into<String>,
-    ) -> Self {
-        let avatar_hue = avatar_hue.rem_euclid(360.0);
-        Self {
-            name: name.into(),
-            avatar_hue,
-            identity_short: identity_short.into(),
-            avatar_rgb: hue_to_rgb(avatar_hue),
-            relation: AuthorRelation::Person,
-            attribution: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_relation(mut self, relation: AuthorRelation) -> Self {
-        self.relation = relation;
-        self
-    }
-
-    /// Record who acted and for whom.
-    #[must_use]
-    pub fn with_attribution(mut self, attribution: HistoryAttribution) -> Self {
-        self.attribution = Some(attribution);
-        self
-    }
-
-    /// Use this exact RGB for the avatar, cursor and history row.
-    #[must_use]
-    pub fn with_rgb(mut self, rgb: (u8, u8, u8)) -> Self {
-        self.avatar_rgb = rgb;
-        self
-    }
-
-    pub fn rgb(&self) -> (u8, u8, u8) {
-        self.avatar_rgb
-    }
-}
+/// Who wrote a change, as history names them: data the collab client
+/// resolves below the toolkit.
+pub use collaboration::history_source::authors::{
+    AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
+};
 
 /// Optional on [`HistoryEntry`] — when present, the widget renders the
 /// row with the struck-through summary, suppresses the `[Revert]` chip,
@@ -488,49 +394,6 @@ pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
     }
     let secs = now.duration_since(ts).unwrap_or_default().as_secs();
     crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
-}
-
-/// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`
-/// makes the truncation and sign-loss the lint warns about impossible —
-/// clippy just can't see through it.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "clamped to [0.0, 255.0] immediately above, so this can only \
-              produce a value in u8's range"
-)]
-fn channel_u8(unit: f32) -> u8 {
-    (unit * 255.0).round().clamp(0.0, 255.0) as u8
-}
-
-/// `HSV(h, 0.65, 0.95)` → RGB. Saturation and value held constant so
-/// generated author colours stay visually coherent (no neon outliers,
-/// no muddy ones).
-pub fn hue_to_rgb(hue_deg: f32) -> (u8, u8, u8) {
-    let sector = hue_deg.rem_euclid(360.0) / 60.0;
-    let sat = 0.65_f32;
-    let val = 0.95_f32;
-    let chroma = val * sat;
-    let x2 = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
-    let min_add = val - chroma;
-    let (red, green, blue) = if sector < 1.0 {
-        (chroma, x2, 0.0)
-    } else if sector < 2.0 {
-        (x2, chroma, 0.0)
-    } else if sector < 3.0 {
-        (0.0, chroma, x2)
-    } else if sector < 4.0 {
-        (0.0, x2, chroma)
-    } else if sector < 5.0 {
-        (x2, 0.0, chroma)
-    } else {
-        (chroma, 0.0, x2)
-    };
-    (
-        channel_u8(red + min_add),
-        channel_u8(green + min_add),
-        channel_u8(blue + min_add),
-    )
 }
 
 #[cfg(test)]
