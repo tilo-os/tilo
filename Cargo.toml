@@ -1263,7 +1263,7 @@ codegen-units = 256
 # LTO and one codegen unit: with the image compile's thin LTO and 8 units its
 # binary is 66.2 MB on x86_64, with these 54.2 MB. A panic aborts, which leaves
 # out the unwind tables and landing pads: 48.2 MB. A greeter that exits ends
-# its link, and tilo-boot-signin asks through Plymouth or the console instead.
+# its link, and tilo-boot-signin asks on the console instead.
 [profile.initrd]
 inherits = "release"
 lto = "fat"

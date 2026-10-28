@@ -7,10 +7,10 @@
 
 pub mod auth;
 pub mod flow;
-pub mod glyphs;
 pub mod greeter;
 pub mod link;
 pub mod people;
+pub mod plymouth;
 pub mod relay;
 pub mod screen;
 pub mod unlock_prompt;
