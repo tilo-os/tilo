@@ -598,4 +598,106 @@ mod tests {
         assert!(host.put_content("../escape", b"anything").is_err());
         assert!(host.content("../escape", &address).is_none());
     }
+
+    /// The content addresses kept under `dir`, each with what it holds: a
+    /// store names an item's file after its hash, in a shard directory of
+    /// its own, beside the lock and generation files it keeps to write
+    /// safely.
+    fn contents(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut found = BTreeMap::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    pending.push(path);
+                } else if let (Some(name), Ok(bytes)) = (
+                    entry.file_name().to_str().map(str::to_owned),
+                    std::fs::read(&path),
+                ) && tilo_content::valid_hash(&name)
+                {
+                    found.insert(name, bytes);
+                }
+            }
+        }
+        found
+    }
+
+    /// Every file of `dir` that is not content, relative to it: what a
+    /// person would read as a note, a log or a record.
+    fn documents(dir: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let named = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy();
+                if !named.contains("content/")
+                    && !entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(tilo_content::valid_hash)
+                {
+                    found.push(named.into_owned());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// An agent whose work is done leaves nothing in the host's state
+    /// directory but its credentials and the room's content: no notes, no
+    /// facts, nothing read off a record. What it learned, it wrote where a
+    /// person would, in the room's records, which the state directory does
+    /// not hold (docs/architecture/agent-memory.md).
+    #[test]
+    fn the_host_keeps_credentials_and_content_and_nothing_learned() {
+        let state = tempfile::tempdir().unwrap();
+        let host = agent_host(state.path());
+        host.put_content(ROOM, b"a picture's bytes").unwrap();
+        // A grant survives a restart, which is the state file's whole job.
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let expires_at = tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000);
+        host.supervisor()
+            .add_grant(crate::control::tests::identity_until(&root, expires_at));
+        host.flush();
+
+        // The credential file, and the one content address the room
+        // holds: no file of any other kind anywhere under it.
+        let kept = contents(&state.path().join(CONTENT_DIR));
+        let address = tilo_content::hash_bytes(b"a picture's bytes");
+        assert_eq!(
+            kept.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![address.as_str()],
+        );
+        assert_eq!(documents(state.path()), vec!["agents.json"]);
+        // The state file is the credentials and the grants, nothing about
+        // the person or the work.
+        let text = std::fs::read(state.path().join("agents.json")).unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&text).unwrap();
+        assert_eq!(written["grants"].as_array().map(Vec::len), Some(1));
+        let mut fields: Vec<&str> = written
+            .as_object()
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        fields.sort_unstable();
+        assert_eq!(fields, vec!["agents", "grants"]);
+    }
 }
