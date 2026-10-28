@@ -105,3 +105,49 @@ fn approving_one_suggestion_twice_on_one_replica_queues_it_once() {
     ada.commit();
     assert_eq!(sink.delivered().len(), 1);
 }
+
+/// What committing the action queued under `ticket` through the host's resource needs of a
+/// room, and what the commit is offered as.
+fn commit_need(
+    replica: &Replica,
+    ticket: u64,
+) -> (tilo_actions::ActionKind, tilo_actions::ActionKind) {
+    let committer: std::sync::Arc<dyn tilolang_tilo::publish::Committer> =
+        std::sync::Arc::new(replica.host.handle());
+    let host = tilolang_tilo::publish::host_resource(&committer);
+    let commit = host
+        .actions
+        .iter()
+        .find(|action| action.id == tilolang_tilo::publish::COMMIT)
+        .unwrap();
+    let arguments = serde_json::json!({ "ticket": ticket });
+    (
+        commit.contract.kind,
+        commit.need_for(arguments.as_object(), None).kind,
+    )
+}
+
+#[test]
+fn a_commit_needs_what_the_action_it_carries_is() {
+    use tilo_actions::ActionKind::{Outside, Undoable};
+    let (ada, invocation) = suggested_room();
+    // Creating the root is a change of the record. The host offers its commit as one, which a
+    // room whose grants let the app author the record allows.
+    let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
+    fresh.host.root_of("so.tilo.lang.letters").unwrap();
+    let created = fresh.host.take_committed();
+    assert_eq!(created.len(), 1);
+    assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
+    // Approving the send queues the letter: committing that reaches outside the record.
+    ada.host
+        .runtime()
+        .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+        .unwrap();
+    let approved = ada.host.take_committed();
+    assert!(
+        approved
+            .iter()
+            .any(|committed| commit_need(&ada, committed.ticket) == (Undoable, Outside)),
+        "{approved:?}"
+    );
+}
