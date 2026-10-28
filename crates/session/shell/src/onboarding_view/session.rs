@@ -29,7 +29,7 @@ impl SessionPaths {
             .filter(|value| !value.is_empty())
             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
         Self {
-            home: crate::onboarding_prepared::session_home(),
+            home: crate::onboarding::session_home(),
             user: std::env::var_os("USER").filter(|value| !value.is_empty()),
             identity: Some(SystemIdentity {
                 root,

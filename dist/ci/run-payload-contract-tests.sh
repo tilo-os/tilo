@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercise format-independent installed-layout verifiers without compiling Tilo.
 set -euo pipefail
+# Most steps here are silent greps and tests: name the one that failed, or a red run says nothing.
+trap 'status=$?; [[ $- != *e* ]] || echo "run-payload-contract-tests.sh:$LINENO: \`$BASH_COMMAND\` failed with exit status $status" >&2' ERR
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)

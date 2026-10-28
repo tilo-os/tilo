@@ -48,7 +48,7 @@ fn tab_package(tree: &WorkspaceTree, tab: &Tab) -> Option<String> {
             ..
         }
     )
-    .then(|| ush::host::TERMINAL_APP_ID.to_owned())
+    .then(|| crate::shell::host_shell_allow::TERMINAL_APP_ID.to_owned())
 }
 
 /// `tab`, with its app and its workspace's room.

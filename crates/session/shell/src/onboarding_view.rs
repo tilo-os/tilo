@@ -17,7 +17,10 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+#[cfg(target_os = "linux")]
 mod prepared;
+#[cfg(not(target_os = "linux"))]
+mod prepared_elsewhere;
 mod recovery_key;
 mod semantic;
 mod session;
@@ -718,9 +721,13 @@ pub struct OnboardingView {
     portable_home: Option<crate::onboarding_portable_home::Pending>,
     portable_applications: Option<crate::onboarding_portable_applications::Pending>,
     browser: Option<crate::onboarding_browser::Pending>,
+    #[cfg(target_os = "linux")]
     prepared_secret_queued: bool,
+    #[cfg(target_os = "linux")]
     prepared_worker: Option<crate::onboarding_prepared::Worker>,
+    #[cfg(target_os = "linux")]
     prepared_home_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
+    #[cfg(target_os = "linux")]
     prepared_review: Option<crate::onboarding_prepared::Pending>,
     #[cfg(target_os = "linux")]
     peer: Option<crate::onboarding_peer::Peer>,
@@ -995,6 +1002,7 @@ impl OnboardingView {
             view.flow.begin_existing();
         }
         view.load_prepared_setup(&identity_dir);
+        #[cfg(target_os = "linux")]
         if context == OnboardingContext::FullSystem {
             view.migration = view
                 .session
@@ -1093,9 +1101,13 @@ impl OnboardingView {
             portable_home: None,
             portable_applications: None,
             browser: None,
+            #[cfg(target_os = "linux")]
             prepared_secret_queued: false,
+            #[cfg(target_os = "linux")]
             prepared_worker: None,
+            #[cfg(target_os = "linux")]
             prepared_home_password: None,
+            #[cfg(target_os = "linux")]
             prepared_review: None,
             #[cfg(target_os = "linux")]
             peer: None,
@@ -2490,7 +2502,7 @@ impl OnboardingView {
                         KEY_PREPARED_IMPORT,
                     )
                     .role(ui::widget::ButtonRole::Primary)
-                    .with_enabled(self.prepared_worker.is_none()),
+                    .with_enabled(!self.prepared_working()),
             )]);
         }
         match self.flow.screen() {
@@ -3020,9 +3032,12 @@ impl OnboardingView {
                 theme,
             ));
         }
-        if self.prepared_worker.is_some() {
+        if self.prepared_working() {
             body = body.push(paragraph(&t("onboarding-prepared-working"), theme));
-        } else if let Some(peer) = &self.peer {
+            return Box::new(body);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(peer) = &self.peer {
             // The package arrives over the peer transport, so there is no
             // password to type. Show the same code the preparing computer
             // shows; a person compares them before approving this computer
@@ -3036,14 +3051,14 @@ impl OnboardingView {
             } else {
                 body = body.push(paragraph(&t("onboarding-prepared-peer-waiting"), theme));
             }
-        } else {
-            body = body.push(Box::new(secret_input(
-                "onboarding.prepared.password",
-                &self.connect_passphrase,
-                &t("onboarding-prepared-password"),
-                &t("onboarding-prepared-password"),
-            )));
+            return Box::new(body);
         }
+        body = body.push(Box::new(secret_input(
+            "onboarding.prepared.password",
+            &self.connect_passphrase,
+            &t("onboarding-prepared-password"),
+            &t("onboarding-prepared-password"),
+        )));
         Box::new(body)
     }
 
@@ -5242,7 +5257,7 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and nearby pairing reports through its child and a status file;
         // nothing wakes the compositor for them, so look while they run.
-        let polling = self.prepared_worker.is_some()
+        let polling = self.prepared_working()
             || self
                 .migration
                 .as_ref()

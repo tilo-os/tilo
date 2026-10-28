@@ -291,6 +291,74 @@ assert "amd64_runner=runner-large" in session_workflow
 assert "arm64_runner=runner-large-arm64" in session_workflow
 assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
 assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
+
+# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# page may still describe them as switched off or name a pool the workflow does
+# not ask for, and none may turn an enabled lane into a supported public
+# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
+# that names the release lane says a tag or `full_native` is what selects it.
+for desktop in contract["desktopSession"]:
+    assert any(
+        arch in desktop["plannedArchitectures"]
+        for arch in ("arm64", "aarch64", "aarch64-linux")
+    ), desktop["distribution"]
+getting_started = (ROOT / "docs/getting-started.md").read_text()
+release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
+packaging_flat = packaging_docs.replace("\n", " ")
+release_flat = release_pipeline.replace("\n", " ")
+for name, page in (
+    ("docs/getting-started.md", getting_started),
+    ("docs/packaging.md", packaging_docs),
+    ("docs/release-pipeline.md", release_pipeline),
+):
+    assert "when enabled" not in page, name
+    assert "not release-gated" not in page, name
+assert "releases build and install-test ARM64" in getting_started
+assert "x86-64 currently" in getting_started
+assert "not a qualified public platform yet" in getting_started
+assert "workflow fact, not a support claim" in getting_started
+assert "`arm64` in tagged and full-native builds" in packaging_docs
+assert "`aarch64` in tagged and full-native builds" in packaging_docs
+assert "runner-large-arm64" in packaging_docs
+assert "runner-arm64" not in packaging_docs
+assert "not a release qualification" in packaging_docs
+assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
+assert "native `runner-large-arm64` package lanes" in release_flat
+assert "still marks ARM64 desktop sessions as" in release_pipeline
+
+# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# page may still describe them as switched off or name a pool the workflow does
+# not ask for, and none may turn an enabled lane into a supported public
+# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
+# that names the release lane says a tag or `full_native` is what selects it.
+for desktop in contract["desktopSession"]:
+    assert any(
+        arch in desktop["plannedArchitectures"]
+        for arch in ("arm64", "aarch64", "aarch64-linux")
+    ), desktop["distribution"]
+getting_started = (ROOT / "docs/getting-started.md").read_text()
+release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
+packaging_flat = packaging_docs.replace("\n", " ")
+release_flat = release_pipeline.replace("\n", " ")
+for name, page in (
+    ("docs/getting-started.md", getting_started),
+    ("docs/packaging.md", packaging_docs),
+    ("docs/release-pipeline.md", release_pipeline),
+):
+    assert "when enabled" not in page, name
+    assert "not release-gated" not in page, name
+assert "releases build and install-test ARM64" in getting_started
+assert "x86-64 currently" in getting_started
+assert "not a qualified public platform yet" in getting_started
+assert "workflow fact, not a support claim" in getting_started
+assert "`arm64` in tagged and full-native builds" in packaging_docs
+assert "`aarch64` in tagged and full-native builds" in packaging_docs
+assert "runner-large-arm64" in packaging_docs
+assert "runner-arm64" not in packaging_docs
+assert "not a release qualification" in packaging_docs
+assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
+assert "native `runner-large-arm64` package lanes" in release_flat
+assert "still marks ARM64 desktop sessions as" in release_pipeline
 package_targets = (ROOT / "dist/ci/package-targets.txt").read_text()
 assert "amd64|arch|docker.io/menci/archlinuxarm@sha256:" in package_targets
 assert "arm64|arch|docker.io/gomasy/archlinuxarm@sha256:" in package_targets

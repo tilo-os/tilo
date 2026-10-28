@@ -36,6 +36,8 @@ pub mod notifications;
 pub mod onboarding;
 #[cfg(target_os = "linux")]
 mod onboarding_browser;
+#[cfg(not(target_os = "linux"))]
+mod onboarding_elsewhere;
 #[cfg(target_os = "linux")]
 mod onboarding_migration;
 mod onboarding_nearby;
@@ -47,6 +49,12 @@ mod onboarding_portable_applications;
 mod onboarding_portable_home;
 #[cfg(target_os = "linux")]
 mod onboarding_prepared;
+#[cfg(not(target_os = "linux"))]
+use onboarding_elsewhere::{
+    browser as onboarding_browser, migration as onboarding_migration,
+    portable_applications as onboarding_portable_applications,
+    portable_home as onboarding_portable_home, retained_files,
+};
 pub mod onboarding_view;
 pub mod polkit_agent;
 pub mod portal;

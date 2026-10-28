@@ -2069,11 +2069,23 @@ fn attach_browser_continuity(package_id: &str, command: &mut LaunchCommand) {
     }
     let projection = lock(&BROWSER_CONTINUITY).clone();
     if let Some(path) = projection
-        && crate::onboarding_browser::validate_published_projection(&path)
+        && published_projection(&path)
     {
         command.args.push("--browser-continuity".into());
         command.args.push(path.display().to_string());
     }
+}
+
+/// Whether `path` is a browser projection the first-use helper published. It
+/// publishes them on Linux, from the browsers of the system Tilo replaced.
+#[cfg(target_os = "linux")]
+fn published_projection(path: &Path) -> bool {
+    crate::onboarding_browser::validate_published_projection(path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn published_projection(_path: &Path) -> bool {
+    false
 }
 
 fn attach_retained_files(
