@@ -340,9 +340,9 @@ inputs = ["**"]
 
 [[step]]
 name = "media-stack"
-label = "GStreamer is the only media stack"
+label = "No shipped image carries Cisco's OpenH264"
 run = "python3 tools/policy/check_media_stack.py"
-inputs = ["Cargo.lock", "**/Cargo.toml", "**/Containerfile", "**/Containerfile.*", "**/Dockerfile", "**/Dockerfile.*",
+inputs = ["**/Containerfile", "**/Containerfile.*", "**/Dockerfile", "**/Dockerfile.*",
           "os/**", "dist/ci/install-build-deps.sh", "dist/dev/Containerfile.fedora44"]
 pre_push = true
 

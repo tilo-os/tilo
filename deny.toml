@@ -128,6 +128,13 @@ deny = [
     { crate = "opentelemetry-http", reason = "exports spans and metrics off the device" },
     { crate = "opentelemetry-datadog", reason = "exports spans and metrics off the device" },
     { crate = "opentelemetry-zipkin", reason = "exports spans and metrics off the device" },
+    # GStreamer (tilo-media) is the one media stack. openh264 builds Cisco's
+    # H.264 codec from source, which Cisco's patent licence does not cover (it
+    # covers only Cisco's own binaries); ffmpeg is a second media stack.
+    { crate = "openh264", reason = "use media::RealtimeEncoder/Decoder (GStreamer)" },
+    { crate = "openh264-sys2", reason = "use media::RealtimeEncoder/Decoder (GStreamer)" },
+    { crate = "ffmpeg-next", reason = "a second media stack; use media (GStreamer)" },
+    { crate = "ffmpeg-sys-next", reason = "a second media stack; use media (GStreamer)" },
     # Two RustCrypto generations are in the lock: the current one, which iroh
     # uses, and the previous one, which third-party crates still pull in. Only
     # those upstreams may depend on the old one, so it leaves the lock when the
