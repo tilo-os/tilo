@@ -30,6 +30,11 @@ below call the result `tilolang` (`target/nested/tilolang`).
 tilolang run apps/tl/notes --search apps/tl --headless --software
 ```
 
+`tilolang run` opens the app once the session's catalogue offers it (`applications
+<id>`): it asks the shell for the applications listing and the shell holds the answer
+until the listing has settled or changed. If the run fails at any point after the session
+started, the tool stops the session: the shell, its apps and its services.
+
 To work in a session that is already running, attach to it:
 
 ```sh
