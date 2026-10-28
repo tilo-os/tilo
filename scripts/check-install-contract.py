@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 import tomllib
@@ -78,6 +79,71 @@ for architecture in windows_host["architectures"]:
     assert f"runner: imager-windows-{architecture}" in imager_workflow
     assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
+
+# People follow the Homebrew commands the landing page prints, so those commands
+# have to name the tap the release workflow actually publishes. The contract is
+# the copy the site consumes; derive every field in it from the publisher here
+# instead of restating a destination by hand in a second place.
+def workflow_env_value(text: str, name: str) -> str:
+    """The literal value of a workflow env entry, or of its `||` fallback."""
+    match = re.search(
+        rf"^  {name}: (?:\$\{{\{{[^}}]*\|\|\s*'([^']+)'\s*\}}\}}|(\S+))$", text, re.M
+    )
+    assert match, f"release workflow has no literal value for {name}"
+    return match.group(1) or match.group(2)
+
+homebrew_tap_repository = workflow_env_value(imager_workflow, "TILO_HOMEBREW_TAP_REPOSITORY")
+homebrew_tap_name = workflow_env_value(imager_workflow, "TILO_HOMEBREW_TAP_NAME")
+release_server = workflow_env_value(imager_workflow, "TILO_RELEASE_SERVER")
+assert re.fullmatch(r"[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+", homebrew_tap_repository)
+assert re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", homebrew_tap_name)
+homebrew = contract["imager"]["homebrew"]
+assert homebrew["tap"] == {
+    "name": homebrew_tap_name,
+    "repository": homebrew_tap_repository,
+    "url": f"{release_server}/{homebrew_tap_repository}.git",
+    "command": f"brew tap {homebrew_tap_name} {release_server}/{homebrew_tap_repository}.git",
+}
+# The formula and cask names are the ones Homebrew audits in the tap, so read
+# them out of the templates that produce those files.
+formula_template = (ROOT / "apps/imager/packaging/homebrew/tilo-imager.rb.in").read_text()
+cask_template = (ROOT / "apps/imager/packaging/homebrew/tilo-imager-cask.rb.in").read_text()
+formula_name = re.search(r'bin\.install "([^"]+)"', formula_template).group(1)
+cask_name = re.search(r'^cask "([^"]+)" do$', cask_template, re.M).group(1)
+# The formula and the cask share one name, because that is the single name a
+# person types and Homebrew resolves.
+assert formula_name == cask_name == "tilo-imager"
+assert homebrew["formula"]["name"] == formula_name
+assert homebrew["cask"]["name"] == cask_name
+assert homebrew["formula"]["host"] == "Linux" and homebrew["cask"]["host"] == "macOS"
+for host_key, flags in (("formula", ""), ("cask", "--cask ")):
+    command = homebrew[host_key]
+    assert command["install"] == f"brew install {flags}{command['name']}"
+    assert command["upgrade"] == f"brew upgrade {flags}{command['name']}"
+    assert command["uninstall"] == f"brew uninstall {flags}{command['name']}"
+
+# Both release scripts read the destination from the workflow instead of
+# repeating it, so the tap the page prints, the tap the README prints and the
+# tap the install tests exercise cannot disagree.
+for script in (
+    "apps/imager/packaging/publish-homebrew-tap.sh",
+    "apps/imager/packaging/publish-site-release.sh",
+):
+    text = (ROOT / script).read_text()
+    assert f"TILO_HOMEBREW_TAP_REPOSITORY:-{homebrew_tap_repository}" in text, script
+    assert f"TILO_HOMEBREW_TAP_NAME:-{homebrew_tap_name}" in text, script
+
+site_publisher = (ROOT / "apps/imager/packaging/publish-site-release.sh").read_text()
+assert '.imager.homebrew.tap.command' in site_publisher
+assert '.imager.homebrew.tap.repository' in site_publisher
+assert '.imager.homebrew.tap.name' in site_publisher
+assert 'landing page Homebrew tap does not match the release tap' in site_publisher
+assert "grep -R -h -o -- 'brew tap" in site_publisher
+assert "'brew install --cask tilo-imager' 'brew install tilo-imager'" in site_publisher
+
+# The install tests run the same tap people get told to run.
+assert imager_workflow.count('brew tap "$TILO_HOMEBREW_TAP_NAME"') == 2
+assert "brew tap tilo/" not in imager_workflow
 
 # Imager's native Windows release includes `ui`, and with it the host
 # services that re-export the clipboard crate. The Wayland clipboard backend

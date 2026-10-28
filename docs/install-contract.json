@@ -21,7 +21,29 @@
         "downloads": ["notarized DMG", "app zip"],
         "packageManager": "Homebrew cask"
       }
-    ]
+    ],
+    "homebrew": {
+      "tap": {
+        "name": "tilo/tilo",
+        "repository": "tilo-os/homebrew-tilo",
+        "url": "https://github.com/tilo-os/homebrew-tilo.git",
+        "command": "brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git"
+      },
+      "formula": {
+        "host": "Linux",
+        "name": "tilo-imager",
+        "install": "brew install tilo-imager",
+        "upgrade": "brew upgrade tilo-imager",
+        "uninstall": "brew uninstall tilo-imager"
+      },
+      "cask": {
+        "host": "macOS",
+        "name": "tilo-imager",
+        "install": "brew install --cask tilo-imager",
+        "upgrade": "brew upgrade --cask tilo-imager",
+        "uninstall": "brew uninstall --cask tilo-imager"
+      }
+    }
   },
   "completeSystem": {
     "architectures": ["x86_64", "aarch64"],
