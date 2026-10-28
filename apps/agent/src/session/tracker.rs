@@ -13,7 +13,7 @@
 use anyhow::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Session, TaskAction, task_action_from_offer};
+use super::{Session, TaskAction, TaskActionStop, task_action_from_offer};
 
 /// The tracker's resource kind; an issue's address is
 /// `tasks.tracker/issues/<id>`.
@@ -95,6 +95,42 @@ pub(super) fn question_id(action: &TaskAction, arguments: &Map<String, Value>) -
         .collect()
 }
 
+/// One model turn's receipt, as the run's issue keeps it: which model
+/// answered, on which device, and what the turn counted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct StepReceipt {
+    /// The turn's number in the run, from 1.
+    pub(super) step: u64,
+    /// The model that answered it; empty when no model planned the run.
+    pub(super) model: String,
+    /// The device this agent runs on: the machine that paid for the turn.
+    pub(super) device: String,
+    pub(super) input_tokens: u64,
+    pub(super) output_tokens: u64,
+    /// Calls priced per call, such as a web search.
+    pub(super) priced_calls: u64,
+    /// What the turn cost, in millionths of `currency`; zero on a local
+    /// model, which spends this device's time rather than money.
+    pub(super) cost_micros: u64,
+    pub(super) currency: String,
+}
+
+impl StepReceipt {
+    /// The receipt as the issue's `settle-spend` action takes it.
+    pub(super) fn into_json(self) -> Value {
+        json!({
+            "step": self.step,
+            "model": self.model,
+            "device": self.device,
+            "inputTokens": self.input_tokens,
+            "outputTokens": self.output_tokens,
+            "pricedCalls": self.priced_calls,
+            "costMicros": self.cost_micros,
+            "currency": self.currency,
+        })
+    }
+}
+
 impl Session {
     /// Tell the run's issue of `update`, when the run is an issue's.
     pub(super) fn report_to_tracker(
@@ -160,6 +196,131 @@ impl Session {
             "settle-confirmation",
             &arguments.as_object().cloned().unwrap_or_default(),
         )
+    }
+
+    /// Record on the run's issue that it read `resource`: a resource the run
+    /// looked up in system search and took in after the one the request
+    /// named. The issue lists it as the link it is, so its person follows it
+    /// where the run went and the person who keeps that resource sees a run
+    /// reach it.
+    pub(super) fn record_read(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        resource: &ui::tilo_reference::ResourceAt,
+    ) -> Result<()> {
+        let Some(issue) = issue_of(run) else {
+            return Ok(());
+        };
+        let arguments = json!({ "issue": issue, "resource": resource });
+        self.tracker_step(
+            run,
+            "record-read",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Hold what the next model turn is expected to cost on the run's issue,
+    /// before it starts: the issue's budget is what the turn may spend.
+    ///
+    /// Answers the issue's refusal, when the step would take the task past
+    /// one of its budgets: the run stops stepping and waits for its person.
+    pub(super) fn hold_spend_on_tracker(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        held: (u64, u64),
+    ) -> Result<Option<String>> {
+        let (tokens, cost_micros) = held;
+        let Some(issue) = issue_of(run).map(str::to_owned) else {
+            return Ok(None);
+        };
+        let arguments = json!({ "issue": issue, "tokens": tokens, "costMicros": cost_micros });
+        self.refusing_tracker_step(
+            run,
+            "hold-spend",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Settle the step in flight on the run's issue with the receipt its
+    /// provider gave: the model that answered, the device this agent runs
+    /// on, and what the turn counted.
+    pub(super) fn settle_spend_on_tracker(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        step: StepReceipt,
+    ) -> Result<Option<String>> {
+        let Some(issue) = issue_of(run).map(str::to_owned) else {
+            return Ok(None);
+        };
+        let arguments = json!({ "issue": issue, "step": step.into_json() });
+        self.refusing_tracker_step(
+            run,
+            "settle-spend",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Pause the run's issue on the run's own behalf, saying `reason`: the
+    /// limit it reached. The run waits for its person to raise it or let it
+    /// go on.
+    pub(super) fn pause_for_budget_on_tracker(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        reason: &str,
+    ) -> Result<()> {
+        let Some(issue) = issue_of(run).map(str::to_owned) else {
+            return Ok(());
+        };
+        let arguments = json!({ "issue": issue, "reason": reason });
+        let _ = self.refusing_tracker_step(
+            run,
+            "pause-run-for-budget",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )?;
+        Ok(())
+    }
+
+    /// As [`Self::tracker_step`], answering the issue's refusal instead of
+    /// only logging it.
+    fn refusing_tracker_step(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Option<String>> {
+        let catalogue = self.task_catalogue();
+        let Some(offer) = catalogue
+            .offers
+            .iter()
+            .filter(|offer| {
+                offer.descriptor.resource_kind == TRACKER_KIND
+                    && offer.descriptor.address.action == action
+            })
+            .min_by_key(|offer| offer.descriptor.address.resource != TRACKER_KIND)
+        else {
+            tracing::warn!(action, "the Tasks app offers the issue's actions nowhere");
+            return Ok(None);
+        };
+        let child = match task_action_from_offer(offer, arguments.clone()) {
+            Ok(child) => child,
+            Err(error) => {
+                tracing::warn!(action, %error, "the issue's action refused its arguments");
+                return Ok(None);
+            }
+        };
+        let deadline = self.task_deadline.take();
+        let outcome = self.invoke_task_action(run, &child, arguments);
+        self.task_deadline = deadline;
+        match outcome? {
+            Ok(_) => Ok(None),
+            // The issue refused it: the text says why, and for a spend step
+            // that is the budget it would cross.
+            Err(TaskActionStop::Failed(reason)) => Ok(Some(reason)),
+            Err(stop @ TaskActionStop::Cancelled(_)) => {
+                tracing::warn!(action, ?stop, "the issue did not take the run's report");
+                Ok(None)
+            }
+        }
     }
 
     /// Invoke the tracker's `action` as a child of `run`. The issue is told

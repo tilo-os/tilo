@@ -163,31 +163,38 @@ NOT_CONTROL_CALLBACKS = {
     "on_open": "answers the resource's published open action",
     "on_open_item": "answers the resource's published open action",
     "on_stage": "stages view state for a screenshot scenario",
+    "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
 }
-# Buttons a toolkit composite draws itself and runs a closure for: a
-# dialog's footer, a menu's entries, a row's hover and swipe actions, a
-# card's hover action, a navigation list's item actions. Each builder call
-# that hands one a closure counts, as a closure-activated control does; a
-# composite that publishes its buttons itself leaves this set.
-ACTION_BUTTON_BUILDERS = frozenset(
-    {
-        "primary_action", "secondary_action", "tertiary_action", "hover_action",
-        "swipe_action", "icon_action", "destructive_action", "item_actions",
-    }
+# Buttons a toolkit composite draws itself and runs a closure for: a row's
+# and a property's actions, a row's swipe actions, a card's hover action, a
+# navigation list's item actions, each with the number of arguments its
+# toolkit builder takes. A call counts by that call site, whatever its
+# arguments are written as (`Icon::X`, a variable, a function's result): the
+# builder's name with the builder's arity. Other methods of the same name (a
+# toolbar's `action(ToolbarAction)`, a spec's `action(name)`) take a different
+# number. Every closure-taking toolkit method of one of these names must take
+# the arity written here, so a changed signature changes what is counted. A
+# composite that publishes its buttons itself (a dialog's footer) is in
+# NOT_ACTION_BUTTONS.
+ACTION_BUTTON_BUILDERS = {
+    "action": 3,
+    "hover_action": 3,
+    "swipe_action": 4,
+    "item_actions": 2,
+}
+ACTION_BUTTON_METHOD = re.compile(
+    r"(?<!\.)\.\s*(" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
 )
-# `MenuItem::action` and a row's or property's `.action(Icon::…, label, …)`
-# are the same buttons under the common name `action`, told apart by their
-# call shape.
-ACTION_BUTTON_CALL = re.compile(
-    r"\.\s*(?:" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
-    r"|\bMenuItem\s*::\s*(?:action|icon_action|destructive_action)\s*\("
-    r"|\.\s*action\s*\(\s*(?:ui\s*::\s*icons\s*::\s*)?Icon\s*::"
-)
+ACTION_BUTTON_CALL = ACTION_BUTTON_METHOD
 # Closure-taking toolkit builders named `*action*` that are neither counted
 # above nor controls: why.
 NOT_ACTION_BUTTONS = {
-    "action": "counted by call shape (ACTION_BUTTON_CALL)",
+    "icon_action": "a menu entry, published as the open menu's own control",
+    "destructive_action": "a menu entry, published as the open menu's own control",
     "actions_group": "binds each hit to its published action",
+    "primary_action": "a dialog's footer button, published as the dialog's own control",
+    "secondary_action": "a dialog's footer button, published as the dialog's own control",
+    "tertiary_action": "a dialog's footer button, published as the dialog's own control",
 }
 CONTROL_CALLBACK_SOURCES = ("crates/sdk/ui-core/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(
@@ -211,12 +218,80 @@ def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Ma
     return kept
 
 
+def call_arguments(code: str, raw: str, open_paren: int) -> int:
+    """How many arguments the call whose `(` is at `open_paren` passes.
+    `code` has literals blanked; `raw` at the same offsets tells a blanked
+    literal argument from an empty slot (a trailing comma)."""
+    count = 0
+    depth = 0
+    start = open_paren + 1
+    index = start
+    while index < len(code):
+        char = code[index]
+        if depth == 0 and char == "|" and code[start:index].strip() in ("", "move"):
+            # A closure's parameters: their commas separate no arguments.
+            close = code.find("|", index + 1)
+            index = len(code) if close < 0 else close + 1
+            continue
+        if code.startswith("::<", index):
+            # A turbofish's commas separate type arguments.
+            angle = 0
+            index += 2
+            while index < len(code):
+                angle += {"<": 1, ">": -1}.get(code[index], 0)
+                index += 1
+                if angle == 0:
+                    break
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+            start = index + 1
+        index += 1
+    last = code[start:index]
+    if last.strip() or re.search(r"\"|'\\?.'", raw[start:index]):
+        count += 1
+    return count
+
+
+def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """The closure-run buttons among `matches`: a builder method passed its
+    toolkit arity."""
+    kept = []
+    for match in closure_controls(code, raw, matches):
+        method = ACTION_BUTTON_METHOD.match(code, match.start())
+        if method and call_arguments(code, raw, match.end() - 1) != ACTION_BUTTON_BUILDERS[method.group(1)]:
+            continue
+        kept.append(match)
+    return kept
+
+
+def split_parameters(parameters: str) -> list[str]:
+    """A signature's parameters, split at its top-level commas."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(parameters):
+        if char in "(<[{":
+            depth += 1
+        elif char in ")>]}" and not (char == ">" and parameters[index - 1] == "-"):
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(parameters[start:index])
+            start = index + 1
+    parts.append(parameters[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
 def unclassified_control_callbacks(root: Path) -> list[Violation]:
     """Closure-taking toolkit `on_*` builders neither counted nor excused."""
     known = (
         CONTROL_CALLBACKS
         | NOT_CONTROL_CALLBACKS.keys()
-        | ACTION_BUTTON_BUILDERS
+        | ACTION_BUTTON_BUILDERS.keys()
         | NOT_ACTION_BUTTONS.keys()
     )
     violations = []
@@ -227,7 +302,27 @@ def unclassified_control_callbacks(root: Path) -> list[Violation]:
             for match in CLOSURE_CALLBACK_DEFINITION.finditer(code):
                 name, generics, arguments, bounds = match.groups()
                 signature = f"{generics or ''} {arguments} {bounds or ''}"
-                if name in known or not CLOSURE_TYPE.search(signature):
+                if not CLOSURE_TYPE.search(signature):
+                    continue
+                arity = ACTION_BUTTON_BUILDERS.get(name)
+                parameters = [
+                    parameter
+                    for parameter in split_parameters(arguments)
+                    if not re.fullmatch(r"&?\s*(?:'\w+\s+)?(?:mut\s+)?self", parameter)
+                ]
+                if arity is not None and len(parameters) != len(split_parameters(arguments)):
+                    if len(parameters) != arity:
+                        violations.append(
+                            Violation(
+                                source,
+                                line_number(raw, match.start()),
+                                f"closure-taking `{name}` takes {len(parameters)} arguments, but "
+                                f"ACTION_BUTTON_BUILDERS counts its calls with {arity}: update "
+                                f"it in {Path(__file__).name}",
+                            )
+                        )
+                    continue
+                if name in known:
                     continue
                 violations.append(
                     Violation(
@@ -252,8 +347,8 @@ RATCHETS = {
     ),
     "closure_action_button": (
         ACTION_BUTTON_CALL,
-        "new closure-run button of a toolkit composite (a dialog footer, a menu entry, a "
-        "row's or card's action); bind it to a resource action or publish it",
+        "new closure-run button of a toolkit composite (a row's, a property's or a card's "
+        "action); bind it to a resource action or publish it",
     ),
     "bespoke_command_entry": (
         re.compile(r"\bCommandEntry\s*::\s*new\s*\("),
@@ -280,7 +375,7 @@ RATCHETS = {
 # Which matches of a ratchet count, given the file's code and raw text.
 RATCHET_FILTERS = {
     "closure_control": closure_controls,
-    "closure_action_button": closure_controls,
+    "closure_action_button": closure_action_buttons,
 }
 # Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
 PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
@@ -707,6 +802,9 @@ def audit_ratchets(
                 (rule, pattern, reason, shipped)
                 for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
             ]
+        parts = relative.split("/")
+        if len(parts) > 2 and parts[0] == "apps" and dynamic_resource_host(root / "apps" / parts[1]):
+            rules = [entry for entry in rules if entry[0] not in DYNAMIC_HOST_RULES]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             if rule in RATCHET_FILTERS:
@@ -806,13 +904,17 @@ def audit_legacy_apis(
     violations: list[Violation],
     *,
     endpoint: bool = False,
+    dynamic_host: bool = False,
 ) -> None:
     """Refuse every use of an API the model replaced in `sources`; an
-    address in a protocol endpoint's (`endpoint`) is its data."""
+    address in a protocol endpoint's (`endpoint`) is its data, and a dynamic
+    resource host (`dynamic_host`) keeps `DYNAMIC_HOST_LEGACY_APIS`."""
     for source, source_text in sources:
         code = code_only(source_text)
         for rule, (pattern, reason) in LEGACY_API_BANS.items():
             if endpoint and rule == "action_address_new":
+                continue
+            if dynamic_host and rule in DYNAMIC_HOST_LEGACY_APIS:
                 continue
             matches = list(pattern.finditer(code))
             if rule in LEGACY_API_BAN_FILTERS:
@@ -1624,6 +1726,38 @@ def audit_search_provider_limits(
     return found
 
 
+# An app that hosts other apps' resources, which exist only at run time (the tilolang host runs
+# packages written in the app language). Its resources and actions come from the packages'
+# metadata through the platform crate it depends on, so its own source holds none of the
+# `Resource`/`ActionSpec` values this audit looks for. The dependency is checked, so the
+# exemption cannot outlive the crate that publishes them.
+DYNAMIC_RESOURCE_HOSTS = {"tilolang": "tilolang-tilo"}
+
+
+def dynamic_resource_host(app_dir: Path) -> bool:
+    """Whether the app publishes its resources through the platform crate that describes
+    them from package metadata at run time."""
+    crate = DYNAMIC_RESOURCE_HOSTS.get(app_dir.name)
+    manifest = app_dir / "Cargo.toml"
+    return (
+        crate is not None
+        and manifest.is_file()
+        and re.search(rf"^{re.escape(crate)}\s*=", manifest.read_text(encoding="utf-8"), re.M)
+        is not None
+    )
+
+
+# What a dynamic resource host (above) has beside the typed framework apps: the dev workbench holds
+# one document per replica it runs; search is a catalogue over resources that are only known at
+# run time, so there is no typed `Resource::search` to publish from; and the controls it draws for
+# a package's views report their events to the host, which applies the action reference the
+# package's view attached to the control (a typed field edit or verb of the package), so no
+# control's closure is an action of its own.
+DYNAMIC_HOST_RULES = frozenset({"widget_owned_document", "widget_search_source", "closure_control"})
+# The legacy APIs a dynamic resource host keeps: its one resource, the room of packages, is
+# described from the packages' metadata at run time, so there is no record to derive it from.
+DYNAMIC_HOST_LEGACY_APIS = frozenset({"hand_resource_impl"})
+
 PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
 
 
@@ -1747,6 +1881,7 @@ def audit(
                 legacy_api_sources(manifest_path.parent, ("src", "tests", "examples", "benches")),
                 violations,
                 endpoint=manifest_path.parent.name in PROTOCOL_ENDPOINTS,
+                dynamic_host=dynamic_resource_host(manifest_path.parent),
             )
         found_providers = audit_search_provider_limits(root, sources, violations)
         for key in SEARCH_LIMIT_EXEMPTIONS:
@@ -1771,6 +1906,7 @@ def audit(
             app_name != "agent"
             and not app_name.endswith("-model")
             and not compute_package
+            and not dynamic_resource_host(manifest_path.parent)
             and not headless_action_service(manifest_path.parent, combined)
             and owning_app(root, manifest_path.parent) is None
         ):

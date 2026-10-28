@@ -176,16 +176,13 @@ impl Rooms {
         }
         let at = std::time::SystemTime::now();
         let mut candidate = governed.peer().clone();
-        candidate
-            .publication_mut()
-            .publish_document(
-                DESKTOP_APP,
-                DESKTOP_RECORD,
-                automerge::AutoCommit::new().save(),
-                &self.inner.host.key,
-                at,
-            )
-            .map_err(|error| error.to_string())?;
+        candidate.publication_mut().publish_document(
+            DESKTOP_APP,
+            DESKTOP_RECORD,
+            automerge::AutoCommit::new().save(),
+            &self.inner.host.key,
+            at,
+        )?;
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, &self.inner.host.key, at, |_, _| {
             Ok(collaboration)

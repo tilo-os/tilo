@@ -9,7 +9,7 @@
 
 use crate::model::{
     Issue, Message, MessageKind, ModelChoice, Run, RunPhase, Status, Tracker, agent_assignee,
-    issue_resource, person_assignee, tracker,
+    issue_resource, money, person_assignee, tracker,
 };
 use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
@@ -98,6 +98,7 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                                 Text::new("tasks-issue-description").with_role(TextRole::Heading),
                             ))
                             .push(body)
+                            .push(about(cx, id))
                             .push(sub_issues(cx, id, nav))
                             .push(links(cx, id))
                             .push(run(cx, id))
@@ -219,12 +220,12 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         if let Some(due) = &planned.due {
             facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
         }
-        if let (Some(budget), spent) = (planned.cost_budget, planned.spend.unwrap_or_default()) {
+        if let Some(budget) = planned.cost_budget {
             facts.push(Fact::text(tr_with(
                 "tasks-fact-cost",
                 &[
-                    ("spent", &spent.to_string()),
-                    ("budget", &budget.to_string()),
+                    ("spent", &money(planned.spend.unwrap_or_default())),
+                    ("budget", &money(budget)),
                 ],
             )));
         }
@@ -429,6 +430,60 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 /// that keeps it; the way to write a note for it in Notes, which links the
 /// note here; and the way to link a note already written, picked by its
 /// title in the system palette.
+/// What the issue is about, when it was asked about something: the resource
+/// the request named and the app it is in, as the desktop carried them
+/// ([`tilo_actions::SelectionSubject`]). It is what the agent starts from,
+/// so a person reading the task sees the same context their agent was given,
+/// whether the request was about a selection or about the view of an app
+/// they asked from.
+fn about(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let subject = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&id)
+                .and_then(|issue| issue.subject.clone())
+                .and_then(|subject| {
+                    serde_json::from_value::<tilo_actions::SelectionSubject>(subject).ok()
+                })
+        }
+    });
+    cx.switch(&subject, |cx, subject| {
+        let Some(subject) = subject else {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
+        };
+        let resource = &subject.resource;
+        let reference = ui::tilo_reference::ResourceRef::whole(
+            resource.kind.clone(),
+            resource.id.clone(),
+            resource.label.clone(),
+        );
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                Text::new("tasks-about").with_role(TextRole::Heading),
+            ))
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(Text::new(&subject.app_label).dimmed()))
+                    .push(Box::new(cx.reference(&subject.app_id, None, &reference))),
+            ));
+        if let Some(excerpt) = subject.anchor.excerpt.as_deref()
+            && !excerpt.trim().is_empty()
+        {
+            column = column.push(Box::new(
+                Text::new(excerpt.trim()).with_role(TextRole::Caption),
+            ));
+        }
+        Box::new(column) as Element
+    })
+}
+
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -517,6 +572,10 @@ struct RunView {
     /// Whether a person paused the run: it takes no new step until they let
     /// it go on.
     paused: bool,
+    /// Why it stopped, when the pause named a reason: the limit it reached.
+    reason: Option<String>,
+    /// What the run spent, as one line a person reads.
+    spend: Option<String>,
     question: Option<String>,
 }
 
@@ -525,6 +584,13 @@ fn run_view(issue: &Issue) -> RunView {
         agent: issue.assigned_agent().map(str::to_owned),
         phase: issue.run.as_ref().map(Run::shown_phase),
         paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
+        reason: issue
+            .run
+            .as_ref()
+            .and_then(|run| run.paused.as_ref())
+            .map(|paused| paused.reason.clone())
+            .filter(|reason| !reason.is_empty()),
+        spend: issue.run.as_ref().and_then(spend_line),
         question: issue
             .run
             .as_ref()
@@ -539,6 +605,40 @@ fn run_view(issue: &Issue) -> RunView {
                     .to_owned()
             }),
     }
+}
+
+/// What a run spent, on which model and on which device, as one line a
+/// person reads. A run that priced nothing — one on a local model — says
+/// what it used and that it cost no money rather than showing `0.00`.
+fn spend_line(run: &Run) -> Option<String> {
+    let spend = run.spend.as_ref()?;
+    if spend.steps_taken == 0 {
+        return None;
+    }
+    let mut parts = Vec::new();
+    parts.push(if spend.currency.is_empty() {
+        tr("tasks-run-spent-nothing")
+    } else {
+        tr_with(
+            "tasks-run-spent",
+            &[
+                ("cost", &money(spend.cost())),
+                ("currency", &spend.currency),
+            ],
+        )
+    });
+    parts.push(tr_with(
+        "tasks-run-used",
+        &[("tokens", &ui::format::count(spend.tokens()))],
+    ));
+    let step = spend.steps.last()?;
+    if !step.model.is_empty() {
+        parts.push(tr_with("tasks-run-model", &[("model", &step.model)]));
+    }
+    if !step.device.is_empty() {
+        parts.push(tr_with("tasks-run-device", &[("device", &step.device)]));
+    }
+    Some(parts.join(". "))
 }
 
 /// The agent's run: start it, stop it, answer what it asks.
@@ -577,6 +677,18 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 ("phase", phase.into()),
             ],
         ))));
+        if let Some(reason) = &view.reason {
+            column = column.push(Box::new(
+                Banner::warning(reason.clone()).with_id("tasks-run-stopped-at-budget"),
+            ));
+        }
+        if let Some(spend) = &view.spend {
+            column = column.push(Box::new(
+                Text::new(spend)
+                    .with_id("tasks-run-spend")
+                    .with_role(TextRole::Caption),
+            ));
+        }
         if let Some(action) = &view.question {
             column = column.push(Box::new(
                 Banner::warning(ui::i18n::I18nManager::format(
@@ -656,13 +768,13 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         }
     });
     let people = cx.people();
-    let list = cx.switch(&messages, move |_, messages| {
+    let list = cx.switch(&messages, move |cx, messages| {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related);
         for message in messages {
-            column = column.push(message_row(&people, message));
+            column = column.push(message_row(cx, &people, message));
         }
         Box::new(column) as Element
     });
@@ -717,7 +829,7 @@ fn take(draft: &LocalState<String>) -> String {
     text
 }
 
-fn message_row(people: &ui::framework::People, message: &Message) -> Element {
+fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {
     let author = if message.by_agent {
         message.author.trim_start_matches("agent:").to_owned()
     } else {
@@ -739,6 +851,31 @@ fn message_row(people: &ui::framework::People, message: &Message) -> Element {
             heading = heading.push(Box::new(
                 Badge::text(tr("tasks-message-from-run")).style(ChipStyle::Tinted(Tone::Info)),
             ));
+        }
+        // A lookup is the run having read this, through system search under
+        // its own permissions: the resource reads as the chip a link does, so
+        // the person follows it where the run went without asking again.
+        MessageKind::Lookup => {
+            heading = heading.push(Box::new(
+                Badge::text(tr("tasks-message-lookup")).style(ChipStyle::Neutral),
+            ));
+            let Some(resource) =
+                serde_json::from_str::<ui::tilo_reference::ResourceAt>(&message.lookup).ok()
+            else {
+                return Box::new(heading) as Element;
+            };
+            return Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(heading))
+                    .push(Box::new(cx.reference(
+                        &resource.app,
+                        resource.record.as_deref(),
+                        &resource.reference,
+                    ))),
+            );
         }
     }
     Box::new(

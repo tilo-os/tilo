@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 
-from _control import call, require_ok, runtime_socket_path
+from _control import call, hang_bound, require_ok, runtime_socket_path
 from tilo_client import scratch_session_env
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
@@ -44,6 +44,9 @@ BINARY = pathlib.Path(
         SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell",
     )
 ).resolve()
+# A snapshot renders a whole frame, and the first one on a software adapter
+# compiles every pipeline first: it is bounded as a hang, not as a reply.
+SNAPSHOT_TIMEOUT = hang_bound(otherwise=5.0)
 PALETTE_PNG = pathlib.Path("/tmp/full-loop-palette.png")
 FINAL_PNG = pathlib.Path("/tmp/full-loop-final.png")
 
@@ -57,6 +60,14 @@ def state() -> dict:
 
 def palette() -> dict:
     return state()["chrome"]["palette"]
+
+
+def has_target(name: str) -> bool:
+    """Whether the compositor offers `name` as a target with an area."""
+    return any(
+        t["name"] == name and t["rect"][2] > 0 and t["rect"][3] > 0
+        for t in call(SOCKET, {"op": "list_targets"})["targets"]
+    )
 
 
 def wait_until(description: str, predicate, timeout: float = 3.0) -> None:
@@ -241,6 +252,10 @@ def main() -> int:
         require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
         wait_until("strip switcher to open",
                    lambda: state()["chrome"].get("strip_switcher_open"))
+        # The state flips at the key press; the open labels have a place to
+        # click only once a frame has laid them out.
+        wait_until("open strip switcher to be laid out",
+                   lambda: has_target("strip_switcher"))
         require_ok(call(SOCKET, {"op": "click_named", "name": "strip_switcher"}))
         print("  clicked strip_switcher")
         require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
@@ -269,12 +284,17 @@ def main() -> int:
         if input_target is None:
             raise RuntimeError("palette is live in state but has no visible semantic target")
         time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)}))
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT))
         assert_nonblank_png(PALETTE_PNG)
         assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
 
-        # 5. Escape, snapshot final state.
+        # 5. Escape clears what was typed, a second Escape closes search;
+        # snapshot the final state.
+        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
+        wait_until("palette query to clear",
+                   lambda: palette()["visible"] and palette()["query"] == "")
         require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
         wait_until("palette to close", lambda: not palette()["visible"])
         if any(
@@ -283,7 +303,8 @@ def main() -> int:
         ):
             raise RuntimeError("closed palette still exports a visible semantic input target")
         time.sleep(0.5)  # let the close transition finish before judging pixels
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)}))
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT))
         assert_nonblank_png(FINAL_PNG)
         assert_palette_is_visually_gone(PALETTE_PNG, FINAL_PNG)
         print(f"  {FINAL_PNG} written and verified")

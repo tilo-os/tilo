@@ -205,7 +205,7 @@ fn the_person_opens_and_closes_a_side_panel_from_the_window_and_the_door() {
             .resources()
             .into_iter()
             .flat_map(|resource| resource.actions)
-            .map(|spec| spec.id)
+            .map(|spec| spec.id.clone())
             .filter(|id| id.contains("side-panel"))
             .collect::<Vec<_>>()
     };

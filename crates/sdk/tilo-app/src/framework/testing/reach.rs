@@ -8,43 +8,96 @@ use crate::framework::app::ResourceApp;
 /// Invoke every action `app` publishes, one after another, as a headless
 /// drive's `invoke` steps do (`FrameHarness::invoke_action`: the door's own
 /// resolution, availability, confirmation and strict binding), each with
-/// [`sample_arguments`] and confirmed. Answers the ones the door could not
+/// `sample_arguments` and confirmed. Answers the ones the door could not
 /// address, as `resource action: why`: published yet reachable only by
 /// clicking. An action an earlier one withdrew (its row was removed) is not
 /// asked; one that is unavailable now, refuses the sample as arguments (a
 /// payload only another answer can build, such as a review to restore), or
 /// ran and failed at its job, was reached.
 pub fn unreachable_actions<A: ResourceApp>(app: &mut HeadlessApp<A>) -> Vec<String> {
-    let surveyed = tilo_actions::door::survey(&app.harness().resources());
+    unreachable_actions_in_share(app, 0, 1)
+}
+
+/// [`unreachable_actions`] for one share of what `app` publishes: the
+/// actions of every `shares`th resource in the order the door surveys them,
+/// from the `share`th (below `shares`). A window publishing thousands of
+/// actions (one set per row of a long list) is asked in shares, each its
+/// own test running beside the others; the shares together ask every
+/// action. A resource's actions stay in one share, so one that withdraws
+/// its row spares the walk the rest of the row's, as in a whole walk.
+pub fn unreachable_actions_in_share<A: ResourceApp>(
+    app: &mut HeadlessApp<A>,
+    share: usize,
+    shares: usize,
+) -> Vec<String> {
+    // The published tree costs a walk of the whole window, and a long list
+    // publishes thousands of actions: the walk resolves each against the
+    // tree as the last invocation that ran left it. One that answered with
+    // an error changed nothing to resolve against; the door resolves every
+    // invocation afresh itself, and the answers that depend on the tree
+    // (no such action, a confirmation phrase) are checked against a fresh
+    // one, so a tree kept across errors decides nothing alone.
+    let mut resources = app.harness().resources();
+    let surveyed = tilo_actions::door::survey(&resources);
     let mut unreachable = Vec::new();
-    for descriptor in surveyed {
+    let mut resource_ordinals = std::collections::HashMap::new();
+    let ours = surveyed.into_iter().filter(|descriptor| {
+        let next = resource_ordinals.len();
+        let ordinal = *resource_ordinals
+            .entry(descriptor.address.resource.clone())
+            .or_insert(next);
+        ordinal.checked_rem(shares) == Some(share)
+    });
+    for descriptor in ours {
         let address = descriptor.address.clone();
         let arguments = sample_arguments(&descriptor);
-        let resources = app.harness().resources();
         let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
             continue;
         };
-        let phrase = match spec.confirmation_for_json(&arguments) {
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => Some(phrase),
-            tilo_actions::ConfirmationPolicy::None | tilo_actions::ConfirmationPolicy::Confirm => {
-                None
-            }
-        };
-        let answer = app
+        let phrase = confirmation_phrase(spec, &arguments);
+        let mut answer = app
             .harness()
             .invoke_action(&address, &arguments, true, phrase.as_deref());
-        // The invocation first takes the work still pending in the window, as
-        // a real input event does: an earlier action's withdrawal of this row
-        // (a file it closed) may land only then. A row no longer published
-        // was withdrawn, not left without a handler.
-        if let Err(error) = answer
-            && error.code() == "unknown_action"
-            && tilo_actions::door::resolve(&app.harness().resources(), &address).is_some()
-        {
-            unreachable.push(format!("{} {}: {error}", address.resource, address.action));
+        if matches!(answer, Err(tilo_actions::DoorError::ConfirmationRequired)) {
+            // The phrase may name what an earlier invocation renamed.
+            resources = app.harness().resources();
+            let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
+                continue;
+            };
+            let phrase = confirmation_phrase(spec, &arguments);
+            answer = app
+                .harness()
+                .invoke_action(&address, &arguments, true, phrase.as_deref());
+        }
+        match answer {
+            // What it ran may have withdrawn rows the walk has yet to ask.
+            Ok(_) => resources = app.harness().resources(),
+            // The invocation first takes the work still pending in the
+            // window, as a real input event does: an earlier action's
+            // withdrawal of this row (a file it closed) may land only then.
+            // A row no longer published was withdrawn, not left without a
+            // handler.
+            Err(error) if error.code() == "unknown_action" => {
+                resources = app.harness().resources();
+                if tilo_actions::door::resolve(&resources, &address).is_some() {
+                    unreachable.push(format!("{} {}: {error}", address.resource, address.action));
+                }
+            }
+            Err(_) => {}
         }
     }
     unreachable
+}
+
+/// The confirmation phrase `spec` asks for `arguments`, if any.
+fn confirmation_phrase(
+    spec: &tilo_actions::ActionSpec,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    match spec.confirmation_for_json(arguments) {
+        tilo_actions::ConfirmationPolicy::Phrase { phrase } => Some(phrase),
+        tilo_actions::ConfirmationPolicy::None | tilo_actions::ConfirmationPolicy::Confirm => None,
+    }
 }
 
 /// Arguments `descriptor`'s parameters accept, for a test that invokes an

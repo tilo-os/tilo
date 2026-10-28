@@ -206,7 +206,7 @@ impl BookQuery {
             viewport: Rect::ZERO,
             synced: None,
             shelved: HashMap::new(),
-            chips: PagePart::new("books.search."),
+            chips: PagePart::new(),
             facets: FacetMenu::default(),
             offers: None,
             cursor: None,

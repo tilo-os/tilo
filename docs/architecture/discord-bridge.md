@@ -144,6 +144,17 @@ token to the host as a secret, never in the op's result. The host stores it as
 `SecretStore::item("webhook", <channel id>)`, so the record holds only the
 webhook's id.
 
+A webhook can disappear from Discord: an admin deletes it in the channel's
+settings, or the server's state is reset. When a send finds its webhook gone
+(404, Unknown Webhook) or its token missing, the worker adopts or creates the
+channel's webhook as `create-webhook` does, sends once more through it, and
+reports the new id in the send's result (`webhook_id`); the program maps it
+in the old one's place. Until then the worker routes ops naming the old
+webhook to the new one and keeps what it posts through its own webhooks out
+of the events it delivers. Edits and deletes of messages only the old webhook
+could change find nothing to change (404) and settle as done, with a line in
+the worker's log.
+
 ### Voice
 
 The worker reports who is in the guild's voice channels (only the bridged

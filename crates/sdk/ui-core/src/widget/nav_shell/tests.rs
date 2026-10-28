@@ -1688,7 +1688,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
     settle(&mut h, 360, 800);
     let outgoing = h.a11y_node_named("Inbox").expect("initial navigation row");
     {
-        let shell = h.root_mut::<NavShell>();
+        let mut shell = h.root_mut::<NavShell>();
         shell.show(NavPane::Content);
         // The first animation sample is still wholly on the outgoing page.
         shell.inputs.borrow_mut().push_pos = Some(0.0);
@@ -1762,9 +1762,9 @@ fn a_toast_is_the_window_bars_notice_and_paints_nothing_over_the_window() {
     settle(&mut h, 1280, 800);
     let theme = Theme::dark();
     let mut text = crate::font_catalog::fixture_renderer();
-    let shell = h.root_mut::<NavShell>();
-    let _ = present_shell(shell, &mut text, &theme, 1.0);
-    let _ = present_shell(shell, &mut text, &theme, 1.0);
+    let mut shell = h.root_mut::<NavShell>();
+    let _ = present_shell(&mut shell, &mut text, &theme, 1.0);
+    let _ = present_shell(&mut shell, &mut text, &theme, 1.0);
     shell.toast("Saved", ToastKind::Success);
     assert_eq!(
         notice(),
@@ -1772,7 +1772,7 @@ fn a_toast_is_the_window_bars_notice_and_paints_nothing_over_the_window() {
         "the window's bar shows the notice"
     );
     assert_eq!(shell.toast_text(), Some("Saved"));
-    let (_, damage) = present_shell(shell, &mut text, &theme, 1.0);
+    let (_, damage) = present_shell(&mut shell, &mut text, &theme, 1.0);
     assert!(
         damage.is_empty(),
         "nothing is painted over the window: {damage:?}"
@@ -1790,7 +1790,7 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
     notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
-    let shell = h.root_mut::<NavShell>();
+    let mut shell = h.root_mut::<NavShell>();
     shell.toast_with_action("Deleted Groceries", ToastKind::Info, "undo-2", "Undo");
     let shown = notice().expect("the bar shows the notice");
     let button = shown.actions.into_iter().next().expect("with its button");
@@ -1800,8 +1800,9 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
         crate::window_toolbar::take_events().is_empty(),
         "the press is the notice's, not among the app's slot events"
     );
+    drop(shell);
     settle(&mut h, 1280, 800);
-    let shell = h.root_mut::<NavShell>();
+    let mut shell = h.root_mut::<NavShell>();
     assert_eq!(
         shell.take_toast_action().as_deref(),
         Some("Deleted Groceries"),
@@ -2030,7 +2031,7 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
             "outside a window bar the header keeps its search button"
         );
         assert!(WindowHeader::set_window_presents_search(
-            h.root_mut::<NavShell>(),
+            &mut *h.root_mut::<NavShell>(),
             true
         ));
         settle(&mut h, 1280, 800);
@@ -2041,7 +2042,7 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
     // Case `a_header_set_later_has_none_either`.
     {
         let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
-        WindowHeader::set_window_presents_search(h.root_mut::<NavShell>(), true);
+        WindowHeader::set_window_presents_search(&mut *h.root_mut::<NavShell>(), true);
         settle(&mut h, 1280, 800);
         h.root_mut::<NavShell>().set_content_header(
             "Groceries",
@@ -2136,6 +2137,87 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     h.key("ArrowRight");
     settle(&mut h, 1400, 800);
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
+}
+
+/// Whether the content of a narrow mail window is still sliding in one frame
+/// after `push` brought it to the front.
+fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
+    let mut h = harness(mail_shell(), 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    push(&mut h.root_mut::<NavShell>());
+    h.relayout_at((560, 800)).expect("the push lays out");
+    let shell = h.root::<NavShell>();
+    assert_eq!(shell.front_pane(), NavPane::Content);
+    let moving = shell.inputs.borrow().push.is_moving(crate::time::now());
+    if moving {
+        assert!(
+            shell.needs_animation_frame(),
+            "the shell asks for frames while the push moves"
+        );
+    } else {
+        // Landed at once: the shell owes the frames that lay the landed pose out and drop
+        // what it hides, and asks for nothing after them.
+        for _ in 0..LANDING_FRAMES {
+            if !h.root::<NavShell>().needs_animation_frame() {
+                break;
+            }
+            h.relayout_at((560, 800)).expect("a landing frame lays out");
+        }
+        assert!(
+            !h.root::<NavShell>().needs_animation_frame(),
+            "a push that landed asks for no frames beyond its landing's"
+        );
+    }
+    moving
+}
+
+/// The frames a slide that landed still owes: the one whose tick finds it ended, the one that
+/// lays the landed pose out, and the structural one that drops what that pose hides.
+const LANDING_FRAMES: usize = 3;
+
+/// A push follows the input that asked for it (HIG §9.7): a click or a tap
+/// the person just made slides the content in; a key, an agent's action, or a
+/// show nobody visibly caused lands it on the next frame.
+#[test]
+fn a_push_slides_for_a_click_or_a_tap_and_lands_at_once_otherwise() {
+    use crate::tokens::MotionSource;
+    // Nothing the person did: a restore, a sync, a script.
+    assert!(
+        !slides_after_push(|shell| shell.show(NavPane::Content)),
+        "a show nobody caused lands at once"
+    );
+    for (source, slides) in [
+        (MotionSource::Pointer, true),
+        (MotionSource::Gesture, true),
+        (MotionSource::Keyboard, false),
+        (MotionSource::Action, false),
+    ] {
+        let moving = slides_after_push(|shell| {
+            crate::motion::note_source(source);
+            shell.show(NavPane::Content);
+        });
+        assert_eq!(moving, slides, "a push after {source:?}");
+    }
+}
+
+/// A host that knows where an open came from says so: a search hit or an
+/// agent's `open` lands at once even right after a click elsewhere, and a
+/// person's click slides even when nothing was noted on this thread.
+#[test]
+fn a_push_from_a_known_origin_moves_as_that_origin_does() {
+    use crate::tokens::MotionSource;
+    assert!(
+        !slides_after_push(|shell| {
+            crate::motion::note_source(MotionSource::Pointer);
+            shell.show_from(NavPane::Content, MotionSource::Action);
+        }),
+        "an agent's open lands at once"
+    );
+    assert!(
+        slides_after_push(|shell| shell.show_from(NavPane::Content, MotionSource::Pointer)),
+        "a person's click slides the content in"
+    );
 }
 
 /// A shell whose toolbar is its window bar's slots draws no header row, at
@@ -2497,12 +2579,193 @@ fn the_shell_continues_and_reports_input_as_its_content() {
     assert_eq!(metadata.bytes, b"line 3");
     assert!(
         crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
-            h.root_mut::<NavShell>()
+            &mut *h.root_mut::<NavShell>()
         )
         .is_some()
     );
     assert_eq!(
         h.native_input_snapshot(),
         Some(serde_json::json!({ "caret_line": 3 }))
+    );
+}
+
+/// A shown title that says something else (an item's title as it is typed) is the same part,
+/// measured and painted again: the window keeps its tree. A count is drawn in that part too.
+/// A title that comes or goes changes the header row.
+#[test]
+fn a_shown_title_that_changes_keeps_the_tree_and_one_that_goes_rebuilds_it() {
+    use crate::widget::StructureChange;
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let _ = h.root_mut::<NavShell>().take_structure_change();
+
+    {
+        let mut shell = h.root_mut::<NavShell>();
+        shell.set_content_title("Design review, second round");
+        assert_eq!(
+            shell.take_structure_change(),
+            StructureChange::None,
+            "a title typed into keeps the header row"
+        );
+    }
+    h.relayout_at((1400, 800)).expect("the title lays out");
+    let title = &h.root::<NavShell>().headers[Column::Content.index()].title;
+    assert_eq!(title.title.as_deref(), Some("Design review, second round"));
+    assert!(
+        !crate::widget::Widget::is_layout_dirty(title),
+        "it is measured again with what it says now"
+    );
+
+    let mut shell = h.root_mut::<NavShell>();
+    shell.set_content_count(Some(3));
+    assert_eq!(
+        shell.take_structure_change(),
+        StructureChange::None,
+        "a count is drawn in the title's part"
+    );
+
+    shell.set_content_title("");
+    assert_eq!(
+        shell.take_structure_change(),
+        StructureChange::Rebuild,
+        "a title that goes changes the header row"
+    );
+}
+
+/// A header's actions that each take their change in place (a label, whether one is enabled)
+/// keep the row as it is; an action that comes or goes changes it.
+#[test]
+fn header_actions_changed_in_place_keep_the_row() {
+    use crate::component::Described as _;
+    use crate::widget::StructureChange;
+    let action = || -> Element { Probe::boxed("reply").0 };
+    let shell = mail_shell().content_header("Design review", vec![action(), action()]);
+    let mut h = harness(shell, 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let _ = h.root_mut::<NavShell>().take_structure_change();
+
+    {
+        let mut shell = h.root_mut::<NavShell>();
+        let views = shell
+            .slot_views("actions")
+            .expect("the content header's actions");
+        assert_eq!(views.len(), 2);
+        assert!(
+            views.view_mut(0).is_some(),
+            "an action, reconciled where it stands"
+        );
+        shell.finish_slot_edit();
+        assert_eq!(
+            shell.take_structure_change(),
+            StructureChange::None,
+            "actions changed in place keep the header row"
+        );
+    }
+
+    {
+        let mut shell = h.root_mut::<NavShell>();
+        let views = shell
+            .slot_views("actions")
+            .expect("the content header's actions");
+        views.remove(1);
+        shell.finish_slot_edit();
+        assert_eq!(
+            shell.take_structure_change(),
+            StructureChange::Rebuild,
+            "an action that goes changes the row"
+        );
+    }
+}
+
+/// A pane that, once armed, mounts children of its own in place at its next
+/// sync, as a list does when rows change: it reports the change until it is
+/// carried out, in place or by a build.
+struct Remounting {
+    rect: Rect,
+    armed: SharedRc<Cell<bool>>,
+    pending: bool,
+    remounts: SharedRc<Cell<usize>>,
+}
+
+impl Widget for Remounting {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.pending = false;
+        taffy.fill_leaf(node_map, self)
+    }
+    crate::rect_geometry!();
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        self.pending |= self.armed.replace(false);
+    }
+    fn take_structure_change(&mut self) -> StructureChange {
+        if self.pending {
+            StructureChange::Children
+        } else {
+            StructureChange::None
+        }
+    }
+    fn remount_children(&mut self, _remount: &mut crate::widget::Remount<'_>) -> bool {
+        if std::mem::take(&mut self.pending) {
+            self.remounts.set(self.remounts.get() + 1);
+        }
+        true
+    }
+    fn name(&self) -> &'static str {
+        "Remounting"
+    }
+}
+
+/// A change a part carries out in place is the shell's only where the
+/// shell can have it carried out: in a screen it lays out, in front or not,
+/// it is remounted there; a screen outside the tree is built whole when it
+/// comes back. Either way the frame settles and the window keeps its tree.
+#[test]
+fn a_part_changed_in_place_off_screen_keeps_the_tree_and_settles() {
+    let armed = SharedRc::new(Cell::new(false));
+    let remounts = SharedRc::new(Cell::new(0));
+    let overview = Remounting {
+        rect: Rect::ZERO,
+        armed: SharedRc::clone(&armed),
+        pending: false,
+        remounts: SharedRc::clone(&remounts),
+    };
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .overview(Box::new(overview))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 360, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+
+    let rebuilt = h.rebuilt_frames();
+    for _ in 0..3 {
+        armed.set(true);
+        h.relayout_at((360, 800))
+            .expect("the frame settles with a change pending off screen");
+    }
+    assert_eq!(h.rebuilt_frames(), rebuilt, "the window keeps its tree");
+    let laid_out = h
+        .root::<NavShell>()
+        .exposed_parts()
+        .contains(&Part::Body(Column::Overview));
+    assert_eq!(
+        remounts.get(),
+        if laid_out { 3 } else { 0 },
+        "remounted where it is laid out, and only there"
     );
 }

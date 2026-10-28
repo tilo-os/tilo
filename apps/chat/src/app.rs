@@ -338,6 +338,12 @@ pub struct ChatApp {
     // presence (see `adopt_room`). A peer never writes its own name into
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
+    /// Whether presence answered this frame with who is here (see
+    /// `adopt_room`): the answer decides who is offline, even when it names
+    /// nobody but this window's own person. A window whose host has no
+    /// presence at all (a chat on this device alone) reads the recorded
+    /// status instead.
+    pub(crate) room_presence_answers: bool,
     /// The person each of the room's devices belongs to, where presence
     /// says: a call's roster names people, presence names their devices,
     /// and `room_names` carries both so either reads as the same name.
@@ -745,6 +751,7 @@ impl ChatApp {
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
+            room_presence_answers: false,
             room_persons: HashMap::new(),
             room_voice: HashMap::new(),
             room_labels: ui::presence::ParticipantLabels::default(),

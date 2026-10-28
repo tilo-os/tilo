@@ -159,6 +159,9 @@ fn action_failed(
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
+    /// The action as it was asked, for an answer that says what ran: a
+    /// capture's picture is an artifact, a read's is the page to look at.
+    acted: ui::webview::PageRequest,
     phase: PagePhase,
     deadline: std::time::Instant,
     /// A main-frame load that settled while the request was with the engine
@@ -1281,7 +1284,9 @@ impl BrowserWidget {
     }
     /// The content store a picture of the page is kept in: opaque bytes by
     /// hash, which the agent's answer names, so what a page shows as pixels
-    /// reaches the reader who can see them.
+    /// reaches the reader who can see them. The store the host lent the
+    /// window (`SurfaceCx::content`), so the bytes land where the content
+    /// service reads them from.
     pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
     }
@@ -2088,10 +2093,12 @@ impl BrowserWidget {
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         let act = request.described();
+        let acted = request.clone();
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
             invocation,
             request_id: self.page_request_seq,
+            acted,
             phase: PagePhase::Queued {
                 request,
                 until: now + PAGE_LOAD_WAIT,
@@ -2133,6 +2140,7 @@ impl BrowserWidget {
             PagePhase::Navigating { reply } => self.page_success(
                 operation.invocation,
                 &reply,
+                &operation.acted,
                 Some("the page it opened is still loading"),
             ),
             PagePhase::Queued { .. } | PagePhase::Sent => {
@@ -2187,8 +2195,12 @@ impl BrowserWidget {
                     Some(format!("the page it opened failed to load: {error}"))
                 }
             };
-            self.page_operation_result =
-                Some(self.page_success(operation.invocation, reply, note.as_deref()));
+            self.page_operation_result = Some(self.page_success(
+                operation.invocation,
+                reply,
+                &operation.acted,
+                note.as_deref(),
+            ));
             return;
         }
         self.page_operation_result = Some(match result {
@@ -2200,7 +2212,7 @@ impl BrowserWidget {
                 });
                 return;
             }
-            Ok(reply) => self.page_success(operation.invocation, &reply, None),
+            Ok(reply) => self.page_success(operation.invocation, &reply, &operation.acted, None),
             // A page that refused the action because it was busy, or never
             // answered, is reported as what it is.  Calling it retryable here
             // would contradict the at-most-once contract this app publishes
@@ -2237,8 +2249,12 @@ impl BrowserWidget {
             return;
         };
         let note = error.map(|error| format!("the page it opened failed to load: {error}"));
-        self.page_operation_result =
-            Some(self.page_success(operation.invocation, &reply, note.as_deref()));
+        self.page_operation_result = Some(self.page_success(
+            operation.invocation,
+            &reply,
+            &operation.acted,
+            note.as_deref(),
+        ));
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
@@ -5275,13 +5291,13 @@ impl BrowserWidget {
         }
         let mut pip = E::PictureInPicture.bound();
         if self.active_pip {
-            pip.label = "Close Picture in Picture".into();
+            pip.type_mut().label = "Close Picture in Picture".into();
         }
         page.actions.push(pip);
         let web_page = is_supported_web_url(&self.current_uri);
         let mut reader = E::ReaderView.bound();
         if self.reader_view {
-            reader.label = "Close reader view".into();
+            reader.type_mut().label = "Close reader view".into();
         }
         page.actions.push(if web_page {
             reader
@@ -5296,6 +5312,15 @@ impl BrowserWidget {
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage { frame: None }, &["frame"][..]),
+            (
+                E::FindPageElement {
+                    role: None,
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                &["role", "name", "nth", "frame"][..],
+            ),
             (
                 E::ClickPage {
                     element: element.clone(),
@@ -5442,7 +5467,7 @@ impl BrowserWidget {
         );
         let mut pause = E::TogglePause.bound();
         if self.history_paused() {
-            pause.label = "Resume history in this window".into();
+            pause.type_mut().label = "Resume history in this window".into();
         }
         session.actions.push(pause);
 

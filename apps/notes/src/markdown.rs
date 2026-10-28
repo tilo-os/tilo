@@ -303,7 +303,7 @@ fn push_indent(out: &mut String, indent: u8) {
 ///
 /// Unmatched markers fall through to the plain text — `*not closed`
 /// stays `*not closed` so the round-trip stays byte-stable. Outside code
-/// and links a backslash before an [`escapable`] character yields that
+/// and links a backslash before an `escapable` character yields that
 /// character; [`serialize_inline`] writes those escapes.
 pub fn parse_inline(line: &str) -> InlineText {
     let bytes = line.as_bytes();

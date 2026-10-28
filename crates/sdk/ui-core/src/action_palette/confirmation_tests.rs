@@ -54,8 +54,8 @@ fn confirmation_refreshes_never_turn_the_question_back_into_search() {
     )
     .unwrap()
     .with_description("Remove this message for everyone");
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
-    spec.contract.risk = tilo_actions::RiskLevel::Destructive;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
     let resources = vec![Resource::new("chat", "chat", "Chat").with_action(spec)];
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&resources);
@@ -143,8 +143,8 @@ fn the_standard_confirmation_button_keeps_exact_evidence_and_cancels_on_escape()
         },
     )
     .unwrap();
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
-    spec.contract.risk = tilo_actions::RiskLevel::Destructive;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
     let resource = Resource::new("chat", "chat", "Chat").with_action(spec);
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&[resource]);
@@ -198,7 +198,7 @@ fn a_confirmation_asks_the_actions_question_and_one_enter_goes_ahead() {
     )
     .unwrap()
     .with_description("Remove this message for everyone");
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
     let resource = Resource::new("chat", "chat", "Chat").with_action(spec);
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&[resource]);
@@ -273,7 +273,7 @@ fn a_confirmation_field_never_shows_search_results() {
     )
     .unwrap()
     .destructive();
-    erase.contract.confirmation = ConfirmationPolicy::Phrase {
+    erase.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
         phrase: "nvme0n1".into(),
     };
     let resources = vec![
@@ -368,7 +368,7 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
         .unwrap()
     };
     let mut focus = new_folder();
-    focus.label = "Focus".into();
+    focus.type_mut().label = "Focus".into();
     let resources = vec![
         Resource::new("feeds.library", "feeds.library", "Feeds")
             .with_action(new_folder())
@@ -479,6 +479,7 @@ fn history_requires_fresh_palette_confirmation_for_ready_work() {
         .iter_mut()
         .find(|action| action.id == "mark")
         .unwrap()
+        .type_mut()
         .contract
         .confirmation = ConfirmationPolicy::Phrase {
         phrase: "MARK THING".into(),
@@ -535,7 +536,7 @@ fn asking_to_erase() -> ActionPalette {
     .unwrap()
     .destructive()
     .with_description("Erases every file on Samsung T7");
-    erase.contract.confirmation = ConfirmationPolicy::Phrase {
+    erase.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
         phrase: "Samsung T7".into(),
     };
     let mut palette = ActionPalette::new();

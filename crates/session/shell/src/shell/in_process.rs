@@ -527,7 +527,7 @@ impl InProcessApps {
         if component.capture_protected() {
             self.capture_protected
                 .borrow_mut()
-                .insert(definition.app_id.to_owned());
+                .insert(definition.app_id().to_owned());
         }
         Ok(component)
     }
@@ -541,7 +541,7 @@ impl InProcessApps {
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
         super::work_accounting::app_mounted();
-        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
                 Some(feedback) => {
                     feedback
@@ -553,7 +553,7 @@ impl InProcessApps {
             };
         }
         #[cfg(target_os = "linux")]
-        if definition.app_id == "so.tilo.messages" {
+        if definition.app_id() == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
                 && let Some(wake) = &self.messaging_record_wake
@@ -567,7 +567,7 @@ impl InProcessApps {
         }
         let records = self
             .owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(LaunchError::Record)?;
         let views = if let Some(views) = self.views.get(room) {
             Rc::clone(views)
@@ -614,7 +614,7 @@ impl InProcessApps {
             .map_err(LaunchError::Operation)?;
         if let Ok(person) = ui::record::person::PersonRecords::open(
             &mut self.owners,
-            definition.app_id,
+            definition.app_id(),
             self.author.clone(),
         ) {
             context.provide_person_records(person.sharing(&held));
@@ -626,7 +626,7 @@ impl InProcessApps {
             room.to_owned(),
             self.author.clone(),
         ));
-        if definition.app_id == "so.tilo.messages" {
+        if definition.app_id() == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {
                 context.lend(first.client());
@@ -639,7 +639,7 @@ impl InProcessApps {
                 context.lend(registry.clone().client());
             }
         }
-        if definition.app_id == "so.tilo.passwords"
+        if definition.app_id() == "so.tilo.passwords"
             && let Some(owner) = &self.credential_owner
         {
             context.lend(owner.clone());
@@ -1113,7 +1113,7 @@ mod tests {
         let _again = mount_terminal(&mut apps);
         let records = apps
             .owners
-            .open(terminal::definition().app_id, ROOM)
+            .open(terminal::definition().app_id(), ROOM)
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
@@ -1178,7 +1178,7 @@ mod tests {
         let places = |apps: &mut InProcessApps| {
             let records = apps
                 .owners
-                .open(file_explorer::definition().app_id, ROOM)
+                .open(file_explorer::definition().app_id(), ROOM)
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
@@ -1308,7 +1308,10 @@ mod tests {
         write(&mut apps, 62, "Beta");
 
         let titles = |apps: &mut InProcessApps, tab: u64| -> Vec<String> {
-            let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+            let records = apps
+                .owners
+                .open(notes::definition().app_id(), ROOM)
+                .unwrap();
             records
                 .try_open_record(&RecordCheckout::new(
                     RecordId::for_tab(tab),
@@ -1395,6 +1398,124 @@ mod tests {
         );
     }
 
+    /// The hosted Editor's text selection and clipboard commands are driven
+    /// through the keyboard, headlessly: select all, copy, and paste into a
+    /// second document that already holds text of its own.
+    ///
+    /// A teacher that has to edit a document can select and copy text instead
+    /// of deleting it one character at a time, which is what a person does.
+    /// The checks read the published accessible selection, so the route is the
+    /// one a screen reader and an agent also take.
+    /// An Editor tab `tab` showing the file at `path`, with the keyboard on
+    /// its document.
+    fn focused_editor_on(
+        inputs: &crate::shell::hosted_inputs::HostedTileInputs,
+        tab: u64,
+        path: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        inputs.bind_document(
+            tab,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: path.canonicalize().unwrap(),
+            },
+        );
+        let mut editor = mount_tab(
+            inputs,
+            tab,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "Editor tab {tab} shows its document"
+        );
+        assert!(
+            editor
+                .perform_named("editor_view", &ui::a11y::Action::Focus)
+                .is_ok(),
+            "the keyboard reaches tab {tab}'s document"
+        );
+        editor
+    }
+
+    #[test]
+    fn the_hosted_editor_selects_copies_and_pastes_through_the_keyboard() {
+        use ui::headless::Action;
+
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
+        inputs.mount_apps_in_process(
+            InProcessApps::at(
+                profile.path(),
+                &profile.path().join("person"),
+                "test-person",
+            )
+            .unwrap(),
+        );
+
+        let line = "moor at the east quay\n";
+        let source = folder.path().join("harbour-plan.txt");
+        std::fs::write(&source, line).unwrap();
+        let mut editor = focused_editor_on(&inputs, 81, &source);
+
+        let outcome = ui::headless::driver::drive(
+            &mut editor,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("a".into()).into(),
+                Action::Key("c".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(0, line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "select all and copy must select the whole document: {:?}",
+            outcome.failure()
+        );
+
+        let drafted = "";
+        let destination = folder.path().join("tide-notes.txt");
+        std::fs::write(&destination, drafted).unwrap();
+        let mut second = focused_editor_on(&inputs, 82, &destination);
+
+        // Paste the copied line into the empty destination: one command that
+        // writes text a character-by-character route would have typed.
+        let outcome = ui::headless::driver::drive(
+            &mut second,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("v".into()).into(),
+                Action::Key("s".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(line.len(), line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "paste must write the copied line at the caret: {:?}",
+            outcome.failure()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            line,
+            "the pasted text is the document the copy came from"
+        );
+    }
+
     /// A Notes tab shown as an app of its own runs what its launch queued:
     /// a Markdown file it is opened on becomes a note in the tab's notebook.
     #[test]
@@ -1451,7 +1572,10 @@ mod tests {
         }
         let _reports = ui::component_lifecycle::close_components(app.as_mut());
 
-        let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+        let records = apps
+            .owners
+            .open(notes::definition().app_id(), ROOM)
+            .unwrap();
         records
             .try_open_record(&RecordCheckout::new(
                 RecordId::for_tab(81),
@@ -1665,7 +1789,7 @@ mod tests {
         // The room's host holds the record: committed in the clear, or, in
         // a room whose records are sealed channels, as the sealed writes
         // the host keeps under the record's wire name.
-        let app = notes::definition().app_id;
+        let app: &str = &notes::definition().app_id;
         let record = RecordId::for_tab(93).to_string();
         let wire = session
             .network()
@@ -1763,12 +1887,12 @@ mod tests {
             &mut [&mut notes, &mut terminal],
             "both apps publish",
             || {
-                provider_of(notes::definition().app_id).is_some()
-                    && provider_of(terminal::definition().app_id).is_some()
+                provider_of(notes::definition().app_id()).is_some()
+                    && provider_of(terminal::definition().app_id()).is_some()
             },
         );
-        let notes_provider = provider_of(notes::definition().app_id).unwrap();
-        let terminal_provider = provider_of(terminal::definition().app_id).unwrap();
+        let notes_provider = provider_of(notes::definition().app_id()).unwrap();
+        let terminal_provider = provider_of(terminal::definition().app_id()).unwrap();
 
         let query = |provider: &str, needle: &str| {
             tilo_actions::remote::ActionHost::query(

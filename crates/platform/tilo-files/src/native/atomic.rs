@@ -173,7 +173,7 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     // Do not let directory replacement bypass the target's write access. This
     // opens without truncating, so an access refusal leaves its bytes intact.
-    drop(fs::OpenOptions::new().write(true).open(&target)?);
+    fs::OpenOptions::new().write(true).open(&target)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -453,12 +453,14 @@ pub(super) fn publish(
     open: impl FnMut(&Path) -> io::Result<File>,
     how: Publish,
 ) -> io::Result<bool> {
-    let (tmp, mut file) = create_temp(path, open)?;
+    let (tmp, file) = create_temp(path, open)?;
     let sync = how != Publish::ReplaceUnsynced;
-    let written = file
-        .write_all(bytes)
-        .and_then(|()| if sync { file.sync_all() } else { Ok(()) });
-    drop(file);
+    // Closed at the end of the block, before the rename.
+    let written = {
+        let mut file = file;
+        file.write_all(bytes)
+            .and_then(|()| if sync { file.sync_all() } else { Ok(()) })
+    };
     if let Err(error) = written {
         let _ = fs::remove_file(&tmp);
         return Err(error);

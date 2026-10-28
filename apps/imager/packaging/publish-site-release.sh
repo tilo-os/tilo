@@ -22,6 +22,18 @@ fingerprint="${fingerprint//[[:space:]]/}"
 [[ "$fingerprint" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
   || { printf 'Linux signing fingerprint must be a full OpenPGP fingerprint\n' >&2; exit 2; }
 
+# The landing page names the Homebrew destination in the installation commands
+# it prints. Derive it from the destination the tap publisher pushes to and the
+# name it tells users to tap, so the page cannot advertise a tap the release
+# never updated.
+tap_repository="${TILO_HOMEBREW_TAP_REPOSITORY:-tilo-os/homebrew-tilo}"
+[[ "$tap_repository" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap repository must be OWNER/homebrew-NAME\n' >&2; exit 2; }
+tap_name="${TILO_HOMEBREW_TAP_NAME:-tilo/tilo}"
+[[ "$tap_name" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap name must be OWNER/NAME\n' >&2; exit 2; }
+tap_command="brew tap $tap_name ${release_server%/}/${tap_repository}.git"
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 askpass="$work/askpass.sh"
@@ -93,18 +105,87 @@ if [ "$winget_http" = 200 ] \
   winget_state=available
 fi
 
+# The install contract is the canonical statement of which hosts, architectures
+# and downloads the release carries, and the workflow publishes one artifact set
+# for each of them. Every page entry is derived from it rather than from a
+# second list kept in step by hand: an architecture the release lane stops
+# building fails below, and one it starts building is published instead of
+# silently missing from the page. Each declaration names the release file it
+# links and the page entry that links it, so neither is read off its label, and
+# only artifacts a host downloads directly appear here: a package-manager
+# install routes through the Homebrew and WinGet channels stated separately.
+declared_downloads="$(jq -r '
+  .imager.hosts[] | .os as $os | .downloads[]
+  | [$os, .name, .asset, .pageKey] | @tsv' docs/install-contract.json)"
+
+# An empty contract would otherwise publish a page with no download on it.
+jq -e '.imager.hosts | length > 0' docs/install-contract.json >/dev/null \
+  || { printf 'install contract declares no Imager host\n' >&2; exit 1; }
+
+entries='{}'
+while IFS=$'\t' read -r host download asset entry_template; do
+  [ -n "$host" ] || continue
+  architectures="$(jq -r --arg os "$host" \
+    '.imager.hosts[] | select(.os == $os) | .architectures[]' docs/install-contract.json)"
+  [ -n "$architectures" ] \
+    || { printf 'install contract declares no architecture for %s\n' "$host" >&2; exit 1; }
+  for arch in $architectures; do
+    case "$arch" in x86_64) arch_key=X64 ;; aarch64) arch_key=Arm64 ;; *)
+      printf 'install contract declares an unsupported Imager architecture: %s\n' "$arch" >&2; exit 1 ;; esac
+    entry_asset="${asset//\{arch\}/$arch}"
+    key="${entry_template//\{archKey\}/$arch_key}"
+    [ "$key" != "$entry_template" ] \
+      || { printf 'install contract declares no page entry for %s on %s\n' "$download" "$host" >&2; exit 1; }
+    # A second declaration of one page entry would quietly replace the first.
+    [ "$(jq -r --arg key "$key" 'has($key)' <<<"$entries")" = false ] \
+      || { printf '%s is declared twice\n' "$key" >&2; exit 1; }
+    # Publishing a link the release does not carry is the failure this page
+    # exists to avoid: require the published file beside a verified digest.
+    test -s "release-assets/$entry_asset" && test -s "release-assets/$entry_asset.sha256" \
+      || { printf 'release does not carry the %s artifact for %s %s\n' \
+             "$download" "$host" "$arch" >&2; exit 1; }
+    entries="$(jq --arg key "$key" --arg asset "$entry_asset" '. + {($key): $asset}' \
+      <<<"$entries")"
+  done
+done <<<"$declared_downloads"
+# The page also links the release trust anchor and the installer catalog, which
+# are not host downloads.
+for asset_key in releaseKey releaseFingerprint installerCatalog; do
+  asset="$(jq -r --arg key "$asset_key" '.assets[$key] // empty' "$manifest")"
+  [ -n "$asset" ] \
+    || { printf 'landing page manifest is missing required release asset %s\n' "$asset_key" >&2; exit 1; }
+  test -s "release-assets/$asset" \
+    || { printf 'release does not carry the %s artifact\n' "$asset_key" >&2; exit 1; }
+  entries="$(jq --arg key "$asset_key" --arg asset "$asset" '. + {($key): $asset}' <<<"$entries")"
+done
+
 jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
    --arg release_root "$release_root" \
    --arg winget_state "$winget_state" \
+   --argjson entries "$entries" \
   '.tag = $tag
    | .published = true
    | .releaseRoot = $release_root
    | .linuxSigningFingerprint = $fingerprint
+   | .assets = $entries
    | .channels.homebrew = "available"
    | .channels.winget = $winget_state' \
   "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 cp docs/install-contract.json "$contract"
+# The contract carries the Homebrew destination the page prints, so it has to
+# describe the tap this promotion actually updates.
+contract_tap="$(jq -r '.imager.homebrew.tap.command // empty' "$contract")"
+contract_tap_name="$(jq -r '.imager.homebrew.tap.name // empty' "$contract")"
+contract_tap_repository="$(jq -r '.imager.homebrew.tap.repository // empty' "$contract")"
+[ "$contract_tap_repository" = "$tap_repository" ] \
+  || { printf 'install contract expects Homebrew tap %s but this release publishes %s\n' \
+         "$contract_tap_repository" "$tap_repository" >&2; exit 1; }
+[ "$contract_tap_name" = "$tap_name" ] \
+  || { printf 'install contract expects Homebrew tap name %s but this release taps %s\n' \
+         "$contract_tap_name" "$tap_name" >&2; exit 1; }
+[ "$contract_tap" = "$tap_command" ] \
+  || { printf 'install contract Homebrew tap command does not match the release tap\n' >&2; exit 1; }
 
 npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
@@ -116,15 +197,11 @@ npm --prefix "$work/site" run build
 # Verify the actual rendered release surface independently of the site's own
 # tests. A simultaneous site-test regression must not let promotion silently
 # drop one supported architecture, format, trust anchor, or package-manager
-# route while still publishing an attractive partial page.
-for asset_key in \
-  windowsX64Setup windowsX64Standalone windowsX64Portable \
-  macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable \
-  linuxX64Flatpak linuxArm64Flatpak linuxX64AppImage linuxArm64AppImage \
-  linuxX64Portable linuxArm64Portable releaseKey releaseFingerprint installerCatalog; do
-  asset="$(jq -r --arg key "$asset_key" '.assets[$key] // empty' "$manifest")"
-  [ -n "$asset" ] \
-    || { printf 'landing page manifest is missing required release asset %s\n' "$asset_key" >&2; exit 1; }
+# route while still publishing an attractive partial page. Every entry the
+# manifest carries is checked, so the page cannot lose a host architecture the
+# install contract declares while the promotion still succeeds.
+for asset_key in $(jq -r '.assets | keys[]' "$manifest"); do
+  asset="$(jq -r --arg key "$asset_key" '.assets[$key]' "$manifest")"
   expected_download="$release_root/download/$GITHUB_REF_NAME/$asset"
   grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
     || { printf 'landing page does not expose required release asset %s\n' "$asset_key" >&2; exit 1; }
@@ -133,6 +210,13 @@ for command in 'brew install --cask tilo-imager' 'brew install tilo-imager'; do
   grep -R -Fq -- "$command" "$work/site/dist" \
     || { printf 'landing page does not expose package-manager command: %s\n' "$command" >&2; exit 1; }
 done
+# A page that installs through a tap prints that tap. Require exactly the tap
+# this promotion updated and refuse any other, so a stale destination in the
+# site template cannot ship as the instructions people follow.
+rendered_taps="$(grep -R -h -o -- 'brew tap [^<"]*' "$work/site/dist" | sort -u || true)"
+[ "$rendered_taps" = "$tap_command" ] \
+  || { printf 'landing page Homebrew tap does not match the release tap: %s\n' \
+         "${rendered_taps:-none}" >&2; exit 1; }
 if [ "$winget_state" = available ]; then
   grep -R -Fq -- 'winget install Tilo.Imager' "$work/site/dist" \
     || { printf 'landing page hides an accepted WinGet release\n' >&2; exit 1; }

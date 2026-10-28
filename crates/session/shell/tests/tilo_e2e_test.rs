@@ -12,10 +12,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
+use shell::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::TopBarChrome;
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
+use tilo_quick_settings::QuickSettingsState;
 
 use ui::widget::Widget;
 

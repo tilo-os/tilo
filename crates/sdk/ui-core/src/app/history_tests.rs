@@ -1295,14 +1295,15 @@ impl RoutedPrimary {
             .unwrap(),
         );
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.primary-probe",
-            title: "Primary Probe",
+            app_id: "dev.tilo.primary-probe".into(),
+            title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
             record_kind: crate::RecordKind::new("primary.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
@@ -4115,7 +4116,7 @@ impl PaletteHistoryOwner {
                 },
             )
         };
-        spec.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+        spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: PALETTE_CONFIRMATION.into(),
         };
         if self
@@ -4124,7 +4125,7 @@ impl PaletteHistoryOwner {
             .load(std::sync::atomic::Ordering::SeqCst)
             == 2
         {
-            spec.contract.availability = tilo_actions::Availability::Unavailable {
+            spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                 code: "fixture-unavailable".into(),
                 reason: "Current action unavailable".into(),
             };
@@ -4609,7 +4610,7 @@ impl ComponentControlOwner {
                     .unwrap()
             },
         );
-        spec.contract.confirmation = self.confirmation.clone();
+        spec.type_mut().contract.confirmation = self.confirmation.clone();
         if self.entered.is_some() {
             spec = spec
                 .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
@@ -6805,7 +6806,7 @@ fn custody_matrix_app_with_confirmation(
     use crate::widget::toggle_group::Segment;
     use crate::widget::*;
     let mut resource = custody_matrix_spec(kind);
-    resource.actions[0].contract.confirmation = confirmation;
+    resource.actions[0].type_mut().contract.confirmation = confirmation;
     let unit = || {
         tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |()| {
             serde_json::Map::new()

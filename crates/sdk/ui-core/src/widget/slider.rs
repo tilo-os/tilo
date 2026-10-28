@@ -2424,7 +2424,7 @@ mod tests {
             rebuilt: &Rc<Cell<bool>>,
         ) {
             if rebuilt.replace(false) {
-                *d.root_mut::<Slider>() = built(level, rebuilt);
+                d.root_mut::<Slider>().replace(built(level, rebuilt));
                 d.relayout();
             }
         }

@@ -2045,7 +2045,7 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
     )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.label = format!("Open {}", container.name);
+        open.type_mut().label = format!("Open {}", container.name);
         open
     });
     let effects = match container.status {
@@ -2247,7 +2247,7 @@ mod tests {
         ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
     }
 
-    fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
+    fn app_of(driver: &mut ui::headless::FrameHarness) -> ui::headless::RootMut<'_, ContainersApp> {
         driver.root_mut::<ContainersApp>()
     }
 
@@ -2343,7 +2343,7 @@ mod tests {
         d.present_in_window_bar();
         d.relayout();
         let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
-        let app = app_of(&mut d);
+        let app = d.root::<ContainersApp>();
         let chosen = app
             .selected()
             .and_then(|id| app.engine.find(id))

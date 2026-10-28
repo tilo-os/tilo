@@ -137,6 +137,15 @@ pub struct Plan {
     /// order.
     pub seccomp: Vec<Vec<u8>>,
     pub cap_last: u32,
+    /// The job has a network namespace of its own, whose `lo` the init
+    /// brings up; false where it joins one its owner configures.
+    pub own_net: bool,
+    /// A helper of the caller's (see [`crate::job::helper`]): a mount
+    /// namespace of its own and nothing else, keeping the caller's ids and
+    /// capabilities.
+    pub helper: bool,
+    /// Raise the open file limit to its hard limit before the command runs.
+    pub nofile_max: bool,
 }
 
 fn cstr(bytes: &[u8], what: &str) -> Result<CString, SpawnError> {
@@ -389,6 +398,22 @@ impl Builder {
                 // writes into a shared image, not even a mount point.
                 self.attr(new, RO, false)?;
             }
+            Root::Layers {
+                lowers,
+                upper,
+                work,
+            } => {
+                // Writable while the root is built, so mount points go into the
+                // job's own upper; read-only once built (see `filesystem`).
+                let opts = self.overlay_options(lowers, Some((upper, work)), Owners::System)?;
+                self.ops.push(Op::Mount {
+                    src: Some(cstr(b"overlay", "overlay")?),
+                    dst: under(NEW, new)?,
+                    fstype: Some(cstr(b"overlay", "overlay")?),
+                    flags: libc::MS_NOSUID | libc::MS_NODEV,
+                    data: Some(cstr(opts.as_bytes(), "overlay options")?),
+                });
+            }
             Root::Host { extra } => {
                 self.ops.push(Op::Mount {
                     src: Some(cstr(b"tmpfs", "tmpfs")?),
@@ -618,7 +643,7 @@ impl Builder {
                 upper,
                 work,
             } => {
-                let opts = self.overlay_options(lowers, Some((upper, work)))?;
+                let opts = self.overlay_options(lowers, Some((upper, work)), Owners::Job)?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -634,7 +659,7 @@ impl Builder {
                         inside.display()
                     )));
                 }
-                let opts = self.overlay_options(lowers, None)?;
+                let opts = self.overlay_options(lowers, None, Owners::Job)?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -673,6 +698,7 @@ impl Builder {
         &mut self,
         lowers: &[PathBuf],
         writes: Writes<'_>,
+        owners: Owners,
     ) -> Result<String, SpawnError> {
         use std::fmt::Write as _;
         if lowers.is_empty() {
@@ -693,7 +719,7 @@ impl Builder {
             None => None,
         };
         let (lowers, writes) = if self.userns.is_some() {
-            self.idmapped_layers(&lowers, writes)?
+            self.idmapped_layers(&lowers, writes, owners)?
         } else {
             let old = |p: &Path| PathBuf::from(format!("{OLD}{}", p.display()));
             (
@@ -735,6 +761,7 @@ impl Builder {
         &mut self,
         lowers: &[PathBuf],
         writes: Option<(PathBuf, PathBuf)>,
+        owners: Owners,
     ) -> Result<Named, SpawnError> {
         let at = PathBuf::from(format!("/layers/{}", self.overlays));
         self.overlays = self.overlays.saturating_add(1);
@@ -750,7 +777,7 @@ impl Builder {
                 path_c(&lower_at)?,
                 libc::MS_BIND | libc::MS_REC,
                 Idmap::Required,
-                Owners::Job,
+                owners,
             )?;
             named.push(lower_at);
         }
@@ -775,7 +802,7 @@ impl Builder {
             path_c(&upper_at)?,
             libc::MS_BIND | libc::MS_REC,
             Idmap::Required,
-            Owners::Job,
+            owners,
         )?;
         let (upper, work) = (
             upper_at.join(beneath(&upper)),
@@ -920,7 +947,7 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     let mut b = Builder {
         ops: Vec::new(),
         made: Vec::new(),
-        root_writable: matches!(spec.root, Root::Host { .. }),
+        root_writable: matches!(spec.root, Root::Host { .. } | Root::Layers { .. }),
         rules: vec![Rule {
             path: path_c(Path::new("/"))?,
             access: sys::LL_READ,
@@ -941,6 +968,11 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     let root_dir = match &spec.root {
         Root::Image(dir) => dir.as_path(),
         Root::Host { .. } => Path::new("/"),
+        // The account files the job sees are the topmost layer's.
+        Root::Layers { lowers, .. } => lowers
+            .iter()
+            .find(|l| l.join("etc/passwd").is_file())
+            .map_or_else(|| Path::new("/nonexistent"), PathBuf::as_path),
     };
     b.account(root_dir, spec.ids.inside_uid, spec.ids.inside_gid)?;
     b.proc_and_dev(spec)?;
@@ -1088,6 +1120,9 @@ impl Plan {
             rules: rules.unwrap_or_default(),
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
+            own_net: true,
+            helper: false,
+            nofile_max: false,
         })
     }
 }

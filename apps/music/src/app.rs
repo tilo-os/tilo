@@ -694,6 +694,9 @@ pub struct MusicApp {
     /// each as the participant's attributed, undoable action. `None` until
     /// the surface is attached.
     dispatcher: Option<ui::framework::Dispatcher<crate::model::Library>>,
+    /// The library's published actions and Music's effects, which the page's
+    /// controls are bound to. `None` until the framework attaches.
+    actions: Option<ui::framework::Actions<Library>>,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
@@ -999,6 +1002,7 @@ impl MusicApp {
             )),
             #[cfg(not(test))]
             dispatcher: None,
+            actions: None,
             #[cfg(test)]
             _test_cache_dir: test_cache_dir,
         }
@@ -1247,6 +1251,11 @@ impl MusicApp {
         dispatcher: ui::framework::Dispatcher<crate::model::Library>,
     ) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Bind the page's controls to what the library and Music publish.
+    pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Library>) {
+        self.actions = Some(actions);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
@@ -5602,6 +5611,7 @@ fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
 mod local_files;
 mod media_grid;
 mod page_part;
+mod published;
 mod recommendations;
 mod render;
 mod shell;

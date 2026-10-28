@@ -52,6 +52,9 @@ impl Mounted {
     }
 }
 
+/// Most threads serving the mount at once.
+const MAX_THREADS: usize = 8;
+
 /// Mount `documents` at `at`, creating the folder (owner-only) and clearing
 /// a mount a crashed shell left behind there. Only this user can enter it:
 /// the kernel refuses every other user, and nothing on it can be executed
@@ -77,9 +80,13 @@ pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
     // app's open or the shell's own look at the table. The handlers take
     // the table's lock only to look an entry up, never across a read. Most
     // of the time a thread waits on the disk rather than a CPU, so even one
-    // CPU gets a second thread.
-    config.n_threads =
-        Some(std::thread::available_parallelism().map_or(2, |cpus| cpus.get().max(2)));
+    // CPU gets a second thread. Each thread holds a request buffer of the
+    // largest write (16 MiB) for the session's life, so the count stops at
+    // MAX_THREADS: one per CPU put 384 of them, 6 GiB, in an idle desktop on
+    // a 384-CPU machine, and a desktop's apps never wait on that many reads.
+    config.n_threads = Some(
+        std::thread::available_parallelism().map_or(2, |cpus| cpus.get().clamp(2, MAX_THREADS)),
+    );
     let session = fuser::spawn_mount(DocumentsFs::new(documents), at, &config)?;
     Ok(Mounted {
         _session: session,

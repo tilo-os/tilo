@@ -331,6 +331,14 @@ pub trait AppWidget: Widget {
         None
     }
 
+    /// The component to show in this one's place, built now: what a root shown before its
+    /// record ([`crate::application::HostContext::record_opening`]) answers once the record
+    /// is had. Asked, as a component's own request to show another is, before the window
+    /// syncs, so the window shows this root until it shows the new one.
+    fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+        None
+    }
+
     /// The narrowest window this app is still usable in, in logical px: a
     /// Tilo app's compact layout, a client's `xdg_toplevel` min-size hint.
     /// Resizing a window stops its edge here rather than squeezing the app
@@ -431,6 +439,15 @@ mod component_adapter {
         /// A complete-content capture laid the root out in a tree of its own:
         /// the host rebuilds its layout before the next frame.
         relayout: bool,
+        /// The record's durability changed and the root synced with it
+        /// ([`AppComponent::take_save_status_changed`]): what shows it is
+        /// drawn by the next frame. Nothing about the tree changed, so it is
+        /// not rebuilt (which repaints the whole window for a save label
+        /// after every key), and nothing is measured for it either: a widget
+        /// whose size the new status changes says so itself, as after any
+        /// sync, and a status that keeps its size (Saving, then Saved after
+        /// each keystroke's write) re-solves no layout.
+        save_status_shown: bool,
     }
 
     impl BoundAppWidget {
@@ -438,6 +455,7 @@ mod component_adapter {
             Self {
                 component,
                 relayout: false,
+                save_status_shown: false,
             }
         }
 
@@ -946,6 +964,14 @@ mod component_adapter {
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
+            if binding.records.is_opening(&binding.checkout.id) {
+                // The record is still opening off the frame: the root shows before it
+                // (`HostContext::record_opening`) and reads nothing of it.
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.sync(state, &automerge::ROOT);
+                }
+                return;
+            }
             let sync_root = |component: &mut AppComponent| {
                 binding
                     .read_document(state, |document, record_root| {
@@ -992,6 +1018,13 @@ mod component_adapter {
             // its draw sees it.
             let permissions = binding.permissions.borrow().clone();
             let update = |component: &mut AppComponent| {
+                if binding.records.is_opening(&binding.checkout.id) {
+                    // Shown before its record, as `sync` does.
+                    return component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.update(state, &automerge::ROOT));
+                }
                 binding
                     .read_document(state, |document, record_root| {
                         component
@@ -1167,6 +1200,10 @@ mod component_adapter {
         }
         fn accessibility_represents_child(&self, child_index: usize) -> bool {
             self.in_root(|root| root.accessibility_represents_child(child_index))
+                .unwrap_or_default()
+        }
+        fn lays_out_child(&self, child_index: usize) -> bool {
+            self.in_root(|root| root.lays_out_child(child_index))
                 .unwrap_or_default()
         }
         fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
@@ -1356,8 +1393,9 @@ mod component_adapter {
         fn take_structure_dirty(&mut self) -> bool {
             self.take_structure_change().rebuilds()
         }
-        /// The root's change as it says it; the component's own reasons (a
-        /// relayout it asked for, a save status no `App` presented) rebuild.
+        /// The root's change as it says it, and a relayout the component
+        /// asked for, which rebuilds. A save status no `App` presented is
+        /// drawn by the next frame (`save_status_shown`).
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             use crate::widget::StructureChange;
             let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
@@ -1365,22 +1403,22 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return relayout;
             };
-            let save_status_changed =
-                StructureChange::of(self.component.take_save_status_changed());
+            if self.component.take_save_status_changed() {
+                self.save_status_shown = true;
+            }
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_change()
-                .join(save_status_changed)
-                .join(relayout)
+            root.take_structure_change().join(relayout)
         }
         fn needs_redraw(&self) -> bool {
-            self.in_root(|root| root.needs_redraw()).unwrap_or_default()
+            self.save_status_shown || self.in_root(|root| root.needs_redraw()).unwrap_or_default()
         }
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
             self.in_root(|root| root.collect_damage(regions));
         }
         fn mark_drawn(&mut self) {
+            self.save_status_shown = false;
             self.in_root_mut(|root| root.mark_drawn());
         }
         fn release_scene_cache(&mut self) {

@@ -10,6 +10,8 @@ use crate::model::run::{Area, Budget, ModelChoice, Run};
 pub const MAX_TITLE_CHARS: usize = 240;
 /// The longest message a thread keeps.
 pub const MAX_MESSAGE_CHARS: usize = 16 * 1024;
+/// The longest address a run records reading.
+pub const MAX_READ_RESOURCE_CHARS: usize = 2048;
 /// The most labels one issue carries.
 pub const MAX_LABELS: usize = 32;
 
@@ -95,6 +97,9 @@ pub enum MessageKind {
     ToRun,
     /// What the run did or found, posted by its agent.
     FromRun,
+    /// A resource the run read, looked up through system search. It reads as
+    /// the read it was, and names the address of what was read.
+    Lookup,
 }
 
 /// One message of an issue's thread.
@@ -118,6 +123,10 @@ pub struct Message {
     /// The run it is to or from; 0 for a comment.
     #[model(readonly)]
     pub run: u64,
+    /// The resource a [`MessageKind::Lookup`] read: its address in the app
+    /// that keeps it. Empty for any other message.
+    #[model(readonly)]
+    pub lookup: String,
     /// A message to a run that its agent took in.
     #[model(readonly)]
     pub incorporated: bool,
@@ -225,9 +234,10 @@ pub struct Issue {
     pub cost_budget: Option<u64>,
     /// Spend
     ///
-    /// What an agent's runs recorded they used, in the same units. Typed, as
-    /// a field a person can read, never taken from an agent's own word in
-    /// its report.
+    /// What its runs spent, in millionths of the same currency unit, with
+    /// its sub-issues' included: what a person reads of the cost, and what
+    /// its budget is measured against. Written by the tracker from its own
+    /// ledger of settled receipts, never taken from an agent's word.
     #[model(readonly)]
     pub spend: Option<u64>,
     /// Thread
@@ -448,6 +458,7 @@ impl Imported {
                         MessageKind::Comment
                     },
                     run: 0,
+                    lookup: String::new(),
                     incorporated: true,
                 },
             );

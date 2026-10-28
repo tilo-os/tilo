@@ -81,6 +81,8 @@ class TiloVm:
         self.vm = vm
         self.slot = slot
         self.log = log
+        # Why the slot session could not be restarted, once that happened (`restart_session`).
+        self.restart_failed: str | None = None
 
     def run(self, *args: str, timeout: float = 120, check: bool = True,
             slot: bool = True, cwd: Path | None = None) -> str:
@@ -212,9 +214,17 @@ class TiloVm:
         """Restart the slot's session on its current generation and wait until its control
         socket answers again: a fresh compositor, unlocked, with no windows open. Counted in
         `requested_restarts`, so the session-restart guard knows this ending was asked for."""
+        if getattr(self, "restart_failed", None):
+            # A session that one restart could not bring back gets no second one: each would
+            # wait out its bounds again, and every check after it with them.
+            raise VmError(f"not restarted again: {self.restart_failed}")
         self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
-        self.run("slot", "restart", self.slot, timeout=300, slot=False)
-        self.wait_answering(timeout)
+        try:
+            self.run("slot", "restart", self.slot, timeout=300, slot=False)
+            self.wait_answering(timeout)
+        except VmError as exc:
+            self.restart_failed = f"restarting the slot session failed: {exc.reason()}"
+            raise
 
     def wait_answering(self, timeout: float = 60) -> dict:
         """The state dump, once the slot's compositor answers its control socket with at
@@ -253,10 +263,10 @@ class TiloVm:
         return self.run("slot", "exec", "--", "sh", "-c", script,
                         timeout=timeout, check=check)
 
-    def root_exec(self, script: str, timeout: float = 120) -> str:
+    def root_exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
         (it is not dumpable, so slot exec cannot), or a check's setup of this throwaway VM."""
-        return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout)
+        return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout, check=check)
 
     def slot_uid(self) -> int:
         if not hasattr(self, "_uid"):

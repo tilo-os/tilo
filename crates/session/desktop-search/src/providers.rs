@@ -467,6 +467,175 @@ fn key(address: &ActionAddress) -> String {
     format!("{}\u{1f}{}", address.resource, address.action)
 }
 
+/// The kind answers are grouped under.
+pub const ANSWERS_KIND: &str = "Answers";
+
+/// What was typed, worked out ([`crate::answers`]): a sum or a conversion,
+/// which choosing copies, and an address, which choosing opens. Rows are
+/// addressed by what they answer (`sum:12*7`), as the native shell's are.
+pub struct Answers;
+
+impl Source for Answers {
+    fn id(&self) -> &'static str {
+        "quick-answers"
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        use crate::answers::{address, evaluate, format_number, units};
+        let typed = needle.trim();
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let answer = |id: &str, title: String, subtitle: Option<String>, target: Target| Hit {
+            kind: ResourceKind::Custom(ANSWERS_KIND.into()),
+            provider: self.id().into(),
+            id: format!("{id}:{typed}"),
+            title,
+            subtitle,
+            facts: Vec::new(),
+            score: MAX_PROVIDER_SCORE,
+            icon: None,
+            target,
+        };
+        let mut out = Vec::new();
+        if let Some(value) = evaluate(typed) {
+            let text = format_number(value);
+            out.push(answer(
+                "sum",
+                text.clone(),
+                Some(format!("{typed} =")),
+                Target::Copy { text },
+            ));
+        }
+        if let Some(conversion) = units::convert(typed) {
+            out.push(answer(
+                "unit",
+                conversion.to.clone(),
+                Some(format!("{} =", conversion.from)),
+                Target::Copy {
+                    text: conversion.to,
+                },
+            ));
+        }
+        if let Some((uri, shown)) = address(typed) {
+            out.push(answer(
+                "address",
+                format!("Open {shown}"),
+                None,
+                Target::Open { uri },
+            ));
+        }
+        out
+    }
+}
+
+/// The kind "Search the web for …" is grouped under.
+pub const WEB_KIND: &str = "Web";
+/// The kind the web services named in a query are grouped under.
+pub const WEBSITES_KIND: &str = "Websites";
+
+/// A service row's score when the query names the service alone: below an
+/// exact name's, so an app named the same way still leads.
+const SERVICE_SCORE: i32 = 60;
+
+/// What a service row gives way at the merge when an app serves the same
+/// service (Tube for `YouTube`): enough that the app's row leads the service
+/// named alone.
+const SERVED_SERVICE_YIELD: f32 = -1.5;
+
+/// What a row every query gets gives way: more than any direct match's
+/// strength (a whole title, the provider's top score and an app's launch
+/// intent together), so it is always last.
+const FALLBACK_INTENT: f32 = -10.0;
+
+/// The web as a source ([`crate::answers::web`]): "Search the web for …"
+/// for every query, last, and the web services a query names ("youtube
+/// cats"). The search opens on [`crate::answers::web::FALLBACK_ENGINE`]:
+/// a desktop inside a web browser has no browser app to run it on the
+/// person's own engine, as the native shell's does.
+pub struct WebSearch;
+
+impl Source for WebSearch {
+    fn id(&self) -> &'static str {
+        "web"
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        use crate::answers::web::{Named, fallback_search_url, named};
+        let typed = needle.trim();
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let row = |kind: &str, id: String, title: String, subtitle: &str, score, icon, uri| Hit {
+            kind: ResourceKind::Custom(kind.into()),
+            provider: self.id().into(),
+            id,
+            title,
+            subtitle: Some(subtitle.into()),
+            facts: Vec::new(),
+            score,
+            icon: Some(icon),
+            target: Target::Open { uri },
+        };
+        let mut out = Vec::new();
+        match named(typed) {
+            Some(Named::Search(service, query)) => out.push(row(
+                WEBSITES_KIND,
+                format!("query:{}:{query}", service.id),
+                format!("Search {} for {query}", service.name),
+                service.domain,
+                MAX_PROVIDER_SCORE,
+                service.icon,
+                service.web_search(&query),
+            )),
+            Some(Named::Service(service)) => out.push(row(
+                WEBSITES_KIND,
+                format!("service:{}", service.id),
+                service.name.into(),
+                service.domain,
+                SERVICE_SCORE,
+                service.icon,
+                service.home.into(),
+            )),
+            None => {}
+        }
+        out.push(row(
+            WEB_KIND,
+            format!("search:{typed}"),
+            format!("Search the web for {typed}"),
+            "Web",
+            1,
+            ui::icons::Icon::Globe,
+            fallback_search_url(typed),
+        ));
+        out
+    }
+
+    /// "Search the web for …" answers every query, so it comes after every
+    /// row that answers it directly, as the native shell's fallback does
+    /// (its title holds what was typed and would otherwise lead). A query
+    /// naming a service is worth what the row's title typed whole is; a
+    /// service named alone yields to the app that serves it.
+    fn intent(&self, hit: &Hit) -> f32 {
+        let Some((row, rest)) = hit.id.split_once(':') else {
+            return 0.0;
+        };
+        match row {
+            "search" => FALLBACK_INTENT,
+            "query" => {
+                ui::search::system::lexical_strength(&hit.title, &hit.kind, &hit.title, None)
+            }
+            "service"
+                if crate::answers::web::Service::by_id(rest)
+                    .is_some_and(|service| service.app.is_some()) =>
+            {
+                SERVED_SERVICE_YIELD
+            }
+            _ => 0.0,
+        }
+    }
+}
+
 pub const RECENT_KIND: &str = "Recent";
 
 /// What this palette opened lately, newest first, offered while the query
@@ -478,8 +647,12 @@ pub struct Recents(pub Vec<Hit>);
 pub const MAX_RECENTS: usize = 6;
 
 impl Recents {
-    /// Remember `hit` as the newest choice.
+    /// Remember `hit` as the newest choice. An answer or a web search is
+    /// what one query typed came to, nothing to go back to.
     pub fn record(&mut self, hit: &Hit) {
+        if matches!(hit.target, Target::Copy { .. } | Target::Open { .. }) {
+            return;
+        }
         self.0
             .retain(|recent| !(recent.provider == hit.provider && recent.id == hit.id));
         self.0.insert(0, hit.clone());
@@ -765,7 +938,7 @@ mod tests {
     #[test]
     fn unavailable_and_programmatic_actions_are_not_offered() {
         let mut resource = resource_with_action("r", "Doc", "print", "Print");
-        resource.actions[0].contract.availability = Availability::Unavailable {
+        resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
             code: "offline".into(),
             reason: "Offline".into(),
         };
@@ -1117,5 +1290,89 @@ mod tests {
                 "{query:?} took {best:?} against the registry (budget {budget:?})"
             );
         }
+    }
+
+    /// The rows `needle` comes to over the applications and the answers,
+    /// as `(title, target)` in the order the palette shows them.
+    fn answered(needle: &str) -> Vec<(String, Target)> {
+        search(needle, &[&apps(), &Answers, &WebSearch], 0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .map(|hit| (hit.title, hit.target))
+            .collect()
+    }
+
+    #[test]
+    fn a_sum_and_a_conversion_lead_and_are_copied() {
+        let rows = answered("12*7");
+        assert_eq!(
+            rows.first(),
+            Some(&("84".to_owned(), Target::Copy { text: "84".into() }))
+        );
+        let rows = answered("5 km in miles");
+        assert_eq!(
+            rows.first(),
+            Some(&(
+                "3.1069 mi".to_owned(),
+                Target::Copy {
+                    text: "3.1069 mi".into()
+                }
+            ))
+        );
+        let hit = Answers.query("5 km in miles").remove(0);
+        assert_eq!(hit.subtitle.as_deref(), Some("5 km ="));
+        assert_eq!(hit.id, "unit:5 km in miles");
+    }
+
+    #[test]
+    fn every_query_can_be_searched_on_the_web_after_what_it_names() {
+        let rows = answered("sheets");
+        assert_eq!(
+            rows.first().map(|(title, _)| title.as_str()),
+            Some("Sheets")
+        );
+        assert_eq!(
+            rows.last(),
+            Some(&(
+                "Search the web for sheets".to_owned(),
+                Target::Open {
+                    uri: "https://duckduckgo.com/?q=sheets".into()
+                }
+            )),
+            "the web comes last"
+        );
+        let rows = answered("youtube cats");
+        assert_eq!(
+            rows.first(),
+            Some(&(
+                "Search YouTube for cats".to_owned(),
+                Target::Open {
+                    uri: "https://www.youtube.com/results?search_query=cats".into()
+                }
+            )),
+            "a query naming a service searches it first"
+        );
+        assert!(WebSearch.query("   ").is_empty());
+        assert!(Answers.query("   ").is_empty());
+    }
+
+    #[test]
+    fn an_address_opens_and_answers_are_not_remembered() {
+        let hits = Answers.query("example.com");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Open example.com");
+        assert_eq!(
+            hits[0].target,
+            Target::Open {
+                uri: "https://example.com".into()
+            }
+        );
+        let mut recents = Recents::default();
+        recents.record(&hits[0]);
+        recents.record(&Answers.query("2+2").remove(0));
+        assert!(
+            recents.0.is_empty(),
+            "what one query came to is not a recent"
+        );
     }
 }

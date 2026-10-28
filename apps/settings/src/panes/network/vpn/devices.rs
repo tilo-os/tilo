@@ -1,5 +1,5 @@
 //! The person's devices as VPNs (docs/device-vpn.md): each of their devices
-//! that shares its connection is a "Through <device>" row of the VPN list,
+//! that shares its connection is a "Through `<device>`" row of the VPN list,
 //! and this device shares its own connection with theirs by a switch, with a
 //! Stop for each device using it.
 //!

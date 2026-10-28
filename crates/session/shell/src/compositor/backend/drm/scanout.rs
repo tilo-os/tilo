@@ -72,8 +72,8 @@ use super::output_signal::{
     device_has_adaptive_sync, find_property, hdr_capability,
 };
 use super::outputs::DrmOutputKey;
-use crate::shell::color_pipeline::SdrToPqEncoder;
 use settings_store::hardware::HdrUnavailable;
+use tilo_color_pipeline::color_pipeline::SdrToPqEncoder;
 use tilo_lock::MutexRecover as _;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
@@ -1220,11 +1220,11 @@ impl CardHandle {
     pub fn read_hdr_display_info(
         &self,
         connector_name: &str,
-    ) -> Option<crate::wayland::edid::HdrDisplayInfo> {
+    ) -> Option<tilo_wayland_ext::edid::HdrDisplayInfo> {
         let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
-        let info = crate::wayland::edid::parse_hdr_display_info(&edid);
+        let info = tilo_wayland_ext::edid::parse_hdr_display_info(&edid);
         info.supported_transfers
-            .contains(&crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084)
+            .contains(&neighbour_wire::colorimetry::TransferCharacteristics::SmpteSt2084)
             .then_some(info)
     }
 
@@ -1422,7 +1422,7 @@ fn read_monitor_identity(
     connector_name: &str,
 ) -> Option<settings_store::hardware::MonitorIdentity> {
     let edid = std::fs::read(connector_sysfs(card_path, connector_name).join("edid")).ok()?;
-    crate::wayland::edid::parse_monitor_identity(&edid)
+    tilo_wayland_ext::edid::parse_monitor_identity(&edid)
 }
 
 /// Ask the hardware what is connected now; `force_probe` is on since a
@@ -2673,7 +2673,7 @@ impl DrmScanout {
 
     /// The CRTC dims this output itself: every plane, a client buffer
     /// scanned out directly included. Otherwise the compositor's final pass
-    /// must ([`crate::shell::software_dim::final_pass_dim`]).
+    /// must ([`tilo_color_pipeline::software_dim::final_pass_dim`]).
     pub fn software_dim_in_crtc(&self) -> bool {
         self.crtc_gamma.carries()
     }
@@ -4079,7 +4079,7 @@ pub struct ScanoutBuild {
     /// EDID identity of the monitor on this connector, when it has one.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     /// The sink's HDR description, when its EDID advertises PQ.
-    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    pub hdr_display: Option<tilo_wayland_ext::edid::HdrDisplayInfo>,
     /// The configured mode this output was brought up under, if any.
     pub mode_intent: Option<settings_store::hardware::OutputMode>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.

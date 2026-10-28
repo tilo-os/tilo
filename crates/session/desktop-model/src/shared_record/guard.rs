@@ -11,8 +11,11 @@
 //! author never saw, since its own dependencies are what that entry would
 //! have to be among.
 //!
-//! A write is admitted when every act on what its writer did not make is one
-//! the room lets them do ([`crate::ownership::act_node`]). Whoever holds the
+//! A write is admitted when every act on what its writer did not make, and
+//! every strip or window it adds in someone else's name, is one the room
+//! lets them do ([`crate::ownership::act_node`]), and it binds no window to
+//! another record than the one it showed: a record route is a window's
+//! identity, so not even its maker rebinds it. Whoever holds the
 //! record decides a write with it before taking it in: a relay at its door,
 //! a governor admitting it, and every device that receives it.
 
@@ -22,7 +25,10 @@ use automerge::{AutoCommit, ChangeHash};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 
-use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop, Touched, foreign_acts};
+use crate::ids::TabId;
+use crate::ownership::{
+    DESKTOP_APP, DESKTOP_RECORD, SharedDesktop, Touched, claimed, foreign_acts, rebound_windows,
+};
 
 /// Whether `(app, record)` is a room's shared desktop.
 #[must_use]
@@ -46,6 +52,11 @@ pub enum DesktopRefusal {
         owner = act.owner.as_deref().unwrap_or("nobody")
     )]
     NotTheirs { writer: String, act: Touched },
+    /// It binds a window to another record than the one it showed.
+    #[error(
+        "{writer} may not bind window {window} to another record: it shows its record for good"
+    )]
+    Rebound { writer: String, window: TabId },
     /// It is not a desktop, or not one that can be read.
     #[error("not a shared desktop: {0}")]
     Unreadable(String),
@@ -75,8 +86,15 @@ pub fn judge(
     for change in doc.committed_document().get_changes(before) {
         let seen = super::read(doc, Some(change.deps())).unwrap_or_default();
         let left = super::read(doc, Some(&[change.hash()])).unwrap_or_else(SharedDesktop::default);
+        if let Some(window) = rebound_windows(&seen, &left).first() {
+            return Err(DesktopRefusal::Rebound {
+                writer: writer.person.to_owned(),
+                window: *window,
+            });
+        }
         if let Some(act) = foreign_acts(&seen, &left, writer.person, writer.members)
             .into_iter()
+            .chain(claimed(&seen, &left, writer.person))
             .find(|act| !(writer.allows)(act))
         {
             return Err(DesktopRefusal::NotTheirs {

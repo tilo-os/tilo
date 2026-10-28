@@ -2811,6 +2811,9 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             path.join(artifacts)
         }
     });
+    // Every app's surface is checked before the run fails, so one run names every app
+    // whose surface.toml is behind its code.
+    let mut surface_failures = Vec::new();
     for (app, _, binary) in &packages {
         println!(
             "[certify] {}",
@@ -2832,7 +2835,17 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             "{} production root failed Tilo-native certification",
             app.display()
         );
-        certify_surface(app, executable)?;
+        if let Err(error) = certify_surface(app, executable) {
+            // Where TILO_CERTIFY_SURFACES names a directory (certify's outputs on t), keep
+            // the report the surface can be written from without building the app again.
+            if let Some(dir) = std::env::var_os("TILO_CERTIFY_SURFACES") {
+                match tilo_app_cli::surface::keep_report(app, executable, Path::new(&dir)) {
+                    Ok(file) => println!("kept the surface report in {}", file.display()),
+                    Err(error) => println!("warning: no surface report kept: {error:#}"),
+                }
+            }
+            surface_failures.push(format!("{error:#}"));
+        }
         if let Some(root) = responsive_root.as_deref() {
             let app_name = app.file_name().unwrap_or_default();
             for run in responsive_acceptance_runs(&root.join(app_name)) {
@@ -2903,6 +2916,12 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             }
         }
     }
+    anyhow::ensure!(
+        surface_failures.is_empty(),
+        "{} apps failed their public surface check: {}",
+        surface_failures.len(),
+        surface_failures.join("; ")
+    );
     println!("Certified {} graphical Tilo applications", app_dirs.len());
     Ok(json!({"certified": app_dirs}))
 }

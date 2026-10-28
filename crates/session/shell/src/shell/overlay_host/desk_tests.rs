@@ -22,7 +22,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::desk_widgets::GLANCE_AFTER_PAUSE;
 use crate::shell::now_playing::tests::{FakeSource, player};
 use crate::shell::now_playing::{PlaybackStatus, PlayerCommand};
-use crate::shell::quick_settings::now_playing::{CardTarget, Transport};
+use crate::shell::now_playing_panel::{CardTarget, Transport};
 use crate::shell::state::WorkspaceTree;
 
 fn ms(t0: Instant, n: u64) -> Instant {

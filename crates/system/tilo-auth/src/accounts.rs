@@ -87,16 +87,19 @@ fn parse_passwd(line: &str) -> Option<Account> {
 pub trait Legacy: Send + Sync {
     /// Whether `typed` is the person's old password.
     fn verify(&self, name: &str, typed: &str) -> Result<bool>;
+    /// Whether the person still has a password hash some check would accept.
+    fn has_password(&self, name: &str) -> Result<bool>;
     /// Remove the person's password hash, leaving the account locked to
     /// password checks other than this daemon's.
     fn lock_password(&self, name: &str) -> Result<()>;
 }
 
 /// `pam_unix` through the unlock helper, run as root against a service that
-/// holds only `pam_unix`, and `usermod`.
+/// holds only `pam_unix`, `/etc/shadow` and `usermod`.
 pub struct SystemLegacy {
     pub helper: PathBuf,
     pub service: String,
+    pub shadow: PathBuf,
     pub usermod: PathBuf,
 }
 
@@ -105,6 +108,7 @@ impl Default for SystemLegacy {
         Self {
             helper: PathBuf::from("/usr/libexec/tilo-unlock-helper"),
             service: "tilo-auth-legacy".into(),
+            shadow: PathBuf::from("/etc/shadow"),
             usermod: PathBuf::from("/usr/sbin/usermod"),
         }
     }
@@ -136,6 +140,12 @@ impl Legacy for SystemLegacy {
         }
     }
 
+    fn has_password(&self, name: &str) -> Result<bool> {
+        let shadow = std::fs::read_to_string(&self.shadow)
+            .with_context(|| format!("reading {}", self.shadow.display()))?;
+        Ok(shadow_has_password(&shadow, name))
+    }
+
     fn lock_password(&self, name: &str) -> Result<()> {
         let status = Command::new(&self.usermod)
             .args(["--password", "!", name])
@@ -147,6 +157,18 @@ impl Legacy for SystemLegacy {
         }
         Ok(())
     }
+}
+
+/// Whether `name`'s entry in a shadow file holds anything but a locked or
+/// disabled password: an empty one, which `nullok` accepts, counts.
+fn shadow_has_password(shadow: &str, name: &str) -> bool {
+    shadow.lines().any(|line| {
+        let mut fields = line.split(':');
+        fields.next() == Some(name)
+            && fields
+                .next()
+                .is_some_and(|hash| !hash.starts_with('!') && !hash.starts_with('*'))
+    })
 }
 
 #[cfg(test)]
@@ -199,5 +221,20 @@ mod tests {
                 .is_admin(&accounts.by_name("bob").unwrap().unwrap())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn only_a_locked_or_disabled_shadow_entry_holds_no_password() {
+        let shadow = "root:!:19000::::::\n\
+                      ada:$y$j9T$salt$hash:19000:0:99999:7:::\n\
+                      bob:!$y$j9T$salt$hash:19000::::::\n\
+                      greetd:*:19000::::::\n\
+                      eve::19000::::::\n";
+        assert!(shadow_has_password(shadow, "ada"));
+        assert!(shadow_has_password(shadow, "eve"));
+        assert!(!shadow_has_password(shadow, "root"));
+        assert!(!shadow_has_password(shadow, "bob"));
+        assert!(!shadow_has_password(shadow, "greetd"));
+        assert!(!shadow_has_password(shadow, "mallory"));
     }
 }

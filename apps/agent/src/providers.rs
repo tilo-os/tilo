@@ -5,7 +5,9 @@
 //! and leaves secret resolution to the desktop broker rather than environment
 //! variables or the replicated task state.
 
-use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, SecretReference};
+use agent_provider_config::{
+    Interaction, ModelDescriptor, ProviderConfig, ProviderProfile, SecretReference,
+};
 
 /// The non-secret endpoint selection captured by a new task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,10 +67,73 @@ pub fn agent_selection(agent: &str) -> Option<ProviderSelection> {
     Some(ProviderSelection::from_profile(profile, model.clone()))
 }
 
+/// Load the model Settings chose for one kind of interaction, for a request
+/// of that kind; `None` while that kind follows the default.
+pub fn interaction_selection(kind: Interaction) -> Option<ProviderSelection> {
+    let config = ProviderConfig::load();
+    let (profile, model) = config.interaction_selection(kind)?;
+    Some(ProviderSelection::from_profile(profile, model.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_provider_config::{ProviderProfile, ProviderProtocol};
+    use agent_provider_config::{AgentModel, ProviderProfile, ProviderProtocol};
+
+    /// A request carries the kind of interaction it is, so a translation can
+    /// run on the model chosen for short answers while a task runs on the
+    /// larger one chosen for tasks.
+    #[test]
+    fn a_request_of_each_kind_is_asked_of_the_model_chosen_for_that_kind() {
+        let mut small = ProviderProfile::local_vllm();
+        small.models = vec![ModelDescriptor::new("small")];
+        let mut large = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        large.models = vec![ModelDescriptor::new("large")];
+        large.default_model = Some("large".into());
+        let mut config = ProviderConfig {
+            default_profile: Some(large.id.clone()),
+            profiles: vec![small.clone(), large.clone()],
+            ..Default::default()
+        };
+        config
+            .set_interaction_model(
+                Interaction::OneShot,
+                Some(AgentModel {
+                    profile: small.id.clone(),
+                    model: "small".into(),
+                }),
+            )
+            .unwrap();
+        config
+            .set_interaction_model(
+                Interaction::Task,
+                Some(AgentModel {
+                    profile: large.id.clone(),
+                    model: "large".into(),
+                }),
+            )
+            .unwrap();
+        let chosen = |kind| {
+            config
+                .interaction_selection(kind)
+                .map(|(profile, model)| (profile.location, model.id.clone()))
+        };
+        assert_eq!(
+            chosen(Interaction::OneShot),
+            Some((
+                agent_provider_config::EndpointLocation::ThisDevice,
+                "small".into()
+            ))
+        );
+        assert_eq!(
+            chosen(Interaction::Task),
+            Some((
+                agent_provider_config::EndpointLocation::Hosted,
+                "large".into()
+            ))
+        );
+        assert_eq!(chosen(Interaction::Subtask), None, "it follows the task");
+    }
 
     /// A task's provider selection names a model and never a secret, and the
     /// packaged agent has no route of its own to a provider or an

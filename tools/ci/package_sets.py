@@ -56,8 +56,13 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 
 # Crates the page runtime compiles for the browser that reach wasm-bindgen only
 # through others, with the features the web build gives them: the arguments
-# that build each as tilo-browser-runtime's dependency on it does.
-WASM_ALSO = {"tilo-browser-peer": ("--no-default-features", "--features", "toolkit")}
+# that build each as tilo-browser-runtime's dependency on it does. channel-crypto
+# is here for its own wasm target table: the getrandom backend that makes a peer
+# built without tilo-ui compile belongs to it, so it is built alone to hold that.
+WASM_ALSO = {
+    "tilo-browser-peer": ("--no-default-features", "--features", "toolkit"),
+    "channel-crypto": (),
+}
 # Lints that misfire on wasm32 alone: browser handles are neither Send nor
 # Sync, and std::fs::File there holds nothing to drop.
 WASM_CLIPPY_ALLOW = ("clippy::future_not_send", "clippy::arc_with_non_send_sync", "clippy::drop_non_drop")

@@ -30,8 +30,12 @@ use crate::shell::search::invocation_wake::{poll, waker, watch};
 use crate::shell::selection_agent::SelectionSeed;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// The agent's own answer may take its whole model budget, and a little more.
-const RESPOND_TIMEOUT: Duration = Duration::from_secs(45);
+/// A request's decision may take the agent's own decision budget
+/// (`tilo_agent::transform::RESPOND_TIMEOUT`), and a little more for the
+/// invocation to reach it and come back. The person is waiting in front of
+/// the composer, so the box gives up quickly and the request runs as the
+/// work it was written as rather than leaving them waiting.
+const RESPOND_TIMEOUT: Duration = Duration::from_secs(10);
 /// The Tasks app: a request the composer starts is an issue there, assigned
 /// to the agent and started by the asking.
 const TRACKER_APP: &str = tilo_action_broker::services::TRACKER_APP;
@@ -816,6 +820,11 @@ fn instruction(text: &str, context: &str, conversation: &[ComposerTurn]) -> Stri
 
 fn submission_operation(request: ComposerRequest) -> Option<Operation> {
     if request.intent == ComposerIntent::Request && !request.stop {
+        // The person ruling that this is work skips the question the agent
+        // would have answered: the task starts with their words as its title.
+        if request.as_task == Some(true) {
+            return Some(request_queue(&request, None));
+        }
         return Some(respond_operation(request));
     }
     let issue = request
@@ -1082,6 +1091,7 @@ mod tests {
             ],
             about: None,
             model: None,
+            as_task: None,
         }
     }
 
@@ -1132,6 +1142,32 @@ mod tests {
         assert!(operation.arguments.get("text").is_none());
         stop.task = None;
         assert!(submission_operation(stop).is_none(), "nothing to stop");
+    }
+
+    #[test]
+    fn a_person_ruling_that_it_is_work_starts_the_task_without_asking() {
+        let mut request = request(ComposerIntent::Request);
+        request.task = None;
+        request.text = "Rename every file to its invoice number".into();
+        request.as_task = Some(true);
+        let operation = submission_operation(request.clone()).unwrap();
+        assert_ne!(operation.action, "respond", "no question to the agent");
+        assert_eq!(
+            (
+                operation.resource.as_str(),
+                operation.action.as_str(),
+                operation.app
+            ),
+            (TRACKER, "ask-agent", TRACKER_APP)
+        );
+        assert_eq!(
+            operation.arguments["title"],
+            "Rename every file to its invoice number"
+        );
+
+        // Ruling that it is an answer leaves the question to the agent.
+        request.as_task = Some(false);
+        assert_eq!(submission_operation(request).unwrap().action, "respond");
     }
 
     #[test]

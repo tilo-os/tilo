@@ -92,6 +92,7 @@ fn send(writer: &mut UnixStream, answer: &Answer) -> Result<()> {
     let mut bytes = match answer {
         Answer::Reply(reply) => serde_json::to_vec(reply),
         Answer::Pending(pending) => serde_json::to_vec(pending),
+        Answer::Comforts(comforts) => serde_json::to_vec(comforts),
     }
     .context("encoding a reply")?;
     bytes.push(b'\n');

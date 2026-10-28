@@ -78,6 +78,8 @@ window-toolbar-hide-inspector = Hide inspector
 # A window shared live into a conversation, from its own menu.
 window-share-to-channel = Share to channel…
 window-stop-sharing-in = Stop sharing in { $place }
+history-loading = Loading History…
+lazy-loading = Loading…
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
@@ -243,6 +245,9 @@ arriving-retry = Try again
 content-unavailable = None of the connected devices has it
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
+room-sync-unreachable = Can’t reach { $workspace } right now
+room-sync-unreachable-unnamed = Can’t reach this workspace’s host right now
+room-sync-unreachable-body = This is what this device has. Your changes stay here and sync once its host is back.
 room-sync-host-needs-update = This workspace’s host needs to update
 room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
 room-sync-device-needs-update = Tilo needs to update to sync this workspace
@@ -424,6 +429,10 @@ secret-prompt-attempts-left = { $count ->
 secret-prompt-pins-differ = The new PINs don’t match
 secret-prompt-keypad-delete = Delete
 secret-prompt-keypad-enter = Done
+
+# Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
+screen-reader-turned-on = Screen reader on
+screen-reader-turned-off = Screen reader off
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Welcome back
@@ -648,6 +657,7 @@ save-status-not-saved-named = { $document } wasn't saved
 save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
+save-status-failed-detail = Your latest changes are not stored yet.
 save-status-retry = Try again
 
 # Find bar: the band at the top of a document that finds in it.
@@ -912,6 +922,11 @@ history-preview-now = Back to now
 workspace-identity-required-title = Choose who you are here
 workspace-identity-required-body = This workspace needs to know who’s working in it before { $app } can open.
 workspace-identity-required-choose = Choose identity
+
+# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
+date-field-none = No date
+date-field-calendar = Calendar
+date-field-clear = Clear date
 
 # The menu a secondary click or a long press opens on editable words.
 text-menu-cut = Cut

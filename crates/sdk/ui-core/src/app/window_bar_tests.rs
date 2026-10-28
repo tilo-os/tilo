@@ -289,7 +289,7 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             &crate::a11y::Action::Activate,
         )
         .unwrap();
-    let window = frame.root_mut::<WindowGroup>();
+    let mut window = frame.root_mut::<WindowGroup>();
     let events = window.take_toolbar_events();
     assert_eq!(events, vec![(1, ToolbarEvent::History)]);
     for (_, event) in events {
@@ -306,6 +306,7 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
     let offer = last_offer(&mut shell, &mut app).expect("the app says History is open");
     assert_eq!(offer.history, Some(HistoryOffer::Open));
     window.set_tab_window_offer(1, Some(offer));
+    drop(window);
     frame.relayout();
     assert_eq!(
         frame
@@ -522,9 +523,10 @@ fn native_frame(app: &mut App) {
 /// done in the bar to the app, the app's slots back to the window.
 fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::FrameHarness) {
     for _ in 0..3 {
-        let window = frame.root_mut::<WindowGroup>();
+        let mut window = frame.root_mut::<WindowGroup>();
         let mut events = window.take_toolbar_events();
         events.extend(window.take_location_drafts());
+        drop(window);
         for (tab, event) in events {
             assert_eq!(tab, 1, "events go to the tab the app shows");
             shell.send(&FloatingSurfaceHostMessage::ToolbarEvent { event });

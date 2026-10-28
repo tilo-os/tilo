@@ -3,11 +3,11 @@
 use super::{
     ElementState, FrameHarness, HashMap, InspectionNode, Key, WindowEvent, collect_inspection,
 };
-use crate::action_palette::{ActionPalette, PendingOperation};
+use crate::action_palette::{ActionPaletteBox, PendingOperation};
 
 #[derive(Default)]
 pub(super) struct CallerPalette {
-    pub palette: Option<ActionPalette>,
+    pub palette: Option<ActionPaletteBox>,
     pub resources: Vec<tilo_actions::Resource>,
     pub pending: Option<PendingOperation>,
     /// Set by a root that answers the command chord itself.
@@ -62,7 +62,9 @@ impl FrameHarness {
         {
             return Err("Finish the current dialog or command first".into());
         }
-        let mut palette = ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
+        let mut palette = self
+            .new_action_palette()
+            .ok_or_else(|| "Search is still loading".to_owned())?;
         palette.load_open_resources(&self.caller_resources());
         palette.open();
         palette.set_query(query);
@@ -77,7 +79,7 @@ impl FrameHarness {
         self.caller_palette
             .palette
             .as_ref()
-            .map(ActionPalette::result_rows)
+            .map(|palette| palette.result_rows())
             .unwrap_or_default()
     }
 
@@ -99,8 +101,9 @@ impl FrameHarness {
                 && self.caller_palette.pending.is_none()
                 && !self.global_search_pending()
             {
-                let mut palette =
-                    ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
+                let Some(mut palette) = self.new_action_palette() else {
+                    return false;
+                };
                 palette.load_open_resources(&self.caller_resources());
                 palette.open();
                 self.caller_palette.palette = Some(palette);
@@ -327,8 +330,8 @@ mod tests {
                 payload: vec![],
             },
         );
-        action.kind = tilo_actions::OperationKind::Effect;
-        action.contract.confirmation = confirmation;
+        action.type_mut().kind = tilo_actions::OperationKind::Effect;
+        action.type_mut().contract.confirmation = confirmation;
         vec![
             tilo_actions::Resource::new(
                 "certified-host/room/record/revision",

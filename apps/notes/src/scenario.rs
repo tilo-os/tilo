@@ -54,10 +54,6 @@ pub const SCENARIOS: &[&str] = &[
     "image_sized",
     "long_list",
     "image_edit",
-    "status",
-    "save_retrying",
-    "save_not_saved",
-    "save_error",
     "import_success",
     "presence",
     "shortcuts",
@@ -652,17 +648,6 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("presence") => show_collaborators(driver)?,
-        Some("save_error") => {
-            let first = visible_block_rects(driver)
-                .into_iter()
-                .next()
-                .ok_or("status edit target missing")?;
-            // A space after the line's last word: an edit the note saves
-            // that reads as nothing in the capture.
-            driver.click_at(first.x0 + first.width() * 0.8, first.center().y);
-            driver.key("End");
-            driver.type_text(" ");
-        }
         _ => {}
     }
     for _ in 0..3 {

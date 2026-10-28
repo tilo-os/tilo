@@ -260,14 +260,14 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     args = ap.parse_args()
     have = (DIR / "Cargo.toml").read_text() if (DIR / "Cargo.toml").exists() else ""
-    if args.write:
-        want = manifest(ROOT, have)
-    else:
-        # Checks see the tree read-only: resolve in a copy of it.
-        with tempfile.TemporaryDirectory() as scratch:
-            copy = Path(scratch) / "tree"
-            shutil.copytree(ROOT, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "target"))
-            want = manifest(copy, have)
+    # Resolve in a copy of the tree, never in it: resolving rewrites workspace-unify's manifest,
+    # and a run cut short there, or a second run reading it meanwhile, would take the seeded
+    # manifest for the current one and lose the other architecture's tables, which only a machine
+    # of that architecture can write again.
+    with tempfile.TemporaryDirectory(prefix="workspace-unify-") as scratch:
+        copy = Path(scratch) / "tree"
+        shutil.copytree(ROOT, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "target"))
+        want = manifest(copy, have)
     if args.write:
         (DIR / "Cargo.toml").write_text(want)
         (DIR / "main.rs").write_text(MAIN)

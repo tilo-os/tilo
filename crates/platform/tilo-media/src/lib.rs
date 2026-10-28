@@ -100,6 +100,7 @@ pub mod calibration;
 pub mod calibration_fusion;
 mod caps;
 pub mod dmabuf;
+pub mod edit;
 pub mod encode;
 pub mod engine;
 pub mod event;
@@ -122,6 +123,9 @@ pub mod voice;
 /// The page backend: the browser's media element decodes and plays.
 #[cfg(web_page)]
 mod web;
+/// The page side of [`edit`].
+#[cfg(web_page)]
+mod web_edit;
 
 /// The GStreamer decode pipeline. Only compiled with `--features decode`;
 /// consumers drive it through [`MediaEngine`].

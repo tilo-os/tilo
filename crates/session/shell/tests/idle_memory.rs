@@ -9,8 +9,16 @@
 //! pages per mapping. Both are printed; the gate is the compositor's
 //! anonymous RSS.
 //!
+//! When it is over budget, or `TILO_IDLE_HEAP_PROFILE` is set, a second idle
+//! desktop is started with its heap sampled (`shell::shell::heap_profile`)
+//! and the test prints where its live Rust heap was allocated: per crate and
+//! the largest stacks. A `TILO_IDLE_HEAP_PROFILE` other than `1` is a path the
+//! gzipped pprof profile is written to, for `pprof -top -diff_base`. The
+//! profiled desktop is not the one measured: sampling has its own cost.
+//!
 //! ```bash
 //! cargo test --locked -p shell --test it idle_memory:: -- --nocapture
+//! TILO_IDLE_HEAP_PROFILE=1 cargo test --locked -p shell --test it idle_memory:: -- --nocapture
 //! ```
 
 #![allow(
@@ -164,9 +172,15 @@ fn print_report(report: &serde_json::Value) {
     eprintln!("threads: {}", report["threads"]);
 }
 
-#[test]
-fn an_idle_empty_desktop_stays_within_its_memory_budget() {
-    let desktop = Desktop::start_with(shell::shell::state::WorkspaceTree::bootstrap_default());
+/// Average bytes allocated between two sampled allocations when the heap is
+/// profiled: fine enough that a site holding 1 MiB shows in ~32 samples.
+const HEAP_SAMPLE_RATE: &str = "32768";
+
+/// An empty desktop started with `env`, watched, and left alone past the trim
+/// that returns startup's scratch and a settle period beyond.
+fn idle_desktop(env: &[(&str, &str)]) -> Desktop {
+    let desktop =
+        Desktop::start_with_env(shell::shell::state::WorkspaceTree::bootstrap_default(), env);
     // A person looks at their desktop: frames are rasterised, as on DRM.
     let watched = desktop.control(&serde_json::json!({"op": "watch", "watching": true}));
     assert!(watched.get("err").is_none(), "watch refused: {watched}");
@@ -201,6 +215,69 @@ fn an_idle_empty_desktop_stays_within_its_memory_budget() {
         std::thread::sleep(Duration::from_millis(500));
     }
     std::thread::sleep(SETTLE);
+    desktop
+}
+
+/// Start an idle desktop with its heap sampled and print where its live Rust
+/// heap was allocated; with `path`, write the pprof profile there too.
+fn print_heap_profile(path: Option<&str>) {
+    let desktop = idle_desktop(&[("PPROF_ALLOC_SAMPLE_RATE", HEAP_SAMPLE_RATE)]);
+    // Before the profile: symbolizing it takes heap of its own.
+    let memory = desktop.control(&serde_json::json!({"op": "process_memory"}));
+    let mut request = serde_json::json!({"op": "heap_profile"});
+    if let Some(path) = path {
+        request["path"] = path.into();
+    }
+    let reply = desktop.control(&request);
+    let Some(profile) = reply.get("answer") else {
+        eprintln!("heap_profile gave no answer: {reply}");
+        return;
+    };
+    eprintln!(
+        "live Rust heap of a sampled idle desktop: {} KiB in {} objects (one sample per {} B); glibc had {} KiB in use, the rest C libraries'; anonymous RSS {} KiB",
+        profile["live_kib"],
+        profile["live_objects"],
+        profile["sample_rate"],
+        memory["answer"]["malloc"]["in_use_kib"],
+        memory["answer"]["status_kib"]["RssAnon"]
+    );
+    if let Some(path) = path {
+        eprintln!("pprof profile: {path}");
+    }
+    eprintln!("  live_kib  objects  crate asking");
+    for row in profile["by_crate"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(25)
+    {
+        eprintln!(
+            "  {:>8}  {:>7}  {}",
+            row["kib"],
+            row["objects"],
+            row["crate"].as_str().unwrap_or("?")
+        );
+    }
+    eprintln!("largest live stacks (leaf first):");
+    for row in profile["top_stacks"].as_array().into_iter().flatten() {
+        let frames: Vec<&str> = row["frames"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        eprintln!(
+            "  {:>8} KiB {:>7} objects  {}",
+            row["kib"],
+            row["objects"],
+            frames.join("\n                               <- ")
+        );
+    }
+}
+
+#[test]
+fn an_idle_empty_desktop_stays_within_its_memory_budget() {
+    let desktop = idle_desktop(&[]);
     let reply = desktop.control(&serde_json::json!({"op": "process_memory"}));
     let report = reply
         .get("answer")
@@ -217,8 +294,14 @@ fn an_idle_empty_desktop_stays_within_its_memory_budget() {
         resident > 0,
         "the report counted no resident memory, so the compositor was not observed: {report}"
     );
+    let over = anon_kib > IDLE_ANON_BUDGET_MIB * 1024;
+    let asked = std::env::var("TILO_IDLE_HEAP_PROFILE").ok();
+    if over || asked.is_some() {
+        drop(desktop);
+        print_heap_profile(asked.as_deref().filter(|value| *value != "1"));
+    }
     assert!(
-        anon_kib <= IDLE_ANON_BUDGET_MIB * 1024,
+        !over,
         "the idle compositor holds {} MiB of anonymous memory, budget {IDLE_ANON_BUDGET_MIB} MiB",
         anon_kib / 1024
     );

@@ -42,7 +42,9 @@ mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
+mod follow_ups;
 mod handoff;
+mod held_answers;
 mod history_actions;
 mod host_commands;
 
@@ -59,6 +61,7 @@ mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
+mod surface_route;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod retained_layout;
@@ -73,7 +76,10 @@ include!("app/continuation.rs");
 include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
+include!("app/action_directory.rs");
+include!("app/control_availability.rs");
 include!("app/accessibility.rs");
+include!("app/touch_exploration.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
@@ -510,7 +516,7 @@ pub struct App {
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
-    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    history: Option<crate::history_mode::host::HistoryChrome>,
     #[cfg(any(test, feature = "test-support"))]
     controlled_installed_history_definition:
         Option<&'static crate::history_mode::HistoryDefinition>,
@@ -986,9 +992,8 @@ impl App {
         }
     }
 
-    /// The window's root widget, for a test that drives a live window and
-    /// looks at what it mounted.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The window's root widget: what a host or a test drives the window
+    /// through when it looks at what the app mounted.
     pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
@@ -1330,6 +1335,7 @@ impl App {
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
+        // A native window links its History; only a page fetches it later.
         let host = tilo_startup_metrics::span("history-install", || {
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
         })?;
@@ -1518,6 +1524,8 @@ impl App {
     }
 
     fn close_wake_scope(&mut self) {
+        // Nothing lands for a closing window: what it held is answered.
+        self.send_held_answers();
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
@@ -1840,18 +1848,17 @@ impl App {
             locus: action.locus,
             kind: action.kind,
             contract: action.contract.clone(),
-            input: match &action.input {
+            input: match action.input() {
                 tilo_actions::ActionInput::Immediate(_)
                 | tilo_actions::ActionInput::Deferred { .. } => tilo_actions::InputSpec::None,
                 tilo_actions::ActionInput::Prompted {
                     prompt,
                     placeholder,
                     collects,
-                    ..
                 } => tilo_actions::InputSpec::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    collects: *collects,
+                    prompt: prompt.to_owned(),
+                    placeholder: placeholder.to_owned(),
+                    collects,
                 },
             },
             params: action.params().to_vec(),
@@ -1905,6 +1912,7 @@ impl App {
     /// app closes, so the app's content stays findable whether or not it
     /// runs.
     fn publish_search_index(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.publish_search_index");
         let Some(state) = crate::search::capability::search_index_state(self.root_widget.as_ref())
         else {
             return;
@@ -1940,7 +1948,7 @@ impl App {
                 .continuation
                 .last_private_route
                 .as_ref()
-                .is_some_and(|last| last.route != witness.route)
+                .is_some_and(|last| last.route() != witness.route())
                 || self.continuation.private_instance != Some(instance)
             {
                 self.continuation.owner_view = Default::default();
@@ -1956,7 +1964,7 @@ impl App {
             self.continuation.last_private_route = Some(witness.clone());
             self.continuation.private_instance = Some(instance);
         }
-        Some(witness.route)
+        Some(witness.route().clone())
     }
 }
 
@@ -3912,7 +3920,7 @@ pub(crate) mod ordinary_confirmation_tests {
             vec![ActionParam::required("payload", ParamType::Text, "Payload")],
             |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
         );
-        spec.contract.confirmation = policy;
+        spec.type_mut().contract.confirmation = policy;
         let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
         let binding = ActionBinding::new(&resource, &resource.actions[0], move |()| {
             source.lock().unwrap().clone()
@@ -4562,9 +4570,9 @@ pub(crate) mod ordinary_confirmation_tests {
                             )
                             .with_contract(old);
                         }
-                        "contract" => spec.contract.risk = RiskLevel::Privileged,
+                        "contract" => spec.type_mut().contract.risk = RiskLevel::Privileged,
                         "policy" => {
-                            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                            spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
                                 phrase: "OTHER".into(),
                             }
                         }
@@ -4592,7 +4600,7 @@ pub(crate) mod ordinary_confirmation_tests {
                             .with_contract(old);
                         }
                         "unavailable" => {
-                            spec.contract.availability = Availability::Unavailable {
+                            spec.type_mut().contract.availability = Availability::Unavailable {
                                 code: "gone".into(),
                                 reason: "Gone".into(),
                             }
@@ -4605,8 +4613,8 @@ pub(crate) mod ordinary_confirmation_tests {
                             let duplicate = resources[0].actions[0].clone();
                             resources[0].actions.push(duplicate);
                         }
-                        "label" => spec.label = "Different reviewed meaning".into(),
-                        "kind" => spec.kind = OperationKind::View,
+                        "label" => spec.type_mut().label = "Different reviewed meaning".into(),
+                        "kind" => spec.type_mut().kind = OperationKind::View,
                         "revoked" => {}
                         _ => unreachable!(),
                     }
@@ -4813,7 +4821,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 )
                 .unwrap()
             };
-            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
             resources.borrow_mut()[0].actions[0] = spec;
             let mut app =
                 App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
@@ -4874,7 +4882,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 host.activate("History");
                 if changed {
-                    resources.borrow_mut()[0].actions[0].label = "Changed during History".into();
+                    resources.borrow_mut()[0].actions[0].type_mut().label =
+                        "Changed during History".into();
                 }
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
@@ -4909,7 +4918,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 vec![ActionParam::required("payload", ParamType::Text, "Payload")],
                 |_| EncodedAction::encode("fixture.edit", &FixtureEdit).unwrap(),
             );
-            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
             resources.borrow_mut()[0].actions[0] = spec;
             let mut host = Host::new(native, root);
             match &mut host {

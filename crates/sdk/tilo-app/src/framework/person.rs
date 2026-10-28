@@ -293,7 +293,7 @@ pub(crate) fn resource_id(kind: &str) -> String {
 
 fn history_spec(record: &str, label: &str, undo: bool) -> tilo_actions::ActionSpec {
     let mut spec = history_operation(record.to_owned(), label, undo);
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({
             "type": "object",
             "properties": { "steps": { "type": "integer" } },
@@ -411,8 +411,19 @@ impl PersonState {
                 }),
             })
         };
-        let shared = self.open_kind::<P>(
+        let shared = self.open_kind(
             owner,
+            &RecordType {
+                kind: P::KIND,
+                label: P::LABEL,
+                unreadable: &|reason| {
+                    tilo_resource::resource::unreadable_parts::<P>(
+                        &resource_id(P::KIND),
+                        P::LABEL,
+                        reason,
+                    )
+                },
+            },
             &|doc| P::initialize(doc).map_err(|error| error.to_string()),
             &open,
             publish,
@@ -427,14 +438,15 @@ impl PersonState {
     /// `open` makes of it, created by `initialize` where it does not exist
     /// yet, kept and (for this app's own, when `publish`) published: the
     /// part of opening a person record that does not depend on its type.
-    fn open_kind<P: Resource>(
+    fn open_kind(
         &self,
         owner: &'static str,
+        of: &RecordType<'_>,
         initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
         open: &dyn Fn(StoredRecord) -> Result<Opened, String>,
         publish: bool,
     ) -> Option<Rc<dyn Any>> {
-        let (kind, label) = (P::KIND, P::LABEL);
+        let (kind, label) = (of.kind, of.label);
         let key = (owner, kind.to_owned());
         if let Some(open) = self.opened.borrow().get(&key) {
             return Some(Rc::clone(open));
@@ -442,11 +454,11 @@ impl PersonState {
         let records = self.records_of(owner)?;
         let record = match open_record(&records, kind.to_owned(), kind, initialize) {
             Ok(record) => record,
-            Err(reason) => return self.note_unavailable::<P>(owner, &reason, publish),
+            Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
         let Opened { shared, door, step } = match open(record) {
             Ok(opened) => opened,
-            Err(reason) => return self.note_unavailable::<P>(owner, &reason, publish),
+            Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
         if owner != self.app_id || !publish {
             self.opened.borrow_mut().insert(key, Rc::clone(&shared));
@@ -584,25 +596,22 @@ impl PersonState {
     /// `reason`: the root publishes it with its declared actions
     /// unavailable for that reason, rather than the record going quietly
     /// missing from the surface.
-    fn note_unavailable<P: Resource>(
+    fn note_unavailable(
         &self,
         owner: &'static str,
+        of: &RecordType<'_>,
         reason: &str,
         publish: bool,
     ) -> Option<Rc<dyn Any>> {
-        unreadable_person_record(P::KIND, &reason);
+        unreadable_person_record(of.kind, &reason);
         // Only the record this app would have published is published for
         // the reason: one another app keeps and this one reads is that
         // app's surface, which registers the actions its own record has.
         if owner == self.app_id && publish {
-            let published = tilo_resource::resource::unreadable_parts::<P>(
-                &resource_id(P::KIND),
-                P::LABEL,
-                reason,
-            );
+            let published = (of.unreadable)(reason);
             self.unavailable
                 .borrow_mut()
-                .insert((owner.to_owned(), P::KIND), published);
+                .insert((owner.to_owned(), of.kind), published);
         }
         None
     }
@@ -784,4 +793,13 @@ impl Drop for PersonState {
 #[inline(never)]
 fn unreadable_person_record(kind: &'static str, error: &dyn std::fmt::Display) {
     tracing::warn!(kind, %error, "person record unreadable");
+}
+
+/// A person record's type, as the part of opening one that does not depend
+/// on it reads it: compiled once, not into every app.
+struct RecordType<'a> {
+    kind: &'static str,
+    label: &'static str,
+    /// What the record publishes when it could not be opened, for why.
+    unreadable: &'a dyn Fn(&str) -> tilo_actions::Resource,
 }

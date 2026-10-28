@@ -3,19 +3,26 @@
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, the ush supervisor, tilo-control, the native-room governor
 # fixture), the workspace host and room service a local site runs
-# (nested-pair.sh), the thin apps, the shared runtime library they link and
+# (nested-pair.sh), the thin apps, the tilolang runtime binary (apps/tilolang,
+# which nested-session.sh bakes into the tilolang runtime bundle), the shared
+# runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
 # env-runtime image Terminal's environments start from, and a dbus-daemon for
 # hosts that have none.
 #
-# t.toml's `nested-session` check runs it on a t node, and the session script
-# downloads its output with `t outputs nested-session`. The thin apps and
-# libruntime_dylib.so must come from one Cargo graph (a Rust dylib's symbols
-# carry crate hashes), so they travel together as one check's outputs rather
-# than through `t cargo build`, which copies back programs only.
+# It runs where the builds are warm, never on the machine that runs the
+# session: nested-session.sh has t.toml's `nested-session` check run it on a t
+# node and downloads its output with `t outputs nested-session`, or has rcargo
+# run it on an rcargo builder (`rcargo --fetch nested-session exec`) and fetch
+# the target directory's nested-session. The thin apps and libruntime_dylib.so
+# must come from one Cargo graph (a Rust dylib's symbols carry crate hashes),
+# so they travel together as one build's output rather than through `t cargo
+# build` or `rcargo build`, which copy back programs only.
 #
 # Usage:
-#   dist/dev/nested-session-build.sh OUT        build into OUT (replaced)
+#   dist/dev/nested-session-build.sh [OUT]      build into OUT (replaced), by
+#                                               default the target directory's
+#                                               nested-session
 #   dist/dev/nested-session-build.sh --apps     print the apps it builds
 #
 # The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
@@ -26,18 +33,22 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
-apps="agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"
+# TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
+# `tilolang run` needs none of them, only the runtime and the tilolang binary.
+apps=${TILO_NESTED_APPS-"agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
 fi
-out=$(realpath -m "${1:?usage: nested-session-build.sh OUT | --apps}")
+(($# <= 1)) || { echo "usage: nested-session-build.sh [OUT] | --apps" >&2; exit 2; }
+out=${1:+$(realpath -m "$1")}
 cd "$repo_root"
 arch=$(uname -m)
 env_runtime_trees=$(realpath -m "${TILO_ENV_RUNTIME_TREES:?TILO_ENV_RUNTIME_TREES names the env-runtime trees (the outputs of the image-env-runtime-dev-tree-ARCH check)}")
 [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
     || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+out=${out:-$target/nested-session}
 # Build scripts fetch their test assets into the build directory; on t the
 # sources are read-only.
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
@@ -114,7 +125,10 @@ build_site() {
 # every app of the collection links, whichever of them the session installs.
 selected=()
 for app in $apps; do selected+=("$app"); done
-packages=$(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')
+packages=tilolang-app
+if ((${#selected[@]})); then
+    packages="$packages $(python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.packages | join(" ")')"
+fi
 runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 build_thin() {
     INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
@@ -166,7 +180,8 @@ cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" 
 while IFS= read -r file; do
     cp -p "$target/thin-app/$file" "$out/thin-app/"
 done < <(cat "$target/thin-app/runtime-engines"
-         python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
+         echo tilolang-app
+         ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 cp -rp "$env_runtime" "$out/env-runtime"
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.

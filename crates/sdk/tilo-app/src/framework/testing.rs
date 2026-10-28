@@ -21,7 +21,7 @@ use super::app::{ResourceApp, definition, prepare_on, role_permissions};
 use super::headless::{AUTHOR, INSTANCE, TEST_ROOM, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
-pub use super::headless::{HeadlessApp, surface_in};
+pub use super::headless::{HeadlessApp, HostedApp, surface_in};
 
 /// What interactions cost an app on the UI thread, phase by phase.
 #[cfg(feature = "test-support")]
@@ -31,7 +31,7 @@ pub mod perf;
 #[cfg(feature = "test-support")]
 mod reach;
 #[cfg(feature = "test-support")]
-pub use reach::unreachable_actions;
+pub use reach::{unreachable_actions, unreachable_actions_in_share};
 
 /// The name tests use for [`HeadlessApp`].
 pub type TestApp<A> = HeadlessApp<A>;

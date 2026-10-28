@@ -3,7 +3,7 @@ use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
-use agent_provider_config::{ProviderConfig, ProviderProfile};
+use agent_provider_config::{Interaction, ProviderConfig, ProviderProfile};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -117,7 +117,7 @@ fn standalone_without_authority_starts_empty_and_rejects_mutation() {
     );
     assert!(config(&mut app).profiles.is_empty());
     assert_private(&mut app);
-    assert_eq!(definition().app_id, "so.tilo.model-providers");
+    assert_eq!(definition().app_id(), "so.tilo.model-providers");
 }
 #[test]
 fn without_authority_the_window_says_who_sets_providers_up() {

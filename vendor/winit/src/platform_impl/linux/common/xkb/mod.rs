@@ -28,7 +28,7 @@ use keymap::XkbKeymap;
 
 #[cfg(x11_platform)]
 pub use keymap::raw_keycode_to_physicalkey;
-pub use keymap::{physicalkey_to_scancode, scancode_to_physicalkey};
+pub use keymap::{keysym_location, keysym_to_key, physicalkey_to_scancode, scancode_to_physicalkey};
 pub use state::XkbState;
 
 // TODO: Wire this up without using a static `AtomicBool`.

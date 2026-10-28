@@ -167,6 +167,7 @@ impl App {
     }
 
     pub fn record_tick(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.record_tick");
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();
         let initial = if native {
@@ -244,7 +245,7 @@ impl App {
                             .collaboration
                             .manager
                             .primary_route()
-                            .map(|witness| witness.route.clone());
+                            .map(|witness| witness.route().clone());
                     }
                     if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
                         tracing::warn!(%error,"native document route switch remains unavailable");

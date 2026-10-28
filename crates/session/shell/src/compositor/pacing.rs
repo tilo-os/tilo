@@ -626,8 +626,8 @@ impl PacingWindow {
             return None;
         }
         let window = std::mem::take(self);
-        let cost = super::metrics::percentiles(&window.costs_us);
-        let photon = super::metrics::percentiles(&window.build_to_vblank_us);
+        let cost = tilo_frame_metrics::percentiles(&window.costs_us);
+        let photon = tilo_frame_metrics::percentiles(&window.build_to_vblank_us);
         Some(format!(
             "FRAME-PACING retired={} vblank_frames={} missed={} queue_depth={queue_depth} \
              vblank_locked={} interval_us={} lead_us={} cost_p50_us={} cost_p99_us={} \

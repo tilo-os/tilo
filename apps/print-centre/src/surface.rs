@@ -5,7 +5,6 @@ use ui::framework::{
     Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow,
 };
 
-use ui::tilo_resource::Atom;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{CropSelection, Widget};
 
@@ -19,9 +18,7 @@ use views::{
 };
 type El = Box<dyn Widget>;
 
-use crate::resource::{
-    OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
-};
+use crate::resource::{PrintCentreEffect, PrintDefaults, SCAN_RESOLUTIONS};
 
 pub struct PrintCentre {
     inner: El,
@@ -283,7 +280,6 @@ enum UiCommand {
     PreviousPrintPage,
     NextPrintPage,
     SetPrintOption { option: String, value: String },
-    SelectPrinter(String),
     PrintDocument,
     CancelPrintSetup,
     ScanSetup,
@@ -302,11 +298,6 @@ enum UiCommand {
     RotateScanPage,
     ApplyScanCrop,
     RecognizeCurrentPage,
-    SetTwoSided(bool),
-    SetScanResolution(usize),
-    SetScanColor(usize),
-    SetScanSource(usize),
-    SetOcrLanguage(usize),
 }
 
 impl Door {
@@ -332,7 +323,6 @@ impl Door {
             UiCommand::ConfirmCancel(job) => E::CancelDocument { job },
             UiCommand::RetryJob(job) => E::RetryDocument { job },
             UiCommand::ChooseDocument => E::PrintDocument,
-            UiCommand::SelectPrinter(printer) => E::ChoosePrinter { printer },
             UiCommand::PreviousPrintPage => E::PreviousPrintPage,
             UiCommand::NextPrintPage => E::NextPrintPage,
             UiCommand::SetPrintOption { option, value } => E::SetPrintOption { option, value },
@@ -354,42 +344,6 @@ impl Door {
             UiCommand::RotateScanPage => E::RotateScanPage,
             UiCommand::ApplyScanCrop => E::CropScanPage,
             UiCommand::RecognizeCurrentPage => E::RecognizeText,
-            UiCommand::SetTwoSided(value) => {
-                dispatcher.submit(PrintDefaults::paths().two_sided.set(value));
-                return Ok(());
-            }
-            UiCommand::SetScanResolution(index) => {
-                let dpi = SCAN_RESOLUTIONS.get(index).ok_or("invalid resolution")?;
-                dispatcher.submit(PrintDefaults::paths().scan_resolution.set(*dpi));
-                return Ok(());
-            }
-            UiCommand::SetScanColor(index) => {
-                let value = SCAN_COLORS.get(index).ok_or("invalid color")?;
-                dispatcher.submit(
-                    PrintDefaults::paths()
-                        .scan_color
-                        .set(Atom((*value).to_owned())),
-                );
-                return Ok(());
-            }
-            UiCommand::SetScanSource(index) => {
-                let value = SCAN_SOURCES.get(index).ok_or("invalid source")?;
-                dispatcher.submit(
-                    PrintDefaults::paths()
-                        .scan_source
-                        .set(Atom((*value).to_owned())),
-                );
-                return Ok(());
-            }
-            UiCommand::SetOcrLanguage(index) => {
-                let (value, _) = OCR_LANGUAGES.get(index).ok_or("invalid language")?;
-                dispatcher.submit(
-                    PrintDefaults::paths()
-                        .ocr_language
-                        .set(Atom((*value).to_owned())),
-                );
-                return Ok(());
-            }
         };
         dispatcher.effect(&effect);
         Ok(())

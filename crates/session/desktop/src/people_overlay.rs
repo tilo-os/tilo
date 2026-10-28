@@ -4,7 +4,7 @@
 //! The roster dropdown ([`crate::collaborators`]) answers "who is here?"
 //! once; pinned, the same rows stay in view while the person works. The
 //! panel rests against an edge of the screen, wherever it was last dragged
-//! to ([`dock`], the desk widgets' own edge mechanism), and never takes the keyboard: it only
+//! to (`dock`, the desk widgets' own edge mechanism), and never takes the keyboard: it only
 //! answers the pointer over it.
 //!
 //! Each row is a face, a name and what the person is doing: their own
@@ -13,14 +13,14 @@
 //! are after it; else only where they are. Agents carry their tag and are
 //! listed after the people.
 //!
-//! The person's own row leads the list ([`own_status`]): their face beside
+//! The person's own row leads the list (`own_status`): their face beside
 //! a field with what they say they are doing, which they change right
 //! there.
 //!
 //! Resting the pointer on a row (about a quarter second, so passing over
-//! the list opens nothing) opens a peek beside the panel ([`peek`]): a
+//! the list opens nothing) opens a peek beside the panel (`peek`): a
 //! picture of their screen built from what their presence says, never a
-//! stream of it, with Follow. Beside it a message box ([`composer`]) sends
+//! stream of it, with Follow. Beside it a message box (`composer`) sends
 //! them a direct message through Chat and shows the last few lines.
 //!
 //! The host supplies the rows (the roster's own, already filtered by what

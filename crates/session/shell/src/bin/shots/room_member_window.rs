@@ -10,11 +10,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::network::NeighbourMsg;
 use shell::shell::peer_view::PeerStreamStart;
 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
 use super::ShellDriver;
 

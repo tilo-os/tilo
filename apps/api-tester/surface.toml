@@ -69,6 +69,7 @@ fields = [
   { path = "history.*.status", type = "u16" },
   { path = "history.*.duration_ms", type = "u64" },
   { path = "history.*.at_ms", type = "i64" },
+  { path = "history.*.replay", type = "Atom" },
 ]
 
 [[resources.verbs]]
@@ -170,6 +171,23 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "save-sent"
+kind = "undoable"
+params = [
+  { name = "collection", required = true, schema = { type = "string" } },
+  { name = "sent", required = true, schema = { type = "string" } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "delete-sent"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "sent", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "record-sent"
 kind = "undoable"
 params = [
@@ -178,3 +196,4 @@ params = [
   { name = "status", required = true, schema = { type = "integer", maximum = 65535, minimum = 0 } },
   { name = "duration_ms", required = true, schema = { type = "integer", minimum = 0 } },
 ]
+

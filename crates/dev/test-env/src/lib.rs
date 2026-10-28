@@ -75,7 +75,7 @@
 //! ```
 //!
 //! [`scenario!`] writes the case function itself: a `#[test]` that runs every
-//! case in one pass, through the hook in [`scenario`]. `#[scenario]` is for a
+//! case in one pass, through the hook in [`scenario`](mod@scenario). `#[scenario]` is for a
 //! group that already has its test and only needs its cases collected. A case
 //! that fails is reported by phase, with the line inside it that raised, and
 //! the scenario's cases after it still run, so one pass shows every failure. A
@@ -95,6 +95,7 @@ pub mod hang;
 pub mod idle;
 pub mod net;
 mod own_process;
+pub mod requested_allocations;
 pub mod scenario;
 pub mod swtpm;
 
@@ -555,6 +556,25 @@ pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
         builder.tempdir_in("/tmp")
     } else {
         builder.tempdir_in(temp)
+    }
+}
+
+/// A fresh temporary directory kept in memory where the platform has one
+/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), else
+/// [`tempfile::tempdir`].
+///
+/// For a test whose stores sync every write as they do for a person and
+/// whose crashes it simulates by reopening, not by losing power: the code
+/// still syncs, but a sync then costs nothing instead of waiting on a disk
+/// shared with every other job's writes.
+///
+/// # Errors
+///
+/// Returns the I/O error if the directory cannot be created.
+pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
+    match tilo_paths::memory_temp_dir() {
+        Some(memory) => tempfile::tempdir_in(memory),
+        None => tempfile::tempdir(),
     }
 }
 

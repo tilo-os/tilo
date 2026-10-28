@@ -313,7 +313,11 @@ fn the_share_mark_follows_an_apps_location_in_its_bar() {
     let (_, _, location, actions) = bar.toolbar_rects();
     assert!(location.area() > 0.0, "the app's location stands");
     assert!(
-        rect.x0 > location.x0 && rect.x0 < location.x1,
+        rect.x0 > location.x0,
+        "right after what the location shows: {rect:?} in {location:?}"
+    );
+    assert!(
+        rect.x0 < location.x1,
         "right after what the location shows: {rect:?} in {location:?}"
     );
     assert!(

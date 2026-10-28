@@ -38,6 +38,8 @@ similar = "2.6"
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The bound a test waits on work it started by.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -5,18 +5,19 @@ use fs_protocol::{FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
 struct Fixture {
-    directory: tempfile::TempDir,
     endpoint: Endpoint,
     fs: QuickFS,
     ino: u64,
     original: fs_protocol::FileVersionId,
     history: Arc<crate::history::FileHistoryStore>,
     journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
+    /// Last, so the stores above close before their files are deleted.
+    directory: tempfile::TempDir,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tilo_test_env::memory_tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let hash = store.write_content(b"first").await.unwrap().unwrap();
@@ -67,13 +68,13 @@ impl Fixture {
         let original = history.snapshot(record).unwrap().versions[0].id;
         fs.commit_content(ino, b"second").unwrap();
         Self {
-            directory,
             endpoint,
             fs,
             ino,
             original,
             history,
             journal,
+            directory,
         }
     }
 

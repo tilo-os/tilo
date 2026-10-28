@@ -4,7 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 
-use crate::index::{Document, Page, SearchIndex};
+use crate::index::{Document, SearchIndex};
 use crate::query::Matching;
 use crate::weight::{FieldWeight, Ranks};
 use tilo_lock::MutexRecover as _;
@@ -95,12 +95,9 @@ impl ListIndex {
         }
         let mut ranks = vec![None; rows.len()];
         if let Some((_, index)) = cached.as_ref() {
-            for hit in index.search(query, Page::first(rows.len())).hits {
-                if let Some(rank) = usize::try_from(hit.key)
-                    .ok()
-                    .and_then(|at| ranks.get_mut(at))
-                {
-                    *rank = hit.rank;
+            for (key, rank) in index.ranks(query) {
+                if let Some(slot) = usize::try_from(key).ok().and_then(|at| ranks.get_mut(at)) {
+                    *slot = rank;
                 }
             }
         }

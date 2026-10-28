@@ -468,8 +468,8 @@ class Product:
 
     def publish(self) -> dict[str, Any]:
         spec = fill(self.data.get("publish", {}), self.values(self.arches[0]))
-        if set(spec) - {"run", "inputs", "outputs", "pointers", "requirement"}:
-            raise ProductError(f"{self.name}: publish takes run, inputs, outputs, pointers and requirement")
+        if set(spec) - {"run", "inputs", "outputs", "pointers", "requirement", "requires"}:
+            raise ProductError(f"{self.name}: publish takes run, inputs, outputs, pointers, requirement and requires")
         if self.dev and self.release:
             channel = "any"
             on = dedupe([*self.dev_on, *self.release_on])
@@ -514,7 +514,9 @@ class Product:
                       *(derived if channel == "release" else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),
             "id_token": ["registry.tilo.so"],
-            "requires": CREDENTIAL_REQUIRES,
+            # A publication reads only what the build produced; one may still name the nodes it
+            # pushes from, where a node's network can't carry its layers.
+            "requires": spec.get("requires", CREDENTIAL_REQUIRES),
             "on": on,
         }
         if channel == "any":

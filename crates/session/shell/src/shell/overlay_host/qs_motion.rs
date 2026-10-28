@@ -13,7 +13,7 @@
 //! This only remembers what is drawn: the page being left while a drill
 //! runs, and how far along each motion is.
 
-use crate::shell::quick_settings::QsLevel;
+use tilo_quick_settings::QsLevel;
 use ui::motion::{Appear, Drill, DrillDepth, Extent, Pose, Presence};
 use ui::time::Instant;
 use ui::tokens::{EffectiveMotion, MotionSource};

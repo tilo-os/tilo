@@ -171,10 +171,11 @@ pub use context::{
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
     Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
-    ExecutionMode, HOST_RENDER_TAG, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
-    MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
-    OWN_DEVICE_SCOPE, OWN_RECORD_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy,
+    ExecutionMode, HOST_RENDER_TAG, HOST_UNSUPPORTED_CODE, HOUSEKEEPING_TAG,
+    INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS,
+    MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
+    OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OWN_DEVICE_SCOPE, OWN_RECORD_SCOPE, Offload,
+    PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX, REQUIRES_NATIVE_PATHS_TAG, ResultSpec, RetryPolicy,
     RiskLevel, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
@@ -198,7 +199,7 @@ pub use interaction::{
     InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
     MAX_LABEL_BYTES, SemanticInteraction,
 };
-pub use key::ActionKey;
+pub use key::{ActionKey, CREATE_ACTION};
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
@@ -217,12 +218,12 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
     reason = "existing app impls still name this trait until they publish through tilo_resource"
 )]
 pub use resource::{
-    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
     Resource, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, RunBy, flatten, listed_row, listed_row_problems,
-    sole_text_argument,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten, listed_row,
+    listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

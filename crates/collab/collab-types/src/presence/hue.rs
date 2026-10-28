@@ -137,6 +137,31 @@ impl PresenceHue {
             .unwrap_or(Self::Blue)
     }
 
+    /// The hue nearest an sRGB colour's OKLCH hue, or `None` for a grey
+    /// (chroma under 0.02): how a roster's packed colour or a desktop accent
+    /// reads as a presence hue. The `OKLab` conversion is `tilo_face`'s, which
+    /// the toolkit's `ui::color::Oklch::from_color` reads a colour with too.
+    #[must_use]
+    pub fn nearest_to_srgb(red: u8, green: u8, blue: u8) -> Option<Self> {
+        let (_, a, b) = tilo_face::linear_to_oklab(
+            tilo_face::decode_srgb(red),
+            tilo_face::decode_srgb(green),
+            tilo_face::decode_srgb(blue),
+        );
+        let chroma = a.hypot(b);
+        let hue = if chroma < 1e-6 {
+            0.0
+        } else {
+            b.atan2(a).to_degrees().rem_euclid(360.0)
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "OKLCH chroma is below 0.4 and hue in 0..360; f32 holds them well past 8-bit precision, as the toolkit's Oklch keeps them"
+        )]
+        let (chroma, hue) = (chroma as f32, hue as f32);
+        (chroma >= 0.02).then(|| Self::nearest_to_degrees(hue))
+    }
+
     /// The colour someone wears until they choose one: a pure function of
     /// their identity, so every host paints them the same without asking.
     /// The fixture names `me`, `alice`, `bob` and `charlie` are pinned so

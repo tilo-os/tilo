@@ -116,7 +116,7 @@ does not itself report that digest.
 
 ### Retained installation preferences
 
-Use `--hostname laptop --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
+Use `--hostname tilo-desktop --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
 for a German keyboard and Berlin time. The keyboard argument is the installer's
 published display name. `--locale de_DE.UTF-8` is optional; without it the medium's
 language choice stays unchanged. Hostname defaults to `scenario-tilo`; omitted

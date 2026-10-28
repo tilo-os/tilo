@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The local model catalog's steps, as t's checks run them (t.toml, "Local model catalog";
 # docs/publishing-on-t.md). Building, signing and publishing are separate checks: only `sign` and
-# `review` hold the catalog's signing seed, only `publish` and `publish-runtimes` a package token.
+# `review` hold the catalog's signing seed, only `publish` and `publish-runtime` a package token.
 #
 #   compiler OUT        build tilo-model-catalog without credentials, into OUT/
 #   sign COMPILER OUT   fetch the reviewed artifacts, sign the catalog with
@@ -17,16 +17,14 @@
 #                       sign the same source with the runtimes for ARCH and a throwaway key into
 #                       OUT/catalog.json and keys.json, the catalog ARCH's dev images carry in
 #                       place of the release's
-#   publish-runtimes ARCH
-#                       upload the runtime archives this tree builds for ARCH to their immutable
-#                       package URLs with TILO_PACKAGES_TOKEN, so the dev catalog's runtimes
-#                       download
+#   publish-runtime ID  upload runtime ID's archive as this tree builds it to its immutable package
+#                       URL with TILO_PACKAGES_TOKEN, so dev catalogs naming it download it
 #
 # The runtimes' archives and entries come from the local-model-runtime checks, under
 # $runtimes_out/<id>/.
 #
 # `sign`, `publish` and `review` run only in trusted runs of stable or a release tag (T_REF),
-# `publish-runtimes` only in main's; `dev` holds nothing and runs anywhere.
+# `publish-runtime` only in main's; `dev` holds nothing and runs anywhere.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -195,21 +193,21 @@ case $command in
       "$out/catalog.json" >/dev/null || die 'the dev catalog names no runtime'
     printf 'Signed the %s dev catalog with %s runtimes\n' "$arch" "$(jq '.payload.runtimes | length' "$out/catalog.json")"
     ;;
-  publish-runtimes)
-    arch=${1:?usage: local-model-catalog.sh publish-runtimes ARCH}
+  publish-runtime)
+    id=${1:?usage: local-model-catalog.sh publish-runtime ID}
     [[ $(channel) == dev ]] || die "the runtimes dev images name are published from main, not ${T_REF}"
     require_commit
     : "${TILO_PACKAGES_TOKEN:?the package token is not set: the check needs secrets = [\"TILO_PACKAGES_TOKEN\"]}"
-    work=$(mktemp -d "$scratch/model-runtimes.XXXXXX")
-    trap 'rm -rf "$work"' EXIT
-    built_source "$work/source.json" "$arch"
-    stage_runtimes "$work"
-    while IFS=$'\t' read -r file url; do
-      publish_file "$file" "$url" "$TILO_PACKAGES_TOKEN"
-      printf 'published %s\n' "$url"
-    done < <(jq -r '.runtimes[] | [.artifact.file, .artifact.url] | @tsv' "$work/source.json")
+    entry=$runtimes_out/$id/runtime.json
+    [[ -f $entry ]] || die "no build of runtime $id: the check needs local-model-runtime-$id"
+    archive=$runtimes_out/$id/$id.oci.tar
+    echo "$(jq -r .artifact.sha256 "$entry")  $archive" | sha256sum --check --quiet \
+      || die "runtime $id's archive is not the one its entry names"
+    url=$(jq -r .artifact.url "$entry")
+    publish_file "$archive" "$url" "$TILO_PACKAGES_TOKEN"
+    printf 'published %s\n' "$url"
     ;;
   *)
-    die "usage: local-model-catalog.sh compiler|sign|publish|review|dev|publish-runtimes ..."
+    die "usage: local-model-catalog.sh compiler|sign|publish|review|dev|publish-runtime ..."
     ;;
 esac

@@ -56,7 +56,7 @@ pub(crate) fn passage_effects(book: &str, chapter: usize) -> [ActionSpec; 2] {
 /// `effect` bound to the row it acts on, under that row's own `label`.
 pub(crate) fn bound(effect: &BooksEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
-    label.clone_into(&mut spec.label);
+    label.clone_into(&mut spec.type_mut().label);
     spec
 }
 

@@ -156,7 +156,7 @@ pub(crate) fn clock_snapshot() -> ClockSnapshot {
     }
 }
 
-fn system_status(status: &crate::shell::status::SystemStatus) -> SystemStatus {
+fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {
     SystemStatus {
         battery_percent: status.battery_percent(),
         battery_charging: status.battery_is_charging(),

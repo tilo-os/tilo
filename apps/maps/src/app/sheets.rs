@@ -123,7 +123,7 @@ impl MapsApp {
         let distance = geo::fmt_distance(route.distance_m);
         // The distance and Clear route stand on the duration's baseline.
         let baseline = y + draw::baseline(tr, &duration, &display);
-        let clear_label = failure::t("maps-clear-route");
+        let clear_label = failure::t("maps-clear-route-button");
         let clear_face = ButtonFace::new(Rect::ZERO, &clear_label)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small);

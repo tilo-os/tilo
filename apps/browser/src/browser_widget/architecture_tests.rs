@@ -452,7 +452,8 @@ fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output()
         url: "https://request.test/".into(),
     }
     .bound()
-    .contract;
+    .contract
+    .clone();
     assert!(matches!(
         contract.execution,
         ui::tilo_actions::ExecutionMode::Background { cancellable: true }

@@ -1794,7 +1794,7 @@ fn super_v_and_super_a_open_clipboard_history_and_notifications() {
         assert!(st.overlays.quick_settings);
         assert_eq!(
             st.quick_settings.section,
-            Some(shell::shell::quick_settings::QsSection::Clipboard)
+            Some(tilo_quick_settings::QsSection::Clipboard)
         );
     }
     // Quick Settings is modal and owns every key while open.
@@ -1804,7 +1804,7 @@ fn super_v_and_super_a_open_clipboard_history_and_notifications() {
     assert!(st.overlays.quick_settings);
     assert!(matches!(
         st.quick_settings.current_level(),
-        shell::shell::quick_settings::QsLevel::Notifications
+        tilo_quick_settings::QsLevel::Notifications
     ));
 }
 

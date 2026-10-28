@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The settings section the policy lives in.
+pub const SECTION: &str = "notifications";
+
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
@@ -204,7 +207,7 @@ impl NotificationPolicy {
     /// Returns an error if no config directory is available or the settings
     /// document cannot be written.
     pub fn save_do_not_disturb(on: bool) -> std::io::Result<()> {
-        crate::update_section("notifications", Self::do_not_disturb_values(on))
+        crate::update_section(SECTION, Self::do_not_disturb_values(on))
     }
 
     fn do_not_disturb_values(on: bool) -> serde_json::Map<String, serde_json::Value> {
@@ -215,17 +218,24 @@ impl NotificationPolicy {
 
     pub fn load_at(path: &std::path::Path) -> Self {
         serde_json::from_value(serde_json::Value::Object(crate::load_section_at(
-            path,
-            "notifications",
+            path, SECTION,
         )))
         .unwrap_or_default()
     }
 
     pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(crate::load_section(
-            "notifications",
-        )))
-        .unwrap_or_default()
+        serde_json::from_value(serde_json::Value::Object(crate::load_section(SECTION)))
+            .unwrap_or_default()
+    }
+
+    /// The policy in `document`, an already loaded settings document.
+    #[must_use]
+    pub fn from_document(document: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let section = match document.get(SECTION) {
+            Some(serde_json::Value::Object(section)) => section.clone(),
+            _ => serde_json::Map::new(),
+        };
+        serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default()
     }
 
     pub fn effective_for(

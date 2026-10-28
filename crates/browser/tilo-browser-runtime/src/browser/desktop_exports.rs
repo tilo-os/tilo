@@ -369,11 +369,11 @@ pub fn desktop_dismissed_peer_windows(id: u64) -> Result<String, JsValue> {
     })
 }
 
-/// Show exactly `windows` (`[{key, app, title}]` JSON), the legacy windows
-/// other members stream, as desktop windows: a new key opens a window
-/// beside the focused one, a key no longer listed closes its window. The
-/// page draws each stream over its window's content
-/// ([`desktop_peer_windows`]).
+/// Show exactly `windows` (`[{key, app, title, codec, tab}]` JSON), the
+/// legacy windows other members stream: one naming a layout `tab` in that
+/// tab, one naming none in a window of its own beside the focused one; a key
+/// no longer listed closes its window. The page draws each stream over its
+/// window's content ([`desktop_peer_windows`]).
 ///
 /// # Errors
 ///
@@ -386,14 +386,40 @@ pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        let (launch, close) = desktop
+        desktop.shared.want_peer_windows(wanted);
+        if desktop.show_peer_windows().map_err(error)? {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+impl super::Desktop {
+    /// Place the legacy windows other members stream in the desktop as it
+    /// stands ([`crate::desktop::Shared::reconcile_peer_windows`]): whether
+    /// anything changed.
+    ///
+    /// # Errors
+    ///
+    /// The desktop refused to open a window.
+    pub(super) fn show_peer_windows(&self) -> Result<bool, String> {
+        self.shared.take_peer_windows_due();
+        let crate::desktop::PeerWindowChanges {
+            launch,
+            close,
+            rebuild,
+        } = self
             .handle
-            .read(|tree| desktop.shared.reconcile_peer_windows(tree, wanted));
-        if launch.is_empty() && close.is_empty() {
-            return Ok(());
+            .read(|tree| self.shared.reconcile_peer_windows(tree));
+        if launch.is_empty() && close.is_empty() && rebuild.is_empty() {
+            return Ok(false);
+        }
+        for tab in rebuild {
+            self.handle.rebuild(tab);
         }
         for tab in close {
-            let route = desktop.handle.read(|tree| {
+            let route = self.handle.read(|tree| {
                 tree.workspaces.iter().find_map(|workspace| {
                     workspace.strips.iter().find_map(|strip| {
                         strip
@@ -411,29 +437,24 @@ pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
             });
             if let Some(route) = route {
                 let command = tilo_desktop_surface::navigation::Command::Close {
-                    generation: desktop.generation.clone(),
+                    generation: self.generation.clone(),
                     route,
                 };
                 // A window the person already closed is gone either way.
-                let _ = desktop.handle.dispatch(&command, &desktop.generation);
+                let _ = self.handle.dispatch(&command, &self.generation);
             }
-            desktop.shared.closed_peer_window(tab);
+            self.shared.closed_peer_window(tab);
         }
         for app in launch {
             let command = tilo_desktop_surface::navigation::Command::Launch {
-                generation: desktop.generation.clone(),
+                generation: self.generation.clone(),
                 app,
             };
-            desktop
-                .handle
-                .dispatch(&command, &desktop.generation)
-                .map_err(error)?;
+            self.handle.dispatch(&command, &self.generation)?;
         }
-        desktop.shared.wake();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
+        self.shared.wake();
+        Ok(true)
+    }
 }
 
 /// Changes whenever the desktop tree or what the desktop presents beside it

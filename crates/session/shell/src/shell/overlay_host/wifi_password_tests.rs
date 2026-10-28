@@ -1,8 +1,8 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::quick_settings::{QsLevel, QsSection, WifiNetwork};
 use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
+use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork};
 use ui::widget::Container;
 
 /// Records the join attempts and can be told to reject them, so the
@@ -13,7 +13,7 @@ struct JoinRecorder {
     reject: bool,
 }
 
-impl crate::shell::quick_settings::actions::QsActions for JoinRecorder {
+impl tilo_quick_settings::actions::QsActions for JoinRecorder {
     fn set_brightness(&self, _: f32) -> Result<(), String> {
         Ok(())
     }
@@ -51,7 +51,7 @@ fn host_on_wifi_pane(
     std::rc::Rc<JoinRecorder>,
 ) {
     struct Shim(std::rc::Rc<JoinRecorder>);
-    impl crate::shell::quick_settings::actions::QsActions for Shim {
+    impl tilo_quick_settings::actions::QsActions for Shim {
         fn set_brightness(&self, v: f32) -> Result<(), String> {
             self.0.set_brightness(v)
         }
@@ -135,7 +135,7 @@ fn finish_join(
 ) {
     host.apply_wifi_join_result(
         &mut chrome.borrow_mut(),
-        crate::shell::quick_settings::refresh::WifiJoinResult {
+        crate::shell::quick_settings_refresh::WifiJoinResult {
             ssid: "Cafe WiFi".into(),
             password: password.map(str::to_owned),
             shared_credential,

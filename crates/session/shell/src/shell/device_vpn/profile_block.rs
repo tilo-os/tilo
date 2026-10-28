@@ -18,7 +18,7 @@
 //!
 //! Nothing runs, and `NetworkManager` is not followed, until some profile
 //! has its kill switch on. What blocks is published with the device VPN's
-//! status ([`super::set_profile_block`]) for Settings.
+//! status (`super::set_profile_block`) for Settings.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;

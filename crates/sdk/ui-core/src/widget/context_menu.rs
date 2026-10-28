@@ -25,6 +25,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
+mod published;
+
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
 /// it may capture `Rc` state like any `Button::on_click`.
@@ -60,6 +62,9 @@ pub enum MenuItem {
         /// skips the question for what Undo takes back
         /// ([`MenuItem::asking_first`]).
         asks_first: bool,
+        /// The published action choosing the row runs, when it is one
+        /// ([`MenuItem::for_action`]).
+        address: Option<tilo_actions::ActionAddress>,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -95,6 +100,7 @@ impl MenuItem {
             detail: None,
             submenu: None,
             asks_first: false,
+            address: None,
         }
     }
 
@@ -188,6 +194,26 @@ impl MenuItem {
             *asks_first = true;
         }
         self
+    }
+
+    /// Say that choosing this row runs the published action `address` (a
+    /// row's resource action, a bound command): the open menu publishes no
+    /// control of its own for the row and names the action as its binding,
+    /// so an agent finds the action itself rather than a menu row.
+    #[must_use]
+    pub fn for_action(mut self, action_address: tilo_actions::ActionAddress) -> Self {
+        if let MenuItem::Action { address, .. } = &mut self {
+            *address = Some(action_address);
+        }
+        self
+    }
+
+    /// The published action choosing the row runs, if it is one.
+    pub fn action_address(&self) -> Option<&tilo_actions::ActionAddress> {
+        match self {
+            MenuItem::Action { address, .. } => address.as_ref(),
+            MenuItem::Separator | MenuItem::Caption(_) => None,
+        }
     }
 
     /// The row's label as it reads now: with the ellipsis of a choice that
@@ -1594,6 +1620,12 @@ impl ContextMenu {
 }
 
 impl Widget for ContextMenu {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
     }
@@ -2270,109 +2302,11 @@ impl crate::widget::Decorator for MenuButton {
     }
 }
 
+mod component;
+pub use component::{MenuButtonProps, MenuItemProps};
+
 #[cfg(test)]
-mod a11y_tests {
-    use super::*;
-    use crate::widget::Widget;
-
-    #[test]
-    fn menu_accessibility_reports_state_rows_and_checks() {
-        fn accessibility_reports_menu_role_and_collapsed_when_closed() {
-            use crate::a11y::Role;
-            let mut menu = ContextMenu::new();
-            menu.push(MenuItem::action("Open", || {}));
-            let node = Widget::accessibility(&menu).expect("menu is not presentational");
-            assert_eq!(node.role, Role::Menu);
-            assert_eq!(
-                node.state.expanded,
-                Some(false),
-                "closed menu is not expanded"
-            );
-            assert!(node.state.hidden, "closed menu is hidden from the tree");
-        }
-
-        fn accessibility_open_menu_is_expanded_and_visible() {
-            let mut menu = ContextMenu::new();
-            menu.push(MenuItem::action("Open", || {}));
-            menu.open_at([10.0, 20.0]);
-            let node = Widget::accessibility(&menu).unwrap();
-            assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
-            assert!(!node.state.hidden, "open menu is visible");
-        }
-
-        fn a_caption_is_read_among_the_rows_but_never_chosen() {
-            let mut menu = ContextMenu::with_items(vec![
-                MenuItem::selection("Lounge"),
-                MenuItem::caption("Hosted by example.org"),
-                MenuItem::separator(),
-                MenuItem::selection("Overview"),
-            ]);
-            menu.open_at([10.0, 10.0]);
-            assert!(
-                item_shown(menu.items(), 2),
-                "a caption above keeps the rule"
-            );
-            assert!(!menu.items()[1].is_enabled(), "keyboard passes over it");
-            menu.click_item(1);
-            assert_eq!(menu.take_selection(), None);
-            assert!(menu.is_open(), "a click on the caption chooses nothing");
-            let node = Widget::accessibility(&menu).expect("menu semantics");
-            let caption = &node.children[1];
-            assert_eq!(caption.role, crate::a11y::Role::StaticText);
-            assert_eq!(caption.name.as_deref(), Some("Hosted by example.org"));
-            assert!(
-                menu.item_height(1) < menu.item_height(0),
-                "a caption line is tighter than a row"
-            );
-        }
-
-        fn accessibility_exposes_named_action_rows_and_skips_separators() {
-            let mut menu = ContextMenu::new();
-            menu.push(MenuItem::action("Keep Offline", || {}));
-            menu.push(MenuItem::separator());
-            menu.push(MenuItem::action("Sharing & Access…", || {}));
-            menu.open_at([10.0, 20.0]);
-
-            let node = Widget::accessibility(&menu).unwrap();
-            assert_eq!(node.children.len(), 2);
-            assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
-            assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
-            assert_eq!(
-                node.children[0].action_target.as_deref(),
-                Some("context-menu:item:0")
-            );
-            assert_eq!(node.children[0].pos_in_set, Some(1));
-            assert_eq!(node.children[0].set_size, Some(2));
-            assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
-            assert_eq!(
-                node.children[1].action_target.as_deref(),
-                Some("context-menu:item:2")
-            );
-            assert!(node.children.iter().all(|child| child.state.focusable));
-        }
-
-        fn accessibility_exposes_checked_state_without_polluting_the_label() {
-            let mut menu = ContextMenu::new();
-            menu.push(MenuItem::action("List", || {}).with_checked(true));
-            menu.push(MenuItem::action("Grid", || {}).with_checked(false));
-            menu.open_at([10.0, 20.0]);
-
-            let node = Widget::accessibility(&menu).unwrap();
-            assert_eq!(node.children[0].name.as_deref(), Some("List"));
-            assert_eq!(node.children[0].state.checked, Some(true));
-            assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
-            assert_eq!(node.children[1].state.checked, Some(false));
-        }
-
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        accessibility_reports_menu_role_and_collapsed_when_closed();
-        accessibility_open_menu_is_expanded_and_visible();
-        a_caption_is_read_among_the_rows_but_never_chosen();
-        accessibility_exposes_named_action_rows_and_skips_separators();
-        accessibility_exposes_checked_state_without_polluting_the_label();
-    }
-}
+mod a11y_tests;
 
 #[cfg(test)]
 mod tests {

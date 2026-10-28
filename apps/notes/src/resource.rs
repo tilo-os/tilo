@@ -44,7 +44,6 @@ impl ResourceApp for NotesShell {
         let author = UserId(cx.me().unwrap_or("local").to_owned());
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
-        cx.saves().shown_by_view();
         let mut app = NotesApp::empty_surface(&author, cx.save_status());
         if let Some((page, _)) = launched_note(&cx.launch()) {
             app.open_when_present(page);
@@ -142,10 +141,6 @@ fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> 
 }
 
 impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
-    fn take_save_retry(&mut self) -> bool {
-        self.take_save_retry_request()
-    }
-
     fn effect(&mut self, effect: NotesEffect, cx: &mut EffectCx<Notebook, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
@@ -175,13 +170,21 @@ mod reach_tests {
     use ui::framework::ResourceApp as _;
     use ui::framework::testing::{TestApp, unreachable_actions};
 
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 4;
+
     /// Every action the app publishes is reachable by address in a drive of
-    /// each of its scenarios: none is advertised yet handled only by a
-    /// click. The scenarios stage fixtures; the app someone opens acts on
-    /// this machine (its files, its processes), so it is not walked.
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action() {
-        for scenario in super::NotesShell::scenarios() {
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine (its files, its processes), so
+    /// it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::NotesShell::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
             let mut app = TestApp::<super::NotesShell>::drive(scenario)
                 .unwrap_or_else(|error| panic!("{scenario}: {error}"));
             assert_eq!(
@@ -190,5 +193,25 @@ mod reach_tests {
                 "{scenario}: published actions a drive cannot invoke"
             );
         }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
     }
 }

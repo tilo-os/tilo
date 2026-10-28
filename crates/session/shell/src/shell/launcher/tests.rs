@@ -150,6 +150,35 @@ fn a_held_launch_is_held_and_reported_in_its_own_session_only() {
     );
 }
 
+#[test]
+fn a_native_opening_asked_for_while_the_broker_binds_is_prepared_once_it_is_there() {
+    let session = LaunchSession::current();
+    assert!(
+        lock(&session.opening).is_none(),
+        "no broker is attached yet"
+    );
+    hold_launches();
+    let (prepared, prepared_now) = std::sync::mpsc::channel();
+    let waiting = session.clone();
+    let preflight = std::thread::spawn(move || {
+        waiting.wait_while_launches_held();
+        prepared.send(()).expect("the test waits for it");
+    });
+    assert!(
+        prepared_now
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err(),
+        "nothing is prepared while launches are held"
+    );
+    release_held_launches();
+    prepared_now
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("prepared once launches run");
+    preflight.join().expect("the preflight ends");
+    // Not holding: a later opening is prepared at once.
+    session.wait_while_launches_held();
+}
+
 fn test_gate() -> Mutex<Gate> {
     Mutex::new(Gate::open_with_capacity(2))
 }

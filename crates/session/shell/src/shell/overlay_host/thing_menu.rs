@@ -104,7 +104,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Notifications
+                    tilo_quick_settings::QsLevel::Notifications
                 )
         };
         let id = in_center

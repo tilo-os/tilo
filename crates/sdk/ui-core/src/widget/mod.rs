@@ -2005,6 +2005,15 @@ pub trait Widget {
         false
     }
 
+    /// Whether this widget lays one retained [`children`](Widget::children)
+    /// entry out itself (an [`Embedded`](crate::widget::Embedded) part of a
+    /// painted page) rather than through the window's layout, which then
+    /// gives it no node. The accessibility walk reaches such a child, and
+    /// every widget inside it, through this widget's node.
+    fn lays_out_child(&self, _child_index: usize) -> bool {
+        false
+    }
+
     /// What describes one retained [`children`](Widget::children) entry to
     /// assistive technology, when this widget holds the words for it: a
     /// row's secondary line is its trailing switch's description. The
@@ -2440,7 +2449,7 @@ pub trait Widget {
 
     /// Carry out a [`StructureChange::Children`] this widget or one under it
     /// reported, in the retained layout tree, through `remount` (see
-    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// [`remount`]). Returns `false` when it cannot be
     /// carried out in place: the host then rebuilds its tree, and the change
     /// is carried out by [`Self::build_layout`]. A widget reports such a
     /// change until either has carried it out. The default carries out its
@@ -3050,7 +3059,9 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors, focus_ring_reach};
+pub use button::{
+    Button, ButtonFace, ButtonInteract, ButtonProps, ButtonRole, face_colors, focus_ring_reach,
+};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -3140,7 +3151,7 @@ pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
     ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
-    NavShell, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
+    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
@@ -3148,8 +3159,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavPerson, NavSearchTerm,
-    NavSection,
+    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{
@@ -3159,7 +3170,7 @@ pub use document_viewport::{
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
 mod text;
-pub use text::Text;
+pub use text::{Text, TextProps};
 mod spacer;
 pub use spacer::Spacer;
 mod when;
@@ -3168,6 +3179,8 @@ mod slot;
 pub use slot::{Slot, SlotHandle, Switch};
 mod columns;
 pub use columns::Columns;
+/// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
+pub mod arrange;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
@@ -3177,7 +3190,7 @@ pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_re
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
-    TextInputKind, paint_invalid_edge, paint_preedit_underline,
+    TextInputKind, TextInputProps, paint_invalid_edge, paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
@@ -3239,7 +3252,7 @@ pub use board::{Board, BoardDrop};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
-pub use scrollable::{ScrollAxis, Scrollable};
+pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
@@ -3267,7 +3280,8 @@ pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{
-    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, note_shift, shift_held,
+    shift_skips_confirmation,
 };
 mod row_menu;
 pub use primitives::{
@@ -3329,7 +3343,9 @@ pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
+pub mod date_field;
 pub mod date_picker;
+pub use date_field::DateField;
 pub use date_picker::{DateFeed, DatePicker, DateShown, ExternalDatePickerHit};
 pub mod time_picker;
 pub mod timeline_density;
@@ -3372,7 +3388,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
+pub use avatar::{Avatar, AvatarFace, AvatarProps, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
@@ -3455,10 +3471,14 @@ pub use tree_view::{
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
-pub use virtual_list::{DuplicateListKey, ListModel, RowSelection, VecListModel, VirtualList};
+pub use virtual_list::{
+    DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
+    RowSelection, VecListModel, VirtualList, VirtualListProps,
+};
 mod activation;
 mod dismissal;
 pub(crate) mod view_choice;
+pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
@@ -3492,13 +3512,13 @@ pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
 pub use property_list::{
-    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyRow, PropertyValue,
-    property_label_column,
+    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyListProps, PropertyProps,
+    PropertyRow, PropertyValue, property_label_column,
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus,
-    RowValue, SwipeAction, badge_column_width,
+    ControlRow, ListRow, ListRowFace, ListRowProps, RowAction, RowLeading, RowLeadingShape,
+    RowShape, RowStatus, RowValue, SwipeAction, SwipeActionProps, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -3513,8 +3533,10 @@ pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
+pub mod docked;
+pub use docked::{Docked, DockedProps};
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
+pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps};
 pub mod find_bar;
 pub use find_bar::{
     FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
@@ -3546,10 +3568,14 @@ pub use conversation::{
 };
 pub mod card;
 mod tone;
-pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
+pub use card::{
+    Actions, Card, CardFace, CardGrid, CardProps, CardWidth, card_column_width, card_columns,
+};
 pub use tone::Tone;
 mod section;
-pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
+pub use section::{
+    ObjectHeader, Section, SectionHeader, SectionHeaderFace, SectionProps, StatusLine,
+};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview,

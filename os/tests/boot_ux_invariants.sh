@@ -21,7 +21,7 @@ grep -Fq 'plymouth-plugin-script' "$containerfile"
 # Names and messages on the boot sign-in screen are drawn by the label plugin.
 grep -Fq 'plymouth-plugin-label' "$containerfile"
 grep -Fq 'Image.Text(' "$script"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-face"' "$root/os/scripts/build-initramfs.sh" \
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter tilo-boot-face"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
   exit 1

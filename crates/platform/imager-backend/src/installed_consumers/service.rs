@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
+    io::Read,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::Duration,
@@ -151,6 +152,44 @@ pub struct Selected {
     pub bundle: PathBuf,
 }
 
+impl Selected {
+    /// What `--receiving-browser` prints, for the receiving fixture's admission.
+    pub fn json(&self) -> Value {
+        json!({
+            "package_id_hex": self.package_id_hex,
+            "publisher_key_hex": self.publisher_key_hex,
+            "runtime": self.runtime,
+            "browser": self.browser.to_string_lossy(),
+            "version": self.version,
+            "bundle": self.bundle.to_string_lossy(),
+        })
+    }
+}
+
+/// Where the image store keeps each package's signed record, `<package id>.pkg`.
+const IMAGE_PACKAGES: &str = "/usr/share/tilo-apps/pkgs";
+
+/// The image store's tree of `package`: named by the payload root hash its
+/// signed record commits to (os/scripts/signed-records.py), after checking
+/// that the record is that package's.
+fn image_tree(root: &Path, package: &str) -> std::io::Result<String> {
+    let record = format!("{IMAGE_PACKAGES}/{package}.pkg/signed-root");
+    let mut bytes = Vec::new();
+    std::fs::File::open(under(root, &record))?
+        .take(tilo_app_package::SIGNED_ROOT_LEN as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    require(
+        tilo_app_package::BlobHash::of(&bytes).to_hex() == package,
+        "Browser package record is not its signed identity",
+    )?;
+    let signed = tilo_app_package::SignedRoot::decode(&bytes)
+        .map_err(|_| invalid("Browser package record is not its signed identity"))?;
+    Ok(format!(
+        "/usr/share/tilo-apps/trees/{}",
+        signed.payload_root_hash.to_hex()
+    ))
+}
+
 /// Canonical installed-store layout, never a caller-supplied executable path.
 pub fn selected(root: &Path) -> std::io::Result<Option<Selected>> {
     let registry = root.join("usr/share/tilo-apps/registry.toml");
@@ -181,8 +220,8 @@ pub fn selected(root: &Path) -> std::io::Result<Option<Selected>> {
         hex_digest(package_id) && hex_digest(publisher),
         "Browser package has no signed identity",
     )?;
-    let payload = format!("/usr/share/tilo-apps/pkgs/{package_id}");
-    let metadata = format!("{payload}.pkg/manifest.toml");
+    let payload = image_tree(root, package_id)?;
+    let metadata = format!("{IMAGE_PACKAGES}/{package_id}.pkg/manifest.toml");
     require(
         text("payload_root") == Some(payload.as_str())
             && text("manifest_path") == Some(metadata.as_str()),
@@ -770,14 +809,14 @@ pub fn check_trust(evidence: &Value) -> std::io::Result<()> {
         QUALIFICATION_SCRIPT,
         "/usr/share/tilo/browser-runtime-publisher.hex",
         "/usr/share/tilo-apps",
-        "/usr/share/tilo-apps/pkgs",
+        IMAGE_PACKAGES,
+        "/usr/share/tilo-apps/trees",
     ] {
         account::image_owned(Path::new(path))?;
     }
-    let pkgs = Path::new("/usr/share/tilo-apps/pkgs");
     for root in [
-        pkgs.join(package),
-        pkgs.join(format!("{package}.pkg")),
+        PathBuf::from(image_tree(Path::new("/"), package)?),
+        Path::new(IMAGE_PACKAGES).join(format!("{package}.pkg")),
         Path::new("/usr/lib/tilo-runtime").join(cef),
     ] {
         account::image_owned_tree(&root)?;

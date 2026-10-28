@@ -90,9 +90,14 @@ impl MenuEntry {
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 
+/// The entries a menu offers where it opens, asked of the content: a list
+/// answers for the row under the pointer, or its focused row when the
+/// keyboard opened the menu (`None`).
+pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
+
 pub struct ContextMenuArea {
     content: Element,
-    entries: MenuEntries,
+    entries: ContentMenuEntries,
     menu: ContextMenu,
     runs: Vec<Option<Rc<dyn Fn()>>>,
     cursor: Point,
@@ -111,6 +116,15 @@ impl ContextMenuArea {
         content: Element,
         entries: impl Fn(Option<Point>) -> Vec<MenuEntry> + 'static,
     ) -> Self {
+        Self::over_content(content, move |_, at| entries(at))
+    }
+
+    /// `content` with a menu of what `entries` offers when it opens, asked
+    /// with the content itself, so one menu can serve every row of a list.
+    pub fn over_content(
+        content: Element,
+        entries: impl Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry> + 'static,
+    ) -> Self {
         Self {
             content,
             entries: Box::new(entries),
@@ -121,6 +135,16 @@ impl ContextMenuArea {
             pending: None,
             viewport: None,
         }
+    }
+
+    /// What the menu is over.
+    pub fn content(&self) -> &dyn Widget {
+        self.content.as_ref()
+    }
+
+    /// What the menu is over, to update in place.
+    pub fn content_mut(&mut self) -> &mut dyn Widget {
+        self.content.as_mut()
     }
 
     pub fn is_open(&self) -> bool {
@@ -135,7 +159,7 @@ impl ContextMenuArea {
     /// Open the menu at `at` (window coordinates) with what is offered
     /// there now; whether there was anything to offer.
     pub fn open_at(&mut self, at: Point, pointer: bool) -> bool {
-        let entries = (self.entries)(pointer.then_some(at));
+        let entries = (self.entries)(self.content.as_ref(), pointer.then_some(at));
         let offered = entries.iter().any(|entry| entry.run.is_some());
         let mut menu = ContextMenu::new();
         self.runs.clear();
@@ -311,6 +335,12 @@ impl super::Decorator for ContextMenuArea {
         "ContextMenuArea"
     }
 
+    /// The content's change is the area's: the menu adds no structure of
+    /// its own, so rows a list mounts in place stay mounted in place.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.content.take_structure_change()
+    }
+
     // The content's node is this area's: named targets and hit tests that
     // find the node meet the area, which answers as the content does.
     fn build_layout(
@@ -454,6 +484,23 @@ mod tests {
         assert_eq!(area.menu().hovered(), Some(1));
         crate::testing::dispatch(&mut area, &named_key(NamedKey::Enter));
         assert_eq!(chosen.get(), 2);
+    }
+
+    #[test]
+    fn a_menu_over_its_content_is_asked_with_the_content() {
+        let mut area = ContextMenuArea::over_content(
+            Box::new(Spacer::fixed(10.0).with_id("rows")),
+            |content, at| {
+                let named = content.test_id().unwrap_or_default().to_owned();
+                vec![MenuEntry::new(format!("{named} {}", at.is_some()), || {})]
+            },
+        );
+        assert!(area.open_at(Point::new(5.0, 5.0), false));
+        assert_eq!(
+            area.menu().items().first().and_then(MenuItem::label),
+            Some("rows false")
+        );
+        assert_eq!(area.content().test_id(), Some("rows"));
     }
 
     #[test]
@@ -651,6 +698,36 @@ mod tests {
         harness.relayout();
         mouse(&mut harness, ElementState::Released, MouseButton::Left);
         assert_eq!(*chosen.borrow(), vec!["Second"]);
+        assert!(!harness.root::<ContextMenuArea>().is_open());
+    }
+
+    /// An open menu's entries are its published controls: an agent chooses
+    /// one as a person does, and the area runs the entry it read from the
+    /// menu's choice.
+    #[test]
+    fn an_agent_chooses_a_menu_entry_through_its_published_control() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut harness, chosen) = four_entries();
+        assert!(
+            !harness
+                .resources()
+                .iter()
+                .any(|resource| resource.id.0.starts_with("tilo.control:menu.")),
+            "a closed menu offers nothing"
+        );
+        right_click(&mut harness);
+        let resources = harness.resources();
+        let third = resources
+            .iter()
+            .find(|resource| resource.id.0 == "tilo.control:menu.2")
+            .expect("the third entry is published");
+        assert_eq!(third.label, "Third");
+        assert_eq!(third.actions[0].kind, tilo_actions::OperationKind::Effect);
+        harness
+            .invoke_published("tilo.control:menu.2", "invoke", &serde_json::Map::new())
+            .expect("the entry is reachable");
+        assert_eq!(*chosen.borrow(), vec!["Third"]);
         assert!(!harness.root::<ContextMenuArea>().is_open());
     }
 

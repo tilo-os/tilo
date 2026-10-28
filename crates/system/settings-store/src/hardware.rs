@@ -2768,7 +2768,7 @@ impl ShortcutConfig {
             }) {
                 continue;
             }
-            if !chord.is_valid_configurable() {
+            if !chord.is_valid_configurable() || defaults.shadows(action, &chord) {
                 continue;
             }
             effective.bindings.remove(&action);

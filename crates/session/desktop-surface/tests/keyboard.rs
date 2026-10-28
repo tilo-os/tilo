@@ -446,11 +446,12 @@ impl TileSource for Source {
         let room = workspace.room().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
-            app_id: APP,
-            title: "Keyboard",
+            app_id: APP.into(),
+            title: "Keyboard".into(),
             icon: IconDescriptor::Glyph("K"),
             record_kind: ui::record::RecordKind::new("keyboard-test"),
             room_record: false,
+            opens_before_record: false,
             required: vec![],
             optional: vec![],
             opens: &[],

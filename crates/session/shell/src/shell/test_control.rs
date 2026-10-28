@@ -60,6 +60,11 @@ pub enum Command {
     ForeignFrames,
     /// The compositor process's own memory by kind of mapping (heap, stacks, GPU driver memory, fonts, files), glibc's heap split and its threads by name, in KiB ([`crate::shell::memory_report`]). Read-only; vm-acceptance R01 records it because Tilo's kernel has no smaps.
     ProcessMemory,
+    /// Where the compositor's live Rust heap was allocated, by call site ([`crate::shell::heap_profile`]); with `path`, also the gzipped pprof profile, written there. Answers `heap_profile_unavailable` unless the compositor started with `PPROF_ALLOC_SAMPLE_RATE` set in a build with `hosted-test-control`.
+    HeapProfile {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     /// Inject a key press + release. `key` is a winit-style name or a single character; unknown names return `parse_error`.
     Key { key: String },
     /// Inject a key press + release the way a keyboard attached to the machine delivers it: the
@@ -1110,6 +1115,10 @@ pub fn dispatch_command<S: ControlState>(
             Response::Answer(crate::shell::memory_report::report()),
             Vec::new(),
         ),
+        Command::HeapProfile { path } => (
+            answer_or_err(heap_profile(path.as_deref()), "heap_profile_unavailable"),
+            Vec::new(),
+        ),
         Command::StateDump { include_history } => state_dump(state, *include_history),
         Command::Windows => (
             answer_or_err(
@@ -1954,6 +1963,16 @@ fn decode_device_id(value: &str) -> Option<[u8; 32]> {
 }
 
 /// Wrap a capability-op result in the wire envelope. A refusal is a [`Response::Err`], not an `Answer` with `allowed: false` — conflating them would read a refused *grant* as a successful deny.
+#[cfg(feature = "hosted-test-control")]
+fn heap_profile(path: Option<&str>) -> Result<serde_json::Value, String> {
+    crate::shell::heap_profile::report(path)
+}
+
+#[cfg(not(feature = "hosted-test-control"))]
+fn heap_profile(_path: Option<&str>) -> Result<serde_json::Value, String> {
+    Err("this build has no heap profiler (feature hosted-test-control)".into())
+}
+
 fn answer_or_err(result: Result<serde_json::Value, String>, code: &str) -> Response {
     match result {
         Ok(value) => Response::Answer(value),

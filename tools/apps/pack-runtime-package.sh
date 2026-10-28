@@ -7,7 +7,8 @@
 # <bin-dir> holds tilo-app-package and tilo-runtime-bundle. The package is
 # `kind = "runtime"`; its payload is the bundle directory (bundle.toml and the
 # files it signs) and `package.provides` names the runtime the bundle is,
-# `tilo-runtime/<bundle version>`. A runtime's libraries are hundreds of
+# `tilo-runtime/<bundle version>` (`tilolang/<bundle version>` for the
+# tilolang runtime, apps/tilolang/tilo-runtime.toml). A runtime's libraries are hundreds of
 # megabytes, so <out-dir> receives the package's thin form together with its
 # content-addressed payload objects (`<hex>.blob`, and a `<hex>.chunks` list
 # for each blob larger than one chunk), to be uploaded side by side; the
@@ -34,6 +35,8 @@ esac
     printf 'pack-runtime-package: unexpected bundle version %s\n' "${bundle_version:-none}" >&2
     exit 1
 }
+runtime_name=tilo-runtime
+[[ $package_id == so.tilo.runtime.tilolang ]] && runtime_name=tilolang
 pubkey=$("$bin_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -44,7 +47,7 @@ name = "$name"
 category = "System"
 version = "$version"
 kind = "runtime"
-provides = "tilo-runtime/$bundle_version"
+provides = "$runtime_name/$bundle_version"
 
 [package.isa]
 $isa
@@ -68,6 +71,16 @@ if [[ $package_id == so.tilo.runtime.chromium ]]; then
 [entrypoint]
 type = "cli"
 bin = "lib/chromium/tilo-chromium-host"
+TOML
+fi
+if [[ $package_id == so.tilo.runtime.tilolang ]]; then
+    # The binary every tilolang app's entrypoint executes.
+    test -x "$bundle/bin/tilolang-app"
+    cat >> "$work/manifest.toml" <<'TOML'
+
+[entrypoint]
+type = "cli"
+bin = "bin/tilolang-app"
 TOML
 fi
 if [[ $package_id == so.tilo.runtime.signal ]]; then

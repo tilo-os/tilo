@@ -8,10 +8,25 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import room_capacity  # noqa: E402
+
+
+def quiet_cgroup(directory: Path) -> Path:
+    """A job cgroup with room, so a test measures its run and not the job.
+
+    The suite runs beside every other suite of a CI check in one cgroup; a
+    bench started there inherits the job's memory use, and the sweep's guard
+    would stop it at once instead of at its own timeout.
+    """
+    root = directory / "cgroup"
+    root.mkdir()
+    (root / "memory.current").write_text("0", encoding="utf-8")
+    (root / "memory.max").write_text(str(8 * 1024**3), encoding="utf-8")
+    return root
 
 
 def report(guests: int, rss: float, cores: float, spectators: int = 0, egress: float = 0.0,
@@ -56,8 +71,11 @@ class PlanTest(unittest.TestCase):
 class BenchTest(unittest.TestCase):
     def test_a_run_past_its_time_is_stopped_and_named(self):
         with tempfile.TemporaryDirectory() as directory:
-            code, _, stopped = room_capacity.bench([sys.executable, "-c", "import time; time.sleep(30)"],
-                                                   Path(directory) / "log", timeout_s=1)
+            root = Path(directory)
+            with patch.object(room_capacity, "CGROUP", quiet_cgroup(root)):
+                code, _, stopped = room_capacity.bench(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    root / "log", timeout_s=1)
         self.assertIsNone(code)
         self.assertEqual(stopped, "stopped after 1 s")
 
@@ -97,7 +115,8 @@ class DegradedRunTest(unittest.TestCase):
                               encoding="utf-8")
             prefix.chmod(0o755)
             out = root / "probe"
-            self.assertEqual(room_capacity.degraded([str(prefix)], binary, out), 0)
+            with patch.object(room_capacity, "CGROUP", quiet_cgroup(root)):
+                self.assertEqual(room_capacity.degraded([str(prefix)], binary, out), 0)
             self.assertEqual(sorted(path.stem for path in out.glob("*.json")),
                              sorted(item.name for item in room_capacity.degraded_plan()))
             calls = (root / "calls.log").read_text(encoding="utf-8").splitlines()

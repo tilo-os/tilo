@@ -6,7 +6,7 @@ label = "Folder"
 version = 1
 fields = [
   { path = "places", type = "Collection<Bookmark>", stored = "collection" },
-  { path = "places.*.place", type = "Atom", label = true, readonly = true },
+  { path = "places.*.place", type = "Atom", readonly = true },
   { path = "ops", type = "Outbox<FileTask, Vec<Change>>", unit = true },
 ]
 

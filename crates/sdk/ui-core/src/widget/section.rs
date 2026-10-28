@@ -218,6 +218,19 @@ impl SectionHeader {
         self
     }
 
+    /// The header as a widget of its own: the head of a card or a panel that is not a
+    /// [`Section`].
+    #[must_use]
+    pub fn into_element(self) -> Element {
+        Box::new(self.into_widget(None))
+    }
+
+    /// The header's title.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     fn into_widget(self, disclosure: Option<Disclosure>) -> HeaderRow {
         let has_leading = self.leading.is_some();
         let mut children: Vec<Element> = self.leading.into_iter().collect();
@@ -997,6 +1010,9 @@ pub struct Section {
     motion: crate::tokens::EffectiveMotion,
     /// Told whether the pointer is over the section.
     pointer: Option<Rc<Cell<bool>>>,
+    /// How its own items changed since the host last read it: inserted, removed or moved by
+    /// key in place.
+    structure: crate::widget::StructureChange,
 }
 
 impl Section {
@@ -1013,6 +1029,7 @@ impl Section {
             ghosts: crate::widget::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
             pointer: None,
+            structure: crate::widget::StructureChange::None,
         }
     }
 
@@ -1230,11 +1247,20 @@ impl Widget for Section {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for child in &mut self.parts.children {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    /// Its items inserted, removed or moved by key, and what its parts describe.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let mut change = std::mem::take(&mut self.structure);
+        for child in &mut self.parts.children {
+            change = change.join(child.take_structure_change());
+        }
+        change
     }
 
     fn build_layout(
@@ -2028,3 +2054,6 @@ impl Widget for ObjectHeader {
 #[cfg(test)]
 #[path = "section_tests.rs"]
 mod tests;
+
+mod component;
+pub use component::SectionProps;

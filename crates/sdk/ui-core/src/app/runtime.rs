@@ -209,10 +209,13 @@ pub(super) struct AvailabilityWalk {
     /// (`ActionRuntime::last_control_availability`) as the walk left it:
     /// anything that drops it asks for the walk again.
     pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
-    /// A bound component's permissions sample an outside authority at each
-    /// decision (`PermissionContext::samples_outside`), which changes with
-    /// nothing put in force: their controls are refreshed every frame.
-    pub(super) sampled: bool,
+    /// The bound components' resources could not be read: their controls
+    /// are refreshed again on the next frame.
+    pub(super) unread: bool,
+    /// When a bound component's permissions next change with time alone
+    /// (`PermissionContext::next_change_in`): the walk is taken again then,
+    /// and the loop wakes for it.
+    pub(super) changes_at: Option<crate::time::Instant>,
 }
 
 /// Every input of reconciling the document routes with the tree.
@@ -407,6 +410,9 @@ pub(super) struct ActionRuntime {
     /// Resolutions asked for a resource still being read, answered once its
     /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
+    /// Answers to broker invocations held, by wire id, until what they
+    /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
+    pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -485,6 +491,7 @@ impl ActionRuntime {
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
             awaited_resolutions: Vec::new(),
+            held_answers: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
@@ -502,6 +509,24 @@ impl ActionRuntime {
 pub(super) struct AccessibilityRuntime {
     pub(super) screen_reader: Option<crate::screen_reader::ScreenReader>,
     pub(super) screen_reader_modifier_down: bool,
+    /// Ctrl+Super+Enter and the two-volume-key hold, which turn the screen
+    /// reader on and off (`App::handle_screen_reader_chord`).
+    pub(super) screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord,
+    /// Told the new state after the chord toggled the screen reader; when
+    /// set, it keeps the state instead of the person's settings file.
+    pub(super) on_screen_reader_chord: Option<Box<dyn FnMut(bool)>>,
+    /// The narrator the chord turned off, kept until the reader is turned on
+    /// again: its speech backends cut an utterance off when dropped, and it
+    /// is still saying that the screen reader is off.
+    pub(super) parting_screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// What a finger means while the screen reader is on
+    /// (`App::explore_by_touch`).
+    pub(super) touch_explorer: crate::screen_reader_touch::TouchExplorer,
+    /// The order the screen reader walks, read from
+    /// [`Self::semantic_tree`] at the revision it is keyed by.
+    pub(super) reading_order: Option<(u64, Vec<crate::screen_reader::ReadingItem>)>,
+    /// Counts the refreshes that changed [`Self::semantic_tree`].
+    pub(super) semantic_tree_revision: u64,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
     pub(super) focus_before_trap: Option<NodeId>,
@@ -542,6 +567,12 @@ impl AccessibilityRuntime {
         Self {
             screen_reader,
             screen_reader_modifier_down: false,
+            screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord::new(),
+            on_screen_reader_chord: None,
+            parting_screen_reader: None,
+            touch_explorer: crate::screen_reader_touch::TouchExplorer::new(),
+            reading_order: None,
+            semantic_tree_revision: 0,
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,

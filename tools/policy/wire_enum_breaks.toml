@@ -59,7 +59,7 @@ enum = "Reply"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any reply is decoded"
 
 [[break]]
-file = "crates/session/shell/src/compositor/liveness.rs"
+file = "crates/session/liveness/src/lib.rs"
 enum = "Answer"
 reason = "one line of JSON per answer between the compositor and its liveness prober (`serde_json::from_str`, `rename_all = snake_case`), both in the same binary, so a variant is named and its place carries no bytes"
 

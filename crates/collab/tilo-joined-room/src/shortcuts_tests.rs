@@ -31,8 +31,10 @@ fn request(fixture: &Fixture, change: &ShortcutChange) -> OwnerCommitRequest {
 fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
     owner
         .with_current(RoomId::parse(crate::testing::ROOM).unwrap(), |view| {
-            Ok(tilo_desktop_model::projection::workspace_shortcuts_of(
-                view.peer().admitted_room().ok_or("no room")?,
+            Ok(tilo_automation::decode_saved(
+                &tilo_desktop_model::projection::workspace_shortcuts_of(
+                    view.peer().admitted_room().ok_or("no room")?,
+                ),
             ))
         })
         .unwrap()

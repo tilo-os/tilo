@@ -87,7 +87,7 @@ const FILE_SCOPE: &str = "file";
 pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition {
     leaked(TypeId::of::<HistoryKey<A>>(), || {
         history_definition_of(
-            A::ID,
+            super::app::hooks::<A>().id(),
             A::FILE_HISTORY,
             (<A::Resource as Resource>::LABEL, preview::<A>),
             restore_schema::<A::Resource>(),
@@ -266,10 +266,9 @@ fn unavailable_preview(_: PreviewInput) -> Result<Box<dyn HistoryPreview>, Strin
     Err("this scope is a declaration, not a preview".into())
 }
 
-/// Whether `R` renders its record as text for History: an app may say so for
-/// its own type (`ResourceApp::HISTORY_RENDERS_TEXT`), else the type's `read`
-/// adapter is the test — a type that reads its record answers the same
-/// question at every version.
+/// Whether `R` renders its record as text for History: the type declares
+/// it (`history_text`) beside the `read` adapter that answers it, the same
+/// at every version.
 #[must_use]
 pub(crate) fn text_rendering<R: Resource>() -> TextRendering {
     TextRendering::from_declaration(R::READABLE, R::HISTORY_READS_TEXT)
@@ -308,7 +307,7 @@ pub(crate) fn historical_content<R: Resource>(
                 // rendering shows the exact bytes it holds: naming them as
                 // text would invent a document.
                 TextRendering::Structured | TextRendering::None => {
-                    binary_content::<R>(frozen, item)
+                    binary_content(frozen, item, R::LABEL)
                 }
             }
         }
@@ -322,10 +321,14 @@ fn version_gap(error: &tilo_resource::ModelError) -> HistoricalGap {
 }
 
 /// The bytes a version holds, for a type with no text rendering: the exact
-/// content address and length, never a diff of them.
-fn binary_content<R: Resource>(
+/// content address and length, never a diff of them. `label` is the type's
+/// [`Resource::LABEL`]; not generic, so it is compiled once rather than into
+/// every app.
+#[inline(never)]
+fn binary_content(
     frozen: &AutoCommit,
     item: Option<&str>,
+    label: &'static str,
 ) -> Result<serde_json::Value, HistoricalGap> {
     use automerge::{ROOT, ReadDoc as _};
     let id = match item {
@@ -335,8 +338,7 @@ fn binary_content<R: Resource>(
             .map_or_else(
                 || {
                     Err(HistoricalGap::unavailable(format!(
-                        "a {} holds no {key}",
-                        R::LABEL
+                        "a {label} holds no {key}"
                     )))
                 },
                 |(_, id)| Ok(id),
@@ -405,7 +407,7 @@ fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
     Ok(build_root::<A>(
         reader,
         Editing::ReadOnly,
-        AppStorage::for_app(A::ID),
+        AppStorage::for_app(super::app::hooks::<A>().id()),
         super::settings::Hosted::default(),
     ))
 }
@@ -448,7 +450,7 @@ pub(crate) fn render_past<A: ResourceApp>(
     let live = root
         .typed::<A::Resource>()
         .map(|typed| typed.live.clone())
-        .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
+        .ok_or_else(|| format!("{} drew another resource", super::app::hooks::<A>().title()))?;
     let mut preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
     let theme = ui_core::Theme::dark();
     let mut text = ui_core::text_render::TextRenderer::new();

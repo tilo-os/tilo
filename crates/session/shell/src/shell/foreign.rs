@@ -317,11 +317,11 @@ impl CpuLayout {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-use crate::shell::hdr_surface::half_to_f32;
+use tilo_color_pipeline::hdr_surface::half_to_f32;
 use tilo_lock::MutexRecover as _;
 
 /// Append one row of a 10-bit or half-float buffer to `texels` as the
-/// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
+/// matching [`tilo_color_pipeline::hdr_surface::HdrTexelFormat`]: 10-bit words with
 /// red in the low bits, half floats red first, padding alpha made opaque.
 /// Other layouts carry no HDR plane and append nothing.
 #[cfg(any(test, target_os = "linux"))]
@@ -358,10 +358,12 @@ fn append_hdr_texels(layout: CpuLayout, src: &[u8], texels: &mut Vec<u8>) {
 /// The texel format [`append_hdr_texels`] writes for `layout`, when it
 /// writes any.
 #[cfg(any(test, target_os = "linux"))]
-fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrTexelFormat> {
+fn hdr_texel_format(layout: CpuLayout) -> Option<tilo_color_pipeline::hdr_surface::HdrTexelFormat> {
     match layout {
-        CpuLayout::Rgb10 { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgb10a2),
-        CpuLayout::Half { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgba16Float),
+        CpuLayout::Rgb10 { .. } => Some(tilo_color_pipeline::hdr_surface::HdrTexelFormat::Rgb10a2),
+        CpuLayout::Half { .. } => {
+            Some(tilo_color_pipeline::hdr_surface::HdrTexelFormat::Rgba16Float)
+        }
         CpuLayout::Rgba8(_) | CpuLayout::P010 => None,
     }
 }
@@ -371,14 +373,14 @@ fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrT
 #[cfg(any(test, target_os = "linux"))]
 fn hdr_signal(
     layout: CpuLayout,
-    colorimetry: crate::collab::colorimetry::Colorimetry,
-) -> Option<crate::shell::hdr_surface::SurfaceSignal> {
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
+) -> Option<tilo_color_pipeline::hdr_surface::SurfaceSignal> {
     if matches!(layout, CpuLayout::Rgba8(_)) {
         return None;
     }
-    crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+    tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
         colorimetry,
-        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
     )
 }
 
@@ -389,9 +391,9 @@ fn convert_rows<'a>(
     layout: CpuLayout,
     rows: impl Iterator<Item = &'a [u8]>,
     (width, height): (u32, u32),
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
-) -> Option<crate::shell::hdr_surface::HdrPlane> {
+) -> Option<tilo_color_pipeline::hdr_surface::HdrPlane> {
     let signal = hdr_signal(layout, colorimetry);
     let format = hdr_texel_format(layout).filter(|_| signal.is_some());
     let mut texels = Vec::new();
@@ -414,7 +416,7 @@ fn convert_rows<'a>(
             append_hdr_texels(layout, row, &mut texels);
         }
     }
-    crate::shell::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
+    tilo_color_pipeline::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
 }
 
 /// Convert one row of a 10-bit or half-float buffer to RGBA8: SDR signals
@@ -424,13 +426,16 @@ fn convert_rows<'a>(
 fn convert_row(
     layout: CpuLayout,
     src: &[u8],
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
 ) {
-    let tonemap = crate::shell::hdr_tonemap::HdrTonemapConfig::default();
+    let tonemap = tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default();
     let mut push = |rgb: [f32; 3], alpha: u8| {
-        let [r, g, b] =
-            crate::shell::hdr_tonemap::tonemap_rgb_signal_to_srgb8(rgb, colorimetry, tonemap);
+        let [r, g, b] = tilo_color_pipeline::hdr_tonemap::tonemap_rgb_signal_to_srgb8(
+            rgb,
+            colorimetry,
+            tonemap,
+        );
         out.extend_from_slice(&[r, g, b, alpha]);
     };
     match layout {
@@ -553,15 +558,15 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
     let format = dmabuf.format();
     let layout = CpuLayout::for_fourcc(format.code)
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     let colorimetry =
-        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+        colorimetry.unwrap_or_else(neighbour_wire::colorimetry::Colorimetry::sdr_bt709);
     *hdr = None;
     if layout == CpuLayout::P010 {
         return import_p010(dmabuf, out, colorimetry, hdr);
@@ -644,8 +649,8 @@ pub fn import_dmabuf_rgba(
 fn import_p010(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
-    colorimetry: crate::collab::colorimetry::Colorimetry,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     let width = dmabuf.width();
     let height = dmabuf.height();
@@ -712,7 +717,7 @@ fn import_p010(
     };
     let luma = plane(0, y_stride, height)?;
     let chroma = plane(1, uv_stride, chroma_rows)?;
-    let rgba = crate::shell::hdr_tonemap::tonemap_p010_to_rgba8(
+    let rgba = tilo_color_pipeline::hdr_tonemap::tonemap_p010_to_rgba8(
         &luma,
         &chroma,
         y_stride / 2,
@@ -720,12 +725,12 @@ fn import_p010(
         width,
         height,
         colorimetry,
-        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
     );
     out.clear();
     out.extend_from_slice(&rgba);
     *hdr = hdr_signal(CpuLayout::P010, colorimetry).and_then(|signal| {
-        crate::shell::hdr_surface::HdrPlane::p010(
+        tilo_color_pipeline::hdr_surface::HdrPlane::p010(
             &luma,
             &chroma,
             (y_stride / 2, uv_stride / 2),
@@ -833,10 +838,10 @@ struct ForeignEntry {
     activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
-    hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     /// The current frame when it stayed on the GPU; `rgba` is then empty and
     /// read back only on demand.
     gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
@@ -1128,7 +1133,7 @@ pub struct FrameSnapshot {
     pub seq: u64,
     /// The frame at full precision, the same size as `rgba`, when it
     /// carries an HDR signal and nothing is composited over it.
-    pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    pub hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
 }
 
 /// A subsurface's pixels, tightly packed RGBA.
@@ -1327,9 +1332,34 @@ struct CaptureProtection {
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
 
-/// The process-wide [`ForeignFrameStore`].
+/// The process-wide [`ForeignFrameStore`]. It is also the store window
+/// shares encode a window's frames from ([`tilo_window_share::window_frames`]).
 pub fn store() -> &'static ForeignFrameStore {
-    STORE.get_or_init(ForeignFrameStore::default)
+    static PROVIDED: std::sync::Once = std::sync::Once::new();
+    let store = STORE.get_or_init(ForeignFrameStore::default);
+    PROVIDED.call_once(|| tilo_window_share::window_frames::provide(store));
+    store
+}
+
+impl tilo_window_share::window_frames::WindowFrames for ForeignFrameStore {
+    fn frame(&self, surface: SurfaceId) -> Option<tilo_window_share::window_frames::WindowFrame> {
+        let snapshot = self.snapshot(surface)?;
+        Some(tilo_window_share::window_frames::WindowFrame {
+            rgba: snapshot.rgba,
+            width: snapshot.width,
+            height: snapshot.height,
+            seq: snapshot.seq,
+        })
+    }
+
+    fn changes(
+        &self,
+        surface: SurfaceId,
+        previous: u64,
+        current: u64,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        self.snapshot_changes(surface, previous, current)
+    }
 }
 
 /// How a dmabuf's bytes were obtained.
@@ -1383,7 +1413,7 @@ struct CaptureJob<T> {
 pub struct DmabufCommit {
     pub buffer: Dmabuf,
     /// The surface's colour description, if it has one.
-    pub colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    pub colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     /// The commit's opaque region covers the whole surface
     /// ([`crate::compositor::opaque_region`]): the buffer's alpha channel is
     /// padding. The frame is drawn ignoring it, as an `X` format is, and a
@@ -1537,7 +1567,7 @@ struct ShmSpare {
 struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
-    hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    hdr: Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
     /// The frame, when it stayed on the GPU; `rgba` is then empty.
     gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
@@ -2457,19 +2487,19 @@ fn share_dmabuf(
 ///
 /// A 10-bit or half-float buffer is read back at its own precision and
 /// converted like the CPU import, so an HDR description yields its
-/// [`crate::shell::hdr_surface::HdrPlane`] on either route. P010 cannot be
+/// [`tilo_color_pipeline::hdr_surface::HdrPlane`] on either route. P010 cannot be
 /// read back through GL, so it goes to the CPU first.
 #[cfg(target_os = "linux")]
 fn decode_dmabuf(
     dmabuf: &Dmabuf,
     rgba: &mut Vec<u8>,
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
-    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
+    hdr: &mut Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32, DmabufRoute), String> {
     *hdr = None;
     let layout = CpuLayout::for_fourcc(dmabuf.format().code);
     let description =
-        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+        colorimetry.unwrap_or_else(neighbour_wire::colorimetry::Colorimetry::sdr_bt709);
     if layout == Some(CpuLayout::P010)
         && let Ok((width, height)) = import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr)
     {
@@ -2532,7 +2562,7 @@ fn decode_dmabuf(
 impl ForeignFrameStore {
     /// The image description the surface's client last attached.
     #[cfg(target_os = "linux")]
-    fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
+    fn colorimetry(&self, id: SurfaceId) -> Option<neighbour_wire::colorimetry::Colorimetry> {
         self.entries
             .lock_recover()
             .get(&id)
@@ -2709,7 +2739,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         client: Client,
         dmabuf: Dmabuf,
-        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     ) -> Option<PreparedDmabufCapture> {
         let commit = DmabufCommit {
             buffer: dmabuf,
@@ -2960,7 +2990,7 @@ impl ForeignFrameStore {
         token: u64,
         result: Result<(u32, u32, CaptureRoute), String>,
         rgba: &mut Vec<u8>,
-        hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+        hdr: Option<tilo_color_pipeline::hdr_surface::HdrPlane>,
     ) -> bool {
         let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
@@ -3133,7 +3163,7 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
         rgba: &[u8],
-        hdr: crate::shell::hdr_surface::HdrPlane,
+        hdr: tilo_color_pipeline::hdr_surface::HdrPlane,
     ) {
         let (width, height) = (hdr.width(), hdr.height());
         self.publish_frame(id, rgba, width, height, Some(Arc::new(hdr)));
@@ -3145,7 +3175,7 @@ impl ForeignFrameStore {
         rgba: &[u8],
         width: u32,
         height: u32,
-        hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+        hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     ) {
         // Copied before the lock: painting takes it too.
         let pixels = Arc::new(rgba.to_vec());
@@ -3741,7 +3771,10 @@ impl ForeignFrameStore {
     pub fn frame_image(
         &self,
         id: SurfaceId,
-    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+    ) -> Option<(
+        ImageData,
+        Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
+    )> {
         let shared = self.with_frames(id, |guard, children| {
             if !children.is_empty() {
                 return None;
@@ -4002,7 +4035,7 @@ impl ForeignFrameStore {
 
     /// When the store next decides something about `id`'s window by itself
     /// while it has not presented: the opening configure sent anyway, or the
-    /// window shown anyway past [`PRESENT_GRACE`]. Deadlines, so a window
+    /// window shown anyway past `PRESENT_GRACE`. Deadlines, so a window
     /// whose app is slow to draw asks for no frames meanwhile. Past the
     /// backstop the deadline stays due until a draw presents the window
     /// (`mark_presented`), which is what serving it does. `None` once
@@ -4404,7 +4437,7 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     /// The cached frame at full precision, when it carries an HDR signal.
-    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    cached_hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     cached_seq: u64,
     /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
     sheet_images: Vec<(SheetLink, ImageData)>,
@@ -4835,7 +4868,7 @@ impl ForeignSurfaceWidget {
         } else {
             dst.intersect(self.rect)
         };
-        crate::shell::hdr_surface::record(
+        tilo_color_pipeline::hdr_surface::record(
             plane,
             image,
             brush_transform,
@@ -4956,7 +4989,7 @@ enum SharedFrame {
     Cpu(
         Arc<Vec<u8>>,
         (u32, u32),
-        Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+        Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     ),
 }
 
@@ -6028,7 +6061,7 @@ mod tests {
 
     #[test]
     fn ten_bit_and_half_float_rows_convert_for_the_sdr_desktop() {
-        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
         // XB30: red in the low bits. Full red, half green, zero blue.
         let word: u32 = 0xC008_03FF; // red 1023, green 512, padding set
         let mut out = Vec::new();
@@ -6068,7 +6101,7 @@ mod tests {
         // A PQ signal is tone-mapped rather than shown raw: PQ 0.58
         // (~200 cd/m² of a 1000 cd/m² master) lands darker than the
         // 148/255 an SDR reading of the same code would give.
-        let pq = crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry();
+        let pq = tilo_window_share::hdr_metadata::HdrConfig::pq_reference().colorimetry();
         let mid: u32 = 0x2529_4A52; // 594 in every channel
         let mut out = Vec::new();
         convert_row(
@@ -6089,9 +6122,9 @@ mod tests {
 
     #[test]
     fn hdr_frames_keep_a_full_precision_plane() {
-        use crate::shell::hdr_surface::{HdrTexelFormat, SignalTransfer};
-        let pq = crate::collab::colorimetry::Colorimetry::hdr10();
-        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
 
         // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
         {
@@ -6152,12 +6185,12 @@ mod tests {
         {
             let frames = ForeignFrameStore::default();
             let root = sid(80);
-            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+            let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
                 pq,
-                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+                tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
             )
             .expect("PQ");
-            let plane = crate::shell::hdr_surface::HdrPlane::from_signal_rgb(
+            let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
                 4,
                 4,
                 (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
@@ -6196,12 +6229,12 @@ mod tests {
         }
     }
 
-    fn scrgb() -> crate::collab::colorimetry::Colorimetry {
-        crate::collab::colorimetry::Colorimetry {
-            primaries: crate::collab::colorimetry::ColorPrimaries::Bt709,
-            transfer: crate::collab::colorimetry::TransferCharacteristics::Linear,
-            matrix: crate::collab::colorimetry::MatrixCoefficients::Identity,
-            range: crate::collab::colorimetry::ColorRange::Full,
+    fn scrgb() -> neighbour_wire::colorimetry::Colorimetry {
+        neighbour_wire::colorimetry::Colorimetry {
+            primaries: neighbour_wire::colorimetry::ColorPrimaries::Bt709,
+            transfer: neighbour_wire::colorimetry::TransferCharacteristics::Linear,
+            matrix: neighbour_wire::colorimetry::MatrixCoefficients::Identity,
+            range: neighbour_wire::colorimetry::ColorRange::Full,
         }
     }
 

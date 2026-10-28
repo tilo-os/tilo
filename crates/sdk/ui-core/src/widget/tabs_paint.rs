@@ -107,8 +107,22 @@ impl TabBar {
                 let rect = self.toolbar_row_rect();
                 self.toolbar_row.lay_out(rect);
             }
-            self.toolbar_row
-                .paint(scene, transform, tr, theme, presence);
+            // The app's slots change on their own (a document's edited mark
+            // comes and goes with each save): a damage part held inside the
+            // bar, so they repaint the bar and not the window's lane.
+            let area = self.rect.union(self.toolbar_row.row()).inflate(2.0, 2.0);
+            let key = crate::scene_parts::PartKey::new("ui.window-toolbar-row", &self.group_id_tag);
+            let row = &mut self.toolbar_row;
+            crate::scene_parts::part(
+                scene,
+                key,
+                vec![transform.transform_rect_bbox(area)],
+                |scene| {
+                    scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &area);
+                    row.paint(scene, transform, tr, theme, presence);
+                    scene.pop_layer();
+                },
+            );
         }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);

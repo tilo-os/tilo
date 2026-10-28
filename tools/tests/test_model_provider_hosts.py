@@ -18,13 +18,17 @@ class ModelProviderHosts(unittest.TestCase):
         self.assertEqual(set(providers["platforms"]), {"tilo-os", "linux", "macos", "web"})
         self.assertEqual(apps["so.tilo.settings"]["platforms"], ["tilo-os"])
         manifest = tomllib.loads((ROOT / "apps/model-providers/tilo-app.toml").read_text())
-        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@10"})
+        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@11"})
         self.assertEqual(manifest["sandbox"]["net"]["mode"], "off")
         self.assertTrue(providers["keywords"])
         published = json.loads((ROOT / "crates/browser/tilo-web-desktop/apps.json").read_text())
         self.assertIn("so.tilo.model-providers", json.dumps(published))
+        # The web desktop registers every app deferred from its own module
+        # (tools/web/generate_web_desktop.py), so the panel is named there by
+        # its app id and the module defers it.
         for path, registration in [
-            ("crates/browser/tilo-web-desktop/src/apps.rs", 'registry::defer("so.tilo.model-providers"'),
+            ("crates/browser/tilo-web-desktop/src/apps.rs", "model_providers_split::register();"),
+            ("crates/browser/tilo-web-desktop/src/apps.rs", 'const APP: &str = "so.tilo.model-providers";'),
             ("crates/agent/agent-participant/src/web_apps.rs", "model_providers::definition()"),
         ]:
             self.assertIn(registration, (ROOT / path).read_text())
@@ -50,15 +54,18 @@ class ModelProviderHosts(unittest.TestCase):
         base = ROOT / "crates/browser/tilo-browser-runtime/src"
         services = (base / "host_services.rs").read_text()
         helper = services.split("fn provider_admin_app(", 1)[1].split("\n}", 1)[0]
+        # The page runs Model Providers, never Settings (a Tilo OS app).
         self.assertEqual(re.findall(r'"(so\.tilo\.[^"]+)"', helper),
-                         ["so.tilo.settings", "so.tilo.model-providers"])
+                         ["so.tilo.model-providers"])
         self.assertIn("handle.is_available() && !provider_admin_app(context.app_id())", services)
         desktop = (base / "desktop.rs").read_text()
-        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id)", desktop)
+        self.assertIn("if crate::host_services::provider_admin_app(definition.app_id())", desktop)
         self.assertIn("self.inputs.provider_admin.clone()", desktop)
         browser = (base / "browser.rs").read_text()
-        self.assertIn("provide_provider_admin(&mut context, config.provider_admin()?)", browser)
-        config = browser.split("fn provider_admin(", 1)[1].split("\n    fn models(", 1)[0]
+        # The page's own administration is lent to the panel's page only.
+        self.assertIn("crate::host_services::provide_provider_admin(context, self.provider_admin()?)", browser)
+        self.assertIn("if crate::host_services::provider_admin_app(context.app_id())", browser)
+        config = browser.split("fn provider_admin(", 1)[1].split("\n    fn lend_provider_admin(", 1)[0]
         self.assertIn("self.provider_management", config)
         self.assertNotIn("self.models", config)
         self.assertNotIn("session_token", helper)

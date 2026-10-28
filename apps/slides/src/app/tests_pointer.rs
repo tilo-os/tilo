@@ -761,9 +761,12 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
             1,
             "exactly one host chooser request"
         );
-        // A frame takes up the chosen file and lands a real image in the deck.
-        bench.frame();
-        bench.frame();
+        // The chooser's file is read on a background worker; the first frame
+        // after it delivers takes it up and lands a real image in the deck.
+        tilo_test_env::wait_until("the chosen picture to land on the slide", || {
+            bench.frame();
+            bench.deck().slides[0].elements.len() > before
+        });
         let deck = bench.deck();
         let el = deck.slides[0]
             .elements

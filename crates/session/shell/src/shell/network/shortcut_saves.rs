@@ -140,9 +140,11 @@ impl ShellNetwork {
                 tilo_automation::ShortcutChange::Save(saved) => workspace
                     .shortcuts
                     .iter()
-                    .any(|held| held.id == saved.id && held.saved_proof == saved.saved_proof),
+                    .filter(|held| held.id() == saved.id)
+                    .filter_map(|held| held.decode().ok())
+                    .any(|held| held.saved_proof == saved.saved_proof),
                 tilo_automation::ShortcutChange::Delete(id) => {
-                    !workspace.shortcuts.iter().any(|held| &held.id == id)
+                    !workspace.shortcuts.iter().any(|held| held.id() == id)
                 }
             })
     }

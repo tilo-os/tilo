@@ -18,6 +18,9 @@ pub struct SendItem {
     pub op: SendOp,
     /// `map` the result as a message with this root.
     pub root: Option<String>,
+    /// The message's Tilo channel, which the webhook a send reports it
+    /// went out through (its old one gone from Discord) maps to.
+    pub channel: String,
 }
 
 /// What a Tilo post becomes.
@@ -223,6 +226,7 @@ pub fn plan_post(
             tilo: message.id.clone(),
         },
         root: message.parent,
+        channel: message.channel.clone(),
     });
     plan
 }

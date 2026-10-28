@@ -127,6 +127,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );
@@ -162,7 +163,7 @@ mod tests {
 
         fn fixture_unavailable_qs_overrides_every_dispatcher_default() {
             use os_actions::Dispatcher;
-            let actions = crate::shell::quick_settings::actions::UnavailableQsActions;
+            let actions = tilo_quick_settings::actions::UnavailableQsActions;
             let results = [
                 actions.set_brightness(0.0),
                 actions.set_volume(0.0),
@@ -277,6 +278,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );
@@ -349,6 +351,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );

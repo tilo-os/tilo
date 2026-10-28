@@ -61,11 +61,21 @@ mod test_support;
 mod text_operations;
 #[cfg(test)]
 mod text_operations_tests;
+#[cfg(test)]
+mod typing_boundary_tests;
 
 pub use app::CodeApp;
 pub use effects::CodeEditorEffect;
 pub use project::Project;
 pub use resource::CodeEditorShell;
+
+/// Read the authoritative buffer for benchmark correctness checks outside the measured edit.
+#[cfg(feature = "benchmarks")]
+#[doc(hidden)]
+#[must_use]
+pub fn benchmark_buffer_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
+    doc::EditorDoc::read_buffer_key(doc, key)
+}
 
 /// The app's toolkit definition, which every host that mounts the editor
 /// (the shell's Editor tabs, a desktop test) instantiates.

@@ -186,6 +186,17 @@ fn never_while_typing_in_a_call_or_following() {
 /// moment already reached would draw a frame on every frame (the whole time
 /// the person types) for a hint that cannot begin until what holds it back
 /// changes.
+/// Hints turned off wake nobody at a hint's moment.
+#[test]
+fn hints_turned_off_ask_for_no_wake() {
+    let mut run = Run::new();
+    assert_eq!(run.coach.next_change(TIMING), Some(run.at(17)));
+    run.coach.set_enabled(false, run.at(1));
+    assert_eq!(run.coach.next_change(TIMING), None);
+    run.tick(20);
+    assert_eq!(run.showing(), None);
+}
+
 #[test]
 fn a_moment_held_back_asks_for_no_more_frames() {
     let mut run = Run::new();

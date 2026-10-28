@@ -423,3 +423,50 @@ fn an_earlier_part_the_room_lacks_ends_in_a_final_state() {
     assert_eq!(state(&mut bo), (false, false, false));
     assert_eq!(shown(&mut bo), ["0.0", "0.1", "1.0", "1.1", "2.0", "2.1"]);
 }
+
+/// A window that has not chosen its channel yet (its chat record still on
+/// its way when the head is taken up) shows no timeline, and reads nothing
+/// back for it.
+#[test]
+fn no_channel_in_view_reads_nothing_back() {
+    let mut ada = Window::on_device("ada").unwrap();
+    let mut bo = Window::on_device("bo").unwrap();
+    three_parts(&mut ada, 150);
+    join(&mut ada, &mut bo);
+    bo.with_surface::<ChatApp, _>(|surface| {
+        surface.active_channel.clear();
+        surface.messages.clear();
+    });
+    bo.harness().relayout();
+    bo.harness().relayout();
+    assert_eq!(held(&mut bo), vec![2]);
+}
+
+/// A channel whose messages are all in the head (here one made after the
+/// earlier parts filled) reads nothing back: the head's counts of the parts
+/// before say it has none there.
+#[test]
+fn a_channel_with_nothing_earlier_reads_nothing_back() {
+    let mut ada = Window::on_device("ada").unwrap();
+    let mut bo = Window::on_device("bo").unwrap();
+    three_parts(&mut ada, 2);
+    bo.invoke(
+        Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
+            id: "c_quiet".into(),
+            name: "quiet".into(),
+            category: None,
+            kind: None,
+            topic: None,
+        }),
+    )
+    .unwrap();
+    open_channel(&mut bo, "c_quiet");
+    join(&mut ada, &mut bo);
+    bo.harness().relayout();
+    bo.harness().relayout();
+    assert_eq!(held(&mut bo), vec![2]);
+    assert!(
+        !bo.with_surface::<ChatApp, _>(|surface| surface.reads_back())
+            .unwrap()
+    );
+}

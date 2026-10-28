@@ -24,7 +24,11 @@ const ARCHIVE: &str = "archive";
 /// A post as long as one may be: a part fills after a few dozen of them.
 fn long_post(n: usize) -> String {
     let line = format!("filler {n} ");
-    line.repeat(chat::record::MAX_MESSAGE_TEXT_BYTES / line.len())
+    line.repeat(
+        chat::record::MAX_MESSAGE_TEXT_BYTES
+            .checked_div(line.len())
+            .unwrap_or_default(),
+    )
 }
 
 /// The resource `id` among `resources` and their children.
@@ -170,7 +174,7 @@ pub async fn run(bundle: &str) {
                 "post",
                 &serde_json::json!({"channel": archive, "text": long_post(n)}),
             );
-            n += 1;
+            n = n.saturating_add(1);
         }
     }
     let route = super::super::DocumentRoute {
@@ -281,15 +285,15 @@ pub async fn run(bundle: &str) {
         .expect("the chat publishes its channel");
     let provider = record_provider(&route);
 
-    let root = hex::encode(reader.cert.user_public_key);
+    let reader_root = hex::encode(reader.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room, "provider": provider,
         "record": route.record,
         "reference": {"id": channel_id, "kind": channel_kind},
-        "root": root, "decoy": decoy, "seed": reader.key.to_bytes(),
+        "root": reader_root, "decoy": decoy, "seed": reader.key.to_bytes(),
         "certificate": {"cert": reader.cert, "hostCert": host.cert},
-        "accounts": super::account_document(&root, &hosted.web.origin, "Fixture reader"),
+        "accounts": super::account_document(&reader_root, &hosted.web.origin, "Fixture reader"),
         "decoyAccounts": super::account_document(&decoy, &hosted.web.origin, "Unadmitted fixture account"),
         "perPart": PER_PART,
     });

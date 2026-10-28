@@ -14,6 +14,8 @@
 #            one that lists the tracked files through Git and reads any of them says `**`.
 #   git      it lists or reads the tracked files through Git: under t, whose checks see no
 #            .git, it runs under tools/ci/t-git-index.sh, which indexes the files present
+#            (`git = "paths"`: it only lists their paths, or greps the working tree, and never
+#            reads blobs from the index, so the index records the paths without hashing them)
 #   tests    a test of the suite's own tools, run after the checks of the tree: its fixtures
 #            write beside the sources, so under t it gets a private copy of them
 #   history  a test that reads the commit's Git history: under t it gets t's .git, which keys
@@ -34,7 +36,7 @@ inputs = ["**"]
 name = "public-references"
 label = "Tracked files reference no internal tracker"
 run = "python3 tools/policy/check_public_references.py"
-git = true
+git = "paths"
 inputs = ["**"]
 
 [[step]]
@@ -117,7 +119,7 @@ pre_push = true
 name = "suites"
 label = "Every test suite outside Cargo is gated or explained"
 run = "python3 tools/ci/suites.py check"
-git = true
+git = "paths"
 inputs = ["**/*.py", "**/*.sh", "**/*.mjs", "**/*.rs", "**/*.toml", "**/*.yml", "**/*.txt"]
 
 [[step]]
@@ -235,7 +237,7 @@ pre_push = true
 name = "image-builder-inputs"
 label = "Image builders copy what they compile, and only that"
 run = "python3 tools/policy/check_image_builder_inputs.py"
-git = true
+git = "paths"
 inputs = ["os/**", "tools/**", "fuzz/**", "**/*.rs", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 
 [[step]]
@@ -327,7 +329,7 @@ pre_push = true
 name = "automerge-apply-contract"
 label = "Automerge apply contract"
 run = "python3 tools/policy/check_automerge_apply_contract.py"
-git = true
+git = "paths"
 inputs = ["**/*.rs", "**/Cargo.toml"]
 
 [[step]]
@@ -370,7 +372,7 @@ pre_push = true
 name = "image-interpreters"
 label = "No new interpreter scripts in the OS image"
 run = "python3 tools/policy/check_image_interpreters.py"
-git = true
+git = "paths"
 inputs = ["os/**", "dist/**", "docs/**", "keys/**", "crates/session/install-profile-model/locales.txt",
           "tools/policy/image_interpreter_baseline.txt"]
 
@@ -378,7 +380,7 @@ inputs = ["os/**", "dist/**", "docs/**", "keys/**", "crates/session/install-prof
 name = "seeded-state-history"
 label = "State seeded once keeps every version upgraded machines hold"
 run = "python3 tools/policy/check_seeded_state_history.py"
-git = true
+git = "paths"
 inputs = ["**"]
 
 [[step]]
@@ -414,7 +416,7 @@ pre_push = true
 name = "setup-neutral"
 label = "No setup-specific references"
 run = "python3 tools/policy/check_setup_neutral.py"
-git = true
+git = "paths"
 inputs = ["**"]
 
 [[step]]
@@ -435,7 +437,7 @@ inputs = ["**/*.rs", "**/Cargo.toml", "**/clippy.toml", "clippy.toml"]
 name = "source-file-size"
 label = "Rust files stay under their size ceiling"
 run = "python3 tools/policy/check_source_file_size.py"
-git = true
+git = "paths"
 inputs = ["**/*.rs", "tools/policy/source_file_size_baseline.toml"]
 
 # The suite's own tests, after the checks of the tree.
@@ -445,9 +447,30 @@ name = "unit"
 label = "Repository policy unit tests"
 run = "python3 tools/policy/run_unit_tests.py tools/tests"
 tests = true
-# Some 240 test files of tools across the tree, which read what those tools read.
+# Some 240 test files of tools across the tree, which read what those tools read. Each that reads
+# only some of the tree is a check of its own, keyed by what it reads and run with just that
+# (tools/policy/unit_test_inputs.py); those that read the whole tree, and those that read the
+# commit's history through Git, run together in policy/tests/unit.
 inputs = ["**"]
 history = true
+split = true
+# Test files that run in policy/tests/unit whatever they are found to read: those that read the
+# commit's history through Git, and those that check the tree as a whole (that it passes a policy,
+# that every workspace package or app has something), whose reads are the tree's.
+whole_tree_tests = [
+  "tools/tests/test_browser_runtime_release.py", "tools/tests/test_check_image_interpreters.py",
+  "tools/tests/test_check_seeded_state_history.py", "tools/tests/test_image_builder_inputs.py",
+  "tools/tests/test_macos_collection.py", "tools/tests/test_signal_provider_release.py",
+  "tools/tests/test_signal_runtime_staging.py", "tools/tests/test_suites.py",
+  "tools/tests/test_test_environment.py", "tools/tests/test_workflow_package_paths.py",
+  "tools/tests/test_check_host_data_apps.py", "tools/tests/test_component_manifest.py",
+  "tools/tests/test_copy_language.py", "tools/tests/test_dependency_cycles.py",
+  "tools/tests/test_developer_docs.py", "tools/tests/test_development_book.py",
+  "tools/tests/test_extension_resolve.py", "tools/tests/test_language_packs.py",
+  "tools/tests/test_package_sets.py", "tools/tests/test_policy_steps.py",
+  "tools/tests/test_registry_metadata.py", "tools/tests/test_security_boundary_invariants.py",
+  "tools/tests/test_ui_build_inputs.py", "tools/tests/test_vm_artifact_handoff.py",
+]
 pre_push = true
 
 [[step]]

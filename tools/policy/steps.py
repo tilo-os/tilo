@@ -7,8 +7,8 @@ and what tools/ci/t_toml.py turns into one `policy/<name>` check each.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePath
 import re
 import sys
 import tomllib
@@ -18,7 +18,7 @@ MANIFEST = "tools/policy/steps.toml"
 GIT_INDEX = "tools/ci/t-git-index.sh"
 FINDINGS = "tools/policy/findings.py"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-FIELDS = {"name", "label", "run", "inputs", "git", "tests", "history", "covered_by", "pre_push"}
+FIELDS = {"name", "label", "run", "inputs", "git", "tests", "history", "covered_by", "pre_push", "split", "whole_tree_tests"}
 # What a step a push runs may not be: it lists the tree through Git (t indexes all of it first),
 # reads the whole tree, or builds. Those wait for main, which runs every default check.
 WHOLE_TREE = frozenset({"**"})
@@ -42,6 +42,16 @@ class Step:
     covered_by: str | None
     pre_push: bool = False
     history: bool = False
+    # It only lists the tracked paths through Git (`git = "paths"`), never reads blobs from the
+    # index, so t-git-index.sh indexes the paths without hashing the files.
+    git_paths: bool = False
+    # The suite's tests, one check per test file (`split = true`): see `expanded`.
+    split: bool = False
+    # Test files that run in the whole tree, with t's .git, whatever unit_test_inputs.py finds in
+    # them: those that read the commit's history, and those that check the tree as a whole.
+    whole_tree_tests: tuple[str, ...] = ()
+    # It runs in a copy of the tree holding only its inputs (run_unit_tests.py --pruned).
+    pruned: bool = False
 
     @property
     def check(self) -> str:
@@ -51,7 +61,9 @@ class Step:
     @property
     def command(self) -> str:
         """What runs it: under t-git-index.sh when it reads the tree through Git."""
-        return f"bash {GIT_INDEX} {self.run}" if self.git else self.run
+        if not self.git:
+            return self.run
+        return f"bash {GIT_INDEX} --paths {self.run}" if self.git_paths else f"bash {GIT_INDEX} {self.run}"
 
     @property
     def t_command(self) -> str:
@@ -72,7 +84,13 @@ def load(root: Path = ROOT) -> list[Step]:
             raise ValueError(f"{MANIFEST}: a step's name is lowercase words joined by '-', not {name!r}")
         step = Step(name, entry["label"], " ".join(entry["run"].replace("\\\n", " ").split()),
                     tuple(entry.get("inputs", ())), bool(entry.get("git")), bool(entry.get("tests")),
-                    entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")))
+                    entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")),
+                    entry.get("git") == "paths", bool(entry.get("split")), tuple(entry.get("whole_tree_tests", ())))
+        if step.split and not (step.tests and step.history):
+            raise ValueError(f"{MANIFEST}: step {name} says split = true, which only the suite's tests with "
+                             "history = true may (the tests that read the whole tree run as one such check)")
+        if entry.get("git") not in (None, True, False, "paths"):
+            raise ValueError(f"{MANIFEST}: step {name} says git = {entry.get('git')!r}: true or \"paths\"")
         if step.history and not step.tests:
             raise ValueError(f"{MANIFEST}: step {name} says history = true, which only the suite's tests may")
         if (step.tests, name) in seen:
@@ -92,6 +110,44 @@ def load(root: Path = ROOT) -> list[Step]:
         seen.add((step.tests, name))
         steps.append(step)
     return steps
+
+
+SPLIT_RUNNER = "tools/policy/run_unit_tests.py"
+
+
+def split_checks(step: Step, root: Path = ROOT) -> list[Step]:
+    """A `split` step as t runs it: each test file that reads only some of the tree is a check of
+    its own, `<check>/<name>`, keyed by what it reads (tools/policy/unit_test_inputs.py) and run in
+    a copy of the tree holding just that, so a read of anything else fails it; the files that read
+    the whole tree, or the commit's history, stay together in the step's own check."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import unit_test_inputs
+
+    directories = [Path(word) for word in step.run.split()[2:]]
+    tree = unit_test_inputs.Tree(root)
+    tests = sorted(path for path in tree.files
+                   if any(PurePath(path).parent == directory for directory in directories)
+                   and PurePath(path).match("test_*.py"))
+    missing = sorted(set(step.whole_tree_tests) - set(tests))
+    if missing:
+        raise ValueError(f"{MANIFEST}: step {step.name} names whole-tree tests that don't exist: {', '.join(missing)}")
+    whole, own = [], []
+    for test in tests:
+        found, _ = (None, "") if test in step.whole_tree_tests else unit_test_inputs.inputs(test, tree)
+        if found is None:
+            whole.append(test)
+        else:
+            name = PurePath(test).stem.removeprefix("test_").replace("_", "-")
+            own.append(replace(step, name=f"{step.name}/{name}", run=f"python3 {SPLIT_RUNNER} --pruned {test}",
+                               inputs=tuple(found), history=False, pre_push=step.pre_push, split=False,
+                               whole_tree_tests=(), pruned=True))
+    rest = replace(step, run=f"python3 {SPLIT_RUNNER} {' '.join(whole)}", split=False, whole_tree_tests=())
+    return [rest, *own]
+
+
+def expanded(root: Path = ROOT) -> list[Step]:
+    """Every step as t runs it: a `split` step as its checks (`split_checks`)."""
+    return [check for step in load(root) for check in (split_checks(step, root) if step.split else [step])]
 
 
 def imports(path: str, root: Path = ROOT, found: set[str] | None = None) -> set[str]:

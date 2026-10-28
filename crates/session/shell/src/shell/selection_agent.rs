@@ -57,6 +57,12 @@ pub(crate) struct SelectionSeed {
     pub app_id: String,
     pub app_label: String,
     pub selection: Option<SharedSelection>,
+    /// The resource the app said its focused window shows, when that is not
+    /// what the selection names: a person long-pressed the window's title or
+    /// its drawer, not a place in what it shows. It travels as the task's
+    /// subject, so the agent is told which view of the app it is about and
+    /// starts there.
+    pub view: Option<SharedSelection>,
     /// Where the selection is drawn on the desktop, when the app said: the
     /// composer keeps clear of all of it.
     pub area: Option<Rect>,
@@ -87,8 +93,23 @@ impl SelectionSeed {
             app_id: app_id.into(),
             app_label: app_label.into(),
             selection,
+            view: None,
             area: None,
         }
+    }
+
+    /// This seed also says which view of its app the window shows: the
+    /// whole item `resource` named `label`, the place the task starts at
+    /// when the selection itself names no resource.
+    #[must_use]
+    pub(crate) fn showing(mut self, resource: tilo_actions::ActionResource) -> Self {
+        let label = resource.label.clone();
+        self.view = Some(
+            SharedSelection::of_text(&label)
+                .at(tilo_actions::SelectionPlace::item(resource.id.as_str()))
+                .in_resource(resource),
+        );
+        self
     }
 
     /// This seed's selection drawn at `area` on the desktop.
@@ -98,14 +119,23 @@ impl SelectionSeed {
         self
     }
 
+    /// What the request is about, as typed context: the selection's resource
+    /// when it names one, else the view the app's window shows.
+    fn about(&self) -> Option<&SharedSelection> {
+        self.selection
+            .as_ref()
+            .filter(|selection| selection.resource.is_some())
+            .or(self.view.as_ref())
+    }
+
     /// The `subject_json` argument of `desktop:tasks/queue`: what the
     /// request is about, the resource the app published and the selection
     /// in it. The subject only: it attaches nothing, so the task runs with a
     /// room-wide task's authority. `None` when the selection names no
     /// resource, or the app has no package id to name it by.
     pub(crate) fn subject_json(&self) -> Option<String> {
-        let selection = self.selection.as_ref()?;
-        let resource = selection.resource.clone()?;
+        let about = self.about()?;
+        let resource = about.resource.clone()?;
         if !self.app_id.contains('.') {
             return None;
         }
@@ -113,7 +143,7 @@ impl SelectionSeed {
             app_id: self.app_id.clone(),
             app_label: self.app_label.clone(),
             resource,
-            anchor: selection.anchor.clone(),
+            anchor: about.anchor.clone(),
         })
         .ok()
     }
@@ -157,10 +187,21 @@ impl SelectionSeed {
                     ("selection", excerpt.into()),
                 ],
             ),
-            None => t_args(
-                "agent-quick-about-window",
-                &[("app", self.app_label.clone().into())],
-            ),
+            // Nothing is selected, but the app said which view its window
+            // shows: that is what the request is about, named as it reads.
+            None => match self.about().and_then(|about| about.resource.as_ref()) {
+                Some(resource) => t_args(
+                    "agent-quick-about-resource",
+                    &[
+                        ("app", self.app_label.clone().into()),
+                        ("resource", resource.label.clone().into()),
+                    ],
+                ),
+                None => t_args(
+                    "agent-quick-about-window",
+                    &[("app", self.app_label.clone().into())],
+                ),
+            },
         }
     }
 }

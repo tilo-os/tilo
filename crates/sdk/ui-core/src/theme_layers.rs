@@ -248,9 +248,9 @@ pub struct AccessibilityLayer {
 
 impl AccessibilityLayer {
     /// Same lower bound as [`Theme::with_text_scale`].
-    pub const TEXT_SCALE_MIN: f32 = 0.5;
+    pub const TEXT_SCALE_MIN: f32 = settings_store::appearance::TEXT_SCALE_MIN;
     /// Same upper bound as [`Theme::with_text_scale`].
-    pub const TEXT_SCALE_MAX: f32 = 4.0;
+    pub const TEXT_SCALE_MAX: f32 = settings_store::appearance::TEXT_SCALE_MAX;
     /// Same lower bound as [`Theme::with_ui_scale`].
     pub const UI_SCALE_MIN: f32 = 0.5;
     /// Same upper bound as [`Theme::with_ui_scale`].

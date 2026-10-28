@@ -441,8 +441,9 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
             "the first window focused again rests home"
         );
 
-        let surface = frame.root_mut::<DesktopSurface>();
+        let mut surface = frame.root_mut::<DesktopSurface>();
         surface.shown_row().unwrap().pan_to(f64::MAX);
+        drop(surface);
         frame.relayout();
         let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
         let last = row.groups.last().unwrap().get_rect();
@@ -834,7 +835,7 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
             .shown_row_ref()
             .unwrap()
             .scroll_x();
-        let surface = frame.root_mut::<DesktopSurface>();
+        let mut surface = frame.root_mut::<DesktopSurface>();
         assert!(
             surface.shown_row_ref().unwrap().pan_max_scroll_x() > 2000.0,
             "{kind}: five windows overflow the strip"
@@ -855,16 +856,17 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
             handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].id),
             "{kind}: focus stays put while the strip moves"
         );
+        drop(surface);
 
         // Frames lay the strip out while the wheel spins.
         frame.relayout();
-        let surface = frame.root_mut::<DesktopSurface>();
-        surface.end_idle_swipe(ms(t, 17 * 5 + 250));
+        frame
+            .root_mut::<DesktopSurface>()
+            .end_idle_swipe(ms(t, 17 * 5 + 250));
         for _ in 0..4 {
             frame.relayout();
         }
-        let surface = frame.root_mut::<DesktopSurface>();
-        let shown = focused(surface, &handle);
+        let shown = focused(&mut frame.root_mut::<DesktopSurface>(), &handle);
         assert_eq!(
             handle.read(|tree| tree.workspaces[0].strips[0].window_groups[shown].id),
             looked_at,
@@ -874,6 +876,7 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
             shown >= 1,
             "{kind}: focus followed the strip to window {shown}"
         );
+        let surface = frame.root::<DesktopSurface>();
         assert!(
             (surface.shown_row_ref().unwrap().scroll_x() - start - 1440.0).abs() < 0.5,
             "{kind}: and the strip stays where the pan left it"
@@ -937,7 +940,7 @@ fn a_swipe_nothing_scrolls_pulls_the_strip_against_its_rubber_band() {
         for _ in 0..4 {
             frame.relayout();
         }
-        let surface = frame.root_mut::<DesktopSurface>();
+        let mut surface = frame.root_mut::<DesktopSurface>();
         let home = surface.shown_row_ref().unwrap().scroll_x();
         let t = ui::time::now();
         for i in 0..10 {
@@ -966,9 +969,10 @@ fn a_swipe_nothing_scrolls_pulls_the_strip_against_its_rubber_band() {
             pulled < travel / 2.0,
             "{kind}: against resistance, {pulled} px of {travel}"
         );
-        assert_eq!(focused(surface, &handle), 0);
+        assert_eq!(focused(&mut surface, &handle), 0);
 
         surface.end_idle_swipe(ms(t, 16 * 9 + 250));
+        drop(surface);
         assert!(frame.settle_for_capture(Duration::from_secs(3)), "{kind}");
         let rest = frame
             .root::<DesktopSurface>()

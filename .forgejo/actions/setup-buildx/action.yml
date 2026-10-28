@@ -49,7 +49,7 @@ runs:
         DRIVER_OPTS: ${{ inputs.driver-opts }}
         PERSISTENT: ${{ inputs.persistent }}
         SEED: ${{ inputs.seed }}
-        TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}
+        TRUST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/stable' && 'trusted' || 'untrusted' }}
       run: |
         set -euo pipefail
         config="$(mktemp "${RUNNER_TEMP:-/tmp}/buildkitd.XXXXXX.toml")"

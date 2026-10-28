@@ -698,7 +698,7 @@ fn gated(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionS
 /// `effect` bound to the row it is offered on, as `label`.
 fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
     let mut spec = effect.bound();
-    spec.label = label.into();
+    spec.type_mut().label = label.into();
     spec
 }
 
@@ -706,7 +706,7 @@ fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
 /// bound and `param` asked of the caller.
 fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
     let mut spec = effect.bound_asking_params(vec![param]);
-    spec.label = label.into();
+    spec.type_mut().label = label.into();
     spec
 }
 

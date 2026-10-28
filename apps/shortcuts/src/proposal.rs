@@ -9,7 +9,7 @@
 //!
 //! A proposal is a draft like any other: ordinary invocations of the actions
 //! that were repeated, the least grant those steps need
-//! ([`grant::least_privilege`]), and the checker's verdict before it is
+//! (`grant::least_privilege`), and the checker's verdict before it is
 //! offered. Accepting one opens it as a draft to review; rejecting one is
 //! remembered in the workbench ([`crate::model::Workbench::ignore_proposal`]),
 //! so the same work is not offered twice.
@@ -85,16 +85,12 @@ impl Proposal {
             .map(|step| label(step, catalog))
             .filter(|label| !label.is_empty())
             .collect();
-        let mut name = match names.as_slice() {
+        let name = match names.as_slice() {
             [] => String::from("New shortcut"),
             [only] => only.clone(),
             _ => names.join(", then "),
         };
-        if let Some(first) = name.chars().next() {
-            let upper: String = first.to_uppercase().collect();
-            name.replace_range(..first.len_utf8(), &upper);
-        }
-        name
+        ui::format::capitalize_first(&name)
     }
 
     /// What was noticed, in the person's words.
