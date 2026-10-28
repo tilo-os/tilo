@@ -42,8 +42,8 @@ impl QsActionAvailability {
         #[cfg(target_os = "linux")]
         {
             let mut availability = Self::from_probe(command_on_path);
-            // Tools on PATH are not hardware. A VM ships nmcli, brightnessctl
-            // and bluetoothctl with no backlight, Wi-Fi radio or adapter; the
+            // Tools on PATH are not hardware. A VM ships NetworkManager,
+            // brightnessctl and bluetoothctl with no backlight, Wi-Fi radio or adapter; the
             // actions must then be unavailable rather than a working-looking
             // toggle that fails or no-ops.
             availability.brightness = os_actions::display::has_backlight();
@@ -63,16 +63,17 @@ impl QsActionAvailability {
 
     #[cfg(any(test, target_os = "linux"))]
     fn from_probe(mut present: impl FnMut(&str) -> bool) -> Self {
-        let network_manager = present("nmcli");
         Self {
             brightness: present("brightnessctl"),
             volume: present("wpctl"),
-            wifi: network_manager,
+            // NetworkManager is asked over D-Bus and ships with the OS; the
+            // radios themselves are looked for in `detect`.
+            wifi: true,
             power_profile: present("powerprofilesctl"),
-            vpn: network_manager,
+            vpn: true,
             // The radio is BlueZ's; its client ships with the daemon.
             bluetooth: present("bluetoothctl"),
-            airplane_mode: network_manager,
+            airplane_mode: true,
         }
     }
 }
@@ -162,8 +163,7 @@ mod availability_tests {
     #[test]
     fn quick_settings_mechanisms_are_probed_independently_and_absent_when_unsupported() {
         fn mechanisms_are_probed_independently_before_discovery() {
-            let found =
-                QsActionAvailability::from_probe(|command| matches!(command, "wpctl" | "nmcli"));
+            let found = QsActionAvailability::from_probe(|command| command == "wpctl");
             assert!(!found.brightness);
             assert!(found.volume);
             assert!(found.wifi);

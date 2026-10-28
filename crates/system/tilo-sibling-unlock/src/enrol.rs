@@ -150,25 +150,29 @@ pub struct Status {
     pub siblings: Vec<String>,
 }
 
+/// The file `NetworkManager` keeps the saved connection called `name` in.
+fn keyfile_of(name: &str) -> Result<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("no async runtime")?;
+    let profiles = runtime
+        .block_on(async { tilo_nm::NmClient::system().await?.profiles().await })
+        .context("could not ask NetworkManager for its saved connections")?;
+    profiles
+        .into_iter()
+        .find(|profile| profile.settings.id() == name)
+        .map(|profile| profile.filename)
+        .filter(|file| !file.is_empty())
+        .ok_or_else(|| anyhow!("no saved connection is named {name:?}"))
+}
+
 /// Reads a `NetworkManager` connection's keyfile by name, secrets included.
 fn network(name: &str) -> Result<material::Network> {
     if !material::valid_network_id(name) {
         bail!("{name:?} is not a usable connection name");
     }
-    let listing = crate::exec::run(
-        "nmcli",
-        ["-t", "-f", "NAME,FILENAME", "connection", "show"],
-        None,
-    )?;
-    let listing = String::from_utf8_lossy(&listing);
-    let file = listing
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix(name)
-                .and_then(|rest| rest.strip_prefix(':'))
-        })
-        .ok_or_else(|| anyhow!("no saved connection is named {name:?}"))?
-        .replace("\\:", ":");
+    let file = keyfile_of(name)?;
     let keyfile = std::fs::read_to_string(&file)
         .with_context(|| format!("could not read the saved connection {file}"))?;
     let keyfile = for_early_boot(&keyfile, |interface| {

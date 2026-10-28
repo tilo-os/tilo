@@ -206,24 +206,26 @@ pub trait Host {
         PathBuf::from("/usr/libexec/tilo/tilo-crypto")
     }
 
-    /// `NetworkManager`'s cached connectivity state (no probe is sent). An
-    /// empty string means unknown.
+    /// `NetworkManager`'s cached connectivity state (no probe is sent):
+    /// `none`, `portal`, `limited`, `full` or `unknown`. An empty string
+    /// means `NetworkManager` could not be asked.
     fn connectivity(&self) -> String {
-        if !which("nmcli") {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
             return String::new();
-        }
-        match run(
-            &[
-                OsStr::new("nmcli"),
-                OsStr::new("-t"),
-                OsStr::new("-f"),
-                OsStr::new("CONNECTIVITY"),
-                OsStr::new("general"),
-            ],
-            false,
-        ) {
-            Ok(output) if output.success => py::strip(&output.stdout).to_owned(),
-            _ => String::new(),
+        };
+        match runtime.block_on(tilo_nm::state()) {
+            Ok(state) => match state.connectivity {
+                tilo_nm::NmConnectivity::None => "none",
+                tilo_nm::NmConnectivity::Portal => "portal",
+                tilo_nm::NmConnectivity::Limited => "limited",
+                tilo_nm::NmConnectivity::Full => "full",
+                tilo_nm::NmConnectivity::Unknown => "unknown",
+            }
+            .to_owned(),
+            Err(_) => String::new(),
         }
     }
 

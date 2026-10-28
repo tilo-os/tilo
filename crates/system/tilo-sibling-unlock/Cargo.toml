@@ -33,6 +33,8 @@ postcard = { workspace = true, features = ["alloc"] }
 tempfile.workspace = true
 tilo-ask-password = { path = "../ask-password" }
 tilo-seal = { path = "../tilo-seal" }
+# Where NetworkManager keeps an unlock network's saved connection.
+tilo-nm = { path = "../tilo-nm" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 zeroize.workspace = true
