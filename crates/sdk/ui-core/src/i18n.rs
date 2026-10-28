@@ -1,6 +1,7 @@
 use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
 use unic_langid::LanguageIdentifier;
 
@@ -147,13 +148,20 @@ impl From<f64> for ArgValue {
     }
 }
 
+/// A bundle of catalogues whose parsed resources are shared with every
+/// thread that loaded the same text ([`shared_resource`]).
+type Bundle = FluentBundle<Arc<FluentResource>>;
+
 pub struct I18nManager {
-    bundles: HashMap<LanguageIdentifier, FluentBundle<FluentResource>>,
-    catalog_order: Vec<LanguageIdentifier>,
+    /// Every catalogue added on this thread, by locale, the locales in the
+    /// order they were first added. Only the shown ones are parsed
+    /// ([`Self::parse_shown`]).
+    catalogs: Vec<(LanguageIdentifier, Vec<CatalogText>)>,
+    /// The parsed catalogues of the active language and the source locale.
+    /// Selecting another language parses its catalogues and drops the ones
+    /// no longer shown.
+    bundles: HashMap<LanguageIdentifier, LoadedBundle>,
     source_locale: LanguageIdentifier,
-    /// Every Fluent source added to the source locale, kept so a fallback
-    /// can be formatted under the active locale's plural rules.
-    source_texts: Vec<String>,
     /// The source catalogue rebuilt under the active locale, keyed by the
     /// revision, source count and locale it was built for.
     localized_source: std::cell::RefCell<Option<LocalizedSource>>,
@@ -161,6 +169,96 @@ pub struct I18nManager {
     id: u64,
     pub current_locale: LanguageIdentifier,
     revision: u64,
+}
+
+/// Where one catalogue's Fluent text comes from. Text is parsed only while
+/// its language is shown, so a catalogue in a language nobody on the
+/// desktop reads costs its embedded bytes and nothing else.
+#[derive(Clone)]
+enum CatalogText {
+    /// Embedded in the binary.
+    Embedded(&'static str),
+    /// A language pack's catalogue, read from disk when its language is
+    /// shown.
+    Pack(LanguagePack, &'static str),
+    /// Parsed when it was added.
+    Parsed(Arc<FluentResource>),
+}
+
+impl CatalogText {
+    fn is(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Embedded(a), Self::Embedded(b)) => std::ptr::eq(*a, *b) || a == b,
+            (Self::Pack(a, la), Self::Pack(b, lb)) => a.id == b.id && la == lb,
+            (Self::Parsed(a), Self::Parsed(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// The parsed resource: `None` for text that does not parse (a
+    /// translator's typo degrades to "not loaded") or a pack no longer
+    /// installed.
+    fn resource(&self) -> Option<Arc<FluentResource>> {
+        match self {
+            Self::Embedded(text) => shared_resource(std::borrow::Cow::Borrowed(text)).ok(),
+            Self::Pack(pack, locale) => {
+                shared_resource(std::borrow::Cow::Owned(pack.read(locale)?)).ok()
+            }
+            Self::Parsed(resource) => Some(Arc::clone(resource)),
+        }
+    }
+}
+
+/// One locale's parsed catalogues.
+struct LoadedBundle {
+    bundle: Bundle,
+    /// The resources added to `bundle`, in order.
+    resources: Vec<Arc<FluentResource>>,
+    /// How many of the locale's catalogues have been read into it.
+    read: usize,
+}
+
+impl LoadedBundle {
+    fn new(locale: &LanguageIdentifier) -> Self {
+        Self {
+            bundle: new_bundle(locale),
+            resources: Vec::new(),
+            read: 0,
+        }
+    }
+}
+
+/// Every parsed catalogue in the process, by a hash of its text. Threads
+/// that load the same catalogue (the compositor's main thread and its
+/// broker threads, an embedded catalogue and the toolkit's own fallback)
+/// share one parse; it is freed when the last bundle holding it is.
+static PARSED: std::sync::Mutex<Vec<(u64, std::sync::Weak<FluentResource>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// `text` parsed, shared with every other bundle in the process that holds
+/// the same text.
+fn shared_resource(text: std::borrow::Cow<'_, str>) -> Result<Arc<FluentResource>, String> {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let hash = hasher.finish();
+    let mut parsed = PARSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    parsed.retain(|(_, resource)| resource.strong_count() > 0);
+    if let Some(resource) = parsed
+        .iter()
+        .filter(|(held, _)| *held == hash)
+        .filter_map(|(_, resource)| resource.upgrade())
+        .find(|resource| resource.source() == text.as_ref())
+    {
+        return Ok(resource);
+    }
+    let resource =
+        FluentResource::try_new(text.into_owned()).map_err(|(_, errors)| format!("{errors:?}"))?;
+    let resource = Arc::new(resource);
+    parsed.push((hash, Arc::downgrade(&resource)));
+    Ok(resource)
 }
 
 /// Layout-stress translation mode used by screenshots and acceptance tests.
@@ -195,7 +293,7 @@ thread_local! {
     static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
     // Shared controls remain readable even when an app installs only its own
     // catalog. App translations always take precedence over this source.
-    static TOOLKIT_SOURCE: Result<FluentBundle<FluentResource>, I18nError> =
+    static TOOLKIT_SOURCE: Result<Bundle, I18nError> =
         make_bundle(&parse_locale_or_default("en-US"), include_str!("../locales/en-US.ftl"));
 }
 
@@ -220,7 +318,7 @@ struct LocalizedSource {
     revision: u64,
     texts: usize,
     locale: LanguageIdentifier,
-    bundle: FluentBundle<FluentResource>,
+    bundle: Bundle,
 }
 
 /// The pseudo-locale language subtag (`qps-ploc`, `qps-plocm`): selecting it
@@ -385,7 +483,7 @@ pub fn follow_configured_language() {
                 manager
                     .borrow()
                     .as_ref()
-                    .is_none_or(|manager| manager.bundles.contains_key(&locale))
+                    .is_none_or(|manager| manager.has_catalog(&locale))
             });
             if !loaded {
                 refresh_language_packs();
@@ -396,24 +494,25 @@ pub fn follow_configured_language() {
     }
 }
 
-fn make_bundle(
-    locale: &LanguageIdentifier,
-    source: &str,
-) -> Result<FluentBundle<FluentResource>, I18nError> {
-    let resource = FluentResource::try_new(source.to_owned()).map_err(|(_, errors)| {
-        I18nError::InvalidResource {
-            locale: locale.to_string(),
-            details: format!("{errors:?}"),
-        }
-    })?;
+fn new_bundle(locale: &LanguageIdentifier) -> Bundle {
     let mut bundle = FluentBundle::new(vec![locale.clone()]);
+    // Don't wrap interpolated variables in Unicode bidi isolation marks
+    // (FSI/PDI) — we render to a single run, so "Count is { $n }" should
+    // read "Count is 5", not "Count is \u{2068}5\u{2069}".
     bundle.set_use_isolating(false);
     bundle
+}
+
+fn make_bundle(locale: &LanguageIdentifier, source: &str) -> Result<Bundle, I18nError> {
+    let invalid = |details: String| I18nError::InvalidResource {
+        locale: locale.to_string(),
+        details,
+    };
+    let resource = shared_resource(std::borrow::Cow::Borrowed(source)).map_err(invalid)?;
+    let mut bundle = new_bundle(locale);
+    bundle
         .add_resource(resource)
-        .map_err(|errors| I18nError::InvalidResource {
-            locale: locale.to_string(),
-            details: format!("{errors:?}"),
-        })?;
+        .map_err(|errors| invalid(format!("{errors:?}")))?;
     Ok(bundle)
 }
 
@@ -421,7 +520,7 @@ fn make_bundle(
 /// otherwise the text and whether it formatted without errors (a missing
 /// variable, an unknown reference).
 fn format_from_bundle(
-    bundle: &FluentBundle<FluentResource>,
+    bundle: &Bundle,
     key: &str,
     args: Option<&FluentArgs>,
 ) -> Option<(String, bool)> {
@@ -444,7 +543,7 @@ struct Resolution<'k, 'a> {
 }
 
 impl Resolution<'_, '_> {
-    fn attempt(&mut self, bundle: &FluentBundle<FluentResource>) -> Option<String> {
+    fn attempt(&mut self, bundle: &Bundle) -> Option<String> {
         match format_from_bundle(bundle, self.key, self.args)? {
             (value, true) => Some(value),
             (value, false) => {
@@ -488,34 +587,94 @@ impl I18nManager {
     }
 
     pub fn init(locale: &str) {
-        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
-        let locale = lang_id.clone();
-        let mut bundle = FluentBundle::new(vec![lang_id]);
-        // Don't wrap interpolated variables in Unicode bidi isolation marks
-        // (FSI/PDI) — we render to a single run, so "Count is { $n }" should
-        // read "Count is 5", not "Count is \u{2068}5\u{2069}".
-        bundle.set_use_isolating(false);
-        MANAGER.with(|m| {
-            let revision = m
+        let locale = parse_locale_or_default(locale);
+        Self::replace(locale.clone(), locale.clone(), vec![(locale, Vec::new())]);
+    }
+
+    /// Install a manager with `catalogs`, selecting `active`, in place of
+    /// the thread's current one.
+    fn replace(
+        source_locale: LanguageIdentifier,
+        active: LanguageIdentifier,
+        catalogs: Vec<(LanguageIdentifier, Vec<CatalogText>)>,
+    ) {
+        MANAGER.with(|slot| {
+            let revision = slot
                 .borrow()
                 .as_ref()
                 .map_or(1, |manager| manager.revision.wrapping_add(1));
-            *m.borrow_mut() = Some(I18nManager {
-                bundles: HashMap::from([(locale.clone(), bundle)]),
-                catalog_order: vec![locale.clone()],
-                source_locale: locale.clone(),
-                source_texts: Vec::new(),
+            let mut manager = Self {
+                catalogs,
+                bundles: HashMap::new(),
+                source_locale,
                 localized_source: std::cell::RefCell::new(None),
                 id: next_manager_id(),
-                current_locale: locale,
+                current_locale: active,
                 revision,
-            });
+            };
+            manager.parse_shown();
+            *slot.borrow_mut() = Some(manager);
         });
+    }
+
+    /// Whether a catalogue was added for `locale`, parsed or not.
+    fn has_catalog(&self, locale: &LanguageIdentifier) -> bool {
+        self.catalogs.iter().any(|(held, _)| held == locale)
+    }
+
+    /// Parse the catalogues of the locales shown that are not parsed yet,
+    /// and drop those of locales no longer shown. Shown are the active
+    /// language's (each of its regions is a fallback for the others) and the
+    /// source's.
+    fn parse_shown(&mut self) {
+        let Self {
+            catalogs,
+            bundles,
+            source_locale,
+            current_locale,
+            ..
+        } = self;
+        let shows = |locale: &LanguageIdentifier| {
+            locale.language == current_locale.language || locale == source_locale
+        };
+        bundles.retain(|locale, _| shows(locale));
+        for (locale, texts) in catalogs.iter() {
+            if !shows(locale) {
+                continue;
+            }
+            let loaded = bundles
+                .entry(locale.clone())
+                .or_insert_with(|| LoadedBundle::new(locale));
+            for text in texts.iter().skip(loaded.read) {
+                if let Some(resource) = text.resource() {
+                    // A message-id collision leaves the existing message in
+                    // place and still adds the resource's other messages.
+                    let _ = loaded.bundle.add_resource(Arc::clone(&resource));
+                    loaded.resources.push(resource);
+                }
+            }
+            loaded.read = texts.len();
+        }
+    }
+
+    /// Add `text` to `locale`'s catalogues, parsing it if the locale is
+    /// shown. Text already added is not added again.
+    fn add_catalog(&mut self, locale: LanguageIdentifier, text: CatalogText) {
+        match self.catalogs.iter_mut().find(|(held, _)| *held == locale) {
+            Some((_, texts)) if texts.iter().any(|held| held.is(&text)) => return,
+            Some((_, texts)) => texts.push(text),
+            None => self.catalogs.push((locale, vec![text])),
+        }
+        self.parse_shown();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Atomically install every bundled Fluent catalog and select an explicit
     /// active locale. Lookup falls back from the active language to
     /// `source_locale`, then to the key itself.
+    ///
+    /// Every catalogue is parsed now, so a broken one is reported; text the
+    /// process has parsed before is shared rather than parsed again.
     pub fn install(
         source_locale: &str,
         active_locale: &str,
@@ -523,40 +682,27 @@ impl I18nManager {
     ) -> Result<(), I18nError> {
         let source_locale = parse_locale(source_locale)?;
         let active_locale = parse_locale(active_locale)?;
-        let mut bundles = HashMap::new();
-        let mut catalog_order = Vec::new();
+        let mut parsed: Vec<(LanguageIdentifier, Vec<CatalogText>)> = Vec::new();
         for (locale, source) in catalogs {
             let locale = parse_locale(locale)?;
-            let bundle = make_bundle(&locale, source)?;
-            if bundles.insert(locale.clone(), bundle).is_some() {
+            if parsed.iter().any(|(held, _)| *held == locale) {
                 return Err(I18nError::DuplicateLocale(locale.to_string()));
             }
-            catalog_order.push(locale);
+            let invalid = |details: String| I18nError::InvalidResource {
+                locale: locale.to_string(),
+                details,
+            };
+            let resource = shared_resource(std::borrow::Cow::Borrowed(source)).map_err(invalid)?;
+            // Built only to report messages that collide.
+            new_bundle(&locale)
+                .add_resource(Arc::clone(&resource))
+                .map_err(|errors| invalid(format!("{errors:?}")))?;
+            parsed.push((locale, vec![CatalogText::Parsed(resource)]));
         }
-        if !bundles.contains_key(&source_locale) {
+        if !parsed.iter().any(|(locale, _)| *locale == source_locale) {
             return Err(I18nError::MissingSource(source_locale.to_string()));
         }
-        let source_texts = catalogs
-            .iter()
-            .filter(|(locale, _)| parse_locale(locale).is_ok_and(|locale| locale == source_locale))
-            .map(|(_, source)| (*source).to_owned())
-            .collect();
-        MANAGER.with(|slot| {
-            let revision = slot
-                .borrow()
-                .as_ref()
-                .map_or(1, |manager| manager.revision.wrapping_add(1));
-            *slot.borrow_mut() = Some(Self {
-                bundles,
-                catalog_order,
-                source_locale,
-                source_texts,
-                localized_source: std::cell::RefCell::new(None),
-                id: next_manager_id(),
-                current_locale: active_locale,
-                revision,
-            });
-        });
+        Self::replace(source_locale, active_locale, parsed);
         Ok(())
     }
 
@@ -573,37 +719,17 @@ impl I18nManager {
     }
 
     pub fn add_resource(locale: &str, ftl_source: String) {
-        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
+        let locale = parse_locale_or_default(locale);
         // A malformed `.ftl` resource degrades to "not loaded" — `lookup`
         // already falls back to the raw key when no message is found,
         // which is a safer failure mode than panicking the whole app over
         // a translator's typo.
-        let Ok(res) = FluentResource::try_new(ftl_source.clone()) else {
+        let Ok(resource) = shared_resource(std::borrow::Cow::Owned(ftl_source)) else {
             return;
         };
-
         MANAGER.with(|m| {
-            if let Some(mgr) = m.borrow_mut().as_mut() {
-                if !mgr.bundles.contains_key(&lang_id) {
-                    let mut b = FluentBundle::new(vec![lang_id.clone()]);
-                    b.set_use_isolating(false);
-                    mgr.bundles.insert(lang_id.clone(), b);
-                    mgr.catalog_order.push(lang_id.clone());
-                }
-                // Same degrade: a message-id collision leaves the existing
-                // message in place rather than crashing the caller.
-                // A resource that collides with existing ids still adds its
-                // other messages, so the source copy is recorded either way.
-                if lang_id == mgr.source_locale && !mgr.source_texts.contains(&ftl_source) {
-                    mgr.source_texts.push(ftl_source);
-                }
-                if mgr
-                    .bundles
-                    .get_mut(&lang_id)
-                    .is_some_and(|bundle| bundle.add_resource(res).is_ok())
-                {
-                    mgr.revision = mgr.revision.wrapping_add(1);
-                }
+            if let Some(manager) = m.borrow_mut().as_mut() {
+                manager.add_catalog(locale, CatalogText::Parsed(resource));
             }
         });
     }
@@ -615,6 +741,7 @@ impl I18nManager {
                 && mgr.current_locale != lang_id
             {
                 mgr.current_locale = lang_id;
+                mgr.parse_shown();
                 mgr.revision = mgr.revision.wrapping_add(1);
             }
         });
@@ -639,16 +766,19 @@ impl I18nManager {
         }
     }
 
-    /// Whether a catalogue installed on this thread defines `key`. The shared
-    /// toolkit fallback does not count, and pseudo-localisation plays no part.
+    /// Whether a catalogue installed on this thread, in the active language
+    /// or the source, defines `key`. The shared toolkit fallback does not
+    /// count, and pseudo-localisation plays no part.
     #[must_use]
     pub fn has_message(key: &str) -> bool {
         MANAGER.with(|manager| {
             manager.borrow().as_ref().is_some_and(|manager| {
-                manager
-                    .bundles
-                    .values()
-                    .any(|bundle| bundle.get_message(key).is_some_and(|m| m.value().is_some()))
+                manager.bundles.values().any(|loaded| {
+                    loaded
+                        .bundle
+                        .get_message(key)
+                        .is_some_and(|m| m.value().is_some())
+                })
             })
         })
     }
@@ -768,14 +898,13 @@ impl I18nManager {
     fn resolve(&self, resolution: &mut Resolution<'_, '_>) -> Option<String> {
         let current = &self.current_locale;
         let same_language = |locale: &&LanguageIdentifier| locale.language == current.language;
-        let generic = self
-            .catalog_order
-            .iter()
+        let order = || self.catalogs.iter().map(|(locale, _)| locale);
+        let generic = order()
             .filter(same_language)
             .find(|locale| locale.region.is_none() && locale.script.is_none());
         let chain = std::iter::once(current)
             .chain(generic)
-            .chain(self.catalog_order.iter().filter(same_language));
+            .chain(order().filter(same_language));
         let mut tried: Vec<&LanguageIdentifier> = Vec::new();
         for locale in chain {
             if tried.contains(&locale) {
@@ -785,7 +914,7 @@ impl I18nManager {
             if let Some(value) = self
                 .bundles
                 .get(locale)
-                .and_then(|bundle| resolution.attempt(bundle))
+                .and_then(|loaded| resolution.attempt(&loaded.bundle))
             {
                 return Some(value);
             }
@@ -793,24 +922,24 @@ impl I18nManager {
         if tried.contains(&&self.source_locale) {
             return None;
         }
-        if *current != self.source_locale && !self.source_texts.is_empty() {
+        let source = self.bundles.get(&self.source_locale)?;
+        if *current != self.source_locale && !source.resources.is_empty() {
             let mut cached = self.localized_source.borrow_mut();
             let stale = cached.as_ref().is_none_or(|c| {
                 c.revision != self.revision
-                    || c.texts != self.source_texts.len()
+                    || c.texts != source.resources.len()
                     || c.locale != *current
             });
             if stale {
-                let mut bundle = FluentBundle::new(vec![current.clone()]);
-                bundle.set_use_isolating(false);
-                for text in &self.source_texts {
-                    if let Ok(resource) = FluentResource::try_new(text.clone()) {
-                        let _ = bundle.add_resource(resource);
-                    }
+                // The same parsed resources, under the active locale's
+                // plural rules.
+                let mut bundle = new_bundle(current);
+                for resource in &source.resources {
+                    let _ = bundle.add_resource(Arc::clone(resource));
                 }
                 *cached = Some(LocalizedSource {
                     revision: self.revision,
-                    texts: self.source_texts.len(),
+                    texts: source.resources.len(),
                     locale: current.clone(),
                     bundle,
                 });
@@ -819,9 +948,7 @@ impl I18nManager {
                 .as_ref()
                 .and_then(|localized| resolution.attempt(&localized.bundle));
         }
-        self.bundles
-            .get(&self.source_locale)
-            .and_then(|bundle| resolution.attempt(bundle))
+        resolution.attempt(&source.bundle)
     }
 
     /// Resolve a message without variables. This function-shaped form is
@@ -1179,13 +1306,17 @@ impl EmbeddedCatalog {
         if loaded {
             return;
         }
-        let sources = self.every_source();
+        let texts = self.catalog_texts();
         if manager.is_some() {
-            for (locale, source) in &sources {
-                I18nManager::add_resource(locale, source.clone().into_owned());
-            }
+            MANAGER.with(|slot| {
+                if let Some(manager) = slot.borrow_mut().as_mut() {
+                    for (locale, text) in texts {
+                        manager.add_catalog(locale, text);
+                    }
+                }
+            });
         } else {
-            self.install_fresh(&sources);
+            self.install_fresh(texts);
         }
         // Only a first load pins: reading the packs again (any thread may ask
         // for that) must not undo a locale chosen since.
@@ -1203,26 +1334,43 @@ impl EmbeddedCatalog {
         }
     }
 
-    fn install_fresh(&self, sources: &[(&'static str, std::borrow::Cow<'static, str>)]) {
-        let catalogs: Vec<(&str, &str)> = sources
+    /// Every catalogue, unparsed: the embedded ones and those the installed
+    /// language packs hold, read when their language is shown.
+    fn catalog_texts(&self) -> Vec<(LanguageIdentifier, CatalogText)> {
+        let mut texts: Vec<(&'static str, CatalogText)> = self
+            .catalogs
             .iter()
-            .map(|(locale, source)| (*locale, source.as_ref()))
+            .map(|(locale, source)| (*locale, CatalogText::Embedded(source)))
             .collect();
-        let installed = match self.fresh_locale {
-            FreshLocale::Source => {
-                I18nManager::install(self.source_locale, self.source_locale, &catalogs)
-            }
-            FreshLocale::System => I18nManager::install_system(self.source_locale, &catalogs),
-        };
-        if installed.is_err() {
-            // A catalogue with a syntax error still loads every message that
-            // parsed: `add_resource` degrades per resource instead of
-            // rejecting the whole set.
-            I18nManager::init(self.source_locale);
-            for (locale, source) in sources {
-                I18nManager::add_resource(locale, source.clone().into_owned());
+        if let Some(pack) = self.pack {
+            for locale in pack.installed_locales() {
+                if !texts.iter().any(|(held, _)| *held == locale) {
+                    texts.push((locale, CatalogText::Pack(pack, locale)));
+                }
             }
         }
+        texts
+            .into_iter()
+            .filter_map(|(locale, text)| Some((parse_locale(locale).ok()?, text)))
+            .collect()
+    }
+
+    fn install_fresh(&self, texts: Vec<(LanguageIdentifier, CatalogText)>) {
+        let source = parse_locale_or_default(self.source_locale);
+        let active = match self.fresh_locale {
+            FreshLocale::Source => source.clone(),
+            FreshLocale::System => preferred_locale().unwrap_or_else(|| source.clone()),
+        };
+        let mut catalogs: Vec<(LanguageIdentifier, Vec<CatalogText>)> = Vec::new();
+        for (locale, text) in texts {
+            match catalogs.iter_mut().find(|(held, _)| *held == locale) {
+                Some((_, held)) => held.push(text),
+                None => catalogs.push((locale, vec![text])),
+            }
+        }
+        // A catalogue with a syntax error leaves the others loaded: each
+        // degrades on its own.
+        I18nManager::replace(source, active, catalogs);
     }
 
     /// Resolve `key` in the active locale.
@@ -1743,6 +1891,73 @@ mod tests {
             assert_eq!(PINNED.t("pinned-probe"), "Pinned");
             assert_eq!(I18nManager::current_locale(), "en-US");
         }
+    }
+
+    /// The locales whose catalogues the thread's manager has parsed.
+    fn parsed_locales() -> Vec<String> {
+        MANAGER.with(|manager| {
+            let mut locales: Vec<String> = manager
+                .borrow()
+                .as_ref()
+                .map(|manager| manager.bundles.keys().map(ToString::to_string).collect())
+                .unwrap_or_default();
+            locales.sort();
+            locales
+        })
+    }
+
+    /// Only the language shown and the source are parsed; choosing another
+    /// language parses it then, and lets go of the one it replaced.
+    #[test]
+    fn only_the_shown_language_and_the_source_are_parsed() {
+        static SWITCHED: EmbeddedCatalog = EmbeddedCatalog::new(
+            "en-US",
+            &[
+                ("en-US", "switch-probe = Hello\nswitch-only-source = Source"),
+                ("de-DE", "switch-probe = Hallo"),
+                ("fr", "switch-probe = Bonjour"),
+            ],
+        );
+        let _restore = RestoreLookupState::capture();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        assert_eq!(SWITCHED.t("switch-probe"), "Hello");
+        assert_eq!(parsed_locales(), ["en-US"]);
+
+        let revision = I18nManager::revision();
+        SWITCHED.set_locale("de-DE");
+        assert_ne!(I18nManager::revision(), revision);
+        assert_eq!(SWITCHED.t("switch-probe"), "Hallo");
+        assert_eq!(SWITCHED.t("switch-only-source"), "Source");
+        assert_eq!(SWITCHED.t("switch-missing"), "switch-missing");
+        assert_eq!(parsed_locales(), ["de-DE", "en-US"]);
+
+        SWITCHED.set_locale("fr-CA");
+        assert_eq!(SWITCHED.t("switch-probe"), "Bonjour");
+        assert_eq!(parsed_locales(), ["en-US", "fr"]);
+
+        SWITCHED.set_locale("en-US");
+        assert_eq!(SWITCHED.t("switch-probe"), "Hello");
+        assert_eq!(parsed_locales(), ["en-US"]);
+    }
+
+    /// Threads that load the same catalogue share one parse of it.
+    #[test]
+    fn threads_share_one_parse_of_a_catalogue() {
+        static SHARED: EmbeddedCatalog =
+            EmbeddedCatalog::new("en-US", &[("en-US", "shared-probe = Shared\n")]);
+        let source = || {
+            SHARED.ensure();
+            MANAGER.with(|manager| {
+                let manager = manager.borrow();
+                let loaded = manager.as_ref()?.bundles.values().next()?;
+                Some(Arc::as_ptr(loaded.resources.first()?).addr())
+            })
+        };
+        let _restore = RestoreLookupState::capture();
+        let here = source();
+        assert!(here.is_some());
+        let there = std::thread::spawn(source).join().unwrap();
+        assert_eq!(here, there);
     }
 
     #[test]
