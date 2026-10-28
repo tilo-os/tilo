@@ -1179,7 +1179,7 @@ impl Draft {
     }
 
     /// The item of the step at `index` of `block`.
-    fn item_at(&self, block: &Block, index: usize) -> Option<Id> {
+    fn item_at(&self, block: &[Segment], index: usize) -> Option<Id> {
         let (parent, branch) = self.block_owner(block)?;
         self.steps
             .iter()
@@ -1190,19 +1190,30 @@ impl Draft {
 
     /// The item id of the step whose block `block` names, and which of its
     /// branches that block is.
-    fn block_owner(&self, block: &Block) -> Option<(String, &'static str)> {
+    fn block_owner(&self, block: &[Segment]) -> Option<(String, &'static str)> {
         let (branch, addressing) = block.split_last()?;
+        let Segment::Branch(branch) = branch else {
+            return None;
+        };
         if addressing.is_empty() {
             return Some((String::new(), branch));
         }
-        let owner = self.item_at(&addressing.to_vec(), index_of(addressing)?)?;
+        let owner = self.item_at(addressing, index_of(addressing)?)?;
         Some((owner.as_str().to_owned(), branch))
     }
 }
 
 /// A block address (`2.then`) as its segments: step indices, then the
 /// branches they lead into.
-type Block = Vec<&'static str>;
+type Block = Vec<Segment>;
+
+/// One segment of a block address: where a step sits in its block, or which
+/// of a step's blocks it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Segment {
+    At(usize),
+    Branch(&'static str),
+}
 
 /// The segments of `block`, in order; `None` when one is neither a step
 /// index nor a branch.
@@ -1210,26 +1221,24 @@ fn segments(block: &str) -> Option<Block> {
     block
         .split('.')
         .filter(|segment| !segment.is_empty())
-        .map(address_segment)
+        .map(|segment| {
+            if let Some(branch) = [THEN, ELSE, EACH]
+                .into_iter()
+                .find(|branch| *branch == segment)
+            {
+                return Some(Segment::Branch(branch));
+            }
+            segment.parse().ok().map(Segment::At)
+        })
         .collect()
 }
 
-/// `segment` as the branch it names, or the step index it reads as.
-fn address_segment(segment: &'static str) -> Option<&'static str> {
-    if let Some(branch) = [THEN, ELSE, EACH]
-        .into_iter()
-        .find(|branch| *branch == segment)
-    {
-        return Some(branch);
-    }
-    segment.parse::<usize>().ok().map(|_| segment)
-}
-
 /// The index `addressing` ends with, when it ends with one.
-fn index_of(addressing: &[&str]) -> Option<usize> {
-    addressing
-        .last()
-        .and_then(|segment| segment.parse::<usize>().ok())
+fn index_of(addressing: &[Segment]) -> Option<usize> {
+    match addressing.last() {
+        Some(Segment::At(index)) => Some(*index),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
