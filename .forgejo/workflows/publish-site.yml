@@ -80,6 +80,16 @@ jobs:
           bash tools/ci/publish/web-desktop-bundle.sh wasm "$OUT/web-desktop/wasm"
           bash tools/ci/publish/web-desktop-bundle.sh bundle "$OUT/web-desktop/bundle" "$OUT/web-desktop/wasm"
 
+      - name: Give buildah a scratch disk
+        # Its overlay driver refuses the job container's own overlayfs; a t step
+        # had an ext4 scratch disk. Both images are small (fedora-minimal and
+        # caddy bases), so a tmpfs holds their layers.
+        run: |
+          set -euo pipefail
+          mkdir -p /var/tmp/buildah-scratch
+          mount -t tmpfs -o size=12g tmpfs /var/tmp/buildah-scratch
+          echo TMPDIR=/var/tmp/buildah-scratch >> "$GITHUB_ENV"
+
       - name: Build and test the room service image
         run: |
           set -euo pipefail
