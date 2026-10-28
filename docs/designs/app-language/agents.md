@@ -16,6 +16,12 @@ before a person sees it. Every rule below saves an agent a call, a guess or toke
   so it can do no more than the task may. All its changes are one task step: one preview, one
   undo, and asks still ask.
 - The existing tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) stay as one-call forms.
+- **A task is many programs.** Real work takes rounds: exploring, dead ends, failures, asks,
+  intermediate results ("cool beaches nearby" searches maps and the web before composing an
+  answer; "fix the video for launch day" runs for hours). Each `tilo` call is one step with its
+  own preview and undo; the task is the session of steps, with its trail, pending asks, presence
+  in the windows it touches, and an answer composed at the end or kept up to date as it goes.
+  You can undo one step or the whole task.
 
 ```
 let hits = find("launch video")
