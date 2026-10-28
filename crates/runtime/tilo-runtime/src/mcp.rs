@@ -928,19 +928,148 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .await?
             .rows)
     }
-    /// The top-level resources of `provider` whose kind or label is `name`.
+    /// The resources of `provider` whose kind or label is `name`: its
+    /// top-level ones and, inside each container there, its live children.
     /// The host answers the name itself, whole: a listing's page can stop at
     /// its work budget short of the resource (right after a write, an app
     /// walks its widgets until it publishes again), so reading pages for it
     /// would fail once an app outgrows any page count.
+    ///
+    /// A child is named like any resource: a browser's page is `browser.page`
+    /// while the app it belongs to is the one a person opened, and a caller
+    /// that names the page should not have to browse the tree first.
     async fn resources_named(
         &self,
         provider: &str,
         name: &str,
     ) -> Result<Vec<CatalogueRow>, String> {
+        let mut rows = self.named_under(provider, "", name).await?;
+        // A container is found by listing the level, not by name: the name
+        // being searched for is the child's, and the container's is another.
+        // The listing costs one question per container, and only when the
+        // name is not at the level already: a caller naming a top-level
+        // resource pays what it paid before.
+        //
+        // Children hang as deep as an app draws them: a browser's page is
+        // under the row of the widget bound to it, which is under the app's
+        // own row. So the walk goes down while it finds containers and stops
+        // at the first level that answers, or when the tree is deeper than
+        // any app draws it (and when a host answered a container as its own
+        // child, which is what the visited set is for).
+        let mut frontier = Vec::new();
+        if rows.is_empty() {
+            frontier.extend(self.containers_under(provider, "").await?);
+        }
+        let mut visited = std::collections::BTreeSet::new();
+        for _ in 0..NAMED_DEPTH {
+            if !rows.is_empty() || frontier.is_empty() {
+                break;
+            }
+            let mut deeper = Vec::new();
+            for container in std::mem::take(&mut frontier) {
+                if !visited.insert(container.clone()) {
+                    continue;
+                }
+                for row in self.named_under(provider, &container, name).await? {
+                    if rows.iter().all(|seen| seen.resource.id != row.resource.id) {
+                        rows.push(row);
+                    }
+                }
+                if rows.is_empty() {
+                    deeper.extend(self.containers_under(provider, &container).await?);
+                }
+            }
+            frontier = deeper;
+        }
+        // Not every app publishes a row for the box its actions hang under: a
+        // browser's page is one resource whose actions hang under its own id,
+        // so no container row names it and it is never at the top level. The
+        // host still searches its whole tree for a needle, so the name is
+        // asked as one, and only the rows whose kind or label is exactly the
+        // name are kept: a needle also matches ids and parameter names.
+        if rows.is_empty() {
+            rows = self
+                .asked_by_needle(provider, name)
+                .await?
+                .into_iter()
+                .filter(|row| {
+                    row.resource.id == name
+                        || row.resource.kind == name
+                        || row.resource.label.eq_ignore_ascii_case(name)
+                })
+                .collect();
+        }
+        Ok(rows)
+    }
+    /// The rows `provider` answers for `needle`, searched across its whole
+    /// tree: the one question that reaches a resource no container lists.
+    async fn asked_by_needle(
+        &self,
+        provider: &str,
+        needle: &str,
+    ) -> Result<Vec<CatalogueRow>, String> {
+        let mut rows = self.asked_for(provider, needle).await?;
+        // A host searches the words it writes on a row, so a kind written
+        // `browser.page` is reached by the `page` in it and not by the whole
+        // dotted name. Ask for that too, and let the caller keep the rows
+        // whose kind or label is exactly the name it wants.
+        if let Some((_, tail)) = needle.rsplit_once('.')
+            && !tail.is_empty()
+            && tail != needle
+        {
+            for row in self.asked_for(provider, tail).await? {
+                if rows.iter().all(|seen| seen.resource.id != row.resource.id) {
+                    rows.push(row);
+                }
+            }
+        }
+        Ok(rows)
+    }
+    /// The rows `provider` answers for `needle` in one question.
+    async fn asked_for(&self, provider: &str, needle: &str) -> Result<Vec<CatalogueRow>, String> {
         Ok(self
             .ask(CatalogueQuery {
                 provider: Some(provider.to_owned()),
+                needle: needle.to_owned(),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows)
+    }
+    /// The containers listed directly under `parent` (the top level for ""):
+    /// the rows that hold children and offer no action themselves.
+    async fn containers_under(&self, provider: &str, parent: &str) -> Result<Vec<String>, String> {
+        let rows = if parent.is_empty() {
+            self.top_resources(provider).await?
+        } else {
+            self.ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: Some(parent.to_owned()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.has_children && row.action.is_none())
+            .map(|row| row.resource.id)
+            .collect())
+    }
+    /// The resources under `parent` (the level itself for "") whose kind or
+    /// label is `name`, asked of the host by name.
+    async fn named_under(
+        &self,
+        provider: &str,
+        parent: &str,
+        name: &str,
+    ) -> Result<Vec<CatalogueRow>, String> {
+        Ok(self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
                 resource_name: Some(name.to_owned()),
                 max_results: 128,
                 ..CatalogueQuery::default()
@@ -3038,6 +3167,10 @@ fn state_json(
 }
 /// Longer names are resource ids, never a kind or a label.
 const RESOURCE_NAME_BYTES: usize = 64;
+/// How far below the top level a resource named by kind or label is looked
+/// for: an app's own row, the row of a widget bound to it, and the widget's
+/// page are three, and no app draws its directory deeper than that.
+const NAMED_DEPTH: usize = 3;
 /// How many resources an error names before it stops.
 const LISTED_RESOURCES: usize = 16;
 
