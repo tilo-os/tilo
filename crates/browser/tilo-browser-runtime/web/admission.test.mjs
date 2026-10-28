@@ -23,7 +23,7 @@ function doors(overrides = {}) {
   }};
 }
 
-test('the person’s own room needs no peer', async () => {
+test('the person’s own desktop needs no peer', async () => {
   const {calls, deps} = doors();
   assert.deepEqual(await admit({scope: {kind: 'own'}, deps}), {peer: null});
   assert.deepEqual(calls, []);
@@ -31,7 +31,7 @@ test('the person’s own room needs no peer', async () => {
 
 const commons = {name: 'Commons', host: {origin: room.host}, admission: `${room.host}/`};
 
-test('the own room of a stranger under a home taking people by invitation is that home’s door', async () => {
+test('the own desktop of a stranger under a home taking people by invitation is that home’s door', async () => {
   // Going to /me directly: the home's door answers, as at the bare entry,
   // and its refusal (the wait list) is what the page shows.
   const turnedAway = Object.assign(new Error('Commons needs an invitation'), {code: 'invitation-only'});
@@ -45,7 +45,7 @@ test('the own room of a stranger under a home taking people by invitation is tha
   assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]]);
 });
 
-test('the own room opens without a peer for whom the home’s gate is open, or whom its door just let in', async () => {
+test('the own desktop opens without a peer for whom the home’s gate is open, or whom its door just let in', async () => {
   const open = doors({ownDesktopOpen: async () => true});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, deps: open.deps}), {peer: null});
   assert.deepEqual(open.calls, [], 'a member asks no door');
@@ -54,7 +54,7 @@ test('the own room opens without a peer for whom the home’s gate is open, or w
   const letIn = doors({ownDesktopOpen: async () => kept,
     enterViaHost: async () => { kept = true; return {room: room.room, dispose: async () => { disposed = true; }}; }});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, deps: letIn.deps}), {peer: null});
-  assert.ok(disposed, 'the door’s peer is let go: the own room has none');
+  assert.ok(disposed, 'the door’s peer is let go: the own desktop has none');
   // A door with no seat lets the page watch, which keeps no membership:
   // still nothing of their own.
   const watching = doors({ownDesktopOpen: async () => false, enterViaHost: async () => ({watching: true, dispose: async () => {}})});
@@ -63,35 +63,6 @@ test('the own room opens without a peer for whom the home’s gate is open, or w
   const bare = doors({ownDesktopOpen: async () => false});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: {name: 'Team', host: {origin: room.host}}, deps: bare.deps}), {peer: null});
   assert.deepEqual(bare.calls, []);
-});
-
-test('the own room is carried by the home’s host, for a person its door let in', async () => {
-  const own = {room: 'own', dispose: async () => {}};
-  // A member: straight to their own room on the home's host.
-  let member = true;
-  const asked = [];
-  const carried = doors({ownDesktopOpen: async () => true, memberOf: () => member,
-    enterOwnRoom: async home => { asked.push(home); return own; }});
-  assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, deps: carried.deps}), {peer: own});
-  assert.deepEqual(asked, [commons]);
-  assert.deepEqual(carried.calls, [], 'a member asks no door');
-  // Someone the home's open door has not let in yet goes through it first.
-  member = false;
-  let disposed = false;
-  const letIn = doors({ownDesktopOpen: async () => true, memberOf: () => member,
-    enterViaHost: async () => { member = true; return {room: room.room, dispose: async () => { disposed = true; }}; },
-    enterOwnRoom: async () => own});
-  assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, deps: letIn.deps}), {peer: own});
-  assert.ok(disposed, 'the door’s peer is let go: the own room is another room');
-  // One the door only lets watch has no room of their own there.
-  member = false;
-  const watching = doors({ownDesktopOpen: async () => true, memberOf: () => false,
-    enterViaHost: async () => ({watching: true, dispose: async () => {}}), enterOwnRoom: async () => own});
-  await assert.rejects(admit({scope: {kind: 'own'}, home: commons, deps: watching.deps}), {name: 'AdmissionError', code: 'no-access'});
-  // A home without a door: its host is asked for the room directly.
-  const team = {name: 'Team', host: {origin: room.host}};
-  const bare = doors({enterOwnRoom: async () => own});
-  assert.deepEqual(await admit({scope: {kind: 'own'}, home: team, deps: bare.deps}), {peer: own});
 });
 
 test('a host whose listed workspace has an admission door lets the person in when the browser has no account there', async () => {

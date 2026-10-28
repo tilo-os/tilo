@@ -154,10 +154,6 @@ pub(crate) struct Room {
     standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
-    /// The room is the page's person's own ([`tilo_relay_protocol::own_room`]):
-    /// they are its only owner by construction, and no host governs it to
-    /// ask.
-    own: bool,
     /// Nodes below the room the page's windows asked whether its person may
     /// change (an item someone shares), with the asked node's text form and
     /// the room's last answer. Those it allows beyond their role (an item
@@ -207,7 +203,7 @@ pub(crate) fn open(
     device: String,
     peer: PeerHandle,
     events: PeerEvents,
-    (room, own): (&str, bool),
+    room: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace =
@@ -235,7 +231,6 @@ pub(crate) fn open(
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
-        own,
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
@@ -566,15 +561,6 @@ impl Room {
     /// follow, and wake them.
     fn ask_standing_when_due(&self) {
         if !self.ready || self.mounts.is_empty() {
-            return;
-        }
-        if self.own {
-            // Theirs alone: nobody to ask, nothing to take back.
-            if self.standing.set(Some(tilo_action_policy::Role::Owner)) {
-                for mounted in self.mounts.values() {
-                    (mounted.attachment.notify)();
-                }
-            }
             return;
         }
         let now = crate::shell::now_ms();
