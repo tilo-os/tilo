@@ -192,9 +192,6 @@ def policy_checks(root: Path = ROOT) -> str:
             'requires = ["arch=any"]',
             f"requirement = {POLICY_TEST_FILE_REQUIREMENT if step.pruned else POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
             f"run = {json.dumps(step.t_command)}",
-            # Policy steps read the tree and build nothing (their tests stub cargo): no build
-            # snapshot to lease and no target/ to prepare, which cost each step over a minute.
-            "hints = { builds = false }",
             # The tests make repositories and scratch files beside the sources: a private
             # writable view of the tree. Those that read the commit's history (release contracts
             # at HEAD) get t's own .git too, which keys their result per commit.
