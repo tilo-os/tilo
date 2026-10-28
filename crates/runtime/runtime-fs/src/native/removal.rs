@@ -376,24 +376,6 @@ impl FsSession {
             ))
         })
     }
-    pub(crate) fn removal_directory(
-        &self,
-        entry: &GrantedEntry,
-    ) -> Result<Arc<RemovalCustody>, FsError> {
-        let table = self.call()?;
-        let custody = lock(&self.inner.removal)?
-            .clone()
-            .ok_or(FsError::Unsupported(
-                "protected removal custody was not admitted",
-            ))?;
-        self.validate(&table, &custody.root, Some(FsRight::Purge))?;
-        self.validate(&table, entry.lease(), Some(FsRight::Purge))?;
-        if !entry.lease().descends_from(&custody.root) {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        Ok(custody)
-    }
     pub(crate) fn created_temporary_custody(
         &self,
         parent: &DirectoryGrant,
@@ -522,16 +504,6 @@ impl FsSession {
         if !parent.lease.descends_from(&custody.root) {
             return Err(FsError::Denied);
         }
-        custody.check()?;
-        action()
-    }
-    pub(crate) fn captured_effect<T>(
-        &self,
-        custody: &RemovalCustody,
-        action: impl FnOnce() -> Result<T, FsError>,
-    ) -> Result<T, FsError> {
-        let table = self.call()?;
-        self.validate(&table, &custody.root, Some(FsRight::Purge))?;
         custody.check()?;
         action()
     }
