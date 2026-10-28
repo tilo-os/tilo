@@ -52,7 +52,13 @@ struct CodeWindow {
 }
 
 impl CodeWindow {
-    fn open(launch: AppLaunch, profile: std::path::PathBuf, room: RoomId, person: String) -> Self {
+    fn open(
+        launch: AppLaunch,
+        profile: std::path::PathBuf,
+        room: RoomId,
+        person: String,
+        wakes: Arc<Wakes>,
+    ) -> Self {
         let (asked, told) = mpsc::channel::<String>();
         let (shown, seen) = mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
@@ -105,6 +111,9 @@ impl CodeWindow {
                     if shown.send(Shown { names, route }).is_err() {
                         return;
                     }
+                    // The channel wakes nothing: the waiting loop is woken
+                    // to read it, or it sleeps on until the devices stir.
+                    wakes.wake();
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
             })
@@ -233,12 +242,14 @@ fn code_windows_on_two_devices_converge_on_the_workspace_emoji() {
             dir.path().join("desktop-code"),
             room,
             person.clone(),
+            Arc::clone(&wakes),
         ),
         CodeWindow::open(
             laptop.app_launch(&dir.path().join("laptop-collab.sock"), CODE, room),
             dir.path().join("laptop-code"),
             room,
             person,
+            Arc::clone(&wakes),
         ),
     ];
     let devices = [&desktop, &laptop];

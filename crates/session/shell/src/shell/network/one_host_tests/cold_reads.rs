@@ -309,8 +309,24 @@ impl SealedChat {
 /// Wait until `device`'s broker took every sealed write of `app` that
 /// reached its network: the broker's drain empties the network's inbound
 /// documents as it admits them.
+///
+/// The drain takes them on its own thread and tells nobody, so no wake
+/// comes of it: while this waits, the loop is woken to look again as often
+/// as the app threads here turn, or it would sleep until the hang bound
+/// unless something else on the devices stirred.
 pub(crate) fn until_broker_took(devices: &[&Device], device: &Device, app: &str) {
     let inbound = device.net().inbound_documents_handle();
+    let looking = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let ticker = {
+        let looking = Arc::clone(&looking);
+        let wakes = Arc::clone(&device.wakes);
+        std::thread::spawn(move || {
+            while looking.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                wakes.wake();
+            }
+        })
+    };
     until(devices, "the broker to take the record's writes", || {
         (!inbound
             .lock()
@@ -319,6 +335,8 @@ pub(crate) fn until_broker_took(devices: &[&Device], device: &Device, app: &str)
             .any(|document| document.app_id == app))
         .then_some(())
     });
+    looking.store(false, std::sync::atomic::Ordering::Release);
+    ticker.join().unwrap();
 }
 
 /// An app of `definition` opening the package's record in `room` cold, in
@@ -561,6 +579,7 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
     let app_thread = {
         let done = Arc::clone(&done);
         let person = person.clone();
+        let wakes = Arc::clone(&wakes);
         std::thread::spawn(move || {
             let (mut app, owners) = open_cold(
                 &profile,
@@ -575,7 +594,12 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
                 let full = channels
                     .as_ref()
                     .is_some_and(|channels| channels.iter().any(|id| id == "harbour"));
-                if shown.send(channels).is_err() || full {
+                // What the app shows reaches the waiting loop over the
+                // channel, which wakes nothing: the loop is woken too, or it
+                // sleeps on until something on the devices stirs.
+                let gone = shown.send(channels).is_err();
+                wakes.wake();
+                if gone || full {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));

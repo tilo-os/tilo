@@ -65,6 +65,7 @@ pub(super) fn drive<T: Send + 'static>(
     let done = Arc::new(AtomicBool::new(false));
     let thread = {
         let done = Arc::clone(&done);
+        let wakes = Arc::clone(&devices.first().expect("a wait is for a device").wakes);
         std::thread::spawn(move || {
             let (mut app, owners) = open();
             let mut finished = false;
@@ -76,6 +77,9 @@ pub(super) fn drive<T: Send + 'static>(
                     if told.send(found).is_err() {
                         finished = true;
                     }
+                    // The channel wakes nothing: the waiting loop is woken
+                    // to read it, or it sleeps on until the devices stir.
+                    wakes.wake();
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
