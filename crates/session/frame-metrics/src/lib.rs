@@ -1,3 +1,10 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "in a test an exact comparison is the assertion, not a hazard"
+    )
+)]
 //! Frame-loop instrumentation: per-tick phase timings, present pacing and input-to-present latency.
 //!
 //! One [`FrameSample`] per loop iteration: `period_us` (real cadence), per-phase durations,
@@ -10,11 +17,14 @@
 //! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
+//!
+//! It sits below the compositor so a compositor change does not rebuild it,
+//! and its tests run on their own.
 
-pub(crate) mod cpu_trace;
-pub(crate) mod profile;
+pub mod cpu_trace;
+pub mod profile;
 mod trace_writer;
-pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
+pub use cpu_trace::{CpuPhase, CpuSnapshot};
 use trace_writer::TraceWriter;
 
 use std::io::Write;
@@ -751,19 +761,19 @@ impl FrameRecorder {
     }
 
     /// Snapshot phase CPU only for an explicitly requested CPU companion trace.
-    pub(crate) fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
+    pub fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
         self.cpu_trace
             .as_ref()
             .and_then(cpu_trace::CpuTrace::snapshot)
     }
 
-    pub(crate) fn mark_cpu(&mut self, phase: CpuPhase, start: Option<CpuSnapshot>) {
+    pub fn mark_cpu(&mut self, phase: CpuPhase, start: Option<CpuSnapshot>) {
         if let Some(trace) = self.cpu_trace.as_mut() {
             trace.mark(phase, start);
         }
     }
 
-    pub(crate) fn mark_paint_wall(&mut self, wall: Duration) {
+    pub fn mark_paint_wall(&mut self, wall: Duration) {
         if let Some(trace) = self.cpu_trace.as_mut() {
             trace.mark_paint_wall(wall);
         }
@@ -1074,7 +1084,7 @@ impl Drop for FrameRecorder {
 
 /// `CLOCK_MONOTONIC` now, in nanoseconds: the clock input events and boot
 /// measurements are stamped with, so the session log can place a frame on it.
-pub(crate) fn monotonic_time_ns() -> Option<u128> {
+pub fn monotonic_time_ns() -> Option<u128> {
     let mut now = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,

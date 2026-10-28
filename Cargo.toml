@@ -401,6 +401,7 @@ members = [
     "crates/session/desktop-model",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
+    "crates/session/frame-metrics",
     "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/platform/imager-backend",

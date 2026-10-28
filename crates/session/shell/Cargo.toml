@@ -307,6 +307,8 @@ tilo-quick-settings = { path = "../quick-settings" }
 # The share session, encoders, viewer registry and counters of a window
 # shared with the workspace's other devices.
 tilo-window-share = { path = "../window-share" }
+# The frame loop's phase timings, pacing, CPU traces and profiles.
+tilo-frame-metrics = { path = "../frame-metrics" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The reusable video-streaming stack (encode/decode, per-share frame transport
 # substrate, throttle). `network::{encoder,

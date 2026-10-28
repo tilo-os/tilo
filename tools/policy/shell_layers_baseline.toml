@@ -33,6 +33,7 @@
 [extracted]
 crates = [
     "tilo-callstream",
+    "tilo-frame-metrics",
     "tilo-network-secret-agent",
     "tilo-polkit-agent",
     "tilo-relay-shell",
@@ -249,3 +250,4 @@ grandfathered = [
 "tilo-wayland-ext" = "The color-management-v1 handlers and the EDID parsing, carved out of the shell so the compositor does not rebuild them; it brings neighbour-wire and smithay, which the shell already depends on"
 "tilo-quick-settings" = "The Quick Settings panel, its sections and state, and the status line the top bar shares, carved out of the shell so a chrome or compositor change does not rebuild them; it brings tilo-ui, tilo-desktop, os-actions, settings-store and tilo-power-mgmt, which the shell already depends on"
 "tilo-window-share" = "The owner side of a window shared with the workspace (share session, encoders, viewer registry, encode settings and counters), carved out of the shell so the compositor does not rebuild it; it brings neighbour-wire, tilo-callstream, tilo-media, tilo-paint-stream and smithay, which the shell already depends on"
+"tilo-frame-metrics" = "The frame loop's instrumentation (phase timings, pacing, CPU traces, on-demand profiles), carved out of the compositor so a compositor change does not rebuild it; it brings libc, serde, serde_json, tilo-lock and tilo-paths, which the shell already depends on"

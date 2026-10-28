@@ -81,7 +81,6 @@ pub mod lock_controller;
 pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
-pub mod metrics;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]
