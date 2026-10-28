@@ -206,6 +206,9 @@ trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code
 # profile `initrd`) links the empty os/initrd/workspace-hack instead, so it
 # takes only what its own manifests name and every boot unpacks no GStreamer or
 # PipeWire. The resolve that build writes to Cargo.lock is put back after it.
+# It links as its profile says (fat LTO, one codegen unit), which keeps it
+# within the initramfs's budget, not with the release build's thin LTO; an
+# image linked without LTO links it without LTO too.
 if [[ $TILO_COMPILER_CACHE == off ]]; then
   if [[ -n ${RUSTC_WRAPPER:-}${SCCACHE_BUCKET:-}${SCCACHE_ENDPOINT:-}${SCCACHE_DIR:-}${ACTIONS_CACHE_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${AWS_ACCESS_KEY_ID:-} ]]; then
     echo 'a build without the compiler cache received compiler-cache settings' >&2; exit 1
@@ -421,8 +424,9 @@ case "$TILO_RUST_LTO" in \
        fi \
     && build_phase rust-boot-greeter \
     && cp Cargo.lock "$scratch/Cargo.lock" \
-    && { CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-         CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
+    && if [ "$TILO_RUST_LTO" = off ]; then initrd_lto=off initrd_units=16; else initrd_lto=fat initrd_units=1; fi \
+    && { CARGO_PROFILE_INITRD_LTO="$initrd_lto" \
+         CARGO_PROFILE_INITRD_CODEGEN_UNITS="$initrd_units" \
          cargo build --profile initrd -p greeter --bin tilo-greeter \
            --config 'patch.crates-io.workspace-hack.path="os/initrd/workspace-hack"'; \
          boot_status=$?; cp "$scratch/Cargo.lock" Cargo.lock; [ "$boot_status" = 0 ]; } \

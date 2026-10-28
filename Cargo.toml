@@ -1233,9 +1233,17 @@ codegen-units = 16
 
 # The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
 # release code without its symbol table, since every boot unpacks the
-# initramfs and nothing there reads symbols.
+# initramfs and nothing there reads symbols. The initramfs holds it to a size
+# budget (os/scripts/build-initramfs.sh), so it links as small as it can. Fat
+# LTO and one codegen unit: with the image compile's thin LTO and 8 units its
+# binary is 66.2 MB on x86_64, with these 54.2 MB. A panic aborts, which leaves
+# out the unwind tables and landing pads: 48.2 MB. A greeter that exits ends
+# its link, and tilo-boot-signin asks through Plymouth or the console instead.
 [profile.initrd]
 inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 strip = "symbols"
 
 # The demo profile keeps release optimisation while enabling shell's
