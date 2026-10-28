@@ -251,7 +251,7 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
 /// The window's pixels as the CPU rasterizes the frame's scene, RGBA rows.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 fn pixels(h: &FrameHarness, ground: vello::peniko::Color) -> Vec<u8> {
-    let mut canvas = crate::render_thread::cpu_raster::CpuCanvas::new();
+    let mut canvas = crate::cpu_canvas::CpuCanvas::new();
     canvas
         .rasterize(&crate::retained_raster::FrameContent {
             scene: h.scene(),

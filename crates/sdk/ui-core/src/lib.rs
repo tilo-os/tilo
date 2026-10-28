@@ -158,6 +158,7 @@ pub use tilo_ui_paint::{color, color_compat};
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
+pub mod cpu_canvas;
 mod damage;
 pub mod date;
 pub mod diag;

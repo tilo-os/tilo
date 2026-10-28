@@ -26,7 +26,6 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
-pub(crate) mod cpu_raster;
 #[cfg(test)]
 mod deferred_pipelines_tests;
 mod native_gpu_trace;
@@ -50,8 +49,8 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
+use crate::retained_raster::bounded_present_damage;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
 pub use crate::retained_raster::{FrameContent, RetainedRaster, RetainedTarget};
@@ -120,7 +119,7 @@ static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
 
 /// Record why the drawing surface was lost; the first reason is the cause.
 /// Whether a window on this adapter rasterizes its frames on the CPU
-/// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
+/// (`crate::cpu_canvas`) and uploads the pixels, instead of running vello's compute
 /// pipelines on an emulated GPU. Vello then draws only backdrop blurs.
 pub fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
     adapter.device_type == vello::wgpu::DeviceType::Cpu
@@ -1275,53 +1274,6 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
-)]
-fn bounded_present_damage(
-    width: u32,
-    height: u32,
-    damage: &[Rect],
-) -> Option<Vec<tilo_presentation::DamageRect>> {
-    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
-        return None;
-    }
-    let mut regions = Vec::with_capacity(damage.len());
-    for rect in damage {
-        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
-            return None;
-        }
-        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
-        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
-        if x1 > x && y1 > y {
-            regions.push(Region {
-                x,
-                y,
-                width: x1.saturating_sub(x),
-                height: y1.saturating_sub(y),
-            });
-        }
-    }
-    if regions.is_empty() {
-        return None;
-    }
-    Some(
-        coalesce_regions(regions)
-            .into_iter()
-            .map(|rect| tilo_presentation::DamageRect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            })
-            .collect(),
-    )
-}
-
 /// Whether the render worker repaints a frame of `width` × `height` with
 /// `damage` (physical pixels) from its scene region by region, never
 /// whole: what a frame drawn for its damage only needs
@@ -1329,64 +1281,6 @@ fn bounded_present_damage(
 pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
     bounded_present_damage(width, height, damage).is_some()
         && crate::retained_raster::repaints_alone(width, height, damage)
-}
-
-#[cfg(test)]
-mod present_damage_tests {
-    use super::{Rect, bounded_present_damage};
-
-    #[test]
-    fn presentation_hints_cover_every_changed_framebuffer_pixel() {
-        let changed = [
-            Rect::new(-4.5, 1.2, 5.1, 7.8),
-            Rect::new(10.7, 12.4, 23.8, 29.2),
-            Rect::new(22.6, 28.1, 35.0, 37.0),
-        ];
-        let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
-        // Pixel-cell intersection, independently of the outward-rounding
-        // implementation: every pixel touched by any submitted damage must
-        // be included, including fractional edges and output clipping.
-        for y in 0_u32..32 {
-            for x in 0_u32..32 {
-                let cell = Rect::new(
-                    f64::from(x),
-                    f64::from(y),
-                    f64::from(x.saturating_add(1)),
-                    f64::from(y.saturating_add(1)),
-                );
-                if changed
-                    .iter()
-                    .any(|rect| !rect.intersect(cell).is_zero_area())
-                {
-                    assert!(
-                        hints.iter().any(|hint| {
-                            x >= hint.x
-                                && y >= hint.y
-                                && x < hint.x.saturating_add(hint.width)
-                                && y < hint.y.saturating_add(hint.height)
-                        }),
-                        "changed framebuffer pixel ({x}, {y}) omitted"
-                    );
-                }
-            }
-        }
-        assert!(hints.iter().all(|hint| {
-            hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
-        }));
-    }
-
-    #[test]
-    fn uncertain_damage_preserves_whole_surface_presentation() {
-        for damage in [
-            vec![],
-            vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
-            vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
-            vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
-            vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
-        ] {
-            assert!(bounded_present_damage(32, 32, &damage).is_none());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1856,7 +1750,7 @@ mod retained_damage_tests {
         let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
         let (retained, _) = target(&gpu.device);
         let (oracle, _) = target(&gpu.device);
-        let mut canvas = cpu_raster::CpuCanvas::new();
+        let mut canvas = crate::cpu_canvas::CpuCanvas::new();
         let first = [Item {
             rect: Rect::new(30.0, 25.0, 75.0, 60.0),
             color: [220, 60, 30],
@@ -1877,7 +1771,7 @@ mod retained_damage_tests {
             ))
             .expect("damaged CPU frame");
         canvas.upload(&gpu.queue, &retained);
-        let mut full = cpu_raster::CpuCanvas::new();
+        let mut full = crate::cpu_canvas::CpuCanvas::new();
         full.rasterize(&content(&scene_of(&next), Color::TRANSPARENT, &[], true))
             .expect("full CPU oracle");
         full.upload(&gpu.queue, &oracle);
@@ -2008,7 +1902,7 @@ mod retained_damage_tests {
             "GPU: the copied frame differs from a full render"
         );
 
-        let mut canvas = cpu_raster::CpuCanvas::new();
+        let mut canvas = crate::cpu_canvas::CpuCanvas::new();
         let (cpu_texture, _) = target(device);
         canvas
             .rasterize(&frame(&before, &[], &[], true))
@@ -2018,7 +1912,7 @@ mod retained_damage_tests {
             .rasterize(&frame(&after, &exposed, &copies, false))
             .expect("scrolled CPU frame");
         canvas.upload(queue, &cpu_texture);
-        let mut full = cpu_raster::CpuCanvas::new();
+        let mut full = crate::cpu_canvas::CpuCanvas::new();
         let (cpu_oracle, _) = target(device);
         full.rasterize(&frame(&after, &[], &[], true))
             .expect("full CPU oracle");

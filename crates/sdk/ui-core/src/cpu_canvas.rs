@@ -1,10 +1,14 @@
-//! Software fine rasterization; wgpu only uploads and presents these pixels.
+//! A retained target drawn on the CPU: the scene replayed by `tilo-cpu-raster`
+//! into pixels the host holds, repainted only where the frame changed. The
+//! native render worker draws on it for an adapter that rasterizes on the
+//! CPU and uploads the pixels to its texture; a page whose browser offers no
+//! WebGPU draws on it and presents the pixels to its canvas.
 
 use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 
-use super::{FrameContent, bounded_present_damage};
+use crate::retained_raster::{DAMAGE_ONLY_REFUSED, FrameContent, bounded_present_damage};
 
-pub(crate) struct CpuCanvas {
+pub struct CpuCanvas {
     rasterizer: CpuRasterizer,
     pixels: Vec<u8>,
     size: (u32, u32),
@@ -18,17 +22,27 @@ pub(crate) struct CpuCanvas {
     damage_only: bool,
 }
 
+/// Worker threads a frame is rasterized on: `vello_cpu` spawns none on
+/// `wasm32`, where it draws on the calling thread.
+pub(crate) const THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
+
 /// A canvas to rasterize frames into when they are rasterized on the CPU
 /// (`on_cpu`), else none.
 pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
     on_cpu.then(CpuCanvas::new)
 }
 
+impl Default for CpuCanvas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CpuCanvas {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             rasterizer: CpuRasterizer::new(Options {
-                threads: 4,
+                threads: THREADS,
                 ..Options::default()
             }),
             pixels: Vec::new(),
@@ -42,15 +56,15 @@ impl CpuCanvas {
 
     /// Whether the frames' scenes hold only what their damage needs
     /// (`RetainedRaster::rasterize_damage_only`).
-    pub(crate) fn draw_damage_only(&mut self, damage_only: bool) {
+    pub fn draw_damage_only(&mut self, damage_only: bool) {
         self.damage_only = damage_only;
     }
 
-    pub(crate) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.valid = false;
     }
 
-    pub(crate) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
+    pub fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
         if frame.width == 0 || frame.height == 0 {
             return Err("CPU target dimensions must be nonzero".into());
         }
@@ -87,7 +101,7 @@ impl CpuCanvas {
             // The copies may have moved the pixels: what is retained is no
             // longer the last frame.
             self.valid = false;
-            return Err(crate::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+            return Err(DAMAGE_ONLY_REFUSED.to_owned());
         }
         self.regions = if whole {
             vec![Region::new(0, 0, frame.width, frame.height)]
@@ -126,11 +140,18 @@ impl CpuCanvas {
     }
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
-    pub(crate) fn pixels(&self) -> &[u8] {
+    pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
-    pub(crate) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
+    /// The pixels [`Self::rasterize`] last drew, and where the scroll copies
+    /// of that frame landed: what a host that presents the canvas itself
+    /// sends, instead of [`Self::upload`]'s whole texture.
+    pub fn drawn(&self) -> &[Region] {
+        &self.uploads
+    }
+
+    pub fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
         let stride = self.size.0.saturating_mul(4);
         for region in &self.uploads {
             let offset = u64::from(region.y) * u64::from(stride) + u64::from(region.x) * 4;

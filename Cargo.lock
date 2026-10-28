@@ -17625,6 +17625,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "vello_cpu 0.3.0",
+ "web-time",
  "workspace-hack",
 ]
 

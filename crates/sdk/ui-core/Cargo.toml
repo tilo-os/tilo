@@ -141,6 +141,10 @@ portal = ["native", "tilo-host/portal"]
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# The public CPU raster: the native render worker's frames on an adapter
+# that rasterizes on the CPU, and the browser's when the page has no WebGPU
+# (cpu_canvas).
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # Initials, as the login and boot sign-in screens draw them too.
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
@@ -495,8 +499,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 # Private files need an OS; the browser supplies them through its host instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The public native render worker is also available to hosts without OS services.
-tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
 tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }

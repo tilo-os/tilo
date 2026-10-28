@@ -13,6 +13,13 @@ vello_encoding.workspace = true
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 smallvec = "1.15.1"
+# A clock on wasm32, where std has none: the browser runtime rasterizes with
+# this crate too, and its statistics are durations.
+web-time = "1"
+# The workspace-hack's native feature set does not build for wasm32, and a
+# page with no WebGPU rasterizes its frames with this crate (ui-core's
+# cpu_canvas).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

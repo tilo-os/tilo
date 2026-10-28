@@ -35,7 +35,9 @@ mod glyph;
 mod image;
 mod record;
 
-use std::time::{Duration, Instant};
+// `std::time` panics for a clock on wasm32, where the browser runtime
+// rasterizes too: `web_time` is the page's `performance.now`.
+use web_time::{Duration, Instant};
 
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::Rect;
