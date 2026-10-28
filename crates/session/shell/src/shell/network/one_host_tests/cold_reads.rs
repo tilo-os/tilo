@@ -9,7 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use ed25519_dalek::Signer as _;
-use tilo_user_identity::DeviceCapabilities;
+use ed25519_dalek::SigningKey;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
 use ui::collaboration::CertifiedEndpointIdentity;
 use ui::permissions::{PermissionContext, Role, UserId};
@@ -25,32 +26,15 @@ impl Device {
     /// device to its broker: the device's certificate, and its proof of the
     /// key, for the room.
     pub(crate) fn endpoint_identity(&self, room: RoomId) -> CertifiedEndpointIdentity {
-        let identity = self.keyless_endpoint_identity(room);
         // An app of a session that serves through its broker encrypts under
         // the keys that session hands it, as a launched app does.
         let keys = self.endpoint_keys.lock().expect("endpoint keys").clone();
-        match keys {
-            Some(keys) => identity.with_channel_keys(keys),
-            None => identity,
-        }
+        certified_identity(&self.key(), &self.cert(), room, keys)
     }
 
     /// [`Self::endpoint_identity`] with no channel keys to encrypt under.
     pub(crate) fn keyless_endpoint_identity(&self, room: RoomId) -> CertifiedEndpointIdentity {
-        let key = self.key();
-        let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.to_string(),
-            device_certificate: serde_json::to_vec(&self.cert()).expect("certificate JSON"),
-            proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &room.to_string(),
-                ))
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .expect("certified join encodes");
-        CertifiedEndpointIdentity::new(presentation, key)
+        certified_identity(&self.key(), &self.cert(), room, None)
     }
 
     /// Serve this device's session through a collaboration broker bound at
@@ -119,6 +103,35 @@ impl Device {
                     })
                     .count()
             })
+    }
+}
+
+/// How the device holding `key` and `cert` presents itself to its broker
+/// for `room`: its certificate, and its proof of the key, for the room;
+/// encrypting under `keys`, the channel keys its session hands it, when it
+/// has them.
+pub(crate) fn certified_identity(
+    key: &SigningKey,
+    cert: &DeviceCert,
+    room: RoomId,
+    keys: Option<ui::collaboration::EndpointChannelKeys>,
+) -> CertifiedEndpointIdentity {
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.to_string(),
+        device_certificate: serde_json::to_vec(cert).expect("certificate JSON"),
+        proof: key
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                &room.to_string(),
+            ))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .expect("certified join encodes");
+    let identity = CertifiedEndpointIdentity::new(presentation, key.clone());
+    match keys {
+        Some(keys) => identity.with_channel_keys(keys),
+        None => identity,
     }
 }
 

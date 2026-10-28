@@ -260,10 +260,9 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
     assert!(
-        alice_page
-            .drain()
-            .iter()
-            .all(|event| !matches!(event, PeerEvent::Document(_))),
+        alice_page.drain().iter().all(
+            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
+        ),
         "the watching page wrote to Alice"
     );
 

@@ -88,6 +88,10 @@ fn live_frames_cross_between_two_shells_through_a_device_hosted_room() {
     );
     p.hold_live_keys(keys_of);
     q.hold_live_keys(keys_of);
+    // Each keeps its workspaces' layouts through its session's broker, as a
+    // desktop session does: a window one shows is a tab on the other.
+    p.carry_layouts();
+    q.carry_layouts();
     let (local, room) = hosted_workspace(&p, &[&q], "Review");
     q.join(&p.invite(local, "Grace", Some(grace.user())))
         .unwrap();

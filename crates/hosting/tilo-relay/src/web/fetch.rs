@@ -184,6 +184,15 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
             rooms.push(Room(id));
         }
     }
+    // The person this host runs for is its own before any room is bound
+    // here: what they fetch counts against their own room.
+    if rooms.is_empty()
+        && user == own_user
+        && let Ok(id) =
+            tilo_relay_protocol::room_workspace_id(&tilo_relay_protocol::own_room(&user))
+    {
+        rooms.push(Room(id));
+    }
     rooms
 }
 
