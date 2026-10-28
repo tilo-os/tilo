@@ -18476,8 +18476,10 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-net",
+ "tilo-nm",
  "tilo-pycompat",
  "tilo-test-env",
+ "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -20810,6 +20812,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-ask-password",
+ "tilo-nm",
  "tilo-seal",
  "tilo-unlock-protocol",
  "tokio",
