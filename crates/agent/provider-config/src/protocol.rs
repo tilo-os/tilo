@@ -494,7 +494,7 @@ impl Recovery {
     pub fn guidance(self) -> &'static str {
         match self {
             Self::AddProvider => {
-                "Open Model Providers and add a provider with its API key to use this."
+                "Open Model Providers to add a provider with its API key and choose its model."
             }
             Self::RefreshSettings => {
                 "Refresh provider settings and review the current values before saving again."

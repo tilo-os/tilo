@@ -207,7 +207,8 @@ impl PageService {
         };
         let response = match send(route)?.await {
             Err(error) if !proxied && error.may_be_cors() => {
-                // The browser refused before anything reached the provider.
+                // A provider that does not answer browsers fails their
+                // preflight, so the request itself never left the page.
                 let retried = send(ProxyUse::CrossOrigin)?.await;
                 if retried.is_ok()
                     && let Ok(mut known) = self.proxied.lock()
