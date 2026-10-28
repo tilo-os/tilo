@@ -639,7 +639,7 @@ mod tests {
             frame.dispatch_to_root(&input::cursor_moved(790.0, 590.0));
             frame.dispatch_to_root(&input::mouse_press());
             assert_dismissed_editor(
-                &mut *frame.root_mut::<PersonQuickComposer>(),
+                &mut frame.root_mut::<PersonQuickComposer>(),
                 later,
                 followed,
                 &draft,

@@ -412,7 +412,7 @@ fn an_inflected_needle_finds_the_word_a_description_spells() {
         "Scrolls the page too, with the keys that scroll it: PageDown, PageUp, Home, End, \
          ArrowDown and ArrowUp, or Space for a screenful.",
     );
-    let rows = [pointer_path.clone(), drag.clone(), press.clone()];
+    let rows = [pointer_path, drag, press];
     let found = |needle: &str| {
         let words = page::needle_words(needle);
         rows.iter()
