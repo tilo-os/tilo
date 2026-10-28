@@ -21150,6 +21150,7 @@ dependencies = [
 name = "tilo-ui-paint"
 version = "0.1.0"
 dependencies = [
+ "tilo-face",
  "tilo-vello",
  "workspace-hack",
 ]
@@ -21697,6 +21698,8 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "collab-types",
+ "collaboration",
  "crc32fast",
  "redb",
  "serde",
@@ -21711,6 +21714,7 @@ dependencies = [
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
