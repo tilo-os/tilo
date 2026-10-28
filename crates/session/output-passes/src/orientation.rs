@@ -16,8 +16,8 @@
 use settings_store::hardware::OutputTransform;
 use vello::wgpu;
 
-use super::fullscreen_pass;
-use super::icc_lut::{IccLut, IccLutTextures};
+use crate::fullscreen_pass;
+use crate::icc_lut::{IccLut, IccLutTextures};
 
 /// The `orientation` value the shaders take for `transform`.
 pub fn shader_code(transform: OutputTransform) -> u32 {
@@ -41,7 +41,7 @@ pub fn turned(size: (u32, u32), transform: OutputTransform) -> (u32, u32) {
 /// The copy pass after the shared orientation helpers
 /// ([`tilo_color_pipeline::color_pipeline::OUTPUT_ORIENTATION_SHADER`]).
 const COPY_SHADER_BODY: &str = concat!(
-    include_str!("../output_color_lut.wgsl"),
+    include_str!("output_color_lut.wgsl"),
     r"
 struct CopyParams {
     orientation: u32,

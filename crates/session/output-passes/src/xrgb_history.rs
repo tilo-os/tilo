@@ -15,19 +15,19 @@ const MAX_RECTS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct XrgbHistoryIdentity {
-    pub(crate) bridge_generation: u64,
-    pub(crate) bridge_epoch: u64,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) pitch: usize,
-    pub(crate) targets: usize,
-    pub(crate) scanout_epoch: u64,
+    pub bridge_generation: u64,
+    pub bridge_epoch: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: usize,
+    pub targets: usize,
+    pub scanout_epoch: u64,
 }
 
 impl XrgbHistoryIdentity {
     #[must_use]
     #[cfg(any(test, target_os = "linux"))]
-    pub(crate) fn with_scanout_epoch(mut self, scanout_epoch: u64) -> Self {
+    pub fn with_scanout_epoch(mut self, scanout_epoch: u64) -> Self {
         self.scanout_epoch = scanout_epoch;
         self
     }
@@ -72,7 +72,7 @@ pub struct XrgbHistoryTransaction<'a> {
 
 /// The bridge-only output write plan produced by a staged transaction.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum XrgbWritePlan<'a> {
+pub enum XrgbWritePlan<'a> {
     Full,
     Rects(&'a [FineDamageRect]),
 }
@@ -310,7 +310,7 @@ impl XrgbTargetHistory {
 }
 
 impl XrgbHistoryTransaction<'_> {
-    pub(crate) fn write_plan(&self) -> XrgbWritePlan<'_> {
+    pub fn write_plan(&self) -> XrgbWritePlan<'_> {
         if self.partial_plan {
             XrgbWritePlan::Rects(&self.history.scratch_plan)
         } else {
@@ -318,11 +318,11 @@ impl XrgbHistoryTransaction<'_> {
         }
     }
 
-    pub(crate) fn prepared_identity(&self) -> Option<XrgbHistoryIdentity> {
+    pub fn prepared_identity(&self) -> Option<XrgbHistoryIdentity> {
         self.identity
     }
 
-    pub(crate) fn matches_frame(
+    pub fn matches_frame(
         &self,
         revision: u64,
         previous_revision: Option<u64>,

@@ -3,7 +3,7 @@
 //! The readback presenter calibrates an SDR output by running its qcms transform (sRGB to the
 //! panel, perceptual intent) over every pixel on the CPU (`paint_one_scanout`). [`IccLut`]
 //! samples that same transform once, when the profile is chosen, into a 3D table that the
-//! SDR final pass (`OrientedCopy` in [`super::orientation`]) interpolates per pixel on the GPU
+//! SDR final pass (`OrientedCopy` in [`crate::orientation`]) interpolates per pixel on the GPU
 //! (`shell/output_color_lut.wgsl`), so a calibrated output renders direct. qcms stays the
 //! only reader of ICC files: the table is qcms's own output at its grid points.
 //!
@@ -215,5 +215,5 @@ fn grid_coordinates(codes: &[u8]) -> Vec<f32> {
     coordinates
 }
 
-#[cfg(test)]
-pub(crate) mod tests;
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests;

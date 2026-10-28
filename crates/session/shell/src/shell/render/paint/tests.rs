@@ -6,10 +6,10 @@ use settings_store::hardware::OutputTransform;
 use vello::{AaConfig, RenderParams, Scene};
 
 use crate::shell::frame::FrameBuilder;
-use crate::shell::render::icc_lut::IccLut;
-use crate::shell::render::xrgb_history::XrgbWritePlan;
 use crate::shell::test_support::PopulatedShellFixture;
 use automerge::{AutoCommit, ROOT};
+use tilo_output_passes::icc_lut::IccLut;
+use tilo_output_passes::xrgb_history::XrgbWritePlan;
 use ui::taffy::NodeId;
 use vello::kurbo::Affine;
 use vello::peniko::Fill;

@@ -9,8 +9,8 @@ use vello::wgpu;
 
 use settings_store::hardware::OutputTransform;
 
-use super::fullscreen_pass;
-use super::orientation::shader_code;
+use crate::fullscreen_pass;
+use crate::orientation::shader_code;
 use tilo_color_pipeline::color_pipeline::{OUTPUT_ENCODE_SHADER_SOURCE, sanitize_sdr_white_nits};
 
 /// Bytes of the shader's `EncodeParams` uniform: SDR white (`f32`) and the output's

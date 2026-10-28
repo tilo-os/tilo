@@ -63,7 +63,7 @@ pub(super) struct ClientEligibility {
     pub upright: bool,
     /// The output has no ICC profile: a client buffer flipped onto a
     /// calibrated output would skip the profile its composited frames go
-    /// through (`shell::render::icc_lut`).
+    /// through (`tilo_output_passes::icc_lut`).
     pub uncalibrated: bool,
     /// The compositor's final pass does not dim the output: a client buffer
     /// flipped onto an output dimmed there would skip the dimming. Dimming
