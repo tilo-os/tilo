@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilolang_tilo::runtime::{Binding, UiNode, Value};
+use crate::{UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
@@ -29,7 +29,7 @@ use ui::widget::{
 
 use crate::adapter::{Adapter, NodeSource};
 use crate::body::BodyEditor;
-use crate::window::pane::Pane;
+use crate::pane::Pane;
 use ui::presence::PathSegment;
 
 /// What a person did to the view.
@@ -47,14 +47,11 @@ pub enum UiEvent {
     /// list selected), carrying a value when the event carries one.
     Fire(String, String, Option<Value>),
     /// A row of a resource was activated: show the resource.
-    Open(tilolang_tilo::runtime::ResourceRef),
+    Open(crate::ResourceRef),
 }
 
 /// Where controls report what the person did.
 pub type EventSink = Rc<RefCell<Vec<UiEvent>>>;
-
-/// The name a bound field is announced by.
-pub type FieldNames = Rc<dyn Fn(&Binding) -> String>;
 
 /// A case of an enum, as a control shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,22 +62,13 @@ pub struct Case {
     pub icon: Option<ui::icons::Icon>,
 }
 
-/// The cases of an enum (by id) with what a control shows for each.
-pub type Cases = Rc<dyn Fn(&str) -> Vec<Case>>;
-
-/// What the room calls a participant (by id).
-pub type People = Rc<dyn Fn(&str) -> String>;
-
 /// Builds and reconciles the widgets of a view tree.
 pub struct Reconciler {
     sink: EventSink,
-    names: FieldNames,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
-    cases: Cases,
-    people: People,
     /// What the components it builds report, shared with every reconciler of the same view.
     adapter: Adapter,
     /// Where the rows of the virtual lists it builds come from.
@@ -107,7 +95,7 @@ pub fn display(value: &Value) -> String {
         }
         Value::Float(number) => formats.decimal(*number, 2),
         Value::Bool(flag) => flag.to_string(),
-        Value::Principal(who) => who.0.clone(),
+        Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
         _ => String::new(),
     }
@@ -126,6 +114,34 @@ fn token<'a>(node: &'a UiNode, name: &str) -> Option<&'a str> {
         Some(Value::Text(text)) => Some(text),
         _ => None,
     }
+}
+
+/// The cases a `choice` node shows, as its app read them from the enum it chooses from: each a
+/// name, a label and an icon.
+fn cases_of(node: &UiNode) -> Vec<Case> {
+    let Some(Value::List(cases)) = prop(node, "cases") else {
+        return Vec::new();
+    };
+    cases
+        .iter()
+        .filter_map(|case| match case {
+            Value::List(parts) => match parts.as_slice() {
+                [Value::Text(name), Value::Text(label), icon] => Some(Case {
+                    name: name.clone(),
+                    label: label.clone(),
+                    icon: match icon {
+                        Value::Opt(Some(icon)) => match &**icon {
+                            Value::Text(icon) => ui::icons::Icon::from_name(icon),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                }),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 #[allow(
@@ -350,32 +366,26 @@ fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn SlotHost) -> R)
 
 impl Reconciler {
     #[must_use]
-    pub fn new(sink: EventSink, names: FieldNames) -> Self {
+    pub fn new(sink: EventSink) -> Self {
         Self {
             sink,
-            names,
             texts: HashMap::new(),
             flags: HashMap::new(),
             navigation: None,
-            cases: Rc::new(|_| Vec::new()),
-            people: Rc::new(str::to_owned),
             adapter: Adapter::default(),
             rows: None,
         }
     }
 
     /// A reconciler of the same view as `other`: its widgets report to the same sink and
-    /// adapter, and read names and cases the same way.
+    /// adapter.
     #[must_use]
     pub fn sharing(other: &Self) -> Self {
         Self {
             sink: Rc::clone(&other.sink),
-            names: Rc::clone(&other.names),
             texts: HashMap::new(),
             flags: HashMap::new(),
             navigation: None,
-            cases: Rc::clone(&other.cases),
-            people: Rc::clone(&other.people),
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
         }
@@ -405,18 +415,6 @@ impl Reconciler {
         self.adapter = adapter;
     }
 
-    /// What the room calls the participant `id`.
-    #[must_use]
-    pub fn person(&self, id: &str) -> String {
-        (self.people)(id)
-    }
-
-    /// What the field or view state `binding` edits is called.
-    #[must_use]
-    pub fn field_name(&self, binding: &Binding) -> String {
-        (self.names)(binding)
-    }
-
     /// The text the control `key` shows, kept in step with what it is bound to.
     pub fn text_state(&mut self, key: &str) -> LocalState<String> {
         self.texts
@@ -431,14 +429,6 @@ impl Reconciler {
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(false))
             .clone()
-    }
-
-    /// Read enum cases and participants' names through `cases` and `people`.
-    #[must_use]
-    pub fn with_lookups(mut self, cases: Cases, people: People) -> Self {
-        self.cases = cases;
-        self.people = people;
-        self
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -1016,12 +1006,10 @@ impl Reconciler {
 
     /// A choice of an enum's cases: segments for a few, a menu for more.
     fn choice(&self, node: &UiNode) -> Element {
-        let cases = token(node, "enum")
-            .map(|id| (self.cases)(id))
-            .unwrap_or_default();
+        let cases = cases_of(node);
         let selected = match prop(node, "selected") {
             Some(Value::Text(case)) => Some(case.clone()),
-            Some(Value::Enum(value)) => Some(value.variant.clone()),
+            Some(Value::Enum(variant)) => Some(variant.clone()),
             _ => None,
         };
         let at = selected
@@ -1302,8 +1290,8 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
         .map(|(target, field)| {
             vec![
                 PathSegment::Field("tilolang".to_owned()),
-                PathSegment::Field(target.id_string()),
-                PathSegment::Field(field.clone()),
+                PathSegment::Field(target.to_owned()),
+                PathSegment::Field(field.to_owned()),
             ]
         })
         .unwrap_or_default()
@@ -1439,7 +1427,7 @@ mod tests {
     }
 
     fn reconciler() -> Reconciler {
-        Reconciler::new(Rc::default(), Rc::new(|_| String::new()))
+        Reconciler::new(Rc::default())
     }
 
     /// The identity of each child widget of a container.

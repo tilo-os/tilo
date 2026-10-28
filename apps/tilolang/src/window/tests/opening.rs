@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 
 use super::*;
+use tilolang_tilo::runtime::{ActionInfo, Decision};
 
 /// The room the windows of these tests show.
 const KEPT_ROOM: &str = "kept-room";
@@ -251,7 +252,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     .unwrap();
     crate::app::load(&committed);
     let notebook = committed.root_of(NOTES).unwrap();
-    let Value::List(notes) = committed.runtime().read(&notebook, "notes").unwrap() else {
+    let RtValue::List(notes) = committed.runtime().read(&notebook, "notes").unwrap() else {
         panic!("the notebook lists its notes");
     };
     assert_eq!(notes.len(), 4, "the record holds the new note");

@@ -20587,6 +20587,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-host"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "tilo-render-protocol",
+ "tilo-ui",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ui-macros"
 version = "0.1.0"
 dependencies = [
@@ -21059,6 +21070,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-app",
  "tilo-automerge",
+ "tilo-render-protocol",
+ "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
  "tracing",
@@ -21118,10 +21131,12 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-render-protocol",
  "tilo-resource",
  "tilolang",
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
+ "tracing",
  "workspace-hack",
 ]
 
