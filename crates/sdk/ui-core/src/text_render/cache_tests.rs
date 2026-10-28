@@ -1,6 +1,78 @@
 use super::*;
 
 #[test]
+fn packed_key_hash_preserves_all_equality_fields_in_one_write() {
+    #[derive(Default)]
+    struct Capture {
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+    impl Hasher for Capture {
+        fn finish(&self) -> u64 {
+            0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+        }
+    }
+    let base = BucketKey {
+        fingerprint: 0,
+        width: None,
+        generation: 0,
+        scale: 0,
+        distinguish_everywhere: false,
+        hyphenator_version: None,
+    };
+    let keys = [
+        base,
+        BucketKey {
+            fingerprint: u64::MAX,
+            ..base
+        },
+        BucketKey {
+            width: Some(0),
+            ..base
+        },
+        BucketKey {
+            width: Some(u32::MAX),
+            ..base
+        },
+        BucketKey {
+            generation: u64::MAX,
+            ..base
+        },
+        BucketKey {
+            scale: u32::MAX,
+            ..base
+        },
+        BucketKey {
+            distinguish_everywhere: true,
+            ..base
+        },
+        BucketKey {
+            hyphenator_version: Some(0),
+            ..base
+        },
+        BucketKey {
+            hyphenator_version: Some(u64::MAX),
+            ..base
+        },
+    ];
+    let mut encodings = std::collections::HashSet::new();
+    for key in keys {
+        let mut hash = Capture::default();
+        key.hash(&mut hash);
+        assert_eq!(hash.writes, 1);
+        assert_eq!(hash.bytes.len(), 5 * std::mem::size_of::<u64>());
+        assert!(
+            encodings.insert(hash.bytes),
+            "distinct equality fields must not alias"
+        );
+    }
+}
+
+#[test]
 fn colliding_text_and_style_keep_independent_values() {
     let plain = TextStyle::new(16.0);
     let tracked = plain.clone().with_letter_spacing(8.0);
