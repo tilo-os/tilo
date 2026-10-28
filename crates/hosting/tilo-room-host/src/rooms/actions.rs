@@ -152,7 +152,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 24] = [
+const VERBS: [Verb; 22] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -215,20 +215,6 @@ const VERBS: [Verb; 24] = [
         gate: governance::REVOKE,
         kind: roles::GOVERNANCE_KIND,
         params: agent_params,
-    },
-    Verb {
-        id: governance::GRANT,
-        label: "Give a grant",
-        gate: governance::GRANT,
-        kind: roles::GOVERNANCE_KIND,
-        params: grant_params,
-    },
-    Verb {
-        id: governance::REVOKE,
-        label: "Take back a grant",
-        gate: governance::REVOKE,
-        kind: roles::GOVERNANCE_KIND,
-        params: revoke_params,
     },
     Verb {
         id: governance::RESTRICT,
@@ -428,22 +414,6 @@ fn agent_params() -> Vec<ActionParam> {
         "agent",
         ParamType::Text,
         "The agent's stable id, as the room's agents name it.",
-    )]
-}
-
-fn grant_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "grant",
-        ParamType::Object,
-        "The grant: its id, subject, node, kinds, answer and lifetime.",
-    )]
-}
-
-fn revoke_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "grant",
-        ParamType::Text,
-        "The grant's id, as the room's grants report it.",
     )]
 }
 
@@ -1442,7 +1412,7 @@ impl Rooms {
                 };
                 generation(self.set_member_role(room, device, request).await)
             }
-            ADD_AGENT | REMOVE_AGENT | governance::GRANT | governance::REVOKE => {
+            ADD_AGENT | REMOVE_AGENT => {
                 let command = membership_command(action, args)?;
                 generation(
                     self.govern_room_membership(room, device, request_id, command)
@@ -1506,18 +1476,6 @@ fn membership_command(
         },
         REMOVE_AGENT => Command::RemoveAgent {
             agent: args.required_text("agent")?.trim().to_lowercase(),
-        },
-        governance::GRANT => Command::Grant {
-            grant: serde_json::from_value(
-                args.0
-                    .get("grant")
-                    .cloned()
-                    .ok_or_else(|| invalid("`grant` is required"))?,
-            )
-            .map_err(|error| invalid(format!("`grant` is not a grant: {error}")))?,
-        },
-        governance::REVOKE => Command::Revoke {
-            grant: tilo_action_policy::GrantId::new(args.required_text("grant")?),
         },
         other => return Err(invalid(format!("`{other}` is no membership command"))),
     })
