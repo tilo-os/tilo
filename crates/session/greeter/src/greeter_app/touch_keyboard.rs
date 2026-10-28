@@ -72,26 +72,29 @@ impl super::GreeterApp {
         if typed.is_empty() || self.phase != AuthPhase::Idle {
             return;
         }
-        let field = self
+        let prompt = self
             .composed
             .element_mut()
             .and_then(|composed| widget_with_id(composed, "greeter.password"))
             .and_then(|widget| widget.as_any_mut())
-            .and_then(|any| any.downcast_mut::<SecretPrompt>())
-            .and_then(|prompt| prompt.field_mut(FieldRole::Secret));
-        let Some(field) = field else {
+            .and_then(|any| any.downcast_mut::<SecretPrompt>());
+        let Some(prompt) = prompt else {
             return;
         };
         let mut submit = false;
         for input in typed {
             match input {
-                ui::passcode_keyboard::PasscodeInput::Text(text) => field.insert_at_cursor(&text),
-                ui::passcode_keyboard::PasscodeInput::Backspace => {
-                    let mut value = Zeroizing::new(field.value().to_owned());
-                    value.pop();
-                    field.set_text(&value);
+                PasscodeInput::Text(text) => {
+                    prompt.edit_field(FieldRole::Secret, |field| field.insert_at_cursor(&text));
                 }
-                ui::passcode_keyboard::PasscodeInput::Enter => submit = true,
+                PasscodeInput::Backspace => {
+                    prompt.edit_field(FieldRole::Secret, |field| {
+                        let mut value = Zeroizing::new(field.value().to_owned());
+                        value.pop();
+                        field.set_text(&value);
+                    });
+                }
+                PasscodeInput::Enter => submit = true,
             }
         }
         if submit {
