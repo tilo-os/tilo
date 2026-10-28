@@ -492,11 +492,11 @@ fn refusals_keep_the_peer_state_messages() {
 }
 
 /// The changes saving `shortcut` makes on top of `before`.
-fn saving(before: &AutoCommit, shortcut: tilo_automation::Shortcut) -> Vec<Vec<u8>> {
+fn saving(before: &AutoCommit, shortcut: &tilo_automation::Shortcut) -> Vec<Vec<u8>> {
     changes_after(before, |doc| {
         tilo_desktop_model::projection::project_workspace_shortcuts(
             doc,
-            &[tilo_automation::SavedShortcut::encode(&shortcut)],
+            &[tilo_automation::SavedShortcut::encode(shortcut)],
         )
         .unwrap();
     })
@@ -514,7 +514,7 @@ fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
     let mut editor = device(0x22, 0x02);
     editor.cert.issued_at_ns = NOW_NS + 400_000_000;
     tilo_user_identity::sign_device_cert(&mut editor.cert, &editor.root).unwrap();
-    let batch = saving(&before, editor.saves(ROOM, shortcut("water")));
+    let batch = saving(&before, &editor.saves(ROOM, shortcut("water")));
     admit_room_changes(
         RoomAdmission {
             before: Some(&before),
@@ -549,7 +549,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     forged.saved_by = Some(owner.person());
     let mut unproven = shortcut("water");
     unproven.saved_by = Some(owner.person());
-    for batch in [saving(&before, forged), saving(&before, unproven)] {
+    for batch in [saving(&before, &forged), saving(&before, &unproven)] {
         assert_eq!(
             admit(Some(&before), as_editor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("water".into()),
@@ -563,7 +563,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     forged.saved_by = Some(editor.person());
     let mut unproven = shortcut("ferns");
     unproven.saved_by = Some(editor.person());
-    for batch in [saving(&before, forged), saving(&before, unproven)] {
+    for batch in [saving(&before, &forged), saving(&before, &unproven)] {
         assert_eq!(
             admit(Some(&before), as_governor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("ferns".into()),
@@ -574,7 +574,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     // A proof from another room does not move with the shortcut.
     let copied = saving(
         &before,
-        editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
+        &editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
     );
     assert_eq!(
         admit(Some(&before), as_editor(), governor, &copied).unwrap_err(),
@@ -583,7 +583,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
 
     // The person's own device saves it; the governor relaying that change is
     // judged by the device that signed it, not by itself.
-    let own = saving(&before, editor.saves(ROOM, shortcut("water")));
+    let own = saving(&before, &editor.saves(ROOM, shortcut("water")));
     admit(Some(&before), as_editor(), governor, &own)
         .expect("the editor's own device saves as the editor");
     let relayed = admit(Some(&before), as_governor(), governor, &own)
@@ -594,7 +594,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
             Some(&before),
             as_editor(),
             governor,
-            &saving(&before, shortcut("nobody")),
+            &saving(&before, &shortcut("nobody")),
         )
         .is_ok(),
         "a shortcut that names no saver arms nowhere"
