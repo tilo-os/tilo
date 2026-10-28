@@ -6,8 +6,6 @@ use ui::framework::{ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::Element;
 
-use crate::app::SpeedTestApp;
-
 /// How many measurements are kept; the oldest go first.
 pub const KEPT: usize = 20;
 
@@ -125,7 +123,7 @@ impl ResourceApp for SpeedTestShell {
     const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
-        cx.surface(SpeedTestApp::new())
+        crate::view::page(cx)
     }
 
     fn scenarios() -> &'static [&'static str] {
