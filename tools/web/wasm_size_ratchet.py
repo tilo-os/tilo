@@ -16,12 +16,19 @@
   budget;
 - `check-budget --base REV` fails when a budget is larger than at REV, beyond
   what the raise files new in this change add. A raise records `bytes`, the
-  app-sdk `run` that measured the bundle, the `measured` bytes and a `reason`.
+  app-sdk `run` that measured the bundle, the `measured` bytes and a `reason`;
+- `parts/<bundle>.json` holds what the start module was made of when its
+  budget was last set (function bytes by `crate::module`, from the
+  splitter's `split.json`). A measurement over budget names the parts that
+  grew most since, so the growth is traced to the surface that caused it:
+  make that surface load on first use (`ui::lazy_code!`) rather than raise
+  the budget. `parts NAME BUNDLE_DIR` writes the file anew.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import pathlib
 import subprocess
@@ -34,6 +41,9 @@ BUDGET = REPO / DIRECTORY / "budget.toml"
 # The single-file layout this directory replaced, read at older revisions.
 LEGACY = "tools/web/wasm-size-budget.toml"
 MODULE = "pkg/tilo_browser_runtime_bg.wasm"
+SPLIT = "pkg/split.json"
+# How many grown parts a measurement over budget names.
+GROWN_SHOWN = 12
 # A budget this much lower than the current one is worth committing.
 SLACK = 0.01
 ROUNDING = 64 * 1024
@@ -118,16 +128,56 @@ def measure(name: str, bundle: pathlib.Path, budget: Budget) -> tuple[int, str]:
                    f"bytes = {proposed} to {DIRECTORY}/budget.toml")
     limit = limits[name]
     if size > limit:
-        return 1, (
+        message = (
             f"{name}: {size} bytes is over its budget of {limit} (+{size - limit}); "
             f"a deliberate raise adds {DIRECTORY}/raises/{name}/<change>.toml with "
             f"bytes = {proposed - limit}, measured = {size}, run = <this run's number> "
             f"and a reason"
         )
+        lines = grown(name, start_parts(bundle))
+        if lines:
+            message += (f"\nwhat grew most in the start module since {DIRECTORY}/parts/{name}.json "
+                        f"(make it load on first use, ui::lazy_code!):\n" + "\n".join(lines))
+        return 1, message
     if proposed < limit * (1 - SLACK):
         return 0, (f"{name}: {size} bytes, under its budget of {limit}; lower it: "
-                   f"[bundles.{name}] bytes = {proposed}, without its raise files")
+                   f"[bundles.{name}] bytes = {proposed}, without its raise files, and "
+                   f"write {DIRECTORY}/parts/{name}.json with `parts {name} BUNDLE_DIR`")
     return 0, f"{name}: {size} bytes, within its budget of {limit}"
+
+
+def start_parts(bundle: pathlib.Path) -> dict[str, int]:
+    """Function bytes by `crate::module` in the start module, or nothing for
+    a bundle the splitter did not split."""
+    path = bundle / SPLIT
+    if not path.is_file():
+        return {}
+    return {str(part): int(size) for part, size in json.loads(path.read_text()).get("start_parts", {}).items()}
+
+
+def parts_path(name: str, root: pathlib.Path = REPO) -> pathlib.Path:
+    return root / DIRECTORY / "parts" / f"{name}.json"
+
+
+def grown(name: str, now: dict[str, int], root: pathlib.Path = REPO) -> list[str]:
+    """The parts that grew most since `parts/<name>.json`, largest growth
+    first, as lines to print."""
+    path = parts_path(name, root)
+    if not now or not path.is_file():
+        return []
+    before = {str(part): int(size) for part, size in json.loads(path.read_text()).items()}
+    growth = sorted(
+        ((size - before.get(part, 0), part) for part, size in now.items() if part != "other"),
+        reverse=True,
+    )
+    lines = []
+    for delta, part in growth[:GROWN_SHOWN]:
+        if delta <= 0:
+            break
+        was = before.get(part)
+        since = "new in the start module" if was is None else f"was {was}"
+        lines.append(f"  {part}: +{delta} bytes before optimising ({since})")
+    return lines
 
 
 def raise_problems(bundle: str, name: str, record: dict, headroom: float) -> list[str]:
@@ -170,10 +220,23 @@ def main() -> int:
     measure_parser = commands.add_parser("measure")
     measure_parser.add_argument("name")
     measure_parser.add_argument("bundle", type=pathlib.Path)
+    parts_parser = commands.add_parser("parts")
+    parts_parser.add_argument("name")
+    parts_parser.add_argument("bundle", type=pathlib.Path)
     check = commands.add_parser("check-budget")
     check.add_argument("--base", required=True)
     args = parser.parse_args()
     current = load()
+    if args.command == "parts":
+        now = start_parts(args.bundle)
+        if not now:
+            print(f"error: {args.bundle / SPLIT} names no start parts", file=sys.stderr)
+            return 1
+        path = parts_path(args.name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(sorted(now.items())), indent=1) + "\n")
+        print(f"wrote {path.relative_to(REPO)}")
+        return 0
     if args.command == "measure":
         status, message = measure(args.name, args.bundle, current)
         print(message, file=sys.stderr if status else sys.stdout)

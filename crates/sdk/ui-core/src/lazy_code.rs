@@ -20,7 +20,10 @@
 //!   surface will stand, so a person who asked for it never sees nothing.
 //!
 //! The browser desktop declares each split point with its `split_code!`
-//! macro (`crates/browser/tilo-web-desktop/src/lazy.rs`).
+//! macro (`crates/browser/tilo-web-desktop/src/lazy.rs`). A surface the
+//! desktop does not draw in its first frame starts out lazy: when the start
+//! module outgrows its budget, `tools/web/wasm_size_ratchet.py` names the
+//! parts of the program that grew.
 
 use crate::deferred::Deferred;
 
