@@ -889,3 +889,141 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A draft with an `if` holding the list step in its `then` block, built the
+/// way a person does: three steps from the catalogue, one of them a
+/// condition, the last moved inside it.
+fn draft_with_a_condition() -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
+    let (host, guard, mut app) = open();
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
+        .expect("a new draft");
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens in the editor");
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(&mut app, "offer-if", &Action::Activate);
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-list"),
+        &Action::Activate,
+    );
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-create"),
+        &Action::Activate,
+    );
+    (host, guard, app)
+}
+
+#[test]
+fn a_condition_holds_steps_and_a_step_folds_away() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    let steps = |app: &mut TestApp<App>| {
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .expect("the draft")
+            .program()
+            .steps
+    };
+    assert_eq!(steps(&mut app).len(), 3, "three steps at the top level");
+
+    // The third step moves into the condition's `then` block, where it is
+    // no longer one of the top level's steps.
+    app.invoke(Workbench::SET_NESTED.with((
+        app.state().drafts.keys().next().expect("the draft").clone(),
+        "2".to_owned(),
+        "0.then".to_owned(),
+        0,
+    )))
+    .expect("the step moves into the condition");
+    let top = steps(&mut app);
+    assert_eq!(top.len(), 2, "only the condition is left at the top");
+    let tilo_automation::StepKind::If { then, .. } = &top[0].kind else {
+        panic!("the first step is the condition: {:?}", top[0].kind);
+    };
+    assert_eq!(then.len(), 2, "the moved step joins what the if holds");
+
+    // A step keeps its place in the program while it is folded: only its
+    // drawing goes.
+    let before = steps(&mut app);
+    act(&mut app, "step-fold-0", &Action::Activate);
+    assert_eq!(steps(&mut app), before, "folding changes no step");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-open-0").within(tilo_test_env::hang_bound()))
+        .expect("a folded step offers to open again");
+    assert!(
+        !app.harness().targets().contains_key("step-fold-0"),
+        "and no longer offers to fold"
+    );
+    act(&mut app, "step-open-0", &Action::Activate);
+    act(&mut app, "step-fold-0", &Action::Activate);
+    assert!(app.harness().targets().contains_key("step-open-0"));
+    assert_eq!(
+        steps(&mut app),
+        before,
+        "opening and folding change nothing"
+    );
+}
+
+#[test]
+fn the_text_view_shows_the_same_steps_in_the_same_order() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    let draft = app
+        .state()
+        .drafts
+        .values()
+        .next()
+        .expect("the draft")
+        .clone();
+    let program = draft.program();
+
+    press_bar(&mut app, "text-view");
+    app.harness()
+        .wait_for_named("draft-text", tilo_test_env::hang_bound())
+        .expect("the program text shows");
+    let snapshot = app.harness().inspection();
+    let text = inspection_node(&snapshot.root, "draft-text")
+        .or_else(|| {
+            snapshot
+                .presentation
+                .as_ref()
+                .and_then(|root| inspection_node(root, "draft-text"))
+        })
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|node| node.name.clone())
+        .expect("the text view draws its text");
+
+    // Every step the blocks hold is a line of the text, named by the
+    // position the editor gives it, and the condition's block is indented.
+    for number in 1..=program.steps.len() + 2 {
+        assert!(
+            text.contains(&format!("{number}.")),
+            "step {number} is in the text: {text}"
+        );
+    }
+    assert!(
+        text.contains("then:") && text.contains("otherwise:"),
+        "the condition names both its blocks: {text}"
+    );
+    let indented = text
+        .lines()
+        .any(|line| line.starts_with("    ") && line.trim_start().starts_with(char::is_numeric));
+    assert!(indented, "a block's steps are indented under it: {text}");
+    assert!(
+        program.steps.iter().all(|step| text.contains(&step.id)),
+        "every step's id is in the text: {text}"
+    );
+
+    // Going back to the blocks keeps the draft exactly as it was.
+    press_bar(&mut app, "text-view");
+    let back = app.state().drafts.values().next().expect("the draft");
+    assert_eq!(back.program(), program, "the text view edits nothing");
+    assert!(
+        !app.harness().targets().contains_key("draft-text"),
+        "the text is gone"
+    );
+}
