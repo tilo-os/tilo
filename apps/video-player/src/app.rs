@@ -29,7 +29,7 @@ use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
 };
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
@@ -106,6 +106,10 @@ struct LocalMediaEntry {
     title: String,
     source: media::Source,
 }
+
+/// The videos played lately, newest first, one per id.
+type RecentEntries =
+    ui::tilo_resource::Recents<LocalMediaEntry, { crate::preferences::RECENT_HISTORY_LIMIT }>;
 
 #[derive(Clone)]
 struct LibraryRowHit {
@@ -300,7 +304,7 @@ pub struct PlayerApp {
     library_visible: bool,
     library_tab: LibraryTab,
     queue: Vec<LocalMediaEntry>,
-    recent: VecDeque<LocalMediaEntry>,
+    recent: RecentEntries,
     current_queue_id: Option<String>,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`. Requests are
@@ -570,13 +574,13 @@ impl PlayerApp {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let preferences = PlaybackPreferences::default();
         let player = configured_player(mode, preferences);
-        Self::from_prepared(player, preferences, VecDeque::new(), mode)
+        Self::from_prepared(player, preferences, RecentEntries::default(), mode)
     }
 
     fn from_prepared(
         player: VideoPlayer,
         preferences: PlaybackPreferences,
-        recent: VecDeque<LocalMediaEntry>,
+        recent: RecentEntries,
         mode: RunMode,
     ) -> Self {
         let kept_retained = recent

@@ -13,26 +13,14 @@ use ui::widget::Element;
 
 use crate::scan::ScanResult;
 
-/// How many analyzed folders are remembered.
-const RECENT_KEPT: usize = 5;
-
 /// The folders analyzed on this device lately, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentFolders {
-    pub folders: Vec<PathBuf>,
+    pub folders: ui::tilo_resource::Recents<PathBuf, 5>,
 }
 
 impl SettingsSchema for RecentFolders {
     const SCOPE: Scope = Scope::DeviceLocal;
-}
-
-impl RecentFolders {
-    /// `folder` first, then the others it was not, at most five.
-    pub fn remember(&mut self, folder: PathBuf) {
-        self.folders.retain(|kept| *kept != folder);
-        self.folders.insert(0, folder);
-        self.folders.truncate(RECENT_KEPT);
-    }
 }
 
 /// What the analyzer does that changes no document: scanning a folder and
@@ -148,10 +136,12 @@ impl ResourceApp for DiskUsageShell {
     fn fixture(fixture: &mut Fixture<DiskUsage>) {
         match fixture.scenario() {
             Some(name) if name.starts_with("home") => fixture.provide(RecentFolders {
-                folders: vec![
+                folders: [
                     PathBuf::from("/home/you/Projects/tilo"),
                     PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-                ],
+                ]
+                .into_iter()
+                .collect(),
             }),
             Some(name) if !name.starts_with("analysis") => {}
             _ => fixture.provide(ScanResult::sample()),
@@ -180,7 +170,7 @@ mod tests {
 
     /// The folders this device remembers.
     fn recent(app: &TestApp<DiskUsageShell>) -> Vec<PathBuf> {
-        app.settings::<RecentFolders>().get().folders
+        app.settings::<RecentFolders>().get().folders.to_vec()
     }
 
     /// Run frames until the scan a row started has shown and remembered
@@ -389,7 +379,7 @@ mod tests {
             assert_eq!(address.action, "analyze");
         }
         app.settings::<RecentFolders>()
-            .update(|recent| recent.remember(folder.clone()))
+            .update(|recent| recent.folders.remember(folder.clone()))
             .unwrap();
         app.settle();
         let id = format!("disk-usage.place:{}", folder.display());

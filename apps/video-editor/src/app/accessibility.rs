@@ -1047,7 +1047,7 @@ impl VideoEditorApp {
         let Some(pending) = &self.pending_open else {
             return AccessNode::new(Role::Dialog).with_name("Save first?");
         };
-        let opening = crate::project_file::recents::label(&pending.path);
+        let opening = crate::project_file::label(&pending.path);
         let kids = vec![
             AccessNode::new(Role::StaticText)
                 .with_name("What happens")

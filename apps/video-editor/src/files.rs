@@ -25,12 +25,6 @@ pub(crate) fn read_prefix(path: &Path, max: u64) -> Result<Vec<u8>, FsError> {
     blocking::read_prefix(&dir, &name, usize::try_from(max).unwrap_or(usize::MAX))
 }
 
-/// Replace the file atomically, creating its folders.
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
-    let (dir, name) = at(path)?;
-    blocking::write_atomic(&dir, &name, bytes)
-}
-
 /// Save a document the user chose, keeping an existing file's link and mode.
 pub(crate) fn save(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
     let (dir, name) = at(path)?;

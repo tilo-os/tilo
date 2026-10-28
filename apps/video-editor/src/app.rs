@@ -1291,9 +1291,11 @@ pub struct VideoEditorApp {
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
-    /// Recently-opened projects, most recent first. Per-device and outside
-    /// the CRDT — see [`crate::project_file::recents`].
-    recents: Vec<PathBuf>,
+    /// The projects opened or saved lately whose file is here, newest
+    /// first, as this device's [`crate::project_file::RecentProjects`] keeps
+    /// them (`recents_setting`; none in a capture or a test).
+    recents: ui::tilo_resource::Recents<PathBuf, 8>,
+    recents_setting: Option<ui::framework::Setting<crate::project_file::RecentProjects>>,
     /// A project waiting for the user to say what to do about unsaved work.
     /// Opening a file must never silently discard an unsaved project.
     pending_open: Option<PendingOpen>,
@@ -1513,7 +1515,8 @@ impl VideoEditorApp {
             save_failure: None,
             resource_operation: None,
             resource_reply: None,
-            recents: crate::project_file::recents::load(),
+            recents: ui::tilo_resource::Recents::default(),
+            recents_setting: None,
             pending_open: None,
             chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
@@ -8822,7 +8825,7 @@ impl VideoEditorApp {
                 "It has never been saved to a file.".to_string(),
                 format!(
                     "Opening {} replaces it. Ctrl+Z brings it back.",
-                    crate::project_file::recents::label(&pending.path)
+                    crate::project_file::label(&pending.path)
                 ),
             ],
         )
@@ -8900,6 +8903,19 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
         self.content = cx.content();
         let mode = cx.mode();
         self.seed.capture = mode == ui::framework::RunMode::Capture;
+        if mode.is_live() {
+            let setting = cx.settings::<crate::project_file::RecentProjects>();
+            // A project whose file is not here is not offered, but stays
+            // remembered: an unmounted volume must not forget it.
+            self.recents = setting
+                .get()
+                .projects
+                .iter()
+                .filter(|path| path.is_file())
+                .cloned()
+                .collect();
+            self.recents_setting = Some(setting);
+        }
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();
         if launched.is_empty() {
             self.seed.hermetic = !mode.is_live();

@@ -70,7 +70,7 @@ impl VideoEditorApp {
             .as_ref()
             .map(|kept| Path::new(kept.name()));
         match self.project_path.as_deref().or(kept) {
-            Some(p) => crate::project_file::recents::label(p),
+            Some(p) => crate::project_file::label(p),
             None if self.project.name.trim().is_empty() => "Untitled".to_string(),
             None => self.project.name.clone(),
         }
@@ -157,6 +157,18 @@ impl VideoEditorApp {
         self.project_rx = Some(portal::request_open_project());
     }
 
+    /// Remember that the project at `path` was just opened or saved. A
+    /// setting that cannot be written costs a recents entry, never work.
+    fn remember_project(&mut self, path: &Path) {
+        self.recents.remember(path.to_path_buf());
+        if let Some(setting) = &self.recents_setting
+            && let Err(error) =
+                setting.update(|recent| recent.projects.remember(path.to_path_buf()))
+        {
+            tracing::warn!(%error, "could not remember the recent project");
+        }
+    }
+
     /// Write the project to `path` and remember it as the project's home.
     ///
     /// A failure is reported in the words the file layer produced and the
@@ -170,7 +182,7 @@ impl VideoEditorApp {
     ) -> Result<(), String> {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
-                self.recents = crate::project_file::recents::remember(&self.recents, &path);
+                self.remember_project(&path);
                 // The location's edited state clears; saving says
                 // nothing more.
                 self.project_notice.dismiss();
@@ -309,7 +321,7 @@ impl VideoEditorApp {
         // Wherever the last project was saved is not this one's place.
         self.project_destination = None;
         if located {
-            self.recents = crate::project_file::recents::remember(&self.recents, &path);
+            self.remember_project(&path);
             self.project_path = Some(path);
         } else {
             // Save asks where again: there is no path to write back to.
@@ -333,7 +345,7 @@ impl VideoEditorApp {
     /// be read here — which sources, in the same words the bin and the
     /// timeline use for the same states.
     pub(super) fn opened_notice(path: &Path, project: &crate::model::Project) -> Notice {
-        let name = crate::project_file::recents::label(path);
+        let name = crate::project_file::label(path);
         let missing = crate::project_file::missing_sources(project);
         if missing.is_empty() {
             return Notice::ok(format!("Opened {name}"));
@@ -472,7 +484,7 @@ impl VideoEditorApp {
             for p in recent {
                 rows.push((
                     ProjectMenuItem::Recent(p.clone()),
-                    crate::project_file::recents::label(p),
+                    crate::project_file::label(p),
                 ));
             }
         }

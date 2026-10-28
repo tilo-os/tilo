@@ -1306,7 +1306,7 @@ fn reopening_a_video_resumes_where_it_was_left_and_does_not_autoplay() {
     let mut app = synth_app();
     app.adopt_settings(&PlayerSettings {
         autoplay: true,
-        recent_history: vec![row],
+        recent_history: [row].into_iter().collect(),
         ..PlayerSettings::default()
     });
     app.open_local_entry(&id)
@@ -1332,7 +1332,7 @@ fn reopening_a_video_resumes_where_it_was_left_and_does_not_autoplay() {
     let (fresh_row, fresh_id) = recent_row("/videos/Talk.mp4", 0);
     app.adopt_settings(&PlayerSettings {
         autoplay: true,
-        recent_history: vec![fresh_row],
+        recent_history: [fresh_row].into_iter().collect(),
         ..PlayerSettings::default()
     });
     app.open_local_entry(&fresh_id)
@@ -1348,7 +1348,7 @@ fn finishing_a_video_clears_its_resume_point_so_a_replay_starts_at_the_top() {
     let source = row.source.clone();
     let mut app = synth_app();
     app.adopt_settings(&PlayerSettings {
-        recent_history: vec![row],
+        recent_history: [row].into_iter().collect(),
         ..PlayerSettings::default()
     });
     app.open_local_entry(&id).expect("the recent row opens");
@@ -1382,7 +1382,7 @@ fn a_paused_video_keeps_where_it_stopped_in_its_recent_row() {
     let (row, id) = recent_row("/videos/Panel.mp4", 0);
     let mut app = synth_app();
     app.adopt_settings(&PlayerSettings {
-        recent_history: vec![row],
+        recent_history: [row].into_iter().collect(),
         ..PlayerSettings::default()
     });
     app.open_local_entry(&id).expect("the recent row opens");

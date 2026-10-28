@@ -70,7 +70,7 @@
 //! understand gets [`ProjectFileError::TooNew`], carrying both versions, and
 //! the caller says so on screen.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ui::tilo_resource::Replica;
 
@@ -292,105 +292,24 @@ pub fn missing_sources(project: &Project) -> Vec<(String, crate::media::Hydratio
         .collect()
 }
 
-/// The recently-opened project list.
+/// The projects opened or saved lately on this device, newest first.
 ///
-/// **Deliberately not in the CRDT.** The editor's document is the
-/// collaborative one: anything written into it replicates to whoever is
-/// sharing the project, and a list of the paths on this machine is the last
-/// thing that should. It is also not project content — it belongs to this
-/// device, and it must survive an Open, which replaces every project map in
-/// the document. So it lives beside the app's own state, in the same
-/// per-package directory the autosave document uses.
-pub mod recents {
-    use std::path::{Path, PathBuf};
+/// A device-local setting, never the collaborative document: whoever shares
+/// the project must not see this device's paths, and the list has to
+/// survive an Open, which replaces every project map in the document.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecentProjects {
+    pub projects: ui::tilo_resource::Recents<PathBuf, 8>,
+}
 
-    /// How many projects are remembered. Long enough to reach back past a
-    /// detour, short enough that the menu stays a menu.
-    pub const MAX: usize = 8;
+impl ui::storage::SettingsSchema for RecentProjects {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
 
-    const FILE: &str = "recent-projects.json";
-
-    /// This app's per-package state directory.
-    ///
-    /// Mirrors `cli::standalone_state_dir` — `$XDG_DATA_HOME/<package-id>`,
-    /// falling back to `~/.local/share/<package-id>` — which is where
-    /// [`ui::persist`] already puts the autosave document. Replicated here
-    /// rather than depended on, because it is four lines and the alternative
-    /// is a new crate dependency for one path join; if that resolver moves,
-    /// this is the sibling that has to move with it.
-    fn dir() -> Option<PathBuf> {
-        let id = std::env::var("TILO_PACKAGE_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "so.tilo.video-editor".to_string());
-        // Reject an id that is not a plain directory name, exactly as the
-        // store does: an id carrying a separator would escape the data home.
-        if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
-            return None;
-        }
-        let base = tilo_paths::xdg::data_home()?;
-        Some(base.join(id))
-    }
-
-    fn path() -> Option<PathBuf> {
-        dir().map(|d| d.join(FILE))
-    }
-
-    /// The remembered projects, most recent first.
-    ///
-    /// A path whose file is no longer there is dropped on the way out rather
-    /// than offered: a menu entry that cannot open anything is worse than a
-    /// shorter menu. Nothing is written back here — a temporarily unmounted
-    /// volume must not permanently forget the project on it.
-    pub fn load() -> Vec<PathBuf> {
-        let Some(p) = path() else { return Vec::new() };
-        let Some(text) = crate::files::read(&p)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-        else {
-            return Vec::new();
-        };
-        let all: Vec<PathBuf> = serde_json::from_str(&text).unwrap_or_default();
-        all.into_iter().filter(|p| p.is_file()).take(MAX).collect()
-    }
-
-    /// Put `entry` at the front, de-duplicated, capped at [`MAX`].
-    ///
-    /// Pure, so the ordering rule is testable without touching a disk.
-    pub fn promote(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
-        let mut out = Vec::with_capacity(MAX);
-        out.push(entry.to_path_buf());
-        for p in list {
-            if p != entry && out.len() < MAX {
-                out.push(p.clone());
-            }
-        }
-        out
-    }
-
-    /// Record that `entry` was just opened or saved, and return the new list.
-    ///
-    /// Best-effort: a state directory that cannot be written costs the user a
-    /// recents entry, never their work, so a failure is silent here and the
-    /// in-memory list is still correct for this session.
-    pub fn remember(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
-        let next = promote(list, entry);
-        if let Some(p) = path()
-            && let Ok(text) = serde_json::to_string(&next)
-        {
-            let _ = crate::files::write(&p, text.as_bytes());
-        }
-        next
-    }
-
-    /// How a recent entry is labelled in the menu: the file's stem, which is
-    /// what the user named the project.
-    pub fn label(entry: &Path) -> String {
-        entry.file_stem().map_or_else(
-            || entry.to_string_lossy().into_owned(),
-            |s| s.to_string_lossy().into_owned(),
-        )
-    }
+/// How a project file is named in menus: its stem, which is what the user
+/// named the project.
+pub fn label(path: &Path) -> String {
+    name_from_path(path).unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -621,8 +540,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn project_names_recents_and_missing_sources_are_tracked() {
+    fn project_names_and_missing_sources_are_tracked() {
         {
             assert_eq!(with_extension("Holiday"), "Holiday.qvp");
             assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
@@ -637,65 +555,6 @@ mod tests {
                 Some("Holiday"),
             );
             assert_eq!(name_from_path(Path::new("/")), None);
-        }
-        {
-            use super::recents::promote;
-            let a = std::path::PathBuf::from("/p/a.qvp");
-            let b = std::path::PathBuf::from("/p/b.qvp");
-            let c = std::path::PathBuf::from("/p/c.qvp");
-
-            let list = promote(&[], &a);
-            assert_eq!(list, vec![a.clone()]);
-            let list = promote(&list, &b);
-            assert_eq!(list, vec![b.clone(), a.clone()]);
-            // Re-opening one already in the list moves it up rather than adding a
-            // second copy — a duplicate entry is a menu that lies about history.
-            let list = promote(&list, &a);
-            assert_eq!(list, vec![a.clone(), b.clone()]);
-            let list = promote(&list, &c);
-            assert_eq!(list, vec![c, a, b]);
-        }
-        {
-            use super::recents::{MAX, promote};
-            let mut list = Vec::new();
-            for i in 0..MAX + 5 {
-                list = promote(&list, std::path::Path::new(&format!("/p/{i}.qvp")));
-            }
-            assert_eq!(list.len(), MAX, "the menu cannot grow without bound");
-            assert_eq!(
-                list[0],
-                std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
-            );
-        }
-        {
-            // Drives the real on-disk path, not just `promote`: a recents list
-            // that is only ever held in memory is exactly the bug this replaces.
-            let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
-            std::fs::create_dir_all(&tmp).unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_DATA_HOME", &tmp)
-                .set("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
-
-            let present = tmp.join("Present.qvp");
-            save(&present, &Project::new("Present")).unwrap();
-            let gone = tmp.join("Gone.qvp");
-
-            let list = super::recents::remember(&[], &gone);
-            let list = super::recents::remember(&list, &present);
-            assert_eq!(list.len(), 2, "both are remembered in memory");
-
-            // A fresh process reads it back — and silently skips the entry whose
-            // file no longer exists rather than offering a menu item that fails.
-            let reloaded = super::recents::load();
-            assert_eq!(
-                reloaded,
-                vec![present.clone()],
-                "only the file that is there"
-            );
-            assert_eq!(super::recents::label(&present), "Present");
-
-            drop(env);
-            std::fs::remove_dir_all(&tmp).ok();
         }
         {
             let mut p = Project::new("moved");
