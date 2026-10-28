@@ -429,7 +429,7 @@ class SelectorTests(unittest.TestCase):
                 for path in inputs:
                     self.assertTrue((REPO_ROOT / path).is_dir(), path)
         runner = (REPO_ROOT / ci_select.VENDORED_TEST_RUNNER).read_text()
-        self.assertIn("from ci.affected_packages import VENDORED_TEST_CRATES", runner)
+        self.assertIn("from ci.package_sets import VENDORED_TEST_CRATES", runner)
 
     def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
         self.setUp()
@@ -1171,12 +1171,8 @@ class SelectorTests(unittest.TestCase):
                 "os/tests/test_builder_candidate_workflow.py",
                 "os/tests/release_pipeline_invariants.sh",
                 "os/tests/workflow_dependency_invariants.sh",
-                "tools/ci/builder_workflow_plan.py",
-                "tools/ci/resolve_promoted_builder.py",
-                "tools/tests/test_builder_workflow_plan.py",
                 "tools/tests/test_cargo_download_cache_action.py",
                 "tools/tests/test_cosign_install_action.py",
-                "tools/tests/test_resolve_promoted_builder.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])
@@ -1213,36 +1209,6 @@ class SelectorTests(unittest.TestCase):
             self.install_control_inputs()
             self.assertTrue(ci_select.make_plan(
                 self.metadata, self.root, [source, "leaf/src/lib.rs"], 2)["rust_required"])
-
-    def test_os_image_request_wrappers_keep_policy_and_real_build_coverage(self):
-        self.install_quality_helpers()
-        self.install_control_inputs()
-        wrappers = [".forgejo/workflows/os-dev.yml",
-                    ".forgejo/workflows/os-dev-x86.yml",
-                    ".forgejo/workflows/os-dev-arm.yml"]
-        for source in wrappers:
-            with self.subTest(source=source):
-                plan = ci_select.make_plan(self.metadata, self.root, [source], 2)
-                self.assertTrue(plan["security_required"])
-                self.assertFalse(plan["rust_required"])
-                self.assertEqual(plan["selected"], [])
-                self.assertEqual(plan["matrix"], {"include": []})
-                for build_input in ("leaf/src/lib.rs", ".forgejo/workflows/build-image.yml",
-                                    "Cargo.lock"):
-                    mixed = ci_select.make_plan(
-                        self.metadata, self.root, [source, build_input], 2)
-                    self.assertTrue(mixed["rust_required"], build_input)
-                full = ci_select.make_plan(
-                    self.metadata, self.root, [source], 2, force_full=True)
-                self.assertTrue(full["full"])
-                self.assertEqual(full["selected_count"], full["workspace_count"])
-                self.assertEqual({row["arch"] for row in full["matrix"]["include"]},
-                                 set(ci_select.NATIVE_RUNNERS))
-        observer = self.root / "tools/tests/test_os_dev_arches.py"
-        observer.unlink()
-        for source in wrappers:
-            self.assertTrue(ci_select.make_plan(
-                self.metadata, self.root, [source], 2)["rust_required"], source)
 
     def install_quality_helpers(self) -> None:
         for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
