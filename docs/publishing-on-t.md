@@ -521,9 +521,10 @@ ring compiles with plain `clang` whatever it is told, so `tools/ci/windows/build
 building but not redistribute them, so they are not in the builder image, which anyone can
 pull: `build/windows-sdk-<arch>` downloads them into t's store, which only t's nodes read.
 Inno Setup's license allows using and redistributing it, commercially too (its authors ask
-commercial users to buy a license, which is a request, not a condition). Fedora builds Wine for
-x86 only, so everything that runs Windows programs (packaging both arches, the Wine checks) runs
-on x86_64 nodes.
+commercial users to buy a license, which is a request, not a condition). Wine runs x86
+programs, so only the x86_64 builder has it (built from source with a patch,
+`os/external-assets/wine/README.md`), and everything that runs Windows programs (packaging
+both arches, the Wine checks) runs on x86_64 nodes.
 
 **Signing** needs these secrets, on `tag:imager-v*` and for `release` nodes only:
 

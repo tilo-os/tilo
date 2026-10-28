@@ -90,3 +90,4 @@ c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360	cargo-xwin-v0.2
 dc0a0fb28fdd90405f69e7365bce91d2504ea7491eb4d79d5655ffa106358925	cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz	https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz
 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732	innosetup-6.7.3.exe	https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
 6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5	jsign-7.6.jar	https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar
+eac8ca448f9c0087f963026b4dc276d1e2b7fbb64056edc093e59bbb7e56fe28	wine-11.20.tar.xz	https://dl.winehq.org/wine/source/11.x/wine-11.20.tar.xz
