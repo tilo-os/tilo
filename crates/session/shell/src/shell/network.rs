@@ -3206,6 +3206,10 @@ impl ShellNetwork {
         record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        #[cfg(test)]
+        if test_withheld_records::withholds(record_id) {
+            return;
+        }
         if self.is_local_person_room(&cluster_id) {
             self.publish_person_document(app_id, &cluster_id, record_id, envelope);
             return;
@@ -14292,5 +14296,46 @@ mod tests {
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
         to.dispatch_neighbour_msg(ws, from.public(), None, false, msg);
+    }
+}
+
+/// Crash journeys only: the writes of a record this device does not hand to
+/// the room's host while a [`TestWithheldRecord`] for it lives, so a process
+/// killed meanwhile left them nowhere durable but its own storage.
+#[cfg(test)]
+pub(crate) mod test_withheld_records {
+    use std::sync::Mutex;
+
+    static WITHHELD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(crate) struct TestWithheldRecord(String);
+
+    impl TestWithheldRecord {
+        pub(crate) fn new(record_id: &str) -> Self {
+            WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(record_id.to_owned());
+            Self(record_id.to_owned())
+        }
+    }
+
+    impl Drop for TestWithheldRecord {
+        fn drop(&mut self) {
+            let mut withheld = WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(index) = withheld.iter().position(|record| *record == self.0) {
+                withheld.swap_remove(index);
+            }
+        }
+    }
+
+    pub(crate) fn withholds(record_id: &str) -> bool {
+        WITHHELD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|record| record == record_id)
     }
 }
