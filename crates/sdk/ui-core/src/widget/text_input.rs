@@ -3789,9 +3789,14 @@ impl TextInput {
     /// Route Enter through an exported resource action with the text as its
     /// input; see [`Self::on_submit`].
     #[must_use]
+    /// Enter submits the field's action.
+    ///
+    /// A press whose submission the host has not collected yet is replaced by
+    /// the next: two Enters delivered before the next frame submit once, so a
+    /// repeated or queued press cannot advance a wizard twice.
     pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.enter_submits = true;
-        self.submit_action = Some(ActionEmitter::new(binding));
+        self.submit_action = Some(ActionEmitter::new_replace_one(binding));
         self
     }
 
