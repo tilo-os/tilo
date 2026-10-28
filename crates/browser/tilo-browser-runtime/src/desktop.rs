@@ -1190,25 +1190,16 @@ impl Tiles {
                 self.inputs.provider_admin.clone(),
             )?;
         }
-        let destination = Rc::clone(&self.shared.images);
-        let first_loader = self.shared.images.borrow().len();
-        let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
-            Rc::new(move |max_dimension| {
-                let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
-                destination.borrow_mut().push(loader);
-                image
-            }),
-            || definition.instantiate(context, target, restore),
-        )
-        .map_err(|error| error.to_string())?;
+        let window_content = crate::page_content::serve_window(
+            &context.wake_handle(),
+            &self.shared.images,
+            &self.shared.image_owners,
+        );
+        let mut component = definition
+            .instantiate(context, target, restore)
+            .map_err(|error| error.to_string())?;
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
-        if let Some(content) = component.content() {
-            crate::page_content::own_loaders(
-                &self.shared.image_owners,
-                first_loader..self.shared.images.borrow().len(),
-                &content,
-            );
-        }
+        *window_content.borrow_mut() = component.content();
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
