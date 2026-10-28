@@ -13,7 +13,7 @@ by the launcher, in its sandbox, under its own id and custody.
 ## Start
 
 You need a nested-session build (`dist/dev/nested-session-build.sh
-target/nested-session`, which `t outputs nested-session` makes) and the tool, built
+target/nested-session`, which `dist/dev/nested-session.sh` has rcargo or t make) and the tool, built
 with the nested session's profile:
 
 ```sh
