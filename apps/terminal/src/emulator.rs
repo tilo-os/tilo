@@ -3,8 +3,8 @@
 //! widget draws, selects in and searches.
 //!
 //! The projection is incremental. Rows a feed did not touch keep their shared
-//! [`Line`], so a redraw converts only what changed; rows that scrolled into
-//! history are found without rescanning it (see [`Emulator::arm`]).
+//! [`Line`], so a redraw converts only what changed; history the feed only
+//! moved is found without rescanning it (see [`Emulator::kept`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -90,10 +90,12 @@ impl Dimensions for Size {
     }
 }
 
-/// Where the main buffer's history stood when a feed began.
+/// Where the main buffer stood when a feed began.
 #[derive(Clone, Copy)]
 struct Armed {
-    history: usize,
+    /// Whether the display offset was held one row back (see
+    /// [`Emulator::arm`]).
+    held: bool,
     alternate: bool,
 }
 
@@ -108,6 +110,10 @@ pub(crate) struct Emulator {
     /// OSC 8 targets by URI, to the ids their cells carry on the screen.
     link_ids: HashMap<String, u16>,
     armed: Option<Armed>,
+    /// The cell buffer of each row of the projected main buffer, and how
+    /// many of those rows were history.
+    rows: Vec<*const Cell>,
+    history: usize,
 }
 
 impl Emulator {
@@ -133,6 +139,8 @@ impl Emulator {
             screen: Screen::default(),
             link_ids: HashMap::new(),
             armed: None,
+            rows: Vec::new(),
+            history: 0,
         };
         emulator.project();
         emulator
@@ -225,59 +233,73 @@ impl Emulator {
         output
     }
 
-    /// Note where history stands before parsing, so [`Self::project`] can
-    /// tell how many rows scrolled into it. The grid keeps a scrolled-back
-    /// view still by advancing its display offset one row per row scrolled
-    /// into history; holding the view one row back makes that offset count
-    /// them, even once the oldest rows fall off the end of the history.
+    /// Hold the view one row back before parsing. The grid advances a
+    /// scrolled-back view by every row it scrolls and drops it to the bottom
+    /// when history is cleared or the terminal reset, so afterwards the
+    /// offset tells [`Self::kept`] whether history may have been replaced.
     fn arm(&mut self) {
-        let history = self.term.grid().history_size();
-        if history > 0 {
+        let held = self.term.grid().history_size() > 0;
+        if held {
             self.term.scroll_display(Scroll::Delta(1));
         }
         self.armed = Some(Armed {
-            history,
+            held,
             alternate: self.screen.alternate,
         });
     }
 
-    /// Rows scrolled into the main buffer's history since [`Self::arm`], when
-    /// that can be told.
-    fn scrolled(&self, armed: Armed) -> Option<usize> {
+    /// How many rows at the top of the main buffer's history are the
+    /// projection's rows from `dropped` on, unchanged.
+    ///
+    /// History rows never change in place; the grid only rotates its row
+    /// buffers. So where the buffer of history's first row sat in the last
+    /// projection says how many rows fell off the top, and the rows that were
+    /// history then still are. Rows that were on the screen are converted
+    /// again, as a feed may have written them before they scrolled.
+    fn kept(&self, armed: Armed) -> Option<(usize, usize)> {
         if armed.alternate || self.screen.alternate {
             return None;
         }
         let grid = self.term.grid();
-        let history = grid.history_size();
-        if armed.history == 0 {
-            // Nothing could be held back; until history is full, its growth
-            // is the count.
-            return (history < MAX_HISTORY).then_some(history);
+        if armed.held {
+            // Back at the bottom, history was cleared or the terminal reset;
+            // at the limit, more may have scrolled than the history holds.
+            let offset = grid.display_offset();
+            if offset == 0 || offset >= MAX_HISTORY {
+                return None;
+            }
         }
-        // An offset back at 0 means history was cleared or the terminal
-        // reset; one at the limit may have saturated.
-        let offset = grid.display_offset();
-        (offset > 0 && offset < MAX_HISTORY).then(|| offset - 1)
+        let history = grid.history_size();
+        if history == 0 || self.history == 0 {
+            return Some((0, 0));
+        }
+        let top = grid.topmost_line();
+        let first = grid[top][..].as_ptr();
+        let dropped = self.rows.iter().position(|row| std::ptr::eq(*row, first))?;
+        let kept = self.history.checked_sub(dropped)?.min(history);
+        let last = kept.checked_sub(1)?;
+        let same = self
+            .rows
+            .get(dropped + last)
+            .is_some_and(|row| std::ptr::eq(*row, grid[top + last][..].as_ptr()));
+        same.then_some((dropped, kept))
     }
 
     /// Bring [`Self::screen`] up to date with the grid.
     fn project(&mut self) {
-        let armed = self.armed.take();
-        let scrolled = armed.and_then(|armed| self.scrolled(armed).map(|rows| (armed, rows)));
+        let kept = self.armed.take().and_then(|armed| self.kept(armed));
         self.term.scroll_display(Scroll::Bottom);
 
         let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
         let grid = self.term.grid();
         let history = grid.history_size();
-        let rows = grid.screen_lines();
-        let total = history + rows;
+        let total = history + grid.screen_lines();
 
         let mut previous = std::mem::take(self.screen.lines_mut(alternate));
         // The rows to convert again start at `keep`; `previous` is aligned so
         // its row `i` is the same buffer row as the projection's `keep + i`.
-        let keep = match scrolled {
-            Some((armed, scrolled)) if !alternate && previous.len() == armed.history + rows => {
-                let dropped = armed.history + scrolled - history;
+        let keep = match kept {
+            Some((dropped, kept)) if !alternate => {
                 previous.drain(..dropped.min(previous.len()));
                 self.screen.images.retain_mut(|image| {
                     if image.alternate_screen {
@@ -287,7 +309,7 @@ impl Emulator {
                     image.row = image.row.saturating_sub(dropped);
                     kept
                 });
-                history - scrolled.min(history)
+                kept
             }
             _ => 0,
         };
@@ -303,6 +325,12 @@ impl Emulator {
             }
         }
         *self.screen.lines_mut(alternate) = lines;
+        if !alternate {
+            self.rows = (0..total)
+                .map(|index| grid[top + index][..].as_ptr())
+                .collect();
+            self.history = history;
+        }
         self.screen.alternate = alternate;
         let (column, row) = self.cursor();
         let top = if alternate { 0 } else { history };

@@ -836,8 +836,9 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
     app.settle();
-    app.effect(&MessagesEffect::OpenAccountSetup)
-        .expect("open setup");
+    app.harness()
+        .press_window_action("Accounts")
+        .expect("the bar offers Accounts");
     app.settle();
     let targets = app.harness().targets();
     assert!(
@@ -850,9 +851,7 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
         Some("Accounts")
     );
     assert!(
-        bar.actions
-            .iter()
-            .all(|action| action.id != crate::window_bar::ACCOUNTS),
+        bar.actions.iter().all(|action| action.icon != "users"),
         "the open setup is not offered again beside its own name"
     );
     let tree = app.harness().inspection_json().unwrap();

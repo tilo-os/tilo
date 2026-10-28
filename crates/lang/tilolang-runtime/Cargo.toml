@@ -14,6 +14,8 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
 tilolang = { path = "../tilolang" }
+# `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
+tilo-doc = { path = "../../doc/tilo-doc" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

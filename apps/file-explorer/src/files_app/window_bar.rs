@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use ui::framework::BarCommands;
 use ui::window_toolbar::{
     LocationSegment, LocationSuggestion, ToolbarAction, ToolbarEvent, ToolbarLocation,
     ToolbarNavigation, WindowToolbar,
@@ -22,15 +23,17 @@ use crate::command::FileCommand;
 use crate::i18n::t;
 use crate::model::ViewMode;
 
-/// The action ids Files' slots answer to.
-const UP: &str = "up";
-const VIEW: &str = "view";
-const NEW_FOLDER: &str = "new-folder";
-const SORT: &str = "sort";
-const NEW_FILE: &str = "new-file";
-const HIDDEN: &str = "hidden";
-const TERMINAL: &str = "terminal";
-const EXTRACT: &str = "extract";
+/// What one of Files' slots runs.
+#[derive(Clone, PartialEq)]
+pub(super) enum BarCommand {
+    /// The command the header's control runs.
+    Run(FileCommand),
+    /// Open the New file menu under the bar.
+    NewFile,
+}
+
+/// The bar's entries.
+pub(super) type BarEntries = BarCommands<BarCommand>;
 /// What the cloud account's level of the location commits: its top folder.
 const CLOUD_ROOT: &str = "tilo-files-cloud-root";
 /// What the cloud folder's own level commits: nothing, it is open.
@@ -54,17 +57,6 @@ pub(super) struct BarKey {
     sidebar: bool,
     /// The cloud account and folder browsed, which the bar names instead.
     cloud: Option<(String, Option<String>)>,
-}
-
-fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> ToolbarAction {
-    ToolbarAction {
-        id: id.into(),
-        icon: icon.into(),
-        name,
-        enabled,
-        on,
-        ..ToolbarAction::default()
-    }
 }
 
 impl FileExplorerWidget {
@@ -188,90 +180,82 @@ impl FileExplorerWidget {
 
     /// The bar's actions: up, the view, what the folder offers to make
     /// (or an archive to extract), sort in a grid, the terminal, and
-    /// hidden files.
+    /// hidden files. The row keeps the view and what the folder makes (and
+    /// sorting a grid); the rest is a press away in More.
     fn bar_actions(&self, recent: bool) -> Vec<ToolbarAction> {
+        let entries = &self.bar_entries;
+        let run = |icon: &str, name: String, command: FileCommand| {
+            entries.entry(icon, name, BarCommand::Run(command))
+        };
         let archive = crate::archive::location(&self.current_path).is_some();
         // Up is in the menu: the location's levels and Back already go
         // up, so the row keeps its room for the view and what to make.
-        let up = ToolbarAction {
-            menu: true,
-            ..action(
-                UP,
-                "arrow-up",
-                t("files-up"),
-                self.current_path.parent().is_some() && !recent,
-                false,
-            )
+        let up = run("arrow-up", t("files-up"), FileCommand::Up)
+            .enabled(self.current_path.parent().is_some() && !recent)
+            .in_menu();
+        let view = match self.view_mode {
+            ViewMode::List => run(
+                "layout-grid",
+                t("files-show-as-grid"),
+                FileCommand::SetView(ViewMode::Grid),
+            ),
+            ViewMode::Grid => run(
+                "list",
+                t("files-show-as-list"),
+                FileCommand::SetView(ViewMode::List),
+            ),
         };
-        let mut actions = vec![
-            up,
-            match self.view_mode {
-                ViewMode::List => action(VIEW, "layout-grid", t("files-show-as-grid"), true, false),
-                ViewMode::Grid => action(VIEW, "list", t("files-show-as-list"), true, false),
-            },
-        ];
+        let mut actions = vec![up, view];
         if archive {
-            actions.push(action(
-                EXTRACT,
+            actions.push(run(
                 "download",
                 t("files-archive-extract"),
-                true,
-                false,
+                FileCommand::ExtractCurrentArchive,
             ));
         } else if !recent {
-            actions.push(action(
-                NEW_FOLDER,
+            actions.push(run(
                 "folder-plus",
                 t("files-menu-new-folder"),
-                true,
-                false,
+                FileCommand::NewFolder,
             ));
         }
         if self.view_mode == ViewMode::Grid {
-            actions.push(action(
-                SORT,
+            actions.push(run(
                 "arrow-up-down",
                 t("files-sort-by"),
-                true,
-                false,
+                FileCommand::OpenSortMenu,
             ));
         }
         if !archive && !recent {
             if !self.available_templates().is_empty() {
-                actions.push(action(
-                    NEW_FILE,
-                    "file-plus",
-                    t("files-menu-new-file"),
-                    true,
-                    false,
-                ));
+                actions.push(
+                    entries
+                        .entry("file-plus", t("files-menu-new-file"), BarCommand::NewFile)
+                        .in_menu(),
+                );
             }
-            actions.push(action(
-                TERMINAL,
-                "square-terminal",
-                t("files-menu-open-terminal"),
-                true,
-                false,
-            ));
+            actions.push(
+                run(
+                    "square-terminal",
+                    t("files-menu-open-terminal"),
+                    FileCommand::OpenTerminal,
+                )
+                .in_menu(),
+            );
         }
-        actions.push(action(
-            HIDDEN,
-            "eye",
-            if self.show_hidden {
-                t("files-menu-hide-hidden")
-            } else {
-                t("files-menu-show-hidden")
-            },
-            true,
-            self.show_hidden,
-        ));
-        // The row keeps the view and what the folder makes (and sorting a
-        // grid); the rest is a press away in More.
-        for action in &mut actions {
-            if matches!(action.id.as_str(), NEW_FILE | TERMINAL | HIDDEN) {
-                action.menu = true;
+        let hidden = if self.show_hidden {
+            t("files-menu-hide-hidden")
+        } else {
+            t("files-menu-show-hidden")
+        };
+        // Its name says which way it turns, so it is no toggle.
+        actions.push(
+            ToolbarAction {
+                on: self.show_hidden,
+                ..run("eye", hidden, FileCommand::ToggleHidden)
             }
-        }
+            .in_menu(),
+        );
         actions
     }
 
@@ -371,23 +355,14 @@ impl FileExplorerWidget {
                 self.bar_query = Some(text);
                 None
             }
-            ToolbarEvent::Action { id } => match id.as_str() {
-                UP => Some(FileCommand::Up),
-                VIEW => Some(FileCommand::SetView(match self.view_mode {
-                    ViewMode::List => ViewMode::Grid,
-                    ViewMode::Grid => ViewMode::List,
-                })),
-                NEW_FOLDER => Some(FileCommand::NewFolder),
-                SORT => Some(FileCommand::OpenSortMenu),
-                NEW_FILE => {
+            event @ ToolbarEvent::Action { .. } => match self.bar_entries.pressed(&event) {
+                Some(BarCommand::Run(command)) => Some(command),
+                Some(BarCommand::NewFile) => {
                     let at = self.toolbar.view_menu_anchor();
                     self.open_templates_submenu(at);
                     None
                 }
-                HIDDEN => Some(FileCommand::ToggleHidden),
-                TERMINAL => Some(FileCommand::OpenTerminal),
-                EXTRACT => Some(FileCommand::ExtractCurrentArchive),
-                _ => None,
+                None => None,
             },
             // The bar's own search and History control are run by the
             // framework on the app's widgets, never handed to its slots.

@@ -477,11 +477,9 @@ fn load(store: &Store) -> io::Result<Option<Record>> {
     if file.metadata()?.len() > MAX_RECORD {
         return Err(failure("Installed copy journal exceeds bounds"));
     }
-    let mut bytes = Vec::new();
-    file.by_ref().take(MAX_RECORD + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_RECORD {
-        return Err(failure("Installed copy journal exceeds bounds"));
-    }
+    let bytes = crate::record::read_bounded(&mut file, MAX_RECORD, || {
+        failure("Installed copy journal exceeds bounds")
+    })?;
     let record: Record =
         serde_json::from_slice(&bytes).map_err(|_| failure("Installed copy journal invalid"))?;
     record.validate()?;

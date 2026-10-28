@@ -325,10 +325,7 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         .with_pane_state(&ui.pane)
         .sidebar(Box::new(LibraryNav::new(&ui)))
         .content(editor_pane(&ui, Rc::clone(&follow)));
-    let shell = window_bar::ShortcutsWindow {
-        shell,
-        ui: ui.clone(),
-    };
+    let shell = window_bar::ShortcutsWindow::new(shell, ui.clone());
     let handler = Rc::clone(&core);
     cx.effects(move |effect: DoorEffect, cx| {
         let mut core = handler

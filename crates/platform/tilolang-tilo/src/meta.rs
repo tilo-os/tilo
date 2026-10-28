@@ -55,6 +55,7 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     let mut schema = match field_kind(field, &ty) {
         FieldKind::Counter => FieldSchema::new(&field.id, MergeKind::Counter),
         FieldKind::Text => FieldSchema::new(&field.id, MergeKind::Text),
+        FieldKind::RichText => FieldSchema::new(&field.id, MergeKind::RichText),
         FieldKind::Set => FieldSchema::new(&field.id, MergeKind::Set),
         FieldKind::Map => FieldSchema::new(&field.id, MergeKind::Map),
         FieldKind::Collection => {

@@ -13,7 +13,6 @@ pub mod egress;
 pub mod events;
 pub mod gateway;
 pub mod perform;
-pub mod ratelimit;
 pub mod rest;
 pub mod secrets;
 pub mod voice;

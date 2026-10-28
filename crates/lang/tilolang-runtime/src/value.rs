@@ -269,6 +269,8 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     Text(String),
+    /// A `RichText` value: tilo-doc's rich text (see [`crate::rich`]).
+    Rich(crate::rich::RichValue),
     List(Vec<Value>),
     /// A collection field read in a view, read item by item (see [`CollRef`]). Wherever its
     /// items are needed as values (stored, sorted, put in a list) it is read whole into a
@@ -339,6 +341,7 @@ impl Value {
             Self::Float(_) => "float",
             Self::Bool(_) => "bool",
             Self::Text(_) => "text",
+            Self::Rich(_) => "rich text",
             Self::List(_) => "list",
             Self::Coll(_) => "collection",
             Self::Tuple(_) => "tuple",
@@ -369,6 +372,10 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             Number::from_f64(*f).ok_or_else(|| "a non-finite float cannot be stored".to_owned())?,
         ),
         Value::Text(s) => Json::String(s.clone()),
+        Value::Rich(r) => tagged(
+            "rich",
+            serde_json::to_value(&r.blocks).map_err(|e| e.to_string())?,
+        ),
         Value::List(items) => tagged("list", items_to_json(items)?),
         Value::Tuple(items) => tagged("tuple", items_to_json(items)?),
         Value::Opt(Some(inner)) => tagged("some", to_json(inner)?),
@@ -460,6 +467,10 @@ fn author_of(m: &Map<String, Json>) -> Option<ModuleHash> {
 fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     if let Some(items) = m.get("list") {
         return Ok(Value::List(from_json_items(items)?));
+    }
+    if let Some(blocks) = m.get("rich") {
+        let blocks = serde_json::from_value(blocks.clone()).map_err(|e| e.to_string())?;
+        return Ok(Value::Rich(crate::rich::RichValue { blocks }));
     }
     if let Some(items) = m.get("tuple") {
         return Ok(Value::Tuple(from_json_items(items)?));

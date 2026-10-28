@@ -20,6 +20,23 @@ impl ShellDriver {
         // Past the menu's entrance.
         self.step_frames(20);
     }
+
+    /// The window menu narrowed by typing: "mo" leaves the rows that move
+    /// the window, the best first and armed, and the row that asks it.
+    pub(super) fn scene_window_menu_typed(&mut self) {
+        self.scene_window_menu();
+        self.type_str("mo");
+        self.step_frames(4);
+    }
+
+    /// A sentence typed into the window menu that none of its rows answers:
+    /// only asking it is left, armed, so Enter asks an agent about the
+    /// window.
+    pub(super) fn scene_window_menu_ask(&mut self) {
+        self.scene_window_menu();
+        self.type_str("tidy these tabs into one window");
+        self.step_frames(4);
+    }
 }
 
 impl ShellDriver {

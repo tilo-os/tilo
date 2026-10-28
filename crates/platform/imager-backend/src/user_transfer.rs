@@ -8,7 +8,7 @@ use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use std::{
     ffi::OsStr,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
     sync::Arc,
 };
@@ -31,11 +31,7 @@ pub fn read_private_artifact(pin: &PinnedDirectory, name: &str) -> io::Result<Ve
     if !metadata.is_file() || metadata.len() > LIMIT {
         return Err(failure());
     }
-    let mut bytes = Vec::new();
-    file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(failure());
-    }
+    let bytes = crate::record::read_bounded(file, LIMIT, failure)?;
     pin.validate_destination()?;
     Ok(bytes)
 }

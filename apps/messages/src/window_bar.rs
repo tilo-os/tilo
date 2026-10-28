@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::Dispatcher;
+use ui::framework::{BarActions, Dispatcher};
 use ui::prelude::Id;
 use ui::widget::{Element, NavShell, Widget, WindowBarLink};
 use ui::window_toolbar::{
@@ -18,11 +18,6 @@ use ui::window_toolbar::{
 
 use crate::view::{Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
-
-pub(crate) const ACCOUNTS: &str = "messages.accounts";
-pub(crate) const REFRESH_HISTORY: &str = "messages.refresh-history";
-pub(crate) const REFRESH_GROUP: &str = "messages.group.refresh";
-pub(crate) const CLOSE_GROUPS: &str = "messages.groups.close";
 
 /// What the window bar is made of: the window's state, the door its
 /// effects go through, and the shell's own slots as the shell last built
@@ -35,6 +30,8 @@ pub(crate) struct Bar {
     pub(crate) setup: crate::setup::SetupView,
     pub(crate) groups: crate::groups::GroupsView,
     pub(crate) dispatcher: Dispatcher<Messages>,
+    /// The bar's entries, each invoking its effect.
+    pub(crate) actions: Rc<BarActions<Messages>>,
     /// The shell's link; the shell is built again with what it shows.
     pub(crate) link: Rc<RefCell<Option<WindowBarLink>>>,
 }
@@ -49,21 +46,26 @@ impl Bar {
             .map(WindowBarLink::slots)
             .unwrap_or_default();
         let selected = self.selection.get();
+        let entry = |effect: &MessagesEffect, icon: &str, name: &str| ToolbarAction {
+            icon: icon.into(),
+            name: CATALOG.t(name),
+            ..self.actions.effect(effect)
+        };
         let mut actions = Vec::new();
         let location = if let Some((title, refresh)) = self.groups.shown() {
             toolbar.leading.push(
-                ToolbarAction::new(
-                    CLOSE_GROUPS,
+                entry(
+                    &MessagesEffect::CloseGroups,
                     "arrow-left",
-                    CATALOG.t("messages-close-groups"),
+                    "messages-close-groups",
                 )
                 .navigating(),
             );
-            if refresh.is_some() {
-                actions.push(ToolbarAction::new(
-                    REFRESH_GROUP,
+            if let Some(refresh) = refresh {
+                actions.push(entry(
+                    &refresh,
                     "refresh",
-                    CATALOG.t("messages-refresh-group-membership"),
+                    "messages-refresh-group-membership",
                 ));
             }
             label(title)
@@ -78,22 +80,18 @@ impl Bar {
         {
             label(with)
         } else if let Some(name) = self.person_name(&selected.person) {
-            if self.history.refresh(&self.sources, &selected).is_some() {
-                actions.push(ToolbarAction::new(
-                    REFRESH_HISTORY,
-                    "refresh",
-                    CATALOG.t("messages-refresh-history"),
-                ));
+            if let Some(refresh) = self.history.refresh(&self.sources, &selected) {
+                actions.push(entry(&refresh, "refresh", "messages-refresh-history"));
             }
             self.route(name, &selected)
         } else {
             label(CATALOG.t("messages-people"))
         };
         if !self.setup.visible() {
-            actions.push(ToolbarAction::new(
-                ACCOUNTS,
+            actions.push(entry(
+                &MessagesEffect::OpenAccountSetup,
                 "users",
-                CATALOG.t("messages-setup-accounts"),
+                "messages-setup-accounts",
             ));
         }
         toolbar.location = Some(location);
@@ -149,8 +147,8 @@ impl Bar {
     }
 
     /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the window's, each through the effect its control in the
-    /// window ran. Returns whether anything was asked.
+    /// then the window's, each through its effect. Returns whether anything
+    /// was asked.
     fn take_events(&self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
@@ -160,23 +158,13 @@ impl Bar {
                 .borrow()
                 .as_ref()
                 .is_some_and(|link| link.event(&event))
+                || self.actions.press(&event)
             {
                 continue;
             }
-            let selected = self.selection.get();
-            let effect = match event {
-                ToolbarEvent::Commit { text } => Some(MessagesEffect::SelectRoute { choice: text }),
-                ToolbarEvent::Action { id } => match id.as_str() {
-                    ACCOUNTS => Some(MessagesEffect::OpenAccountSetup),
-                    REFRESH_HISTORY => self.history.refresh(&self.sources, &selected),
-                    REFRESH_GROUP => self.groups.shown().and_then(|(_, refresh)| refresh),
-                    CLOSE_GROUPS => Some(MessagesEffect::CloseGroups),
-                    _ => None,
-                },
-                _ => None,
-            };
-            if let Some(effect) = effect {
-                self.dispatcher.effect(&effect);
+            if let ToolbarEvent::Commit { text } = event {
+                self.dispatcher
+                    .effect(&MessagesEffect::SelectRoute { choice: text });
             }
         }
         asked

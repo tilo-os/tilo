@@ -28,7 +28,6 @@ pub(super) struct Line<'a, R: BufRead> {
     budget: Budget,
     pub(super) bytes: u64,
     complete: bool,
-    maximum: u64,
     #[cfg(test)]
     pub(super) scanned_bytes: u64,
 }
@@ -39,15 +38,9 @@ impl<'a, R: BufRead> Line<'a, R> {
             budget: Rc::new(Cell::new(Some(ROW_BYTES))),
             bytes: 0,
             complete: false,
-            maximum: MAX as u64,
             #[cfg(test)]
             scanned_bytes: 0,
         }
-    }
-    pub(super) fn segmented(reader: &'a mut R) -> Self {
-        let mut line = Self::new(reader);
-        line.maximum = segmented::TOTAL;
-        line
     }
     pub(super) fn parse(&mut self, store: Arc<Store>) -> io::Result<Plan> {
         let budget = self.budget.clone();
@@ -98,7 +91,7 @@ impl<R: BufRead> Read for Line<'_, R> {
         let length = self
             .bytes
             .checked_add(count as u64)
-            .filter(|n| *n <= self.maximum)
+            .filter(|n| *n <= segmented::TOTAL)
             .ok_or_else(|| changed("Home adoption plan exceeds bounds"))?;
         output[..count].copy_from_slice(&bytes[..count]);
         self.reader.consume(count);

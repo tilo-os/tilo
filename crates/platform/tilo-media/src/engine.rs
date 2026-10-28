@@ -78,6 +78,9 @@ pub struct EngineConfig {
     /// Whether the engine plays sound at all. Without it no audio stream is
     /// decoded and no audio device is opened.
     pub audio_output: bool,
+    /// Whether the engine decodes pictures. Without it a source that carries
+    /// a picture as well as sound (a music video) only plays its sound.
+    pub video_output: bool,
 }
 
 impl Default for EngineConfig {
@@ -87,6 +90,7 @@ impl Default for EngineConfig {
             hw_policy: HwPolicy::from_env(),
             volume: 0.8,
             audio_output: true,
+            video_output: true,
         }
     }
 }
@@ -117,6 +121,14 @@ impl EngineConfig {
     pub fn frames_only(mut self) -> Self {
         self.volume = 0.0;
         self.audio_output = false;
+        self
+    }
+
+    /// Play sound only: a music player, which plays the sound of a source
+    /// that may also carry a picture and never shows it.
+    #[must_use]
+    pub fn audio_only(mut self) -> Self {
+        self.video_output = false;
         self
     }
 
@@ -286,6 +298,7 @@ impl MediaEngine {
             config.acceptance,
             config.hw_policy,
             config.audio_output,
+            config.video_output,
         ) {
             Ok(gst) => Backend::Gst(Box::new(gst)),
             Err(reason) => {
@@ -724,6 +737,20 @@ impl MediaEngine {
         match &self.backend {
             Backend::Synth(_) | Backend::Unavailable(_) => None,
             Backend::Gst(g) => g.audio_sink(),
+        }
+    }
+
+    /// How much decoded audio the output has rendered since the last open:
+    /// the host device's progress when the output is governed, else the
+    /// buffers that reached the sink. Non-zero once sound is really coming
+    /// out, as opposed to a pipeline that only says it is playing. Zero
+    /// without the decode backend and in a page, where the media element
+    /// reports no buffers.
+    pub fn audio_buffers_rendered(&self) -> u64 {
+        match &self.backend {
+            #[cfg(gst_decode)]
+            Backend::Gst(g) => g.audio_buffers_rendered(),
+            _ => 0,
         }
     }
 

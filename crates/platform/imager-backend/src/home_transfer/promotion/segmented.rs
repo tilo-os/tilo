@@ -1,25 +1,20 @@
-//! Immutable bounded plan files, committed by the existing private journal.
-//! The semantic Plan and its canonical digest remain v1; only local persistence
-//! gains a segmented envelope. No path supplied by an app selects a segment.
+//! Immutable bounded plan files, committed by the adoption journal, which
+//! records the manifest as frames. No path supplied by an app selects a segment.
 use super::*;
 use crate::migration_review::storage::scratch::MetadataReservation;
 use std::os::unix::fs::MetadataExt as _;
-const SEGMENTS: usize = 2048;
-const HEADER: u64 = 1024 * 1024;
+pub(super) const SEGMENTS: usize = 2048;
 pub(super) const TOTAL: u64 = MAX as u64 * SEGMENTS as u64;
 const BUFFER: usize = 64 * 1024;
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
-    version: u32,
-    nonce: String,
-    bytes: u64,
-    sha256: [u8; 32],
-    segments: Vec<Segment>,
+    pub(super) nonce: String,
+    pub(super) bytes: u64,
+    pub(super) sha256: [u8; 32],
+    pub(super) segments: Vec<Segment>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Segment {
+pub(super) struct Segment {
     bytes: u64,
     sha256: [u8; 32],
 }
@@ -31,9 +26,6 @@ fn directory_name(nonce: &str) -> io::Result<String> {
 }
 fn name(index: usize) -> String {
     format!("segment-{index:04}")
-}
-pub(super) fn is_segmented(prefix: &[u8]) -> bool {
-    prefix.starts_with(b"{\"version\":2,")
 }
 pub(super) struct Pending {
     directory: Arc<PinnedDirectory>,
@@ -86,18 +78,10 @@ impl Pending {
             .ok_or_else(|| changed("Adoption quota reservation missing"))?
             .check()?;
         let manifest = Manifest {
-            version: 2,
             nonce: value.nonce.clone(),
             bytes: value.total,
             sha256: value.hash.clone().finalize().into(),
-            segments: value
-                .segments
-                .iter()
-                .map(|s| Segment {
-                    bytes: s.bytes,
-                    sha256: s.sha256,
-                })
-                .collect(),
+            segments: value.segments.clone(),
         };
         manifest.validate()?;
         Ok((value, manifest))
@@ -256,13 +240,9 @@ impl Drop for Pending {
     }
 }
 impl Manifest {
-    fn validate(&self) -> io::Result<()> {
+    pub(super) fn validate(&self) -> io::Result<()> {
         directory_name(&self.nonce)?;
-        if self.version != 2
-            || self.segments.is_empty()
-            || self.segments.len() > SEGMENTS
-            || self.bytes > TOTAL
-        {
+        if self.segments.is_empty() || self.segments.len() > SEGMENTS || self.bytes > TOTAL {
             return Err(changed("Adoption segmented manifest exceeds bounds"));
         }
         let mut total = 0u64;
@@ -281,16 +261,6 @@ impl Manifest {
             return Err(changed("Adoption segment total differs"));
         }
         Ok(())
-    }
-    pub(super) fn read<R: BufRead>(reader: &mut R) -> io::Result<(Self, u64)> {
-        let mut bytes = Vec::new();
-        reader.take(HEADER + 1).read_until(b'\n', &mut bytes)?;
-        if bytes.len() as u64 > HEADER || bytes.last() != Some(&b'\n') {
-            return Err(changed("Adoption segmented commit is incomplete"));
-        }
-        let manifest: Self = serde_json::from_slice(&bytes)?;
-        manifest.validate()?;
-        Ok((manifest, bytes.len() as u64))
     }
     pub(super) fn reader(
         self,

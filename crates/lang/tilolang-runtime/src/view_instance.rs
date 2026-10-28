@@ -490,6 +490,10 @@ impl ViewInstance {
                 field: field.id.clone(),
                 text: t.clone(),
             },
+            (FieldKind::RichText, Value::Rich(r)) => Mutation::SetRich {
+                field: field.id.clone(),
+                value: r.clone(),
+            },
             (FieldKind::Register, v) => Mutation::SetRegister {
                 field: field.id.clone(),
                 value: to_scalar(v, &field.ty).map_err(RuntimeError::BadArgs)?,

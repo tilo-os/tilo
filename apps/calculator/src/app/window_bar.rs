@@ -5,19 +5,15 @@
 //! switcher (Calculator, Graph 2D, Graph 3D), a graph's formulas as its
 //! sidebar and the angle unit in its menu. Past calculations are the
 //! window's History, which the bar opens itself.
-//! Each slot runs the same semantic action an assistive technology runs on
-//! the calculator, so there is one state path for all of them.
+//! The mode switcher and the sidebar toggle run the same semantic action an
+//! assistive technology runs on the calculator, so there is one state path
+//! for both.
 
-use ui::window_toolbar::{
-    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
-};
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use super::CalculatorApp;
 use crate::actions::GraphKind;
 use crate::model::Mode;
-
-const RADIANS: &str = "calculator.angle:radians";
-const DEGREES: &str = "calculator.angle:degrees";
 
 /// The semantic target of the side panel of graph `kind`.
 fn panel_target(kind: GraphKind) -> &'static str {
@@ -53,13 +49,16 @@ impl CalculatorApp {
         if let Some(kind) = mode.graph() {
             toolbar.sidebar = Some(self.panel(kind).side().is_open());
         }
+        let units = &self.angle_units;
         toolbar.actions.push(
-            ToolbarAction::new(RADIANS, "ruler", "Radians")
+            units
+                .entry("ruler", "Radians", false)
                 .on(!self.model.deg)
                 .in_menu(),
         );
         toolbar.actions.push(
-            ToolbarAction::new(DEGREES, "ruler", "Degrees")
+            units
+                .entry("ruler", "Degrees", true)
                 .on(self.model.deg)
                 .in_menu(),
         );
@@ -70,14 +69,19 @@ impl CalculatorApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run what the person did in the window's bar, through the same
-    /// semantic actions assistive technology runs.
+    /// Run what the person did in the window's bar: the angle unit chosen,
+    /// or a mode or the sidebar, through the semantic actions assistive
+    /// technology runs.
     pub(super) fn apply_window_toolbar(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) {
         for event in ui::window_toolbar::take_events() {
+            if let Some(degrees) = self.angle_units.pressed(&event) {
+                self.set_degrees(degrees);
+                continue;
+            }
             let target = match &event {
                 ToolbarEvent::ToggleSidebar => match self.model.mode.graph() {
                     Some(kind) => panel_target(kind).to_owned(),

@@ -378,6 +378,7 @@ impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
     fn attach(&mut self, cx: SurfaceCx<PrintDefaults>) {
         self.controls = Some(cx.actions());
         self.dispatcher = Some(cx.dispatcher());
+        self.bar = Some(ui::framework::BarActions::new(cx.dispatcher()));
         match cx.mode() {
             RunMode::Live => self.refresh(),
             RunMode::Capture => self.show(cx.fixture::<crate::surface::Snapshot>().as_deref()),

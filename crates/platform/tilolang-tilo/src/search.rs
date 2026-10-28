@@ -1,6 +1,7 @@
 //! What search finds of a room: the text of every record and item of every package.
 //!
-//! Every `Text` field of a type is searchable by default; a hit is the record or item that holds
+//! Every `Text` and `RichText` field of a type is searchable by default (a rich text by its text,
+//! where a reference reads as its run: the referenced resource's title, the person's name); a hit is the record or item that holds
 //! it, found by its text, and it opens the host at that resource (its `open` view action, see
 //! [`crate::effects::OpenEffect`]). A package will be able to say which fields to index; until
 //! then all of them are, the most useful default for a notes app and a chat alike.
@@ -44,10 +45,13 @@ pub fn hits(meta: &Meta, record: &DynRecord, doc: &str) -> Vec<Hit> {
 fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
     let mut texts = Vec::new();
     for field in &record.schema().fields {
-        if let Some(DynValue::Text(text)) = record.get(&field.id)
-            && !text.trim().is_empty()
-        {
-            texts.push(text.clone());
+        let text = match record.get(&field.id) {
+            Some(DynValue::Text(text)) => text.clone(),
+            Some(DynValue::RichText(rich)) => rich.text(),
+            _ => continue,
+        };
+        if !text.trim().is_empty() {
+            texts.push(text);
         }
     }
     if let Some(title) = texts.first().cloned() {

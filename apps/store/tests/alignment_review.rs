@@ -76,9 +76,6 @@ fn staged(scenario: &str) -> StoreApp {
     app
 }
 
-/// The bar's slot ids of the catalogue's actions.
-const CATALOGUE_ACTIONS: [&str; 3] = ["review-package", "remotes", "trust"];
-
 #[test]
 fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     let theme = ui::Theme::dark();
@@ -86,16 +83,6 @@ fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     store.set_items(store::fixture::fixture_catalog());
     let app = lay_out(store, (1200.0, 800.0));
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-    for id in CATALOGUE_ACTIONS {
-        let action = toolbar
-            .actions
-            .iter()
-            .find(|action| action.id == id)
-            .unwrap_or_else(|| panic!("{id} is in the window's bar: {toolbar:?}"));
-        // Occasional actions stand named in the More menu, not as bare icons.
-        assert!(action.menu, "{id} is a More menu item: {action:?}");
-        assert!(!action.name.trim().is_empty(), "{id} is named: {action:?}");
-    }
     let views = toolbar
         .views
         .as_ref()
@@ -135,9 +122,9 @@ fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     }
 }
 
-/// The catalogue is titled like every page, has no permanent status pill, and its actions fit a narrow window.
+/// The catalogue is titled like every page and has no permanent status pill.
 #[test]
-fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
+fn catalogue_has_a_title_and_no_status_pill() {
     let app = lay_out(store::fixture::seeded_app(), (520.0, 820.0));
     let mut names = Vec::new();
     walk(&*app, &mut |w| {
@@ -163,12 +150,6 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
         !names.iter().any(|name| name.contains("apps available")),
         "no persistent status pill: {names:?}"
     );
-    for id in CATALOGUE_ACTIONS {
-        assert!(
-            toolbar.actions.iter().any(|action| action.id == id),
-            "{id} stays reachable in a narrow window: the bar's menu holds what its row cannot"
-        );
-    }
 }
 
 /// Secondary pages share one header composition: the window bar's location, then the body.

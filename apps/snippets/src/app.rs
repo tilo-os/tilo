@@ -59,7 +59,6 @@ pub(crate) enum Action {
     Copy(SnippetId),
     ToggleFavorite(SnippetId),
     Duplicate(SnippetId),
-    Delete(SnippetId),
     SetLanguage(SnippetId, Language),
     Rename(SnippetId, String),
     /// File the snippet under `folder`; empty files it nowhere.
@@ -89,7 +88,6 @@ impl Action {
             Self::Copy(id) => format!("snippets.snippet:{id}.copy"),
             Self::ToggleFavorite(id) => format!("snippets.snippet:{id}.toggle-favorite"),
             Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
-            Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
             Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
             Self::Rename(id, _) => format!("snippets.snippet:{id}.title"),
             Self::SetFolder(id, _) => format!("snippets.snippet:{id}.folder"),
@@ -580,10 +578,6 @@ impl Core {
         }));
     }
 
-    fn delete(&self, id: &SnippetId) {
-        self.submit(Snippets::DELETE.with(id.clone()));
-    }
-
     fn set_language(&self, id: &SnippetId, language: Language) {
         self.submit(Self::paths(id).language.set(language));
     }
@@ -664,7 +658,6 @@ impl Core {
             Action::Copy(id) => self.copy(&id),
             Action::ToggleFavorite(id) => self.toggle_favorite(&id),
             Action::Duplicate(id) => self.duplicate(&id),
-            Action::Delete(id) => self.delete(&id),
             Action::SetLanguage(id, lang) => self.set_language(&id, lang),
             Action::Rename(id, title) => self.rename(&id, &title),
             Action::SetFolder(id, folder) => self.set_folder(&id, &folder),
@@ -791,6 +784,8 @@ pub struct SnippetsApp {
     specimen_open: bool,
     /// How many layouts the window has had since the specimen opened.
     settled_layouts: u32,
+    /// The window bar's entries.
+    bar: window_bar::Bar,
 }
 
 impl SnippetsApp {
@@ -822,6 +817,7 @@ impl SnippetsApp {
             pending_scenario: None,
             specimen_open: false,
             settled_layouts: 0,
+            bar: window_bar::Bar::default(),
         }
     }
 
@@ -942,7 +938,8 @@ impl SnippetsApp {
     }
 
     /// Edit through the resource's dispatcher from now on.
-    pub(crate) fn attach_dispatcher(&self, dispatcher: Dispatcher<Snippets>) {
+    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
+        self.bar.actions = Some(ui::framework::BarActions::new(dispatcher.clone()));
         self.core.borrow_mut().attach_dispatcher(dispatcher);
     }
 

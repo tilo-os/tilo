@@ -294,6 +294,29 @@ impl FrameHarness {
         self.relayout();
     }
 
+    /// Press the action named `name` the app declares in its window's bar,
+    /// among its leading actions, its actions and their menu items, as the
+    /// person finds it by what it says.
+    ///
+    /// # Errors
+    /// Says what the bar offers when no action is named `name`.
+    pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
+        let toolbar = crate::window_toolbar::declared().unwrap_or_default();
+        let actions = toolbar.leading.iter().chain(&toolbar.actions);
+        let mut offered = Vec::new();
+        let mut found = None;
+        for action in actions.flat_map(|action| std::iter::once(action).chain(&action.items)) {
+            if action.name == name && action.items.is_empty() {
+                found = Some(action.id.clone());
+                break;
+            }
+            offered.push(action.name.clone());
+        }
+        let id = found.ok_or_else(|| format!("the bar has no `{name}`, only {offered:?}"))?;
+        self.press_window_slot(crate::window_toolbar::ToolbarEvent::Action { id });
+        Ok(())
+    }
+
     /// The window took the keyboard (it opened, was brought forward —
     /// `WindowEvent::Focused(true)` — or the person pressed one of the app's
     /// slots in its bar): when nothing in it holds the keyboard, the app's

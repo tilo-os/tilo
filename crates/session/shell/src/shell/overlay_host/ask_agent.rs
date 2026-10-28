@@ -1,4 +1,4 @@
-//! The ask-agent chord and the "Tell an agent…" requests Tilo apps send: both
+//! The ask-agent chord and the questions typed into Tilo apps' context menus: both
 //! open the agent quick composer on the focused window's selection
 //! ([`crate::shell::selection_agent`]).
 
@@ -74,29 +74,50 @@ impl ShellOverlayHost {
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
     /// `selection`, drawn at `area` on the desktop when it said where: in
-    /// answer to the chord, or from an "Tell an agent…" entry in its focused
+    /// answer to the chord, or from a sentence typed into a menu of its focused
     /// window. Whether the composer opened.
     pub(crate) fn receive_ask_agent(
         &mut self,
         app_id: &str,
         selection: Option<SharedSelection>,
         area: Option<Rect>,
+        ask: Option<String>,
+        draft: Option<String>,
     ) -> bool {
         let focused = self.focused_app_id();
         if !self.selection_requests.accept(app_id, focused.as_deref()) {
             return false;
         }
         let label = self.app_label(app_id);
-        self.open_ask_agent(SelectionSeed::new(app_id, label, selection).drawn_at(area))
+        let mut seed = SelectionSeed::new(app_id, label, selection).drawn_at(area);
+        if let Some(text) = ask {
+            seed = seed.asking(text);
+        }
+        seed.draft = draft.map(|text| {
+            text.chars()
+                .take(ui::shared_selection::MAX_ASK_CHARS)
+                .collect()
+        });
+        self.open_ask_agent(seed)
     }
 
-    /// "Tell an agent…" on a window of `app_id`, chosen at `at` on the
-    /// desktop: the composer opens there about that app. It attaches the
-    /// resource the app said its window shows, else names the app alone.
-    pub(super) fn tell_agent_about_app(&mut self, app_id: &str, at: Point) -> bool {
+    /// A sentence for an agent typed into the menu of a window of `app_id`
+    /// at `at` on the desktop (`None`: the composer opens to be typed in):
+    /// the composer opens there about that app. It attaches the resource the
+    /// app said its window shows, else names the app alone.
+    pub(super) fn tell_agent_about_app(
+        &mut self,
+        app_id: &str,
+        at: Point,
+        ask: Option<String>,
+    ) -> bool {
         let label = self.app_label(app_id);
         let seed = SelectionSeed::new(app_id, label, None)
             .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))));
+        let seed = match ask {
+            Some(text) => seed.asking(text),
+            None => seed,
+        };
         let seed = match self.selection_requests.window_of(app_id) {
             Some(resource) => seed.showing(resource.clone()),
             None => seed,
@@ -118,7 +139,7 @@ impl ShellOverlayHost {
     /// Open the quick composer about `seed`, for the agent asked last in the
     /// focused workspace (or its first live one) when that agent is admitted
     /// and holds a live task subscription. Says so when none does.
-    pub(crate) fn open_ask_agent(&mut self, seed: SelectionSeed) -> bool {
+    pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
         use crate::shell::state::WorkspaceAuthority as _;
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -179,6 +200,13 @@ impl ShellOverlayHost {
             None => self.focused_window_rect().unwrap_or(viewport),
         };
         let (at, protected) = selection_area(window, self.text_caret, seed.area);
+        // Asked once: the composer keeps what it is about, not the question.
+        // A press the palette made carries the palette's question.
+        let ask = seed
+            .ask
+            .take()
+            .or_else(|| self.selection_requests.take_asking());
+        let draft = seed.draft.take();
         self.agent_quick_composer.open_about(
             owner,
             &agent,
@@ -191,6 +219,11 @@ impl ShellOverlayHost {
             seed,
         );
         self.agent_quick_composer.offer_agents(live);
+        if let Some(text) = ask {
+            self.agent_quick_composer.ask(&text);
+        } else if let Some(text) = draft {
+            self.agent_quick_composer.begin_typing(&text);
+        }
         self.bump_chrome();
         true
     }
@@ -290,6 +323,12 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        // The palette's question about what is focused: the chord's way to
+        // the focused selection, already asked. The last one asked wins.
+        if let Some(query) = chrome.borrow_mut().take_agent_asks_in_place().pop() {
+            self.selection_requests.press_asking(query);
+            self.bump_chrome();
+        }
         let asks = chrome.borrow_mut().take_agent_asks();
         let mut asked = false;
         let mut starts = Vec::new();

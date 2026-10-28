@@ -22,6 +22,7 @@ mod policy;
 mod publication;
 mod records;
 mod reflection;
+mod rich_text;
 #[cfg(feature = "room")]
 mod room;
 mod scenarios;

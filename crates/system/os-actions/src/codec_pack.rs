@@ -182,11 +182,14 @@ pub fn run(action: CodecAction) -> Result<(), String> {
     extension::run(action, &id())
 }
 
-/// Call `on_change` whenever the helper rewrites the codecs status.
+/// Call `on_change` whenever the helper rewrites the codecs status, until
+/// the returned watch is dropped.
 ///
 /// # Errors
 /// As [`extension::watch`].
-pub fn watch(on_change: impl FnMut() -> bool + Send + 'static) -> Result<(), String> {
+pub fn watch(
+    on_change: impl Fn() + Send + 'static,
+) -> Result<tilo_files::native::ChangeWatch, String> {
     extension::watch(&id(), on_change)
 }
 

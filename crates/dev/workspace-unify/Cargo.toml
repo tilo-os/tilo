@@ -1183,7 +1183,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-invidious" = { path = "../../../crates/platform/tilo-invidious", default-features = false, features = [] }
 "tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
@@ -1321,7 +1320,7 @@ doc = false
 "tokio-rustls-acme-0_9_1" = { package = "tokio-rustls-acme", version = "^0.9.1", default-features = false, features = ["default", "rustls-tls-webpki-roots"] }
 "tokio-stream-0_1_18" = { package = "tokio-stream", version = "^0.1.18", default-features = false, features = ["default", "sync", "time", "tokio-util"] }
 "tokio-tungstenite-0_28_0" = { package = "tokio-tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "connect", "handshake", "rustls", "rustls-native-certs", "rustls-pki-types", "rustls-tls-native-roots", "stream", "tokio-rustls"] }
-"tokio-util-0_7_18" = { package = "tokio-util", version = "^0.7.18", default-features = false, features = ["codec", "compat", "default", "futures-io", "futures-util", "io", "io-util", "rt"] }
+"tokio-util-0_7_18" = { package = "tokio-util", version = "^0.7.18", default-features = false, features = ["codec", "compat", "default", "futures-io", "futures-util", "io", "io-util", "rt", "slab", "time"] }
 "tokio-websockets-0_13_3" = { package = "tokio-websockets", version = "^0.13.3", default-features = false, features = ["client", "getrandom", "rand", "ring", "rustls-bring-your-own-connector", "server", "sha1_smol"] }
 "toml-0_8_23" = { package = "toml", version = "^0.8.23", default-features = false, features = ["display", "parse"] }
 "toml-1_0_6_spec-1_1_0" = { package = "toml", version = "^1.0.6+spec-1.1.0", default-features = false, features = ["default", "display", "parse", "serde", "std"] }
@@ -1346,6 +1345,7 @@ doc = false
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
 "tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
+"twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
 "twox-hash-2_1_4" = { package = "twox-hash", version = "^2.1.4", default-features = false, features = ["xxhash64"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
@@ -3568,7 +3568,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-invidious" = { path = "../../../crates/platform/tilo-invidious", default-features = false, features = [] }
 "tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }

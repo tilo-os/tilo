@@ -1045,20 +1045,27 @@ mod tests {
             }
             if page == "catalogue" {
                 let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
-                for name in ["Flatpak repositories", "Trust and moderation"] {
+                for name in [
+                    "Review package",
+                    "Flatpak repositories",
+                    "Trust and moderation",
+                ] {
                     let slot = toolbar
                         .actions
                         .iter()
                         .find(|action| action.name == name)
                         .unwrap_or_else(|| panic!("catalogue: missing bar slot {name}"));
                     assert!(slot.enabled, "catalogue: live owner slot {name}");
+                    // Occasional actions stand named in the More menu, not
+                    // as bare icons.
+                    assert!(slot.menu, "catalogue: {name} is a More menu item");
                 }
             }
             if page == "remotes" {
                 // Reached through the bar's slot: its action resolves.
-                ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-                    id: "remotes".into(),
-                });
+                app.harness()
+                    .press_window_action("Flatpak repositories")
+                    .unwrap();
                 app.settle();
                 let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
                 assert_eq!(

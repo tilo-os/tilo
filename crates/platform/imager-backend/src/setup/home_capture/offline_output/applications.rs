@@ -357,9 +357,10 @@ impl VerifiedOriginalApplications {
             OsStr::new(&format!("{}.receipt.json", self.expected.operation)),
             tilo_files::native::atomic::Privacy::OwnerOnly,
         )?;
-        let mut bytes = Vec::new();
-        receipt.take(18 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 18 * 1024 || bytes != serde_json::to_vec(&self.expected)? {
+        let bytes = crate::record::read_bounded(receipt, 18 * 1024, || {
+            refused("Applications canonical receipt differs")
+        })?;
+        if bytes != serde_json::to_vec(&self.expected)? {
             return Err(refused("Applications canonical receipt differs"));
         }
         let grant =

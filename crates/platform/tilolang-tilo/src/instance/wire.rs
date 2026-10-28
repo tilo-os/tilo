@@ -110,6 +110,8 @@ impl Convert<'_> {
             Value::Float(number) => wire::Value::Float(*number),
             Value::Bool(flag) => wire::Value::Bool(*flag),
             Value::Text(text) => wire::Value::Text(text.clone()),
+            // Until the window draws rich text, it reads its text.
+            Value::Rich(rich) => wire::Value::Text(rich.plain_text()),
             Value::List(items) | Value::Tuple(items) => {
                 wire::Value::List(items.iter().map(|item| self.value(item)).collect())
             }

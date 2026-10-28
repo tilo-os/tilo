@@ -67,11 +67,7 @@ fn receipt(path: &Path) -> io::Result<Expectation> {
     if !file.metadata()?.is_file() || file.metadata()?.len() > 16 * 1024 {
         return Err(failure());
     }
-    let mut bytes = Vec::new();
-    file.take(16 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 16 * 1024 {
-        return Err(failure());
-    }
+    let bytes = crate::record::read_bounded(file, 16 * 1024, failure)?;
     let result: Expectation = serde_json::from_slice(&bytes)?;
     result.validate()?;
     pin.validate_destination()?;

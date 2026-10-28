@@ -604,7 +604,7 @@ impl Snapshot {
                 if field == TYPE {
                     last.ty = Some(codec::get_text(value.value())?);
                 } else if !field.starts_with('$')
-                    && let FieldValue::Text(text) = codec::get_value(value.value())?
+                    && let Some(text) = crate::reads::text_of(codec::get_value(value.value())?)
                 {
                     last.texts.insert(field.to_owned(), text);
                 }

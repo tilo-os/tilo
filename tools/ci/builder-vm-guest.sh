@@ -84,7 +84,9 @@ case ${1:-} in
       --targetbus virtio --driver qemu --subdriver raw --cache unsafe --serial tilo-out --config
     as_user virsh --connect qemu:///session attach-disk "$domain" /work/in.raw vdd \
       --targetbus virtio --driver qemu --subdriver raw --cache unsafe --serial tilo-in --config
-    as_user tilo-vm vm start worker
+    # A boot on a builder this loaded has missed tilo-vm's three minutes for SSH: once more.
+    as_user tilo-vm vm start worker \
+      || { as_user tilo-vm vm stop worker || true; as_user tilo-vm vm start worker; }
     # The work disk is written through to its file only by a clean shutdown: a worker that
     # died with this container would leave its stores half written for the next disk, which
     # then starts them over (the stores-complete marker below).
@@ -104,7 +106,6 @@ case ${1:-} in
     # may miss writes its stores counted on: it starts over.
     fresh=1
     [[ -e /work/stopped-cleanly ]] && fresh=0
-    rm -f /work/stopped-cleanly
     on_worker 'set -e
       if [ '"$fresh"' = 1 ] || ! blkid -t TYPE=btrfs /dev/vdb >/dev/null; then mkfs.btrfs -q -f /dev/vdb; fi
       mkdir -p /var/w; mount /dev/vdb /var/w
@@ -114,6 +115,7 @@ case ${1:-} in
       # left from a run before to refresh.
       printf "[storage]\ndriver = \"overlay\"\ngraphroot = \"/var/w/store\"\nrunroot = \"/run/w-store\"\ntransient_store = true\n" > /var/w/storage.conf
       rm -rf /var/w/root-podman /var/w/root-storage.conf'
+    rm -f /work/stopped-cleanly
     touch /work/last-disk /work/ready
     echo "builder-vm-guest: worker up"
     while sleep 30 & wait $!; do
@@ -196,6 +198,7 @@ case ${1:-} in
       fi
       # Into the registry as the layout holds it, its blobs as they are: disk-image.sh then
       # pushes nothing (TILO_DISK_PUBLISHED_DIGEST).
+      echo "builder-vm-guest: copying the image into the worker'"'"'s registry"
       skopeo copy -q --dest-tls-verify=false oci:/var/w/image docker://localhost:5000/tilo-vm:disk-install || true
       export TILO_DISTROBOX= TILO_VM_ARCH=x86_64 TILO_USER=tester TILO_PASS=tilo SOURCE_DATE_EPOCH='"$SOURCE_DATE_EPOCH"'
       TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=/var/w/dev-disk TILO_RUN=/var/w/dev-disk-run \

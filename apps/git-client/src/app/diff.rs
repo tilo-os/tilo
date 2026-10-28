@@ -320,13 +320,6 @@ impl GitClientApp {
         }
     }
 
-    /// Flip diff syntax highlighting. Routed to by the window bar's item.
-    pub(super) fn toggle_syntax_highlight(&mut self) {
-        if let Err(error) = self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight) {
-            self.last_error = Some(error);
-        }
-    }
-
     /// Write the shared repository projection when branches/commits/remotes move.
     pub(super) fn publish_shared_repo_if_needed(&mut self) {
         if self.awaiting_repo || !self.mode.is_live() {

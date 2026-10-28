@@ -68,11 +68,8 @@ fn read<T: serde::de::DeserializeOwned>(
     if !file.metadata()?.is_file() || file.metadata()?.len() > LIMIT {
         return Err(changed("Application proof exceeds its private bounds"));
     }
-    let mut bytes = Vec::new();
-    file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).map_err(io::Error::other)? > LIMIT {
-        return Err(changed("Application proof exceeds bounds"));
-    }
+    let bytes =
+        crate::record::read_bounded(file, LIMIT, || changed("Application proof exceeds bounds"))?;
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 fn publish(store: &StorageDirectory, name: &str, value: &impl Serialize) -> io::Result<()> {

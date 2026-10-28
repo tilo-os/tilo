@@ -32,6 +32,7 @@ exclude = [
     "vendor/hyper-proxy2",
     "vendor/cosmic-text",
     "vendor/alacritty_terminal",
+    "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
     "vendor/iroh-gossip",
     "vendor/netwatch",
@@ -329,7 +330,6 @@ members = [
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-browser-sessions",
-    "crates/platform/tilo-invidious",
     "crates/platform/tilo-innertube",
     "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
@@ -1281,6 +1281,9 @@ cosmic-text = { path = "vendor/cosmic-text" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+# A bucket's reset during a call no longer panics the limiter. See
+# vendor/twilight-http-ratelimiting/PROVENANCE.md.
+twilight-http-ratelimiting = { path = "vendor/twilight-http-ratelimiting" }
 # zbus's blocking API runs on a runtime of its own with a worker thread per
 # host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
 zbus = { path = "vendor/zbus" }

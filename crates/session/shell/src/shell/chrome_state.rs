@@ -535,6 +535,8 @@ pub struct ChromeState {
     /// Work handed to an agent from the shell's chrome, until the overlay
     /// host asks it through the workspace's tracker.
     agent_asks: Vec<AgentAsk>,
+    /// Questions the search palette asks about what is focused.
+    agent_asks_in_place: Vec<String>,
     /// `None` until the compositor wires it up; tests and offscreen
     /// `shots` run without it.
     notification_bridge: Option<NotificationBridge>,
@@ -872,6 +874,7 @@ impl ChromeState {
             local_user_id,
             notification_log: NotificationLog::default(),
             agent_asks: Vec::new(),
+            agent_asks_in_place: Vec::new(),
             notification_bridge: None,
             pending_notification_actions: None,
             notification_history_store: None,
@@ -3751,26 +3754,6 @@ impl ChromeState {
         });
     }
 
-    /// Ask `agent` in `room` a question: the same issue in Tasks, made as
-    /// one that ends when its run answers, so what was asked and what came
-    /// back stay findable without waiting in the lists. Its page opens once
-    /// it is asked.
-    pub fn ask_agent_question(
-        &mut self,
-        room: crate::shell::state::RoomId,
-        agent: String,
-        (title, body): (String, String),
-    ) {
-        self.agent_asks.push(AgentAsk {
-            room,
-            agent,
-            title,
-            body,
-            show: true,
-            quick: true,
-        });
-    }
-
     /// As [`Self::ask_agent`], and open the issue's page once it is asked.
     pub fn ask_agent_and_show(
         &mut self,
@@ -3791,6 +3774,18 @@ impl ChromeState {
     /// The work handed to agents since last taken.
     pub(crate) fn take_agent_asks(&mut self) -> Vec<AgentAsk> {
         std::mem::take(&mut self.agent_asks)
+    }
+
+    /// Ask the workspace's agent `query` about what is focused (the
+    /// selection in the focused window, else the window), in the composer
+    /// beside it, where the answer shows: the search palette's question.
+    pub fn ask_agent_in_place(&mut self, query: String) {
+        self.agent_asks_in_place.push(query);
+    }
+
+    /// The palette's questions since last taken, oldest first.
+    pub(crate) fn take_agent_asks_in_place(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.agent_asks_in_place)
     }
 
     /// The agent collaborator a retained notification could be handed to:

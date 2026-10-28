@@ -16,7 +16,7 @@ use super::{
 use browser_continuity::Provider;
 #[cfg(target_os = "linux")]
 use std::{
-    io::{self, Read},
+    io,
     path::{Component, Path},
     sync::Arc,
 };

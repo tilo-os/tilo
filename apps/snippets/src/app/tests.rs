@@ -77,10 +77,9 @@ fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
-/// Press one of the library's actions in the window bar.
-fn press_bar(app: &mut TestApp<SnippetsShell>, id: &str) {
-    app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+/// Press the library's action named `name` in the window bar.
+fn press_bar(app: &mut TestApp<SnippetsShell>, name: &str) {
+    app.harness().press_window_action(name).unwrap();
     app.settle();
 }
 
@@ -195,7 +194,7 @@ fn sidebar_places_narrow_the_list() {
 fn controls_submit_library_actions_as_one_undo_step_each() {
     let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
     open_row(&mut app, "Plain");
-    press_bar(&mut app, window_bar::FAVORITE);
+    press_bar(&mut app, "Add to favorites");
     assert!(by_title(&app, "Plain").1.favorite);
     assert!(app.undo(), "the favorite is one undo step");
     assert!(!by_title(&app, "Plain").1.favorite);
@@ -207,7 +206,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         "copying records a use"
     );
 
-    press_bar(&mut app, window_bar::NEW_SNIPPET);
+    press_bar(&mut app, "New snippet");
     assert_eq!(app.state().snippets.len(), 3);
     let (made, _) = by_title(&app, "Untitled snippet");
     assert_eq!(
@@ -217,7 +216,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     );
     // The new snippet is the one open, so the bar's Delete deletes it. Undo
     // takes a deletion back, so it runs at once and nobody is asked.
-    press_bar(&mut app, window_bar::DELETE);
+    press_bar(&mut app, "Delete");
     assert!(app.asking().is_none(), "the host asks nothing");
     assert!(
         app.state().snippets.get(&made).is_none(),
@@ -248,7 +247,7 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     app.settle();
     assert_eq!(by_title(&app, "Deploy").1.language, Language::Rust);
 
-    press_bar(&mut app, window_bar::DUPLICATE);
+    press_bar(&mut app, "Duplicate");
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.body, "kubectl apply");
     assert_eq!(app.state().snippets.len(), 2);
@@ -272,7 +271,7 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
         Selection::Smart(SmartFolder::MostUsed)
     );
     open_row(&mut app, "Deploy");
-    press_bar(&mut app, window_bar::DUPLICATE);
+    press_bar(&mut app, "Duplicate");
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.uses.get(), 0);
     assert_eq!(
@@ -521,11 +520,11 @@ fn showing_the_bars_new_snippet_authors_nothing_and_pressing_it_does() {
     assert!(
         bar.actions
             .iter()
-            .any(|action| action.id == window_bar::NEW_SNIPPET),
+            .any(|action| action.name == "New snippet"),
         "{bar:?}"
     );
     assert_eq!(app.state().snippets.len(), 1, "the bar authors nothing");
-    press_bar(&mut app, window_bar::NEW_SNIPPET);
+    press_bar(&mut app, "New snippet");
     assert_eq!(
         app.state().snippets.len(),
         2,
@@ -617,13 +616,9 @@ fn the_content_column_lays_out_its_controls() {
         .window_toolbar()
         .actions
         .into_iter()
-        .map(|action| action.id)
+        .map(|action| action.name)
         .collect();
-    for id in [
-        window_bar::FAVORITE,
-        window_bar::DUPLICATE,
-        window_bar::DELETE,
-    ] {
+    for id in ["Remove from favorites", "Duplicate"] {
         assert!(actions.iter().any(|have| have == id), "{id} in {actions:?}");
     }
 }
@@ -1032,7 +1027,7 @@ fn the_window_bars_new_snippet_adds_one() {
                 toolbar
                     .actions
                     .into_iter()
-                    .map(|action| action.id)
+                    .map(|action| action.name)
                     .collect()
             })
             .unwrap_or_default()
@@ -1040,19 +1035,18 @@ fn the_window_bars_new_snippet_adds_one() {
     let mut empty = launched(&[]);
     let offered = bar_actions(&mut empty);
     assert!(
-        !offered.iter().any(|id| id == "snippets.new"),
+        !offered.iter().any(|name| name == "New snippet"),
         "{offered:?}"
     );
     drop(empty);
 
     let mut app = launched(&[snippet("Deploy", "make deploy")]);
     let offered = bar_actions(&mut app);
-    assert!(offered.iter().any(|id| id == "snippets.new"), "{offered:?}");
-    app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
-            id: "snippets.new".into(),
-        });
-    app.settle();
+    assert!(
+        offered.iter().any(|name| name == "New snippet"),
+        "{offered:?}"
+    );
+    press_bar(&mut app, "New snippet");
     let failures = format!("{:?}", app.harness().control_failures());
     assert_eq!(app.state().snippets.len(), 2, "{failures}");
 }

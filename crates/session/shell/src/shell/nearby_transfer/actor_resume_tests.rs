@@ -1,9 +1,7 @@
 //! Two real Iroh endpoints resume an immutable Nearby spool after fresh consent.
 
 use super::{CHECKPOINT_BYTES, IncomingManifest, NearbyTransferStore, SecureNearbyDestination};
-use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId};
 use tilo_network_actor::{
     Actor, NearbyTransferCheckpoint, NetCmd, NetEvent, PERSONAL_TRANSFER_CHUNK_BYTES,
     PersonalFabricPayload, PersonalNearbyTransferFrame,
@@ -11,12 +9,7 @@ use tilo_network_actor::{
 use tokio::sync::mpsc;
 
 async fn peer() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, EndpointAddr) {
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .unwrap();
+    let (endpoint, lookup) = tilo_network_actor::loopback_endpoint(None).await;
     let addr = endpoint.addr();
     let (commands, _task) = Actor::spawn(endpoint, lookup);
     let (events, receiver) = mpsc::channel(64);

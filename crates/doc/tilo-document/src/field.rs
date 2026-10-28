@@ -117,7 +117,8 @@ impl Operations for RichText {
             | RichTextAction::ContinueParagraph { .. }
             | RichTextAction::AppendParagraph { .. }
             | RichTextAction::InsertParagraph { .. }
-            | RichTextAction::SplitBlock { .. } => EditOp::Splice,
+            | RichTextAction::SplitBlock { .. }
+            | RichTextAction::SyncClips { .. } => EditOp::Splice,
             RichTextAction::SetMark {
                 spans, name, value, ..
             } => {

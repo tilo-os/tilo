@@ -2,9 +2,11 @@
 //! Photo, Video, Codes and Documents as its views; Open Photos and Camera
 //! settings as its actions; on the documents, the selected page as the
 //! location and what can be done with it as actions. Each runs the published
-//! action its control on the canvas ran. The capture settings stay over the
-//! picture.
+//! action its control on the canvas ran: the settings entry is Camera's
+//! effect, the page entries its effects on the document scanner's row. The
+//! capture settings stay over the picture.
 
+use ui::framework::{BarActions, BarCommands, Dispatcher};
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };
@@ -12,9 +14,7 @@ use ui::window_toolbar::{
 use super::CameraApp;
 use crate::actions::{CameraEffect, DOCUMENT_ROW};
 use crate::model::{CaptureMode, Screen};
-
-pub(crate) const PHOTOS: &str = "camera.open-photos";
-pub(crate) const SETTINGS: &str = "camera.settings";
+use crate::record::Record;
 
 /// The views, in the order the bar shows them; the index is
 /// [`CameraApp::selected_capture_mode`]'s.
@@ -25,58 +25,55 @@ pub(crate) const VIEWS: [(&str, &str); 4] = [
     ("camera.view.documents", "Documents"),
 ];
 
-/// What can be done with the selected page: the bar action's id, icon and
-/// name, and the published effect it runs.
-const PAGE_ACTIONS: [(&str, &str, &str, CameraEffect); 8] = [
+/// What can be done with the selected page: the bar entry's icon and name,
+/// and the effect it runs on the document scanner's row.
+const PAGE_ACTIONS: [(&str, &str, CameraEffect); 8] = [
+    ("download", "Save as PDF", CameraEffect::ExportPdf),
+    ("file-text", "Recognize text", CameraEffect::RecognizeText),
+    ("rotate-cw", "Rotate", CameraEffect::RotatePage),
+    ("scissors", "Crop", CameraEffect::CropPage),
     (
-        "camera.document.export",
-        "download",
-        "Save as PDF",
-        CameraEffect::ExportPdf,
-    ),
-    (
-        "camera.document.recognize",
-        "file-text",
-        "Recognize text",
-        CameraEffect::RecognizeText,
-    ),
-    (
-        "camera.document.rotate",
-        "rotate-cw",
-        "Rotate",
-        CameraEffect::RotatePage,
-    ),
-    (
-        "camera.document.crop",
-        "scissors",
-        "Crop",
-        CameraEffect::CropPage,
-    ),
-    (
-        "camera.document.move-earlier",
         "chevron-left",
         "Move page earlier",
         CameraEffect::MovePageEarlier,
     ),
     (
-        "camera.document.move-later",
         "chevron-right",
         "Move page later",
         CameraEffect::MovePageLater,
     ),
-    (
-        "camera.document.copy-text",
-        "copy",
-        "Copy text",
-        CameraEffect::CopyText,
-    ),
-    (
-        "camera.document.remove",
-        "trash-2",
-        "Remove page",
-        CameraEffect::RemovePage,
-    ),
+    ("copy", "Copy text", CameraEffect::CopyText),
+    ("trash-2", "Remove page", CameraEffect::RemovePage),
 ];
+
+/// What a bar entry that is no effect of Camera itself does.
+#[derive(Clone, PartialEq)]
+enum Command {
+    OpenPhotos,
+    /// Run the effect on the document scanner's row.
+    Page(CameraEffect),
+}
+
+/// The bar's entries: Camera's effects, and the window's commands.
+pub(super) struct Bar {
+    actions: Option<BarActions<Record>>,
+    commands: BarCommands<Command>,
+}
+
+impl Bar {
+    /// Entries submitted through `dispatcher`, once there is one.
+    pub(super) fn new(dispatcher: Option<&Dispatcher<Record>>) -> Self {
+        Self {
+            actions: dispatcher.cloned().map(BarActions::new),
+            commands: BarCommands::new(),
+        }
+    }
+
+    /// Submit through `dispatcher` from now on.
+    pub(super) fn attach(&mut self, dispatcher: Dispatcher<Record>) {
+        self.actions = Some(BarActions::new(dispatcher));
+    }
+}
 
 impl CameraApp {
     /// The window bar's slots for what the window shows now.
@@ -112,10 +109,18 @@ impl CameraApp {
             });
         }
         toolbar.actions = self.page_actions();
-        toolbar.actions.extend([
-            ToolbarAction::new(PHOTOS, "image", "Open Photos"),
-            ToolbarAction::new(SETTINGS, "settings", "Camera settings"),
-        ]);
+        toolbar.actions.push(
+            self.bar
+                .commands
+                .entry("image", "Open Photos", Command::OpenPhotos),
+        );
+        if let Some(bar) = &self.bar.actions {
+            toolbar.actions.push(ToolbarAction {
+                name: "Camera settings".into(),
+                icon: "settings".into(),
+                ..bar.effect(&CameraEffect::OpenSettings)
+            });
+        }
         toolbar
     }
 
@@ -138,14 +143,17 @@ impl CameraApp {
             .is_some_and(|page| page.ocr.is_some());
         PAGE_ACTIONS
             .iter()
-            .filter(|(_, _, _, effect)| *effect != CameraEffect::CopyText || has_text)
-            .map(|(id, icon, name, effect)| {
+            .filter(|(_, _, effect)| *effect != CameraEffect::CopyText || has_text)
+            .map(|(icon, name, effect)| {
                 let available = match effect {
                     CameraEffect::MovePageEarlier => selected > 0,
                     CameraEffect::MovePageLater => selected + 1 < pages,
                     _ => true,
                 };
-                ToolbarAction::new(*id, *icon, *name).enabled(free && available)
+                self.bar
+                    .commands
+                    .entry(*icon, *name, Command::Page(effect.clone()))
+                    .enabled(free && available)
             })
             .collect()
     }
@@ -157,12 +165,29 @@ impl CameraApp {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
             asked = true;
+            if self
+                .bar
+                .actions
+                .as_ref()
+                .is_some_and(|bar| bar.press(&event))
+            {
+                continue;
+            }
+            match self.bar.commands.pressed(&event) {
+                Some(Command::OpenPhotos) => {
+                    self.open_photos();
+                    continue;
+                }
+                Some(Command::Page(effect)) => {
+                    self.invoke_on(DOCUMENT_ROW, &effect);
+                    continue;
+                }
+                None => {}
+            }
             let ToolbarEvent::Action { id } = event else {
                 continue;
             };
             match id.as_str() {
-                PHOTOS => self.open_photos(),
-                SETTINGS => self.invoke(&CameraEffect::OpenSettings),
                 "camera.view.photo" | "camera.view.video" => {
                     let mode = if id == "camera.view.video" {
                         CaptureMode::Video
@@ -175,13 +200,7 @@ impl CameraApp {
                 }
                 "camera.view.codes" => self.invoke(&CameraEffect::OpenScanner),
                 "camera.view.documents" => self.invoke(&CameraEffect::OpenDocument),
-                page => {
-                    if let Some((_, _, _, effect)) =
-                        PAGE_ACTIONS.iter().find(|(action, ..)| *action == page)
-                    {
-                        self.invoke_on(DOCUMENT_ROW, effect);
-                    }
-                }
+                _ => {}
             }
         }
         asked
@@ -228,13 +247,24 @@ mod tests {
         ui::window_toolbar::declared().expect("the window declares its slots")
     }
 
-    fn action_ids() -> Vec<String> {
-        bar().actions.into_iter().map(|action| action.id).collect()
+    fn action_names() -> Vec<String> {
+        bar()
+            .actions
+            .into_iter()
+            .map(|action| action.name)
+            .collect()
     }
 
-    fn press(app: &mut TestApp<SampleCamera>, id: &str) {
+    /// Choose the view `id`.
+    fn choose(app: &mut TestApp<SampleCamera>, id: &str) {
         app.harness()
             .press_window_slot(ToolbarEvent::Action { id: id.into() });
+        app.settle();
+    }
+
+    /// Press the entry named `name`.
+    fn press(app: &mut TestApp<SampleCamera>, name: &str) {
+        app.harness().press_window_action(name).unwrap();
         app.settle();
     }
 
@@ -264,7 +294,7 @@ mod tests {
         let ids: Vec<&str> = views.choices.iter().map(|view| view.id.as_str()).collect();
         assert_eq!(ids, VIEWS.map(|(id, _)| id));
         assert_eq!(views.chosen, "camera.view.photo");
-        assert_eq!(action_ids(), [PHOTOS, SETTINGS]);
+        assert_eq!(action_names(), ["Open Photos", "Camera settings"]);
         let canvas = drawn(&mut app);
         for own in [
             "camera.mode:photo",
@@ -272,7 +302,7 @@ mod tests {
             "camera.nav:scanner",
             "camera.nav:document",
             "camera.nav:settings",
-            PHOTOS,
+            "camera.open-photos",
         ] {
             assert!(
                 !canvas.iter().any(|label| label == own),
@@ -280,20 +310,20 @@ mod tests {
             );
         }
 
-        press(&mut app, "camera.view.video");
+        choose(&mut app, "camera.view.video");
         assert_eq!(camera(&mut app, |camera| camera.mode), CaptureMode::Video);
         assert_eq!(bar().views.unwrap().chosen, "camera.view.video");
-        press(&mut app, "camera.view.codes");
+        choose(&mut app, "camera.view.codes");
         assert_eq!(camera(&mut app, |camera| camera.screen), Screen::Scanner);
-        press(&mut app, "camera.view.documents");
+        choose(&mut app, "camera.view.documents");
         assert_eq!(camera(&mut app, |camera| camera.screen), Screen::Document);
-        press(&mut app, "camera.view.photo");
+        choose(&mut app, "camera.view.photo");
         assert_eq!(
             camera(&mut app, |camera| (camera.screen, camera.mode)),
             (Screen::Camera, CaptureMode::Photo)
         );
 
-        press(&mut app, SETTINGS);
+        press(&mut app, "Camera settings");
         assert_eq!(camera(&mut app, |camera| camera.screen), Screen::Settings);
         assert_eq!(
             ui::window_toolbar::declared(),
@@ -308,9 +338,9 @@ mod tests {
     #[test]
     fn the_selected_page_is_the_window_bars_location_and_actions() {
         let mut app = opened();
-        press(&mut app, "camera.view.documents");
+        choose(&mut app, "camera.view.documents");
         assert_eq!(bar().location, None, "no page yet");
-        assert_eq!(action_ids(), [PHOTOS, SETTINGS]);
+        assert_eq!(action_names(), ["Open Photos", "Camera settings"]);
 
         camera(&mut app, CameraApp::capture_document_page);
         app.settle();
@@ -319,30 +349,30 @@ mod tests {
             Some("Page 1 of 1")
         );
         let actions = bar().actions;
-        let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
+        let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
         assert_eq!(
-            ids,
+            names,
             [
-                "camera.document.export",
-                "camera.document.recognize",
-                "camera.document.rotate",
-                "camera.document.crop",
-                "camera.document.move-earlier",
-                "camera.document.move-later",
-                "camera.document.remove",
-                PHOTOS,
-                SETTINGS,
+                "Save as PDF",
+                "Recognize text",
+                "Rotate",
+                "Crop",
+                "Move page earlier",
+                "Move page later",
+                "Remove page",
+                "Open Photos",
+                "Camera settings",
             ]
         );
-        let enabled = |id: &str| {
+        let enabled = |name: &str| {
             actions
                 .iter()
-                .find(|action| action.id == id)
+                .find(|action| action.name == name)
                 .is_some_and(|action| action.enabled)
         };
-        assert!(enabled("camera.document.rotate"));
-        assert!(!enabled("camera.document.move-earlier"), "one page only");
-        assert!(!enabled("camera.document.move-later"), "one page only");
+        assert!(enabled("Rotate"));
+        assert!(!enabled("Move page earlier"), "one page only");
+        assert!(!enabled("Move page later"), "one page only");
         let canvas = drawn(&mut app);
         for own in [
             "Page 1 of 1",
@@ -363,23 +393,22 @@ mod tests {
             })
         };
         let (width, height) = size(&mut app);
-        press(&mut app, "camera.document.rotate");
+        press(&mut app, "Rotate");
         assert_eq!(size(&mut app), (height, width), "Rotate turns the page");
 
-        press(&mut app, "camera.document.crop");
+        press(&mut app, "Crop");
         assert!(camera(&mut app, |camera| camera
             .document_crop_editor
             .is_some()));
-        assert!(
-            !action_ids()
-                .iter()
-                .any(|id| id.starts_with("camera.document.")),
+        assert_eq!(
+            action_names(),
+            ["Open Photos", "Camera settings"],
             "the crop in progress keeps its own Cancel and Apply"
         );
         camera(&mut app, CameraApp::cancel_document_crop);
         app.settle();
 
-        press(&mut app, "camera.document.remove");
+        press(&mut app, "Remove page");
         assert!(camera(&mut app, |camera| camera
             .document_scan
             .pages

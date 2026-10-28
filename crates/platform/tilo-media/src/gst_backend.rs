@@ -311,6 +311,9 @@ pub struct GstState {
     acceptance: FrameAcceptance,
     observed: Arc<Mutex<Observed>>,
     governed_output: Option<Arc<crate::audio_output::gst::Bridge>>,
+    /// Decoded audio buffers that reached the audio sink since the last
+    /// open, counted by a pad probe on the sink.
+    audio_buffers: Arc<std::sync::atomic::AtomicU64>,
     draining_output: bool,
     output_error_reported: bool,
 
@@ -427,6 +430,7 @@ impl GstState {
         acceptance: FrameAcceptance,
         policy: HwPolicy,
         audio_output: bool,
+        video_output: bool,
     ) -> Result<Self, String> {
         gst::init().map_err(|error| format!("GStreamer could not start: {error}"))?;
         // Pick up plugins a codec-pack merge added (or an unmerge removed)
@@ -460,6 +464,11 @@ impl GstState {
         // An engine that never plays sound decodes no audio stream and opens
         // no audio device.
         let mut governed_output = None;
+        if !video_output {
+            // Sound only: a source that also carries a picture never has it
+            // decoded.
+            playbin.set_property_from_str("flags", "audio");
+        }
         if !audio_output {
             playbin.set_property_from_str("flags", "video+text+deinterlace+soft-colorbalance");
         } else if crate::audio_output::is_governed() {
@@ -475,6 +484,18 @@ impl GstState {
         }
         playbin.set_property("mute", false);
         playbin.set_property("volume", 0.8f64);
+        let audio_buffers = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        if let Some(pad) = playbin
+            .property::<Option<gst::Element>>("audio-sink")
+            .and_then(|sink| sink.downcast::<gst::Bin>().ok()?.by_name("tilo_asink"))
+            .and_then(|sink| sink.static_pad("sink"))
+        {
+            let audio_buffers = audio_buffers.clone();
+            let _ = pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                audio_buffers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+        }
 
         let observed = Arc::new(Mutex::new(Observed::default()));
 
@@ -502,6 +523,7 @@ impl GstState {
             acceptance,
             observed,
             governed_output,
+            audio_buffers,
             draining_output: false,
             output_error_reported: false,
             latest: None,
@@ -570,6 +592,8 @@ impl GstState {
         self.deferred_seek = None;
         self.frames_stored = 0;
         self.frames_at_seek = 0;
+        self.audio_buffers
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self.chapters.clear();
         self.resume = None;
         let uri = match source.to_uri() {
@@ -937,6 +961,18 @@ impl GstState {
     /// The audio sink element, the entry point for routing or monitoring the
     /// output (its `device` property, a `PipeWire` target node, a tee for a
     /// meter). `None` when the audio bin could not be built.
+    /// Decoded audio the output has rendered since the last open: the
+    /// host device's progress for a governed output, else the buffers that
+    /// reached the sink.
+    pub fn audio_buffers_rendered(&self) -> u64 {
+        match &self.governed_output {
+            Some(output) => output.observation().rendered_frames,
+            None => self
+                .audio_buffers
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     pub fn audio_sink(&self) -> Option<gst::Element> {
         let sink = self
             .playbin

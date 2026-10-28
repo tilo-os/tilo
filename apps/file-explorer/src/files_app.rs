@@ -757,6 +757,8 @@ pub struct FileExplorerWidget {
     bar_query: Option<String>,
     /// What the bar's slots were last declared from.
     declared_bar: Option<window_bar::BarKey>,
+    /// The commands of the bar's entries.
+    bar_entries: window_bar::BarEntries,
     /// News ([`Self::status`], or that an archive is read-only on entering
     /// it) said in the window's bar for a while; the item and selection
     /// counts are the window's accessible status, not news.
@@ -2046,6 +2048,7 @@ impl FileExplorerWidget {
             header_in_bar: false,
             bar_query: None,
             declared_bar: None,
+            bar_entries: window_bar::BarEntries::new(),
             status_notice: StatusText::default(),
             needs: ui::attention::Presses::new(),
             status_said: None,

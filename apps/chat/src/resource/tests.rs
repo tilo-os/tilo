@@ -146,13 +146,11 @@ fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
             toolbar
                 .actions
                 .iter()
-                .any(|action| action.id == "stop-sharing" && action.enabled)
+                .any(|action| action.name == "Stop sharing" && action.enabled)
         })
     };
     assert!(offers_stop(), "the window's bar shows Stop sharing");
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-        id: "stop-sharing".into(),
-    });
+    app.harness().press_window_action("Stop sharing").unwrap();
     app.settle();
     assert!(!app.surface_mut::<crate::ChatApp>().sharing_context);
     assert!(!offers_stop(), "Stop sharing leaves the bar once stopped");

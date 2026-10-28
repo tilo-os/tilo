@@ -1,17 +1,19 @@
 //! Discord's REST API: one call, with the bot token or a webhook's token,
 //! inside the egress allowlist and the rate limits.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
 use tilo_connector::protocol::FromWorker;
-use tilo_net::{Client, Method, NetError, Redirects};
+use tilo_net::{Client, HeaderMap, Method, NetError, Redirects};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
+use twilight_http_ratelimiting::{Endpoint, RateLimitHeaders, RateLimiter};
 use url::Url;
 
 use crate::egress::{Egress, Purpose};
-use crate::ratelimit::{RateLimits, route_key};
 use crate::secrets::{BOT_TOKEN, Secrets, TOKEN_ITEM};
 
 /// Longest wait for a 429 the worker sits out inside one call; a longer
@@ -99,12 +101,21 @@ pub struct Rest {
     http: Client,
     base: Url,
     egress: Egress,
-    limits: RateLimits,
+    /// Calls in one bucket go one at a time and in the order they were
+    /// made, which keeps calls to one channel in order, and wait for the
+    /// refill when the bucket is empty.
+    limits: RateLimiter,
+    /// Until when a global 429 holds every call.
+    global_until: Mutex<Option<Instant>>,
+    /// Calls that got a 429 or waited for a bucket or the global limit.
+    limited: AtomicU64,
     secrets: Arc<Secrets>,
     out: mpsc::UnboundedSender<FromWorker>,
 }
 
 impl Rest {
+    /// Must be called inside a Tokio runtime, which runs the rate limiter.
+    ///
     /// # Errors
     /// The HTTP client could not be built.
     pub fn new(
@@ -125,7 +136,9 @@ impl Rest {
             http,
             base,
             egress,
-            limits: RateLimits::default(),
+            limits: RateLimiter::default(),
+            global_until: Mutex::new(None),
+            limited: AtomicU64::new(0),
             secrets,
             out,
         })
@@ -139,13 +152,44 @@ impl Rest {
     /// How many calls a 429 or a rate-limit wait has held up so far.
     #[must_use]
     pub fn rate_limited_total(&self) -> u64 {
-        self.limits.limited_total()
+        self.limited.load(Ordering::Relaxed)
     }
 
-    /// Whether a call to `path` would wait for its rate-limit bucket.
-    #[must_use]
-    pub fn busy(&self, method: &Method, path: &str) -> bool {
-        self.limits.busy(&route_key(method.as_str(), path))
+    /// Whether a call to `path` would wait for its rate-limit bucket to
+    /// refill.
+    pub async fn busy(&self, method: &Method, path: &str) -> bool {
+        let Some(endpoint) = endpoint(method, path) else {
+            return false;
+        };
+        self.limits.bucket(endpoint).await.is_some_and(|bucket| {
+            bucket.remaining == 0 && bucket.reset_at > std::time::Instant::now()
+        })
+    }
+
+    /// Wait for the global limit and `endpoint`'s bucket to allow a call,
+    /// counting the wait.
+    async fn permit(
+        &self,
+        method: &Method,
+        path: &str,
+        endpoint: &Endpoint,
+    ) -> twilight_http_ratelimiting::Permit {
+        if self.wait_global().await | self.busy(method, path).await {
+            self.limited.fetch_add(1, Ordering::Relaxed);
+        }
+        self.limits.acquire(endpoint.clone()).await
+    }
+
+    /// Wait out a global limit; whether there was one.
+    async fn wait_global(&self) -> bool {
+        let until = self.global_until.lock().ok().and_then(|until| *until);
+        match until {
+            Some(until) if until > Instant::now() => {
+                tokio::time::sleep_until(until).await;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Call `method path` with `query` and `body`. `path` is below the API
@@ -176,10 +220,11 @@ impl Rest {
         self.egress
             .check(&url, Purpose::Api)
             .map_err(RestError::Unavailable)?;
-        let route = route_key(method.as_str(), path);
+        let endpoint = endpoint(&method, path)
+            .ok_or_else(|| RestError::Unavailable(format!("no rate limits for {method}")))?;
         let (content_type, bytes) = encode(&body);
         for _ in 0..MAX_ATTEMPTS {
-            let mut held = self.limits.acquire(&route).await;
+            let permit = self.permit(&method, path, &endpoint).await;
             let mut request = self.http.request(method.clone(), url.as_str());
             if auth == Auth::Bot {
                 let token = self
@@ -209,7 +254,6 @@ impl Rest {
             let response = request.send().await.map_err(|e| unreachable_error(&e))?;
             let status = response.status().as_u16();
             let headers = response.headers().clone();
-            self.limits.observe(&mut held, &headers);
             let raw = response
                 .bytes_limited(MAX_RESPONSE_BYTES)
                 .await
@@ -219,19 +263,17 @@ impl Rest {
             } else {
                 serde_json::from_slice(&raw).unwrap_or(Value::Null)
             };
-            match status {
-                200..=299 => return Ok(value),
-                429 => {
-                    let wait = self.limits.retry_after(&mut held, &headers, &value);
+            match (status, self.settle(permit, status, &headers, &value)) {
+                (200..=299, _) => return Ok(value),
+                (_, Some(wait)) => {
                     if wait > MAX_INLINE_WAIT {
                         return Err(RestError::Unavailable(format!(
                             "Discord is rate limiting this route for {}s",
                             wait.as_secs()
                         )));
                     }
-                    drop(held);
                 }
-                401 if auth == Auth::Bot => {
+                (401, _) if auth == Auth::Bot => {
                     self.secrets.forget(BOT_TOKEN, TOKEN_ITEM);
                     let _ = self.out.send(FromWorker::Status {
                         healthy: false,
@@ -239,7 +281,7 @@ impl Rest {
                     });
                     return Err(RestError::Unauthorized(REJECTED_TOKEN.into()));
                 }
-                400..=499 => {
+                (400..=499, _) => {
                     return Err(RestError::Refused {
                         status,
                         code: value.get("code").and_then(Value::as_u64).unwrap_or(0),
@@ -259,6 +301,105 @@ impl Rest {
             "Discord kept rate limiting this route".into(),
         ))
     }
+}
+
+impl Rest {
+    /// Tell the rate limiter what a response said about its bucket. For a
+    /// 429, how long it says to wait, from its body's `retry_after` or the
+    /// `Retry-After` header: the route's bucket stays empty that long, and a
+    /// global 429 holds every other call too.
+    fn settle(
+        &self,
+        permit: twilight_http_ratelimiting::Permit,
+        status: u16,
+        headers: &HeaderMap,
+        body: &Value,
+    ) -> Option<Duration> {
+        if status != 429 {
+            permit.complete(bucket_headers(headers));
+            return None;
+        }
+        self.limited.fetch_add(1, Ordering::Relaxed);
+        let wait = body
+            .get("retry_after")
+            .and_then(Value::as_f64)
+            .and_then(|s| Duration::try_from_secs_f64(s).ok())
+            .or_else(|| header(headers, "retry-after").and_then(seconds))
+            .unwrap_or(Duration::from_secs(1));
+        let global = body.get("global").and_then(Value::as_bool) == Some(true)
+            || headers.contains_key("x-ratelimit-global");
+        if global {
+            if let Ok(mut until) = self.global_until.lock() {
+                *until = Instant::now().checked_add(wait);
+            }
+            permit.complete(None);
+        } else {
+            let bucket = header(headers, RateLimitHeaders::BUCKET).unwrap_or_default();
+            permit.complete(Some(RateLimitHeaders {
+                bucket: bucket.as_bytes().to_vec(),
+                limit: 0,
+                remaining: 0,
+                reset_at: std::time::Instant::now()
+                    .checked_add(wait)
+                    .unwrap_or_else(std::time::Instant::now),
+            }));
+        }
+        Some(wait)
+    }
+}
+
+/// The rate-limited endpoint of `method path`: the path with every id that
+/// is not a major parameter (message ids, emoji, user ids) replaced, so the
+/// limiter learns one bucket for all the calls Discord counts in one.
+fn endpoint(method: &Method, path: &str) -> Option<Endpoint> {
+    use twilight_http_ratelimiting::Method as Limited;
+    let method = match *method {
+        Method::GET => Limited::Get,
+        Method::POST => Limited::Post,
+        Method::PATCH => Limited::Patch,
+        Method::PUT => Limited::Put,
+        Method::DELETE => Limited::Delete,
+        _ => return None,
+    };
+    let mut key = Vec::new();
+    let mut previous = "";
+    let mut before_previous = "";
+    for segment in path.trim_start_matches('/').split('/') {
+        let major = matches!(previous, "channels" | "guilds" | "webhooks")
+            || (before_previous == "webhooks" && previous != "messages");
+        let variable = segment.bytes().all(|b| b.is_ascii_digit()) || previous == "reactions";
+        key.push(if major || !variable { segment } else { ":id" });
+        before_previous = previous;
+        previous = segment;
+    }
+    Some(Endpoint {
+        method,
+        path: key.join("/"),
+    })
+}
+
+/// What a response's headers say about its bucket, when they say it all.
+fn bucket_headers(headers: &HeaderMap) -> Option<RateLimitHeaders> {
+    Some(RateLimitHeaders {
+        bucket: header(headers, RateLimitHeaders::BUCKET)?
+            .as_bytes()
+            .to_vec(),
+        limit: header(headers, RateLimitHeaders::LIMIT)?.parse().ok()?,
+        remaining: header(headers, RateLimitHeaders::REMAINING)?.parse().ok()?,
+        reset_at: std::time::Instant::now()
+            .checked_add(header(headers, RateLimitHeaders::RESET_AFTER).and_then(seconds)?)?,
+    })
+}
+
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+fn seconds(text: &str) -> Option<Duration> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
 }
 
 /// A network failure without the error's own text, which can name the URL
@@ -318,5 +459,39 @@ fn encode(body: &Body) -> (Option<String>, Vec<u8>) {
                 out,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoints_keep_major_parameters_only() {
+        let path = |method, path| endpoint(&method, path).map(|endpoint| endpoint.path);
+        assert_eq!(
+            path(Method::GET, "/channels/11/messages/22").as_deref(),
+            Some("channels/11/messages/:id")
+        );
+        assert_eq!(
+            path(
+                Method::PUT,
+                "/channels/11/messages/22/reactions/%F0%9F%91%8D/@me"
+            )
+            .as_deref(),
+            Some("channels/11/messages/:id/reactions/:id/@me")
+        );
+        assert_eq!(
+            path(Method::POST, "/webhooks/33/tok").as_deref(),
+            Some("webhooks/33/tok")
+        );
+        assert_eq!(
+            path(Method::PATCH, "/webhooks/33/tok/messages/44").as_deref(),
+            Some("webhooks/33/tok/messages/:id")
+        );
+        assert_eq!(
+            path(Method::PUT, "/guilds/1/members/2/roles/3").as_deref(),
+            Some("guilds/1/members/:id/roles/:id")
+        );
     }
 }

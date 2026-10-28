@@ -17,6 +17,8 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Change watches on the extension status and brightness memory directories.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true

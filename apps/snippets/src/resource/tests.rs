@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::Language;
-use ui::tilo_actions::{ActionSpec, Resource as Published};
+use ui::tilo_actions::{ActionSpec, ResourceSpec as Published};
 use ui::tilo_resource::{Edit, Replica, Resource};
 
 fn edit(library: &mut Replica<Snippets>, edit: &Edit<Snippets>) -> Result<(), String> {

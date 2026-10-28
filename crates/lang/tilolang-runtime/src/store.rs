@@ -87,6 +87,7 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
         FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
         FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
         FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
+        FieldValue::Rich(r) => Ok(Lit::Text(r.plain_text())),
         FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
         FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
         FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
@@ -129,7 +130,7 @@ impl FieldRead {
         use crate::meta::Ty;
         let absent = match kind {
             FieldKind::Counter | FieldKind::Collection => Lit::Int(0),
-            FieldKind::Text => Lit::Text(String::new()),
+            FieldKind::Text | FieldKind::RichText => Lit::Text(String::new()),
             FieldKind::Set => Lit::Set(Vec::new()),
             FieldKind::Map => return None,
             FieldKind::Register => match default {
@@ -189,6 +190,12 @@ pub enum Mutation {
         field: FieldId,
         text: String,
     },
+    /// Make the rich text read as `value`; the store splices and marks the paragraphs that
+    /// differ ([`crate::rich::store_under`]).
+    SetRich {
+        field: FieldId,
+        value: crate::rich::RichValue,
+    },
     /// Insert a new item with a fresh id; `index` of `None` appends.
     CollInsert {
         field: FieldId,
@@ -246,6 +253,8 @@ pub enum FieldValue {
     Scalar(Scalar),
     Counter(i64),
     Text(String),
+    /// A rich text's paragraphs.
+    Rich(crate::rich::RichValue),
     /// Collection items in order.
     Items(Vec<ItemId>),
     /// Set elements, sorted.

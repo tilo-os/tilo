@@ -4,15 +4,11 @@
 //! search finds and replaces in the bytes ([`super::find`]) and its History
 //! control opens the record's History; the view draws no header row.
 
-use ui::window_toolbar::{
-    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
-};
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use super::HexView;
 use crate::model::EditMode;
 
-/// The bar action that shows and hides the inspector.
-pub(crate) const INSPECTOR: &str = "hex.inspector";
 /// The bar's views: how a typed byte lands.
 pub(crate) const OVERWRITE: &str = "hex.mode:overwrite";
 pub(crate) const INSERT: &str = "hex.mode:insert";
@@ -49,16 +45,17 @@ impl HexView {
                 chosen: mode_id(self.model.mode()).into(),
             }),
             actions: vec![
-                ToolbarAction::new(
-                    INSPECTOR,
-                    "panel-right",
-                    if open {
-                        "Hide inspector"
-                    } else {
-                        "Show inspector"
-                    },
-                )
-                .on(open),
+                self.inspector_entry
+                    .entry(
+                        "panel-right",
+                        if open {
+                            "Hide inspector"
+                        } else {
+                            "Show inspector"
+                        },
+                        (),
+                    )
+                    .on(open),
             ],
             ..WindowToolbar::default()
         }
@@ -75,26 +72,24 @@ impl HexView {
 
     /// Run one thing the person did in the window's bar.
     pub(crate) fn run_window_bar_event(&mut self, event: &ToolbarEvent) {
-        let ToolbarEvent::Action { id } = event else {
-            return;
-        };
         if !self.has_file {
             return;
         }
-        match id.as_str() {
-            INSPECTOR => self.toggle_inspector(),
-            OVERWRITE | INSERT => {
-                let want = if id == OVERWRITE {
-                    EditMode::Overwrite
-                } else {
-                    EditMode::Insert
-                };
-                if self.model.mode() != want {
-                    self.model.toggle_mode();
-                    self.moved();
-                }
-            }
-            _ => {}
+        if self.inspector_entry.pressed(event).is_some() {
+            self.toggle_inspector();
+            return;
+        }
+        let ToolbarEvent::Action { id } = event else {
+            return;
+        };
+        let want = match id.as_str() {
+            OVERWRITE => EditMode::Overwrite,
+            INSERT => EditMode::Insert,
+            _ => return,
+        };
+        if self.model.mode() != want {
+            self.model.toggle_mode();
+            self.moved();
         }
     }
 }

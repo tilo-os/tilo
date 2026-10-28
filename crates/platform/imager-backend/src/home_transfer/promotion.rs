@@ -4,11 +4,11 @@ use super::super::{
     destination_security,
     migration::{OwnedTemporary, PinnedDirectory, changed},
     migration_durability as durable,
+    migration_journal_log::{self, frame_bytes},
     migration_store::NativePath,
     nofollow::metadata_nofollow,
 };
 use crate::home_transfer::protocol::Fact;
-use advisory_lock::FileLock;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, MetadataExt, OpenOptions};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use std::{
     collections::BTreeSet,
     ffi::{CString, OsStr},
     fs::File,
-    io::{self, BufRead, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, Read, Seek, Write},
     os::{
         fd::AsRawFd,
         unix::{ffi::OsStrExt, fs::PermissionsExt},
@@ -767,6 +767,15 @@ fn validate_plan(plan: &Plan) -> io::Result<()> {
     for entry in plan.entries.iter() {
         let entry = entry?;
         let path = decoded(&entry.path)?;
+        // Review captures structural proof for exactly the moved entries that
+        // may hold installed applications; recovery relies on it being there.
+        if entry.structure.is_some()
+            != (matches!(entry.kind, Kind::Move) && structure::needed(&path))
+        {
+            return Err(changed(
+                "Adoption structural proof does not match its entry",
+            ));
+        }
         if let Some(items) = &entry.structure {
             structure::validate(items, &entry)?;
         }
@@ -879,22 +888,34 @@ fn plan_digest(plan: &Plan) -> io::Result<[u8; 32]> {
     serde_json::to_writer(&mut writer, plan)?;
     Ok(writer.0.finalize().into())
 }
+const MAGIC: [u8; 8] = *b"TILOADP2";
+type Reservation = crate::migration_review::storage::scratch::MetadataReservation;
+/// The adoption journal on the shared framed log: the segmented plan's
+/// manifest, published with the header, then one receipt per completed move.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum Record {
+    Plan {
+        nonce: String,
+        bytes: u64,
+        sha256: [u8; 32],
+        segments: usize,
+    },
+    Segment(segmented::Segment),
+    Entry(usize),
+    Root {
+        root_acl: root_acl::Receipt,
+    },
+}
 struct Log {
-    file: FileLock,
-    parent: Arc<PinnedDirectory>,
-    name: std::ffi::OsString,
-    identity: durable::Identity,
+    log: migration_journal_log::Log,
     plan: Plan,
     done: Done,
     root_receipt: Option<root_acl::Receipt>,
-    journal_reservations: Vec<crate::migration_review::storage::scratch::MetadataReservation>,
-    segment_reservation: Option<crate::migration_review::storage::scratch::MetadataReservation>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-enum Checkpoint {
-    Entry(usize),
-    Root { root_acl: root_acl::Receipt },
+    journal_reservations: Vec<Reservation>,
+    segment_reservation: Reservation,
+    #[cfg(all(test, feature = "native-capture-qualification"))]
+    manifest: segmented::Manifest,
 }
 impl Log {
     fn create(parent: &Arc<PinnedDirectory>, name: &OsStr, plan: Plan) -> io::Result<Self> {
@@ -902,75 +923,50 @@ impl Log {
         let scratch = plan.entries.store().scratch();
         scratch.validate_metadata_destination(parent)?;
         let mut journal_reservation = scratch.reserve_metadata()?;
-        let mut temporary = OwnedTemporary::create(parent, name)?;
         let checkpoint_bytes = checkpoint_reserve(&plan)?;
-        let mut measure = PlanMeasure { bytes: 0 };
-        serde_json::to_writer(&mut measure, &plan)?;
-        measure.write_all(b"\n")?;
-        let pending = if measure
-            .bytes
-            .checked_add(checkpoint_bytes)
-            .is_some_and(|n| n <= MAX as u64)
-        {
-            journal_reservation.grow(
-                measure
-                    .bytes
-                    .checked_add(checkpoint_bytes)
-                    .ok_or_else(|| changed("Adoption root quota overflow"))?,
-            )?;
-            let mut output = PlanWriter {
-                file: &mut temporary.file,
-                bytes: 0,
-                maximum: MAX
-                    .checked_sub(usize::try_from(checkpoint_bytes).map_err(io::Error::other)?)
-                    .ok_or_else(|| changed("Home adoption checkpoint reserve exceeds bounds"))?,
-            };
-            serde_json::to_writer(&mut output, &plan)?;
-            output.write_all(b"\n")?;
-            None
-        } else {
-            let (pending, manifest) = segmented::Pending::write(parent, &plan)?;
-            let mut header = PlanMeasure { bytes: 0 };
-            serde_json::to_writer(&mut header, &manifest)?;
-            header.write_all(b"\n")?;
-            journal_reservation.grow(
-                header
-                    .bytes
-                    .checked_add(checkpoint_bytes)
-                    .ok_or_else(|| changed("Adoption root quota overflow"))?,
-            )?;
-            serde_json::to_writer(&mut temporary.file, &manifest)?;
-            temporary.file.write_all(b"\n")?;
-            if temporary
-                .file
-                .metadata()?
-                .len()
-                .checked_add(checkpoint_bytes)
-                .is_none_or(|n| n > MAX as u64)
-            {
-                return Err(changed("Home adoption root journal exceeds bounds"));
-            }
-            Some(pending)
+        let (pending, manifest) = segmented::Pending::write(parent, &plan)?;
+        let head = Record::Plan {
+            nonce: manifest.nonce.clone(),
+            bytes: manifest.bytes,
+            sha256: manifest.sha256,
+            segments: manifest.segments.len(),
         };
-        durable::sync_file(&temporary.file)?;
-        temporary.validate()?;
-        publish_temporary(parent, &temporary, name)?;
+        let mut journal_bytes = (MAGIC.len() as u64)
+            .checked_add(frame_bytes(&head)?)
+            .ok_or_else(|| changed("Adoption root quota overflow"))?;
+        for segment in &manifest.segments {
+            journal_bytes = journal_bytes
+                .checked_add(frame_bytes(&Record::Segment(segment.clone()))?)
+                .ok_or_else(|| changed("Adoption root quota overflow"))?;
+        }
+        let journal_bytes = journal_bytes
+            .checked_add(checkpoint_bytes)
+            .filter(|n| *n <= MAX as u64)
+            .ok_or_else(|| changed("Home adoption root journal exceeds bounds"))?;
+        journal_reservation.grow(journal_bytes)?;
+        let log =
+            migration_journal_log::Log::create_in(parent, name, MAGIC, &head, |file, seq| {
+                for segment in &manifest.segments {
+                    migration_journal_log::write_record(
+                        file,
+                        seq,
+                        &Record::Segment(segment.clone()),
+                    )?;
+                }
+                Ok(())
+            })?;
+        drop(log);
         #[cfg(test)]
         crate::migration_journal::crash_injection::boundary("adoption_root_published");
         // Once the root name exists, even an uncertain directory sync must
         // retain referenced segments. Error recovery can verify that root;
         // uncommitted cleanup must never leave it pointing to removed files.
-        let reservation = match pending {
-            Some(pending) => Some(pending.commit()?),
-            None => None,
-        };
-        durable::sync_directory(&parent.file)?;
-        drop(temporary);
+        let reservation = pending.commit()?;
         Self::open_with_reservation(
             parent,
             name,
             scratch,
-            reservation,
+            Some(reservation),
             Some(journal_reservation),
         )
     }
@@ -985,83 +981,86 @@ impl Log {
         parent: &Arc<PinnedDirectory>,
         name: &OsStr,
         scratch: Arc<super::super::migration_review::InventoryScratch>,
-        reservation: Option<crate::migration_review::storage::scratch::MetadataReservation>,
-        journal_reservation: Option<crate::migration_review::storage::scratch::MetadataReservation>,
+        reservation: Option<Reservation>,
+        journal_reservation: Option<Reservation>,
     ) -> io::Result<Self> {
         scratch.validate_metadata_destination(parent)?;
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .follow(FollowSymlinks::No)
-            .nonblock(true);
-        let raw = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
-        destination_security::check_private_file(&raw)?;
-        if !raw.metadata()?.is_file() || raw.metadata()?.len() > MAX as u64 {
+        let mut log = migration_journal_log::Log::open_in(parent, name, MAGIC)?;
+        if log.file.metadata()?.len() > MAX as u64 {
             return Err(changed(
                 "Home adoption journal must be bounded private metadata",
             ));
         }
-        let mut file = FileLock::try_exclusive(raw).map_err(io::Error::other)?;
-        let mut reader = std::io::BufReader::new(&*file);
-        let store = Store::new(scratch.clone(), Arc::new(AtomicBool::new(false)))?;
-        let (plan, mut offset, segment_reservation) = if segmented::is_segmented(reader.fill_buf()?)
-        {
-            let (manifest, bytes) = segmented::Manifest::read(&mut reader)?;
-            let mut segments =
-                std::io::BufReader::new(manifest.reader(parent, &scratch, reservation)?);
-            let mut line = replay::Line::segmented(&mut segments);
-            let plan = line.parse(Arc::clone(&store))?;
-            drop(line);
-            let mut extra = [0u8; 1];
-            if segments.read(&mut extra)? != 0 {
-                return Err(changed("Adoption segmented plan has trailing bytes"));
-            }
-            let reservation = segments.into_inner().into_reservation()?;
-            (plan, bytes, Some(reservation))
-        } else {
-            let mut line = replay::Line::new(&mut reader);
-            let plan = line.parse(Arc::clone(&store))?;
-            let bytes = line.bytes;
-            drop(line);
-            if reservation.is_some() {
-                return Err(changed("Segmented allocation bound to legacy journal"));
-            }
-            (plan, bytes, None)
+        let Some(Record::Plan {
+            nonce,
+            bytes,
+            sha256,
+            segments: count,
+        }) = migration_journal_log::read_record(&mut log.file, log.sequence)?
+        else {
+            return Err(changed("Home adoption journal is incomplete"));
         };
+        log.sequence += 1;
+        if count > segmented::SEGMENTS {
+            return Err(changed("Adoption segmented manifest exceeds bounds"));
+        }
+        let mut segments = Vec::with_capacity(count);
+        while segments.len() < count {
+            let Some(Record::Segment(segment)) =
+                migration_journal_log::read_record(&mut log.file, log.sequence)?
+            else {
+                return Err(changed("Home adoption journal is incomplete"));
+            };
+            log.sequence += 1;
+            segments.push(segment);
+        }
+        let manifest = segmented::Manifest {
+            nonce,
+            bytes,
+            sha256,
+            segments,
+        };
+        let store = Store::new(scratch.clone(), Arc::new(AtomicBool::new(false)))?;
+        #[cfg(all(test, feature = "native-capture-qualification"))]
+        let kept = segmented::Manifest {
+            nonce: manifest.nonce.clone(),
+            bytes: manifest.bytes,
+            sha256: manifest.sha256,
+            segments: manifest.segments.clone(),
+        };
+        let mut plan_bytes =
+            std::io::BufReader::new(manifest.reader(parent, &scratch, reservation)?);
+        let mut line = replay::Line::new(&mut plan_bytes);
+        let plan = line.parse(Arc::clone(&store))?;
+        drop(line);
+        let mut extra = [0u8; 1];
+        if plan_bytes.read(&mut extra)? != 0 {
+            return Err(changed("Adoption segmented plan has trailing bytes"));
+        }
+        let segment_reservation = plan_bytes.into_inner().into_reservation()?;
         validate_plan(&plan)?;
         let journal_reservations = if let Some(reservation) = journal_reservation {
             reservation.check()?;
             vec![reservation]
         } else {
             let mut existing = scratch.reserve_metadata()?;
-            existing.retain_locked_journal(&file)?;
+            existing.retain_locked_journal(&log.file)?;
             let mut future = scratch.reserve_metadata()?;
             future.grow(checkpoint_reserve(&plan)?)?;
             vec![existing, future]
         };
         store.freeze()?;
-        let mut bytes = Vec::new();
         let mut done = Done::new(plan.entries.len(), store.scratch())?;
         let mut root_receipt = None;
-        loop {
-            bytes.clear();
-            if reader.by_ref().take(1025).read_until(b'\n', &mut bytes)? == 0 {
-                break;
-            }
-            if bytes.len() > 1024 {
-                return Err(changed("Home adoption checkpoint exceeds bounds"));
-            }
-            if bytes.last() != Some(&b'\n') {
-                break;
-            }
-            match serde_json::from_slice::<Checkpoint>(&bytes)? {
-                Checkpoint::Entry(index) => {
+        let mut end = log.file.stream_position()?;
+        while let Some(record) = migration_journal_log::read_record(&mut log.file, log.sequence)? {
+            match record {
+                Record::Entry(index) => {
                     if index >= plan.entries.len() || !done.insert(index)? {
                         return Err(changed("Home adoption journal has an invalid receipt"));
                     }
                 }
-                Checkpoint::Root { root_acl: receipt } => {
+                Record::Root { root_acl: receipt } => {
                     let expected = plan
                         .root_acl
                         .as_ref()
@@ -1074,89 +1073,50 @@ impl Log {
                     }
                     root_receipt = Some(receipt);
                 }
+                Record::Plan { .. } | Record::Segment(_) => {
+                    return Err(changed("Home adoption journal has an invalid receipt"));
+                }
             }
-            offset = offset
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(|| changed("Home adoption journal overflow"))?;
+            log.sequence += 1;
+            end = log.file.stream_position()?;
         }
-        file.set_len(offset)?;
-        file.seek(SeekFrom::End(0))?;
-        durable::sync_file(&file)?;
-        let identity = durable::identity(&file)?;
+        // An interrupted last append has no durable receipt; its move is
+        // revalidated and repeated. No earlier receipt is removed.
+        log.repair(end, || Ok(()))?;
         Ok(Self {
-            file,
-            parent: Arc::clone(parent),
-            name: name.into(),
-            identity,
+            log,
             plan,
             done,
             root_receipt,
             journal_reservations,
             segment_reservation,
+            #[cfg(all(test, feature = "native-capture-qualification"))]
+            manifest: kept,
         })
     }
+    fn check_reservations(&self) -> io::Result<()> {
+        for reservation in &self.journal_reservations {
+            reservation.check()?;
+        }
+        self.segment_reservation.check()
+    }
     fn checkpoint_root(&mut self, receipt: root_acl::Receipt) -> io::Result<()> {
-        self.check_identity()?;
+        self.check_reservations()?;
         if self.root_receipt.is_some() {
             return Err(changed("Duplicate root ACL checkpoint"));
         }
-        serde_json::to_writer(
-            &mut *self.file,
-            &Checkpoint::Root {
-                root_acl: receipt.clone(),
-            },
-        )?;
-        self.file.write_all(b"\n")?;
-        durable::sync_file(&self.file)?;
+        self.log.append(&Record::Root {
+            root_acl: receipt.clone(),
+        })?;
         self.root_receipt = Some(receipt);
         Ok(())
     }
-    fn check_identity(&self) -> io::Result<()> {
-        for reservation in &self.journal_reservations {
-            reservation.check()?;
-        }
-        if let Some(reservation) = &self.segment_reservation {
-            reservation.check()?;
-        }
-        self.parent.validate_destination()?;
-        let named = cap_primitives::fs::open(
-            &self.parent.file,
-            Path::new(&self.name),
-            OpenOptions::new()
-                .read(true)
-                .follow(FollowSymlinks::No)
-                .nonblock(true),
-        )?;
-        if durable::identity(&named)? != self.identity {
-            return Err(changed("Home adoption journal was replaced"));
-        }
-        Ok(())
-    }
     fn checkpoint(&mut self, index: usize) -> io::Result<()> {
-        for reservation in &self.journal_reservations {
-            reservation.check()?;
-        }
-        if let Some(reservation) = &self.segment_reservation {
-            reservation.check()?;
-        }
+        self.check_reservations()?;
         if self.done.contains(index)? {
             return Err(changed("Duplicate adoption checkpoint"));
         }
-        self.parent.validate_destination()?;
-        let named = cap_primitives::fs::open(
-            &self.parent.file,
-            Path::new(&self.name),
-            OpenOptions::new()
-                .read(true)
-                .follow(FollowSymlinks::No)
-                .nonblock(true),
-        )?;
-        if durable::identity(&named)? != self.identity {
-            return Err(changed("Home adoption journal was replaced"));
-        }
-        serde_json::to_writer(&mut *self.file, &index)?;
-        self.file.write_all(b"\n")?;
-        durable::sync_file(&self.file)?;
+        self.log.append(&Record::Entry(index))?;
         if !self.done.insert(index)? {
             return Err(changed("Duplicate adoption checkpoint"));
         }
@@ -1193,59 +1153,21 @@ fn publish_temporary(
     Ok(())
 }
 
+/// The exact framed size of every receipt the journal may still append.
 fn checkpoint_reserve(plan: &Plan) -> io::Result<u64> {
+    let last = plan.entries.len().saturating_sub(1);
     let entries = (plan.entries.len() as u64)
-        .checked_mul(32)
+        .checked_mul(frame_bytes(&Record::Entry(last))?)
         .ok_or_else(|| changed("Adoption checkpoint reserve overflow"))?;
     let root = match &plan.root_acl {
-        Some(intent) => {
-            serde_json::to_vec(&Checkpoint::Root {
-                root_acl: intent.receipt(plan)?,
-            })?
-            .len() as u64
-                + 1
-        }
+        Some(intent) => frame_bytes(&Record::Root {
+            root_acl: intent.receipt(plan)?,
+        })?,
         None => 0,
     };
     entries
         .checked_add(root)
         .ok_or_else(|| changed("Adoption checkpoint reserve overflow"))
-}
-struct PlanMeasure {
-    bytes: u64,
-}
-impl Write for PlanMeasure {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes = self
-            .bytes
-            .checked_add(bytes.len() as u64)
-            .filter(|n| *n <= segmented::TOTAL)
-            .ok_or_else(|| changed("Adoption plan exceeds segmented bounds"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-struct PlanWriter<'a> {
-    file: &'a mut File,
-    bytes: usize,
-    maximum: usize,
-}
-impl Write for PlanWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let next = self
-            .bytes
-            .checked_add(bytes.len())
-            .filter(|n| *n <= self.maximum)
-            .ok_or_else(|| changed("Home adoption plan exceeds bounds"))?;
-        self.file.write_all(bytes)?;
-        self.bytes = next;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
 }
 
 #[cfg(test)]

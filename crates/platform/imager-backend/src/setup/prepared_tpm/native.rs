@@ -196,11 +196,9 @@ fn read_bounded(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
             "signed target artifact is not a bounded regular file",
         ));
     }
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(invalid("signed target artifact exceeded its bound"));
-    }
+    let bytes = crate::record::read_bounded(file, limit, || {
+        invalid("signed target artifact exceeded its bound")
+    })?;
     Ok(bytes)
 }
 

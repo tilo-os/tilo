@@ -12,18 +12,12 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToo
 
 use super::{Action, Content, Destination, RemoteApp};
 
-pub(crate) const NEW_CONNECTION: &str = "remote.connection.new";
-pub(crate) const LEAVE_FORM: &str = "remote.form.back";
-pub(crate) const SAVE: &str = "remote.form.save";
-pub(crate) const SCALE: &str = "remote.session.scale";
-pub(crate) const FULLSCREEN: &str = "remote.session.fullscreen";
-pub(crate) const DISCONNECT: &str = "remote.session.disconnect";
-
 impl RemoteApp {
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
         let name = |id| self.workspace.get(id).map(|c| c.name.clone());
+        let bar = &self.bar;
         let (label, actions) = match self.content() {
             Content::List {
                 destination,
@@ -35,17 +29,17 @@ impl RemoteApp {
                     _ => "Connections",
                 })),
                 if has_connections {
-                    vec![ToolbarAction::new(NEW_CONNECTION, "plus", "New connection")]
+                    vec![bar.entry("plus", "New connection", Action::NewConnection)]
                 } else {
                     Vec::new()
                 },
             ),
             Content::Form(model) => {
                 toolbar.leading.push(
-                    ToolbarAction::new(
-                        LEAVE_FORM,
+                    bar.entry(
                         "arrow-left",
                         I18nManager::lookup_plain("window-toolbar-back"),
+                        Action::Back,
                     )
                     .navigating(),
                 );
@@ -55,7 +49,7 @@ impl RemoteApp {
                     } else {
                         "New connection"
                     })),
-                    vec![ToolbarAction::new(SAVE, "check", "Save")],
+                    vec![bar.entry("check", "Save", Action::SaveForm)],
                 )
             }
             Content::Surface(id) => {
@@ -88,15 +82,18 @@ impl RemoteApp {
     fn session_actions(&self, framebuffer: bool) -> Vec<ToolbarAction> {
         let mut actions = Vec::new();
         if framebuffer {
-            let fit = self.session.borrow().scale_to_fit;
-            actions.push(if fit {
-                ToolbarAction::new(SCALE, "square", "Actual size")
+            let (icon, name) = if self.session.borrow().scale_to_fit {
+                ("square", "Actual size")
             } else {
-                ToolbarAction::new(SCALE, "minimize-2", "Fit to window")
-            });
-            actions.push(ToolbarAction::new(FULLSCREEN, "maximize-2", "Full screen"));
+                ("minimize-2", "Fit to window")
+            };
+            actions.push(self.bar.entry(icon, name, Action::ToggleScale));
+            actions.push(
+                self.bar
+                    .entry("maximize-2", "Full screen", Action::ToggleFullscreen),
+            );
         }
-        actions.push(ToolbarAction::new(DISCONNECT, "unlink", "Disconnect"));
+        actions.push(self.bar.entry("unlink", "Disconnect", Action::Disconnect));
         actions
     }
 
@@ -109,16 +106,11 @@ impl RemoteApp {
             let action = match &event {
                 ToolbarEvent::Back if on_form => Action::Back,
                 _ if self.shell.window_toolbar_event(&event) => continue,
-                ToolbarEvent::Action { id } => match id.as_str() {
-                    NEW_CONNECTION => Action::NewConnection,
-                    LEAVE_FORM if on_form => Action::Back,
-                    SAVE => Action::SaveForm,
-                    SCALE => Action::ToggleScale,
-                    FULLSCREEN => Action::ToggleFullscreen,
-                    DISCONNECT => Action::Disconnect,
-                    _ => continue,
+                _ => match self.bar.pressed(&event) {
+                    Some(Action::Back) if !on_form => continue,
+                    Some(action) => action,
+                    None => continue,
                 },
-                _ => continue,
             };
             self.requests.borrow_mut().push(action);
         }

@@ -9,12 +9,7 @@ use ui::window_toolbar::{
 };
 
 use super::{Page, PrintCentre, UiCommand, display_name};
-
-pub(crate) const ADD_PRINTER: &str = "print-centre.add";
-pub(crate) const PRINT: &str = "print-centre.print";
-pub(crate) const REFRESH: &str = "print-centre.refresh";
-pub(crate) const CHECK_AGAIN: &str = "print-centre.diagnostics.refresh";
-pub(crate) const NEEDS_YOU: &str = "print-centre.needs";
+use crate::resource::PrintCentreEffect;
 
 impl PrintCentre {
     /// The window bar's slots for the page shown now.
@@ -35,33 +30,46 @@ impl PrintCentre {
             .as_ref()
             .and_then(|snapshot| snapshot.queues.as_ref().ok())
             .is_some_and(|queues| !queues.is_empty());
-        match self.page {
-            Page::Dashboard => {
-                // Adding a printer and printing both need printers: with
-                // none, the page's own empty state offers to find one.
-                if has_printers {
+        if let Some(bar) = &self.bar {
+            let entry = |effect: PrintCentreEffect, icon: &str, name: &str| ToolbarAction {
+                icon: icon.into(),
+                name: name.into(),
+                ..bar.effect(&effect)
+            };
+            match self.page {
+                Page::Dashboard => {
+                    // Adding a printer and printing both need printers: with
+                    // none, the page's own empty state offers to find one.
+                    if has_printers {
+                        toolbar.actions.push(entry(
+                            PrintCentreEffect::PrintDocument,
+                            "printer",
+                            "Print a document",
+                        ));
+                        toolbar.actions.push(entry(
+                            PrintCentreEffect::FindPrinters,
+                            "plus",
+                            "Add printer",
+                        ));
+                    }
                     toolbar
                         .actions
-                        .push(ToolbarAction::new(PRINT, "printer", "Print a document"));
-                    toolbar
-                        .actions
-                        .push(ToolbarAction::new(ADD_PRINTER, "plus", "Add printer"));
+                        .push(entry(PrintCentreEffect::Refresh, "refresh", "Refresh"));
                 }
+                Page::Diagnostics => {
+                    toolbar.actions.push(entry(
+                        PrintCentreEffect::Refresh,
+                        "refresh",
+                        "Check again",
+                    ));
+                }
+                _ => {}
+            }
+            if let Some(label) = ui::attention::pill() {
                 toolbar
                     .actions
-                    .push(ToolbarAction::new(REFRESH, "refresh", "Refresh"));
+                    .push(entry(PrintCentreEffect::OpenNeeds, "bell", &label).labelled());
             }
-            Page::Diagnostics => {
-                toolbar
-                    .actions
-                    .push(ToolbarAction::new(CHECK_AGAIN, "refresh", "Check again"));
-            }
-            _ => {}
-        }
-        if let Some(label) = ui::attention::pill() {
-            toolbar
-                .actions
-                .push(ToolbarAction::new(NEEDS_YOU, "bell", label).labelled());
         }
         toolbar
     }
@@ -82,14 +90,18 @@ impl PrintCentre {
         })
     }
 
-    /// Run what the person did in the window's bar through the effect its
-    /// control in the page ran. Returns whether anything was asked.
+    /// Run what the person did in the window's bar: its entries run their
+    /// effects, Back leads to the printers. Returns whether anything was
+    /// asked.
     pub(super) fn take_window_toolbar_events(&self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
             asked = true;
-            if let Some(command) = command(&event) {
-                let _ = self.door().send(command);
+            if self.bar.as_ref().is_some_and(|bar| bar.press(&event)) {
+                continue;
+            }
+            if event == ToolbarEvent::Back {
+                let _ = self.door().send(UiCommand::Dashboard);
             }
         }
         asked
@@ -98,21 +110,6 @@ impl PrintCentre {
     pub(super) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
-}
-
-/// What the page's own control for `event` sent.
-fn command(event: &ToolbarEvent) -> Option<UiCommand> {
-    Some(match event {
-        ToolbarEvent::Back => UiCommand::Dashboard,
-        ToolbarEvent::Action { id } => match id.as_str() {
-            ADD_PRINTER => UiCommand::Discover,
-            PRINT => UiCommand::ChooseDocument,
-            REFRESH | CHECK_AGAIN => UiCommand::Refresh,
-            NEEDS_YOU => UiCommand::Needs,
-            _ => return None,
-        },
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
@@ -125,20 +122,16 @@ mod tests {
         ui::window_toolbar::declared().expect("the window declares its slots")
     }
 
-    fn action_ids(bar: &WindowToolbar) -> Vec<&str> {
+    fn action_names(bar: &WindowToolbar) -> Vec<&str> {
         bar.actions
             .iter()
-            .map(|action| action.id.as_str())
+            .map(|action| action.name.as_str())
             .collect()
     }
 
-    fn press(app: &mut TestApp<PrintCentreShell>, event: ToolbarEvent) {
-        app.harness().press_window_slot(event);
+    fn press(app: &mut TestApp<PrintCentreShell>, name: &str) {
+        app.harness().press_window_action(name).unwrap();
         app.settle();
-    }
-
-    fn drawn(node: &ui::headless::InspectionNode, id: &str) -> bool {
-        node.test_id.as_deref() == Some(id) || node.children.iter().any(|child| drawn(child, id))
     }
 
     fn page(app: &mut TestApp<PrintCentreShell>) -> Page {
@@ -159,8 +152,8 @@ mod tests {
         });
     }
 
-    /// The printers' actions are the bar's; no page draws a way back, a
-    /// title or those actions of its own.
+    /// The bar holds the way back, the page shown and the page's actions,
+    /// which run what the page's own controls ran.
     #[test]
     fn the_window_bar_holds_the_way_back_the_page_and_its_actions() {
         let _serial = crate::surface::serial();
@@ -171,21 +164,17 @@ mod tests {
         // What wants a person may already be waiting in this process, so the
         // page's own actions come first and the count follows them.
         let declared = bar();
-        let ids = action_ids(&declared);
+        let names = action_names(&declared);
         assert!(
-            ids.starts_with(&[PRINT, ADD_PRINTER, REFRESH]),
-            "the page's actions, in order: {ids:?}"
+            names.starts_with(&["Print a document", "Add printer", "Refresh"]),
+            "the page's actions, in order: {names:?}"
         );
         assert_eq!(bar().navigation, None, "the printers are where Back leads");
         assert_eq!(bar().location, None);
-        let root = app.harness().inspection().root;
-        for own in [ADD_PRINTER, PRINT, REFRESH, "print-centre.back"] {
-            assert!(!drawn(&root, own), "the page draws no {own} of its own");
-        }
 
         app.surface_mut::<PrintCentre>()
             .tell(super::super::OperationNotice::success("Printer added"));
-        press(&mut app, ToolbarEvent::Action { id: REFRESH.into() });
+        press(&mut app, "Refresh");
         refreshed(
             &mut app,
             "Refresh to ask again, as the printers' own refresh did",
@@ -207,21 +196,12 @@ mod tests {
         );
         assert!(help.navigation.is_some_and(|navigation| navigation.back));
         let help_bar = bar();
-        let help_ids = action_ids(&help_bar);
+        let help_names = action_names(&help_bar);
         assert!(
-            help_ids.starts_with(&[CHECK_AGAIN]),
-            "the page's own action first: {help_ids:?}"
+            help_names.starts_with(&["Check again"]),
+            "the page's own action first: {help_names:?}"
         );
-        let root = app.harness().inspection().root;
-        for own in [CHECK_AGAIN, "print-centre.back"] {
-            assert!(!drawn(&root, own), "device help draws no {own} of its own");
-        }
-        press(
-            &mut app,
-            ToolbarEvent::Action {
-                id: CHECK_AGAIN.into(),
-            },
-        );
+        press(&mut app, "Check again");
         refreshed(
             &mut app,
             "Check again to ask again and show the printers it found",
@@ -235,30 +215,12 @@ mod tests {
             bar().location.map(|location| location.label).as_deref(),
             Some("Print history")
         );
-        press(&mut app, ToolbarEvent::Back);
+        app.harness().press_window_slot(ToolbarEvent::Back);
+        app.settle();
         assert_eq!(
             page(&mut app),
             Page::Dashboard,
             "Back leads to the printers"
         );
-    }
-
-    /// Add printer and Print a document send what the page's own buttons
-    /// sent: finding printers and choosing a document.
-    #[test]
-    fn the_bars_actions_send_the_pages_own_commands() {
-        let action = |id: &str| ToolbarEvent::Action { id: id.into() };
-        assert!(matches!(
-            command(&action(ADD_PRINTER)),
-            Some(UiCommand::Discover)
-        ));
-        assert!(matches!(
-            command(&action(PRINT)),
-            Some(UiCommand::ChooseDocument)
-        ));
-        assert!(matches!(
-            command(&ToolbarEvent::Back),
-            Some(UiCommand::Dashboard)
-        ));
     }
 }

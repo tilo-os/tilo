@@ -817,3 +817,13 @@ the first line in place when the cursor was on the second line. The patch
 clears every line above the cursor; the terminal app's
 `erasing_below_the_cursor_keeps_what_is_left_of_it` test covers it. See
 `vendor/alacritty_terminal/PROVENANCE.md`.
+## Discord rate limiter reset during a call
+
+`twilight-http-ratelimiting` 0.17.1 is the checksum-verified ISC registry
+release. Its limiter task asserted that no call was in flight when a bucket's
+reset timer fired, which happens whenever a bucket with calls left resets
+during a call; the panic stopped the limiter and failed every later call of
+the Discord worker. The patch backports upstream's removal of that assertion;
+the worker's bridge tests cover it. See
+`vendor/twilight-http-ratelimiting/PROVENANCE.md`.
+

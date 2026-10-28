@@ -498,8 +498,8 @@ fn accessibility_exposes_and_activates_calculator_controls() {
             siblings_are_consistently_keyed(&tree.children),
             "synthetic Calculator siblings must not mix stable and ordinal keys"
         );
-        // The modes and the angle unit are the window bar's: the bar's
-        // slots run these same semantic actions.
+        // The modes are the window bar's: its view switcher runs these
+        // same semantic actions.
 
         let mut doc = AutoCommit::new();
         assert!(
@@ -512,16 +512,6 @@ fn accessibility_exposes_and_activates_calculator_controls() {
             "header: mode activate handled"
         );
         assert_eq!(app.model.mode, Mode::Graph2d, "header: mode switched");
-        assert!(
-            app.perform_semantic_action(
-                "calculator.angle:degrees",
-                &Action::ToggleCheck,
-                &mut Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ),
-            "header: angle toggle handled"
-        );
-        assert!(app.model.deg, "header: degrees on");
     }
 
     // phase accessibility_exposes_keypad_and_graph_formula_controls
@@ -1062,18 +1052,25 @@ fn the_bars_angle_unit_changes_trig_output() {
             (rad_val - 1.0).abs() > 0.01,
             "RAD sin(90) must not be 1 (got {rad_val})"
         );
-        let mut press = |app: &mut CalculatorApp, id: &str| {
-            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+        let mut press = |app: &mut CalculatorApp, name: &str| {
+            app.declare_window_toolbar();
+            let id = ui::window_toolbar::declared()
+                .into_iter()
+                .flat_map(|bar| bar.actions)
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the bar has {name}"))
+                .id;
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id });
             ui::widget::Widget::settle(app, &mut ui::widget::Edits::lend(&mut st.doc), &st.root);
         };
-        press(&mut app, "calculator.angle:degrees");
+        press(&mut app, "Degrees");
         assert!(app.model.deg, "choosing Degrees must switch to degrees");
         let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
         assert!(
             (deg_val - 1.0).abs() < 1e-9,
             "DEG sin(90) must be 1 (got {deg_val})"
         );
-        press(&mut app, "calculator.angle:radians");
+        press(&mut app, "Radians");
         assert!(
             !app.model.deg,
             "choosing Radians must switch back to radians"

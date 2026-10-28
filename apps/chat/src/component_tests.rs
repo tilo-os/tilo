@@ -1130,12 +1130,12 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
 
 /// The name of the slot `target` in the window's row of slots, as a reader
 /// and an agent find it (none: not in the row).
-fn window_slot_name(frame: &ui::headless::FrameHarness, target: &str) -> Option<String> {
-    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<String> {
-        if node.action_target.as_deref() == Some(target) {
-            return node.name.clone();
+fn window_slot_target(frame: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+    fn find(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
+        if node.name.as_deref() == Some(name) && node.action_target.is_some() {
+            return node.action_target.clone();
         }
-        node.children.iter().find_map(|child| find(child, target))
+        node.children.iter().find_map(|child| find(child, name))
     }
     let inspection = frame.inspection();
     let row = inspection
@@ -1143,7 +1143,7 @@ fn window_slot_name(frame: &ui::headless::FrameHarness, target: &str) -> Option<
         .children
         .iter()
         .find(|node| node.path == ui::headless::WINDOW_SLOTS)?;
-    find(row.semantics.as_ref()?, target)
+    find(row.semantics.as_ref()?, name)
 }
 
 // Mounted alone, as a browser page mounts it, Chat's call controls are its
@@ -1151,8 +1151,6 @@ fn window_slot_name(frame: &ui::headless::FrameHarness, target: &str) -> Option<
 // an agent activates them there, and leaving takes them away.
 #[test]
 fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
-    const MUTE: &str = "window-toolbar-action:call-mute";
-    const LEAVE: &str = "window-toolbar-action:call-leave";
     let cache = ui::portable_storage::PortableStorage::new("call-window-slots", "device").unwrap();
     let (mut frame, _, _) = component_mount_as(
         &cache,
@@ -1170,28 +1168,24 @@ fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
         .invoke_bound_action(&join, &serde_json::Map::new())
         .expect("the call is joined");
     frame.relayout();
-    assert_eq!(
-        window_slot_name(&frame, MUTE).as_deref(),
-        Some("Unmute"),
+    assert!(
+        window_slot_target(&frame, "Unmute").is_some(),
         "joined muted, the microphone says what a press does"
     );
-    assert_eq!(
-        window_slot_name(&frame, LEAVE).as_deref(),
-        Some("Leave call")
-    );
+    let leave = window_slot_target(&frame, "Leave call").expect("Leave is in the row");
     frame
         .perform_semantic_named(
             ui::headless::WINDOW_SLOTS,
-            Some(LEAVE),
+            Some(&leave),
             &ui::a11y::Action::Activate,
         )
         .expect("Leave runs from the row");
     assert_eq!(
-        window_slot_name(&frame, LEAVE),
+        window_slot_target(&frame, "Leave call"),
         None,
         "left, the call's controls go"
     );
-    assert_eq!(window_slot_name(&frame, MUTE), None);
+    assert_eq!(window_slot_target(&frame, "Unmute"), None);
 }
 
 #[test]

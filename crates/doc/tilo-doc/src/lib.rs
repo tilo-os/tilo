@@ -39,7 +39,8 @@ pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRu
 pub use model::DocMut;
 pub use model::{Containers, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
 pub use reconcile::{
-    ReconcileStats, reads_as, reconcile_document, reconcile_into, reconcile_under,
+    ReconcileStats, reads_as, reconcile_body, reconcile_body_under, reconcile_document,
+    reconcile_into, reconcile_under,
 };
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{

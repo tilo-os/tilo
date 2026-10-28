@@ -131,9 +131,10 @@ fn read_private(file: &File) -> io::Result<Vec<u8>> {
     }
     let mut reader = file.try_clone()?;
     reader.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    reader.take(MAX_RECORD + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_RECORD || stamp(&metadata) != stamp(&file.metadata()?) {
+    let bytes = crate::record::read_bounded(reader, MAX_RECORD, || {
+        failure("Protected mounted record changed")
+    })?;
+    if stamp(&metadata) != stamp(&file.metadata()?) {
         return Err(failure("Protected mounted record changed"));
     }
     Ok(bytes)

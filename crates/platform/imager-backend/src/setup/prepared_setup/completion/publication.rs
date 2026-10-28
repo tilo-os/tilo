@@ -136,11 +136,8 @@ fn recover(
         };
         use std::io::Read as _;
         let before = cap_primitives::fs::Metadata::from_file(&marker)?;
-        let mut bytes = Vec::new();
-        std::io::Read::by_ref(&mut marker)
-            .take(16 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 16 * 1024 || bytes.is_empty() {
+        let bytes = crate::record::read_bounded(&mut marker, 16 * 1024, invalid)?;
+        if bytes.is_empty() {
             return Err(invalid());
         }
         let committed: Completion = serde_json::from_slice(&bytes).map_err(|_| invalid())?;

@@ -20,10 +20,10 @@
 //! jumped is announced at once, not after the monotonic clock caught up.
 //!
 //! Other processes write some of the inputs: the identity directory (its
-//! registry, records and fleets) and the home-peer registry. On Linux the same
-//! thread watches them with inotify ([`identity_files_watched`]); events that
-//! only read (open, access) are not watched, so a check reading the files
-//! does not announce itself.
+//! registry, records and fleets) and the home-peer registry. On Linux they are
+//! watched for changes ([`identity_files_watched`],
+//! [`tilo_files::native::watch_changes`]); reads are not changes, so a check
+//! reading the files does not announce itself.
 //!
 //! Where a signal cannot be held (no timerfd or inotify, as on macOS
 //! development builds, or a directory that cannot be watched),
@@ -218,48 +218,31 @@ fn identity_directories() -> Vec<(std::path::PathBuf, bool)> {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    //! timerfd for instants and clock changes, inotify for identity files,
-    //! both waited on by one `poll` that never times out.
+    //! timerfd for instants and clock changes, waited on by a `poll` that
+    //! never times out, and change watches for identity files.
 
-    use std::collections::BTreeSet;
-    use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tilo_files::native::{ChangeWatch, watch_changes, watch_presence, watch_tree_changes};
     use tilo_lock::MutexRecover as _;
-
-    /// What a watched directory reports: writes, renames, creation and
-    /// removal. Opening and reading are left out, so a check that reads the
-    /// files does not announce itself; so are attribute changes, which a
-    /// reader that re-applies a directory's private mode would cause.
-    const MASK: u32 = libc::IN_CLOSE_WRITE
-        | libc::IN_MODIFY
-        | libc::IN_CREATE
-        | libc::IN_DELETE
-        | libc::IN_MOVED_FROM
-        | libc::IN_MOVED_TO
-        | libc::IN_DELETE_SELF
-        | libc::IN_MOVE_SELF
-        | libc::IN_ONLYDIR;
 
     pub(super) struct Clock {
         timer: Option<OwnedFd>,
-        inotify: Option<OwnedFd>,
         watches: Mutex<Watches>,
         /// An identity directory reported a change since the last sync: one
-        /// may have been created that is not watched yet.
-        changed: AtomicBool,
-        /// The thread stopped waiting on the descriptors: neither signal
-        /// holds any more.
+        /// may have been created or removed, which moves its watch.
+        changed: Arc<AtomicBool>,
+        /// The thread stopped waiting on the timer: it no longer holds.
         stopped: AtomicBool,
     }
 
     #[derive(Default)]
     struct Watches {
-        /// Directories watched so far; adding one again is harmless.
-        watched: BTreeSet<PathBuf>,
+        /// Each identity directory, the directory it is watched through
+        /// (itself, or its parent while it does not exist), and the watch.
+        armed: Vec<(PathBuf, PathBuf, ChangeWatch)>,
         /// The identity directories the last sync covered, and whether it
         /// covered all of them.
         synced: Option<(Vec<(PathBuf, bool)>, bool)>,
@@ -267,7 +250,7 @@ mod platform {
 
     impl Clock {
         pub(super) fn open() -> Self {
-            // SAFETY: plain syscalls; each returned descriptor is checked and
+            // SAFETY: plain syscall; a returned descriptor is checked and
             // owned exactly once.
             let timer = unsafe {
                 let fd = libc::timerfd_create(
@@ -276,23 +259,13 @@ mod platform {
                 );
                 (fd >= 0).then(|| OwnedFd::from_raw_fd(fd))
             };
-            // SAFETY: as above.
-            let inotify = unsafe {
-                let fd = libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK);
-                (fd >= 0).then(|| OwnedFd::from_raw_fd(fd))
-            };
-            if timer.is_none() || inotify.is_none() {
-                tracing::warn!(
-                    timer = timer.is_some(),
-                    inotify = inotify.is_some(),
-                    "policy clock degraded: consumers keep a one-second re-check"
-                );
+            if timer.is_none() {
+                tracing::warn!("policy clock degraded: consumers keep a one-second re-check");
             }
             Self {
                 timer,
-                inotify,
                 watches: Mutex::new(Watches::default()),
-                changed: AtomicBool::new(true),
+                changed: Arc::new(AtomicBool::new(true)),
                 stopped: AtomicBool::new(false),
             }
         }
@@ -347,18 +320,13 @@ mod platform {
         }
 
         /// Watch every identity directory that exists, or its parent while
-        /// it does not, so its creation is seen. `false` when one of them
+        /// it does not, so its creation is seen; one that holds the identity
+        /// registry with every directory below it. `false` when one of them
         /// cannot be watched. Touches the filesystem only when a watched
         /// directory changed, the directories moved (a test's environment)
         /// or the last sync was incomplete; otherwise it is a lock and a
         /// comparison, cheap enough for every policy check.
         pub(super) fn sync_watches(&self) -> bool {
-            let Some(inotify) = &self.inotify else {
-                return false;
-            };
-            if self.stopped.load(Ordering::SeqCst) {
-                return false;
-            }
             let directories = super::identity_directories();
             let mut watches = self.watches.lock_recover();
             let changed = self.changed.swap(false, Ordering::SeqCst);
@@ -369,8 +337,9 @@ mod platform {
                 return true;
             }
             let mut complete = true;
+            let mut armed = Vec::with_capacity(directories.len());
             for (directory, with_children) in &directories {
-                let target = if directory.is_dir() {
+                let through = if directory.is_dir() {
                     directory.clone()
                 } else if let Some(parent) = directory.parent().filter(|parent| parent.is_dir()) {
                     parent.to_path_buf()
@@ -378,34 +347,69 @@ mod platform {
                     complete = false;
                     continue;
                 };
-                complete &= add_watch(inotify, &target, &mut watches.watched);
-                if *with_children && target == *directory {
-                    for child in subdirectories(directory) {
-                        complete &= add_watch(inotify, &child, &mut watches.watched);
+                if let Some(index) = watches
+                    .armed
+                    .iter()
+                    .position(|(target, held, _)| target == directory && *held == through)
+                {
+                    armed.push(watches.armed.swap_remove(index));
+                    continue;
+                }
+                match self.watch(directory, &through, *with_children) {
+                    Ok(watch) => armed.push((directory.clone(), through, watch)),
+                    Err(error) => {
+                        tracing::debug!(
+                            directory = %through.display(),
+                            %error,
+                            "identity directory could not be watched"
+                        );
+                        complete = false;
                     }
                 }
             }
+            watches.armed = armed;
             watches.synced = Some((directories, complete));
             drop(watches);
             complete
         }
 
+        /// A watch on `through`, `directory` itself or its parent, that
+        /// announces each change. The next sync moves it once the directory
+        /// appears or goes.
+        fn watch(
+            &self,
+            directory: &Path,
+            through: &Path,
+            with_children: bool,
+        ) -> std::io::Result<ChangeWatch> {
+            let changed = Arc::clone(&self.changed);
+            let announce = move || {
+                changed.store(true, Ordering::SeqCst);
+                super::announce();
+            };
+            if through != directory {
+                let target = directory.to_path_buf();
+                return watch_presence(through, move |entry| entry == target, announce);
+            }
+            if with_children {
+                watch_tree_changes(directory, |_| true, announce)
+            } else {
+                watch_changes(directory, |_| true, announce)
+            }
+        }
+
         pub(super) fn run(&self, clock: &super::Clock) {
-            let mut fds = Vec::with_capacity(2);
-            for fd in [&self.timer, &self.inotify].into_iter().flatten() {
-                fds.push(libc::pollfd {
-                    fd: fd.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
-            if fds.is_empty() {
+            let Some(timer) = &self.timer else {
                 return;
-            }
-            let count = libc::nfds_t::try_from(fds.len()).unwrap_or(0);
+            };
+            let mut fds = [libc::pollfd {
+                fd: timer.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }];
             loop {
-                // SAFETY: `fds` holds `count` initialised entries.
-                let ready = unsafe { libc::poll(fds.as_mut_ptr(), count, -1) };
+                // SAFETY: `fds` holds one initialised entry.
+                let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
                 if ready < 0 {
                     let error = std::io::Error::last_os_error();
                     if error.kind() == std::io::ErrorKind::Interrupted {
@@ -414,36 +418,22 @@ mod platform {
                     self.stop(&error);
                     return;
                 }
-                for entry in &mut fds {
-                    if entry.revents == 0 {
-                        continue;
-                    }
-                    if entry.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-                        self.stop(&std::io::Error::other("descriptor failed"));
-                        return;
-                    }
-                    entry.revents = 0;
-                    drain(entry.fd);
-                    if self
-                        .timer
-                        .as_ref()
-                        .is_some_and(|fd| fd.as_raw_fd() == entry.fd)
-                    {
-                        // Expired, or cancelled by a clock change: either
-                        // way the clock moved past what was armed.
-                        clock.fire();
-                    } else {
-                        // A directory created meanwhile is watched from now.
-                        self.changed.store(true, Ordering::SeqCst);
-                        let _ = self.sync_watches();
-                        super::announce();
-                    }
+                let [entry] = &mut fds;
+                if entry.revents == 0 {
+                    continue;
                 }
+                if entry.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                    self.stop(&std::io::Error::other("descriptor failed"));
+                    return;
+                }
+                entry.revents = 0;
+                drain(entry.fd);
+                // Expired, or cancelled by a clock change: either way the
+                // clock moved past what was armed.
+                clock.fire();
             }
         }
-    }
 
-    impl Clock {
         /// Stop for good: consumers fall back to their one-second re-check,
         /// and one last announcement makes them notice.
         fn stop(&self, error: &std::io::Error) {
@@ -451,39 +441,6 @@ mod platform {
             self.stopped.store(true, Ordering::SeqCst);
             super::announce();
         }
-    }
-
-    fn add_watch(inotify: &OwnedFd, directory: &Path, watched: &mut BTreeSet<PathBuf>) -> bool {
-        if watched.contains(directory) {
-            return true;
-        }
-        let Ok(path) = CString::new(directory.as_os_str().as_bytes()) else {
-            return false;
-        };
-        // SAFETY: `inotify` is a live inotify descriptor, `path` a valid C string.
-        let added = unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), path.as_ptr(), MASK) };
-        if added < 0 {
-            tracing::debug!(
-                directory = %directory.display(),
-                error = %std::io::Error::last_os_error(),
-                "identity directory could not be watched"
-            );
-            return false;
-        }
-        watched.insert(directory.to_path_buf());
-        true
-    }
-
-    fn subdirectories(directory: &Path) -> Vec<PathBuf> {
-        std::fs::read_dir(directory)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .map(|entry| entry.path())
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Read whatever `fd` holds; its content is not needed.

@@ -6,8 +6,9 @@
 //! and repairing the runtime while it needs it; on the repositories,
 //! refreshing them. Back is the shell's slot, and search the bar's own,
 //! which searches the catalogue in place (the Store is its
-//! [`ui::widget::Queryable`]). Each slot runs the same published action a
-//! button bound to it ran, through the window's controls.
+//! [`ui::widget::Queryable`]). Each action runs the same published effect
+//! a button bound to it ran, through the window's dispatcher; a view, the
+//! published view action, through the window's controls.
 
 use ui::tilo_actions::ControlInvocation;
 use ui::window_toolbar::{
@@ -19,11 +20,6 @@ use crate::bindings;
 use crate::resource::StoreEffect;
 use ui::widget::Widget as _;
 
-const REVIEW_PACKAGE: &str = "review-package";
-const REMOTES: &str = "remotes";
-const TRUST: &str = "trust";
-const REPAIR_RUNTIME: &str = "repair-runtime";
-const REFRESH_REMOTES: &str = "refresh-remotes";
 /// A view's slot id: `view:` and its name in [`VIEWS`].
 const VIEW_PREFIX: &str = "view:";
 
@@ -39,6 +35,13 @@ impl StoreApp {
 
     /// The window bar's slots, the shell's own (`base`) first.
     pub(super) fn window_toolbar(&self, mut base: WindowToolbar) -> WindowToolbar {
+        let entry = |effect: StoreEffect, icon: &str, name: String| {
+            self.bar.as_ref().map(|bar| ToolbarAction {
+                icon: icon.into(),
+                name,
+                ..bar.effect(&effect)
+            })
+        };
         base.location = Some(ToolbarLocation {
             label: if self.runtime_visible() {
                 ui::i18n!("store-runtime-title")
@@ -50,11 +53,11 @@ impl StoreApp {
         if self.remotes_open && !self.runtime_visible() {
             ui::widget::NavShell::push_window_actions(
                 &mut base,
-                vec![ToolbarAction::new(
-                    REFRESH_REMOTES,
+                entry(
+                    StoreEffect::RefreshRemotes,
                     "refresh",
                     ui::i18n!("store-remote-refresh"),
-                )],
+                ),
             );
         }
         if !self.shows_catalogue() {
@@ -92,21 +95,38 @@ impl StoreApp {
         });
         // Opening a package file and managing where apps come from are
         // occasional: they stand named in the More menu, not as bare icons.
-        let mut actions = vec![
-            ToolbarAction::new(REVIEW_PACKAGE, "box", ui::i18n!("store-package-review")).in_menu(),
-            ToolbarAction::new(REMOTES, "cloud", ui::i18n!("store-remotes-title")).in_menu(),
-            ToolbarAction::new(TRUST, "shield", ui::i18n!("store-trust-title")).in_menu(),
+        let repair = self.runtime_recovery.is_some().then(|| {
+            entry(
+                StoreEffect::ShowRuntime,
+                "triangle-alert",
+                ui::i18n!("store-runtime-show"),
+            )
+        });
+        let occasional = [
+            entry(
+                StoreEffect::ImportPackage {
+                    path: None,
+                    content: None,
+                    reported_size: None,
+                },
+                "box",
+                ui::i18n!("store-package-review"),
+            ),
+            entry(
+                StoreEffect::ShowRemotes,
+                "cloud",
+                ui::i18n!("store-remotes-title"),
+            ),
+            entry(
+                StoreEffect::ShowTrust,
+                "shield",
+                ui::i18n!("store-trust-title"),
+            ),
         ];
-        if self.runtime_recovery.is_some() {
-            actions.insert(
-                0,
-                ToolbarAction::new(
-                    REPAIR_RUNTIME,
-                    "triangle-alert",
-                    ui::i18n!("store-runtime-show"),
-                ),
-            );
-        }
+        let actions = repair
+            .into_iter()
+            .flatten()
+            .chain(occasional.into_iter().flatten().map(ToolbarAction::in_menu));
         ui::widget::NavShell::push_window_actions(&mut base, actions);
         base
     }
@@ -123,10 +143,14 @@ impl StoreApp {
                 acted = true;
                 continue;
             }
+            if self.bar.as_ref().is_some_and(|bar| bar.press(&event)) {
+                acted = true;
+                continue;
+            }
             let ToolbarEvent::Action { id } = event else {
                 continue;
             };
-            if let Some(invocation) = Self::bar_invocation(&id) {
+            if let Some(invocation) = Self::view_invocation(&id) {
                 self.bar_controls.push_back(invocation);
                 acted = true;
             }
@@ -140,25 +164,11 @@ impl StoreApp {
         acted
     }
 
-    /// The invocation of the published action slot `id` stands for.
-    fn bar_invocation(id: &str) -> Option<ControlInvocation> {
-        if let Some(view) = id.strip_prefix(VIEW_PREFIX) {
-            let index = VIEWS.iter().position(|name| *name == view)?;
-            return bindings::view()?.invoke(index).ok();
-        }
-        let effect = match id {
-            REVIEW_PACKAGE => StoreEffect::ImportPackage {
-                path: None,
-                content: None,
-                reported_size: None,
-            },
-            REMOTES => StoreEffect::ShowRemotes,
-            TRUST => StoreEffect::ShowTrust,
-            REPAIR_RUNTIME => StoreEffect::ShowRuntime,
-            REFRESH_REMOTES => StoreEffect::RefreshRemotes,
-            _ => return None,
-        };
-        bindings::effect(&effect)?.invoke(()).ok()
+    /// The invocation of the view action the view slot `id` stands for.
+    fn view_invocation(id: &str) -> Option<ControlInvocation> {
+        let view = id.strip_prefix(VIEW_PREFIX)?;
+        let index = VIEWS.iter().position(|name| *name == view)?;
+        bindings::view()?.invoke(index).ok()
     }
 }
 

@@ -62,10 +62,12 @@ tools/ci/builder-vm.sh clean        # this worktree's run containers and run scr
 ```
 
 - **Where things live.** Everything stays under `/srv/rcargo/scratch/builder-vm` on the
-  builder: `store` (the image build's podman store), `out/<worktree>` (the OS build's
-  output and caches), `images/<digest>` (the image's OCI layout), `disks/<digest>` (its
-  disk, with its install log), `base/<tag>` (the published disk the worker boots),
-  `worker-vm` (the worker's work disk) and `runs/<run>` (each run's reports).
+  builder: `stores/<worktree>` (the podman store the worktree's image builds write),
+  `store` (the shared one beneath them, read only, whose layers still count as build
+  cache), `out/<worktree>` (the OS build's output and caches), `images/<digest>` (the
+  image's OCI layout), `disks/<digest>` (its disk, with its install log), `base/<tag>` (the
+  published disk the worker boots), `worker-vm` (the worker's work disk) and `runs/<run>`
+  (each run's reports).
 - **What makes a re-run warm.** The image build runs in a container of its own (rcargo
   stops idle worktree containers and prunes its shared store, which a long build does not
   survive), with a podman store and the OS build's cargo and sccache caches that outlive

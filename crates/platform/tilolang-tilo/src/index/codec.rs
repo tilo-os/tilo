@@ -127,6 +127,7 @@ const TEXT_FIELD: u8 = 7;
 const KEYS: u8 = 8;
 const ENTRIES: u8 = 9;
 const ITEMS: u8 = 10;
+const RICH: u8 = 11;
 
 fn put_scalar(w: &mut Writer, scalar: &Scalar) {
     match scalar {
@@ -182,6 +183,10 @@ pub fn put_value(value: &FieldValue) -> Vec<u8> {
             w.u8(TEXT_FIELD);
             w.str(text);
         }
+        FieldValue::Rich(rich) => {
+            w.u8(RICH);
+            w.str(&serde_json::to_string(&rich.blocks).unwrap_or_default());
+        }
         FieldValue::Keys(keys) => {
             w.u8(KEYS);
             w.u32(len_u32(keys.len()));
@@ -219,6 +224,9 @@ pub fn get_value(sealed: &[u8]) -> Result<FieldValue, Corrupt> {
         ABSENT => FieldValue::Absent,
         COUNTER => FieldValue::Counter(i64::from_le_bytes(r.u64()?.to_le_bytes())),
         TEXT_FIELD => FieldValue::Text(r.str()?.to_owned()),
+        RICH => FieldValue::Rich(tilolang_runtime::rich::RichValue {
+            blocks: serde_json::from_str(r.str()?).map_err(|_| Corrupt)?,
+        }),
         KEYS => {
             let n = r.u32()?;
             let mut keys = Vec::new();

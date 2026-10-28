@@ -132,7 +132,6 @@ fn journal_bytes(
 ) -> io::Result<Vec<u8>> {
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt as _};
     use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-    use std::io::Read;
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let file = cap_primitives::fs::open(&directory.file, Path::new(name), &options)?;
@@ -143,12 +142,9 @@ fn journal_bytes(
     {
         return Err(refused("private journal is not a bounded private file"));
     }
-    let mut bytes = Vec::new();
-    file.take((MAX_JOURNAL_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_JOURNAL_BYTES {
-        return Err(invalid("Deferred selection journal exceeds its bound"));
-    }
+    let bytes = crate::record::read_bounded(file, MAX_JOURNAL_BYTES as u64, || {
+        invalid("Deferred selection journal exceeds its bound")
+    })?;
     Ok(bytes)
 }
 

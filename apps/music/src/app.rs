@@ -3804,7 +3804,6 @@ impl MusicApp {
                         match crate::audio::OfflineDownload::start(
                             cache_track.clone(),
                             stream.url.clone(),
-                            None,
                             self.media_cache_root.clone(),
                         ) {
                             Ok(download) => {

@@ -5247,6 +5247,34 @@ pub fn gossip_caches_drain_within() -> Duration {
         .saturating_add(config.cache_evict_interval)
 }
 
+/// An endpoint for a test of the network's own peers: on loopback, with no
+/// relay and no address directory, so its peers reach each other directly and
+/// a run never depends on public relays or DNS being up and quick. `key`
+/// fixes its identity; `None` makes a fresh one.
+#[cfg(any(test, feature = "test-support"))]
+#[expect(
+    clippy::expect_used,
+    reason = "a test without its loopback endpoint has nothing to run on"
+)]
+pub async fn loopback_endpoint(
+    key: Option<iroh::SecretKey>,
+) -> (iroh::Endpoint, iroh::address_lookup::memory::MemoryLookup) {
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .address_lookup(lookup.clone())
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("a loopback address");
+    let builder = match key {
+        Some(key) => builder.secret_key(key),
+        None => builder,
+    };
+    (
+        builder.bind().await.expect("bind a loopback endpoint"),
+        lookup,
+    )
+}
+
 /// How long gossip keeps message ids and messages in a test process that
 /// asked for it with [`shorten_gossip_retention_for_this_process`]; unset,
 /// gossip keeps iroh-gossip's and [`GOSSIP_MESSAGE_RETENTION`].

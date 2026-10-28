@@ -169,10 +169,13 @@ impl ContextMenuArea {
                 self.runs.push(entry.run);
             }
         }
-        // What is selected in the content is what the menu acts on, so
-        // "Tell an agent…" attaches it.
-        menu.set_about(crate::shared_selection::subtree_selection(
-            self.content.as_ref(),
+        // A right-click inside what is selected in the content is about the
+        // selection, so a question typed into the menu is; elsewhere the app
+        // names what is under the pointer, else the window
+        // (`shared_selection::pointed_selection`, the one subject rule).
+        menu.set_about(crate::shared_selection::pointed_selection(
+            crate::shared_selection::subtree_selection(self.content.as_ref()),
+            pointer.then_some(at),
         ));
         #[allow(
             clippy::cast_possible_truncation,
@@ -200,7 +203,7 @@ impl ContextMenuArea {
             run();
             return;
         }
-        // A row the menu adds itself ("Tell an agent…") runs its own.
+        // A row the menu adds itself (asking what is typed) runs its own.
         self.menu.click_item(index);
         self.menu.close();
     }

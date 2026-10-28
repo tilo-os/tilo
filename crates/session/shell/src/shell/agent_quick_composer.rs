@@ -9,7 +9,8 @@
 use std::collections::{HashMap, HashSet};
 
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Decorator, Divider, Dropdown, Popover, PopoverSide,
+    Button, ButtonRole, Column, Container, ControlSize, Decorator, Divider, Dropdown, Popover,
+    PopoverSide,
 };
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
@@ -127,6 +128,18 @@ impl RunPhase {
 pub(crate) struct ComposerRun {
     pub task: ComposerTask,
     pub phase: RunPhase,
+    /// What the run has shown so far while it works.
+    pub progress: RunProgress,
+}
+
+/// What a working run shows of itself: the text its current model turn
+/// streams, and the steps it reported so far.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunProgress {
+    /// The current turn's text as it streams; empty before the first words.
+    pub streamed: String,
+    /// What the run reported so far, oldest first: the last few steps.
+    pub steps: Vec<String>,
 }
 
 /// What the person does with a text answer about their selection.
@@ -171,6 +184,8 @@ struct Submission {
 #[derive(Clone)]
 struct View {
     title: LocalState<String>,
+    /// What the request is about, by name: the resource, else the app.
+    subject: LocalState<String>,
     /// The agent the person picked, among [`AgentQuickComposer::agents`].
     agent: LocalState<String>,
     picks_agent: LocalState<bool>,
@@ -184,12 +199,17 @@ struct View {
     context: LocalState<String>,
     asked: LocalState<String>,
     answer: LocalState<String>,
+    /// What the answer line shows: the agent's last answer, or what its run
+    /// streams while it works.
+    shown: LocalState<String>,
     status: LocalState<String>,
     has_context: LocalState<bool>,
     has_asked: LocalState<bool>,
     has_answer: LocalState<bool>,
     can_use_answer: LocalState<bool>,
     has_status: LocalState<bool>,
+    /// Whether the composer follows a run, which opens in Tasks.
+    has_run: LocalState<bool>,
     /// Whether the agent is still at it: thinking, sending or working.
     waiting: LocalState<bool>,
     running: LocalState<bool>,
@@ -200,6 +220,7 @@ impl Default for View {
     fn default() -> Self {
         Self {
             title: LocalState::new(t("agent-quick-accessible-name")),
+            subject: LocalState::new(String::new()),
             agent: LocalState::new(String::new()),
             picks_agent: LocalState::new(false),
             model: LocalState::new(String::new()),
@@ -209,12 +230,14 @@ impl Default for View {
             context: LocalState::new(String::new()),
             asked: LocalState::new(String::new()),
             answer: LocalState::new(String::new()),
+            shown: LocalState::new(String::new()),
             status: LocalState::new(String::new()),
             has_context: LocalState::new(false),
             has_asked: LocalState::new(false),
             has_answer: LocalState::new(false),
             can_use_answer: LocalState::new(false),
             has_status: LocalState::new(false),
+            has_run: LocalState::new(false),
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
@@ -230,6 +253,7 @@ struct Presses {
     close: LocalState<bool>,
     insert: LocalState<bool>,
     save: LocalState<bool>,
+    open_run: LocalState<bool>,
 }
 
 impl Default for Presses {
@@ -240,6 +264,7 @@ impl Default for Presses {
             close: LocalState::new(false),
             insert: LocalState::new(false),
             save: LocalState::new(false),
+            open_run: LocalState::new(false),
         }
     }
 }
@@ -313,6 +338,10 @@ pub(crate) struct AgentQuickComposer {
     model_picker: PickerListing,
     /// Whether the mode picker lists its two choices yet.
     mode_picker: PickerListing,
+    /// The run the person asked to see in Tasks, until the host takes it.
+    open_run: Option<String>,
+    /// Whether it stands along the bottom of a narrow viewport.
+    sheet: bool,
 }
 
 impl Default for AgentQuickComposer {
@@ -346,11 +375,19 @@ impl Default for AgentQuickComposer {
             models: Vec::new(),
             model_picker: PickerListing::Listed,
             mode_picker: PickerListing::Unlisted,
+            open_run: None,
+            sheet: false,
         };
         composer.popover = composer.controls();
         composer
     }
 }
+
+/// How wide the composer is beside its subject: one width whatever it
+/// shows, so an answer arriving grows it downwards only.
+const COMPOSER_WIDTH: f32 = 360.0;
+/// Below this viewport width the composer is a sheet along the bottom.
+const SHEET_BELOW: f64 = 600.0;
 
 fn wrapped(text: Text) -> Box<dyn Widget> {
     Box::new(Container::new().with_no_padding().with_child(Box::new(
@@ -359,45 +396,16 @@ fn wrapped(text: Text) -> Box<dyn Widget> {
 }
 
 impl AgentQuickComposer {
+    /// What the request is about, and Close.
     fn header(&self) -> Row {
         let close = self.presses.close.clone();
         Row::new()
             .with_justify(taffy::JustifyContent::SpaceBetween)
-            .push(Box::new(When::from_state(
-                &self.view.picks_agent,
-                |picks| !*picks,
-                Box::new(
-                    Text::from_state(&self.view.title, Clone::clone)
-                        .with_role(ui::TextRole::Heading),
-                ),
-            )))
-            .push(Box::new(When::from_state(
-                &self.view.picks_agent,
-                |picks| *picks,
-                Box::new(
-                    Dropdown::from_state(Vec::new(), &self.view.agent)
-                        .with_id(AGENT_PICKER)
-                        .with_resolved_accessible_name(t("agent-quick-agent")),
-                ),
-            )))
-            .push(Box::new(When::from_state(
-                &self.view.picks_model,
-                |picks| *picks,
-                Box::new(
-                    Dropdown::from_state(Vec::new(), &self.view.model)
-                        .with_id(MODEL_PICKER)
-                        .with_resolved_accessible_name(t("agent-quick-model")),
-                ),
-            )))
-            .push(Box::new(When::from_state(
-                &self.view.picks_mode,
-                |picks| *picks,
-                Box::new(
-                    Dropdown::from_state(mode_choices(), &self.view.mode)
-                        .with_id(MODE_PICKER)
-                        .with_resolved_accessible_name(t("agent-quick-mode")),
-                ),
-            )))
+            .push(Box::new(
+                Text::from_state(&self.view.subject, Clone::clone)
+                    .with_id("agent-quick-subject")
+                    .with_role(ui::TextRole::Label),
+            ))
             .push(Box::new(
                 Button::icon_only(
                     "agent-quick-close",
@@ -423,20 +431,100 @@ impl AgentQuickComposer {
             ))
     }
 
-    /// Stop while a run goes on, and Send.
-    fn footer(&self) -> Row {
+    /// Where the work stands: what the agent is doing, then the run in
+    /// Tasks and Stop, on a line of their own away from Send.
+    fn status(&self) -> (Row, Row) {
+        let view = &self.view;
         let stop = self.presses.stop.clone();
-        let submit = self.presses.submit.clone();
-        Row::new()
-            .with_justify(taffy::JustifyContent::End)
+        let open_run = self.presses.open_run.clone();
+        let line = Row::new()
+            .no_wrap()
             .push(Box::new(When::from_state(
-                &self.view.running,
+                &view.waiting,
+                |shown| *shown,
+                Box::new(Spinner::for_text(ui::TextRole::Caption)),
+            )))
+            .push(Box::new(
+                Text::from_state(&view.status, Clone::clone)
+                    .with_id("agent-quick-status")
+                    .with_role(ui::TextRole::Caption)
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .dimmed(),
+            ));
+        let run = Row::new()
+            .push(Box::new(When::from_state(
+                &view.has_run,
+                |shown| *shown,
+                Box::new(
+                    Button::new("agent-quick-open-run", &t("agent-quick-open-run"))
+                        .with_icon(ui::icons::Icon::ExternalLink)
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .on_click(move || open_run.set(true)),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &view.running,
                 |shown| *shown,
                 Box::new(
                     Button::new("agent-quick-stop", &t("agent-quick-stop"))
+                        .with_icon(ui::icons::Icon::Square)
+                        .control_size(ControlSize::Small)
                         .on_click(move || stop.set(true)),
                 ),
+            )));
+        (line, run)
+    }
+
+    /// One quiet line of the defaults a request goes with (which agent,
+    /// which model, and whether it decides, answers here or runs as a task),
+    /// each changeable in place, and Send.
+    fn footer(&self) -> Row {
+        let submit = self.presses.submit.clone();
+        let quiet = |picker: Dropdown| picker.control_size(ControlSize::Small);
+        let defaults = Row::new()
+            .no_wrap()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| !*picks,
+                Box::new(
+                    Text::from_state(&self.view.title, Clone::clone)
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                ),
             )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| *picks,
+                Box::new(quiet(
+                    Dropdown::from_state(Vec::new(), &self.view.agent)
+                        .with_id(AGENT_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-agent")),
+                )),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_model,
+                |picks| *picks,
+                Box::new(quiet(
+                    Dropdown::from_state(Vec::new(), &self.view.model)
+                        .with_id(MODEL_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-model")),
+                )),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_mode,
+                |picks| *picks,
+                Box::new(quiet(
+                    Dropdown::from_state(mode_choices(), &self.view.mode)
+                        .with_id(MODE_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-mode")),
+                )),
+            )));
+        Row::new()
+            .no_wrap()
+            .with_justify(taffy::JustifyContent::SpaceBetween)
+            .push(Box::new(defaults))
             .push(Box::new(
                 Button::new("agent-quick-send", &t("agent-quick-send"))
                     .with_icon(ui::icons::Icon::Send)
@@ -448,15 +536,7 @@ impl AgentQuickComposer {
 
     fn controls(&self) -> Popover<Container> {
         let view = &self.view;
-        let context = When::from_state(
-            &view.has_context,
-            |shown| *shown,
-            wrapped(
-                Text::from_state(&view.context, Clone::clone)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ),
-        );
+        let (status_line, run_line) = self.status();
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
             .with_id("agent-quick-editor")
@@ -464,31 +544,20 @@ impl AgentQuickComposer {
             .with_accessible_name(t("agent-quick-editor-name"))
             .with_min_lines(2)
             .on_submit(move |_| submit.set(true));
-        let status = When::from_state(
-            &view.has_status,
-            |shown| *shown,
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(When::from_state(
-                        &view.waiting,
-                        |shown| *shown,
-                        Box::new(Spinner::for_text(ui::TextRole::Caption)),
-                    )))
-                    .push(wrapped(
-                        Text::from_state(&view.status, Clone::clone)
-                            .with_id("agent-quick-status")
-                            .with_role(ui::TextRole::Caption)
-                            .with_live(ui::a11y::Politeness::Polite)
-                            .dimmed(),
-                    )),
-            ),
-        );
         let body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
             .push(Box::new(self.header()))
-            .push(Box::new(context))
+            .push(Box::new(When::from_state(
+                &view.has_context,
+                |shown| *shown,
+                wrapped(
+                    Text::from_state(&view.context, Clone::clone)
+                        .with_id("agent-quick-excerpt")
+                        .with_role(ui::TextRole::Caption)
+                        .dimmed(),
+                ),
+            )))
             .push(Box::new(When::from_state(
                 &view.has_asked,
                 |shown| *shown,
@@ -507,7 +576,7 @@ impl AgentQuickComposer {
                 &view.has_answer,
                 |shown| *shown,
                 wrapped(
-                    Text::from_state(&view.answer, Clone::clone)
+                    Text::from_state(&view.shown, Clone::clone)
                         .with_id("agent-quick-answer")
                         .with_live(ui::a11y::Politeness::Polite),
                 ),
@@ -517,12 +586,22 @@ impl AgentQuickComposer {
                 |shown| *shown,
                 Box::new(self.uses()),
             )))
-            .push(Box::new(status))
+            .push(Box::new(When::from_state(
+                &view.has_status,
+                |shown| *shown,
+                Box::new(status_line),
+            )))
+            .push(Box::new(When::from_state(
+                &view.has_run,
+                |shown| *shown,
+                Box::new(run_line),
+            )))
             .push(Box::new(editor))
             .push(Box::new(self.footer()));
         Popover::with_content(
             Container::new()
                 .with_no_padding()
+                .with_width(COMPOSER_WIDTH)
                 .with_child(Box::new(body)),
         )
         .side(PopoverSide::Right)
@@ -558,14 +637,83 @@ impl AgentQuickComposer {
         self.answer_use = None;
         self.owner = Some(owner);
         self.load_draft();
-        self.popover.set_viewport(viewport);
-        // Beside everything the composer is about, never on top of it.
-        self.popover
-            .set_anchor(origin.marker.union(origin.protected));
-        self.popover.set_avoid(Some(origin.protected));
+        // Opened beside an agent's marker, it is about what the marker says.
+        self.show_subject(None);
+        self.place(
+            viewport,
+            origin.marker.union(origin.protected),
+            origin.protected,
+        );
         self.popover.set_open(true);
         self.refresh();
         self.focus_reset = true;
+    }
+
+    /// Stand beside `anchor` and never over `protected` in `viewport`; in a
+    /// viewport too narrow for that, along its bottom edge as a sheet the
+    /// width of the viewport, with even air either side.
+    fn place(&mut self, viewport: Rect, anchor: Rect, protected: Rect) {
+        self.popover.set_viewport(viewport);
+        if viewport.width() < SHEET_BELOW {
+            // The popover keeps its edge margin and padding on both sides.
+            let air = 2.0 * f64::from(ui::tokens::Spacing::BASE.s2)
+                + 2.0 * f64::from(ui::tokens::Spacing::BASE.s4);
+            self.popover
+                .content_mut()
+                .set_width(ui::num::f32_of_f64((viewport.width() - air).max(0.0)));
+            self.popover.set_anchor(Rect::new(
+                viewport.x0,
+                viewport.y1,
+                viewport.x1,
+                viewport.y1,
+            ));
+            self.popover.set_avoid(None);
+            self.popover.set_side(PopoverSide::Above);
+            self.sheet = true;
+        } else {
+            self.popover.content_mut().set_width(COMPOSER_WIDTH);
+            self.popover.set_side(PopoverSide::Right);
+            // Beside everything the composer is about, never on top of it.
+            self.popover.set_anchor(anchor);
+            self.popover.set_avoid(Some(protected));
+            self.sheet = false;
+        }
+    }
+
+    /// Keep a sheet above the on-screen keyboard: `inset` is how far up from
+    /// the viewport's bottom it reaches.
+    pub(crate) fn rise_above_keyboard(&mut self, viewport: Rect, inset: f64) {
+        if !self.sheet || !self.is_open() {
+            return;
+        }
+        let bottom = viewport.y1 - inset.clamp(0.0, viewport.height());
+        let floor = Rect::new(viewport.x0, bottom, viewport.x1, bottom);
+        self.popover
+            .set_viewport(Rect::new(viewport.x0, viewport.y0, viewport.x1, bottom));
+        self.popover.set_anchor(floor);
+    }
+
+    /// Show what the request is about: `about`'s thing by name and its
+    /// selected text as it reads, or with none, the agent and the line the
+    /// composer was opened with. Never Markdown source.
+    fn show_subject(&self, about: Option<&super::selection_agent::SelectionSeed>) {
+        let (subject, excerpt) = match about {
+            Some(seed) => {
+                let (label, excerpt) = seed.subject();
+                (
+                    label,
+                    excerpt.map(|text| t_args("agent-quick-excerpt", &[("text", text.into())])),
+                )
+            }
+            None => (
+                self.label.clone(),
+                Some(super::selection_agent::plain_excerpt(&self.context))
+                    .filter(|line| !line.trim().is_empty()),
+            ),
+        };
+        self.view.subject.set(subject);
+        self.view.has_context.set(excerpt.is_some());
+        self.view.context.set(excerpt.unwrap_or_default());
     }
 
     /// Open on what the person selected: the composer shows what it is
@@ -590,8 +738,45 @@ impl AgentQuickComposer {
             viewport,
         );
         self.selection = about.selection.is_some();
+        self.show_subject(Some(&about));
         self.about = Some(about);
         self.refresh();
+    }
+
+    /// Ask `text` at once, as if the person had typed it into the field
+    /// and pressed Send: what they typed into a context menu that none of
+    /// its entries answered. The adapter takes it with the next request.
+    pub(crate) fn ask(&mut self, text: &str) {
+        if !self.is_open() || text.trim().is_empty() {
+            return;
+        }
+        self.draft.set(text.to_owned());
+        self.presses.submit.set(true);
+        self.refresh();
+    }
+
+    /// Start the field with `text`, what the person began typing over the
+    /// selection, their typing going on after it.
+    pub(crate) fn begin_typing(&mut self, text: &str) {
+        if !self.is_open() || text.is_empty() {
+            return;
+        }
+        self.draft.set(text.to_owned());
+        self.pending_editor = None;
+        self.refresh();
+    }
+
+    /// The run the person asked to see in Tasks, exactly once: its issue.
+    pub(crate) fn take_open_run(&mut self) -> Option<String> {
+        self.tick();
+        self.open_run.take()
+    }
+
+    /// The answer the composer shows now, as text: the agent's last answer,
+    /// or what its run streams while it works.
+    #[cfg(test)]
+    pub(crate) fn shown_answer(&self) -> String {
+        self.view.shown.get()
     }
 
     /// The selection the composer was opened about, if it was.
@@ -665,13 +850,7 @@ impl AgentQuickComposer {
 
     /// Offer to insert a text answer at the selection the composer was
     /// opened about, or keep it as a note.
-    #[cfg_attr(
-        not(any(test, debug_assertions)),
-        expect(
-            dead_code,
-            reason = "opening the composer about a selection is what sets it"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn set_about_selection(&mut self, selection: bool) {
         self.selection = selection;
         self.refresh();
@@ -964,6 +1143,7 @@ impl AgentQuickComposer {
                         label: title,
                     },
                     phase: RunPhase::Starting,
+                    progress: RunProgress::default(),
                 };
                 self.runs.insert(owner.clone(), run);
                 None
@@ -1018,9 +1198,23 @@ impl AgentQuickComposer {
             .answer
             .set(answer.map(|turn| turn.text.clone()).unwrap_or_default());
         self.view.has_asked.set(asked.is_some());
-        self.view.has_answer.set(answer.is_some());
         let run = self.runs.get(owner);
         let running = run.is_some_and(|run| run.phase.running());
+        // While a run works, what it streams is its answer so far.
+        let streamed = run
+            .filter(|_| running)
+            .map(|run| run.progress.streamed.as_str())
+            .filter(|text| !text.trim().is_empty());
+        let shown_answer = streamed
+            .map(str::to_owned)
+            .or_else(|| answer.map(|turn| turn.text.clone()))
+            .unwrap_or_default();
+        self.view.has_answer.set(!shown_answer.trim().is_empty());
+        self.view.shown.set(shown_answer);
+        // A run being started has no issue yet to open.
+        self.view
+            .has_run
+            .set(run.is_some_and(|run| run.phase != RunPhase::Starting));
         // A run being started has no run yet to direct or stop.
         let starting = run.is_some_and(|run| run.phase == RunPhase::Starting);
         let busy = self.busy();
@@ -1066,6 +1260,11 @@ impl AgentQuickComposer {
     fn tick(&mut self) {
         if take(&self.presses.close) {
             self.dismiss();
+        }
+        if take(&self.presses.open_run)
+            && let Some(run) = self.followed()
+        {
+            self.open_run = Some(run.task.task_id.clone());
         }
         let picked = self.view.agent.get();
         if self
@@ -1441,6 +1640,7 @@ mod tests {
                 label: "Fix the link".into(),
             },
             phase,
+            progress: RunProgress::default(),
         }
     }
 

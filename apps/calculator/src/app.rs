@@ -104,6 +104,9 @@ pub struct CalculatorApp {
     rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
     select: Option<(GraphKind, Id)>,
+    /// The window bar's angle-unit entries, each carrying whether it
+    /// chooses degrees.
+    angle_units: ui::framework::BarCommands<bool>,
 }
 
 impl CalculatorApp {
@@ -149,6 +152,7 @@ impl CalculatorApp {
             entries: Rc::default(),
             rows: Rc::default(),
             select: None,
+            angle_units: ui::framework::BarCommands::new(),
         }
     }
 
@@ -413,12 +417,12 @@ impl CalculatorApp {
         }
     }
 
-    /// Shared angle-unit transition for the window bar's menu and semantic
-    /// activation: one state path for both.
+    /// Switch the angle unit, as the window bar's menu does.
     fn set_degrees(&mut self, degrees: bool) {
         if self.model.deg != degrees {
             self.model.deg = degrees;
             self.model_dirty = true;
+            self.dirty = true;
         }
     }
 
@@ -1648,16 +1652,6 @@ impl Widget for CalculatorApp {
             }
             "calculator.mode:3" if matches!(action, Action::Activate) => {
                 self.switch_mode(Mode::Convert, state);
-            }
-            "calculator.angle:radians"
-                if matches!(action, Action::Activate | Action::ToggleCheck) =>
-            {
-                self.set_degrees(false);
-            }
-            "calculator.angle:degrees"
-                if matches!(action, Action::Activate | Action::ToggleCheck) =>
-            {
-                self.set_degrees(true);
             }
             "calculator.expression" if matches!(action, Action::SetValue(_)) => {
                 let Action::SetValue(expr) = action else {

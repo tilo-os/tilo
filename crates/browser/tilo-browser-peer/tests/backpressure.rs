@@ -16,8 +16,8 @@ mod steward;
 mod support;
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
@@ -33,6 +33,9 @@ struct Gated {
     paused: Arc<AtomicBool>,
     held: Arc<AtomicUsize>,
     sessions: Arc<AtomicUsize>,
+    /// When the last `/events` poll went to the host: the host's idle
+    /// timeout counts from there.
+    polled: Arc<Mutex<Instant>>,
 }
 
 impl HttpClient for Gated {
@@ -49,6 +52,9 @@ impl HttpClient for Gated {
             }
             while events && self.paused.load(Ordering::Relaxed) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if events {
+                *self.polled.lock().unwrap() = Instant::now();
             }
             self.inner.post(&path, session.as_deref(), body).await
         })
@@ -109,12 +115,14 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     let paused = Arc::new(AtomicBool::new(false));
     let held = Arc::new(AtomicUsize::new(0));
     let sessions = Arc::new(AtomicUsize::new(0));
+    let polled = Arc::new(Mutex::new(Instant::now()));
     let observer = start_peer(
         Host::Https(Arc::new(Gated {
             inner: host.https(),
             paused: paused.clone(),
             held: held.clone(),
             sessions: sessions.clone(),
+            polled: polled.clone(),
         })),
         observer.cert,
         host_device.cert.clone(),
@@ -150,11 +158,14 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     }
     let receipt = author.barrier().unwrap();
     let published = Instant::now();
-    // The host ends a session nobody polled for 45 s; stop pausing well
-    // before that however slowly the commits become durable.
+    // The host ends a session nobody polled for 45 s, counted from the
+    // last poll it received: the long poll before the held one may have
+    // started up to 20 s before the hold. Stop pausing well before that
+    // however slowly the commits become durable.
     let unpause = paused.clone();
+    let last_poll = *polled.lock().unwrap();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep_until((last_poll + Duration::from_secs(30)).into()).await;
         unpause.store(false, Ordering::Relaxed);
     });
     // Every commit is fsynced into the retained log and each lagging

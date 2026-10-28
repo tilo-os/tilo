@@ -425,11 +425,9 @@ impl Store {
         if file.metadata()?.len() > MAX_RECORD {
             return Err(failure("capture record exceeds bound"));
         }
-        let mut bytes = Vec::new();
-        file.take(MAX_RECORD + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_RECORD {
-            return Err(failure("capture record exceeds bound"));
-        }
+        let bytes = crate::record::read_bounded(file, MAX_RECORD, || {
+            failure("capture record exceeds bound")
+        })?;
         let record = match serde_json::from_slice::<DurableRecord>(&bytes)? {
             DurableRecord::Capture(record) => record,
             DurableRecord::Original(_) => {

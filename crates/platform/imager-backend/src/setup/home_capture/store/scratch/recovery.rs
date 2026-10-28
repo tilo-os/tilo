@@ -23,11 +23,9 @@ impl Store {
             if file.metadata()?.len() > MAX_RECORD {
                 return Err(failure("Inventory worker custody exceeds record bound"));
             }
-            let mut bytes = Vec::new();
-            file.take(MAX_RECORD + 1).read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_RECORD {
-                return Err(failure("Inventory worker custody grew beyond bound"));
-            }
+            let bytes = crate::record::read_bounded(file, MAX_RECORD, || {
+                failure("Inventory worker custody grew beyond bound")
+            })?;
             match serde_json::from_slice::<DurableRecord>(&bytes)? {
                 DurableRecord::Capture(record) => {
                     record.validate()?;

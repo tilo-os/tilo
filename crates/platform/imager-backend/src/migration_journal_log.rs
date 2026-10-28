@@ -16,6 +16,12 @@ use std::{
     sync::Arc,
 };
 pub const MAX_RECORD: usize = 128 * 1024;
+/// Length, sequence and SHA-256 in front of every record's payload.
+pub const FRAME_HEADER: usize = 44;
+/// The exact bytes [`write_record`] appends for `record`.
+pub fn frame_bytes<T: Serialize>(record: &T) -> io::Result<u64> {
+    Ok((FRAME_HEADER + serde_json::to_vec(record)?.len()) as u64)
+}
 pub fn write_record<T: Serialize>(
     file: &mut File,
     sequence: &mut u64,
@@ -51,7 +57,7 @@ pub fn read_record<T: serde::de::DeserializeOwned>(
     sequence: u64,
 ) -> io::Result<Option<T>> {
     use sha2::{Digest, Sha256};
-    let mut header = [0; 44];
+    let mut header = [0; FRAME_HEADER];
     match file.read_exact(&mut header) {
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         result => result?,
@@ -222,20 +228,38 @@ impl Log {
         rest: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
     ) -> io::Result<Self> {
         let (parent, name) = parent(path)?;
-        let (file, identity, sequence) = create_private(&parent, &name, magic, header, rest)?;
+        Self::create_in(&parent, &name, magic, header, rest)
+    }
+    /// [`Self::create_with`] inside an already pinned and validated parent.
+    pub fn create_in<T: Serialize>(
+        parent: &Arc<PinnedDirectory>,
+        name: &std::ffi::OsStr,
+        magic: [u8; 8],
+        header: &T,
+        rest: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let (file, identity, sequence) = create_private(parent, name, magic, header, rest)?;
         Ok(Self {
             file,
             sequence,
-            parent,
-            name,
+            parent: Arc::clone(parent),
+            name: name.to_os_string(),
             identity,
             failed: false,
         })
     }
     pub fn open(path: &Path, magic: [u8; 8]) -> io::Result<Self> {
-        durability::supported()?;
         let (parent, name) = parent(path)?;
-        let (mut file, identity) = open_private(&parent, &name)?;
+        Self::open_in(&parent, &name, magic)
+    }
+    /// [`Self::open`] inside an already pinned and validated parent.
+    pub fn open_in(
+        parent: &Arc<PinnedDirectory>,
+        name: &std::ffi::OsStr,
+        magic: [u8; 8],
+    ) -> io::Result<Self> {
+        durability::supported()?;
+        let (mut file, identity) = open_private(parent, name)?;
         let mut observed = [0; 8];
         file.read_exact(&mut observed)?;
         if observed != magic {
@@ -244,8 +268,8 @@ impl Log {
         Ok(Self {
             file,
             sequence: 0,
-            parent,
-            name,
+            parent: Arc::clone(parent),
+            name: name.to_os_string(),
             identity,
             failed: false,
         })

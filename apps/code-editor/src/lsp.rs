@@ -1,16 +1,16 @@
-//! A small, self-contained Language Server Protocol client.
+//! A small Language Server Protocol client.
 //!
 //! Three layers, from the bottom up:
 //!
 //! 1. **Framing** — LSP speaks JSON-RPC 2.0 over stdio, each message prefixed
 //!    by a `Content-Length` header. [`encode`] frames an outgoing payload;
-//!    [`MessageReader`] decodes a stream of incoming ones. Both are pure and
-//!    unit-tested against canned bytes.
+//!    [`MessageReader`] decodes a stream of incoming ones, refusing frames
+//!    larger than the editor will hold.
 //! 2. **Parsing** — [`parse_publish_diagnostics`], [`parse_completion`],
-//!    [`parse_hover`], and [`parse_definition`] turn a server's JSON into the
-//!    editor's own model types ([`LspDiagnostic`], [`CompletionItem`], …).
-//!    These are the hermetically-tested core: they run on canned LSP JSON with
-//!    no server binary and no network.
+//!    [`parse_hover`], and [`parse_definition`] read a server's JSON as the
+//!    `lsp-types` protocol types and project it onto the editor's own model
+//!    types ([`LspDiagnostic`], [`CompletionItem`], …), bounding what is kept.
+//!    They run on canned LSP JSON with no server binary and no network.
 //! 3. **Client** — [`LspClient`] spawns the appropriate server for a language
 //!    (rust-analyzer for Rust, gopls for Go, …), performs the
 //!    `initialize`/`initialized` handshake, and pumps notifications +
@@ -18,10 +18,8 @@
 //!    frame. Spawning is guarded so a missing binary degrades gracefully to a
 //!    clear note rather than a crash.
 //!
-//! The client's process spawning is std-only (no extra deps, no network at
-//! build time), so the whole module compiles unconditionally; the editor only
-//! *starts* a server when explicitly asked (see `app.rs`), keeping the
-//! hermetic build and `--shots` from ever launching rust-analyzer.
+//! The editor only *starts* a server when explicitly asked (see `app.rs`),
+//! keeping the hermetic build and `--shots` from ever launching rust-analyzer.
 //!
 //! [`encode`]: crate::lsp::encode
 //! [`MessageReader`]: crate::lsp::MessageReader
@@ -40,6 +38,30 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 
+use lsp_types::notification::{
+    DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
+    Progress as ProgressNotification, PublishDiagnostics,
+};
+use lsp_types::request::{
+    ApplyWorkspaceEdit, Completion, Formatting, GotoDefinition, HoverRequest, Initialize, Request,
+    WorkspaceConfiguration,
+};
+use lsp_types::{
+    ClientCapabilities, CompletionClientCapabilities, CompletionItemCapability, CompletionItemKind,
+    CompletionParams, CompletionResponse, CompletionTextEdit, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentFormattingClientCapabilities, DocumentFormattingParams,
+    DynamicRegistrationClientCapabilities, FormattingOptions, GotoCapability, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverClientCapabilities, HoverContents, HoverParams,
+    InitializeParams, InitializedParams, MarkedString, MarkupKind, NumberOrString,
+    PartialResultParams, ProgressParams, ProgressParamsValue, PublishDiagnosticsClientCapabilities,
+    PublishDiagnosticsParams, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+    TextDocumentSyncClientCapabilities, VersionedTextDocumentIdentifier, WindowClientCapabilities,
+    WorkDoneProgress, WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceFolder,
+};
+pub use lsp_types::{Position, Range, TextEdit};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 
 use crate::bottom_panel::{Diagnostic, Severity};
@@ -69,27 +91,12 @@ const MAX_LSP_DISPLAY_TEXT_CHARS: usize = 64 * 1024;
 // Model types (LSP → editor)
 // ---------------------------------------------------------------------------
 
-/// A zero-based `(line, character)` position, as LSP uses everywhere.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Position {
-    pub line: u32,
-    pub character: u32,
-}
-
-/// A half-open `[start, end)` range in a document.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LspRange {
-    pub start: Position,
-    pub end: Position,
-}
-
 /// A parsed `textDocument/publishDiagnostics` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LspDiagnostic {
-    pub range: LspRange,
-    /// LSP severity: 1=Error, 2=Warning, 3=Information, 4=Hint. Defaults to
+    pub range: Range,
     /// Error when a server omits it (the LSP spec's stated default).
-    pub severity: u8,
+    pub severity: DiagnosticSeverity,
     pub message: String,
     pub source: Option<String>,
 }
@@ -108,12 +115,12 @@ impl LspDiagnostic {
     }
 }
 
-/// Map an LSP severity code to the panel's severity vocabulary.
-pub fn severity_from_lsp(code: u8) -> Severity {
-    match code {
-        1 => Severity::Error,
-        2 => Severity::Warning,
-        3 => Severity::Info,
+/// Map an LSP severity to the panel's severity vocabulary.
+pub fn severity_from_lsp(severity: DiagnosticSeverity) -> Severity {
+    match severity {
+        DiagnosticSeverity::ERROR => Severity::Error,
+        DiagnosticSeverity::WARNING => Severity::Warning,
+        DiagnosticSeverity::INFORMATION => Severity::Info,
         _ => Severity::Hint,
     }
 }
@@ -122,169 +129,133 @@ pub fn severity_from_lsp(code: u8) -> Severity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
-    /// LSP `CompletionItemKind` (1=Text, 3=Function, 5=Field, 6=Variable, …).
-    pub kind: Option<u8>,
+    pub kind: Option<CompletionItemKind>,
     pub detail: Option<String>,
     /// The text to actually insert — `insertText` when present, else `label`.
     pub insert_text: String,
 }
 
-/// One edit of a document's text, as a formatter answers: `range` replaced
-/// by `new_text`. Positions count UTF-16 code units, as LSP's default
-/// position encoding does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TextEdit {
-    pub range: LspRange,
-    pub new_text: String,
-}
-
-/// A source location (go-to-definition result).
+/// A source location (go-to-definition result), its URI in the form the
+/// editor keys documents by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
     pub uri: String,
-    pub range: LspRange,
+    pub range: Range,
 }
 
 // ---------------------------------------------------------------------------
 // Parsers (pure; hermetically tested)
 // ---------------------------------------------------------------------------
 
-fn parse_position(v: &Value) -> Position {
-    Position {
-        line: v.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
-        character: v.get("character").and_then(Value::as_u64).unwrap_or(0) as u32,
-    }
-}
-
-fn parse_range(v: &Value) -> LspRange {
-    LspRange {
-        start: v.get("start").map(parse_position).unwrap_or_default(),
-        end: v.get("end").map(parse_position).unwrap_or_default(),
-    }
+/// A message's `params` (or `result`) as the protocol type `T`; `None` when
+/// the server sent something else.
+fn payload<T: serde::de::DeserializeOwned>(msg: &Value, field: &str) -> Option<T> {
+    T::deserialize(msg.get(field).unwrap_or(msg)).ok()
 }
 
 /// Parse a `textDocument/publishDiagnostics` notification into `(uri, diags)`.
 /// Accepts either the full notification (`{method, params:{uri, diagnostics}}`)
 /// or a bare `params` object.
 pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnostic>)> {
-    let params = msg.get("params").unwrap_or(msg);
-    let uri = normalize_document_uri(&clip_display_text(
-        params.get("uri").and_then(Value::as_str)?,
-    ));
+    let params: PublishDiagnosticsParams = payload(msg, "params")?;
+    let uri = normalize_document_uri(&clip_display_text(params.uri.as_str()));
     let diags = params
-        .get("diagnostics")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .take(MAX_LSP_DIAGNOSTICS)
-                .map(|d| LspDiagnostic {
-                    range: d.get("range").map(parse_range).unwrap_or_default(),
-                    // Per spec, absent severity defaults to Error(1).
-                    severity: d.get("severity").and_then(Value::as_u64).unwrap_or(1) as u8,
-                    message: d
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .map_or_else(String::new, clip_display_text),
-                    source: d
-                        .get("source")
-                        .and_then(Value::as_str)
-                        .map(clip_display_text),
-                })
-                .collect()
+        .diagnostics
+        .into_iter()
+        .take(MAX_LSP_DIAGNOSTICS)
+        .map(|d| LspDiagnostic {
+            range: d.range,
+            severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
+            message: clip_display_text(&d.message),
+            source: d.source.as_deref().map(clip_display_text),
         })
-        .unwrap_or_default();
+        .collect();
     Some((uri, diags))
 }
 
 /// Parse a `$/progress` notification into a [`Progress`].
 ///
-/// The shape is a token plus a `value` that is one of `begin` / `report` /
-/// `end`. `begin` carries the title, `report` carries updates without repeating
-/// it, and `end` may carry only a closing message — so a caller that wants a
+/// `begin` carries the title, `report` carries updates without repeating it,
+/// and `end` may carry only a closing message — so a caller that wants a
 /// stable label has to remember the title from `begin`. That is the client's
 /// job (see [`LspClient`]), not the parser's; this returns exactly what the
 /// notification said.
 pub fn parse_progress(msg: &Value) -> Option<Progress> {
-    let params = msg.get("params").unwrap_or(msg);
+    let params: ProgressParams = payload(msg, "params")?;
     // The token may be a string or an integer; normalise to a string so it can
     // key a map either way.
-    let token = match params.get("token")? {
-        Value::String(s) => clip_display_text(s),
-        Value::Number(n) => n.to_string(),
-        _ => return None,
+    let token = match params.token {
+        NumberOrString::String(s) => clip_display_text(&s),
+        NumberOrString::Number(n) => n.to_string(),
     };
-    let value = params.get("value")?;
-    let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+    let ProgressParamsValue::WorkDone(value) = params.value;
+    let (title, message, percentage, done) = match value {
+        WorkDoneProgress::Begin(b) => (b.title, b.message, b.percentage, false),
+        WorkDoneProgress::Report(r) => (String::new(), r.message, r.percentage, false),
+        WorkDoneProgress::End(e) => (String::new(), e.message, None, true),
+    };
     Some(Progress {
         token,
-        title: clip_display_text(value.get("title").and_then(Value::as_str).unwrap_or("")),
-        message: value
-            .get("message")
-            .and_then(Value::as_str)
-            .map(clip_display_text),
-        percentage: value
-            .get("percentage")
-            .and_then(Value::as_u64)
-            .map(|p| p.min(100) as u32),
-        done: kind == "end",
+        title: clip_display_text(&title),
+        message: message.as_deref().map(clip_display_text),
+        percentage: percentage.map(|p| p.min(100)),
+        done,
     })
 }
 
-/// Parse a `textDocument/completion` result. Handles both shapes the spec
-/// allows: a bare `CompletionItem[]`, or a `CompletionList { items: [...] }`.
-/// Accepts either the full response envelope (`{result: …}`) or the result
-/// value directly.
+/// Parse a `textDocument/completion` result: a bare `CompletionItem[]` or a
+/// `CompletionList`. Accepts either the full response envelope
+/// (`{result: …}`) or the result value directly.
 pub fn parse_completion(msg: &Value) -> Vec<CompletionItem> {
-    let result = msg.get("result").unwrap_or(msg);
-    let items = if let Some(arr) = result.as_array() {
-        arr
-    } else if let Some(arr) = result.get("items").and_then(Value::as_array) {
-        arr
-    } else {
-        return Vec::new();
+    let items = match payload(msg, "result") {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => return Vec::new(),
     };
     items
-        .iter()
+        .into_iter()
         .take(MAX_LSP_COMPLETIONS)
-        .filter_map(|it| {
-            let label = clip_display_text(it.get("label").and_then(Value::as_str)?);
-            let insert_text = it
-                .get("insertText")
-                .and_then(Value::as_str)
-                .map(clip_display_text)
-                // `textEdit.newText` is the modern insert payload; fall back to it.
+        .map(|item| {
+            let label = clip_display_text(&item.label);
+            // `textEdit.newText` is the modern insert payload; fall back to it.
+            let insert_text = item
+                .insert_text
                 .or_else(|| {
-                    it.get("textEdit")
-                        .and_then(|e| e.get("newText"))
-                        .and_then(Value::as_str)
-                        .map(clip_display_text)
+                    item.text_edit.map(|edit| match edit {
+                        CompletionTextEdit::Edit(edit) => edit.new_text,
+                        CompletionTextEdit::InsertAndReplace(edit) => edit.new_text,
+                    })
                 })
-                .unwrap_or_else(|| label.clone());
-            Some(CompletionItem {
+                .map_or_else(|| label.clone(), |text| clip_display_text(&text));
+            CompletionItem {
                 label,
-                kind: it.get("kind").and_then(Value::as_u64).map(|k| k as u8),
-                detail: it
-                    .get("detail")
-                    .and_then(Value::as_str)
-                    .map(clip_display_text),
+                kind: item.kind,
+                detail: item.detail.as_deref().map(clip_display_text),
                 insert_text,
-            })
+            }
         })
         .collect()
 }
 
-/// Parse a `textDocument/hover` result into plain display text. Handles the
-/// three `contents` shapes: a `MarkupContent {value}`, a `MarkedString` (string
-/// or `{value}`), and an array of `MarkedString`. `None`/`null` → `None`.
+/// Parse a `textDocument/hover` result into plain display text, whichever
+/// `contents` shape the server chose. `null` or empty → `None`.
 pub fn parse_hover(msg: &Value) -> Option<String> {
-    let result = msg.get("result").unwrap_or(msg);
-    if result.is_null() {
-        return None;
-    }
-    let contents = result.get("contents").unwrap_or(result);
-    let text = marked_to_string(contents);
+    let marked = |marked: MarkedString| match marked {
+        MarkedString::String(text) => text,
+        MarkedString::LanguageString(code) => code.value,
+    };
+    let text = match payload::<Option<Hover>>(msg, "result")??.contents {
+        HoverContents::Scalar(text) => marked(text),
+        HoverContents::Array(parts) => parts
+            .into_iter()
+            .map(marked)
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        HoverContents::Markup(markup) => markup.value,
+    };
     let text = clip_display_text(&text);
-    if text.is_empty() { None } else { Some(text) }
+    (!text.is_empty()).then_some(text)
 }
 
 /// Bound user-visible LSP strings after parsing. UTF-8 is preserved because
@@ -297,59 +268,27 @@ fn clip_display_text(text: &str) -> String {
     text.get(..end).unwrap_or_default().trim().to_string()
 }
 
-fn marked_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Array(arr) => arr
-            .iter()
-            .map(marked_to_string)
-            .filter(|s| !s.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::Object(_) => v
-            .get("value")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
-/// Parse a `textDocument/definition` result. Handles a single `Location`, a
-/// `Location[]`, and a `LocationLink[]` (which uses `targetUri`/`targetRange`).
+/// Parse a `textDocument/definition` result: a `Location`, a `Location[]`, or
+/// a `LocationLink[]`, whose target selection is where the editor goes.
 pub fn parse_definition(msg: &Value) -> Vec<Location> {
-    let result = msg.get("result").unwrap_or(msg);
-    match result {
-        Value::Null => Vec::new(),
-        Value::Array(arr) => arr
+    let location = |uri: &lsp_types::Uri, range| Location {
+        uri: normalize_document_uri(&clip_display_text(uri.as_str())),
+        range,
+    };
+    match payload::<Option<GotoDefinitionResponse>>(msg, "result").flatten() {
+        None => Vec::new(),
+        Some(GotoDefinitionResponse::Scalar(at)) => vec![location(&at.uri, at.range)],
+        Some(GotoDefinitionResponse::Array(all)) => all
             .iter()
             .take(MAX_LSP_DEFINITIONS)
-            .filter_map(parse_location)
+            .map(|at| location(&at.uri, at.range))
             .collect(),
-        obj => parse_location(obj).into_iter().collect(),
+        Some(GotoDefinitionResponse::Link(links)) => links
+            .iter()
+            .take(MAX_LSP_DEFINITIONS)
+            .map(|link| location(&link.target_uri, link.target_selection_range))
+            .collect(),
     }
-}
-
-fn parse_location(v: &Value) -> Option<Location> {
-    // Plain Location.
-    if let (Some(uri), Some(range)) = (v.get("uri").and_then(Value::as_str), v.get("range")) {
-        return Some(Location {
-            uri: normalize_document_uri(&clip_display_text(uri)),
-            range: parse_range(range),
-        });
-    }
-    // LocationLink.
-    if let (Some(uri), Some(range)) = (
-        v.get("targetUri").and_then(Value::as_str),
-        v.get("targetSelectionRange")
-            .or_else(|| v.get("targetRange")),
-    ) {
-        return Some(Location {
-            uri: normalize_document_uri(&clip_display_text(uri)),
-            range: parse_range(range),
-        });
-    }
-    None
 }
 
 /// Parse a `textDocument/formatting` response: the edits that format the
@@ -363,24 +302,9 @@ pub fn parse_formatting(msg: &Value) -> Result<Vec<TextEdit>, String> {
                 .unwrap_or("the formatter failed"),
         ));
     }
-    match msg.get("result").unwrap_or(&Value::Null) {
-        Value::Null => Ok(Vec::new()),
-        Value::Array(edits) => edits
-            .iter()
-            .map(|edit| {
-                Ok(TextEdit {
-                    range: parse_range(edit.get("range").ok_or("an edit without a range")?),
-                    new_text: edit
-                        .get("newText")
-                        .and_then(Value::as_str)
-                        .ok_or("an edit without text")?
-                        .to_owned(),
-                })
-            })
-            .collect::<Result<_, &str>>()
-            .map_err(str::to_owned),
-        _ => Err("the formatter answered something other than edits".into()),
-    }
+    Option::<Vec<TextEdit>>::deserialize(msg.get("result").unwrap_or(&Value::Null))
+        .map(Option::unwrap_or_default)
+        .map_err(|_| "the formatter answered something other than edits".into())
 }
 
 /// The byte offset in `text` of an LSP position, its column counted in UTF-16
@@ -871,28 +795,28 @@ impl LspClient {
 
     /// Notify the server a document was opened.
     pub fn did_open(&mut self, uri: &str, language_id: &str, version: i64, text: &str) {
-        self.send_notification(
-            "textDocument/didOpen",
-            &json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": language_id,
-                    "version": version,
-                    "text": text,
-                }
-            }),
-        );
+        let Some(uri) = parse_uri(uri) else { return };
+        self.notify::<DidOpenTextDocument>(&DidOpenTextDocumentParams {
+            text_document: TextDocumentItem::new(
+                uri,
+                language_id.to_owned(),
+                protocol_version(version),
+                text.to_owned(),
+            ),
+        });
     }
 
     /// Notify the server a document changed (full-text sync).
     pub fn did_change(&mut self, uri: &str, version: i64, text: &str) {
-        self.send_notification(
-            "textDocument/didChange",
-            &json!({
-                "textDocument": { "uri": uri, "version": version },
-                "contentChanges": [ { "text": text } ]
-            }),
-        );
+        let Some(uri) = parse_uri(uri) else { return };
+        self.notify::<DidChangeTextDocument>(&DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier::new(uri, protocol_version(version)),
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.to_owned(),
+            }],
+        });
     }
 
     /// Notify the server the document was written to disk.
@@ -901,43 +825,53 @@ impl LspClient {
     /// the compiler errors that make the Problems panel worth reading arrive in
     /// response to this notification and nothing else.
     pub fn did_save(&mut self, uri: &str) {
-        self.send_notification(
-            "textDocument/didSave",
-            &json!({ "textDocument": { "uri": uri } }),
-        );
+        let Some(uri) = parse_uri(uri) else { return };
+        self.notify::<DidSaveTextDocument>(&DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            text: None,
+        });
     }
 
     /// Request completions at a position (result arrives as an `LspEvent`).
     pub fn request_completion(&mut self, uri: &str, pos: Position) {
-        self.send_request(
-            "textDocument/completion",
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": pos.line, "character": pos.character }
-            }),
+        let Some(at) = position_params(uri, pos) else {
+            return;
+        };
+        self.send_request::<Completion>(
+            &CompletionParams {
+                text_document_position: at,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            },
             Pending::Completion,
         );
     }
 
     pub fn request_hover(&mut self, uri: &str, pos: Position) {
-        self.send_request(
-            "textDocument/hover",
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": pos.line, "character": pos.character }
-            }),
+        let Some(at) = position_params(uri, pos) else {
+            return;
+        };
+        self.send_request::<HoverRequest>(
+            &HoverParams {
+                text_document_position_params: at,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
             Pending::Hover,
         );
     }
 
     /// Request the definition location(s) at a position.
     pub fn request_definition(&mut self, uri: &str, pos: Position) {
-        self.send_request(
-            "textDocument/definition",
-            &json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": pos.line, "character": pos.character }
-            }),
+        let Some(at) = position_params(uri, pos) else {
+            return;
+        };
+        self.send_request::<GotoDefinition>(
+            &GotoDefinitionParams {
+                text_document_position_params: at,
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
             Pending::Definition,
         );
     }
@@ -945,17 +879,24 @@ impl LspClient {
     /// Ask for the edits that format the document (result arrives as an
     /// [`LspEvent::Formatted`]). Returns whether the request went out.
     pub fn request_formatting(&mut self, uri: &str, tab_size: u32, insert_spaces: bool) -> bool {
-        self.send_request(
-            "textDocument/formatting",
-            &json!({
-                "textDocument": { "uri": uri },
-                "options": { "tabSize": tab_size, "insertSpaces": insert_spaces }
-            }),
+        let Some(uri) = parse_uri(uri) else {
+            return false;
+        };
+        self.send_request::<Formatting>(
+            &DocumentFormattingParams {
+                text_document: TextDocumentIdentifier::new(uri),
+                options: FormattingOptions {
+                    tab_size,
+                    insert_spaces,
+                    ..FormattingOptions::default()
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
             Pending::Formatting,
         )
     }
 
-    fn send_request(&mut self, method: &str, params: &Value, kind: Pending) -> bool {
+    fn send_request<R: Request>(&mut self, params: &R::Params, kind: Pending) -> bool {
         let has_capacity = self
             .pending
             .lock()
@@ -971,21 +912,17 @@ impl LspClient {
         };
         pending.insert(id, kind);
         drop(pending);
-        self.send_request_raw(method, params, Some(id));
+        self.write_request::<R>(id, params);
         true
     }
 
-    fn send_request_raw(&mut self, method: &str, params: &Value, id: Option<i64>) {
-        let Some(id) = id.or_else(|| self.take_request_id()) else {
-            return;
-        };
-        let payload = json!({
+    fn write_request<R: Request>(&self, id: i64, params: &R::Params) {
+        self.write(&json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": method,
+            "method": R::METHOD,
             "params": params,
-        });
-        self.write(&payload);
+        }));
     }
 
     fn take_request_id(&mut self) -> Option<i64> {
@@ -994,13 +931,12 @@ impl LspClient {
         Some(id)
     }
 
-    fn send_notification(&self, method: &str, params: &Value) {
-        let payload = json!({
+    fn notify<N: Notification>(&self, params: &N::Params) {
+        self.write(&json!({
             "jsonrpc": "2.0",
-            "method": method,
+            "method": N::METHOD,
             "params": params,
-        });
-        self.write(&payload);
+        }));
     }
 
     fn write(&self, payload: &Value) {
@@ -1086,33 +1022,82 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
         || root.display().to_string(),
         |s| s.to_string_lossy().to_string(),
     );
-    client.send_request_raw(
-        "initialize",
-        &json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "rootPath": root.display().to_string(),
-            "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
-            "capabilities": {
-                "window": { "workDoneProgress": true },
-                "workspace": {
-                    "configuration": true,
-                    "workspaceFolders": true,
-                    "didChangeConfiguration": { "dynamicRegistration": true }
-                },
-                "textDocument": {
-                    "synchronization": { "didSave": true },
-                    "hover": { "contentFormat": ["plaintext", "markdown"] },
-                    "completion": { "completionItem": { "snippetSupport": false } },
-                    "publishDiagnostics": {},
-                    "definition": {},
-                    "formatting": {}
-                }
-            }
+    let Some(id) = client.take_request_id() else {
+        return;
+    };
+    let root_uri = parse_uri(root_uri);
+    #[allow(
+        deprecated,
+        reason = "servers that predate workspace folders still read rootUri and rootPath"
+    )]
+    let params = InitializeParams {
+        process_id: Some(std::process::id()),
+        root_path: Some(root.display().to_string()),
+        root_uri: root_uri.clone(),
+        workspace_folders: root_uri.map(|uri| {
+            vec![WorkspaceFolder {
+                uri,
+                name: folder_name,
+            }]
         }),
-        None,
-    );
-    client.send_notification("initialized", &json!({}));
+        capabilities: ClientCapabilities {
+            window: Some(WindowClientCapabilities {
+                work_done_progress: Some(true),
+                ..WindowClientCapabilities::default()
+            }),
+            workspace: Some(WorkspaceClientCapabilities {
+                configuration: Some(true),
+                workspace_folders: Some(true),
+                did_change_configuration: Some(DynamicRegistrationClientCapabilities {
+                    dynamic_registration: Some(true),
+                }),
+                ..WorkspaceClientCapabilities::default()
+            }),
+            text_document: Some(TextDocumentClientCapabilities {
+                synchronization: Some(TextDocumentSyncClientCapabilities {
+                    did_save: Some(true),
+                    ..TextDocumentSyncClientCapabilities::default()
+                }),
+                hover: Some(HoverClientCapabilities {
+                    content_format: Some(vec![MarkupKind::PlainText, MarkupKind::Markdown]),
+                    ..HoverClientCapabilities::default()
+                }),
+                completion: Some(CompletionClientCapabilities {
+                    completion_item: Some(CompletionItemCapability {
+                        snippet_support: Some(false),
+                        ..CompletionItemCapability::default()
+                    }),
+                    ..CompletionClientCapabilities::default()
+                }),
+                publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
+                definition: Some(GotoCapability::default()),
+                formatting: Some(DocumentFormattingClientCapabilities::default()),
+                ..TextDocumentClientCapabilities::default()
+            }),
+            ..ClientCapabilities::default()
+        },
+        ..InitializeParams::default()
+    };
+    client.write_request::<Initialize>(id, &params);
+    client.notify::<Initialized>(&InitializedParams {});
+}
+
+/// A document URI as the protocol type. The editor builds its URIs with
+/// [`path_to_uri`], so they always parse.
+fn parse_uri(uri: &str) -> Option<lsp_types::Uri> {
+    uri.parse().ok()
+}
+
+fn position_params(uri: &str, position: Position) -> Option<TextDocumentPositionParams> {
+    Some(TextDocumentPositionParams::new(
+        TextDocumentIdentifier::new(parse_uri(uri)?),
+        position,
+    ))
+}
+
+/// The editor counts document versions in `i64`; the protocol's are `i32`.
+fn protocol_version(version: i64) -> i32 {
+    i32::try_from(version).unwrap_or(i32::MAX)
 }
 
 impl LspClient {
@@ -1176,7 +1161,7 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
         if let Some(id) = id {
             let result = match method {
                 // One config object per requested scope; `null` = use defaults.
-                "workspace/configuration" => {
+                WorkspaceConfiguration::METHOD => {
                     let n = msg
                         .get("params")
                         .and_then(|p| p.get("items"))
@@ -1187,7 +1172,7 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
                 // Accepting a dynamic registration, a progress token, or an
                 // apply-edit we do not implement: an empty/negative result is a
                 // valid answer and lets the server proceed.
-                "workspace/applyEdit" => json!({ "applied": false }),
+                ApplyWorkspaceEdit::METHOD => json!({ "applied": false }),
                 _ => Value::Null,
             };
             return Routed {
@@ -1202,9 +1187,9 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
 
         // No id: a plain notification.
         let event = match method {
-            "textDocument/publishDiagnostics" => parse_publish_diagnostics(msg)
+            PublishDiagnostics::METHOD => parse_publish_diagnostics(msg)
                 .map(|(uri, diagnostics)| LspEvent::Diagnostics { uri, diagnostics }),
-            "$/progress" => parse_progress(msg).map(LspEvent::Progress),
+            ProgressNotification::METHOD => parse_progress(msg).map(LspEvent::Progress),
             _ => None,
         };
         return Routed { event, reply: None };
@@ -1444,7 +1429,7 @@ mod tests {
     #[test]
     fn formatting_edits_apply_to_the_text_they_were_made_for() {
         let edit = |start: (u32, u32), end: (u32, u32), text: &str| TextEdit {
-            range: LspRange {
+            range: Range {
                 start: Position {
                     line: start.0,
                     character: start.1,
@@ -1589,7 +1574,7 @@ mod tests {
         let (uri, diags) = parse_publish_diagnostics(&msg).unwrap();
         assert_eq!(uri, "file:///proj/src/main.rs");
         assert_eq!(diags.len(), 2);
-        assert_eq!(diags[0].severity, 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::ERROR);
         assert_eq!(
             diags[0].range.start,
             Position {
@@ -1620,7 +1605,7 @@ mod tests {
             }
         });
         let (_, diags) = parse_publish_diagnostics(&msg).unwrap();
-        assert_eq!(diags[0].severity, 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::ERROR);
         assert_eq!(diags[0].to_panel().severity, Severity::Error);
     }
 
@@ -1638,7 +1623,7 @@ mod tests {
         let items = parse_completion(&list);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "println!");
-        assert_eq!(items[0].kind, Some(3));
+        assert_eq!(items[0].kind, Some(CompletionItemKind::FUNCTION));
         assert_eq!(items[0].insert_text, "println!");
         // No insertText → falls back to the label.
         assert_eq!(items[1].insert_text, "primes_below");
@@ -1654,7 +1639,10 @@ mod tests {
 
     fn completion_prefers_text_edit_new_text() {
         let msg = json!({ "result": [
-            { "label": "greet", "textEdit": { "newText": "greet(${1})" } }
+            { "label": "greet", "textEdit": {
+                "range": { "start": {"line":0,"character":0}, "end": {"line":0,"character":2} },
+                "newText": "greet(${1})"
+            } }
         ]});
         let items = parse_completion(&msg);
         assert_eq!(items[0].insert_text, "greet(${1})");
@@ -1695,6 +1683,7 @@ mod tests {
         // LocationLink[] (targetUri / targetSelectionRange).
         let links = json!({ "result": [ {
             "targetUri": "file:///proj/src/greeter.rs",
+            "targetRange": { "start": {"line":3,"character":0}, "end": {"line":6,"character":1} },
             "targetSelectionRange": { "start": {"line":4,"character":7}, "end": {"line":4,"character":12} }
         } ] });
         let locs = parse_definition(&links);

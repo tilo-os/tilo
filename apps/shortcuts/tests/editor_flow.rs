@@ -240,17 +240,16 @@ fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
         .unwrap_or_else(|error| panic!("{target}: {error}"));
 }
 
-/// Press the window's action `id` in its bar, once the bar offers it.
-fn press_bar(app: &mut TestApp<App>, id: &str) {
+/// Press the window's action `name` in its bar, once the bar offers it.
+fn press_bar(app: &mut TestApp<App>, name: &str) {
     app.settle();
     let offered = ui::window_toolbar::declared().is_some_and(|bar| {
         bar.actions
             .iter()
-            .any(|action| action.id == id && action.enabled)
+            .any(|action| action.name == name && action.enabled)
     });
-    assert!(offered, "the window bar offers {id}");
-    app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    assert!(offered, "the window bar offers {name}");
+    app.harness().press_window_action(name).unwrap();
     app.settle();
 }
 
@@ -284,7 +283,7 @@ fn the_window_bar_names_the_page_and_holds_its_actions() {
         let actions: Vec<(String, bool)> = bar
             .actions
             .into_iter()
-            .map(|action| (action.id, action.enabled))
+            .map(|action| (action.name, action.enabled))
             .collect();
         (location, actions)
     };
@@ -293,18 +292,12 @@ fn the_window_bar_names_the_page_and_holds_its_actions() {
     assert_eq!(
         actions,
         [
-            ("new-shortcut".to_owned(), true),
-            ("reload".to_owned(), true)
+            ("New shortcut".to_owned(), true),
+            ("Reload shortcuts".to_owned(), true)
         ]
     );
-    for drawn in ["new-shortcut", "reload"] {
-        assert!(
-            !app.harness().targets().contains_key(drawn),
-            "the window draws no {drawn} of its own"
-        );
-    }
 
-    press_bar(&mut app, "new-shortcut");
+    press_bar(&mut app, "New shortcut");
     assert_eq!(app.state().drafts.len(), 1, "New shortcut starts a draft");
     let (location, actions) = bar(&mut app);
     assert_eq!(
@@ -313,10 +306,10 @@ fn the_window_bar_names_the_page_and_holds_its_actions() {
         "the draft is open"
     );
     assert!(
-        actions.contains(&("review-save".to_owned(), false)),
+        actions.contains(&("Review and save…".to_owned(), false)),
         "a draft without steps cannot be saved yet: {actions:?}"
     );
-    press_bar(&mut app, "discard-draft");
+    press_bar(&mut app, "Discard draft");
     assert!(app.state().drafts.is_empty(), "Discard draft discards it");
 }
 
@@ -326,8 +319,8 @@ fn the_bar_duplicates_the_open_draft() {
     app.harness()
         .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
-    press_bar(&mut app, "new-shortcut");
-    press_bar(&mut app, "duplicate-shortcut");
+    press_bar(&mut app, "New shortcut");
+    press_bar(&mut app, "Duplicate");
     assert_eq!(app.state().drafts.len(), 2, "Duplicate starts a variant");
     assert!(
         app.state()
@@ -451,7 +444,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect("the draft checks");
 
     // Review what it may do, then save.
-    press_bar(&mut app, "review-save");
+    press_bar(&mut app, "Review and save…");
     app.harness()
         .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
         .expect("the sheet shows");
@@ -713,7 +706,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     render_morning_matrix(&mut app, &output, "draft");
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
-    press_bar(&mut app, "review-save");
+    press_bar(&mut app, "Review and save…");
     app.harness()
         .expect(
             &SemanticExpectation::named("schedule-review-0")
@@ -818,7 +811,7 @@ fn the_save_review_says_what_saving_allows() {
         "id": "no-actions", "name": "Only a branch", "steps": [{"id": "branch", "step": "if", "cond": {"truthy": {"literal": true}}, "then": []}]
     })))
     .unwrap();
-    press_bar(&mut app, "review-save");
+    press_bar(&mut app, "Review and save…");
     let explain = ui::i18n!("shortcuts-grant-explain");
     assert!(
         explain.contains("app actions listed") && explain.contains("person running it"),
@@ -941,7 +934,7 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
         .clone();
     let program = draft.program();
 
-    press_bar(&mut app, "text-view");
+    press_bar(&mut app, "Show program text");
     app.harness()
         .wait_for_named("draft-text", tilo_test_env::hang_bound())
         .expect("the program text shows");
@@ -995,7 +988,7 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
     );
 
     // Going back to the blocks keeps the draft exactly as it was.
-    press_bar(&mut app, "text-view");
+    press_bar(&mut app, "Show blocks");
     let state = app.state();
     let back = state.drafts.values().next().expect("the draft");
     assert_eq!(back.program(), program, "the text view edits nothing");

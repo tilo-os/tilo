@@ -15,9 +15,8 @@ impl SetupApp {
         home: PathBuf,
     ) -> Result<Self, String> {
         let mut app = Self::new();
-        app.controller.borrow_mut().review_desktop();
         app.desktop_only = true;
-        app.chosen_experience = Some(Experience::Desktop);
+        app.experience = Some(Experience::Desktop);
         app.desktop_flow
             .require_account_protocol(prepared.account_custody_protocol());
         app.desktop_flow
@@ -133,11 +132,7 @@ mod tests {
     #[test]
     fn desktop_only_records_intent_without_inventing_support_or_preparation() {
         let app = SetupApp::for_desktop();
-        assert_eq!(app.controller().page(), SetupPage::Review);
-        assert_eq!(
-            app.controller().chosen_experience(),
-            Some(Experience::Desktop)
-        );
+        assert_eq!(app.experience, Some(Experience::Desktop));
         assert!(!app.capabilities.platform.desktop_session);
         assert!(!app.internal_install.is_probing());
         assert!(app.guided_desktop.is_none());
@@ -169,7 +164,6 @@ mod tests {
         assert!(!app.guided_navigation.get());
         assert!(app.answer(SetupEffect::InstallDesktop).is_err());
         assert!(app.guided_desktop.is_none());
-        assert!(app.controller().folders().is_empty());
         assert!(!app.internal_install.is_probing());
     }
 
@@ -243,7 +237,6 @@ mod tests {
             std::fs::read(home.join("ordinary-document")).unwrap(),
             b"current document"
         );
-        assert!(app.controller().folders().is_empty());
         assert!(!app.status_is_error);
         assert_eq!(
             app.status,

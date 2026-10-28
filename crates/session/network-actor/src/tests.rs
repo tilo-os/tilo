@@ -407,18 +407,11 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
     }
 }
 
-use iroh::endpoint::presets;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tokio::time::timeout;
 
 async fn endpoint() -> (Endpoint, MemoryLookup) {
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .unwrap();
-    (endpoint, lookup)
+    crate::loopback_endpoint(None).await
 }
 
 /// Reads personal fabric frames on every connection it accepts, as the
@@ -731,14 +724,7 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
 }
 
 async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .unwrap();
-    (endpoint, lookup)
+    crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes()))).await
 }
 
 fn enrol(

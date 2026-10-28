@@ -5,16 +5,21 @@
 //! snippet's favorite toggle, with Duplicate and Delete in the bar's menu.
 //! The bar's search is the library's search; the window draws no header row.
 
+use ui::framework::{BarActions, BarCommands};
 use ui::widget::{NavPane, NavShell};
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
 use super::{Action, SnippetsApp};
+use crate::model::Snippets;
 use crate::tr;
 
-pub(crate) const NEW_SNIPPET: &str = "snippets.new";
-pub(crate) const FAVORITE: &str = "snippets.favorite";
-pub(crate) const DUPLICATE: &str = "snippets.duplicate";
-pub(crate) const DELETE: &str = "snippets.delete";
+/// The bar's entries: the library's verbs, and the commands that open
+/// what they make.
+#[derive(Default)]
+pub(super) struct Bar {
+    pub(super) actions: Option<BarActions<Snippets>>,
+    commands: BarCommands<Action>,
+}
 
 impl SnippetsApp {
     /// The window bar's slots for what the window shows now.
@@ -33,25 +38,39 @@ impl SnippetsApp {
             label,
             ..ToolbarLocation::default()
         });
+        let commands = &self.bar.commands;
         // An empty library offers New snippet in the window itself; the bar
         // would only repeat it.
         let mut actions = Vec::new();
         if !core.library.snippets.is_empty() {
-            actions.push(ToolbarAction::new(NEW_SNIPPET, "plus", tr("snippets-new")));
+            actions.push(commands.entry("plus", tr("snippets-new"), Action::NewSnippet));
         }
         if let Some((id, open)) = core
             .open
             .as_ref()
             .and_then(|id| Some((id, core.library.get(id)?)))
         {
+            let favorite = core.favorite_label(id);
             actions.push(
-                ToolbarAction::new(FAVORITE, "star", core.favorite_label(id)).on(open.favorite),
+                commands
+                    .entry("star", favorite, Action::ToggleFavorite(id.clone()))
+                    .on(open.favorite),
             );
+            let duplicate = tr("snippets-menu-duplicate");
             actions.push(
-                ToolbarAction::new(DUPLICATE, "copy", tr("snippets-menu-duplicate")).in_menu(),
+                commands
+                    .entry("copy", duplicate, Action::Duplicate(id.clone()))
+                    .in_menu(),
             );
-            actions
-                .push(ToolbarAction::new(DELETE, "trash-2", tr("snippets-menu-delete")).in_menu());
+            if let Some(bar) = &self.bar.actions {
+                actions.push(
+                    ToolbarAction {
+                        name: tr("snippets-menu-delete"),
+                        ..bar.action(Snippets::DELETE.with(id.clone()))
+                    }
+                    .in_menu(),
+                );
+            }
         }
         NavShell::push_window_actions(&mut toolbar, actions);
         toolbar
@@ -64,21 +83,18 @@ impl SnippetsApp {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
             asked = true;
-            if self.shell.window_toolbar_event(&event) {
+            if self.shell.window_toolbar_event(&event)
+                || self
+                    .bar
+                    .actions
+                    .as_ref()
+                    .is_some_and(|bar| bar.press(&event))
+            {
                 continue;
             }
-            let ToolbarEvent::Action { id } = event else {
-                continue;
-            };
-            let open = self.core.borrow().open.clone();
-            let action = match (id.as_str(), open) {
-                (NEW_SNIPPET, _) => Action::NewSnippet,
-                (FAVORITE, Some(open)) => Action::ToggleFavorite(open),
-                (DUPLICATE, Some(open)) => Action::Duplicate(open),
-                (DELETE, Some(open)) => Action::Delete(open),
-                _ => continue,
-            };
-            self.requests.borrow_mut().push(action);
+            if let Some(action) = self.bar.commands.pressed(&event) {
+                self.requests.borrow_mut().push(action);
+            }
         }
         asked
     }

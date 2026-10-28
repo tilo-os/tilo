@@ -51,35 +51,20 @@ fn has_key(bitmap: &str, code: usize) -> bool {
         .is_some_and(|word| word & 1 == 1)
 }
 
-/// Call `changed` whenever a device appears in or leaves `dev_input`.
+/// Call `changed` whenever a device appears in or leaves `dev_input`, for
+/// the life of the process.
 pub fn watch(dev_input: &Path, changed: impl Fn() + Send + 'static) {
-    use rustix::fs::inotify;
-    let watch = inotify::init(inotify::CreateFlags::CLOEXEC).and_then(|fd| {
-        inotify::add_watch(
-            &fd,
-            dev_input,
-            inotify::WatchFlags::CREATE | inotify::WatchFlags::DELETE,
-        )?;
-        Ok(fd)
-    });
-    let fd = match watch {
-        Ok(fd) => fd,
+    static WATCH: std::sync::Mutex<Option<tilo_files::native::ChangeWatch>> =
+        std::sync::Mutex::new(None);
+    match tilo_files::native::watch_presence(dev_input, |_| true, changed) {
+        Ok(watch) => {
+            *WATCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
+        }
         Err(error) => {
             tracing::warn!(%error, "the sign-in screen cannot follow keyboards being plugged");
-            return;
         }
-    };
-    let spawned = std::thread::Builder::new()
-        .name("keyboards".into())
-        .spawn(move || {
-            let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
-            let mut reader = inotify::Reader::new(&fd, &mut buffer);
-            while reader.next().is_ok() {
-                changed();
-            }
-        });
-    if let Err(error) = spawned {
-        tracing::warn!(%error, "the sign-in screen cannot follow keyboards being plugged");
     }
 }
 

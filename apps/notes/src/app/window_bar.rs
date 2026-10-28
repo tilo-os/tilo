@@ -8,13 +8,17 @@
 
 use std::rc::Rc;
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::framework::BarCommands;
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::NotesApp;
 
-/// The action ids the note's slots answer to.
-const NEW_NOTE: &str = "new-note";
-const NOTE_ACTIONS: &str = "note-actions";
+/// What an entry of the bar asks the header for.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum BarCommand {
+    NewNote,
+    NoteActions,
+}
 
 impl NotesApp {
     /// Whether this person may make a note in the notebook, as the room
@@ -32,18 +36,19 @@ impl NotesApp {
     /// The slots for the note shown (`title`, and the anchor `open` shows it
     /// at; `None`: no note is open).
     fn window_toolbar(
+        bar: &BarCommands<BarCommand>,
         note: Option<(&str, String)>,
         sidebar_open: bool,
         adds_notes: bool,
     ) -> WindowToolbar {
         let title = note.as_ref().map(|(title, _)| *title);
         // New note is offered only to someone who may make one.
-        let new_note = adds_notes.then(|| ToolbarAction {
-            id: NEW_NOTE.into(),
-            icon: "plus".into(),
-            name: ui::i18n!("notes-affordance-new-note"),
-            enabled: true,
-            ..ToolbarAction::default()
+        let new_note = adds_notes.then(|| {
+            bar.entry(
+                "plus",
+                ui::i18n!("notes-affordance-new-note"),
+                BarCommand::NewNote,
+            )
         });
         WindowToolbar {
             sidebar: Some(sidebar_open),
@@ -58,13 +63,13 @@ impl NotesApp {
             }),
             actions: new_note
                 .into_iter()
-                .chain([ToolbarAction {
-                    id: NOTE_ACTIONS.into(),
-                    icon: "more-horizontal".into(),
-                    name: ui::i18n!("notes-affordance-note-actions"),
-                    enabled: title.is_some(),
-                    ..ToolbarAction::default()
-                }])
+                .chain([bar
+                    .entry(
+                        "more-horizontal",
+                        ui::i18n!("notes-affordance-note-actions"),
+                        BarCommand::NoteActions,
+                    )
+                    .enabled(title.is_some())])
                 .collect(),
             ..WindowToolbar::default()
         }
@@ -117,18 +122,16 @@ impl NotesApp {
                 .0
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(&self.bar, note, open, adds)));
             self.declared_bar = Some(key);
         }
         let header = Rc::clone(&self.header);
         for event in ui::window_toolbar::take_events() {
-            match event {
-                ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
-                ToolbarEvent::Action { id } => match id.as_str() {
-                    NEW_NOTE if adds => header.new_note.set(true),
-                    NOTE_ACTIONS => header.note_menu.set(true),
-                    _ => {}
-                },
+            match (&event, self.bar.pressed(&event)) {
+                (ToolbarEvent::ToggleSidebar, _) => self.shell.toggle_sidebar(),
+                (_, Some(BarCommand::NewNote)) if adds => header.new_note.set(true),
+                (_, Some(BarCommand::NoteActions)) => header.note_menu.set(true),
+                (ToolbarEvent::Action { .. }, _) => {}
                 _ => continue,
             }
             changed = true;
@@ -139,7 +142,7 @@ impl NotesApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{NEW_NOTE, NotesApp};
+    use super::NotesApp;
     use ui::framework::testing::TestApp;
 
     /// Notes in its window bar at `size`, on `scenario`'s note.
@@ -231,7 +234,7 @@ mod tests {
             declared
                 .actions
                 .iter()
-                .filter(|action| action.id == NEW_NOTE)
+                .filter(|action| action.name == "New note")
                 .count(),
             1,
             "the bar holds New note once"

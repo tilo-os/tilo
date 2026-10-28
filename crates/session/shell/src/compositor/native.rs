@@ -2304,6 +2304,8 @@ fn pump_floating_surface_service(
                 ui::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                     selection,
                     bounds,
+                    ask,
+                    draft,
                 } => {
                     // The app id is the launcher's: a selection is only ever
                     // credited to the app that holds it, and only while it
@@ -2315,7 +2317,7 @@ fn pump_floating_surface_service(
                     );
                     changed |= frame_builder
                         .host_mut()
-                        .receive_ask_agent(&app_id, selection, area);
+                        .receive_ask_agent(&app_id, selection, area, ask, draft);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::Pointed {
                     request,

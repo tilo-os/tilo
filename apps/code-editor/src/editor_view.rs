@@ -48,6 +48,7 @@ use crate::highlight::{BackgroundHighlights, IncrementalHighlights, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
 use crate::row_viewport::RowViewportIndex;
+use lsp_types::CompletionItemKind;
 use std::sync::Arc;
 
 #[path = "editor_scroll.rs"]
@@ -88,14 +89,22 @@ fn completion_kind_icon(item: &CompletionItem) -> Icon {
     if is_macro {
         return Icon::Sparkles;
     }
-    match item.kind {
-        Some(2..=4) => Icon::Code,
-        Some(5 | 10) => Icon::List,
-        Some(6) => Icon::Square,
-        Some(7 | 8 | 13 | 22) => Icon::Layers,
-        Some(9) => Icon::Folder,
-        Some(14) => Icon::Star,
-        Some(21) => Icon::Pin,
+    let Some(kind) = item.kind else {
+        return Icon::FileText;
+    };
+    match kind {
+        CompletionItemKind::METHOD
+        | CompletionItemKind::FUNCTION
+        | CompletionItemKind::CONSTRUCTOR => Icon::Code,
+        CompletionItemKind::FIELD | CompletionItemKind::PROPERTY => Icon::List,
+        CompletionItemKind::VARIABLE => Icon::Square,
+        CompletionItemKind::CLASS
+        | CompletionItemKind::INTERFACE
+        | CompletionItemKind::ENUM
+        | CompletionItemKind::STRUCT => Icon::Layers,
+        CompletionItemKind::MODULE => Icon::Folder,
+        CompletionItemKind::KEYWORD => Icon::Star,
+        CompletionItemKind::CONSTANT => Icon::Pin,
         _ => Icon::FileText,
     }
 }
@@ -3340,7 +3349,7 @@ mod tests {
         ev.set_caret_for_test(0, 3);
         let item = |label: &str| CompletionItem {
             label: label.into(),
-            kind: Some(3),
+            kind: Some(CompletionItemKind::FUNCTION),
             detail: None,
             insert_text: label.into(),
         };
@@ -3443,28 +3452,41 @@ mod tests {
 
     #[test]
     fn completion_candidates_show_their_kind_and_macros_have_their_own_icon() {
-        let item = |label: &str, kind: Option<u8>, detail: Option<&str>| CompletionItem {
-            label: label.to_string(),
-            kind,
-            detail: detail.map(str::to_string),
-            insert_text: label.to_string(),
-        };
+        let item =
+            |label: &str, kind: Option<CompletionItemKind>, detail: Option<&str>| CompletionItem {
+                label: label.to_string(),
+                kind,
+                detail: detail.map(str::to_string),
+                insert_text: label.to_string(),
+            };
         assert_eq!(
-            completion_kind_icon(&item("primes_below", Some(3), Some("fn(u64) -> Vec<u64>"))),
+            completion_kind_icon(&item(
+                "primes_below",
+                Some(CompletionItemKind::FUNCTION),
+                Some("fn(u64) -> Vec<u64>")
+            )),
             Icon::Code
         );
         // A macro is a function by LSP kind; its detail (or the `!` of its
         // name) says what it is.
         assert_eq!(
-            completion_kind_icon(&item("println", Some(3), Some("macro"))),
+            completion_kind_icon(&item(
+                "println",
+                Some(CompletionItemKind::FUNCTION),
+                Some("macro")
+            )),
             Icon::Sparkles
         );
         assert_eq!(
-            completion_kind_icon(&item("vec!", Some(3), None)),
+            completion_kind_icon(&item("vec!", Some(CompletionItemKind::FUNCTION), None)),
             Icon::Sparkles
         );
         assert_eq!(
-            completion_kind_icon(&item("primary", Some(6), Some("let binding"))),
+            completion_kind_icon(&item(
+                "primary",
+                Some(CompletionItemKind::VARIABLE),
+                Some("let binding")
+            )),
             Icon::Square
         );
         assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);

@@ -24,7 +24,6 @@ pub fn public_dir() -> Option<PathBuf> {
 const MAX_RECORD_BYTES: u64 = 4 << 20;
 
 pub fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -36,11 +35,9 @@ pub fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other("record is not a regular file"));
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_RECORD_BYTES {
-        return Err(std::io::Error::other("record is unexpectedly large"));
-    }
+    let bytes = crate::record::read_bounded(file, MAX_RECORD_BYTES, || {
+        std::io::Error::other("record is unexpectedly large")
+    })?;
     Ok(bytes)
 }
 

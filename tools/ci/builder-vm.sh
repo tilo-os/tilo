@@ -143,21 +143,29 @@ cmd_image() {
   # jobs are bounded: the build counts the node's cores (377), not the builder's share of
   # them, and that many compilers at once fail to spawn; neither container limits its
   # processes, as podman's default of 2048 does, which a compile of 32 jobs outgrows.
-  # Every worktree's build shares the store's images and layers, but keeps its containers
-  # (the compile's, the image build's steps) in its own run directory (transient_store): a
-  # podman starting in another worktree's build container takes the shared container
-  # database for one left from before a reboot and resets it, which unmounted the running
-  # compile of this one ("Failed to create temp dir", a linker killed mid-link).
+  # Each worktree's build writes its images and layers into a store of its own
+  # ($scratch/stores/<worktree>, the graphroot) and reads the shared store's as a read-only
+  # image store beneath it, whose layers still serve as its build cache. With one store
+  # written by every build, each step of one build waited on the others' commits for the
+  # store's lock: twelve one-line steps took 130 to 450 s there and 67 s in a store of their
+  # own, and a dev image after a one-crate change, which reruns about a hundred and fifty
+  # steps, took 31 min instead of 40. A build also crashed podman there (a nil image in
+  # buildah's layer-cache lookup) when another build changed the store under them. Containers
+  # live in the build's run directory (transient_store): a podman starting in another
+  # worktree's build container took a shared container database for one left from before a
+  # reboot and reset it, which unmounted the running compile of this one.
   builder_job image <<<"set -e
-    mkdir -p $scratch/store/tmp $scratch/store/tilo-external-assets $out
+    mkdir -p $scratch/store/tmp $scratch/store/tilo-external-assets $scratch/stores/$key $out
     printf '[containers]\npids_limit = 0\n' > $scratch/store/containers.conf
-    printf '[storage]\ndriver = \"overlay\"\ngraphroot = \"/var/lib/containers/storage\"\nrunroot = \"/run/containers/storage\"\ntransient_store = true\n[storage.options]\nadditionalimagestores = [\"/usr/lib/containers/storage\"]\n' \
-      > $scratch/store/storage.conf
+    printf '[storage]\ndriver = \"overlay\"\ngraphroot = \"/var/lib/containers/worktree/storage\"\nrunroot = \"/run/containers/storage\"\ntransient_store = true\n[storage.options]\nadditionalimagestores = [\"/var/lib/containers/storage\", \"/usr/lib/containers/storage\"]\n' \
+      > $scratch/store/storage-worktree.conf
     podman run --rm --name bvm-image-$key --label $label=image --label $label.tree=$key --pids-limit=-1 \
       -e CONTAINERS_CONF_OVERRIDE=/var/lib/containers/containers.conf \
-      -e CONTAINERS_STORAGE_CONF=/var/lib/containers/storage.conf \
+      -e CONTAINERS_STORAGE_CONF=/var/lib/containers/storage-worktree.conf \
       --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt unmask=ALL --device /dev/fuse \
-      -v $scratch/store:/var/lib/containers -v /srv/rcargo/ci-cache:/srv/rcargo/ci-cache:ro \
+      -v $scratch/store:/var/lib/containers -v $scratch/store/storage:/var/lib/containers/storage:ro \
+      -v $scratch/stores/$key:/var/lib/containers/worktree \
+      -v /srv/rcargo/ci-cache:/srv/rcargo/ci-cache:ro \
       -v $src:'$local_path' -v $out:/out -v $bin:/usr/local/bin/tilo-vm:ro \
       -w '$local_path' -e TILO_LOCAL_TAG=wt-$key -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
       -e TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} \
@@ -320,7 +328,7 @@ cmd_clean() {
     podman unshare rm -rf $scratch/runs/*-$key $scratch/jobs/$key-* $scratch/work/$key $scratch/src/$key"
   if ((all)); then
     digest=$(on_builder "cat $scratch/worktrees/$key.image 2>/dev/null" || true)
-    on_builder "podman unshare rm -rf $scratch/out/$key $scratch/worktrees/$key.image ${digest:+$(image_dir "${digest#sha256:}") $scratch/disks/${digest#sha256:}}"
+    on_builder "podman unshare rm -rf $scratch/out/$key $scratch/stores/$key $scratch/worktrees/$key.image ${digest:+$(image_dir "${digest#sha256:}") $scratch/disks/${digest#sha256:}}"
   fi
   note "cleaned this worktree's runs and scratch$( ((all)) && echo ', its image, disk and build caches')"
 }

@@ -1,7 +1,7 @@
 //! Asking an agent about what the person selected in the focused window.
 //!
-//! The desktop's ask-agent chord, and the "Tell an agent…" entry a Tilo app's
-//! menus offer, open the agent quick composer seeded with the selection: the
+//! The desktop's ask-agent chord, and a sentence typed into a Tilo app's
+//! context menu, open the agent quick composer seeded with the selection: the
 //! person types what they want ("tighten this", "why does this fail?") and
 //! the composer queues a task about the selection (its subject, never a
 //! scope), so the agent acts at exactly that place through the app's
@@ -66,6 +66,12 @@ pub(crate) struct SelectionSeed {
     /// Where the selection is drawn on the desktop, when the app said: the
     /// composer keeps clear of all of it.
     pub area: Option<Rect>,
+    /// What the person already asked about it, typed into its context
+    /// menu: the composer opens asking it.
+    pub ask: Option<String>,
+    /// What the person began typing over it: the composer opens with it in
+    /// its field, to go on.
+    pub draft: Option<String>,
 }
 
 impl SelectionSeed {
@@ -95,6 +101,8 @@ impl SelectionSeed {
             selection,
             view: None,
             area: None,
+            ask: None,
+            draft: None,
         }
     }
 
@@ -109,6 +117,18 @@ impl SelectionSeed {
                 .at(tilo_actions::SelectionPlace::item(resource.id.as_str()))
                 .in_resource(resource),
         );
+        self
+    }
+
+    /// This seed, with `text` already asked about it.
+    #[must_use]
+    pub(crate) fn asking(mut self, text: String) -> Self {
+        let text: String = text
+            .trim()
+            .chars()
+            .take(ui::shared_selection::MAX_ASK_CHARS)
+            .collect();
+        self.ask = (!text.is_empty()).then_some(text);
         self
     }
 
@@ -165,6 +185,33 @@ impl SelectionSeed {
         }
     }
 
+    /// What the composer shows the request is about: the thing's name (the
+    /// resource the selection is in, else the view the window shows, else
+    /// the app), and the selected text as it reads, when there is some.
+    pub(crate) fn subject(&self) -> (String, Option<String>) {
+        let label = self
+            .about()
+            .and_then(|about| about.resource.as_ref())
+            .map_or_else(|| self.app_label.clone(), |resource| resource.label.clone());
+        let excerpt = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.anchor.excerpt.as_deref())
+            .map(|excerpt| {
+                let line = plain_excerpt(excerpt)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let mut shown: String = line.chars().take(CONTEXT_CHARS).collect();
+                if shown.len() < line.len() {
+                    shown.push('…');
+                }
+                shown
+            })
+            .filter(|excerpt| !excerpt.is_empty() && *excerpt != label);
+        (label, excerpt)
+    }
+
     /// The line the composer shows above its editor: what it is about.
     pub(crate) fn context(&self) -> String {
         let excerpt = self
@@ -204,6 +251,62 @@ impl SelectionSeed {
             },
         }
     }
+}
+
+/// Selected text as it reads, not as it is written: a document's selection
+/// arrives as its Markdown source (`[tilo OS](https://tilo.so)`, `**late**`),
+/// and the composer shows what the person saw. Links keep their text,
+/// emphasis and code marks go, and a line's heading, list or quote marker
+/// goes.
+pub(crate) fn plain_excerpt(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    for (index, line) in markdown.lines().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let trimmed = line.trim_start();
+        let body = trimmed
+            .strip_prefix("> ")
+            .or_else(|| {
+                let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+                (hashes > 0)
+                    .then(|| trimmed.get(hashes..))
+                    .flatten()
+                    .and_then(|rest| rest.strip_prefix(' '))
+            })
+            .or_else(|| {
+                ["- [ ] ", "- [x] ", "- ", "* ", "+ "]
+                    .iter()
+                    .find_map(|marker| trimmed.strip_prefix(marker))
+            })
+            .unwrap_or(trimmed);
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' | '_' | '`' | '~' => {}
+                '[' => {
+                    // `[text](target)` reads as its text.
+                    let text: String = chars.by_ref().take_while(|c| *c != ']').collect();
+                    if chars.peek() == Some(&'(') {
+                        for c in chars.by_ref() {
+                            if c == ')' {
+                                break;
+                            }
+                        }
+                    }
+                    out.push_str(&plain_excerpt(&text));
+                }
+                '!' if chars.peek() == Some(&'[') => {}
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+    }
+    out
 }
 
 /// Where a pressed chord goes next.
@@ -248,6 +351,9 @@ pub(crate) struct SelectionRequests {
     /// launcher vouched for it.
     windows: HashMap<u64, (String, tilo_actions::ActionResource)>,
     pressed: bool,
+    /// What the person already asked, from the search palette, that the
+    /// composer the press opens asks about the focused selection or window.
+    asking: Option<String>,
     waiting: Option<Waiting>,
     /// The agent last asked in each room, asked again while it is live.
     last_agent: HashMap<String, String>,
@@ -309,6 +415,20 @@ impl SelectionRequests {
     /// The chord was pressed.
     pub(crate) fn press(&mut self) {
         self.pressed = true;
+        self.asking = None;
+    }
+
+    /// Press the chord on the person's behalf, `text` already asked: the
+    /// palette's question goes to the agent about what is focused, as the
+    /// chord would take it, and its answer shows in the composer there.
+    pub(crate) fn press_asking(&mut self, text: String) {
+        self.pressed = true;
+        self.asking = Some(text);
+    }
+
+    /// What the palette asked with the last press, exactly once.
+    pub(crate) fn take_asking(&mut self) -> Option<String> {
+        self.asking.take()
     }
 
     /// Route a pressed chord for the focused app: ask it when it can
@@ -334,7 +454,7 @@ impl SelectionRequests {
     }
 
     /// Whether `app_id` may open the composer with its answer: the app the
-    /// chord asked, or (an "Tell an agent…" entry) the focused app itself. A
+    /// chord asked, or (a sentence typed into its menu) the focused app itself. A
     /// window in the background never opens one.
     pub(crate) fn accept(&mut self, app_id: &str, focused_app: Option<&str>) -> bool {
         if self
@@ -427,6 +547,22 @@ impl SelectionRequests {
 
     pub(crate) fn asked(&mut self, room: &str, agent: &str) {
         self.last_agent.insert(room.to_owned(), agent.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod plain_excerpt_tests {
+    use super::plain_excerpt;
+
+    #[test]
+    fn a_selection_reads_as_the_person_saw_it_not_as_its_markdown() {
+        assert_eq!(
+            plain_excerpt("[tilo OS](search for the tilo homepage)"),
+            "tilo OS"
+        );
+        assert_eq!(plain_excerpt("**late** results, `v2`"), "late results, v2");
+        assert_eq!(plain_excerpt("## Plan\n- [ ] ship it"), "Plan\nship it");
+        assert_eq!(plain_excerpt("a \\*literal\\* star"), "a *literal* star");
     }
 }
 

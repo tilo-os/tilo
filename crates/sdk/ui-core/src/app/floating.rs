@@ -634,11 +634,15 @@ impl App {
         }
         self.send_window_share(client, instance)?;
         for request in crate::shared_selection::take_agent_requests() {
+            let ask = request.ask.clone();
+            let draft = request.draft.clone();
             let (selection, bounds) = self.agent_reference(request);
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                     selection,
                     bounds,
+                    ask,
+                    draft,
                 },
             )?;
             *changed = true;
@@ -1061,6 +1065,8 @@ impl App {
                             &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                                 selection,
                                 bounds,
+                                ask: None,
+                                draft: None,
                             },
                         );
                     }

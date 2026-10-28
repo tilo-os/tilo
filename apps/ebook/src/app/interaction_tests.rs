@@ -227,18 +227,17 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
         assert!(
             bar.actions
                 .iter()
-                .any(|action| action.id == crate::app::window_bar::SORT
-                    && !action.items.is_empty()),
+                .any(|action| action.name == "Sort books" && !action.items.is_empty()),
             "the sort orders are a menu in the bar"
         );
         let hide = bar
             .actions
             .iter()
-            .find(|action| action.id == crate::app::window_bar::HIDE_FINISHED)
+            .find(|action| action.name == "Hide finished books")
             .expect("hide-finished toggle");
         assert!(hide.toggles && !hide.on);
 
-        press_bar(&mut app, &mut doc, crate::app::window_bar::HIDE_FINISHED);
+        press_bar(&mut app, &mut doc, "Hide finished books");
         assert!(TestLibrary::read_library_prefs(&doc).hide_read);
 
         // The open settings page goes back through the bar's navigation, as
@@ -325,7 +324,7 @@ fn reader_controls_are_accessible_and_live() {
         let bookmark = bar
             .actions
             .iter()
-            .find(|action| action.id == crate::app::window_bar::BOOKMARK)
+            .find(|action| action.name == "Bookmark this page")
             .expect("bookmark toggle");
         assert!(bookmark.toggles && !bookmark.on);
         assert!(
@@ -335,7 +334,7 @@ fn reader_controls_are_accessible_and_live() {
             "the app paints no row of its own for them"
         );
 
-        press_bar(&mut app, &mut doc, crate::app::window_bar::BOOKMARK);
+        press_bar(&mut app, &mut doc, "Bookmark this page");
         assert!(
             TestLibrary::list_annotations(&doc)
                 .iter()
@@ -345,7 +344,7 @@ fn reader_controls_are_accessible_and_live() {
             app.window_toolbar()
                 .actions
                 .iter()
-                .any(|action| action.id == crate::app::window_bar::BOOKMARK && action.on),
+                .any(|action| action.name == "Bookmark this page" && action.on),
             "the bar marks the bookmarked page, as the icon did"
         );
     }
@@ -588,11 +587,28 @@ fn app_with_math_sample() -> BooksApp {
 }
 
 /// Run one full headless frame so `self.hits` reflects the current view.
-/// Press the window bar's action `id`, as the desktop's bar hands it to the
-/// app: the same path a person's press in the bar takes.
-fn press_bar(app: &mut BooksApp, doc: &mut AutoCommit, id: &str) {
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+/// Press the window bar's entry named `name`, as the desktop's bar hands it
+/// to the app: the same path a person's press in the bar takes. A press on
+/// one of the library's own edits is handed to the door, which this bare
+/// widget applies as the host does.
+fn press_bar(app: &mut BooksApp, doc: &mut AutoCommit, name: &str) {
+    let id = app
+        .window_toolbar()
+        .actions
+        .into_iter()
+        .flat_map(|action| std::iter::once(action.clone()).chain(action.items))
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("the bar has no {name}"))
+        .id;
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id });
     app.settle(&mut Edits::lend(doc), &automerge::ROOT);
+    for edit in app.dispatch.take_asked().unwrap() {
+        app.dispatch
+            .apply_now(&mut Edits::lend(doc), &edit)
+            .unwrap();
+    }
+    // The host presents the record the edit changed.
+    app.read_record(doc);
     app.sync(doc, &automerge::ROOT);
 }
 
@@ -1034,7 +1050,7 @@ fn font_choice_applies_persists_and_falls_back() {
         assert!(!mono0, "serif is a proportional face");
         // Open the settings popover and switch to the sans "Default" pill — the
         // real click path — which must apply and persist to the CRDT.
-        press_bar(&mut app, &mut doc, crate::app::window_bar::APPEARANCE);
+        press_bar(&mut app, &mut doc, "Reading appearance");
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sans = find_reading_hit(
             &app,
@@ -1942,7 +1958,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(!app.reading_settings.is_open());
-        press_bar(&mut app, &mut doc, crate::app::window_bar::APPEARANCE);
+        press_bar(&mut app, &mut doc, "Reading appearance");
         assert!(app.reading_settings.is_open(), "popover opened");
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let dark = find_reading_hit(&app, |action| {
@@ -2026,7 +2042,7 @@ fn type_popover_values_edit_and_persist() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        press_bar(&mut app, &mut doc, crate::app::window_bar::APPEARANCE);
+        press_bar(&mut app, &mut doc, "Reading appearance");
 
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = TestLibrary::read_settings(&doc).font_scale;
@@ -2068,7 +2084,7 @@ fn type_popover_values_edit_and_persist() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        press_bar(&mut app, &mut doc, crate::app::window_bar::APPEARANCE);
+        press_bar(&mut app, &mut doc, "Reading appearance");
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let val = app
             .reading_settings
@@ -3392,21 +3408,21 @@ fn library_shelf_layout_filtering_and_keyboard() {
         let sort = bar
             .actions
             .iter()
-            .find(|action| action.id == crate::app::window_bar::SORT)
+            .find(|action| action.name == "Sort books")
             .expect("a sort control is in the bar");
         assert_eq!(
             sort.items
                 .iter()
                 .filter(|item| item.on)
-                .map(|item| item.id.as_str())
+                .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            ["books.sort.progress"],
+            ["Progress"],
             "the order in use is the one marked"
         );
         assert!(
             bar.actions
                 .iter()
-                .any(|action| action.id == crate::app::window_bar::HIDE_FINISHED && action.toggles),
+                .any(|action| action.name == "Hide finished books" && action.toggles),
             "a hide-finished toggle is in the bar"
         );
     }
@@ -4126,7 +4142,7 @@ fn bookmarks_and_their_shortcuts() {
                 .all(|hit| !matches!(hit.action, Action::ToggleBookmark)),
             "the bookmark is the bar's slot, not an icon in a row of the app's"
         );
-        press_bar(&mut app, &mut doc, crate::app::window_bar::BOOKMARK);
+        press_bar(&mut app, &mut doc, "Bookmark this page");
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(bookmarks(&doc), 1, "the bar's bookmark added a bookmark");
         // Remove via the 'b' shortcut (same page position -> same anchor).
@@ -5092,7 +5108,7 @@ fn reader_controls_fit_their_labels() {
                 app.window_toolbar()
                     .actions
                     .iter()
-                    .any(|action| action.id == crate::app::window_bar::APPEARANCE),
+                    .any(|action| action.name == "Reading appearance"),
                 "at {scale}× the reading appearance is a slot of the bar"
             );
             assert!(

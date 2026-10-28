@@ -6,7 +6,6 @@
 //! than memory is still counted without holding it.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -922,13 +921,9 @@ pub(crate) fn read_file(
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let mut file = cap_primitives::fs::open(&directory.file, path, &options)?;
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(too_large(usize::try_from(limit).unwrap_or(usize::MAX)));
-    }
+    let bytes = crate::record::read_bounded(&mut file, limit, || {
+        too_large(usize::try_from(limit).unwrap_or(usize::MAX))
+    })?;
     let after = metadata_nofollow(&directory.file, path)?;
     if !same_snapshot(&before, &after) {
         return Err(invalid("Thunderbird file changed while it was read"));

@@ -5,22 +5,14 @@
 //! Review and save (Discard draft in the menu). The window draws no header
 //! row; a saved shortcut's Run stays with the inputs it is run with.
 
+use ui::framework::{BarActions, BarCommands};
 use ui::i18n::I18nManager;
 use ui::prelude::*;
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
 use super::{DRAFT, OVERVIEW, SAVED, Ui, draft_label, save_blocker};
 use crate::door::DoorEffect;
 use crate::model::Workbench;
-
-pub(crate) const NEW_SHORTCUT: &str = "new-shortcut";
-pub(crate) const RELOAD: &str = "reload";
-pub(crate) const EDIT: &str = "edit-shortcut";
-pub(crate) const DUPLICATE: &str = "duplicate-shortcut";
-pub(crate) const DELETE: &str = "delete-shortcut";
-pub(crate) const REVIEW: &str = "review-save";
-pub(crate) const TEXT_VIEW: &str = "text-view";
-pub(crate) const DISCARD: &str = "discard-draft";
 
 /// What the open page is, for the bar.
 enum Open {
@@ -29,13 +21,33 @@ enum Open {
     Saved(String),
 }
 
+/// What a draft's entries do in the window itself.
+#[derive(Clone, Copy, PartialEq)]
+enum Command {
+    /// Edit the draft as blocks or as its program text.
+    ToggleText,
+    /// Open the save sheet.
+    Review,
+}
+
 /// The navigation shell, with the window's slots in its bar.
 pub(super) struct ShortcutsWindow {
-    pub(super) shell: NavShell,
-    pub(super) ui: Ui,
+    shell: NavShell,
+    ui: Ui,
+    actions: BarActions<Workbench>,
+    commands: BarCommands<Command>,
 }
 
 impl ShortcutsWindow {
+    pub(super) fn new(shell: NavShell, ui: Ui) -> Self {
+        Self {
+            actions: BarActions::new(ui.dispatcher.clone()),
+            commands: BarCommands::new(),
+            shell,
+            ui,
+        }
+    }
+
     fn open(&self) -> Open {
         let selected = self
             .ui
@@ -51,14 +63,39 @@ impl ShortcutsWindow {
         }
     }
 
+    /// The saved shortcut `id` as the workbench's verbs take it.
+    fn saved_json(&self, id: &str) -> Option<serde_json::Value> {
+        let shortcut = self.ui.door.with(|door| {
+            door.library
+                .ready()
+                .and_then(|library| library.iter().find(|s| s.id == id).cloned())
+        });
+        shortcut.and_then(|s| serde_json::to_value(s).ok())
+    }
+
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
         let sidebar_in_front =
             self.shell.geometry().stack.len() > 1 && self.shell.front_pane() == NavPane::Sidebar;
         let open = self.open();
-        let label = match &open {
-            _ if sidebar_in_front => None,
+        let label = if sidebar_in_front {
+            None
+        } else {
+            self.label(&open)
+        };
+        toolbar.location = label.map(|label| ToolbarLocation {
+            label,
+            ..ToolbarLocation::default()
+        });
+        let actions = self.page_actions(open);
+        NavShell::push_window_actions(&mut toolbar, actions);
+        toolbar
+    }
+
+    /// What the open page is called.
+    fn label(&self, open: &Open) -> Option<String> {
+        match open {
             Open::Overview => Some(String::from("Overview")),
             Open::Draft(id) => self.ui.live.with(|workbench| {
                 workbench
@@ -74,61 +111,91 @@ impl ShortcutsWindow {
                         .map(|shortcut| shortcut.name.clone())
                 })
             }),
-        };
-        toolbar.location = label.map(|label| ToolbarLocation {
-            label,
-            ..ToolbarLocation::default()
-        });
+        }
+    }
+
+    /// The bar's actions for the open page.
+    fn page_actions(&self, open: Open) -> Vec<ToolbarAction> {
         let lookup = I18nManager::lookup_plain;
+        let bar = &self.actions;
+        let named = |icon: &str, name: String, entry: ToolbarAction| ToolbarAction {
+            icon: icon.into(),
+            name,
+            ..entry
+        };
         let mut actions = vec![
-            ToolbarAction::new(NEW_SHORTCUT, "plus", "New shortcut"),
-            ToolbarAction::new(RELOAD, "refresh", "Reload shortcuts"),
+            named(
+                "plus",
+                "New shortcut".into(),
+                bar.action(Workbench::NEW_DRAFT.with(String::from("New shortcut"))),
+            ),
+            named(
+                "refresh",
+                "Reload shortcuts".into(),
+                bar.effect(&DoorEffect::Refresh),
+            ),
         ];
         match open {
-            Open::Saved(_) => {
-                actions.push(ToolbarAction::new(EDIT, "pencil", lookup("shortcuts-edit")));
-                actions.push(ToolbarAction::new(
-                    DUPLICATE,
-                    "copy",
-                    lookup("shortcuts-duplicate"),
-                ));
+            Open::Saved(id) => {
+                if let Some(json) = self.saved_json(&id) {
+                    actions.push(named(
+                        "pencil",
+                        lookup("shortcuts-edit"),
+                        bar.action(Workbench::OPEN_SHORTCUT.with(json.clone())),
+                    ));
+                    actions.push(named(
+                        "copy",
+                        lookup("shortcuts-duplicate"),
+                        bar.action(Workbench::DUPLICATE_SHORTCUT.with(json)),
+                    ));
+                }
                 actions.push(
-                    ToolbarAction::new(DELETE, "trash-2", lookup("shortcuts-delete")).in_menu(),
+                    named(
+                        "trash-2",
+                        lookup("shortcuts-delete"),
+                        bar.effect(&DoorEffect::Delete { shortcut: id }),
+                    )
+                    .in_menu(),
                 );
             }
-            Open::Draft(_) => {
+            Open::Draft(id) => {
                 let savable = self.ui.editor.with(|input| save_blocker(input).is_none());
                 let as_text = self.ui.as_text.get();
                 actions.push(
-                    ToolbarAction::new(
-                        TEXT_VIEW,
-                        if as_text { "list" } else { "code" },
-                        lookup(if as_text {
-                            "shortcuts-show-blocks"
-                        } else {
-                            "shortcuts-show-text"
-                        }),
-                    )
-                    .on(as_text),
+                    self.commands
+                        .entry(
+                            if as_text { "list" } else { "code" },
+                            lookup(if as_text {
+                                "shortcuts-show-blocks"
+                            } else {
+                                "shortcuts-show-text"
+                            }),
+                            Command::ToggleText,
+                        )
+                        .on(as_text),
                 );
                 actions.push(
-                    ToolbarAction::new(REVIEW, "check", lookup("shortcuts-review"))
+                    self.commands
+                        .entry("check", lookup("shortcuts-review"), Command::Review)
                         .enabled(savable),
                 );
-                actions.push(ToolbarAction::new(
-                    DUPLICATE,
+                actions.push(named(
                     "copy",
                     lookup("shortcuts-duplicate"),
+                    bar.action(Workbench::DUPLICATE_DRAFT.with(id.clone())),
                 ));
                 actions.push(
-                    ToolbarAction::new(DISCARD, "trash-2", lookup("shortcuts-discard-button"))
-                        .in_menu(),
+                    named(
+                        "trash-2",
+                        lookup("shortcuts-discard-button"),
+                        bar.action(Workbench::DISCARD.with(id)),
+                    )
+                    .in_menu(),
                 );
             }
             Open::Overview => {}
         }
-        NavShell::push_window_actions(&mut toolbar, actions);
-        toolbar
+        actions
     }
 
     /// Run what the person did in the window's bar: the shell's own slots,
@@ -137,57 +204,19 @@ impl ShortcutsWindow {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
             asked = true;
-            if self.shell.window_toolbar_event(&event) {
+            if self.shell.window_toolbar_event(&event) || self.actions.press(&event) {
                 continue;
             }
-            if let ToolbarEvent::Action { id } = event {
-                self.run(&id);
+            let ui = &self.ui;
+            match self.commands.pressed(&event) {
+                Some(Command::ToggleText) => ui.as_text.set(!ui.as_text.get()),
+                Some(Command::Review) if ui.editor.with(|input| save_blocker(input).is_none()) => {
+                    ui.sheet.set(true);
+                }
+                Some(Command::Review) | None => {}
             }
         }
         asked
-    }
-
-    fn run(&self, id: &str) {
-        let ui = &self.ui;
-        match (id, self.open()) {
-            (NEW_SHORTCUT, _) => ui
-                .dispatcher
-                .submit(Workbench::NEW_DRAFT.with(String::from("New shortcut"))),
-            (RELOAD, _) => ui.dispatcher.effect(&DoorEffect::Refresh),
-            (EDIT, Open::Saved(id)) => {
-                let shortcut = ui.door.with(|door| {
-                    door.library
-                        .ready()
-                        .and_then(|library| library.iter().find(|s| s.id == id).cloned())
-                });
-                if let Some(json) = shortcut.and_then(|s| serde_json::to_value(s).ok()) {
-                    ui.dispatcher.submit(Workbench::OPEN_SHORTCUT.with(json));
-                }
-            }
-            (DELETE, Open::Saved(id)) => ui.dispatcher.effect(&DoorEffect::Delete { shortcut: id }),
-            (DUPLICATE, Open::Draft(id)) => {
-                ui.dispatcher.submit(Workbench::DUPLICATE_DRAFT.with(id));
-            }
-            (DUPLICATE, Open::Saved(id)) => {
-                let shortcut = ui.door.with(|door| {
-                    door.library
-                        .ready()
-                        .and_then(|library| library.iter().find(|s| s.id == id).cloned())
-                });
-                if let Some(json) = shortcut.and_then(|s| serde_json::to_value(s).ok()) {
-                    ui.dispatcher
-                        .submit(Workbench::DUPLICATE_SHORTCUT.with(json));
-                }
-            }
-            (TEXT_VIEW, _) => ui.as_text.set(!ui.as_text.get()),
-            (REVIEW, Open::Draft(_)) => {
-                if ui.editor.with(|input| save_blocker(input).is_none()) {
-                    ui.sheet.set(true);
-                }
-            }
-            (DISCARD, Open::Draft(id)) => ui.dispatcher.submit(Workbench::DISCARD.with(id)),
-            _ => {}
-        }
     }
 }
 

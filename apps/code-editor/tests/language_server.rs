@@ -175,7 +175,8 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
             )
         });
     assert_eq!(
-        found.severity, 1,
+        found.severity,
+        lsp_types::DiagnosticSeverity::ERROR,
         "an unresolved name is an error, not a hint"
     );
     assert_eq!(

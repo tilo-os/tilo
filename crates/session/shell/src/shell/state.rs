@@ -998,6 +998,11 @@ impl Default for WorkspaceTree {
     }
 }
 
+/// The filesystem authority last exported, and where
+/// ([`WorkspaceTree::export_fs_capabilities`]).
+static FS_AUTHORITY_EXPORTED: std::sync::Mutex<Option<(std::path::PathBuf, Vec<u8>)>> =
+    std::sync::Mutex::new(None);
+
 /// What [`WorkspaceTree::export_fs_capabilities`] takes from a workspace
 /// to write on the state writer thread.
 struct FsExportWorkspace {
@@ -2205,11 +2210,22 @@ impl WorkspaceTree {
         let Ok(json) = serde_json::to_vec_pretty(&authority) else {
             return;
         };
+        // Every save exports, and most saves change nothing the filesystem
+        // enforces: an unchanged list is neither rewritten nor published
+        // again. The first export of a session always is.
+        let mut exported = tilo_lock::MutexRecover::lock_recover(&FS_AUTHORITY_EXPORTED);
+        if exported
+            .as_ref()
+            .is_some_and(|(last, bytes)| last == path && *bytes == json)
+        {
+            return;
+        }
         if let Err(e) = tilo_files::native::atomic::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
         schedule_fs_authority_publication(path.to_path_buf());
+        *exported = Some((path.to_path_buf(), json));
     }
 
     /// The durable room identity of `workspace_id`. What the launch path

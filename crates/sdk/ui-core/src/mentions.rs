@@ -2,7 +2,7 @@
 //! the record itself, and the one notice each mentioned reader gets.
 //!
 //! A mention is a run of rich text marked `mention` with the participant's
-//! id, whichever app wrote it: a paragraph of a note (an Automerge text
+//! id, whichever app wrote it (native or tilolang): a paragraph of a note (an Automerge text
 //! mark, as `tilo-doc` keeps them) or a block of a chat message (a stored
 //! mark span, as `tilo_document::ClipBlock` keeps them). [`in_record`] finds
 //! every one in a record's document without the app's code, so whatever
@@ -29,7 +29,17 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use crate::record::RecordId;
 
 /// The mark a mention's run carries, valued with the participant's id.
+/// The same mark refers to any other resource ([`names_resource`]): those
+/// are references, not people, and tell nobody.
 pub const MARK: &str = "mention";
+
+/// Whether a `mention` mark's value names a resource rather than a
+/// person: a native resource link (`tilo://open#…`) or a tilolang
+/// resource's published id in the room (`tl:<app>:<id>`).
+#[must_use]
+pub fn names_resource(value: &str) -> bool {
+    value.starts_with("tilo://open#") || value.starts_with("tl:")
+}
 /// The mark naming who wrote a run of text (`tilo_resource::text::AUTHOR_MARK`).
 const AUTHOR_MARK: &str = "author";
 /// The key a stored enum value keeps its variant under
@@ -152,7 +162,7 @@ impl Walk<'_> {
             let (MARK, ScalarValue::Str(person)) = (mark.name(), mark.value()) else {
                 continue;
             };
-            if person.is_empty() {
+            if person.is_empty() || names_resource(person) {
                 continue;
             }
             let by = marks
@@ -184,7 +194,10 @@ impl Walk<'_> {
         if self.string(obj, "name").as_deref() != Some(MARK) {
             return;
         }
-        let Some(person) = self.mark_value(obj).filter(|person| !person.is_empty()) else {
+        let Some(person) = self
+            .mark_value(obj)
+            .filter(|person| !person.is_empty() && !names_resource(person))
+        else {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);

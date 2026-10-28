@@ -4448,6 +4448,24 @@ fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
 }
 
 #[test]
+fn deleting_lines_on_screen_leaves_the_scrollback_alone() {
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+    let history: String = (0..60).map(|n| format!("H{n:03}\r\n")).collect();
+    w.feed(history.as_bytes());
+    w.sync(&doc, &ROOT);
+    let before = w.grid_text();
+    // A delete-line on the screen moves rows inside it, never into history.
+    w.feed(b"\x1b[5;1H\x1b[2M");
+    w.sync(&doc, &ROOT);
+    let after = w.grid_text();
+    let scrollback = |text: &str| text.lines().take(30).map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(scrollback(&after), scrollback(&before));
+    assert!(after.contains("H000") && after.contains("H059"), "{after}");
+}
+
+#[test]
 fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
     let (mut w, _rx) = build_test_widget();
     let doc = AutoCommit::new();

@@ -1,7 +1,7 @@
 //! The permission filter over published resources: what the participant
 //! may invoke stays, the rest is withheld.
 
-use super::*;
+use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};
 
 pub(crate) fn filter_resource(
     binding: &CallbackBinding,

@@ -67,7 +67,6 @@ use std::time::{Duration, Instant};
 use crate::shell::host_runtime::{proc_stat, write_runtime_private};
 use crate::shell::state::{RoomId, Workspace};
 use collab_types::caps::LaunchGrants;
-use notify::Watcher as _;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
 /// Fallback only: the registry is watched with inotify, so a new install
@@ -1599,10 +1598,12 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
 static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Option<Instant>)>> = Mutex::new(None);
 static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// Bumped when a watch (or an explicit invalidate) makes the memoised
-/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: a
-/// recursive inotify walk must not look like a new generation of apps.
+/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: an
+/// invalidation alone must not look like a new generation of apps.
 static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
-static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+/// The registry roots watched, and a watch of each that could be armed.
+static APP_CACHE_WATCH: Mutex<Option<(Vec<PathBuf>, Vec<tilo_files::native::ChangeWatch>)>> =
+    Mutex::new(None);
 /// The registries the memoised snapshot was read from, as they were just before the read.
 static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
@@ -2122,8 +2123,6 @@ fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     let apps = read_installed_apps()?;
     *lock(&APP_CACHE_STAMP) = Some(stamps);
     let generation = record_app_read(epoch, &apps);
-    // Watch after the first memoize so opening the registry to fill the
-    // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
     Ok((generation, apps))
 }
@@ -2246,75 +2245,41 @@ fn app_cache_roots() -> Vec<PathBuf> {
     .collect()
 }
 
+/// Watch the registry roots, package folders included, once per set of roots. A change is
+/// read on the watch's thread, so the list the compositor loop is served holds it without a
+/// read of its own. Opens and reads are not changes, so filling the cache does not expire it.
 fn ensure_app_cache_watch() {
     let roots = app_cache_roots();
     if roots.is_empty() {
         return;
     }
     let mut watched = lock(&APP_CACHE_WATCH);
-    if watched.as_ref() == Some(&roots) {
+    if watched.as_ref().is_some_and(|(held, _)| *held == roots) {
         return;
     }
-    let watch_roots = roots.clone();
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    if std::thread::Builder::new()
-        .name("tilo-apps-watch".into())
-        .spawn(move || watch_app_cache_roots(&watch_roots, &ready_tx))
-        .is_ok()
-    {
-        *watched = Some(roots);
-        drop(watched);
-        // A write that lands before the recursive watch is armed never
-        // arrives; wait so the first fill is already subscribed.
-        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
-    }
-}
-
-fn app_cache_event_matters(event: &notify::Event) -> bool {
-    use notify::event::{EventKind, ModifyKind};
-    match event.kind {
-        EventKind::Modify(ModifyKind::Metadata(_))
-        | EventKind::Access(_)
-        | EventKind::Any
-        | EventKind::Other => false,
-        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => true,
-    }
-}
-
-fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|event| app_cache_event_matters(&event)) {
-            let _ = tx.send(());
-        }
-    });
-    let mut watcher = match watcher {
-        Ok(watcher) => watcher,
-        Err(error) => {
-            tracing::warn!(%error, "app registry cannot be watched; falling back to TTL");
-            let _ = ready.send(());
-            return;
-        }
-    };
-    for root in roots {
-        if let Err(error) = watcher.watch(root, notify::RecursiveMode::Recursive) {
-            tracing::info!(%error, path = %root.display(), "app registry path is not watched");
-        }
-    }
-    // Keep `watcher` alive for the thread lifetime. Drop the walk that
-    // `watch` itself performs so it does not look like a registry change.
-    let _watcher = watcher;
-    while rx.try_recv().is_ok() {}
-    let _ = ready.send(());
-    // A change is read here, on the watch's thread, so the list the
-    // compositor loop is served holds it without a read of its own.
-    while rx.recv().is_ok() {
-        while rx.try_recv().is_ok() {}
-        expire_watched_app_cache();
-        if let Err(error) = installed_apps_snapshot() {
-            tracing::debug!(%error, "changed app registry unreadable; the last list stays stale");
-        }
-    }
+    let armed = roots
+        .iter()
+        .filter_map(|root| {
+            tilo_files::native::watch_tree_changes(
+                root,
+                |_| true,
+                || {
+                    expire_watched_app_cache();
+                    if let Err(error) = installed_apps_snapshot() {
+                        tracing::debug!(
+                            %error,
+                            "changed app registry unreadable; the last list stays stale"
+                        );
+                    }
+                },
+            )
+            .map_err(|error| {
+                tracing::info!(%error, path = %root.display(), "app registry path is not watched");
+            })
+            .ok()
+        })
+        .collect();
+    *watched = Some((roots, armed));
 }
 
 /// Immutable installed-app snapshot revision for retained search projections.
