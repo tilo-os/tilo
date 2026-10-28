@@ -311,15 +311,23 @@ impl Head {
             triggers: self.triggers.clone(),
             step_timeout_secs: self.step_timeout_secs,
         }
+    }
+
     /// The steps of block `branch` of the step with item id `parent`.
     fn block(&self, parent: &str, branch: &str) -> Vec<Step> {
-            .filter_map(|(key, node)| {
+        let mut steps: Vec<(usize, Step)> = self
+            .steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (key, node))| {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
-                Some(Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone()))
+                Some((index, Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone())))
             })
-            .collect()
+            .collect();
+        steps.sort_by_key(|(index, _)| *index);
+        steps.into_iter().map(|(_, step)| step).collect()
     }
 
     /// Store `program`, changing only what differs from what the draft
@@ -406,6 +414,8 @@ impl Head {
                 self.store_block(block, key.as_str(), branch, order, mint);
             }
         }
+    }
+
     /// The shortcut this draft saves as, with `grant`.
     #[must_use]
     pub fn shortcut(&self, grant: Vec<tilo_action_policy::Rule>) -> Shortcut {
@@ -430,6 +440,9 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
     for (index, key) in order.iter().enumerate() {
         if collection.position(key) != Some(index) {
             collection.move_to(key, index);
+        }
+    }
+}
 /// Every draft on this device's workbench.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
