@@ -61,7 +61,14 @@ impl ListIndex {
         R: IntoIterator<Item = (&'a str, FieldWeight)>,
     {
         let one_word = query.split_whitespace().nth(1).is_none();
-        let rows = RowFields::new(rows, one_word);
+        let rows: Vec<Vec<(&'a str, FieldWeight)>> = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight)))
+                    .collect()
+            })
+            .collect();
         if query.trim().is_empty() {
             return vec![Some(0); rows.len()];
         }
@@ -96,49 +103,6 @@ impl ListIndex {
         }
         drop(cached);
         ranks
-    }
-}
-
-/// Borrowed fields for one query, staged in two flat buffers rather than
-/// allocating a separate vector for every row on every keystroke.
-#[derive(Hash)]
-struct RowFields<'a> {
-    fields: Vec<(&'a str, FieldWeight)>,
-    ends: Vec<usize>,
-}
-
-impl<'a> RowFields<'a> {
-    fn new<R>(rows: impl IntoIterator<Item = R>, one_word: bool) -> Self
-    where
-        R: IntoIterator<Item = (&'a str, FieldWeight)>,
-    {
-        let rows = rows.into_iter();
-        let mut fields = Vec::new();
-        let mut ends = Vec::with_capacity(rows.size_hint().0);
-        for row in rows {
-            fields.extend(
-                row.into_iter()
-                    .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight))),
-            );
-            ends.push(fields.len());
-        }
-        Self { fields, ends }
-    }
-
-    fn len(&self) -> usize {
-        self.ends.len()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &[(&'a str, FieldWeight)]> {
-        let mut start = 0;
-        let mut fields = self.fields.as_slice();
-        self.ends.iter().map(move |&end| {
-            // Boundaries come only from extending this buffer in `new`.
-            let (row, remaining) = fields.split_at(end.saturating_sub(start));
-            fields = remaining;
-            start = end;
-            row
-        })
     }
 }
 
@@ -180,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_staging_preserves_rows_fields_weights_and_phrase_changes() {
+    fn list_staging_preserves_rows_fields_weights_and_phrase_changes() {
         let list = ListIndex::default();
         let title = FieldWeight::TITLE;
         let keyword = FieldWeight::KEYWORD;
@@ -218,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_staging_preserves_the_large_list_engine_path() {
+    fn list_staging_preserves_the_large_list_engine_path() {
         let list = ListIndex::default();
         let mut rows = vec![vec![("Hotel", FieldWeight::TITLE)]; crate::direct::DIRECT_LIMIT + 1];
         rows.push(Vec::new());
