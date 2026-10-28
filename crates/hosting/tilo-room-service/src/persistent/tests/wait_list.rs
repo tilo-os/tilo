@@ -393,7 +393,7 @@ async fn mailing_with(
         .unwrap();
     let persistent = Persistent::attach_for_test(Arc::new(shared), Box::new(stdin), stdout).await;
     let relay = Relay {
-        commands: BufReader::new(relay_stdin).lines(),
+        commands: BufReader::new(Reading::open(relay_stdin)).lines(),
         events: relay_stdout,
     };
     (persistent, relay, dir)
