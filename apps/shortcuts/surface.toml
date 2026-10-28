@@ -151,6 +151,24 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-nested"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "block", required = true, schema = { type = "string" } },
+  { name = "index", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "set-output"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "binding", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "add-input"
 kind = "undoable"
 params = [

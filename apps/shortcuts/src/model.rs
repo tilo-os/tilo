@@ -284,7 +284,6 @@ impl Head {
     }
 }
 
-impl Draft {
     /// A draft holding `program`, its steps' item ids minted by `mint`.
     pub fn new(
         name: String,
@@ -304,7 +303,6 @@ impl Draft {
     }
 
     /// The program the draft holds.
-    #[must_use]
     pub fn program(&self) -> Program {
         Program {
             inputs: self.inputs.values().cloned().collect(),
@@ -313,13 +311,8 @@ impl Draft {
             triggers: self.triggers.clone(),
             step_timeout_secs: self.step_timeout_secs,
         }
-    }
-
     /// The steps of block `branch` of the step with item id `parent`.
     fn block(&self, parent: &str, branch: &str) -> Vec<Step> {
-        self.steps
-            .iter()
-            .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
             .filter_map(|(key, node)| {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
@@ -413,8 +406,6 @@ impl Draft {
                 self.store_block(block, key.as_str(), branch, order, mint);
             }
         }
-    }
-
     /// The shortcut this draft saves as, with `grant`.
     #[must_use]
     pub fn shortcut(&self, grant: Vec<tilo_action_policy::Rule>) -> Shortcut {
@@ -439,10 +430,6 @@ fn place<T>(collection: &mut Collection<T>, order: &[Id]) {
     for (index, key) in order.iter().enumerate() {
         if collection.position(key) != Some(index) {
             collection.move_to(key, index);
-        }
-    }
-}
-
 /// Every draft on this device's workbench.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Workbench {
@@ -452,8 +439,6 @@ pub struct Workbench {
     /// says nothing about what the person did, only which proposals were
     /// turned down.
     pub ignored: Vec<String>,
-}
-
 /// `name`, numbered past the drafts that already go by it: "New shortcut",
 /// then "New shortcut 2", "New shortcut 3".
 fn unused_name(workbench: &Workbench, name: &str) -> String {
@@ -481,8 +466,6 @@ fn draft_mut<'a>(workbench: &'a mut Workbench, draft: &Id) -> Result<&'a mut Dra
         .drafts
         .get_mut(draft)
         .ok_or_else(|| Refusal::from("there is no such draft"))
-}
-
 /// Apply `edit` to the program of `draft` and store what changed.
 fn edit_program(
     workbench: &mut Workbench,
@@ -495,8 +478,6 @@ fn edit_program(
     edit(&mut program).map_err(Refusal::from)?;
     draft.set_program(&program, &mut || cx.id());
     Ok(())
-}
-
 /// Bring a workbench of version 1 up to this one: a draft's inputs, output
 /// and triggers and each step's head and arguments were one JSON string
 /// each, and are stored as their values now. Every draft, step and binding
@@ -905,6 +886,62 @@ impl Workbench {
         })
     }
 
+    /// Move a step into another block of the same draft: `""` for the top
+    /// level, or a block of a step such as `2.then`, `2.else` or `3.each`.
+    /// It lands at `index` there, counted from 0 (past the block's last
+    /// step puts it last), and the steps that follow it make room. A step
+    /// never moves inside its own blocks.
+    #[action]
+    pub fn set_nested(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("The block it moves into: empty for the top level, or like 2.then")] block: String,
+        #[param("Where it lands there: 0 first, or past its last step")] index: usize,
+    ) -> Result<(), Refusal> {
+        draft_mut(self, draft)?
+            .step_item(&path)
+            .ok_or_else(|| Refusal::new(format!("there is no step `{path}`")))?;
+        edit_program(self, cx, draft, |program| {
+            let (from, at) = split_path(&path).ok_or_else(|| format!("no step `{path}`"))?;
+            let moved = block_at(&program.steps, from)
+                .and_then(|steps| steps.get(at))
+                .cloned()
+                .ok_or_else(|| format!("there is no step `{path}`"))?;
+            if block == from || block.starts_with(&format!("{from}.")) {
+                return Err(format!("step `{path}` cannot move into its own block"));
+            }
+            let count = block_at(&program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?
+                .len();
+            let from_block = from.to_owned();
+            block_mut(&mut program.steps, &from_block)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .remove(at);
+            let destination = block_mut(&mut program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?;
+            destination.insert(index.min(count), moved);
+            Ok(())
+        })
+    }
+
+    /// Say what the shortcut reports when it finishes, or that it reports
+    /// nothing.
+    #[action]
+    pub fn set_output(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("Where the value comes from, as binding JSON; empty reports nothing")] binding: String,
+    ) -> Result<(), Refusal> {
+        let binding = parse_binding(&binding)?;
+        edit_program(self, cx, draft, |program| {
+            program.output = binding;
+            Ok(())
+        })
+    }
+
     /// Declare a value the shortcut is started with.
     #[action]
     pub fn add_input(
@@ -1109,6 +1146,70 @@ pub fn block_at<'a>(steps: &'a [Step], block: &str) -> Option<&'a [Step]> {
         (StepKind::ForEach { body, .. }, "each") => Some(body),
         _ => None,
     }
+}
+
+impl Draft {
+    /// The item holding the step at `path` (`2.then.1`), which
+    /// [`Workbench::set_nested`] moves in the stored draft itself.
+    #[must_use]
+    pub fn step_item(&self, path: &str) -> Option<Id> {
+        self.item_at(&steps_block(path)?, index_of_path(path)?)
+    }
+
+    /// The item of the step at `index` of `block`.
+    fn item_at(&self, block: &Block, index: usize) -> Option<Id> {
+        let (parent, branch) = self.block_owner(block)?;
+        self.steps
+            .iter()
+            .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
+            .map(|(key, _)| key.clone())
+            .nth(index)
+    }
+
+    /// The item id of the step whose block `block` names, and which of its
+    /// branches that block is.
+    fn block_owner(&self, block: &Block) -> Option<(String, &'static str)> {
+        let (branch, owner_path) = block.split_last()?;
+        if owner_path.is_empty() {
+            return Some((String::new(), *branch));
+        }
+        let owner = self.item_at(owner_path, index_of_path(owner_path)?)?;
+        Some((owner.as_str().to_owned(), *branch))
+    }
+}
+
+/// A block address (`2.then`) as the named branches it descends into, after
+/// the step indices that lead to it.
+type Block = Vec<&'static str>;
+
+/// The branches `block` names, in order; `None` when a segment is neither an
+/// index nor a branch.
+fn segments(block: &str) -> Option<Block> {
+    if block.is_empty() {
+        return Some(Vec::new());
+    }
+    block
+        .split('.')
+        .map(|segment| match segment {
+            THEN => Some(THEN),
+            ELSE => Some(ELSE),
+            EACH => Some(EACH),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The block the step at `path` is in: its addresses are indices, its
+/// blocks branches.
+fn steps_block(path: &str) -> Option<Block> {
+    let (block, _) = path.rsplit_once('.').unwrap_or(("", path));
+    segments(block)
+}
+
+/// The index of the step at `path` within its block.
+fn index_of_path(path: &str) -> Option<usize> {
+    let (_, index) = path.rsplit_once('.').unwrap_or(("", path));
+    index.parse().ok()
 }
 
 #[cfg(test)]

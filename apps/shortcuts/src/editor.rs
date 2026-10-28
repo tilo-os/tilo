@@ -665,3 +665,89 @@ pub const fn param_type_label(ty: ParamType) -> &'static str {
 #[cfg(test)]
 #[path = "editor_tests.rs"]
 mod tests;
+
+/// `program` as the app's text view writes it: one step a line, its number,
+/// what it does and where each value comes from, the steps inside a block
+/// indented under it and each block named. The same steps the blocks show,
+/// in the same order, for reading beside what the text language says.
+#[must_use]
+pub fn program_text(program: &crate::model::Program, catalog: &ActionCatalog) -> String {
+    let mut out = String::new();
+    for input in &program.inputs {
+        let _ = writeln!(out, "input {} {}", input.name, param_type_name(input.ty));
+    }
+    if !program.inputs.is_empty() {
+        out.push('\n');
+    }
+    text_steps(&program.steps, "", catalog, &mut out);
+    if let Some(output) = &program.output {
+        let _ = writeln!(out, "\nresult {}", describe(output, &program.steps));
+    }
+    out.trim_end().to_owned()
+}
+
+/// The steps of one block, indented by `indent`.
+fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut String) {
+    for step in steps {
+        let line = match &step.kind {
+            StepKind::Invoke {
+                action,
+                resource,
+                args,
+                ..
+            } => {
+                let values: Vec<String> = args
+                    .iter()
+                    .map(|(name, binding)| format!("{name}: {}", describe(binding, steps)))
+                    .collect();
+                let resource = match resource {
+                    Selector::Fixed { resource } => format!(" on {resource}"),
+                    other => format!(" on {other:?}"),
+                };
+                format!(
+                    "{}{}{}{}",
+                    title(step, catalog, steps),
+                    resource,
+                    if values.is_empty() { "" } else { " with " },
+                    values.join(", ")
+                )
+            }
+            other => title(step, catalog, steps) + &substance_text(other, steps),
+        };
+        let _ = writeln!(out, "{indent}{line}");
+        match &step.kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                let _ = writeln!(out, "{indent}  then:");
+                text_steps(then, &format!("{indent}    "), catalog, out);
+                let _ = writeln!(out, "{indent}  otherwise:");
+                text_steps(otherwise, &format!("{indent}    "), catalog, out);
+            }
+            StepKind::ForEach { body, .. } => {
+                let _ = writeln!(out, "{indent}  for each:");
+                text_steps(body, &format!("{indent}    "), catalog, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What a step other than an action does, after its name: the condition of
+/// an `if`, the items of a repeat, the value a variable is set to.
+fn substance_text(kind: &StepKind, steps: &[Step]) -> String {
+    match kind {
+        StepKind::If { cond, .. } => match cond {
+            Condition::Truthy(binding) => format!(" when {}", describe(binding, steps)),
+            other => format!(" {other:?}"),
+        },
+        StepKind::ForEach { items, item, .. } => {
+            format!(" {item} in {}", describe(items, steps))
+        }
+        StepKind::SetVar { name, value } => format!(" {name} to {}", describe(value, steps)),
+        StepKind::Ai { prompt, .. } => format!(" “{prompt}”"),
+        StepKind::Task { instruction, .. } => format!(" “{instruction}”"),
+        StepKind::Ask { param } => format!(" “{}”", param.description),
+        StepKind::Invoke { .. } => String::new(),
+    }
+}
