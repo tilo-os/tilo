@@ -342,6 +342,14 @@ pub struct ChannelEncryption {
     /// epoch of the keys last taken from it
     /// ([`ChannelDirectory::hosted_channel_keys`]).
     hosted: HashMap<ChannelId, (RoomId, u64)>,
+    /// The gate this service last registered with the broker for each
+    /// channel. Every access re-asserts its channel's gate, and a channel's
+    /// keys are read for every live frame sealed or opened; taking the
+    /// broker's lock for each made every such read wait for as long as a
+    /// broker thread held it to append and sync durable history, which froze
+    /// the desktop while its frame loop was the reader. Only a changed gate
+    /// takes the lock.
+    registered: HashMap<ChannelId, channel_crypto::ChannelGate>,
 }
 
 impl ChannelEncryption {
@@ -414,6 +422,7 @@ impl ChannelEncryption {
             queued: false,
             unopened: HashMap::new(),
             hosted: HashMap::new(),
+            registered: HashMap::new(),
         }
     }
 
@@ -1196,12 +1205,13 @@ impl ChannelEncryption {
         ChannelAccess::Ready(keys)
     }
 
-    fn register_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
-        if !gate.encryption_required {
+    fn register_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        if !gate.encryption_required || self.registered.get(&channel) == Some(&gate) {
             return;
         }
         if let Ok(mut broker) = self.broker.lock() {
             broker.register_channel_gate(channel, gate);
+            self.registered.insert(channel, gate);
         }
     }
 

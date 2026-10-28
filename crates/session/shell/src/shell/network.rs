@@ -2382,7 +2382,7 @@ impl ShellNetwork {
             live_chat: Mutex::default(),
             live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
-            live_keys: Box::new(crate::shell::live_presence::session_keys),
+            live_keys: Box::new(crate::shell::live_presence::session_keys_without_waiting),
             room_reactions: Mutex::default(),
             presence_visibility: Mutex::new(presence_visibility::Visibilities::saved()),
             peer_colours: Mutex::default(),
