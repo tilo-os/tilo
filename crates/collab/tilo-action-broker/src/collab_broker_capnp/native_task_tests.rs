@@ -490,6 +490,7 @@ impl Fixture {
             connection_id: peer,
             verified_identity: admitted,
             record_kind: None,
+            route_access: RouteAccess::Own,
             lease: None,
             _hold: None,
         })

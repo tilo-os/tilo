@@ -213,6 +213,24 @@ WIDGET_LATE = b'''<!doctype html><title>Connecting</title>
 '''
 
 
+# A frame the page sets up by script, reaching a document another origin
+# serves, which then moves on to its form by itself. The page may hold the
+# frame's element but never read its document, so the frame is reached the way
+# a person reaches it: through the frame, never through the page around it.
+SCRIPTED_FRAME = b'''<!doctype html><title>Scripted frame</title>
+<h1>Extension page</h1>
+<p id="status">Reading the address book</p>
+<button id="outside">Outside the frame</button>
+<script>setTimeout(() => {
+  const fr = document.createElement('iframe');
+  fr.title = 'Address finder';
+  fr.src = 'http://localhost' + location.origin.slice(location.origin.lastIndexOf(':')) + '/widget-late';
+  fr.style.cssText = 'width:600px;height:240px;border:0';
+  document.body.append(fr);
+}, 300);</script>
+'''
+
+
 WIDGET = b'''<!doctype html><title>Payment details</title>
 <form action="/done" method="get">
   <label>IBAN <input name="iban"></label>
@@ -327,6 +345,50 @@ document.addEventListener('keydown', event => window.pressed.push(event.key));
 </script>'''
 
 
+# What a person sees on a form, named the way a person reads it, so the same
+# description finds the element again after the page has been reloaded.
+FINDS = b'''<!doctype html><title>Found</title>
+<style>.hidden{position:absolute;opacity:0;width:1px;height:1px}</style>
+<h1>Booking</h1>
+<form action="/done" method="get">
+  <fieldset><legend>Contact</legend>
+    <label>Email address <input name="email" type="email"></label>
+    <label>Telephone <input name="phone"></label>
+  </fieldset>
+  <fieldset><legend>Guests</legend>
+    <ul id="guests"><li><span>Ada Lovelace</span><button type="button">Remove</button></li>
+      <li><span>Grace Hopper</span><button type="button">Remove</button></li></ul>
+    <label>Newsletter <input name="letter" type="checkbox"></label>
+    <label>Seats <select name="seats"><option>One</option><option>Two</option></select></label>
+  </fieldset>
+  <button>Place booking</button>
+</form>
+<label>Notes <textarea name="notes"></textarea></label>
+<p><a href="/help">Help with booking</a></p>
+<div id="tick"></div>
+<script>
+// A page whose own document numbers every element by the time it is read:
+// nothing an earlier read said can be addressed here.
+document.getElementById('tick').textContent = 'ready ' + performance.now();
+for (const button of document.querySelectorAll('#guests button'))
+  button.onclick = () => button.closest('li').remove();
+'''
+
+
+# A frame's own document, found by the description alone: the caller reads
+# nothing of the frame first.
+EMBED = b'''<!doctype html><title>Embedded</title>
+<iframe src="/embedded-form" title="Card form" style="width:600px;height:240px;border:0"></iframe>
+'''
+
+
+EMBEDDED = b'''<!doctype html><title>Card details</title>
+<label>Card number <input name="card"></label>
+<label>Security code <input name="cvc"></label>
+<button>Save card</button>
+'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -337,10 +399,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else GESTURES if path == '/gestures' \
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
+            else SCRIPTED_FRAME if path == '/scripted-frame' \
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
             else RICH if path == '/rich' \
             else SCROLL if path == '/scroll' \
             else NATIVE if path == '/native' else LONG if path == '/long' \
+            else FINDS if path == '/finds' else EMBED if path == '/embed' \
+            else EMBEDDED if path == '/embedded-form' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -373,6 +438,10 @@ class PageActions(unittest.TestCase):
         self.request = 0
 
     def page(self, action, **fields):
+        return self.asked(action, **fields)
+
+    def asked(self, action, **fields):
+        # What the engine says to one request, whether it answers or refuses.
         self.request += 1
         request = self.request
         self.h.send(op='page', request_id=request, action=action, **fields)
@@ -523,6 +592,79 @@ class PageActions(unittest.TestCase):
         save = self.ref(inside['outline'], 'button "Save bank details"')
         self.ok('click', element=save, frame=frame)
         self.assertNotIn('Save bank details', self.ok('outline', frame=frame)['outline'])
+
+    def test_a_frame_the_page_set_up_by_script_is_reached_through_the_frame(self):
+        self.h.navigate(self.url + '/scripted-frame')
+        # The frame is made by script, and the document it reaches is served by
+        # another origin: the page holds the frame's element and never its
+        # document. It is still one line of the page, and the id it prints
+        # addresses it, so the address an action takes is never one the page
+        # can read.
+        deadline = time.monotonic() + HANG_BOUND
+        while 'iframe' not in (outline := self.outline()):
+            self.assertLess(time.monotonic(), deadline, 'the scripted frame never appeared')
+            time.sleep(0.2)
+        numbers = re.findall(r'iframe "Address finder" \[frame=([\d.]+)\]', outline)
+        self.assertEqual(len(numbers), 1, outline)
+        frame = numbers[0]
+        while 'IBAN' not in (inside := self.ok('outline', frame=frame))['outline']:
+            self.assertLess(time.monotonic(), deadline, 'the frame never reached its form')
+            time.sleep(0.1)
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Extension page', inside['outline'], 'the frame reads its own document alone')
+        # The frame's own document is written in through the frame's own
+        # outline, and the page around it never runs a line of it.
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame=frame)
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame=frame)['outline'])
+        self.assertNotIn('Extension page', self.ok('outline', frame=frame)['outline'])
+
+    def test_a_frame_the_page_set_up_by_script_is_a_document_that_arrived(self):
+        self.h.navigate(self.url + '/late')
+        # The frame's document is fetched after the page loaded. A caller
+        # reading the page's requests finds it as a document, never as one
+        # still on its way: a request that arrived and a request that never
+        # will must not read the same.
+        # Recording starts with the first request made of the log, so the page
+        # is reached once the log is listening: its documents, and the frame's,
+        # are then the ones this read covers.
+        self.h.navigate(self.url + '/late')
+        deadline = time.monotonic() + HANG_BOUND
+        used = 0
+        while True:
+            network = self.ok('network', since=used)
+            used = network['data']['next']
+            documents = [e for e in network['data']['entries']
+                         if e.get('type') == 'Document' and 'widget-late' in e.get('url', '')]
+            if documents and all('state' in e for e in documents) and documents[-1]['state'] != 'pending':
+                break
+            self.assertLess(time.monotonic(), deadline, f'the frame\'s document never arrived: {network}')
+            time.sleep(0.2)
+        self.assertEqual(documents[-1]['state'], 'done', documents[-1])
+        # Every document the page holds is finished: nothing is left pending
+        # once its own document has loaded.
+        every = self.ok('network', since=0)['data']['entries']
+        documents = [e for e in every if e.get('type') == 'Document']
+        self.assertTrue(documents, every)
+        self.assertEqual([e for e in documents if e.get('state') == 'pending'], [], documents)
+
+    def test_a_frame_is_named_the_way_its_outline_writes_it(self):
+        self.h.navigate(self.url + '/framed')
+        printed = re.search(r'iframe "Payment form" \[frame=(\d+)\]', self.outline()).group(1)
+        # Every form a caller copies an id in is the frame it names: the number,
+        # the number as text, and the outline's own bracketed `[frame=1]`.
+        for named in (printed, f'frame={printed}', f'[frame={printed}]', f' {printed} '):
+            with self.subTest(frame=named):
+                inside = self.page('outline', frame=named)
+                self.assertTrue(inside['ok'], inside)
+                self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        # A frame the outline never printed is still refused, however it is
+        # written: an id is a number, never a selector or a script.
+        for named in ('7', 'frame=7', '[frame=7]', 'iframe', '1.e', 'top'):
+            with self.subTest(frame=named):
+                refused = self.page('outline', frame=named)
+                self.assertEqual((refused['ok'], refused['code']), (False, 'no_frame'), refused)
+                self.assertIn(printed, refused['message'], 'the answer names a frame the page has')
 
     def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
         self.h.navigate(self.url + '/framed')
@@ -1143,6 +1285,151 @@ class PageActions(unittest.TestCase):
         short = self.ok('outline')
         self.assertNotIn('stopped there', short['message'], short)
         self.assertNotIn('the page goes on', short['outline'])
+
+    def find(self, **fields):
+        # A find is a read of the page: it answers with a ref, or with why it
+        # could not say which element was meant.
+        return self.page('find', **fields)
+
+
+    def test_a_find_names_an_element_by_what_the_page_says_it_is(self):
+        self.h.navigate(self.url + '/finds')
+        outline = self.outline()
+        # What the page holds, read once: every find below answers the ref
+        # the same page's own outline prints.
+        # A label names its control, and the same words find it.
+        by_name = self.find(name='Email address')
+        self.assertTrue(by_name['ok'], by_name)
+        self.assertEqual(by_name['data']['element'], self.ref(outline, 'textbox "Email address"'), by_name)
+        self.assertEqual(by_name['data']['role'], 'textbox')
+        self.assertEqual(by_name['data']['name'], 'Email address')
+        # The line is the outline's own line, with the words of the box it is
+        # printed under, so what is answered is what a reader can find in a
+        # read of the page.
+        self.assertIn('textbox "Email address"', by_name['data']['line'], by_name)
+        self.assertIn(by_name['data']['line'].replace('group "Contact": ', ''), outline,
+                      'the answer is the outline\'s own line, under the box it is printed in')
+        self.assertIn('Email address', by_name['message'])
+        # The ref a find answers is a ref like any other: a step fills with
+        # it, and what was typed is on the page where the caller left it.
+        self.ok('fill', element=by_name['data']['element'], text='ada@example.test')
+        self.assertIn('value="ada@example.test"', self.outline())
+        # A role and a name together pick one element out of the page.
+        button = self.find(role='button', name='Place booking')
+        self.assertTrue(button['ok'], button)
+        self.assertEqual(button['data']['element'], self.ref(self.outline(), 'button "Place booking"'))
+        # What sits under a bar is found by the bar's words too, as its own
+        # line is printed under them.
+        nested = self.find(name='Telephone')
+        self.assertTrue(nested['ok'], nested)
+        self.assertEqual(nested['data']['element'], self.ref(self.outline(), 'textbox "Telephone"'))
+        # A role alone names every element of that kind, so it is numbered
+        # like any other description with more than one match.
+        by_role = self.find(role='button')
+        self.assertEqual((by_role['ok'], by_role['code']), (False, 'ambiguous'), by_role)
+        first = self.find(role='button', nth=1)
+        self.assertTrue(first['ok'], first)
+        self.assertEqual(first['data']['element'], self.ref(self.outline(), 'button "Remove"'))
+        self.assertEqual(first['data']['nth'], 1)
+
+    def test_a_find_matches_a_name_case_and_part_ways(self):
+        self.h.navigate(self.url + '/finds')
+        outline = self.outline()
+        email = self.ref(outline, 'textbox "Email address"')
+        # Exactly as printed first, then in any letter case, then by a part.
+        for written in ('Email address', 'email ADDRESS', 'mail addr'):
+            found = self.find(name=written)
+            self.assertTrue(found['ok'], (written, found))
+            self.assertEqual(found['data']['element'], email, written)
+        # An exact match wins over a looser one that would have matched too.
+        self.assertEqual(self.find(name='Newsletter')['data']['role'], 'checkbox')
+
+    def test_a_find_numbers_equal_matches_and_refuses_to_guess(self):
+        self.h.navigate(self.url + '/finds')
+        outline = self.outline()
+        removes = re.findall(r'button "Remove" \[ref=(d\d+e\d+)\]', outline)
+        self.assertEqual(len(removes), 2, outline)
+        # Several equal matches are refused, and the error lists each with the
+        # number that names it.
+        refused = self.find(role='button', name='Remove')
+        self.assertEqual((refused['ok'], refused['code']), (False, 'ambiguous'), refused)
+        for number, ref in enumerate(removes, start=1):
+            self.assertIn(f'({number}) group "Guests": button "Remove"', refused['message'], refused)
+            self.assertIn(f'[ref={ref}]', refused['message'], refused)
+        self.assertIn('nth', refused['message'], refused)
+        # The number picks the one meant, in the order the outline prints them.
+        for number, ref in enumerate(removes, start=1):
+            found = self.find(role='button', name='Remove', nth=number)
+            self.assertTrue(found['ok'], found)
+            self.assertEqual(found['data']['element'], ref, number)
+            self.assertEqual(found['data']['nth'], number)
+        # A number past the last names how many there are.
+        past = self.find(role='button', name='Remove', nth=3)
+        self.assertEqual((past['ok'], past['code']), (False, 'not_found'), past)
+        self.assertIn('from 1 to 2', past['message'], past)
+        # A description the page does not hold names what it nearly said
+        # instead of any element at all.
+        missing = self.find(role='button', name='Delete')
+        self.assertEqual((missing['ok'], missing['code']), (False, 'not_found'), missing)
+        self.assertIn('Remove', missing['message'], missing)
+        self.assertIn('button "Place booking"', missing['message'], missing)
+        self.assertNotIn('element', missing, 'a find that found nothing answers no ref')
+        # A description of nothing names no element, and says what a
+        # description needs rather than guessing at one.
+        empty = self.page('find')
+        self.assertEqual((empty['ok'], empty['code']), (False, 'invalid_request'), empty)
+        self.assertIn('role', empty['message'], empty)
+        self.assertIn('name', empty['message'], empty)
+
+    def test_a_find_understands_a_description_after_the_page_has_reloaded(self):
+        self.h.navigate(self.url + '/finds')
+        first = self.find(role='textbox', name='Telephone')['data']['element']
+        self.ok('fill', element=first, text='01234')
+        self.h.navigate(self.url + '/finds')
+        # A reloaded document has refs of its own; the description finds the
+        # element again, and the ref from before it is no longer the page's.
+        again = self.find(role='textbox', name='Telephone')
+        self.assertTrue(again['ok'], again)
+        self.assertNotEqual(again['data']['element'], first, 'a reloaded page has refs of its own')
+        self.assertEqual(again['data']['element'], self.ref(self.outline(), 'textbox "Telephone"'))
+        # The whole of what a replayed step does: find, then act on the ref.
+        self.ok('fill', element=again['data']['element'], text='01234')
+        self.assertIn('value="01234"', self.outline())
+        # The old ref is refused, never resolved against whatever is there now.
+        stale = self.page('fill', element=first, text='999')
+        self.assertEqual((stale['ok'], stale['code']), (False, 'stale_element'), stale)
+
+    def test_a_find_reaches_inside_an_open_shadow_root(self):
+        self.h.navigate(self.url + '/form')
+        # The outline prints what a shadow root holds; a find reaches it the
+        # same way a read does, without the caller knowing there is a root.
+        found = self.find(role='button', name='Shadow button')
+        self.assertTrue(found['ok'], found)
+        self.assertEqual(found['data']['element'], self.ref(self.outline(), 'button "Shadow button"'))
+        self.ok('click', element=found['data']['element'])
+        self.assertIn('text "shadow clicked"', self.outline())
+
+    def test_a_find_reads_a_frame_s_own_document(self):
+        self.h.navigate(self.url + '/embed')
+        outline = self.outline()
+        frame = re.search(r'iframe "Card form" \[frame=([\d.]+)\]', outline).group(1)
+        # Neither the page nor the frame was read first: the id the page
+        # printed and the description are all the caller needs.
+        found = self.find(role='textbox', name='Security code', frame=frame)
+        self.assertTrue(found['ok'], found)
+        self.assertEqual(found['data']['element'], self.ref(self.ok('outline', frame=frame)['outline'],
+                                                           'textbox "Security code"'))
+        self.ok('fill', element=found['data']['element'], text='123', frame=frame)
+        self.assertIn('value="123"', self.ok('outline', frame=frame)['outline'])
+        # The frame's element belongs to the frame: the page cannot name it.
+        wrong = self.page('fill', element=found['data']['element'], text='456')
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
+        # The page itself holds none of the frame's words, and a caller
+        # looking in the wrong document is told which frame holds them.
+        absent = self.find(name='Security code')
+        self.assertEqual((absent['ok'], absent['code']), (False, 'not_found'), absent)
+        self.assertIn(f'frame={frame}', absent['message'], absent)
+        self.assertIn('read it with read-page', absent['message'], absent)
 
 
 if __name__ == '__main__':

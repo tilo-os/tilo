@@ -173,7 +173,8 @@ impl crate::resources::PublishesResources for DeclaredDirectory {
                 }
                 if doc.get(ROOT, "changed-contract").unwrap().is_some() {
                     for action in &mut resource.actions {
-                        action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                        action.type_mut().contract.confirmation =
+                            tilo_actions::ConfirmationPolicy::Confirm;
                     }
                 }
                 if wide {
@@ -970,7 +971,7 @@ impl ExtendedDirectory {
         );
         parent.children.push(inspect("extended:a", "A"));
         if extra {
-            parent.actions[0].contract.kind = tilo_actions::ActionKind::Undoable;
+            parent.actions[0].type_mut().contract.kind = tilo_actions::ActionKind::Undoable;
             parent.actions.push(
                 ActionSpec::operation(
                     "tail",

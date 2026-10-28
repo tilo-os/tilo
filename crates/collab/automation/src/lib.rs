@@ -48,6 +48,7 @@ pub mod run;
 pub mod scenario;
 pub mod shortcut;
 mod template;
+pub mod text;
 mod types;
 
 #[cfg(test)]

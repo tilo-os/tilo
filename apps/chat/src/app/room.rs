@@ -43,6 +43,9 @@ impl ChatApp {
         if let Some(capture) = self.capture_agent_presence.clone() {
             self.adopt_room(&capture);
         } else if ui::presence::frame::frame(|presence| self.adopt_room(presence)).is_none() {
+            // No presence this frame: nobody's answer says who is here, so the
+            // record's own words about each person stand (`live_status`).
+            self.room_presence_answers = false;
             return perms_changed;
         }
         let after = (
@@ -59,6 +62,10 @@ impl ChatApp {
     }
 
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
+        // Presence answered: from here on it, not the record, says who is
+        // here. An answer naming nobody besides this window's own person is
+        // still an answer — the room is otherwise empty.
+        self.room_presence_answers = true;
         self.person_contacts = ui::person_chat::contacts();
         self.adopt_own_participant(presence);
         self.room_voice = self

@@ -29,7 +29,10 @@ impl TileSource for Readers {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
         let room = workspace.room().to_string();
         let definition = crate::definition();
-        let records = self.owners.open(definition.app_id, &room).expect("records");
+        let records = self
+            .owners
+            .open(&definition.app_id, &room)
+            .expect("records");
         let views = Rc::new(
             ui::application_view::InstanceViewStore::new(self.state.clone(), "device", &room)
                 .expect("views"),

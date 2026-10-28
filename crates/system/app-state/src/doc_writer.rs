@@ -107,6 +107,44 @@ impl StoredLoad {
     }
 }
 
+/// A stored document's bytes as its owner read them, to decode on any thread: how a window
+/// shows before its record is decoded, and takes it in when it is
+/// ([`DocOwner::stored_bytes`], [`Self::decode`], [`DocOwner::decoded`]).
+pub struct StoredBytes {
+    bytes: Vec<u8>,
+    known: Option<Vec<ChangeHash>>,
+    recover_partial: bool,
+    label: PathBuf,
+}
+
+/// [`StoredBytes`] decoded, for the owner that read them to accept.
+pub struct DecodedBytes {
+    doc: AutoCommit,
+    source: Vec<u8>,
+    repair: Option<Vec<u8>>,
+}
+
+impl StoredBytes {
+    /// Decode the document, dropping a torn tail into a private repair when the owner read
+    /// them to recover one.
+    ///
+    /// # Errors
+    /// Refuses empty, incomplete, corrupt or unsupported documents.
+    pub fn decode(self) -> Result<DecodedBytes, StoreError> {
+        let (doc, repair) = decode_canonical_with(
+            &self.bytes,
+            self.recover_partial,
+            &self.label,
+            self.known.as_deref(),
+        )?;
+        Ok(DecodedBytes {
+            doc,
+            source: self.bytes,
+            repair,
+        })
+    }
+}
+
 impl DocOwner {
     /// Lease `key` and continue its stored writer identity, minting one when
     /// none is stored yet. The identity is persisted with the first write.
@@ -268,6 +306,19 @@ impl DocOwner {
     }
 
     fn load_with(&self, recover_partial: bool) -> Result<Option<StoredLoad>, StoreError> {
+        let Some(stored) = self.stored_bytes(recover_partial)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.decoded(stored.decode()?)))
+    }
+
+    /// The stored document's bytes, to decode on another thread
+    /// ([`StoredBytes::decode`]); [`Self::decoded`] binds the result to this owner, as
+    /// [`Self::load`] (`recover_partial`) or [`Self::load_complete`] would have.
+    ///
+    /// # Errors
+    /// A failure reading the store.
+    pub fn stored_bytes(&self, recover_partial: bool) -> Result<Option<StoredBytes>, StoreError> {
         let Some(stored) = self.store.read(&self.key)? else {
             return Ok(None);
         };
@@ -275,18 +326,23 @@ impl DocOwner {
             .store
             .read_hint(&self.key)
             .and_then(|hint| load_hint::hashes_for(&hint, &stored.bytes));
-        let (doc, repair) = decode_canonical_with(
-            &stored.bytes,
+        Ok(Some(StoredBytes {
+            bytes: stored.bytes,
+            known,
             recover_partial,
-            &self.label,
-            known.as_deref(),
-        )?;
-        Ok(Some(StoredLoad {
-            doc,
-            source: stored.bytes,
-            repair,
-            identity: Rc::clone(&self.identity),
+            label: self.label.clone(),
         }))
+    }
+
+    /// The candidate `decoded` is, bound to this owner, which read its bytes: what
+    /// [`Self::accept`] takes.
+    pub fn decoded(&self, decoded: DecodedBytes) -> StoredLoad {
+        StoredLoad {
+            doc: decoded.doc,
+            source: decoded.source,
+            repair: decoded.repair,
+            identity: Rc::clone(&self.identity),
+        }
     }
 
     /// Accept this owner's exact candidate: publish its repair, if any, and

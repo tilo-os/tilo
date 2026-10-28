@@ -10,6 +10,8 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 
+use super::request_window_shortcut;
+
 /// [`super::request_window_shortcut`] for an operation on the focused window
 /// group, refused at once when no window has focus.
 pub(super) fn request_group_shortcut(
@@ -25,6 +27,50 @@ pub(super) fn request_group_shortcut(
 
 pub(super) fn no_window() -> ActionError {
     ActionError::Explained(t("search-action-window-none"))
+}
+
+/// Maximize the focused window group, or restore it when it already is.
+/// The chord and the palette row both land here, so one key and one row
+/// are one operation.
+pub(super) fn request_toggle_maximize(st: &mut ChromeState) -> Result<(), ActionError> {
+    let maximized = {
+        let Some(group) = crate::shell::window_actions::active_group_id(st) else {
+            return Err(no_window());
+        };
+        let tree = st.tree();
+        let state = tree
+            .desktop
+            .active_workspace()
+            .into_iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|candidate| candidate.id == group)
+            .map(|group| group.maximized);
+        drop(tree);
+        state
+    };
+    request_window_shortcut(
+        st,
+        if maximized == Some(true) {
+            ShortcutAction::RestoreWindow
+        } else {
+            ShortcutAction::MaximizeWindow
+        },
+    )
+}
+
+/// The display an operation moves the focused window group to has to be
+/// another one: a display the window already fills has no room for it.
+pub(super) fn other_display_needed(state: &ChromeState) -> Result<(), ActionError> {
+    let tree = state.tree();
+    let displays = tree.desktop.outputs.displays.len();
+    drop(tree);
+    if displays < 2 {
+        return Err(ActionError::Explained(t(
+            "search-action-window-unchanged-edge",
+        )));
+    }
+    Ok(())
 }
 
 fn window_unchanged() -> ActionError {
@@ -171,6 +217,7 @@ mod tests {
             ("group.move-left", serde_json::json!({})),
             ("group.maximize", serde_json::json!({})),
             ("group.close", serde_json::json!({})),
+            ("group.toggle-maximize", serde_json::json!({})),
             ("group.move-to-strip", serde_json::json!({ "strip": 1 })),
         ] {
             assert!(

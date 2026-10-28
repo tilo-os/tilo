@@ -71,6 +71,8 @@ window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
 window-share-to-channel = In Kanal teilen…
 window-stop-sharing-in = Teilen in { $place } beenden
+history-loading = Verlauf wird geladen…
+lazy-loading = Wird geladen…
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
@@ -905,6 +907,11 @@ history-preview-now = Zurück zu jetzt
 workspace-identity-required-title = Wähle, wer du hier bist
 workspace-identity-required-body = Dieser Arbeitsbereich muss wissen, wer darin arbeitet, bevor { $app } öffnen kann.
 workspace-identity-required-choose = Identität wählen
+
+# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
+date-field-none = Kein Datum
+date-field-calendar = Kalender
+date-field-clear = Datum entfernen
 
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden

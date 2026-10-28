@@ -702,6 +702,25 @@ fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
     ui::widget::BadgeFace::dot(mark).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
+/// The empty list's face: why there is nothing here, and what to do next.
+fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) {
+    let (icon, title, message) = zero_state(
+        !state.mailbox.messages.is_empty(),
+        !state.accounts.is_empty(),
+        state.folder,
+    );
+    EmptyState::paint(
+        ctx,
+        r,
+        &EmptyStateContent {
+            icon: Some(icon),
+            message,
+            ..EmptyStateContent::new(title)
+        },
+        Point::new(-1.0, -1.0),
+    );
+}
+
 impl Widget for MessageList {
     fn build_layout(
         &mut self,
@@ -755,21 +774,7 @@ impl Widget for MessageList {
         if rows.is_empty() {
             self.slots.clear();
             self.region.set_content_size(r.width(), 0.0);
-            let (icon, title, message) = zero_state(
-                !state.mailbox.messages.is_empty(),
-                !state.accounts.is_empty(),
-                state.folder,
-            );
-            EmptyState::paint(
-                &mut ctx,
-                r,
-                &EmptyStateContent {
-                    icon: Some(icon),
-                    message,
-                    ..EmptyStateContent::new(title)
-                },
-                Point::new(-1.0, -1.0),
-            );
+            paint_zero_state(&mut ctx, r, &state);
             return;
         }
 

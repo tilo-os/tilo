@@ -1106,172 +1106,7 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 /// **The reference is what grants access.** A member can reach only the
 /// records the room references. Removing a reference stops future changes
 /// flowing; it cannot un-share bytes a peer already synced.
-pub mod room {
-    use super::{
-        AutoCommit, INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc, RecordCheckout, RecordId,
-        RecordKind, RecordSet, StringAt, Transactable, object_at, str_at, string_at,
-    };
-    use tilo_sort::CompactSort as _;
-
-    /// Select the room index. Malformed or conflicted metadata fails closed;
-    /// only an entirely absent index is created.
-    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-        match object_at(doc, &ROOT, INDEX, ObjType::Map) {
-            ObjectAt::Missing => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
-            ObjectAt::Object(object) => Some(object),
-            ObjectAt::Invalid => None,
-        }
-    }
-
-    fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
-        match object_at(doc, &ROOT, INDEX, ObjType::Map) {
-            ObjectAt::Object(object) => Some(object),
-            ObjectAt::Missing | ObjectAt::Invalid => None,
-        }
-    }
-
-    /// Bring a record name into this room. Keyed by record id (not appended
-    /// to a list) so two machines referencing the same name concurrently
-    /// converge on one index entry. The document it resolves to remains
-    /// room-scoped; this is not a cross-room data grant.
-    pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
-        if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
-            return false;
-        }
-        let Some(idx) = index_obj(doc) else {
-            return false;
-        };
-        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
-            ObjectAt::Object(object) => {
-                // Refresh the type only if it actually differs, so
-                // re-opening a record is not itself an edit.
-                match string_at(doc, &object, "kind") {
-                    StringAt::String(existing) if existing == kind.as_str() => {}
-                    // Renamed: the index follows the kind's current name.
-                    StringAt::String(_) => {
-                        let _ = doc.put(&object, "kind", kind.as_str());
-                    }
-                    StringAt::Missing | StringAt::Invalid => return false,
-                }
-                false
-            }
-            ObjectAt::Missing => {
-                let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
-                    return false;
-                };
-                let _ = doc.put(&entry, "kind", kind.as_str());
-                true
-            }
-            ObjectAt::Invalid => false,
-        }
-    }
-
-    /// Drop a record's reference from this room. The record itself is
-    /// untouched — another room may hold an independently scoped replica.
-    pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
-        let Some(idx) = index_ro(doc) else {
-            return false;
-        };
-        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
-            ObjectAt::Object(_) => doc.delete(&idx, id.as_str()).is_ok(),
-            ObjectAt::Missing | ObjectAt::Invalid => false,
-        }
-    }
-
-    /// Whether this room references `id`.
-    pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
-        index_ro(doc).is_some_and(|idx| {
-            let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
-                return false;
-            };
-            str_at(doc, &entry, "kind")
-                .map(RecordKind::new)
-                .is_some_and(|kind| kind.is_valid())
-        })
-    }
-
-    /// Every well-formed record this room references.  This is retained for
-    /// callers that already have their own work bound; hosts that learn a
-    /// room supplied index should use [`discoverable_references`] instead.
-    pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
-        let Some(idx) = index_ro(doc) else {
-            return Vec::new();
-        };
-        let mut out: Vec<RecordCheckout> = doc
-            .keys(&idx)
-            .filter_map(|k| {
-                let id = RecordId::parse(&k)?;
-                let ObjectAt::Object(object) = object_at(doc, &idx, k.as_str(), ObjType::Map)
-                else {
-                    return None;
-                };
-                let kind = RecordKind::new(str_at(doc, &object, "kind")?);
-                let checkout = RecordCheckout::new(id, kind);
-                checkout.is_valid().then_some(checkout)
-            })
-            .collect();
-        out.compact_sort();
-        out
-    }
-
-    /// A deterministic, resource-bounded view of collaborator-supplied room
-    /// names.  It reads at most a small fixed prefix of the CRDT map and
-    /// returns at most [`super::MAX_DISCOVERED_ROOM_RECORDS`] valid entries.
-    /// It does **not** open records, create persistence, or join record
-    /// routes; the caller must make that explicit after choosing a record.
-    pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
-        let Some(idx) = index_ro(doc) else {
-            return Vec::new();
-        };
-        let mut out: Vec<RecordCheckout> = doc
-            .keys(&idx)
-            .take(super::MAX_ROOM_INDEX_KEYS_SCANNED)
-            .filter_map(|key| {
-                let id = RecordId::parse(&key)?;
-                let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map)
-                else {
-                    return None;
-                };
-                let kind = RecordKind::new(str_at(doc, &entry, "kind")?);
-                let checkout = RecordCheckout::new(id, kind);
-                checkout.is_valid().then_some(checkout)
-            })
-            .collect();
-        out.compact_sort();
-        out.truncate(super::MAX_DISCOVERED_ROOM_RECORDS);
-        out
-    }
-
-    /// Records this room holds that reference `target` under `relation` —
-    /// how an app finds "the annotations for this document" without a
-    /// second index.
-    pub fn referencing(
-        room: &AutoCommit,
-        docs: &RecordSet,
-        target: &RecordId,
-        relation: &str,
-    ) -> Vec<RecordCheckout> {
-        references(room)
-            .into_iter()
-            .filter(|c| {
-                docs.peek(&c.id).is_some_and(|d| {
-                    super::references(d)
-                        .iter()
-                        .any(|r| &r.target == target && r.relation == relation)
-                })
-            })
-            .collect()
-    }
-
-    /// Copy, the explicit verb: mints a new record id rather than reusing
-    /// the origin's. The new document is created empty by the caller's
-    /// next [`RecordSet::checkout`]; this returns the identity to check out.
-    pub fn duplicate(doc: &mut AutoCommit, origin: &RecordCheckout) -> RecordCheckout {
-        let copy = RecordCheckout::new(RecordId::minted(), origin.kind.clone());
-        reference(doc, &copy.id, &copy.kind);
-        copy
-    }
-}
+pub mod room;
 
 impl PartialOrd for RecordCheckout {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -1330,6 +1165,9 @@ pub struct RecordSet {
     /// A hydrated, host-acknowledged browser cache (Cloud portable sessions).
     portable: Option<PortableStorage>,
     pending: HashMap<RecordId, Reserved>,
+    /// Records being opened off the frame ([`RecordStore::begin_opening`]): not open until they
+    /// are taken in.
+    opening: HashMap<RecordId, opening::Opening>,
     /// The records lent out of the set to an action frame
     /// ([`RecordStore::with_action_state`]): their documents are with the
     /// frame, so the other records of the set stay open to it meanwhile.
@@ -1415,6 +1253,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
@@ -1445,6 +1284,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: None,
@@ -2075,6 +1915,10 @@ impl RecordSet {
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
+        // A record opening off the frame is opened by taking it in, once it is decoded.
+        if self.opening.contains_key(&want.id) {
+            self.take_in_opening(&want.id, true)?;
+        }
         if let Some(slot) = self.open.get(&want.id) {
             if slot.kind != want.kind {
                 return Err(RecordOpenError::IdentityMismatch);
@@ -2107,18 +1951,23 @@ impl RecordSet {
                 app_state::DocStore::exclusive(backend, key)?
             };
             let creation = read.clone();
-            let creation_heads = creation_capture_heads(&read)?;
+            // The creation's graph is the snapshot's: its heads are those of the snapshot as it
+            // is decoded to be validated first, never decoded again only to read them.
+            let creation_heads: std::cell::RefCell<Option<Vec<automerge::ChangeHash>>> =
+                std::cell::RefCell::default();
             let (mut doc, autosave) = crate::persist::finish_canonical_created(
                 store,
                 read,
                 |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
                 |doc| {
+                    let mut heads = creation_heads.borrow_mut();
+                    let heads = heads.get_or_insert_with(|| doc.base_heads());
                     validate_created_graph(
                         doc,
                         want,
                         &self.home,
                         creation.creation_workspace().map(|scope| scope.id.as_str()),
-                        &creation_heads,
+                        heads,
                     )
                     .map_err(|error| error.to_string())
                 },
@@ -2506,6 +2355,7 @@ impl RecordOwners {
             backend: self.portable.is_none().then(|| Rc::clone(&self.store)),
             portable: self.portable.clone(),
             pending: HashMap::new(),
+            opening: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: (joins_construction && self.portable.is_none())
@@ -4668,6 +4518,8 @@ pub fn tick(
 mod identity_tests;
 
 mod arrival;
+mod opening;
+pub use opening::RecordOpening;
 #[cfg(test)]
 mod replica_merge_tests;
 

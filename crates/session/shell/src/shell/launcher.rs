@@ -1620,6 +1620,11 @@ pub(crate) struct SessionLaunches {
     /// Launches held until their room is ready for apps.
     #[cfg(any(test, target_os = "linux"))]
     rooms: room_hold::State,
+    /// Signalled whenever the gate opens.
+    #[cfg(any(test, target_os = "linux"))]
+    gate_opened: std::sync::Condvar,
+    /// The session's broker for native openings, once it has bound.
+    opening: Mutex<Option<NativeAppOpening>>,
 }
 
 impl Default for SessionLaunches {
@@ -1648,6 +1653,8 @@ impl Default for SessionLaunches {
             )),
             #[cfg(any(test, target_os = "linux"))]
             rooms: room_hold::State::default(),
+            gate_opened: std::sync::Condvar::new(),
+            opening: Mutex::default(),
         }
     }
 }
@@ -1694,6 +1701,17 @@ impl LaunchSession {
                 .get_or_insert_with(Self::for_new_thread)
                 .clone()
         })
+    }
+
+    /// Block while launches are held: until the broker the session is starting has bound, or
+    /// its start has failed.
+    #[cfg(any(test, target_os = "linux"))]
+    fn wait_while_launches_held(&self) {
+        drop(
+            self.gate_opened
+                .wait_while(lock(&self.gate), |gate| gate.is_holding())
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
     }
 
     #[cfg(not(test))]
@@ -1760,6 +1778,8 @@ static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// recursive inotify walk must not look like a new generation of apps.
 static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+/// The registries the memoised snapshot was read from, as they were just before the read.
+static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -2218,18 +2238,52 @@ pub(crate) fn installed_app(
     app
 }
 
+/// Which version of a registry file is on disk. An install replaces the registry by one
+/// rename, its commit point, so a completed install always shows as another file here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct RegistryStamp {
+    device: u64,
+    inode: u64,
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn registry_stamps() -> Vec<Option<RegistryStamp>> {
+    use std::os::unix::fs::MetadataExt as _;
+    app_cache_roots()
+        .iter()
+        .map(|root| {
+            let metadata =
+                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
+            Some(RegistryStamp {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified: metadata.modified().ok(),
+                len: metadata.len(),
+            })
+        })
+        .collect()
+}
+
 /// Pair records with their cache revision while holding the cache lock.
+///
+/// A memoised snapshot answers only while the registries are the ones it was read from: the
+/// watch that expires it runs on its own thread, and an app launched right after an install
+/// completed must start the installed package, not the one before it.
 fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
+    let stamps = registry_stamps();
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
+            && lock(&APP_CACHE_STAMP).as_ref() == Some(&stamps)
         {
             return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
+    *lock(&APP_CACHE_STAMP) = Some(stamps);
     let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
@@ -2314,6 +2368,7 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+    *lock(&APP_CACHE_STAMP) = None;
 }
 
 /// Cheap installed-store invalidation token for session-owned services.
@@ -2990,11 +3045,20 @@ fn build_launch_command_for(
 
 /// Run the package `app` with the surface its signed package ships, so the
 /// records of the person's it declares there are kept in their room as a
-/// built-in app's are. A package whose surface no longer matches its
-/// signature declares none.
+/// built-in app's are, and the installed apps it declares it reads are
+/// known to the broker whether or not they run. A package whose surface no
+/// longer matches its signature declares none.
 fn register_signed_surface(app: &InstalledApp, installed: &package_store::InstalledPackage) {
     if let Some(surface) = package_store::integrity::signed_surface(installed) {
-        tilo_action_broker::register_package_surface(&app.package_id, &surface);
+        tilo_action_broker::register_package_surface_and_reads(&app.package_id, &surface, || {
+            package_store::list_installed()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|package| {
+                    package_store::integrity::signed_surface(&package)
+                        .map(|surface| (package.id, surface))
+                })
+        });
     }
 }
 
@@ -4379,6 +4443,11 @@ impl NativeAppOpening {
     }
 }
 
+/// The session's broker has bound: native openings asked for while it was binding use it.
+pub(crate) fn attach_native_app_opening(opening: NativeAppOpening) {
+    *lock(&LaunchSession::current().opening) = Some(opening);
+}
+
 impl std::fmt::Debug for NativeAppOpening {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("NativeAppOpening")
@@ -4397,6 +4466,7 @@ pub(crate) fn queue_native_authoring_launch(
     room: RoomId,
     opening: NativeAppOpening,
 ) -> Result<(), LaunchError> {
+    let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
     let expected = tree
@@ -4411,6 +4481,9 @@ pub(crate) fn queue_native_authoring_launch(
         app,
         room,
         move || {
+            // Asked for while the session's broker was still binding (an app
+            // opened as the session starts): it is prepared once launches run.
+            session.wait_while_launches_held();
             let unavailable = |detail: String| LaunchError::IdentityUnavailable { detail };
             let (_, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room.to_string())
@@ -5195,6 +5268,7 @@ pub fn release_held_launches() {
         // A failure to start is reported through the session by `start_launch`.
         let _ = room_hold::admit(&session, held, start_held);
     });
+    session.gate_opened.notify_all();
 }
 
 /// Start `held` now in `session`.
@@ -5223,6 +5297,7 @@ pub fn fail_held_launches(reason: &str) {
         );
         session.push(held_launch_failure(launch, reason));
     });
+    session.gate_opened.notify_all();
 }
 
 #[cfg(any(test, target_os = "linux"))]

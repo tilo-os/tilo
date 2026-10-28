@@ -71,6 +71,26 @@ class Relative(unittest.TestCase):
         [row] = compare.compare([make(2.9, 6)], history(2, 2, 2, 2, 2), budgets, set(), set())
         self.assertEqual(row.status, "pass")
 
+    def test_a_measurement_the_store_holds_keeps_the_verdict_it_got(self):
+        # t returns a measuring check's earlier records while what it measures is unchanged:
+        # the same numbers again are not a second regression, nor a second baseline run.
+        past = history(10, 10, 10, 10, 10)
+        [first] = compare.compare([make(12.5, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual(first.status, "regression-pending")
+        [again] = compare.compare([make(12.5, 6)], past + [first.record], NO_BUDGETS, set(), set())
+        self.assertEqual((again.status, again.failing), ("regression-pending", False))
+        self.assertIn("judged then", again.note)
+        # A new measurement of the same commit is judged as one.
+        [rerun] = compare.compare([make(12.5, 7)], past + [first.record], NO_BUDGETS, set(), set())
+        self.assertEqual((rerun.status, rerun.failing), ("regression", True))
+
+    def test_a_held_measurement_still_meets_todays_enforced_budget(self):
+        budgets = compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {
+            "unit": "ms", "max": 11.0, "enforce": True}})
+        past = history(10, 10, 10, 10, 10) + [make(12, 6, status="pass")]
+        [again] = compare.compare([make(12, 6)], past, budgets, set(), set())
+        self.assertEqual((again.status, again.failing, again.over_budget), ("pass", True, True))
+
     def test_accept_restarts_the_baseline(self):
         past = history(10, 10, 10, 10, 10)
         [accepted] = compare.compare([make(20, 6)], past, NO_BUDGETS, set(), {"render.frame_ms.4k"})
@@ -443,6 +463,24 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(status, expected, (root / f"{day}-1.md").read_text())
             self.assertIn("**regression**", (root / "7-1.md").read_text())
             self.assertEqual(len(list((root / "store" / "2026-10").glob("*.jsonl"))), 7)
+
+    def test_records_brought_again_are_neither_judged_nor_stored_twice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "budgets.toml").write_text('[kpi."render.frame_ms.4k"]\nunit = "ms"\nmax = 1000.0\n')
+            for day in range(1, 6):
+                results = root / f"night-{day}.jsonl"
+                record.write(results, record.from_samples("render.frame_ms.4k", "ms", [10, 10, 11],
+                                                          started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV))
+                self.assertEqual(self.run_compare(root, results, f"{day}-1"), 0)
+            slow = root / "night-6.jsonl"
+            record.write(slow, record.from_samples("render.frame_ms.4k", "ms", [13, 13, 14],
+                                                   started_at="2026-10-06T01:15:00Z", **ENV))
+            self.assertEqual(self.run_compare(root, slow, "6-1"), 0)
+            # The next candidate's run takes night 6's result from t's cache.
+            self.assertEqual(self.run_compare(root, slow, "7-1"), 0, (root / "7-1.md").read_text())
+            self.assertIn("judged then", (root / "7-1.md").read_text())
+            self.assertEqual(len(list((root / "store" / "2026-10").glob("*.jsonl"))), 6)
 
 
 if __name__ == "__main__":

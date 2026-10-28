@@ -998,7 +998,7 @@ impl GreeterApp {
             username: username.to_string(),
             display_name: display_name.to_string(),
         };
-        let personal = personal.then(|| person("ada", "Ada Example"));
+        let personal = personal.then(|| person("kai", "Kai Example"));
         // A fixed personal account has a known enrollment result. The
         // multi-account fixture exposes the action only as a route: its
         // enrollment is resolved for the username entered before PAM starts.
@@ -1043,7 +1043,7 @@ impl GreeterApp {
             AuthScenario::Accounts => {
                 app.users = vec![
                     person("ada", "Ada Lovelace"),
-                    person("ada", "Ada Example"),
+                    person("kai", "Kai Example"),
                     person("grace", "Grace Hopper"),
                 ];
             }
@@ -3720,7 +3720,7 @@ mod tests {
         {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
-            let person = said.iter().position(|s| s == "Ada Example");
+            let person = said.iter().position(|s| s == "Kai Example");
             let passcode = said.iter().position(|s| s == "Password");
             assert!(person.is_some() && person < passcode, "{said:?}");
         }
@@ -4376,10 +4376,10 @@ mod tests {
             "{ids:?}"
         );
         assert!(
-            !ids.contains(&"greeter.account.ada".to_string()),
+            !ids.contains(&"greeter.account.kai".to_string()),
             "the chosen account is the one shown, not listed again"
         );
-        seed_password(&app, "typed for ada");
+        seed_password(&app, "typed for kai");
         let _ = Widget::take_focus_reset(&mut app);
         let ada = app
             .users

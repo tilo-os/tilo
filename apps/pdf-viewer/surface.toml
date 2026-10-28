@@ -45,6 +45,18 @@ fields = [
   { path = "signatures.*.space", type = "GeomSpace" },
   { path = "form_values", type = "BTreeMap<String, FormEntry>" },
   { path = "adopted", type = "BTreeMap<String, AdoptedEntry>", readonly = true },
+  { path = "reading_page", type = "String" },
+  { path = "reading_fraction", type = "f64" },
+  { path = "reading_zoom", type = "f64" },
+]
+
+[[resources.verbs]]
+id = "record-reading-position"
+kind = "undoable"
+params = [
+  { name = "page", required = true, schema = { type = "string" } },
+  { name = "fraction", required = true, schema = { type = "number" } },
+  { name = "zoom", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]

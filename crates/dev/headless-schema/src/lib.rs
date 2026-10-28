@@ -133,6 +133,9 @@ pub struct SemanticExpectation {
     pub enabled: Option<bool>,
     pub busy: Option<bool>,
     pub invalid: Option<bool>,
+    /// The editable text's selection as `(anchor, focus)`, UTF-8 bytes into
+    /// `value`: how a document's select-all is checked without reading pixels.
+    pub text_selection: Option<(usize, usize)>,
 }
 
 impl SemanticExpectation {
@@ -229,6 +232,14 @@ impl SemanticExpectation {
     #[must_use]
     pub fn invalid(mut self, expected: bool) -> Self {
         self.invalid = Some(expected);
+        self
+    }
+
+    /// Require the editable text's selection to be `anchor` through `focus`,
+    /// as UTF-8 byte offsets into the published `value`.
+    #[must_use]
+    pub fn text_selection(mut self, anchor: usize, focus: usize) -> Self {
+        self.text_selection = Some((anchor, focus));
         self
     }
 }
@@ -699,6 +710,7 @@ fn parse_expectation(value: &serde_json::Value) -> Result<SemanticExpectation, S
         "enabled",
         "busy",
         "invalid",
+        "text_selection",
     ];
     let object = value
         .as_object()
@@ -769,7 +781,30 @@ fn parse_expectation(value: &serde_json::Value) -> Result<SemanticExpectation, S
         enabled: optional_bool("enabled")?,
         busy: optional_bool("busy")?,
         invalid: optional_bool("invalid")?,
+        text_selection: optional_text_selection(object)?,
     })
+}
+
+/// `["anchor", "focus"]`, UTF-8 byte offsets into the published `value`.
+fn optional_text_selection(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<(usize, usize)>, String> {
+    let Some(value) = object.get("text_selection") else {
+        return Ok(None);
+    };
+    let complaint =
+        || "expect.text_selection must be [anchor, focus], two byte offsets".to_string();
+    let pair = value
+        .as_array()
+        .filter(|pair| pair.len() == 2)
+        .ok_or_else(complaint)?;
+    let offset = |at: usize| {
+        pair.get(at)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(complaint)
+    };
+    Ok(Some((offset(0)?, offset(1)?)))
 }
 
 const MAX_TIMEOUT_MS: u64 = 60_000;

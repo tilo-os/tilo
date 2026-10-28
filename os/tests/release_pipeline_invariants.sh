@@ -65,6 +65,10 @@ fi
 t_toml="$repo/t.toml"
 publish="$repo/tools/ci/publish"
 kernel_script="$publish/kernel.sh"
+# What every build of os/kernel/Containerfile sets up (the buildroot it runs FROM, its platform and
+# arguments), shared by the kernel's build and its compiler cache's.
+kernel_env="$publish/kernel-env.sh"
+kernel_cache_script="$publish/kernel-compile-cache.sh"
 # A t check's field, one value per line (a string as itself, an array per element, a table as
 # key=value); fails when t.toml declares no such check, so a renamed check cannot pass unobserved.
 tcheck() {
@@ -117,10 +121,10 @@ kernel_pins="$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")"
 kernel_provenance="$(sed -n '/^  provenance)$/,/^    ;;$/p' "$kernel_script")"
 if t_has image-kernel-{arch} requires 'arch={arch}' \
   && t_has image-kernel-{arch} matrix 'arch=['"'"'x86_64'"'"', '"'"'aarch64'"'"']' \
-  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_script" \
-  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_script" \
-  && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_script" \
-  && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_script" \
+  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_env" \
+  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_env" \
+  && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_env" \
+  && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_env" \
   && grep -Fq 'printf '"'"'%s\n'"'"' "$buildroot" > "$out/buildroot"' "$kernel_script" \
   && grep -Fq 'printf '"'"'%s\n'"'"' "$host" > "$out/build-architecture"' "$kernel_script" \
   && grep -Fq '[[ $buildroot == "${!key}" ]]' <<<"$kernel_provenance" \
@@ -145,10 +149,10 @@ fi
 # compile: the native image, the cross build's repository and the cache take the same ones; only
 # the cross build's repackaging for the kernel's platform, which compiles nothing, does not); the
 # build has explicit bounds.
-if [ "$(grep -Fc '"${args[@]}"' "$kernel_script")" -eq 4 ] \
-  && [ "$(grep -c '^ *b build ' "$kernel_script")" -eq 5 ] \
+if [ "$(cat "$kernel_script" "$kernel_cache_script" | grep -Fc '"${args[@]}"')" -eq 4 ] \
+  && [ "$(cat "$kernel_script" "$kernel_cache_script" | grep -c '^ *b build ')" -eq 5 ] \
   && grep -Fq -- '--target publish-cross \' "$kernel_script" \
-  && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_script" \
+  && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_env" \
   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_script" \
   && grep -q '^memory=' <<<"$(tcheck image-kernel-{arch} requirement)" \
   && grep -q '^cores=' <<<"$(tcheck image-kernel-{arch} requirement)" \
@@ -194,9 +198,11 @@ else
 fi
 
 kernel_containerfile="$repo/os/kernel/Containerfile"
-kernel_build="$(sed -n '/^  build | compile-cache)$/,$p' "$kernel_script")"
-verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1)"
-first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1)"
+# The build as it runs: kernel-env.sh's setup, then kernel.sh's build from where it calls it.
+kernel_build="$(sed -n '/^kernel_build_setup() {$/,/^}$/p' "$kernel_env"; sed -n '/^kernel_build_setup "$arch"$/,$p' "$kernel_script")"
+# A missing line leaves these empty (and the check failing) rather than ending the script.
+verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1 || true)"
+first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1 || true)"
 if grep -Fq '. os/kernel-buildroot-snapshot.env' <<<"$kernel_build" \
    && grep -Fq '[[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' <<<"$kernel_build" \
    && [ -n "$verify_line" ] && [ -n "$first_build_line" ] && [ "$verify_line" -lt "$first_build_line" ] \

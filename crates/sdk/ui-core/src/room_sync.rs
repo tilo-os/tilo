@@ -118,6 +118,9 @@ thread_local! {
     /// yet.
     static SPINNER: Cell<(Option<u64>, Option<vello::kurbo::Rect>)> =
         const { Cell::new((None, None)) };
+    /// When the turning spinner the last drawn frame painted takes its next
+    /// pose: the window redraws then, and only then.
+    static NEXT_POSE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// What the shell says now about the room this app's window is in; `None`:
@@ -349,9 +352,11 @@ pub(crate) fn waiting() -> Option<Waiting> {
 
 /// An empty state painted the waiting spinner at `step` (its pose since the
 /// room began waiting) over `scene_rect`, its slot in scene (physical)
-/// pixels: the frame pump keeps frames coming while it turns, and a new pose
-/// damages that slot alone.
-pub(crate) fn spinner_painted(step: u64, turning: bool, scene_rect: vello::kurbo::Rect) {
+/// pixels, and it takes its next pose at `next` while it turns: the window
+/// redraws then ([`next_pose`]), and the new pose damages that slot alone.
+/// A turning spinner costs one small frame per pose, never a frame per
+/// refresh, a sync or a layout.
+pub(crate) fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vello::kurbo::Rect) {
     SPINNER.with(|spinner| {
         let (last, pending) = spinner.get();
         let pending = if last == Some(step) {
@@ -361,11 +366,23 @@ pub(crate) fn spinner_painted(step: u64, turning: bool, scene_rect: vello::kurbo
         };
         spinner.set((Some(step), pending));
     });
-    if turning {
-        crate::motion::want_frames_until(
-            crate::time::now() + crate::animation::indicator::INDICATOR_STEP,
-        );
+    if let Some(next) = next {
+        NEXT_POSE.with(|pose| pose.set(Some(pose.get().map_or(next, |earlier| earlier.min(next)))));
     }
+}
+
+/// A frame starts drawing: what it paints says again whether a spinner
+/// turns ([`spinner_painted`]).
+#[cfg(any(test, feature = "native"))]
+pub(crate) fn frame_drawing() {
+    NEXT_POSE.with(|pose| pose.set(None));
+}
+
+/// When the turning spinner the last drawn frame painted takes its next
+/// pose; `None` when no spinner turns.
+#[cfg(any(test, feature = "native"))]
+pub(crate) fn next_pose() -> Option<Instant> {
+    NEXT_POSE.with(Cell::get)
 }
 
 /// Where the waiting spinner painted a new pose since the last frame, in
@@ -491,17 +508,39 @@ mod tests {
         let slot = vello::kurbo::Rect::new(100.0, 80.0, 148.0, 128.0);
         set(told(RoomSyncState::Connecting));
         let _ = take_spinner_damage();
-        spinner_painted(3, false, slot);
+        spinner_painted(3, None, slot);
         assert_eq!(
             take_spinner_damage(),
             Some(slot),
             "its slot, not the window"
         );
-        spinner_painted(3, false, slot);
+        spinner_painted(3, None, slot);
         assert_eq!(take_spinner_damage(), None, "the same pose damages nothing");
-        spinner_painted(4, false, slot);
+        spinner_painted(4, None, slot);
         assert_eq!(take_spinner_damage(), Some(slot));
         set(None);
+    }
+
+    #[test]
+    fn a_turning_spinner_asks_for_its_next_pose_and_nothing_once_it_is_gone() {
+        let slot = vello::kurbo::Rect::new(100.0, 80.0, 148.0, 128.0);
+        let since = crate::time::now();
+        frame_drawing();
+        assert_eq!(next_pose(), None, "nothing turns");
+        let next = crate::animation::next_indicator_step(since, since);
+        spinner_painted(0, Some(next), slot);
+        assert_eq!(
+            next_pose(),
+            Some(next),
+            "the window redraws at the next pose"
+        );
+        frame_drawing();
+        assert_eq!(
+            next_pose(),
+            None,
+            "a frame that paints no spinner asks for no more frames"
+        );
+        let _ = take_spinner_damage();
     }
 
     #[test]

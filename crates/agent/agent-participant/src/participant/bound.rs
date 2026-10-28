@@ -61,7 +61,7 @@ impl AgentParticipant {
         let ids: Vec<&str> = self
             .catalogue
             .iter()
-            .map(|definition| definition.app_id)
+            .map(|definition| definition.app_id.as_ref())
             .collect();
         if let Some(id) = ids.iter().find(|id| **id == named) {
             return Ok((*id).to_owned());

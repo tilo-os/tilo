@@ -6,7 +6,8 @@ use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
 use crate::model::issue::{
-    AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
+    AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, MAX_READ_RESOURCE_CHARS, Message,
+    MessageKind, Status,
 };
 use crate::model::run::{
     Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
@@ -882,6 +883,7 @@ impl Tracker {
                 kind,
                 run,
                 incorporated,
+                ..Message::default()
             },
         );
         Ok(())
@@ -925,7 +927,7 @@ impl Tracker {
                     text,
                     kind: MessageKind::FromRun,
                     run: epoch,
-                    incorporated: false,
+                    ..Message::default()
                 },
             );
         }
@@ -1106,7 +1108,7 @@ impl Tracker {
                     text,
                     kind: MessageKind::FromRun,
                     run: epoch,
-                    incorporated: false,
+                    ..Message::default()
                 },
             );
         }
@@ -1153,6 +1155,58 @@ impl Tracker {
         let target = self.issue_mut(issue)?;
         own_run(cx, target)?;
         target.spend = Some(spent);
+        Ok(())
+    }
+
+    /// Record what the run read: a resource it looked up through system
+    /// search, as the hit it took reads. The task lists it, so its person
+    /// sees every resource the run pulled in after the one the request named,
+    /// and the person who keeps that resource sees a run reach it.
+    ///
+    /// Reading it is not a permission: the resource was already read through
+    /// the search under the run's own grants, and a hit the run may not read
+    /// is never found.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or a read of nothing.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn record_read(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The resource it read")] resource: ResourceAt,
+    ) -> Result<(), Refusal> {
+        if resource.reference.id.trim().is_empty()
+            || resource.reference.id.chars().count() > MAX_READ_RESOURCE_CHARS
+            || resource.app.trim().is_empty()
+        {
+            return Err(Refusal::new("A read names one resource it may reach"));
+        }
+        let label = message_text(&resource.reference.label)?;
+        let reference = serde_json::to_string(&resource)
+            .map_err(|_| Refusal::new("A read names one resource it may reach"))?;
+        let at_ms = cx.now_ms();
+        let author = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        at_boundary(run)?;
+        let epoch = run.epoch;
+        push_message(
+            target,
+            cx,
+            Message {
+                author,
+                by_agent: true,
+                at_ms,
+                // The resource's own name: the history entry says what kind of
+                // step this was, and the thread row reads as the lookup it is.
+                text: label,
+                kind: MessageKind::Lookup,
+                lookup: reference,
+                run: epoch,
+                incorporated: false,
+            },
+        );
         Ok(())
     }
 

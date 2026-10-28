@@ -137,7 +137,7 @@ impl MapsApp {
                     .checked(self.model.selected_place().is_some_and(|place| place.saved)),
             ),
             Hit::ClearRoute => (
-                failure::t("maps-clear-route"),
+                failure::t("maps-clear-route-button"),
                 "maps.route.clear".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),

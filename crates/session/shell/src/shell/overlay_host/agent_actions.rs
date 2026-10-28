@@ -816,6 +816,11 @@ fn instruction(text: &str, context: &str, conversation: &[ComposerTurn]) -> Stri
 
 fn submission_operation(request: ComposerRequest) -> Option<Operation> {
     if request.intent == ComposerIntent::Request && !request.stop {
+        // The person ruling that this is work skips the question the agent
+        // would have answered: the task starts with their words as its title.
+        if request.as_task == Some(true) {
+            return Some(request_queue(&request, None));
+        }
         return Some(respond_operation(request));
     }
     let issue = request
@@ -1082,6 +1087,7 @@ mod tests {
             ],
             about: None,
             model: None,
+            as_task: None,
         }
     }
 
@@ -1132,6 +1138,32 @@ mod tests {
         assert!(operation.arguments.get("text").is_none());
         stop.task = None;
         assert!(submission_operation(stop).is_none(), "nothing to stop");
+    }
+
+    #[test]
+    fn a_person_ruling_that_it_is_work_starts_the_task_without_asking() {
+        let mut request = request(ComposerIntent::Request);
+        request.task = None;
+        request.text = "Rename every file to its invoice number".into();
+        request.as_task = Some(true);
+        let operation = submission_operation(request.clone()).unwrap();
+        assert_ne!(operation.action, "respond", "no question to the agent");
+        assert_eq!(
+            (
+                operation.resource.as_str(),
+                operation.action.as_str(),
+                operation.app
+            ),
+            (TRACKER, "ask-agent", TRACKER_APP)
+        );
+        assert_eq!(
+            operation.arguments["title"],
+            "Rename every file to its invoice number"
+        );
+
+        // Ruling that it is an answer leaves the question to the agent.
+        request.as_task = Some(false);
+        assert_eq!(submission_operation(request).unwrap().action, "respond");
     }
 
     #[test]

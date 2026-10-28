@@ -242,7 +242,7 @@ fn edit(
     )
     .of_kind(tilo_actions::ActionKind::Undoable)
     .with_description(description);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec
@@ -273,7 +273,7 @@ fn view(
     )
     .of_kind(ActionKind::Read)
     .with_description(description);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec
@@ -289,7 +289,9 @@ pub(crate) fn specs() -> Vec<ActionSpec> {
     specs.extend(review::specs());
     for spec in &mut specs {
         if names_a_version(&spec.id) {
-            spec.contract.set_audience(tilo_actions::Audience::Agents);
+            spec.type_mut()
+                .contract
+                .set_audience(tilo_actions::Audience::Agents);
         }
     }
     specs
@@ -404,7 +406,7 @@ fn part_edit(
     // A part is named by its number, which only history shows: agents and
     // scripts take it from there. A person undoes in the app itself.
     .for_audience(tilo_actions::Audience::Agents);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec

@@ -1374,3 +1374,6 @@ mod tests {
         assert_eq!(neutral.colour(&theme), theme.tokens.colors.surfaces.raised);
     }
 }
+
+mod component;
+pub use component::AvatarProps;

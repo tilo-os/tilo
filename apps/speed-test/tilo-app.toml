@@ -41,7 +41,7 @@ mode = "allowlist"
 hosts = ["speed.cloudflare.com"]
 
 [sandbox.services]
-collab = "optional@10"
+collab = "optional@11"
 
 [entrypoint]
 bin = "bin/speed-test"

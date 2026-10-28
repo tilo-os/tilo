@@ -83,7 +83,7 @@ impl FrameHarness {
         let intent = crate::standalone_history_host::history_control_binding(control)
             .invoke(())
             .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history, &intent)
+        crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
             .map_err(|error| error.to_string())?;
         self.relayout();
         Ok(())

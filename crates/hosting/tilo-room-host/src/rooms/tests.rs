@@ -931,8 +931,7 @@ async fn governor_authors_a_room_record_no_factory_makes() {
             .into_string()
             .unwrap()
     };
-    // A room holds its shared desktop from the start
-    // (`tilo_peer_state::workspace_seed`), with nothing written in it yet.
+    // The room holds its shared desktop from the start, empty.
     assert!(
         read()
             .await

@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
@@ -56,6 +57,7 @@ impl Scripted {
 impl TransformModel for Scripted {
     fn answer(
         &self,
+        _kind: Interaction,
         _instructions: &str,
         input: &str,
         _max_output_tokens: u32,
@@ -132,7 +134,7 @@ impl AgentHost {
         if self.answering == Answering::Unchecked {
             let raw = self
                 .model
-                .answer("", "", 1, Duration::from_secs(1))
+                .answer(Interaction::OneShot, "", "", 1, Duration::from_secs(1))
                 .unwrap();
             let value: Value = serde_json::from_str(&raw).unwrap();
             return InvocationUpdate::Succeeded {
@@ -276,6 +278,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             inputs,
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ))
 }

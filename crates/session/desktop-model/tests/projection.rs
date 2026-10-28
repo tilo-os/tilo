@@ -1,6 +1,6 @@
-//! A room document carries the workspace's layout as its record, and what a
-//! change to it did to windows its writer did not make is what a room
-//! decides; its other maps merge by key.
+//! A workspace's layout record, written by each device, and what a change
+//! to it did to windows its writer did not make, which is what a room
+//! decides; a room document's other maps merge by key.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,7 +12,7 @@
 
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_desktop_model::ownership::{Act, layout_acts};
+use tilo_desktop_model::ownership::{Act, claimed, foreign_acts};
 use tilo_desktop_model::projection::{project_workspace_shortcuts, workspace_shortcuts_of};
 use tilo_desktop_model::shared_record::device::{Writer, write};
 use tilo_desktop_model::{
@@ -65,8 +65,11 @@ fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16
 }
 
 fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)> {
-    layout_acts(Some(before), after, writer, None)
+    let before = tilo_desktop_model::shared_record::read(before, None).unwrap_or_default();
+    let after = tilo_desktop_model::shared_record::read(after, None).unwrap_or_default();
+    foreign_acts(&before, &after, writer, None)
         .into_iter()
+        .chain(claimed(&before, &after, writer))
         .map(|touched| (touched.id, touched.act))
         .collect()
 }
@@ -105,13 +108,6 @@ fn a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leav
     assert!(acts(&doc, &after, "alice").is_empty());
     // Bob doing the same closes someone else's window.
     assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Close)]);
-
-    // Bob renaming Alice's window is a rename of someone else's.
-    let mut renamed = workspace.clone();
-    renamed.strips[0].window_groups[0].tabs[0].title = "Mine now".into();
-    let mut after = doc.clone();
-    write_as(&mut after, &renamed, "bob", BOB);
-    assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Rename)]);
 
     // Bob moving his own terminal into Alice's group touches nothing of hers.
     let mut moved = workspace;

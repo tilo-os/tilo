@@ -4002,7 +4002,7 @@ impl ForeignFrameStore {
 
     /// When the store next decides something about `id`'s window by itself
     /// while it has not presented: the opening configure sent anyway, or the
-    /// window shown anyway past [`PRESENT_GRACE`]. Deadlines, so a window
+    /// window shown anyway past `PRESENT_GRACE`. Deadlines, so a window
     /// whose app is slow to draw asks for no frames meanwhile. Past the
     /// backstop the deadline stays due until a draw presents the window
     /// (`mark_presented`), which is what serving it does. `None` once

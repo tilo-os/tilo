@@ -83,6 +83,13 @@ lazy-image-decode = []
 # over (`emoji_catalogue::CATALOGUE`, `emoji_catalogue::builtin_catalogue`).
 # The browser desktop uses this to keep it out of its start module.
 lazy-emoji = []
+# A window's History (its timeline, review, restore and file versions) is
+# not linked into the windows that register it: the program fetches its
+# code the first time one does and hands it over
+# (`history_mode::defer_history`, `history_mode::install_history_code`); until
+# then the window shows without History. The browser desktop uses this to
+# keep it out of its start module.
+lazy-history = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
@@ -181,6 +188,7 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
@@ -375,6 +383,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 
 [dev-dependencies]
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
+# The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
+# enabling it here runs the integration tests that drive them whenever the
+# package is tested, not only when a dependant happens to unify the feature in.
+tilo-ui = { path = ".", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
@@ -409,6 +421,10 @@ name = "it"
 path = "tests/it.rs"
 # The shared harness stands up in-process Cap'n Proto brokers.
 required-features = ["broker-transport"]
+
+[[example]]
+name = "component-catalogue"
+path = "examples/component_catalogue.rs"
 
 [[example]]
 name = "action-presence"

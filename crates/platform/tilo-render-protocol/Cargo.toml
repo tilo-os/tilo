@@ -13,6 +13,7 @@ peniko = "0.6.1"
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 thiserror.workspace = true
+tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 vello_encoding = { workspace = true, features = ["bump_estimate"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

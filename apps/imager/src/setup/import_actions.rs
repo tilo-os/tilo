@@ -405,7 +405,7 @@ pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
 /// `effect` bound to its row, offered when `available`.
 fn offer(effect: &ImportEffect, available: bool, code: &str, reason: &str) -> ActionSpec {
     let mut spec = effect.bound();
-    spec.label = label(effect.id());
+    spec.type_mut().label = label(effect.id());
     if available {
         spec
     } else {

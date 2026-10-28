@@ -18,6 +18,8 @@ struct Seen {
     saves: Rc<Cell<usize>>,
     /// Whether the last save status the owner heard is Saved.
     saved: Rc<Cell<bool>>,
+    /// Every save status the owner heard, as whether it was Saved.
+    heard: Rc<RefCell<Vec<bool>>>,
     write_next: Rc<Cell<bool>>,
     body: Rc<RefCell<String>>,
     wake: Rc<RefCell<Option<crate::WakeHandle>>>,
@@ -113,6 +115,10 @@ impl AppWidget for OwnerProbe {
         self.seen
             .saved
             .set(status == crate::record::RecordSaveStatus::Saved);
+        self.seen
+            .heard
+            .borrow_mut()
+            .push(status == crate::record::RecordSaveStatus::Saved);
     }
 }
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
@@ -1069,4 +1075,34 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
         writes[0].key,
         durable_store::StorageKey::record(probe::APP, probe::ROOM, aid.storage_key())
     );
+}
+
+/// A window shows its record saved by measuring and drawing what the status
+/// changed. The change is no structure change: that would rebuild its host's
+/// layout tree and repaint the whole window for a save label after every
+/// keystroke.
+#[test]
+fn a_save_status_change_is_no_structure_change() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (mut owner, seen, _) = prepared(&host, &queue, 7000, true);
+    let _ = owner.take_structure_change();
+    host.records.try_flush().unwrap();
+    owner.sync(&AutoCommit::new(), &ROOT);
+    let heard = seen.heard.borrow().clone();
+    assert!(
+        heard.windows(2).any(|pair| pair == [false, true]),
+        "the window heard its record being written, then saved: {heard:?}"
+    );
+    assert_eq!(
+        owner.take_structure_change(),
+        crate::widget::StructureChange::None,
+        "a save status change rebuilds no layout tree"
+    );
+    assert!(
+        owner.layout_needs_measure() && owner.needs_redraw(),
+        "what shows the status is measured and drawn again"
+    );
+    let (mut frame, _, _) = frame(&queue, vec![owner]);
+    close(&mut frame, 1);
 }

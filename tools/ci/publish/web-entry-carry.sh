@@ -7,7 +7,8 @@
 # it carries.
 #
 # The outgoing image is the one production serves while this runs: tilo.coffee's version.json
-# names its revision, whose image is registry.tilo.so/tilo/web-entry:sha-<revision>, pulled
+# names its revision, whose image is registry.tilo.so/tilo/web-entry:sha-<revision> (or
+# dev-<revision> for a build published from main), pulled
 # anonymously and pinned by digest. One that can't be observed fails the step: publishing
 # without its version would strand every open tab at the next deploy. The carried image is
 # tested against it before anything signs it.
@@ -28,10 +29,19 @@ revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$live
   || die "could not read $live"
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || die "$live names no revision: $revision"
 use_buildah web-entry overlay
-# No credentials: the registry serves its images to anyone.
-b pull --quiet "docker://$repository:sha-$revision" >/dev/null
-digest=$(b images --digests --format '{{.Digest}}' "$repository:sha-$revision" | head -1)
-[[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$repository:sha-$revision has no digest: $digest"
+# No credentials: the registry serves its images to anyone. Production may run a release
+# (sha-<revision>) or a build published from main (dev-<revision>), as tilo.coffee does when it
+# ships ahead of stable; either is the image whose version open tabs hold.
+tag=
+for candidate in "sha-$revision" "dev-$revision"; do
+  if b pull --quiet "docker://$repository:$candidate" >/dev/null 2>&1; then
+    tag=$candidate
+    break
+  fi
+done
+[[ -n $tag ]] || die "$repository has no image for production's revision $revision (sha- or dev-)"
+digest=$(b images --digests --format '{{.Digest}}' "$repository:$tag" | head -1)
+[[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$repository:$tag has no digest: $digest"
 outgoing=docker://$repository@$digest
 printf 'replaces %s@%s (production serves %s)\n' "$repository" "$digest" "$revision"
 

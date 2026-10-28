@@ -209,10 +209,13 @@ pub(super) struct AvailabilityWalk {
     /// (`ActionRuntime::last_control_availability`) as the walk left it:
     /// anything that drops it asks for the walk again.
     pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
-    /// A bound component's permissions sample an outside authority at each
-    /// decision (`PermissionContext::samples_outside`), which changes with
-    /// nothing put in force: their controls are refreshed every frame.
-    pub(super) sampled: bool,
+    /// The bound components' resources could not be read: their controls
+    /// are refreshed again on the next frame.
+    pub(super) unread: bool,
+    /// When a bound component's permissions next change with time alone
+    /// (`PermissionContext::next_change_in`): the walk is taken again then,
+    /// and the loop wakes for it.
+    pub(super) changes_at: Option<crate::time::Instant>,
 }
 
 /// Every input of reconciling the document routes with the tree.
@@ -407,6 +410,9 @@ pub(super) struct ActionRuntime {
     /// Resolutions asked for a resource still being read, answered once its
     /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
+    /// Answers to broker invocations held, by wire id, until what they
+    /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
+    pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -485,6 +491,7 @@ impl ActionRuntime {
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
             awaited_resolutions: Vec::new(),
+            held_answers: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),

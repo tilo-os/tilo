@@ -78,6 +78,8 @@ window-toolbar-hide-inspector = Hide inspector
 # A window shared live into a conversation, from its own menu.
 window-share-to-channel = Share to channel…
 window-stop-sharing-in = Stop sharing in { $place }
+history-loading = Loading History…
+lazy-loading = Loading…
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
@@ -912,6 +914,11 @@ history-preview-now = Back to now
 workspace-identity-required-title = Choose who you are here
 workspace-identity-required-body = This workspace needs to know who’s working in it before { $app } can open.
 workspace-identity-required-choose = Choose identity
+
+# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
+date-field-none = No date
+date-field-calendar = Calendar
+date-field-clear = Clear date
 
 # The menu a secondary click or a long press opens on editable words.
 text-menu-cut = Cut

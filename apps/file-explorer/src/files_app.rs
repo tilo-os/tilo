@@ -636,6 +636,8 @@ pub struct FileExplorerWidget {
     is_loading: bool,
     /// Reads the archive being browsed off the window's thread.
     archive_listing: crate::archive::Listing,
+    /// A transfer a capture shows as running, for as long as the window.
+    staged_transfer: Option<crate::file_ops::Running>,
     /// Files being read out of archives to be opened.
     archive_members: ArchiveMembers,
     /// Archives waiting for the folder Extract to… asks for.
@@ -1980,6 +1982,7 @@ impl FileExplorerWidget {
                 crate::archive::Listing::new(move || wake.wake())
             },
             extract_chooser: None,
+            staged_transfer: None,
             archive_members: {
                 let wake = ui::WakeHandle::new();
                 ArchiveMembers::new(move || wake.wake())
@@ -9094,7 +9097,7 @@ impl FileExplorerWidget {
             "status",
             t("files-nearby-status"),
         );
-        inspect.description = Some(t("files-nearby-status-detail"));
+        inspect.type_mut().description = Some(t("files-nearby-status-detail"));
         resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
@@ -9238,7 +9241,7 @@ impl FileExplorerWidget {
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
                     "Open",
                 );
-                open.contract.availability = availability;
+                open.type_mut().contract.availability = availability;
                 resource.actions.push(open);
                 resource.actions.push(crate::effects::row_action(
                     &crate::effects::FilesEffect::AccountDetails {

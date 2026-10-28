@@ -490,12 +490,54 @@ impl PermissionContext {
         self
     }
 
-    /// Whether this context's answers follow something outside it, sampled
-    /// at each decision (the host's live view of an app's action authority,
-    /// a policy clock), and so may change without a new context being put in
-    /// force ([`SharedPermissions::set`]).
-    pub(crate) fn samples_outside(&self) -> bool {
-        self.policy_time.is_some() || self.action_authority.is_some()
+    /// How long until this context's answers next change with time alone,
+    /// in whole seconds of its policy clock: until the soonest instant a
+    /// grant or sandbox capability it decides by stops being live. Never
+    /// zero, so a wake for it never comes before the change. Only a context following a
+    /// policy clock changes so; one judged at a fixed instant never does.
+    /// The host's view of an app's action authority announces its own
+    /// changes ([`outside_changed`]); a clock that cannot be read says
+    /// nothing until something else changes.
+    pub(crate) fn next_change_in(&self) -> Option<std::time::Duration> {
+        let sampler = self.policy_time.as_ref()?;
+        let now = (sampler.0)().ok()?;
+        let after = |grants: &mut dyn Iterator<Item = &policy::Grant>| {
+            grants
+                .filter_map(|grant| match grant.lifetime {
+                    // Live while the clock's milliseconds are before it.
+                    policy::Lifetime::Until(at) => Some(at.div_ceil(1000)),
+                    _ => None,
+                })
+                .filter(|at| *at > now)
+                .min()
+        };
+        let standing_ends = |standing: &Standing| {
+            after(
+                &mut standing
+                    .policy
+                    .grants
+                    .iter()
+                    .chain(standing.bounds.iter().flat_map(|bound| &bound.grants)),
+            )
+        };
+        let authority = self
+            .action_authority
+            .as_ref()
+            .and_then(|authority| authority.sample_for(self).ok())
+            .and_then(|current| standing_ends(&current.standing));
+        let sandbox = self
+            .sandbox
+            .iter()
+            .filter_map(|cap| match cap.expiry {
+                Expiry::AtUnix(at) if at > now => Some(at),
+                _ => None,
+            })
+            .min();
+        [standing_ends(&self.standing), authority, sandbox]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|at| std::time::Duration::from_secs(at - now))
     }
 
     /// Compare the current policy meaning, not callback allocation or elapsed
@@ -980,10 +1022,50 @@ thread_local! {
     static SHARED_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Moves on with every change of any [`SharedPermissions`] on this thread.
+/// Moves on with every change of an outside authority shared permissions
+/// follow ([`outside_changed`]).
+static OUTSIDE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The loops to wake when an outside authority changes.
+static OUTSIDE_WAKES: std::sync::Mutex<Vec<crate::wake::WakeHandle>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Moves on with every change of any [`SharedPermissions`] on this thread,
+/// and with every change of an outside authority they follow.
 #[must_use]
 pub fn shared_revision() -> u64 {
-    SHARED_REVISION.get()
+    SHARED_REVISION
+        .get()
+        .wrapping_add(OUTSIDE_REVISION.load(std::sync::atomic::Ordering::Acquire))
+}
+
+/// An outside authority permissions follow changed (the host's view of an
+/// app's action authority): on any thread. Moves [`shared_revision`] on and
+/// wakes every loop that asked ([`wake_on_outside_change`]), so what it
+/// derived from permissions is derived again.
+pub(crate) fn outside_changed() {
+    OUTSIDE_REVISION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let wakes: Vec<_> = {
+        let mut wakes = OUTSIDE_WAKES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wakes.retain(crate::wake::WakeHandle::is_active);
+        wakes.clone()
+    };
+    for wake in wakes {
+        wake.wake();
+    }
+}
+
+/// Wake `wake` whenever an outside authority permissions follow changes,
+/// for as long as its scope is open.
+#[cfg(feature = "native")]
+pub(crate) fn wake_on_outside_change(wake: crate::wake::WakeHandle) {
+    let mut wakes = OUTSIDE_WAKES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    wakes.retain(crate::wake::WakeHandle::is_active);
+    wakes.push(wake);
 }
 
 impl SharedPermissions {

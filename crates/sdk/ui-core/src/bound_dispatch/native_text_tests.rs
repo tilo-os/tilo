@@ -343,5 +343,5 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     assert_eq!(marked, Input::Continuing);
     assert_eq!(unmarked, Input::Discrete);
     assert_eq!(physical, programmatic);
-    assert_eq!(DRAINED_INPUT.with(Cell::get), Input::Discrete);
+    assert_eq!(super::input_provenance::drained_input(), Input::Discrete);
 }
