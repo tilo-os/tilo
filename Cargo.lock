@@ -19734,6 +19734,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tilo-font-catalog",
+ "tilo-ui-graph",
  "tilo-vello",
  "tilo-vello-encoding",
  "workspace-hack",
