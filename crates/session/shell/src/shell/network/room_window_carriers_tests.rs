@@ -155,6 +155,9 @@ struct Viewing {
     started: Option<(u32, u32)>,
     decoded: u32,
     latencies: Vec<Duration>,
+    /// The place in the stream of every picture received, and whether it
+    /// was a keyframe, in the order received.
+    received: Vec<(u64, bool)>,
 }
 
 impl Viewing {
@@ -165,22 +168,25 @@ impl Viewing {
             started: None,
             decoded: 0,
             latencies: Vec::new(),
+            received: Vec::new(),
         }
     }
 
     /// Open and decode what `client` received; returns the payloads the
-    /// relay forwarded, as it saw them.
+    /// relay forwarded, as it saw them, by place in the stream.
     fn drain(
         &mut self,
         client: &Client,
         keys: &channel_crypto::ChannelContentKeys,
         room: RoomId,
         origin: Instant,
-    ) -> Vec<Vec<u8>> {
+    ) -> Vec<(u64, Vec<u8>)> {
         let mut forwarded = Vec::new();
         while let Some(picture) = client.try_recv_picture() {
             assert_eq!(picture.window, Some(TAB), "only the shown window arrives");
-            forwarded.push(picture.object.payload.clone());
+            forwarded.push((picture.object.sequence, picture.object.payload.clone()));
+            self.received
+                .push((picture.object.sequence, picture.object.keyframe));
             for message in
                 self.inbound
                     .receive((&HOST, 7), TAB, APP, keys, windows_channel(room), &picture)
@@ -290,7 +296,7 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
         }
         session.deposit_captured_rgba(pictures[(index % 8) as usize].clone());
         if let Some(frame) = session.encode_next_frame(Instant::now()) {
-            plaintexts.push(frame.nalus.clone());
+            plaintexts.push((frame.seq, frame.nalus.clone()));
             assert!(
                 outbound.send(&host, &HOST, &keys, &frame.into_neighbour_msg()),
                 "each frame goes onto the window's track"
@@ -299,14 +305,54 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
         forwarded.extend(viewing.drain(&viewer, &keys, room, origin));
     }
     let sent = u32::try_from(plaintexts.len()).unwrap();
+    let last = plaintexts
+        .last()
+        .map(|(seq, _)| *seq)
+        .expect("frames were sent");
+    // The viewer is done once it holds the window as it stands: the last
+    // frame. The carrier is real time: when a keyframe starts a new group, a
+    // reader that fell behind (a loaded machine stalls the relay's tasks past
+    // the carrier's retention) loses the rest of the group before it, and
+    // the keyframe shows the window again. So not every frame need arrive.
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        while viewing.decoded < sent {
+        while !viewing.received.iter().any(|(seq, _)| *seq == last)
+            || viewing.decoded < u32::try_from(viewing.received.len()).unwrap()
+        {
             forwarded.extend(viewing.drain(&viewer, &keys, room, origin));
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("decoded {} of {sent} frames", viewing.decoded));
+    .unwrap_or_else(|_| {
+        panic!(
+            "decoded {} of {sent} frames; received {:?}",
+            viewing.decoded, viewing.received
+        )
+    });
+    assert_eq!(
+        viewing.decoded,
+        u32::try_from(viewing.received.len()).unwrap(),
+        "every picture received decodes"
+    );
+    // A frame is lost only with the rest of its group: the next picture
+    // received after a gap is a keyframe.
+    for pair in viewing.received.windows(2) {
+        let &[(before, _), (after, keyframe)] = pair else {
+            continue;
+        };
+        assert!(
+            after == before + 1 || keyframe,
+            "frames {}..{after} were lost inside a group, so {after} decodes against a missing \
+             reference: received {:?}",
+            before + 1,
+            viewing.received
+        );
+    }
+    assert_eq!(
+        viewing.received.first(),
+        Some(&(plaintexts[0].0, true)),
+        "the stream opens with its first keyframe"
+    );
     assert_eq!(
         viewing.started,
         Some((WIDTH, HEIGHT)),
@@ -315,7 +361,9 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
 
     // What the relay forwarded is sealed: no frame's bytes appear in it, and
     // a device holding other keys opens none of it.
-    for (plain, sealed) in plaintexts.iter().zip(&forwarded) {
+    let plaintexts: std::collections::BTreeMap<u64, Vec<u8>> = plaintexts.into_iter().collect();
+    for (seq, sealed) in &forwarded {
+        let plain = &plaintexts[seq];
         let probe = &plain[..plain.len().min(24)];
         assert!(
             !sealed.windows(probe.len()).any(|window| window == probe),
@@ -325,7 +373,7 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
     let mut outsider = Viewing::new();
     let stranger = keys_of(channel, 9);
     let picture_count = forwarded.len();
-    assert!(picture_count >= plaintexts.len());
+    assert_eq!(picture_count, viewing.received.len());
     let late = join(&relay, b"late", 'd');
     live(&late, "the late member").await;
 

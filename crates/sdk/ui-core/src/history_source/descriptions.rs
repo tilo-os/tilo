@@ -21,13 +21,11 @@
 use std::collections::HashMap;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
+use automerge::{AutoCommit, ObjType, PatchAction, ReadDoc, Value};
 
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{from_hex16, hex16};
-
-/// Namespaced beside the names of runs, apart from any app's own schema.
-pub const DESCRIPTIONS_KEY: &str = "tilo:describe:";
+pub use collaboration::history_source::{DESCRIPTIONS_KEY, is_description_marker};
 
 /// A description is one short sentence; past this it is a paragraph that
 /// no row has room for.
@@ -133,21 +131,6 @@ pub fn change_evidence(
         out.insert(id, quoted);
     }
     out
-}
-
-/// Whether a change only wrote descriptions.
-pub fn is_description_marker(patches: &[automerge::Patch]) -> bool {
-    !patches.is_empty()
-        && patches.iter().all(|patch| match patch.path.first() {
-            Some((_, Prop::Map(key))) => key.starts_with(DESCRIPTIONS_KEY),
-            Some(_) => false,
-            None => match &patch.action {
-                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
-                    key.starts_with(DESCRIPTIONS_KEY)
-                }
-                _ => false,
-            },
-        })
 }
 
 #[cfg(test)]

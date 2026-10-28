@@ -103,6 +103,7 @@
 
 pub mod app_surface;
 pub mod document_routes;
+pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
@@ -113,6 +114,7 @@ pub mod portable_storage;
 #[cfg(unix)]
 pub mod private_actions;
 pub mod record;
+pub mod state;
 
 // The clock, background work, wake routing and host inputs, under the paths
 // the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
@@ -198,6 +200,14 @@ pub use broker::{
 // non-Required path).
 #[cfg(feature = "broker-transport")]
 pub use broker::CommittedDocument;
+#[cfg(all(
+    feature = "broker-transport",
+    any(test, feature = "test-support"),
+    unix
+))]
+pub use broker::JoiningProbe;
+#[cfg(all(feature = "broker-transport", feature = "native"))]
+pub use broker::NativeJoin;
 #[cfg(feature = "broker-transport")]
 pub use broker::native_initial;
 #[cfg(all(feature = "broker-transport", feature = "test-support", unix))]
@@ -373,6 +383,22 @@ pub enum NativeLaunchError {
     IdentityRequired,
     /// The configured service could not be reached.
     Operation(String),
+}
+
+/// What holds up a primary route's join, as the broker reports it while the
+/// join is pending ([`CollaborationManager::join_hold`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinHold {
+    /// The broker holds the join until the room is ready on this device:
+    /// why, in the person's words, and what last held it up when something
+    /// did.
+    RoomWaiting {
+        reason: String,
+        detail: Option<String>,
+    },
+    /// The broker could not be asked how the room stands: the connection to
+    /// it is unreachable, and why.
+    Unreachable(String),
 }
 
 /// Which connection a native launch's manager joins its room on.
@@ -1021,10 +1047,10 @@ pub struct CollaborationManager {
     /// collaboration service to reach. Losing the service later keeps it
     /// set; a manager that never had one is a local document.
     sync_expected: bool,
-    /// The `Hello` to announce again while a primary route that missed its
-    /// deadline is joined anew in the background: an app opened on its
-    /// local replica rather than wait, and joins once the route answers.
-    rejoin_hello: Option<CollabRequest>,
+    /// Why the broker refused the primary route this manager joined in the
+    /// background. The app it serves keeps working on its local replica and
+    /// says so ([`Self::join_refusal`]).
+    join_refusal: Option<String>,
 }
 
 impl CollaborationManager {
@@ -1048,7 +1074,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             sync_expected: true,
-            rejoin_hello: None,
+            join_refusal: None,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1173,7 +1199,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             sync_expected: false,
-            rejoin_hello: None,
+            join_refusal: None,
         }
     }
 
@@ -1183,6 +1209,7 @@ impl CollaborationManager {
     /// observes the answer.
     fn confirm_primary_route_in_background(&mut self) {
         self.awaiting_primary = true;
+        self.join_refusal = None;
         if self.submit(TransportCommand::ConfirmPrimaryRoute).is_err() {
             self.go_offline("collaboration setup thread is unavailable or overloaded".into());
         }
@@ -1213,11 +1240,34 @@ impl CollaborationManager {
         }
     }
 
-    /// Whether the app opened on its local replica because its primary route
-    /// missed its deadline, and is joining that route again now.
+    /// Whether the manager is joining its primary route in the background:
+    /// it has a connection, and the broker has not answered the route yet.
     #[must_use]
-    pub fn joining_late_route(&self) -> bool {
-        self.rejoin_hello.is_some() && self.awaiting_primary
+    pub fn is_joining(&self) -> bool {
+        self.awaiting_primary && matches!(self.backend, Backend::Transport(_))
+    }
+
+    /// What holds up the primary route this manager is joining, as the
+    /// broker reports it: the room is not ready on this device yet, or the
+    /// broker cannot be reached. `None` while nothing is reported, and once
+    /// the route is joined or refused. Each change wakes the owner.
+    #[must_use]
+    pub fn join_hold(&self) -> Option<JoinHold> {
+        if !self.awaiting_primary {
+            return None;
+        }
+        match &self.backend {
+            Backend::Transport(transport) => transport.join_hold(),
+            Backend::Disabled(_) => None,
+        }
+    }
+
+    /// Why the broker refused the primary route this manager was joining
+    /// in the background, with the broker's own reason. The manager is
+    /// offline from then on; the app keeps its local replica.
+    #[must_use]
+    pub fn join_refusal(&self) -> Option<&str> {
+        self.join_refusal.as_deref()
     }
 
     /// Whether changes were meant to reach peers and currently do not: the
@@ -1248,6 +1298,38 @@ impl CollaborationManager {
             Backend::Disabled(_) => None,
             Backend::Transport(_) => self.primary_route.requested.as_ref(),
         }
+    }
+
+    /// Join `checkout`'s route in place of the primary route this manager
+    /// is still joining, without waiting: the broker's answer to the new
+    /// route arrives as the last one would have ([`Self::poll`]).
+    ///
+    /// # Errors
+    ///
+    /// No route was requested, or the connection refused the request.
+    pub fn retarget_join(
+        &mut self,
+        checkout: &crate::record::RecordCheckout,
+    ) -> Result<(), String> {
+        let pending = self
+            .requested_primary_route()
+            .cloned()
+            .ok_or("native primary route unavailable")?;
+        let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
+        if pending.record == record {
+            return Ok(());
+        }
+        if !self.send(CollabRequest::Hello {
+            app_id: pending.app_id,
+            cluster_id: pending.cluster_id,
+            record,
+            record_kind: Some(checkout.kind.as_str().to_owned()),
+            handle: presence_handle_env(),
+        }) {
+            return Err("native route queue unavailable".into());
+        }
+        self.confirm_primary_route_in_background();
+        Ok(())
     }
 
     /// Without a built-in transport there is nothing to discover.
@@ -1886,49 +1968,16 @@ impl CollaborationManager {
         });
         if self.awaiting_primary {
             match (acknowledged, transport.status()) {
-                (Some(Ok(())), _) => {
-                    self.awaiting_primary = false;
-                    if self.rejoin_hello.take().is_some() {
-                        tracing::info!("collab: the late primary route joined");
-                    }
+                (Some(Ok(())), _) => self.awaiting_primary = false,
+                (Some(Err(error)), _) => {
+                    self.join_refusal = Some(error.clone());
+                    self.go_offline(error);
                 }
-                (Some(Err(error)), _)
-                    if is_primary_route_timeout(&error) && self.rejoin_hello.is_some() =>
-                {
-                    self.rejoin_late_primary_route();
-                }
-                (Some(Err(error)), _) => self.go_offline(error),
                 (None, TransportStatus::Closed(reason)) => self.go_offline(reason),
                 (None, _) => {}
             }
         }
         events
-    }
-
-    /// Join a primary route that missed its deadline again, on the same
-    /// connection, behind the app that opened without waiting for it: the
-    /// app stays up, [`CollaborationState::Connecting`] says it is joining,
-    /// and each attempt is paced by the broker's own join deadline.
-    fn rejoin_late_primary_route(&mut self) {
-        let Some(hello) = self.rejoin_hello.clone() else {
-            return;
-        };
-        tracing::info!("collab: the primary route is late; joining it again");
-        self.awaiting_primary = false;
-        let _ = self.send(hello);
-        self.confirm_primary_route_in_background();
-    }
-
-    /// A manager whose primary route missed its deadline at launch: the app
-    /// opens on its local replica, and `hello` is announced again until the
-    /// route answers (see [`Self::rejoin_late_primary_route`]).
-    #[cfg(feature = "broker-transport")]
-    #[must_use]
-    pub fn joining_late(mut self, hello: CollabRequest) -> Self {
-        self.rejoin_hello = Some(hello);
-        self.rejoin_late_primary_route();
-        self.reported_state = Some(self.state());
-        self
     }
 }
 
@@ -2299,33 +2348,22 @@ mod portable_transport_tests {
 /// Original authority retained across display background work.
 pub use runtime_collab::DisplayOrigin;
 
-/// Whether a primary-route acknowledgement failed because the route took
-/// longer than the broker's join deadline: the broker says so with its own
-/// error text, and a build without the broker transport cannot answer.
-fn is_primary_route_timeout(error: &str) -> bool {
-    #[cfg(feature = "broker-transport")]
-    {
-        error == broker::PRIMARY_ROUTE_TIMED_OUT
-    }
-    #[cfg(not(feature = "broker-transport"))]
-    {
-        let _ = error;
-        false
-    }
-}
-
+/// A primary route whose broker answers late leaves the app up: the manager
+/// joins in the background and takes the answer, the broker's hold-ups and
+/// its refusal as events. Nothing is retried and no clock decides.
 #[cfg(all(test, feature = "broker-transport"))]
 mod late_primary_route_tests {
     use super::*;
-    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use tilo_lock::MutexRecover as _;
 
-    /// A broker connection whose primary-route answers the test hands out,
-    /// recording the `Hello`s it was sent.
-    #[derive(Default)]
+    /// A broker connection whose answer to the primary route, and what it
+    /// says holds the join up, the test hands out; it counts the `Hello`s
+    /// it was sent.
+    #[derive(Clone, Default)]
     struct Late {
-        answers: Arc<Mutex<VecDeque<Result<RouteSpec, String>>>>,
+        answer: Arc<Mutex<Option<Result<RouteSpec, String>>>>,
+        hold: Arc<Mutex<Option<JoinHold>>>,
         hellos: Arc<Mutex<usize>>,
     }
     impl CollabTransport for Late {
@@ -2340,84 +2378,112 @@ mod late_primary_route_tests {
         }
         fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
         fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-            self.answers.lock_recover().pop_front()
+            self.answer.lock_recover().take()
+        }
+        fn join_hold(&self) -> Option<JoinHold> {
+            self.hold.lock_recover().clone()
         }
         fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
     }
 
-    #[test]
-    fn a_late_primary_route_leaves_the_app_up_and_joins_when_it_answers() {
-        let room = uuid::Uuid::from_bytes([7; 16]);
-        let route = RouteSpec {
+    fn route() -> RouteSpec {
+        RouteSpec {
             app_id: "so.tilo.notes".into(),
-            cluster_id: room,
+            cluster_id: uuid::Uuid::from_bytes([7; 16]),
             record: None,
-        };
-        let hello = CollabRequest::Hello {
-            app_id: route.app_id.clone(),
-            cluster_id: room,
+        }
+    }
+
+    /// A manager joining `route()` on `transport` in the background, as a
+    /// native launch's is.
+    fn joining(transport: &Late) -> CollaborationManager {
+        let mut manager = CollaborationManager::with_transport(Box::new(transport.clone()));
+        let route = route();
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
             record: None,
             record_kind: Some("notes.notebook".into()),
             handle: None,
-        };
-        let transport = Late::default();
-        let (answers, hellos) = (
-            Arc::clone(&transport.answers),
-            Arc::clone(&transport.hellos),
-        );
-        // The launch's own Hello missed its deadline: the app opens anyway.
-        let mut manager =
-            CollaborationManager::with_transport(Box::new(transport)).joining_late(hello);
-        assert_eq!(manager.state(), CollaborationState::Connecting);
-        assert!(
-            manager.joining_late_route(),
-            "the app says it is connecting"
-        );
-        assert!(!manager.sync_lost());
-        assert_eq!(
-            *hellos.lock_recover(),
-            1,
-            "the late route is joined again at once"
-        );
+        }));
+        manager.confirm_primary_route_in_background();
+        manager
+    }
 
-        // That join misses its deadline too: still up, joining once more.
-        answers
-            .lock_recover()
-            .push_back(Err(broker::PRIMARY_ROUTE_TIMED_OUT.into()));
+    #[test]
+    fn a_late_primary_route_leaves_the_app_up_and_joins_when_it_answers() {
+        let transport = Late::default();
+        let mut manager = joining(&transport);
+        assert_eq!(manager.state(), CollaborationState::Connecting);
+        assert!(manager.is_joining());
+        assert!(!manager.sync_lost());
+        assert_eq!(manager.join_hold(), None, "a join under way says nothing");
+
+        // The broker has not answered: nothing happens, and nothing is
+        // announced again.
         manager.poll();
         assert_eq!(manager.state(), CollaborationState::Connecting);
-        assert_eq!(*hellos.lock_recover(), 2);
+        assert_eq!(*transport.hellos.lock_recover(), 1);
 
         // The route answers: the app joins it, with nothing to do on its part.
-        answers.lock_recover().push_back(Ok(route));
+        *transport.answer.lock_recover() = Some(Ok(route()));
         manager.poll();
         assert_eq!(manager.state(), CollaborationState::Ready);
-        assert!(
-            !manager.joining_late_route(),
-            "joined: the connecting note clears"
+        assert!(!manager.is_joining());
+        assert_eq!(
+            manager
+                .primary_route()
+                .map(|witness| witness.route().clone()),
+            Some(route())
         );
         assert_eq!(
-            *hellos.lock_recover(),
-            2,
+            manager.take_state_change(),
+            Some(CollaborationState::Ready),
+            "the owner does its connect-time work once joined"
+        );
+        assert_eq!(
+            *transport.hellos.lock_recover(),
+            1,
             "a joined route is not announced again"
         );
     }
 
     #[test]
-    fn a_refused_route_still_takes_the_app_offline() {
-        let hello = CollabRequest::Hello {
-            app_id: "so.tilo.notes".into(),
-            cluster_id: uuid::Uuid::nil(),
-            record: None,
-            record_kind: None,
-            handle: None,
-        };
+    fn the_join_says_what_the_broker_says_holds_it_up() {
         let transport = Late::default();
-        let answers = Arc::clone(&transport.answers);
-        let mut manager =
-            CollaborationManager::with_transport(Box::new(transport)).joining_late(hello);
-        answers.lock_recover().push_back(Err("refused".into()));
+        let mut manager = joining(&transport);
+        let waiting = JoinHold::RoomWaiting {
+            reason: "Placing the workspace on its host".into(),
+            detail: Some("the host is offline".into()),
+        };
+        *transport.hold.lock_recover() = Some(waiting.clone());
+        assert_eq!(manager.join_hold(), Some(waiting));
+        let unreachable = JoinHold::Unreachable("the broker went away".into());
+        *transport.hold.lock_recover() = Some(unreachable.clone());
+        assert_eq!(manager.join_hold(), Some(unreachable));
+        *transport.hold.lock_recover() = None;
+        assert_eq!(manager.join_hold(), None);
+
+        // Joined: nothing holds it up any more, whatever was said last.
+        *transport.hold.lock_recover() = Some(JoinHold::Unreachable("stale".into()));
+        *transport.answer.lock_recover() = Some(Ok(route()));
+        manager.poll();
+        assert_eq!(manager.join_hold(), None);
+    }
+
+    #[test]
+    fn a_refused_route_still_takes_the_app_offline() {
+        let transport = Late::default();
+        let mut manager = joining(&transport);
+        *transport.answer.lock_recover() = Some(Err("not a member of this workspace".into()));
         manager.poll();
         assert!(matches!(manager.state(), CollaborationState::Offline(_)));
+        assert_eq!(
+            manager.join_refusal(),
+            Some("not a member of this workspace"),
+            "the app says why, with the broker's reason"
+        );
+        assert!(manager.sync_lost());
+        assert!(!manager.is_joining());
     }
 }

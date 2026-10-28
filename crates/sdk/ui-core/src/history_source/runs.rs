@@ -23,17 +23,13 @@ use tilo_automerge::ReadTyped as _;
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 
 use crate::history_source::revert::ChangeRun;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{from_hex16, hex16};
+pub use collaboration::history_source::{RUNS_KEY, is_run_marker};
 use tilo_automerge::read::int_at;
-
-/// Prefix of the root keys holding this document's cross-application runs.
-/// Namespaced like [`GROUPS_KEY`](crate::history_source::groups::GROUPS_KEY) so
-/// it cannot collide with an app's own schema.
-pub const RUNS_KEY: &str = "tilo:run:";
 
 /// Longest label stored. A run's label is the instruction as the person phrased
 /// it, and past this it stops fitting anywhere it is rendered.
@@ -283,23 +279,6 @@ pub fn forget_run(doc: &mut AutoCommit, id: &str) -> bool {
         return false;
     }
     doc.delete(automerge::ROOT, id).is_ok()
-}
-
-/// True when every patch lands inside a run record — the change did nothing
-/// but record bookkeeping, already on screen as a band, so a "1 field" row
-/// under it would be noise. An empty patch set is not a marker.
-pub fn is_run_marker(patches: &[Patch]) -> bool {
-    !patches.is_empty()
-        && patches.iter().all(|p| match p.path.first() {
-            Some((_, Prop::Map(k))) => k.starts_with(RUNS_KEY),
-            Some(_) => false,
-            None => match &p.action {
-                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
-                    key.starts_with(RUNS_KEY)
-                }
-                _ => false,
-            },
-        })
 }
 
 /// The run whose first step starts at `start`, if one is recorded.

@@ -180,6 +180,22 @@ struct CollabLaunchHandoff {
     workspace_id: String,
     #[serde(default)]
     executing_peer: bool,
+    /// The window a connection the session makes for one of its own windows
+    /// is for (`launcher::services::write_collab_window_handoff`).
+    #[serde(default)]
+    window_instance: Option<u64>,
+}
+
+impl CollabLaunchHandoff {
+    /// The launch `service` holds for the process `pid` this handoff came
+    /// from, as the app, room and window it names.
+    fn authenticated_launch(
+        &self,
+        service: &dyn crate::services::LauncherServices,
+        pid: u32,
+    ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
+        service.authenticated_launch(pid, &self.app_id, &self.workspace_id, self.window_instance)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14714,7 +14730,7 @@ async fn authenticate_launcher_handoff(
     let launch = services
         .launcher
         .as_ref()
-        .map(|service| service.authenticated_launch(pid, &handoff.app_id, &handoff.workspace_id))
+        .map(|service| handoff.authenticated_launch(service.as_ref(), pid))
         .transpose()
         .map_err(|error| LaunchRefusal {
             error: capnp::Error::failed(error),
@@ -14765,8 +14781,8 @@ async fn authenticate_launcher_handoff(
         "collaboration launch cannot be attested: this broker has no launcher service"
     } else {
         "collaboration launch is not an authenticated shell-managed process: the \
-         shell holds no live launch record for this process, app and room (an app \
-         started by hand through tilo-launcher, or one whose record expired)"
+         shell holds no launch record for this live process, app and room (an app \
+         started by hand through tilo-launcher, or a process that has exited)"
     };
     Err(LaunchRefusal {
         error: capnp::Error::failed(error.into()),
@@ -15432,6 +15448,7 @@ pub mod tests {
             pid: u32,
             app: &str,
             room: &str,
+            _window_instance: Option<u64>,
         ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
             Ok(self.attest_process(pid, app, room).then_some(
                 crate::services::AuthenticatedApplicationLaunch {

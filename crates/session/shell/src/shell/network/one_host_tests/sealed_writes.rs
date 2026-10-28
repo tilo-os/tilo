@@ -46,9 +46,11 @@ impl Device {
     /// `room`.
     fn retained_plaintext(&self, room: RoomId, app: &str) -> usize {
         let net = self.net();
-        let host = net.room_host().expect("the device runs its host");
+        let records = net
+            .room_host()
+            .expect("the device runs its host")
+            .room_records();
         let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-        let records = host.room_records();
         net.wait_on(async move { records.retained(workspace).await })
             .and_then(std::convert::identity)
             .map_or(0, |bodies| {

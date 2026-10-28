@@ -111,29 +111,41 @@ fn tell_supervisor(expiry: collab_types::caps::Expiry) -> bool {
     tell_supervisor_at(&launcher::services::socket_for("ush"), expiry)
 }
 
+/// How long the shell waits for the supervisor to record an allow before it
+/// takes the answer as not recorded.
+#[cfg(target_os = "linux")]
+const SUPERVISOR_ANSWER: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// One `allow-host` request on a fresh connection. The shell connects from
 /// outside every app sandbox, which is what lets the supervisor accept it.
 #[cfg(target_os = "linux")]
 fn tell_supervisor_at(socket: &std::path::Path, expiry: collab_types::caps::Expiry) -> bool {
-    use std::io::{BufRead, Write};
-    let result = (|| -> std::io::Result<bool> {
-        let stream = std::os::unix::net::UnixStream::connect(socket)?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-        let mut line = serde_json::to_vec(&ush::supervisor::ServeRequest::AllowHost { expiry })
-            .map_err(std::io::Error::other)?;
-        line.push(b'\n');
-        (&stream).write_all(&line)?;
-        let mut reply = String::new();
-        std::io::BufReader::new(&stream).read_line(&mut reply)?;
-        Ok(matches!(
-            serde_json::from_str(reply.trim()),
-            Ok(ush::supervisor::ServeResponse::Allowed)
-        ))
-    })();
-    result.unwrap_or_else(|error| {
+    ask_supervisor(socket, expiry, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
         tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
         false
     })
+}
+
+/// [`tell_supervisor_at`], waiting at most `answer` for the reply.
+#[cfg(target_os = "linux")]
+fn ask_supervisor(
+    socket: &std::path::Path,
+    expiry: collab_types::caps::Expiry,
+    answer: std::time::Duration,
+) -> std::io::Result<bool> {
+    use std::io::{BufRead, Write};
+    let stream = std::os::unix::net::UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(answer))?;
+    let mut line = serde_json::to_vec(&ush::supervisor::ServeRequest::AllowHost { expiry })
+        .map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    (&stream).write_all(&line)?;
+    let mut reply = String::new();
+    std::io::BufReader::new(&stream).read_line(&mut reply)?;
+    Ok(matches!(
+        serde_json::from_str(reply.trim()),
+        Ok(ush::supervisor::ServeResponse::Allowed)
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -184,8 +196,20 @@ mod tests {
         std::thread::spawn(move || {
             let _ = ush::supervisor::serve(&serve_socket, &serve_store, std::path::Path::new("/"));
         });
-        tilo_test_env::wait_until("the supervisor's socket", || socket.exists());
-        assert!(tell_supervisor_at(&socket, Expiry::Never));
+        // The socket's path appears at bind, a moment before the listen that
+        // accepts connections: a connect in between is refused.
+        tilo_test_env::wait_until("the supervisor to accept connections", || {
+            std::os::unix::net::UnixStream::connect(&socket).is_ok()
+        });
+        // The supervisor records the allow on disk before it answers: on a
+        // loaded machine that can outlast the shell's own patience, which is
+        // not what this checks, so the test waits as long as it waits for
+        // anything.
+        assert!(
+            ask_supervisor(&socket, Expiry::Never, tilo_test_env::hang_bound())
+                .unwrap_or_else(|error| panic!("the supervisor did not answer: {error}")),
+            "the supervisor allows the host shell"
+        );
         assert!(
             ush::host::HostPolicy::load(&ush::host::HostPolicy::path(&store))
                 .allows_host_shell(TERMINAL_APP_ID, None),

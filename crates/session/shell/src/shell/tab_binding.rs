@@ -1461,8 +1461,12 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
 /// never show a raw machine identifier. Otherwise the trailing component is humanised
 /// (`so.tilo.word-processor` → `Word Processor`), the same transform the package registry
 /// applies. Shared with window cards, so an app is never named two different ways.
+///
+/// The compositor's loop calls this as a window maps, so it reads the installed packages as
+/// last enumerated and never the registry on disk, which can wait on a busy disk and freeze the
+/// desktop; a package installed since shows its humanised id until the refresh lands.
 pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
-    if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
+    if let Some(name) = crate::shell::launcher::display_name_for_app_id_without_waiting(app_id) {
         return name;
     }
     // A legacy VM's window: its installed app's search entry names it (found
@@ -2995,6 +2999,8 @@ mod tests {
                 env.set("TILO_APPS_DATA_DIR", tmp.path());
                 crate::shell::launcher::invalidate_app_cache();
                 crate::shell::launcher::clear_launched_for_test();
+                // The session has enumerated its packages before any window maps.
+                let _ = crate::shell::launcher::installed_apps();
 
                 assert_eq!(tab_label_for_foreign("so.tilo.file-explorer"), "Files");
                 assert_eq!(tab_label_for_foreign("file-explorer"), "Files");

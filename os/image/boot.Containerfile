@@ -62,6 +62,12 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
 # /target holds only uki-input's files, so bootc's own digest of it would be
 # wrong: the digest must be given.
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so the UKI would be served from an earlier build's cache however the
+# kernel, initramfs or command line changed. Copying the kernel stage's output and the
+# UKI's inputs first keys it; neither leaves this stage, whose UKI alone is taken.
+COPY --from=kernel /kernel /tilo-uki-key/kernel
+COPY --from=uki-input /uki-input /tilo-uki-key/uki-input
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \

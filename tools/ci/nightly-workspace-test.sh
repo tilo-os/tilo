@@ -4,7 +4,7 @@
 #
 #   bash tools/ci/nightly-workspace-test.sh host       every package but those below
 #   bash tools/ci/nightly-workspace-test.sh sandboxed  the packages listed in a test
-#                                                      family's `nested_sandboxes`
+#                                                      family's `isolation = { nested = [...] }`
 #
 # A package's tests pass in the sandbox its `test` family runs them in, and in no
 # other: the host packages run as uid 0 in a root-owned namespace (runtime-fs's

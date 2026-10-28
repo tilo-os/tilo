@@ -81,14 +81,21 @@ grep -qx tilo-boot-face /usr/lib/tilo/initramfs-modules.txt || {
 # The greeter is the initramfs's largest part: its build, faces, keymaps,
 # voices and sound stack, measured by its module as it installs them. They
 # grow only on purpose: raise the budget with the change that needs it.
-# Measured at 64,188,287 bytes on x86_64 (aarch64's build is smaller).
+# Measured at 64,188,287 bytes on x86_64 (aarch64's build is smaller), linked with thin
+# LTO. A greeter linked without it (TILO_GREETER_BUDGET=report, os/Containerfile) measures
+# about 80.8 MB: its size is reported, not held to the release's budget.
 greeter_budget=65000000
 greeter_bytes="$(sed -n 's/.*tilo-greeter: the greeter adds \([0-9]*\) bytes.*/\1/p' "$log")"
 [ -n "$greeter_bytes" ] || {
   echo "dracut did not report what the greeter adds to the initramfs" >&2; exit 1; }
-[ "$greeter_bytes" -le "$greeter_budget" ] || {
+if [ "$greeter_bytes" -gt "$greeter_budget" ]; then
   echo "the greeter adds $greeter_bytes bytes to the initramfs, over its budget of $greeter_budget" >&2
-  exit 1; }
+  if [ "${TILO_GREETER_BUDGET:-enforce}" = report ]; then
+    echo "(reported only: this greeter was linked without LTO, which releases always use)" >&2
+  else
+    exit 1
+  fi
+fi
 # A board image (one with a hardware-profile definition) also reads its
 # initramfs back: the profile's firmware and boot modules, and the Wi-Fi pieces
 # sibling unlock installs only optionally. Generic images skip this.

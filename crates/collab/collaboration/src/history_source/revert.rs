@@ -20,10 +20,10 @@ use std::collections::{HashMap, HashSet};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc};
 
-use crate::history_source::authors::AuthorDirectory;
+use crate::history_source::authors::{HistoryAuthor, ResolveAuthor};
 use crate::history_source::entry_id_from_hash;
 use crate::state::write_selected_patches;
-use crate::widget::history::{HistoryAuthor, HistoryEntryId};
+use collab_types::history::HistoryEntryId;
 
 /// A contiguous run of changes, addressed by its first and last change.
 ///
@@ -346,7 +346,7 @@ fn classify(
     later: &HashMap<Slot, String>,
     after: &[ChangeHash],
     covered: usize,
-    authors: &AuthorDirectory,
+    authors: &dyn ResolveAuthor,
 ) -> (RevertOutcome, Vec<(Patch, bool)>) {
     let mut writable = Vec::new();
     let mut list_indices: HashMap<ObjId, Vec<Option<usize>>> = HashMap::new();
@@ -472,7 +472,7 @@ pub fn plan_revert(
     doc: &mut AutoCommit,
     run: &ChangeRun,
     by: Option<&str>,
-    authors: &AuthorDirectory,
+    authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
     let (before, after, covered) = run_bounds(doc, run)?;
     let forward = doc.diff(&before, &after);
@@ -499,7 +499,7 @@ pub fn revert_run(
     doc: &mut AutoCommit,
     run: &ChangeRun,
     by: Option<&str>,
-    authors: &AuthorDirectory,
+    authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
     let (before, after, covered) = run_bounds(doc, run)?;
     let forward = doc.diff(&before, &after);
@@ -521,7 +521,7 @@ pub fn revert_run(
 
 /// Undo one entry's share of a run of work by writing its inverse forward
 /// into `doc`: [`revert_run`] for a run of one change, which is what a step
-/// of an agent's run names ([`RunStep`](crate::history_source::RunStep)).
+/// of an agent's run names (the toolkit's `RunStep`).
 ///
 /// This is the step the reader's history takes back, and it is the same one
 /// `undo` publishes: a run undone by an agent's report and one undone by
@@ -539,7 +539,7 @@ pub fn revert_step(
     doc: &mut AutoCommit,
     change: &ChangeHash,
     by: Option<&str>,
-    authors: &AuthorDirectory,
+    authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
     let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
     revert_run(doc, &run, by, authors)
@@ -560,7 +560,7 @@ pub fn revert_step(
 pub fn revert_changes(
     doc: &mut AutoCommit,
     changes: &[(ChangeHash, String)],
-    authors: &AuthorDirectory,
+    authors: &dyn ResolveAuthor,
 ) -> Result<Vec<RevertOutcome>, RevertError> {
     let mut plans = Vec::with_capacity(changes.len());
     for (hash, actor) in changes {
@@ -708,7 +708,8 @@ mod replay_regressions {
             doc.put(&protected, "label", "peer edited b").unwrap();
             doc.commit();
             let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
-            let result = revert_run(&mut doc, &run, None, &AuthorDirectory::default()).unwrap();
+            let result =
+                revert_run(&mut doc, &run, None, &crate::history_source::TestWords).unwrap();
             assert!(result.wrote);
             assert_eq!(result.kept.len(), 1);
             let labels = (0..doc.length(&list))
@@ -752,7 +753,7 @@ mod replay_regressions {
                 &mut doc,
                 &ChangeRun::single(entry_id_from_hash(&change.to_string())),
                 None,
-                &AuthorDirectory::default(),
+                &crate::history_source::TestWords,
             )
             .unwrap();
             assert!(!result.wrote);

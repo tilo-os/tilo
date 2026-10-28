@@ -884,6 +884,11 @@ RUN --mount=type=cache,id=tilo-wallpaper-artifacts,target=/var/cache/tilo-wallpa
 # /image for /signatures, so the runtimes' bytes are the same layer in every
 # build that bakes the same runtimes, and only the signatures' small one is new.
 FROM ${BASE_REF} AS runtime-image-payload
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so this RUN would be served from an earlier build's cache however the
+# runtimes changed. Copying their publishers' keys first keys it: the payload's builder
+# signs with a key it generates, so that key is new whenever the payload is built again.
+COPY --from=apps-payload /out/runtime-bundle-publisher.hex /out/browser-runtime-publisher.hex /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
     --mount=type=bind,from=apps-payload,source=/out/runtime-version,target=/tilo-runtime-version,ro \
@@ -978,6 +983,12 @@ COPY os/usr/lib/systemd/system/tilo-node-relay@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \
     os/usr/lib/systemd/system/tilo-node-session@.path \
     /tilo-components/usr/lib/systemd/system/
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so this RUN would be served from an earlier build's cache however the
+# compiled components changed. Copying the payload's runtime publisher key first keys it:
+# the payload's builder signs with a key it generates, so that key is new whenever the
+# payload is built again.
+COPY --from=native-builder-payload /out/runtime-bundle-publisher.hex /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
@@ -2935,6 +2946,11 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
 # are new in every build, while the trees they verify are named by their
 # payload and stay the same layer.
 FROM trust AS app-store
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so this RUN would be served from an earlier build's cache however the
+# apps changed. Copying the runtime's publisher key first keys it: the payload's builder
+# signs with a key it generates, so that key is new whenever the payload is built again.
+COPY --from=native-builder-payload /out/runtime-bundle-publisher.hex /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \
@@ -3039,6 +3055,10 @@ FROM binaries AS rootfs
 ARG SOURCE_DATE_EPOCH=0
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
+# A greeter linked without LTO (local builds' default, os/dev/build-image.sh) is about a
+# quarter larger than a release's, so its initramfs budget is reported there, as each app's
+# size budget is, and enforced only where the binaries are linked as releases are.
+ARG TILO_RUST_LTO=thin
 
 # The board's hardware profile (its firmware and hashed device tree) and the
 # initramfs, now that the rollback and unlock helpers and the public trust it
@@ -3061,7 +3081,8 @@ RUN --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},targe
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
-    bash /run/tilo-build-initramfs.sh "$kver"
+    TILO_GREETER_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
+        bash /run/tilo-build-initramfs.sh "$kver"
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
 # state it once did: offering `tilo-install --encrypt` while carrying no
@@ -3392,6 +3413,12 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
 # /target holds only uki-input's files, so bootc's own digest of it would be
 # wrong: the digest must be given.
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so the UKI would be served from an earlier build's cache however the
+# kernel, initramfs or command line changed. Copying the kernel stage's output and the
+# UKI's inputs first keys it; neither leaves this stage, whose UKI alone is taken.
+COPY --from=kernel /kernel /tilo-uki-key/kernel
+COPY --from=uki-input /uki-input /tilo-uki-key/uki-input
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \

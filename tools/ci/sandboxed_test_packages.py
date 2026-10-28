@@ -20,9 +20,9 @@ def sandboxed(path: Path = T_TOML) -> list[str]:
     names: set[str] = set()
     for family in config.get("cargo", []):
         if family.get("name") in FAMILIES:
-            nested = family.get("nested_sandboxes", [])
+            nested = family.get("isolation", {}).get("nested", [])
             if not isinstance(nested, list):
-                raise SystemExit(f"t.toml: {family['name']} names no packages in nested_sandboxes")
+                raise SystemExit(f"t.toml: {family['name']} names no packages in `isolation = { nested = [...] }`")
             names.update(nested)
     if not names:
         raise SystemExit("t.toml: no test family runs packages with nested sandboxes")

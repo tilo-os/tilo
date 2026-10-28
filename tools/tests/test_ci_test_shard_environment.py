@@ -152,13 +152,14 @@ class PrepareTestShardScript(unittest.TestCase):
                 self.assertIn("tools/ci/require-pdf-sandbox.sh", self.tools(calls))
                 self.assertIn("TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so\n", exported)
 
-    def test_browser_peer_gets_chromium_as_a_package_or_scoped_test(self) -> None:
+    def test_browser_peer_builds_its_page_library_in_the_builders_chromium(self) -> None:
         scoped = '[{"package":"tilo-browser-peer","test":"voice","filter":"all()"}]'
         for packages, scoped_tests in (("-p tilo-browser-peer", ""), ("", scoped)):
             with self.subTest(packages=packages, scoped=scoped_tests):
                 calls, exported = self.prepare(packages, scoped_tests)
-                self.assertIn("dnf", self.tools(calls))
-                self.assertRegex(exported, r"(?m)^CHROME=.+/chromium(?:-browser)?$")
+                self.assertEqual(self.tools(calls)[-2:], ["npm", "node"])
+                self.assertNotIn("dnf", self.tools(calls))
+                self.assertNotIn("CHROME=", exported)
 
     def test_imager_gets_its_qualified_cache_root(self) -> None:
         _, exported = self.prepare("-p imager")

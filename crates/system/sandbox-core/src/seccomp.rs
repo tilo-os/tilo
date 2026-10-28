@@ -1573,7 +1573,16 @@ mod tests {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
-            if seccompiler::apply_filter(&program).is_err() {
+            // The kill is the outcome under test, not a crash to debug: it
+            // must not leave a core file in the directory the tests run in.
+            let no_core = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `setrlimit` only reads the limit it is handed.
+            if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core) } != 0
+                || seccompiler::apply_filter(&program).is_err()
+            {
                 // SAFETY: `_exit` does not unwind.
                 unsafe { libc::_exit(12) };
             }

@@ -64,7 +64,7 @@ impl OutsideSink for MemorySink {
 
 /// The tilolang runtime: loads packages and runs their actions, flows and views.
 pub struct Runtime {
-    core: Rc<Core>,
+    pub(crate) core: Rc<Core>,
 }
 
 impl Runtime {

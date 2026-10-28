@@ -216,6 +216,19 @@ impl NativeProcessHost {
     }
 }
 
+/// A record a launch would create (`target`) is not made while the launch's
+/// manager is still joining its room: the room may hold it already, and a
+/// copy made here would diverge from it. The launch builds once the join is
+/// over, from the room's committed history ([`LaunchError::RecordNotHere`]).
+fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
+    if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
+        && crate::collaboration::native_initial::joining()
+    {
+        return Err(LaunchError::RecordNotHere);
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
@@ -1028,6 +1041,7 @@ impl ApplicationHost {
                     .unsaved_target(&records)
                     .map_err(LaunchError::Record)?
             };
+            refuse_copy_while_joining(&target)?;
             let mut context = HostContext::prepare(
                 definition,
                 HostContextInputs {
@@ -1153,7 +1167,10 @@ impl ApplicationHost {
                         reveal: None,
                     };
                 }
-                Err(RecordOpenError::MissingRecord) if saved.is_none() => break LaunchTarget::New,
+                Err(RecordOpenError::MissingRecord) if saved.is_none() => {
+                    refuse_copy_while_joining(&LaunchTarget::New)?;
+                    break LaunchTarget::New;
+                }
                 Err(RecordOpenError::Retired) if successors < MAX_SUCCESSORS => {
                     successors += 1;
                     saved = None;
@@ -1371,6 +1388,86 @@ mod native_process_tests {
             .unwrap();
         assert!(prepared.context.record().id.is_package_primary());
         assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+    }
+
+    /// While a launch's manager joins its workspace, a record this device
+    /// does not hold is not created: the room may hold it, and a copy made
+    /// here would diverge. The launch is told it is not here and builds
+    /// once the join is over; a record it holds opens at once.
+    #[test]
+    #[cfg(all(unix, feature = "broker-transport"))]
+    fn a_record_not_here_is_not_created_while_the_workspace_joins() {
+        use crate::application_test_support as probe;
+        use crate::collaboration::native_initial::NativeConstruction;
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-00000000000c";
+        let launch = || {
+            NativeProcessHost::open_with(
+                &definition(probe::APP),
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("52".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let joining = || {
+            let scope = crate::wake::WakeScope::new();
+            let (manager, broker) = {
+                let _entry = scope.enter();
+                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
+                    "probe",
+                    automerge::AutoCommit::new().save(),
+                    runtime_collab::RoomStatus::Ready,
+                )
+            };
+            (
+                NativeConstruction::enter_component(manager, scope).unwrap(),
+                broker,
+            )
+        };
+        let mut per_room = definition(probe::APP);
+        per_room.room_record = true;
+        let per_window = definition(probe::APP);
+
+        for definition in [&per_room, &per_window] {
+            let mut host = launch();
+            let (construction, _broker) = joining();
+            assert!(matches!(
+                host.prepare_launch(definition, None, probe::runner_inputs()),
+                Err(LaunchError::RecordNotHere)
+            ));
+            drop(construction);
+            // Nothing was made: outside the join the record is still new.
+            let prepared = host
+                .prepare_launch(definition, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(
+                prepared.target,
+                LaunchTarget::New | LaunchTarget::PrimaryNew
+            ));
+        }
+
+        // The room's record, once this device holds it, opens at once while
+        // the workspace joins.
+        let mut host = launch();
+        let mut created = host
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        created.context.initialize_new_record(|_| Ok(())).unwrap();
+        drop(created);
+        drop(host);
+        let mut host = launch();
+        let (_construction, _broker) = joining();
+        let prepared = host
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
+        assert!(prepared.context.record().id.is_package_primary());
     }
 
     #[test]

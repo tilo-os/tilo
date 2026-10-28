@@ -725,8 +725,18 @@ impl App {
         if room_ready {
             self.broadcast_room_index_delta();
         }
+        // What holds a join up, and a join refused or lost, change what the
+        // window's status line says, not the window's model.
+        let status = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
+        let restated = status != self.collaboration.shown_sync_status;
+        if restated {
+            self.collaboration.shown_sync_status = status;
+            self.layout.layout_dirty = true;
+        }
         let Some(state) = self.collaboration.manager.take_state_change() else {
-            return room_ready;
+            return room_ready || restated;
         };
         tracing::debug!(
             target: "tilo.state",

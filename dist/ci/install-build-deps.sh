@@ -61,6 +61,14 @@ esac
 # invokes it from PATH), and valgrind-devel the client-request headers they are
 # compiled against: iai-callgrind reads them from /usr/include when
 # IAI_CALLGRIND_VALGRIND_INCLUDE names it, instead of the headers it bundles.
+# ostree and gpgme-devel: the launcher's signed OSTree/OpenPGP capture fixture
+# commits a GPG-signed OSTree repository and compiles the OpenPGP engine probe
+# against gpgme, as the image build of that engine does. flatpak: the imager's
+# signed offline Flatpak fixture restores a GPG-signed repository into a user
+# installation with it. chromium: the native browser suites drive Fedora's
+# signed build directly, bypassing its desktop launcher, since tests supply
+# their own flags and fresh profiles (CHROME names that executable). These
+# four come without weak dependencies, which would only add desktop extras.
 install_test_runtime_fedora() {
     if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
         dnf swap -y pipewire-pulseaudio pulseaudio
@@ -83,6 +91,9 @@ install_test_runtime_fedora() {
         xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \
         pipewire wireplumber pipewire-gstreamer pipewire-utils \
         valgrind valgrind-devel
+    dnf install -y --setopt=install_weak_deps=False \
+        ostree gpgme-devel flatpak chromium
+    /usr/lib64/chromium-browser/chromium-browser --version
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the

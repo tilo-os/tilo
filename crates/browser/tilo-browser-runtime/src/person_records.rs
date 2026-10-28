@@ -79,15 +79,24 @@ pub(crate) fn provide(
 /// Write out what the person's records in `store` hold that is not stored
 /// yet, as the page does with every mount's records.
 pub(crate) fn flush<T: ?Sized>(store: &Rc<T>) {
+    for error in store_all(store) {
+        tracing::warn!(%error, "the person's records could not be stored");
+    }
+}
+
+/// Hand the store what the person's records in `store` hold, and say what
+/// it refused. The page never waits on its store: the host commits the
+/// writes the store accepted later, from its own queue, so an accepted
+/// write that is not committed yet is not a failure.
+fn store_all<T: ?Sized>(store: &Rc<T>) -> Vec<String> {
+    let _page = durable_store::waiting::forbid_on_this_thread();
     KEPT.with_borrow(|kept| {
-        if let Some(kept) = kept.get(&key(store)) {
-            for records in kept.records.values() {
-                if let Err(error) = records.flush() {
-                    tracing::warn!(%error, "the person's records could not be stored");
-                }
-            }
-        }
-    });
+        kept.get(&key(store))
+            .into_iter()
+            .flat_map(|kept| kept.records.values())
+            .filter_map(|records| records.flush().err())
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -225,6 +234,20 @@ mod tests {
         assert_eq!(
             read(&of(&store, APP, PERSON).unwrap()).as_deref(),
             Some("see you at six")
+        );
+    }
+
+    /// The page's store commits through its host later: a write it
+    /// accepted and has not committed yet is stored as far as the page goes.
+    #[test]
+    fn writes_the_host_has_yet_to_commit_are_no_failure() {
+        let memory = Rc::new(durable_store::MemoryStore::queued());
+        let store: Rc<dyn DurableStore> = memory.clone();
+        write(&of(&store, APP, PERSON).unwrap(), "back in five");
+        assert_eq!(store_all(&store), Vec::<String>::new());
+        assert!(
+            !memory.drain().is_empty(),
+            "the writes wait for the host to commit them"
         );
     }
 

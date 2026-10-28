@@ -318,6 +318,8 @@ pub(super) fn shown_hosted_windows(
 mod tests {
     use super::super::{MemberViewers, RoomHosts};
     use super::{desired_legacy_shares, hosts_viewed_window, remote_extents};
+    use crate::shell::network::RoomWindowViewer;
+    use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
 
     /// A host window (a terminal) streams to each member of its room who
     /// views it, read only, while the room shares its layout: not while
@@ -325,10 +327,7 @@ mod tests {
     /// room whose layout is personal.
     #[test]
     fn a_host_window_streams_read_only_to_room_members_viewing_it_in_a_shared_room() {
-        use crate::shell::network::RoomWindowViewer;
-        use crate::shell::state::{
-            RoomId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree,
-        };
+        use crate::shell::state::RoomId;
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.desktop.workspaces[0].strips.truncate(1);
         tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
@@ -412,30 +411,23 @@ mod tests {
         );
     }
 
-    /// The boundary of a room whose layout is personal: none of a member's
-    /// windows streams to the room's members or hosts, however many view
-    /// it, but for the one the member shared with the room on purpose; and
-    /// that one only while the share lasts.
-    #[test]
-    fn in_a_personal_room_only_a_window_shared_on_purpose_streams_to_members_or_hosts() {
-        use crate::shell::network::RoomWindowViewer;
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
-        use automerge::transaction::Transactable as _;
-        use tilo_desktop_model::projection;
-        use tilo_desktop_model::window_share::{window_node, window_share_id};
-
+    /// A tree of one workspace whose one window holds a tab for each of
+    /// `apps` (surfaces 31 and 32), the one at `active` shown, all minted on
+    /// the device whose key salts them; their tab ids come with it.
+    fn tree_of_two_windows(apps: [&str; 2], active: usize) -> ([u64; 2], WorkspaceTree) {
         // The windows run on the device whose key mints under this salt.
         let salt = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
         let own = |counter: u64| (u64::from(salt) << 48) | counter;
-        let (chat, notes) = (own(3), own(4));
+        let tabs = [own(3), own(4)];
         let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
-        let room = tree.desktop.workspaces[0].room();
         tree.desktop.workspaces[0].strips.truncate(1);
         tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
             id: own(2),
-            tabs: [(chat, "so.tilo.chat", 31), (notes, "so.tilo.notes", 32)]
+            tabs: tabs
                 .into_iter()
-                .map(|(id, app, surface)| Tab {
+                .zip(apps)
+                .zip([31, 32])
+                .map(|((id, app), surface)| Tab {
                     id,
                     title: app.into(),
                     tile: TileContent::Foreign {
@@ -445,11 +437,19 @@ mod tests {
                     app_title: None,
                 })
                 .collect(),
-            active_tab: chat,
+            active_tab: tabs[active],
             width: WindowWidth::Normal,
             maximized: false,
             focus_history: Vec::new(),
         }];
+        (tabs, tree)
+    }
+
+    /// Device 601 viewing each of `tabs`, and device 42 hosting `room`.
+    fn viewed_by_member_and_host(
+        room: crate::shell::state::RoomId,
+        tabs: [u64; 2],
+    ) -> (MemberViewers, RoomHosts) {
         let viewer = |peer: u64| RoomWindowViewer {
             peer,
             room,
@@ -457,15 +457,19 @@ mod tests {
             height: 600,
             decode_limits: std::collections::BTreeMap::new(),
         };
-        // B (601) views both of A's windows, as a device that showed them
-        // would ask; the room's host (42) watches every room's windows.
-        let members = MemberViewers::from([(chat, vec![viewer(601)]), (notes, vec![viewer(601)])]);
+        let members = MemberViewers::from(tabs.map(|tab| (tab, vec![viewer(601)])));
         let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
-        let nobody = std::collections::BTreeMap::new();
+        (members, hosts)
+    }
 
-        let room_text = room.to_string();
+    /// The document of a room whose layout is personal, `room_text`, with
+    /// the identity of the device the windows run on.
+    fn personal_room_document(room_text: &str) -> automerge::AutoCommit {
+        use automerge::transaction::Transactable as _;
+        use tilo_desktop_model::projection;
+
         let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text.as_str())
+        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text)
             .unwrap();
         doc.put(
             automerge::ROOT,
@@ -481,6 +485,27 @@ mod tests {
             )
             .unwrap();
         doc.put(&identities, hex::encode([0x5a; 32]), "{}").unwrap();
+        doc
+    }
+
+    /// The boundary of a room whose layout is personal: none of a member's
+    /// windows streams to the room's members or hosts, however many view
+    /// it, but for the one the member shared with the room on purpose; and
+    /// that one only while the share lasts.
+    #[test]
+    fn in_a_personal_room_only_a_window_shared_on_purpose_streams_to_members_or_hosts() {
+        use tilo_desktop_model::projection;
+        use tilo_desktop_model::window_share::{window_node, window_share_id};
+
+        let ([chat, notes], mut tree) = tree_of_two_windows(["so.tilo.chat", "so.tilo.notes"], 0);
+        let room = tree.desktop.workspaces[0].room();
+        // B (601) views both of A's windows, as a device that showed them
+        // would ask; the room's host (42) watches every room's windows.
+        let (members, hosts) = viewed_by_member_and_host(room, [chat, notes]);
+        let nobody = std::collections::BTreeMap::new();
+
+        let room_text = room.to_string();
+        let mut doc = personal_room_document(&room_text);
         doc.commit();
         tree.project_room_document_for_test(room, &doc);
         assert!(
@@ -539,74 +564,20 @@ mod tests {
     /// shared beside it still does.
     #[test]
     fn a_shared_tilo_app_window_streams_nothing_to_members_or_hosts() {
-        use crate::shell::network::RoomWindowViewer;
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
-        use automerge::transaction::Transactable as _;
         use tilo_desktop_model::projection;
         use tilo_desktop_model::window_share::{
             WindowShows, shows_node, window_node, window_share_id, window_shows_share_id,
         };
 
-        // The windows run on the device whose key mints under this salt.
-        let salt = tilo_desktop_model::ids::device_salt_of_key(&[0x5a; 32]);
-        let own = |counter: u64| (u64::from(salt) << 48) | counter;
-        let (terminal, notes) = (own(3), own(4));
-        let mut tree = WorkspaceTree::bootstrap_default_with_salt(salt);
-        let room = tree.desktop.workspaces[0].room();
-        tree.desktop.workspaces[0].strips.truncate(1);
-        tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
-            id: own(2),
-            tabs: [
-                (terminal, "org.alacritty.Alacritty", 31),
-                (notes, "so.tilo.notes", 32),
-            ]
-            .into_iter()
-            .map(|(id, app, surface)| Tab {
-                id,
-                title: app.into(),
-                tile: TileContent::Foreign {
-                    app_id: app.into(),
-                    surface_id: surface,
-                },
-                app_title: None,
-            })
-            .collect(),
-            active_tab: notes,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }];
+        let ([terminal, notes], mut tree) =
+            tree_of_two_windows(["org.alacritty.Alacritty", "so.tilo.notes"], 1);
         tree.remember_package_launch(notes, "so.tilo.notes".into());
-        let viewer = |peer: u64| RoomWindowViewer {
-            peer,
-            room,
-            width: 800,
-            height: 600,
-            decode_limits: std::collections::BTreeMap::new(),
-        };
-        let members =
-            MemberViewers::from([(terminal, vec![viewer(601)]), (notes, vec![viewer(601)])]);
-        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
+        let room = tree.desktop.workspaces[0].room();
+        let (members, hosts) = viewed_by_member_and_host(room, [terminal, notes]);
         let nobody = std::collections::BTreeMap::new();
 
         let room_text = room.to_string();
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text.as_str())
-            .unwrap();
-        doc.put(
-            automerge::ROOT,
-            projection::ROOM_LAYOUT_KEY,
-            projection::RoomLayout::Personal.id(),
-        )
-        .unwrap();
-        let identities = doc
-            .put_object(
-                automerge::ROOT,
-                "peer_identities_v1",
-                automerge::ObjType::Map,
-            )
-            .unwrap();
-        doc.put(&identities, hex::encode([0x5a; 32]), "{}").unwrap();
+        let mut doc = personal_room_document(&room_text);
         let mut policy = projection::room_policy_of(&doc, &room_text);
         let note = WindowShows {
             record: String::new(),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 
@@ -145,20 +144,18 @@ def _notifications(st) -> list:
 
 
 def _is_undo_close(toast: dict, title: str, tab_count: int = 1) -> bool:
-    """A transient undo toast for a captured title, with any reopen binding.
+    """A transient undo toast for a captured title.
 
-    Match the English/German shell messages, including the unbound hint. A
-    title substring or a shortcut alone cannot identify the close's toast.
+    Match the English/German shell headings exactly. The toast says only what
+    closed: undoing is its Undo button, so it has no body. A title substring
+    alone cannot identify the close's toast.
     """
     if (not title or not title.strip() or toast.get("severity") != "Info"
             or toast.get("persistent")):
         return False
     english = f"Closed {tab_count} tabs" if tab_count > 1 else f"Closed {title}"
     german = f"{tab_count} Tabs geschlossen" if tab_count > 1 else f"{title} geschlossen"
-    messages = ((english, r"Select to undo(?:, or press .+ later)?"),
-                (german, r"Zum Rückgängigmachen auswählen(?: oder später .+ drücken)?"))
-    return any(toast.get("title") == heading and re.fullmatch(hint, toast.get("body") or "")
-               is not None for heading, hint in messages)
+    return toast.get("title") in (english, german) and not toast.get("body")
 
 
 def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign: bool,
