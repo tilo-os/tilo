@@ -281,15 +281,20 @@ runtime_id=tilo-runtime/$runtime_version
 # The tilolang runtime bundle: the binary every tilolang app's entrypoint
 # executes (apps/tilolang/tilo-runtime.toml), built against the runtime above
 # and signed with the same key. Its version is the one the bundle provides,
-# and `tilolang run` reads it from .tilolang-version. It holds the binary
+# and `tilolang run` reads it from .tilolang-version. It holds the binaries
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
+# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# apps by one author as instances: built without the toolkit, it runs on the app runtime's
+# loader and libraries alone.
+tilolang_host_bin=$bin/tilolang-host
 if [[ -f $tilolang_bin ]]; then
+    [[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin"
     tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
         "$repo_root/apps/tilolang/tilo-runtime.toml")
     [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
-    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_host_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
@@ -298,6 +303,7 @@ if [[ -f $tilolang_bin ]]; then
         mkdir -p "$state/work"
         "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
             --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
+            --include-bin "$tilolang_host_bin" \
             --identity "$identity" >/dev/null
         mv "$state/work/tilolang" "$runtimes/$tilolang_version"
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"

@@ -6,6 +6,8 @@
 //!
 //! - the tilolang runtime bundle, verified as an app launch on it verifies it, read-only and
 //!   executable, its binary `bin/tilolang-host` the only program;
+//! - the Tilo runtime its apps name, verified the same way, read-only: the loader and libraries
+//!   that binary runs on, as an app's entrypoint binary runs on its app's runtime;
 //! - one directory of its own, read-write: the storage of its room and author, which the session
 //!   names, keyed by package inside. Landlock can only narrow, so it holds that directory from
 //!   its start;
@@ -44,14 +46,22 @@ const BASELINE_FD: RawFd = crate::services::BASELINE_SECCOMP_CHILD_FD;
 pub struct HostLaunch {
     /// The tilolang runtime, `tilolang/<version>`.
     pub runtime: String,
-    /// The storage of the host's room and author.
+    /// The Tilo runtime the host's binary runs on, `tilo-runtime/<version>`.
+    pub app_runtime: String,
+    /// The storage of the host's workspace and author.
     pub storage: PathBuf,
 }
 
-/// The bubblewrap arguments of a host on the verified runtime bundle `runtime_root` of
-/// `version`, holding `storage`, with the launcher's own binary at `shim` for Landlock.
+/// The bubblewrap arguments of a host on the verified tilolang runtime bundle `runtime_root` of
+/// `version`, running on the verified Tilo runtime `app_runtime` (its root and version), holding
+/// `storage`, with the launcher's own binary at `shim` for Landlock.
 #[must_use]
-pub fn bwrap_argv(runtime_root: &Path, version: &str, storage: &Path, shim: &Path) -> Vec<String> {
+pub fn bwrap_argv(
+    (runtime_root, version): (&Path, &str),
+    app_runtime: (&Path, &str),
+    storage: &Path,
+    shim: &Path,
+) -> Vec<String> {
     let runtime_mount = crate::sandbox::runtime_mount_for(version);
     let mut argv: Vec<String> = [
         "--unshare-all",
@@ -90,7 +100,10 @@ pub fn bwrap_argv(runtime_root: &Path, version: &str, storage: &Path, shim: &Pat
             ]);
         }
     }
-    crate::sandbox::push_runtime_bundle(&mut argv, Some((runtime_root, version)));
+    // The Tilo runtime: the loader, `LD_LIBRARY_PATH` and libraries, as for an app; the
+    // tilolang bundle beside it, as an app's entrypoint runtime is.
+    crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
+    let _ = crate::sandbox::push_optional_runtime(&mut argv, runtime_root, version);
     argv.extend([
         "--bind".to_owned(),
         storage.display().to_string(),
@@ -106,6 +119,9 @@ pub fn bwrap_argv(runtime_root: &Path, version: &str, storage: &Path, shim: &Pat
         crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_owned(),
         "--ro".to_owned(),
         runtime_mount.display().to_string(),
+    ]);
+    super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
+    argv.extend([
         "--rw-noexec".to_owned(),
         STORAGE_MOUNT.to_owned(),
         "--net-restricted".to_owned(),
@@ -134,6 +150,18 @@ pub fn run_tilolang_host(
             paths: searched,
         });
     };
+    let (found, app_searched) = find_runtime_bundle(&launch.app_runtime, opts)?;
+    let Some((app_root, app_version)) = found else {
+        return Err(RunError::RuntimeBundleMissing {
+            runtime: launch.app_runtime.clone(),
+            paths: app_searched,
+        });
+    };
+    if app_version == version {
+        return Err(RunError::RuntimeReferenceMalformed(
+            launch.app_runtime.clone(),
+        ));
+    }
     if !runtime_root.join(BIN).is_file() {
         return Err(RunError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -162,7 +190,12 @@ pub fn run_tilolang_host(
         "--add-seccomp-fd".to_owned(),
         BASELINE_FD.to_string(),
     ];
-    argv.extend(bwrap_argv(&runtime_root, &version, &storage, &shim));
+    argv.extend(bwrap_argv(
+        (&runtime_root, &version),
+        (&app_root, &app_version),
+        &storage,
+        &shim,
+    ));
     let mut command = Command::new(opts.bwrap_bin.clone().unwrap_or_else(|| "bwrap".into()));
     command
         .args(&argv)
@@ -215,9 +248,15 @@ mod tests {
     #[test]
     fn a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only() {
         let argv = bwrap_argv(
-            Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
-            "0.1.0",
-            Path::new("/home/ada/.local/share/tilo/tilolang-hosts/room/author"),
+            (
+                Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
+                "0.1.0+tilolang",
+            ),
+            (
+                Path::new("/usr/lib/tilo/runtimes/tilo/2026.10.1"),
+                "2026.10.1",
+            ),
+            Path::new("/home/ada/.local/share/tilo/tilolang-hosts/workspace/author"),
             Path::new("/usr/libexec/tilo-launcher"),
         );
         assert!(
@@ -229,7 +268,7 @@ mod tests {
         assert_eq!(
             binds,
             [(
-                "/home/ada/.local/share/tilo/tilolang-hosts/room/author".to_owned(),
+                "/home/ada/.local/share/tilo/tilolang-hosts/workspace/author".to_owned(),
                 STORAGE_MOUNT.to_owned()
             )],
             "its storage is the one thing it writes"
@@ -238,7 +277,11 @@ mod tests {
             .into_iter()
             .map(|(_, to)| to)
             .collect();
-        assert!(mounted.contains(&"/run/tilo-runtime/0.1.0".to_owned()));
+        assert!(mounted.contains(&"/run/tilo-runtime/0.1.0+tilolang".to_owned()));
+        assert!(
+            mounted.contains(&"/run/tilo-runtime/2026.10.1".to_owned()),
+            "the Tilo runtime its binary runs on"
+        );
         for forbidden in ["wayland", "dbus", "bus", "/home", "tilo-svc", "/run/user"] {
             assert!(
                 !mounted.iter().any(|to| to.contains(forbidden)),
@@ -281,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             argv.last().map(String::as_str),
-            Some("/run/tilo-runtime/0.1.0/bin/tilolang-host")
+            Some("/run/tilo-runtime/0.1.0+tilolang/bin/tilolang-host")
         );
     }
 }
