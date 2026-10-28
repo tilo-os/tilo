@@ -3465,6 +3465,53 @@ pub(crate) fn service_retained_owner_model(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+/// A record's save moved on, and nothing else woke the owner
+/// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner
+/// is told the save status alone. No model callback runs (update, settle,
+/// sync), nothing is offered, and the window's layout stands: the status
+/// is shown by what the owner presents of it (the window's bar), as when a
+/// sync delivers it. A save still in flight wakes the owner again when it
+/// moves on.
+pub(crate) fn service_owner_save_progress(
+    root: &mut dyn Widget,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<(), BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            result = Some(current.enter().and_then(|_entry| {
+                let status = current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)?;
+                if status == crate::record::RecordSaveStatus::Saving {
+                    let wake = current.lifetime.clone();
+                    current.records.wake_on_save_progress(
+                        &current.checkout.id,
+                        std::sync::Arc::new(move || wake.wake_save_progress()),
+                    );
+                }
+                owner.record_save_status(status);
+                Ok(())
+            }));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
 /// SDK-owned retained component traversal, separate from public callback reach.
 pub struct RetainedComponentRequest<'a, 'b> {
     inner: &'a mut ComponentRequest<'b>,
