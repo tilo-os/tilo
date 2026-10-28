@@ -86,7 +86,9 @@ Board. The session installs them (`--install-tapp`) beside native Notes
   native Chat, opened now, presents its first frame (`synced-*.png`). The time
   from each launch to its first presented frame is recorded.
 - **host-edit**: tilolang Notes' "New note" lands in the Lounge as native
-  Notes' does.
+  Notes' does; so does it in a second window of the app (the first
+  duplicated, as Super+T does), and in the app started again after every
+  window of it closed.
 
 Each app opens once in the Lounge: these three starts open none before the
 third, so every app is first opened there.
