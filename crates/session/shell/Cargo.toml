@@ -51,6 +51,27 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 
+# Binaries the integration tests start, with no tests of their own: without
+# `test = false` every shell change also compiled and linked an empty test
+# harness for each, beside the binary the tests run.
+[[bin]]
+name = "click_test_client"
+path = "src/bin/click_test_client.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "pressure_fixture"
+path = "src/bin/pressure_fixture.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tilo-runtime-mcp"
+path = "src/bin/tilo-runtime-mcp.rs"
+test = false
+bench = false
+
 [[bin]]
 name = "network-boundary-fixture"
 path = "tests/fixtures/network-boundary.rs"
