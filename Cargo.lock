@@ -3973,6 +3973,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
+ "twilight-http-ratelimiting",
  "url",
  "workspace-hack",
  "zeroize",
@@ -22182,6 +22183,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 
@@ -22548,6 +22550,16 @@ dependencies = [
  "sha1 0.10.6",
  "thiserror 2.0.21",
  "utf-8",
+]
+
+[[package]]
+name = "twilight-http-ratelimiting"
+version = "0.17.1"
+dependencies = [
+ "hashbrown 0.16.1",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -27267,6 +27279,7 @@ dependencies = [
  "ttf-parser",
  "tube",
  "tungstenite",
+ "twilight-http-ratelimiting",
  "two-face",
  "twox-hash",
  "type-map",

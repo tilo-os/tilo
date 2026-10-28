@@ -1,7 +1,7 @@
 //! Perform one queued op against Discord's REST API.
 //!
 //! Performs run concurrently. Calls in one rate-limit bucket still go one at
-//! a time and in order (see [`crate::ratelimit`]), so ops in one channel
+//! a time and in order (see [`crate::rest::Rest`]), so ops in one channel
 //! reach Discord in the order the host handed them over.
 //!
 //! Webhook sends go through a lane per webhook and thread. When a burst
@@ -440,9 +440,35 @@ impl Performer {
         answered
     }
 
+    /// The webhook path of a lane's first send, when sends wait behind it
+    /// that could share its message. The token is held once the lane's first
+    /// send went out; before that nothing has been sent, so nothing can be
+    /// flooded.
+    fn flood_path(&self, key: &str) -> Option<String> {
+        let lanes = self.lanes.lock().ok()?;
+        let first = lanes
+            .get(key)
+            .and_then(|lane| lane.queue.front().filter(|_| lane.queue.len() > 1))
+            .map(|first| (first.op.channel.clone(), first.op.webhook.clone()));
+        drop(lanes);
+        let (channel, webhook) = first?;
+        let token = self.ctx.secrets.cached(WEBHOOK, &channel)?;
+        Some(format!(
+            "/webhooks/{}/{}",
+            segment(&self.current(&webhook)),
+            segment(&token)
+        ))
+    }
+
     /// The next batch of a lane: its first send, plus the sends behind it
     /// that may share its message when the webhook's bucket is empty.
-    fn batch(&self, key: &str) -> Vec<Waiting> {
+    async fn batch(&self, key: &str) -> Vec<Waiting> {
+        // Only this lane's drain takes from it, so the first send asked
+        // about here is the one taken below.
+        let flooded = match self.flood_path(key) {
+            Some(path) => self.ctx.rest.busy(&Method::POST, &path).await,
+            None => false,
+        };
         let Ok(mut lanes) = self.lanes.lock() else {
             return Vec::new();
         };
@@ -453,21 +479,6 @@ impl Performer {
             lanes.remove(key);
             return Vec::new();
         };
-        // The token is held once the lane's first send went out; before
-        // that nothing has been sent, so nothing can be flooded.
-        let flooded = !lane.queue.is_empty()
-            && self
-                .ctx
-                .secrets
-                .cached(WEBHOOK, &first.op.channel)
-                .is_some_and(|token| {
-                    let path = format!(
-                        "/webhooks/{}/{}",
-                        segment(&self.current(&first.op.webhook)),
-                        segment(&token)
-                    );
-                    self.ctx.rest.busy(&Method::POST, &path)
-                });
         let mut chars = first.op.content.chars().count();
         let mut batch = vec![first];
         while flooded && let Some(next) = lane.queue.front() {
@@ -493,7 +504,7 @@ impl Performer {
 
     async fn drain(self: Arc<Self>, key: String) {
         loop {
-            let batch = self.batch(&key);
+            let batch = self.batch(&key).await;
             if batch.is_empty() {
                 return;
             }
