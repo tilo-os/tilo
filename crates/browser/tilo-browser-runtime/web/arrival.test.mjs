@@ -3,8 +3,10 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, doorCopy, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost, waitListFailure,
-  parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
+import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, failureMessage, FAILURES, fill,
+  FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isCoffeeHost, lineParts, measuredSeconds, plannedSegments, refusedByHost,
+  rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
+  STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
@@ -122,10 +124,12 @@ test('a slow start or opening says so too', () => {
   assert.equal(arrival.update({arrival: 'open'}, 19_000).note, 'Still opening the workspace.');
 });
 
-test('the bar follows the measured phases, creeps within one, and never runs backwards', () => {
+test('the bar is sized by the steps and creeps within one, and never runs backwards', () => {
   assert.equal(SEGMENTS.fetch.start, 0);
   assert.ok(Math.abs(SEGMENTS.draw.end - 1) < 1e-9);
-  assert.ok(Math.abs(SEGMENTS.join.start - 2.55 / 7.15) < 1e-9, 'js, fetch and compile come first');
+  const total = Object.values(FIRST_VISIT_SECONDS).reduce((sum, seconds) => sum + seconds, 0);
+  assert.ok(Math.abs(SEGMENTS.join.start - (FIRST_VISIT_SECONDS.fetch + FIRST_VISIT_SECONDS.compile) / total) < 1e-9,
+    'fetch and compile come first');
   for (const elapsed of [0, 500, 5000, 1e9]) {
     const at = progressIn('open', elapsed);
     assert.ok(at >= SEGMENTS.open.start && at < SEGMENTS.open.end, `${elapsed} ms stays inside its phase`);
@@ -133,22 +137,76 @@ test('the bar follows the measured phases, creeps within one, and never runs bac
   assert.ok(progressIn('open', 1000) > progressIn('open', 500));
   const arrival = createArrival();
   const seen = [];
+  const plans = [];
   for (const [state, now] of [[loading, 0], [loading, 1500], [{arrival: 'load', wasmFetched: true}, 2000],
     [{arrival: 'open'}, 2100], [{arrival: 'open'}, 4000], [{arrival: 'draw'}, 4500], [{arrival: 'done'}, 6000]]) {
     seen.push(arrival.update(state, now).progress);
+    plans.push(plannedSegments(arrival.seconds));
   }
   assert.deepEqual([...seen].sort((a, b) => a - b), seen);
-  assert.ok(seen[3] >= SEGMENTS.open.start, 'a skipped join jumps forward');
+  // A step that did not happen leaves no time behind it: the bar stands
+  // where the time spent so far belongs in the plan it made as it went.
+  assert.ok(seen[3] >= plans[3].open.start - 1e-9, 'a skipped join jumps forward');
   assert.equal(seen.at(-1), 1);
   assert.equal(segmentOf('load', false), 'fetch');
   assert.equal(segmentOf('load', true), 'compile');
+});
+
+test('the bar is planned from what getting in took here, not from a guess', () => {
+  // A device that measured itself: fetch and compile took longer, the rest
+  // shorter, so each step's share of the bar follows.
+  const measured = {fetch: 400, compile: 1200, join: 90, open: 110, draw: 2600};
+  const plan = measuredPlan(measured);
+  const arrival = createArrival({measured});
+  assert.deepEqual(arrival.seconds, {...FIRST_VISIT_SECONDS, ...plan});
+  const done = plannedSegments(plan);
+  assert.ok(done.draw.end - done.draw.start > SEGMENTS.draw.end - SEGMENTS.draw.start,
+    'a slower draw is given more of the bar');
+  // Within the step the bar creeps toward its end at the step's own pace: a
+  // 2.6 s draw still moves at 2 s, where the first visit's 1.6 s guess had
+  // already flattened out.
+  const guessed = progressIn('draw', 2000);
+  const planned = progressIn('draw', 2000, {seconds: plan});
+  assert.ok(planned > done.draw.start + (done.draw.end - done.draw.start) * 0.4, 'measured draw keeps moving');
+  for (const elapsed of [0, 500, 1500, 2600, 10_000]) {
+    const at = progressIn('draw', elapsed, {seconds: plan});
+    assert.ok(at >= done.draw.start && at < done.draw.end, `${elapsed} ms stays inside its step`);
+  }
+  // A step's real time replaces its estimate as it completes.
+  const slowJoin = createArrival({lines: {jokes, tips}, measured});
+  slowJoin.update({arrival: 'load'}, 0);
+  slowJoin.update({arrival: 'load', wasmFetched: true}, 400);
+  slowJoin.update({arrival: 'join'}, 1600);
+  assert.deepEqual(slowJoin.spent, {fetch: 400, compile: 1200});
+  slowJoin.update({arrival: 'open'}, 6000);
+  assert.equal(slowJoin.spent.join, 4400, 'the join took far longer than measured');
+  assert.equal(slowJoin.seconds.join, 4.4, 'and the plan says so now, in seconds');
+});
+
+test('a visit remembers what it took, and reads it back for the next bar', () => {
+  const kept = new Map();
+  const window = {localStorage: {getItem: key => kept.get(key) ?? null, setItem: (key, value) => kept.set(key, value)}};
+  assert.deepEqual(rememberedArrival(window), {});
+  rememberArrival({fetch: 210, compile: 70.4, join: NaN, open: 240, draw: 'long'}, window);
+  assert.deepEqual(rememberedArrival(window), {fetch: 210, compile: 70.4, open: 240});
+  assert.deepEqual(measuredSeconds({fetch: 0, compile: -1, join: Infinity}), {});
+  assert.equal(describeSpent({fetch: 210, join: 110.6}), 'fetch 210 ms · join 111 ms');
+  // A page that keeps nothing (private mode, no storage) still shows a bar.
+  const refusing = {localStorage: {getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }}};
+  assert.deepEqual(rememberedArrival(refusing), {});
+  rememberArrival({fetch: 1}, refusing);
+  assert.equal(kept.has(MEASURED_KEY), true);
 });
 
 test('with reduced motion the bar steps at each phase instead of creeping', () => {
   const arrival = createArrival({reducedMotion: true});
   assert.equal(arrival.update({arrival: 'open'}, 1000).progress, SEGMENTS.open.start);
   assert.equal(arrival.update({arrival: 'open'}, 3000).progress, SEGMENTS.open.start);
-  assert.equal(arrival.update({arrival: 'draw'}, 3100).progress, SEGMENTS.draw.start);
+  // The opening's two seconds replace its estimate, so the plan the draw
+  // starts at is the one that now holds what the step really took.
+  // The opening ran from the page's start (its first segment), so it says it took 3.1 s.
+  const next = plannedSegments({...FIRST_VISIT_SECONDS, open: 3.1});
+  assert.equal(arrival.update({arrival: 'draw'}, 3100).progress, next.draw.start);
   assert.equal(progressIn('join', 900, {reducedMotion: true}), SEGMENTS.join.start);
 });
 
