@@ -3,7 +3,7 @@
 //!
 //! An agent describes what it wants to do in its own words, and an app
 //! describes the same gesture in its own: "draw" against "drawing a
-//! signature", "scrolling" against "Scroll down with PageDown". Reducing
+//! signature", "scrolling" against "Scroll down with `PageDown`". Reducing
 //! both to a stem is what makes those the same word.
 
 /// The stem an English word is matched by: its plural, its participle and

@@ -9270,7 +9270,7 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             state.doc = doc;
             let mut driver =
                 ui::headless::FrameHarness::for_root(state, app, (w, h), theme.clone());
-            let (on, off) = place(&mut *driver.root_mut::<VideoEditorApp>());
+            let (on, off) = place(&mut driver.root_mut::<VideoEditorApp>());
             driver.relayout();
             let bound = ui::time::Duration::from_secs(30);
             assert!(

@@ -251,7 +251,7 @@ impl CatalogueRow {
     /// resource's label and kind — rather than only those whose text holds
     /// the needle verbatim. A caller asking for "draw" is after
     /// "Draw a pointer path", and one asking for "scrolling" after a
-    /// "scroll" the description spells as "Scroll down with PageDown".
+    /// "scroll" the description spells as "Scroll down with `PageDown`".
     fn matches(&self, needle: &str) -> bool {
         if needle.is_empty() {
             return true;
