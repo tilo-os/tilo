@@ -1113,7 +1113,7 @@ fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
     }
     let (bar, content) = {
         let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
-        let viewport = row.viewport;
+        let viewport = row.viewport();
         let bounds = row
             .groups
             .iter()
